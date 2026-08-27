@@ -1,0 +1,19 @@
+[package]
+name = "purgatory-bot-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Headless load-test bot client."
+
+[[bin]]
+name = "purgatory-bot-client"
+path = "src/main.rs"
+
+[dependencies]
+purgatory-common = { path = "../../crates/common" }
+purgatory-protocol = { path = "../../crates/protocol" }
+
+[lints]
+workspace = true

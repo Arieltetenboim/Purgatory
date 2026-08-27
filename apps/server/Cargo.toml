@@ -1,0 +1,27 @@
+[package]
+name = "purgatory-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Headless PURGATORY dedicated server."
+
+[[bin]]
+name = "purgatory-server"
+path = "src/main.rs"
+
+[dependencies]
+purgatory-common = { path = "../../crates/common" }
+purgatory-content = { path = "../../crates/content" }
+purgatory-protocol = { path = "../../crates/protocol" }
+purgatory-simulation = { path = "../../crates/simulation" }
+quinn = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

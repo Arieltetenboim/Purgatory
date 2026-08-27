@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/client",
+    "apps/server",
+    "crates/common",
+    "crates/simulation",
+    "crates/protocol",
+    "crates/content",
+    "tools/content_validator",
+    "tools/bot_client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95.0"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+tokio = { version = "1.47", default-features = false, features = ["rt", "rt-multi-thread", "macros", "time", "sync", "signal", "net", "io-util"] }
+quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

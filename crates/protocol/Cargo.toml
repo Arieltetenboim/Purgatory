@@ -1,0 +1,14 @@
+[package]
+name = "purgatory-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Shared client/server protocol types and version semantics."
+
+[dependencies]
+purgatory-common = { path = "../common" }
+
+[lints]
+workspace = true
