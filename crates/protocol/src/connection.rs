@@ -18,6 +18,10 @@ impl ConnectionId {
 
     /// Wrap a server-assigned value. Callers must not use this to let a client
     /// pick its own identity.
+    ///
+    /// `0` is reserved and is not issued by the server allocator. This
+    /// constructor stays infallible so untrusted codec bytes can be represented
+    /// without panicking; the allocator asserts against wraparound to `0`.
     #[must_use]
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)

@@ -18,27 +18,37 @@
 //!
 //! Client sends requests / intent. Server owns authoritative state.
 //! Packet arrival must not directly modify authoritative game state.
-//! Future gameplay flow: parse → validate → semantic request → simulation.
-//! Phase 5.0 does not transmit gameplay commands.
+//! Gameplay flow: parse → validate → semantic request → simulation.
+//! Phase 5.5 transmits intent-only `InputCommand` (with `input_epoch`),
+//! `HeldCancel`, and per-recipient `WorldSnapshot` acknowledgement / contact
+//! headers. The server remains authoritative.
 
 mod config;
 mod connection;
 mod framing;
 mod message;
+mod snapshot;
 mod version;
 
 pub use config::{
-    ALPN_PROTOCOL, DEFAULT_DEV_HOST, DEFAULT_DEV_PORT, HANDSHAKE_TIMEOUT,
-    MAX_CONTROL_MESSAGE_BYTES, MAX_DATAGRAM_BYTES, MAX_LABEL_BYTES, NetworkConfig, PING_INTERVAL,
-    dev_socket_addr,
+    ALPN_PROTOCOL, DEFAULT_DEV_HOST, DEFAULT_DEV_PORT, HANDSHAKE_TIMEOUT, IDLE_TIMEOUT,
+    MAX_CONTROL_MESSAGE_BYTES, MAX_DATAGRAM_BYTES, MAX_ENTITIES_PER_SNAPSHOT,
+    MAX_GAMEPLAY_SNAPSHOT_BYTES, MAX_LABEL_BYTES, NetworkConfig, PING_INTERVAL, dev_socket_addr,
 };
 pub use connection::ConnectionId;
-pub use framing::{FrameError, decode_payload, encode_frame, peek_frame_len};
+pub use framing::{
+    FrameError, decode_gameplay_payload, decode_payload, encode_frame, encode_gameplay_frame,
+    peek_frame_len, peek_gameplay_frame_len,
+};
 pub use message::{
-    ClientControl, CodecError, DisconnectReason, DisconnectReasonCode, Hello, ServerControl,
-    ServerDatagram, Welcome, decode_client_control, decode_client_datagram, decode_server_control,
-    decode_server_datagram, encode_client_control, encode_client_datagram, encode_server_control,
-    encode_server_datagram, validate_hello,
+    ClientControl, CodecError, DisconnectReason, DisconnectReasonCode, Hello, InputCommand,
+    MoveAxis, ServerControl, ServerDatagram, Welcome, decode_client_control,
+    decode_client_datagram, decode_server_control, decode_server_datagram, encode_client_control,
+    encode_client_datagram, encode_server_control, encode_server_datagram, validate_hello,
+};
+pub use snapshot::{
+    PlatformSupportId, ReplicatedKind, SnapshotEntity, WireEntityId, WorldSnapshot,
+    decode_world_snapshot, encode_world_snapshot,
 };
 pub use version::PROTOCOL_VERSION;
 
@@ -63,7 +73,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 1);
+        assert_eq!(PROTOCOL_VERSION, 4);
     }
 
     #[test]

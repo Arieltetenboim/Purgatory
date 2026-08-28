@@ -4,6 +4,7 @@
 //! fields. All mutations go through [`DebugAction`].
 
 use crate::body::PLAYER_HALF_EXTENTS;
+use crate::entity::EntityId;
 use crate::footnote::ContactEvent;
 use crate::platform::{FLOOR, FLOOR_POSITION};
 use crate::stage::{FOOTNOTE_SPAWN_X, P0, P0_POSITION};
@@ -27,7 +28,13 @@ impl World {
 
     /// Restore the local player to the development spawn without changing IDs.
     pub fn reset_dev_player(&mut self) {
-        if self.player_id().is_none() {
+        if let Some(id) = self.player_id() {
+            self.reset_player_entity(id);
+        }
+    }
+
+    pub fn reset_player_entity(&mut self, id: EntityId) {
+        if self.get_player(id).is_none() {
             return;
         }
         // Prefer Phase-4.6 P0 floor when present; else compact FLOOR.
@@ -57,7 +64,7 @@ impl World {
             let top = FLOOR.top_surface(Transform::from_position(FLOOR_POSITION));
             ([-2.0, top + PLAYER_HALF_EXTENTS[1]], false, None)
         };
-        if let Some((transform, player)) = self.player_parts_mut() {
+        if let Some((transform, player)) = self.player_parts_mut_for(id) {
             transform.position = position;
             player.velocity = [0.0, 0.0];
             player.grounded = grounded;

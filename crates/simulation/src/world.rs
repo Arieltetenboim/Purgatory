@@ -37,6 +37,7 @@ pub struct World {
     player: Option<EntityId>,
     bounds: WorldBounds,
     last_motion: PlayerMotionDebug,
+    next_support_id: u16,
 }
 
 impl Default for World {
@@ -48,6 +49,7 @@ impl Default for World {
             player: None,
             bounds: WorldBounds::DEV_COMPACT,
             last_motion: PlayerMotionDebug::default(),
+            next_support_id: 1,
         }
     }
 }
@@ -125,8 +127,7 @@ impl World {
     }
 
     #[must_use]
-    pub fn player_body(&self) -> Option<PlayerBody> {
-        let id = self.player_id()?;
+    pub fn player_body_of(&self, id: EntityId) -> Option<PlayerBody> {
         let data = self.slot_live(id)?;
         let Payload::Player(player) = data.payload else {
             return None;
@@ -143,20 +144,100 @@ impl World {
         })
     }
 
+    pub fn player_body(&self) -> Option<PlayerBody> {
+        let id = self.player_id()?;
+        self.player_body_of(id)
+    }
+
     pub fn spawn_player(&mut self, transform: Transform, player: PlayerState) -> EntityId {
         let id = self.allocate(EntityData {
             transform,
             payload: Payload::Player(player),
         });
-        self.player = Some(id);
+        if self
+            .player
+            .filter(|existing| self.contains(*existing))
+            .is_none()
+        {
+            self.player = Some(id);
+        }
         id
     }
 
-    pub fn spawn_platform(&mut self, transform: Transform, platform: Platform) -> EntityId {
+    pub fn spawn_platform(&mut self, transform: Transform, mut platform: Platform) -> EntityId {
+        if self.next_support_id == 0 {
+            self.next_support_id = 1;
+        }
+        platform.support_id = self.next_support_id;
+        self.next_support_id = match self.next_support_id.checked_add(1) {
+            Some(next) if next != 0 => next,
+            _ => u16::MAX,
+        };
         self.allocate(EntityData {
             transform,
             payload: Payload::Platform(platform),
         })
+    }
+
+    /// Stage-local support id → live platform entity. `0` is never a valid id.
+    #[must_use]
+    pub fn platform_entity_by_support_id(&self, support_id: u16) -> Option<EntityId> {
+        if support_id == 0 {
+            return None;
+        }
+        self.iter_platforms()
+            .find(|view| view.platform.support_id == support_id)
+            .map(|view| view.id)
+    }
+
+    #[must_use]
+    pub fn support_id_of(&self, id: EntityId) -> Option<u16> {
+        let id = self.get_platform(id)?.1.support_id;
+        (id != 0).then_some(id)
+    }
+
+    /// Restore durable local-player FOOTNOTE state for reconciliation.
+    /// `last_contact` is always cleared (transient). Unresolvable support ids
+    /// clear that contact field rather than probing geometry.
+    pub fn restore_player_sim_state(
+        &mut self,
+        position: [f32; 2],
+        velocity: [f32; 2],
+        grounded: bool,
+        grounded_on_support: Option<u16>,
+        ignored_support: Option<u16>,
+    ) {
+        let grounded_on = grounded_on_support.and_then(|id| self.platform_entity_by_support_id(id));
+        let ignored_platform =
+            ignored_support.and_then(|id| self.platform_entity_by_support_id(id));
+        let Some((transform, player)) = self.player_parts_mut() else {
+            return;
+        };
+        transform.position = position;
+        player.velocity = velocity;
+        player.ignored_platform = ignored_platform;
+        player.last_contact = crate::footnote::ContactEvent::None;
+        if grounded {
+            if let Some(on) = grounded_on {
+                player.grounded = true;
+                player.grounded_on = Some(on);
+            } else {
+                player.grounded = false;
+                player.grounded_on = None;
+            }
+        } else {
+            player.grounded = false;
+            player.grounded_on = None;
+        }
+    }
+
+    /// Local-player FOOTNOTE step. Reconciliation and prediction must use this
+    /// (or [`Self::tick_player`]), never a whole-world tick that could later
+    /// re-simulate mobs/NPCs/projectiles.
+    pub fn tick_predicted_player(&mut self, dt_seconds: f32, input: crate::PlayerInput) {
+        if let Some(id) = self.player_id() {
+            self.tick_player(id, dt_seconds, input);
+        }
     }
 
     /// Despawn a live entity. Stale IDs return `false`.
@@ -170,13 +251,21 @@ impl World {
         self.free.push(id.index());
         self.live = self.live.saturating_sub(1);
         if self.player == Some(id) {
-            self.player = None;
+            let next = self.iter_kind(EntityKind::Player).next();
+            self.player = next;
         }
         true
     }
 
     pub fn player_parts_mut(&mut self) -> Option<(&mut Transform, &mut PlayerState)> {
         let id = self.player_id()?;
+        self.player_parts_mut_for(id)
+    }
+
+    pub fn player_parts_mut_for(
+        &mut self,
+        id: EntityId,
+    ) -> Option<(&mut Transform, &mut PlayerState)> {
         let index = self.live_index(id)?;
         match self.slots[index].data.as_mut()? {
             EntityData {
@@ -252,9 +341,12 @@ impl World {
     /// If `grounded_on` names a despawned entity, clear grounding so the next
     /// tick applies gravity instead of trusting a stale ID.
     pub fn clear_stale_grounding(&mut self) {
-        let Some(id) = self.player_id() else {
-            return;
-        };
+        if let Some(id) = self.player_id() {
+            self.clear_stale_grounding_for(id);
+        }
+    }
+
+    pub fn clear_stale_grounding_for(&mut self, id: EntityId) {
         let on = match self.get_player(id) {
             Some((_, player)) => player.grounded_on,
             None => return,
@@ -265,7 +357,7 @@ impl World {
         if self.contains(on) && self.kind(on) == Some(EntityKind::Platform) {
             return;
         }
-        if let Some((_, player)) = self.player_parts_mut() {
+        if let Some((_, player)) = self.player_parts_mut_for(id) {
             player.grounded = false;
             player.grounded_on = None;
         }
@@ -487,5 +579,32 @@ mod tests {
         let again = world.spawn_platform(transform, platform);
         assert!(world.contains(again));
         assert_eq!(world.len(), 1);
+    }
+
+    #[test]
+    fn two_players_tick_independently() {
+        let mut world = World::dev_stage();
+        let a = world.player_id().expect("primary");
+        let floor_view = world.iter_platforms().next().expect("floor");
+        let floor = floor_view.id;
+        let top = floor_view.top_surface();
+        let (transform, state) = PlayerState::standing_on_at(floor, top, 2.0);
+        let b = world.spawn_player(transform, state);
+        assert_ne!(a, b);
+        let ax0 = world.player_body_of(a).expect("a").position[0];
+        let bx0 = world.player_body_of(b).expect("b").position[0];
+        let dt = crate::TICK_DURATION.as_secs_f32();
+        for _ in 0..10 {
+            world.tick_player(a, dt, crate::PlayerInput::from_buttons(false, true, false));
+            world.tick_player(b, dt, crate::PlayerInput::from_buttons(true, false, false));
+        }
+        let ax1 = world.player_body_of(a).expect("a").position[0];
+        let bx1 = world.player_body_of(b).expect("b").position[0];
+        assert!(ax1 > ax0, "A should move right");
+        assert!(bx1 < bx0, "B should move left");
+        world.despawn(a);
+        assert!(!world.contains(a));
+        assert!(world.contains(b));
+        assert_eq!(world.player_id(), Some(b));
     }
 }

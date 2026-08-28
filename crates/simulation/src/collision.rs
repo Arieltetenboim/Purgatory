@@ -112,13 +112,14 @@ pub fn recover_solid_penetration(
         let mag = push_y.abs().min(MAX_RECOVERY_TRANSLATION);
         transform.position[1] += push_y.signum() * mag;
     }
-    Some(RecoveryResult {
+    let result = RecoveryResult {
         platform: id,
         correction: [
             transform.position[0] - before[0],
             transform.position[1] - before[1],
         ],
-    })
+    };
+    Some(result)
 }
 
 /// Separate the player on X against platforms that block this approach.

@@ -4,9 +4,12 @@
 //! regions and empty traversal space — not by doubling platform count.
 //! Labels in comments are developer-only. Not a map loader.
 
+use crate::aabb::Aabb;
 use crate::body::PlayerState;
 use crate::bounds::WorldBounds;
-use crate::platform::Platform;
+use crate::contact::{CONTACT_EPSILON, overlap_x, overlap_y, penetrates};
+use crate::entity::EntityId;
+use crate::platform::{Platform, PlatformKind};
 use crate::transform::Transform;
 use crate::world::World;
 
@@ -15,7 +18,15 @@ pub const P0: Platform = Platform::solid([24.0, 0.4]);
 pub const P0_POSITION: [f32; 2] = [0.0, -4.0];
 
 /// Player spawn X on P0 (far left, near left-boundary test).
-pub const FOOTNOTE_SPAWN_X: f32 = -20.0;
+///
+/// Must sit to the right of the middle slope step (`[-20.5, -2.5]`, half
+/// `[0.7, 0.16]`) so a standing player AABB does not embed in Solid geometry.
+pub const FOOTNOTE_SPAWN_X: f32 = -19.4;
+
+/// Former spawn X that stood inside the middle slope step (Entity 22).
+/// Fixture / regression only. Not used by [`World::footnote_test_stage`].
+#[cfg(test)]
+const LEGACY_INVALID_FOOTNOTE_SPAWN_X: f32 = -20.0;
 
 /// Suggested client logical viewport height for this arena.
 pub const FOOTNOTE_TEST_VIEWPORT_HEIGHT: f32 = 14.0;
@@ -152,8 +163,51 @@ impl World {
         let floor_top = P0.top_surface(Transform::from_position(P0_POSITION));
         let (transform, player) = PlayerState::standing_on_at(p0, floor_top, FOOTNOTE_SPAWN_X);
         world.spawn_player(transform, player);
+        #[cfg(debug_assertions)]
+        if let Some(embed) = first_solid_embed(&world) {
+            panic!(
+                "FOOTNOTE spawn embeds in Solid {embed:?}; normal spawn must not depend on penetration recovery (CONTACT_EPSILON={CONTACT_EPSILON})"
+            );
+        }
         world
     }
+}
+
+/// First Solid the player AABB meaningfully penetrates (`penetrates` / both axes
+/// deeper than [`CONTACT_EPSILON`]). Construction-time check only.
+#[cfg(any(debug_assertions, test))]
+fn first_solid_embed(world: &World) -> Option<(EntityId, [f32; 2], f32, f32)> {
+    let body = world.player_body()?.aabb();
+    first_solid_embed_of(world, body)
+}
+
+#[cfg(any(debug_assertions, test))]
+fn first_solid_embed_of(world: &World, body: Aabb) -> Option<(EntityId, [f32; 2], f32, f32)> {
+    for view in world.iter_platforms() {
+        if view.platform.kind != PlatformKind::Solid {
+            continue;
+        }
+        let pa = view.aabb();
+        if penetrates(body, pa) {
+            return Some((
+                view.id,
+                view.transform.position,
+                overlap_x(body, pa),
+                overlap_y(body, pa),
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+fn standing_on_p0_aabb(spawn_x: f32) -> Aabb {
+    use crate::body::PLAYER_HALF_EXTENTS;
+    let floor_top = P0.top_surface(Transform::from_position(P0_POSITION));
+    Aabb::new(
+        [spawn_x, floor_top + PLAYER_HALF_EXTENTS[1]],
+        PLAYER_HALF_EXTENTS,
+    )
 }
 
 #[cfg(test)]
@@ -206,6 +260,67 @@ mod tests {
         assert!(ov[0].aabb().overlaps(ov[1].aabb()));
     }
 
+    fn solid_at(world: &World, position: [f32; 2]) -> crate::platform::PlatformView {
+        world
+            .iter_platforms()
+            .find(|view| {
+                view.platform.kind == PlatformKind::Solid
+                    && (view.transform.position[0] - position[0]).abs() < 1e-4
+                    && (view.transform.position[1] - position[1]).abs() < 1e-4
+            })
+            .unwrap_or_else(|| panic!("missing Solid at {position:?}"))
+    }
+
+    #[test]
+    fn current_dev_spawn_is_not_inside_solid() {
+        let world = World::footnote_test_stage();
+        assert!(
+            (world.player_body().expect("player").position[0] - FOOTNOTE_SPAWN_X).abs() < 1e-4,
+            "test must use the live FOOTNOTE spawn X"
+        );
+        assert!(
+            first_solid_embed(&world).is_none(),
+            "current dev spawn meaningfully penetrates a Solid: {:?}",
+            first_solid_embed(&world)
+        );
+        let p0 = solid_at(&world, P0_POSITION);
+        let step = solid_at(&world, [-20.5, -2.5]);
+        let aabb = world.player_body().expect("player").aabb();
+        assert!(
+            !penetrates(aabb, p0.aabb()),
+            "spawn must not penetrate P0; touch within CONTACT_EPSILON={CONTACT_EPSILON} is allowed"
+        );
+        assert!(
+            !penetrates(aabb, step.aabb()),
+            "spawn must not penetrate the middle slope step"
+        );
+    }
+
+    #[test]
+    fn old_invalid_spawn_is_detected_as_invalid() {
+        let world = World::footnote_test_stage();
+        let step = solid_at(&world, [-20.5, -2.5]);
+        let legacy = standing_on_p0_aabb(LEGACY_INVALID_FOOTNOTE_SPAWN_X);
+        let embed = first_solid_embed_of(&world, legacy)
+            .expect("legacy spawn X=-20 must be detected as Solid penetration");
+        assert!(
+            (embed.1[0] + 20.5).abs() < 1e-4 && (embed.1[1] + 2.5).abs() < 1e-4,
+            "legacy embed should be the middle slope step, got {embed:?}"
+        );
+        assert!(
+            embed.2 > CONTACT_EPSILON && embed.3 > CONTACT_EPSILON,
+            "legacy embed must be deeper than CONTACT_EPSILON on both axes: {embed:?}"
+        );
+        assert!(
+            penetrates(legacy, step.aabb()),
+            "legacy spawn must remain an unacceptable normal-player spawn against the slope step"
+        );
+        assert!(
+            first_solid_embed(&world).is_none(),
+            "the live map spawn must stay valid; this fixture is not the current spawn"
+        );
+    }
+
     #[test]
     fn footnote_spawn_is_on_main_floor() {
         let world = World::footnote_test_stage();
@@ -213,6 +328,62 @@ mod tests {
         assert!((body.position[0] - FOOTNOTE_SPAWN_X).abs() < 1e-3);
         assert!(body.grounded);
         assert!(body.ignored_platform.is_none());
+    }
+
+    #[test]
+    fn footnote_spawn_idle_does_not_enter_recovery() {
+        use crate::input::PlayerInput;
+        use crate::motion_debug::ResponseKind;
+        let mut world = World::footnote_test_stage();
+        let spawn = world.player_body().expect("player").position;
+        for _ in 0..30 {
+            world.tick(1.0 / 30.0, PlayerInput::idle());
+            let m = world.last_motion_debug();
+            assert_ne!(
+                m.response_kind,
+                ResponseKind::Recovery,
+                "spawn idle must not recover: {m:?}"
+            );
+        }
+        let body = world.player_body().expect("player");
+        assert!((body.position[0] - spawn[0]).abs() < 1e-3);
+        assert!((body.position[1] - spawn[1]).abs() < 1e-3);
+        let m = world.last_motion_debug();
+        assert_eq!(m.response_kind, ResponseKind::None);
+    }
+
+    #[test]
+    fn footnote_valid_spawn_walk_into_slope_does_not_recover() {
+        use crate::input::PlayerInput;
+        use crate::motion_debug::ResponseKind;
+        let mut world = World::footnote_test_stage();
+        let mut recovered = 0u32;
+        // Walk into the staircase, jump against it, then walk away.
+        for i in 0..180 {
+            let input = if i < 60 {
+                PlayerInput::from_buttons(true, false, false)
+            } else if i == 60 {
+                PlayerInput::from_buttons(true, false, true)
+            } else if i < 90 {
+                PlayerInput::from_buttons(true, false, false)
+            } else {
+                PlayerInput::from_buttons(false, true, false)
+            };
+            world.tick(1.0 / 30.0, input);
+            let m = world.last_motion_debug();
+            if m.response_kind == ResponseKind::Recovery {
+                recovered += 1;
+            }
+            let body = world.player_body().expect("player");
+            assert!(
+                body.position[1] > -6.5,
+                "player fell toward world bound during slope approach: {body:?}"
+            );
+        }
+        assert_eq!(
+            recovered, 0,
+            "valid spawn gameplay must not enter Solid recovery against the slope"
+        );
     }
 
     #[test]

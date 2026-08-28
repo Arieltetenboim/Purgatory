@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 egui = "0.36.1"
 egui-wgpu = { version = "0.36.1", features = ["winit"] }
 egui-winit = "0.36.1"
@@ -28,6 +29,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[dev-dependencies]
+# Test-only: the live handshake-shutdown test stands up a local QUIC listener.
+rcgen = { workspace = true }
 
 [lints]
 workspace = true

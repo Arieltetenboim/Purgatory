@@ -14,6 +14,14 @@ use super::snapshot::DebugSnapshot;
 use super::ui_state::DebugUiState;
 use crate::renderer::OverlayPass;
 
+/// Arguments for drawing the Connection Frontend during an egui frame.
+pub struct ConnectionPaint<'a> {
+    pub frontend: &'a crate::frontend::ConnectionFrontend,
+    pub server: &'a str,
+    pub status: &'a str,
+    pub can_connect: bool,
+}
+
 /// GPU handles needed to construct the overlay. wgpu types only; no egui in `gpu.rs`.
 pub struct OverlayInit<'a> {
     pub device: &'a wgpu::Device,
@@ -63,7 +71,7 @@ impl DebugOverlay {
             winit,
             renderer,
             tab: DebugTab::Runtime,
-            ui: DebugUiState::default(),
+            ui: DebugUiState::from_env(),
             collision_history: CollisionHistory::default(),
         }
     }
@@ -83,8 +91,13 @@ impl DebugOverlay {
     }
 
     #[must_use]
+    pub fn context(&self) -> &Context {
+        &self.ctx
+    }
+
+    #[must_use]
     pub fn wants_pointer(&self) -> bool {
-        self.visible && self.ctx.egui_wants_pointer_input()
+        self.ctx.egui_wants_pointer_input()
     }
 
     pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) {
@@ -94,33 +107,56 @@ impl DebugOverlay {
         }
     }
 
-    /// Build and record the overlay into the current frame.
-    pub fn paint(
+    /// Debug overlay widgets only. Not the Connection Frontend.
+    fn paint(
+        ctx: &Context,
+        snapshot: &DebugSnapshot,
+        visible: &mut bool,
+        tab: &mut DebugTab,
+        ui_state: &mut DebugUiState,
+        history: &mut CollisionHistory,
+        actions: &mut Vec<DebugAction>,
+    ) {
+        draw_debug_window(ctx, snapshot, visible, tab, ui_state, history, actions);
+    }
+
+    /// One egui frame: optional [`ConnectionFrontend::paint`] plus debug overlay.
+    pub fn submit_frame(
         &mut self,
         window: &Window,
         pass: OverlayPass<'_>,
         snapshot: &DebugSnapshot,
-    ) -> (Vec<wgpu::CommandBuffer>, Vec<DebugAction>) {
-        if !self.visible {
-            return (Vec::new(), Vec::new());
+        connection: Option<ConnectionPaint<'_>>,
+    ) -> (Vec<wgpu::CommandBuffer>, Vec<DebugAction>, bool) {
+        if connection.is_none() && !self.visible {
+            return (Vec::new(), Vec::new(), false);
         }
 
         let raw_input = self.winit.take_egui_input(window);
         let mut actions = Vec::new();
+        let mut connect_clicked = false;
         let mut visible = self.visible;
         let mut tab = self.tab;
         let mut ui_state = self.ui.clone();
         let history = &mut self.collision_history;
         let mut full_output = self.ctx.run_ui(raw_input, |egui_ctx| {
-            draw_debug_window(
-                egui_ctx,
-                snapshot,
-                &mut visible,
-                &mut tab,
-                &mut ui_state,
-                history,
-                &mut actions,
-            );
+            if let Some(paint) = &connection {
+                connect_clicked =
+                    paint
+                        .frontend
+                        .paint(egui_ctx, paint.server, paint.status, paint.can_connect);
+            }
+            if visible {
+                Self::paint(
+                    egui_ctx,
+                    snapshot,
+                    &mut visible,
+                    &mut tab,
+                    &mut ui_state,
+                    history,
+                    &mut actions,
+                );
+            }
         });
         self.visible = visible;
         self.tab = tab;
@@ -175,7 +211,7 @@ impl DebugOverlay {
             self.renderer.free_texture(&id);
         }
 
-        (extra, actions)
+        (extra, actions, connect_clicked)
     }
 }
 
@@ -234,15 +270,18 @@ fn draw_debug_window(
             });
             ui.separator();
 
-            match *tab {
-                DebugTab::Runtime => draw_runtime_tab(ui, snapshot, ui_state),
-                DebugTab::Player => draw_player_tab(ui, snapshot, actions),
-                DebugTab::Footnote => draw_footnote_tab(ui, snapshot),
-                DebugTab::World => draw_world_tab(ui, snapshot, ui_state),
-                DebugTab::Camera => draw_camera_tab(ui, snapshot, ui_state),
-                DebugTab::Diagnostics => draw_diagnostics_tab(ui, snapshot, ui_state, history),
-                DebugTab::Network => draw_network_tab(ui, snapshot, ui_state),
-            }
+            egui::ScrollArea::vertical()
+                .id_salt(format!("debug-tab-{:?}", *tab))
+                .auto_shrink([false, true])
+                .show(ui, |ui| match *tab {
+                    DebugTab::Runtime => draw_runtime_tab(ui, snapshot, ui_state),
+                    DebugTab::Player => draw_player_tab(ui, snapshot, actions),
+                    DebugTab::Footnote => draw_footnote_tab(ui, snapshot),
+                    DebugTab::World => draw_world_tab(ui, snapshot, ui_state),
+                    DebugTab::Camera => draw_camera_tab(ui, snapshot, ui_state),
+                    DebugTab::Diagnostics => draw_diagnostics_tab(ui, snapshot, ui_state, history),
+                    DebugTab::Network => draw_network_tab(ui, snapshot, ui_state),
+                });
         });
 }
 
@@ -286,9 +325,23 @@ fn draw_runtime_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
     ui.checkbox(&mut ui_state.show_world_bounds, "Show World Bounds");
     ui.checkbox(&mut ui_state.show_grid, "Show Grid");
     ui.checkbox(&mut ui_state.show_parallax_debug, "Show Parallax Debug");
+    ui.checkbox(
+        &mut ui_state.show_interpolation_gizmos,
+        "Show Interpolation Gizmos",
+    );
+    ui.checkbox(
+        &mut ui_state.show_prediction_gizmos,
+        "Show Prediction Gizmos",
+    );
 }
 
 fn draw_player_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, actions: &mut Vec<DebugAction>) {
+    ui.colored_label(
+        egui::Color32::from_rgb(220, 160, 60),
+        "LOCAL DEV / NON-AUTHORITATIVE",
+    );
+    ui.small("Client World FOOTNOTE drives local prediction + Phase 5.5 replay (tick_player). Server owns authority.");
+    ui.separator();
     if let Some(player) = snapshot.player {
         ui.label(format!("Entity: {}", player.id));
         ui.label(format!(
@@ -338,6 +391,9 @@ fn draw_player_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, actions: &mut Ve
         if ui.button("Reset Player").clicked() {
             actions.push(DebugAction::ResetPlayer);
         }
+        ui.small(
+            "DEV: when connected, snaps local prediction to the authoritative replica (not FOOTNOTE spawn). Offline: local World spawn reset. Never mutates ReplicatedWorld or the server.",
+        );
     } else {
         ui.label("Entity: none");
     }
@@ -510,36 +566,279 @@ fn draw_diagnostics_tab(
 
 fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut DebugUiState) {
     let net = snapshot.network;
-    ui.label(format!("State: {}", net.state.as_str()));
-    ui.label(format!("Transport: {}", net.transport));
-    ui.label(format!("Server: {}:{}", net.server_host, net.server_port));
-    match net.protocol_version {
-        Some(v) => ui.label(format!("Protocol: {v}")),
-        None => ui.label("Protocol: —"),
-    };
+    ui.heading("Connection");
+    ui.label(format!("Screen: {}", net.client_screen));
+    ui.label(format!("NetworkState: {}", net.state.as_str()));
+    ui.label(format!("Attempt: {}", net.attempt_id));
     match net.connection_id {
         Some(id) => ui.label(format!("ConnectionId: {id}")),
         None => ui.label("ConnectionId: —"),
     };
-    match net.rtt {
-        Some(rtt) => ui.label(format!("RTT: {:.2} ms", rtt.as_secs_f64() * 1000.0)),
-        None => ui.label("RTT: —"),
+    match net.protocol_version {
+        Some(v) => ui.label(format!("Protocol: {v}")),
+        None => ui.label("Protocol: —"),
     };
+    ui.label(format!("Server: {}:{}", net.server_host, net.server_port));
+    ui.label(format!("Transport: {}", net.transport));
     match net.connected_for {
         Some(dur) => ui.label(format!("Connected for: {:.1} s", dur.as_secs_f32())),
         None => ui.label("Connected for: —"),
     };
-    ui.label(format!("Last status: {}", net.last_status));
+    ui.separator();
+    ui.heading("RTT");
+    fn ms(d: Option<std::time::Duration>) -> String {
+        d.map(|rtt| format!("{:.2} ms", rtt.as_secs_f64() * 1000.0))
+            .unwrap_or_else(|| "—".into())
+    }
+    ui.label(format!("Latest: {}", ms(net.rtt)));
+    ui.label(format!("Min: {}", ms(net.rtt_min)));
+    ui.label(format!("Max: {}", ms(net.rtt_max)));
+    ui.label(format!("EWMA: {}", ms(net.rtt_ewma)));
+    ui.separator();
+    ui.heading("Failure");
+    match net.last_failure {
+        Some(kind) if !kind.is_benign() => {
+            ui.label(format!("Category: {}", kind.debug_label()));
+            ui.label(format!(
+                "Retryable: {}",
+                if net.last_failure_retryable {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ));
+            ui.label(format!("Reason: {}", kind.frontend_status()));
+            ui.label(format!("Debug: {}", net.last_status));
+        }
+        Some(kind) => {
+            ui.label(format!("Last: {} (not a failure)", kind.debug_label()));
+            ui.label("Retryable: no");
+            ui.label(format!("Debug: {}", net.last_status));
+        }
+        None => {
+            ui.label("Category: —");
+            ui.label("Retryable: —");
+        }
+    };
+    ui.separator();
+    ui.heading("Counters");
+    ui.label(format!("Lifecycle events: {}", net.lifecycle_events));
+    ui.label(format!("Telemetry events: {}", net.telemetry_events));
+    ui.label(format!("Dropped telemetry: {}", net.events_dropped));
     ui.label(format!(
-        "Messages tx/rx: {} / {}  dropped events: {}",
-        net.messages_tx, net.messages_rx, net.events_dropped
+        "Stale events ignored: {}",
+        net.stale_events_ignored
     ));
-    ui.small("DEV ONLY: self-signed cert + skip-verify. No gameplay replication.");
+    ui.label(format!("Reconnect attempts: {}", net.reconnect_attempts));
+    ui.label(format!(
+        "Messages tx/rx: {} / {}",
+        net.messages_tx, net.messages_rx
+    ));
+    ui.separator();
+    ui.heading("Gameplay input (intent)");
+    ui.label(format!("Last sequence sent: {}", snapshot.net_input_seq));
+    ui.label(format!("Input commands sent: {}", snapshot.net_input_sent));
+    ui.label(format!(
+        "Semantic: axis={} jump={} down={}",
+        snapshot.net_move_axis, snapshot.net_jump, snapshot.net_down
+    ));
+    ui.small("Intent only. No position/velocity on the wire.");
+    ui.separator();
+    ui.heading("Authoritative replica");
+    ui.label(format!(
+        "Snapshot seq: {}",
+        snapshot
+            .replica_seq
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!("Server tick: {}", snapshot.replica_tick));
+    ui.label(format!(
+        "Replicated entities: {}",
+        snapshot.replica_entities
+    ));
+    ui.label(format!(
+        "Local EntityId: {}",
+        snapshot.replica_local.as_deref().unwrap_or("—")
+    ));
+    ui.label(format!("Stale ignored: {}", snapshot.replica_stale));
+    ui.label(format!("Duplicate ignored: {}", snapshot.replica_duplicate));
+    ui.label(format!("Malformed: {}", snapshot.replica_malformed));
+    ui.label(format!(
+        "Snapshot age: {}",
+        snapshot
+            .replica_age_ms
+            .map(|ms| format!("{ms} ms"))
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.small("Full snapshots. Latest sequence wins. Local: predicted presentation. Remotes: interpolated.");
+    ui.separator();
+    ui.heading("Remote interpolation");
+    ui.label(format!(
+        "Enabled: {}",
+        if snapshot.interp_enabled { "yes" } else { "no" }
+    ));
+    ui.label(format!(
+        "Delay: {} ticks ({} ms)",
+        snapshot.interp_delay_ticks, snapshot.interp_delay_ms
+    ));
+    ui.label(format!("History depth: {}", snapshot.interp_history_depth));
+    ui.label(format!(
+        "Estimated server tick: {:.2}",
+        snapshot.interp_estimated_tick
+    ));
+    ui.label(format!("Render tick: {:.2}", snapshot.interp_render_tick));
+    ui.label(format!(
+        "Bracket A/B: {} / {}",
+        snapshot
+            .interp_bracket_a
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "—".into()),
+        snapshot
+            .interp_bracket_b
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!("Alpha: {:.3}", snapshot.interp_alpha));
+    ui.label(format!("Holds (underrun): {}", snapshot.interp_holds));
+    ui.label(format!("Snaps (teleport): {}", snapshot.interp_snaps));
+    ui.small("Presentation only. Monotonic clock. No extrapolation. Remotes only — local uses prediction.");
+    ui.separator();
+    ui.heading("Local prediction");
+    ui.label(format!(
+        "Enabled / active: {} / {}",
+        if snapshot.pred_enabled { "yes" } else { "no" },
+        if snapshot.pred_active { "yes" } else { "no" }
+    ));
+    ui.label(format!(
+        "Auth pos: {}",
+        snapshot
+            .pred_auth_pos
+            .map(|p| format!("({:.3}, {:.3})", p[0], p[1]))
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!(
+        "Predicted pos: {}",
+        snapshot
+            .pred_pos
+            .map(|p| format!("({:.3}, {:.3})", p[0], p[1]))
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!(
+        "Predicted vel: {}",
+        snapshot
+            .pred_vel
+            .map(|v| format!("({:.3}, {:.3})", v[0], v[1]))
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!(
+        "Lead error (now vs auth): {}",
+        snapshot
+            .pred_lead_error
+            .or(snapshot.pred_error)
+            .map(|e| format!("{e:.3} wu"))
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!(
+        "Aligned residual (best offset): {}",
+        snapshot
+            .pred_aligned_error
+            .map(|e| format!("{e:.3} wu"))
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!(
+        "Best temporal offset: {}",
+        snapshot
+            .pred_best_offset
+            .map(|t| format!("{t} ticks"))
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!(
+        "Aligned dx/dy: {} / {}",
+        snapshot
+            .pred_aligned_dx
+            .map(|e| format!("{e:.3}"))
+            .unwrap_or_else(|| "—".into()),
+        snapshot
+            .pred_aligned_dy
+            .map(|e| format!("{e:.3}"))
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!(
+        "Auth vel: {}",
+        snapshot
+            .pred_auth_vel
+            .map(|v| format!("({:.3}, {:.3})", v[0], v[1]))
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!("Prediction tick: {}", snapshot.pred_tick));
+    ui.label(format!("Auth snapshot tick: {}", snapshot.pred_auth_tick));
+    ui.label(format!(
+        "Best-match client tick: {}",
+        snapshot
+            .pred_best_match_tick
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "—".into())
+    ));
+    ui.label(format!(
+        "Hard snaps / pending / ack: {} / {} / {}",
+        snapshot.pred_resets, snapshot.pred_pending, snapshot.pred_ack
+    ));
+    ui.label(format!(
+        "Epoch / continuation_debt / HeldCancel pending: {} / {} / {}",
+        snapshot.pred_epoch,
+        snapshot.pred_debt,
+        if snapshot.pred_cancel_pending {
+            "yes"
+        } else {
+            "no"
+        }
+    ));
+    ui.label(format!(
+        "Residual divergence streak / max: {} / {:.3}",
+        snapshot.pred_aligned_divergence, snapshot.pred_max_aligned
+    ));
+    ui.label(format!(
+        "Last correction reason: {}",
+        snapshot.pred_last_snap.as_deref().unwrap_or("—")
+    ));
+    ui.small(
+        "Phase 5.5: restore durable state, drop commands ≤ ack, replay unacked via tick_player. Late-collapse is intentional authoritative input compaction.",
+    );
+    ui.small(
+        "Pending > 0: no 8 wu / vertical failsafe. Empty pending may still hard-snap. DriftCorrection is not used. Gizmos default OFF.",
+    );
+    ui.small("Gizmo legend (Prediction Gizmos ON):");
+    ui.small("• Orange marker = Authoritative replica pose (server snapshot)");
+    ui.small("• Green marker = Predicted local pose (rendered player)");
+    ui.small("Cyan player quad = predicted presentation. Camera follows predicted pose.");
+    ui.separator();
+    ui.checkbox(&mut ui_state.log_network_lifecycle, "Log Network Lifecycle");
+    ui.checkbox(&mut ui_state.verbose_network_trace, "Verbose Network Trace");
+    ui.label("Defaults: both OFF.");
+    if ui.button("Clear Network History").clicked() {
+        ui_state.clear_network_history = true;
+    }
+    ui.label(format!(
+        "History: {} / {}",
+        net.history_len,
+        crate::network::NETWORK_HISTORY_CAP
+    ));
+    egui::ScrollArea::vertical()
+        .max_height(160.0)
+        .show(ui, |ui| {
+            for slot in net.history.iter().flatten() {
+                ui.label(slot.summary());
+            }
+        });
+    ui.small("DEV ONLY: self-signed cert + skip-verify. Authoritative snapshots; remotes interpolated; local predicted.");
     ui.separator();
     ui.horizontal(|ui| {
-        if ui.button("Connect / Reconnect").clicked() {
-            ui_state.network_connect = true;
-        }
+        ui.add_enabled_ui(net.can_connect, |ui| {
+            if ui.button("Connect").clicked() {
+                ui_state.network_connect = true;
+            }
+        });
         if ui.button("Disconnect").clicked() {
             ui_state.network_disconnect = true;
         }

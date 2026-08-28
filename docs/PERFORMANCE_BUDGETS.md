@@ -23,11 +23,31 @@ The 30 Hz / ~33.33 ms figures below are **tick spacing**, not permission for sim
 | Collision history (client debug) | 16 events | ring buffer | Presentation-only; detector OFF by default |
 | Client parallax layers | 3 primitive layers | far 0.15 / mid 0.40 / near 0.70 | Presentation-only; batched into existing quad upload |
 | Debug time scale | 1.0 / 0.5 / 0.25 | wall elapsed × scale → clock | Does not change `TICK_RATE_HZ` |
-| Bytes/sec/player | TBD | control + 1 Hz datagram ping | No gameplay snapshots in Phase 5.0 |
-| Connected players | TBD | ≥2 network sessions tested | Session identity only; no remote players rendered |
-| Handshake timeout | 5 s | `HANDSHAKE_TIMEOUT` | Close if no Hello |
+| Bytes/sec/player | TBD | control + 1 Hz datagram ping + 30 Hz snapshots (dev) | Snapshots are full-state development traffic, not a bandwidth target |
+| Remote interp delay | 3 ticks (~100 ms) | `INTERPOLATION_DELAY_TICKS` | Client presentation only; uses `TICK_DURATION` |
+| Remote interp history | 16 samples | `INTERPOLATION_HISTORY_CAP` | Bounded; ~0.5 s at 30 Hz |
+| Interp teleport snap | 8 wu | `INTERPOLATION_SNAP_DISTANCE` | Presentation tuning, not gameplay |
+| Local prediction | 1 player | `LocalPrediction` + client `World` | No full World clone; no remote prediction |
+| Prediction re-anchor | 8 wu | `PREDICTION_REANCHOR_DISTANCE` | Hard snap only; no soft reconciliation |
+| Prediction catch-up | ≤ `MAX_CATCH_UP_TICKS` | shared `SimulationClock` | Same bound as sim clock; no unlimited loop |
+| Connected players | TBD | ≥2 network sessions tested | Remotes interpolated; local predicted |
+| Handshake timeout | 5 s | `HANDSHAKE_TIMEOUT` | Hello/Welcome incomplete; not idle timeout |
+| Idle timeout | 15 s | `IDLE_TIMEOUT` | Explicit Quinn `max_idle_timeout`; transport liveness, not AFK |
 | Control message max | 4096 bytes | `MAX_CONTROL_MESSAGE_BYTES` | Length prefix checked before alloc |
+| Datagram payload max | 256 bytes | `MAX_DATAGRAM_BYTES` | Ping/pong only in Phase 5.0 |
 | Ping cadence | 1 s | `PING_INTERVAL` | Datagram nonce only; not a gameplay timer |
+| Outstanding ping nonces | 4 | drop oldest | Lost Pongs cannot grow a map |
+| Concurrent handshake/session tasks | 32 | `NetworkAbuseConfig::max_inflight_connection_tasks` | Admission/concurrency safety, **not** MMO player capacity. Excess `Incoming` refused |
+| Max concurrent bidi streams | 1 | abuse policy | Control stream only; extra streams refused by transport |
+| Malformed complete-control budget | 32 | per connection | Then disconnect that peer |
+| Invalid datagram budget | 16 | per connection | Then disconnect that peer |
+| Control messages / window | 8 / 1 s | server `Instant` | 16 rate-drops then disconnect |
+| Network diagnostic history | 48 events | `NETWORK_HISTORY_CAP` | Lifecycle/failure ring; no RTT rows |
+| Client command queue | 8 | `CMD_CAP` (Connect only) | Disconnect/Shutdown use the watch control plane, never this queue |
+| Client lifecycle queue | 16 | `LIFECYCLE_CAP` | Reliable; telemetry saturation cannot hide a disconnect |
+| Client telemetry queue | 32 | `TELEMETRY_CAP` | Droppable; drops are counted |
+| Peak sessions under soak | 10 | `SessionTable::high_water`, 10×100 extended soak | Localhost convergence check, **not** a player-capacity claim |
+| Peak inflight tasks under soak | 10 | `max_inflight` ≤ admission cap | Debug, Windows MSVC, 2026-08-27: 1000 sequential cycles ≈ 31 s, 10×100 multi-client ≈ 6 s, 8-seed × 120-op chaos ≈ 3.5 s. Do not optimize from Debug timing |
 | Active entities | TBD | 1,000 / 10,000 lifecycle tests | Debug, Windows MSVC, 2026-08-26: 1,000 tiny platforms spawn ≈ 86 µs, iterate ≈ 27 µs, despawn ≈ 58 µs. Not a player-count claim. Do not optimize from Debug timing. |
 | Memory | TBD | TBD | Server and client reported separately |
 | CPU | TBD | TBD | Include machine spec with every measurement |

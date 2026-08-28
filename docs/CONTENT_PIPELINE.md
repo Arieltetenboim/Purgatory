@@ -24,7 +24,7 @@ Development-only fixtures may live under `/content/dev`.
 
 Presentation assets will later live under `/assets`. `/assets/dev` is reserved for placeholder/dev assets.
 
-The existing `Graphic/` directory is not part of this pipeline yet. Do not import, scan, or connect it to the runtime.
+The existing `Graphic/` directory is not part of this pipeline yet. Phase 5.0B loads **only** `Graphic/LOGO.png` for the Connection Frontend (temporary filesystem path). Do not import, scan, or otherwise connect the rest of `Graphic/` to the runtime.
 
 ## IDs
 

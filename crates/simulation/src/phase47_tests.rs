@@ -376,6 +376,43 @@ fn recover_api_moves_shallowest_axis() {
 }
 
 #[test]
+fn recover_single_solid_independent_of_insertion_order() {
+    fn run(swap: bool) -> ([f32; 2], [f32; 2]) {
+        let mut world = World::new();
+        let first = (
+            Transform::from_position([0.0, 0.0]),
+            Platform::solid([1.0, 1.0]),
+        );
+        let second = (
+            Transform::from_position([8.0, 0.0]),
+            Platform::solid([1.0, 1.0]),
+        );
+        if swap {
+            world.spawn_platform(second.0, second.1);
+            world.spawn_platform(first.0, first.1);
+        } else {
+            world.spawn_platform(first.0, first.1);
+            world.spawn_platform(second.0, second.1);
+        }
+        let (mut transform, mut state) =
+            PlayerState::standing_on_at(world.iter_platforms().next().unwrap().id, 1.0, 0.0);
+        transform.position = [0.1, 0.0];
+        state.grounded = false;
+        state.grounded_on = None;
+        let platforms: Vec<_> = world.iter_platforms().collect();
+        recover_solid_penetration(&mut transform, &state, platforms.into_iter())
+            .expect("embedded in the first solid");
+        (transform.position, state.velocity)
+    }
+    let a = run(false);
+    let b = run(true);
+    assert!(
+        (a.0[0] - b.0[0]).abs() < 1e-5 && (a.0[1] - b.0[1]).abs() < 1e-5,
+        "insertion order changed recovery: {a:?} vs {b:?}"
+    );
+}
+
+#[test]
 fn contact_epsilon_touch_is_not_penetration() {
     use crate::aabb::Aabb;
     use crate::contact::penetrates;

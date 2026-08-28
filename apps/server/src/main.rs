@@ -11,7 +11,10 @@ fn main() {
         purgatory_simulation::version(),
         purgatory_protocol::version(),
     );
-    println!("PURGATORY server bootstrap OK");
+    println!(
+        "PURGATORY server bootstrap OK {}",
+        purgatory_common::identity()
+    );
     run_headless_clock_sample();
     run_headless_world_sample();
     if let Err(err) = network::run_blocking(network::ServerEndpointConfig::dev()) {
@@ -119,6 +122,27 @@ mod tests {
                 "{forbidden} must not appear as a purgatory-server dependency"
             );
         }
+    }
+
+    /// Startup failure (for example a port already in use) must be a concise
+    /// message and a failure exit status, never a panic and never a readiness
+    /// claim from the top level.
+    #[test]
+    fn bind_failure_is_a_clean_startup_failure() {
+        let src = include_str!("main.rs");
+        assert!(
+            !src.contains(concat!("listen", "ing")),
+            "only the network module may report readiness, and only after a real bind"
+        );
+        // Needles are split so this scan cannot match its own source.
+        assert!(
+            src.contains(concat!("eprintln!(\"PURGATORY server err", "or: {err}\")")),
+            "startup failure must print one concise line"
+        );
+        assert!(
+            src.contains(concat!("std::process::ex", "it(1)")),
+            "startup failure must exit with a failure status"
+        );
     }
 
     #[test]

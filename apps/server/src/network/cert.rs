@@ -4,7 +4,9 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 /// Generate an in-memory self-signed cert for local QUIC.
 ///
-/// Named DevOnly so this cannot be mistaken for a production trust path.
+/// Named `DevOnly` so this cannot be mistaken for a production trust path.
+/// There is no production feature flag that selects this generator.
+/// Private key material is process-local memory only and is not written to disk.
 pub fn generate_dev_only_self_signed()
 -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>), String> {
     let certified =

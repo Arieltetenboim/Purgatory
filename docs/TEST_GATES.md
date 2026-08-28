@@ -7,8 +7,8 @@ Status: `pending`, `pass`, `fail`, `skipped`.
 Owner Phase 0 clarifications:
 
 - Project root is this directory.
-- `Graphic/` is left untouched.
-- Git steps are skipped (no `git init`, no commits, no parent-repo interaction).
+- `Graphic/` is left in place. Phase 5.0B later loads **only** `Graphic/LOGO.png` for the Connection Frontend.
+- Git init was skipped in Phase 0. The workspace is now a Git repository at this project root.
 
 ## Gate 0A — Environment detection
 
@@ -22,7 +22,7 @@ Owner Phase 0 clarifications:
 - Status: skipped (Git deferred)
 - Command/test: `.gitignore` created; `git init` not run
 - Date: 2026-08-26
-- Notes: Owner deferred Git. `.gitignore` ignores `/target/`, OS/editor temp files, local logs, profiling output, and local secrets/certificates. `Cargo.lock` is not ignored. No interaction with `C:/Users/Ariel` or any parent Git repository.
+- Notes: Owner deferred Git at Phase 0. `.gitignore` ignores `/target/`, OS/editor temp files, local logs, profiling output, and local secrets/certificates. `Cargo.lock` is not ignored. Git was enabled later at this project root; no interaction with `C:/Users/Ariel` or any parent Git repository.
 
 ## Gate 0C — Cargo workspace and Phase-0 crates
 
@@ -113,8 +113,85 @@ Owner Phase 0 clarifications:
 - Status: pass
 - Command/test: `cargo test -p purgatory-protocol --lib`; `cargo test -p purgatory-server`; `cargo test --workspace`; `cargo run -p purgatory-server`; `cargo run -p purgatory-client`; `./scripts/check.ps1`
 - Date: 2026-08-27
-- Notes: Quinn/QUIC on Tokio. Listen `127.0.0.1:5001`. `PROTOCOL_VERSION = 1`. Hello/Welcome, server `ConnectionId`, 5 s handshake timeout, 4096-byte control frames, datagram nonce ping (client-local Instant RTT). Wire disconnect codes vs `LocalConnectionError`. DEV-ONLY self-signed cert + skip-verify. Client Network debug tab. No gameplay replication. Two simultaneous sessions get distinct ids. Simulation tick independent of packets.
+- Notes: Quinn/QUIC on Tokio. Listen `127.0.0.1:5001`. `PROTOCOL_VERSION = 1`. Hello/Welcome, server `ConnectionId`, 5 s handshake timeout, 4096-byte control frames, datagram nonce ping (client-local Instant RTT). Wire disconnect codes vs local client failures (later unified as `NetworkFailureKind` in 5.0D). DEV-ONLY self-signed cert + skip-verify. Client Network debug tab. No gameplay replication. Two simultaneous sessions get distinct ids. Simulation tick independent of packets.
+
+## Gate 5.0B — Connection frontend + client lifecycle
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-client`; `cargo test --workspace`; `cargo run -p purgatory-server`; `cargo run -p purgatory-client`; `./scripts/check.ps1`
+- Date: 2026-08-27
+- Notes: Client starts on Connection Frontend, no auto-connect. Explicit CONNECT. Client-local `ConnectionAttemptId`. Stale events ignored. Welcome only from active Handshaking enters Game. Immediate client-side Disconnect invalidation (delayed Welcome ignored). Input gated on frontend; SimulationClock not advanced while waiting. `Graphic/LOGO.png` loaded once. Bounded event queue: 4-slot RTT reserve was a mitigation, closed by Gate 5.0C. No protocol expansion, no gameplay replication.
+
+## Gate 5.0C — Connection lifecycle & race hardening
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-client`; `cargo test -p purgatory-server`; `cargo test --workspace`; `./scripts/check.ps1`
+- Date: 2026-08-27
+- Notes: Central stale-attempt filter. Duplicate Connect rejected in lifecycle and runtime (no parallel QUIC). Split lifecycle/telemetry queues; Disconnect/Shutdown via watch epoch. SessionLease exactly-once cleanup. Accept loop spawns per connection (cap 32). 2/5/10 simultaneous clients, malformed/stalled isolation, 20-cycle churn + 5×8 multi-client churn. Ping outstanding bound 4 (drop oldest). No gameplay replication. Phase 5.0D follows.
+
+## Gate 5.0D — Network diagnostics & failure semantics
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-protocol --lib`; `cargo test -p purgatory-client`; `cargo test -p purgatory-server`; `cargo test --workspace`; `./scripts/check.ps1`
+- Date: 2026-08-27
+- Notes: `NetworkFailureKind` maps wire codes and transport symptoms; retryability and frontend strings are single mappings. Manual disconnect / local shutdown are benign. Bounded 48-event history; RTT EWMA resets between sessions; history does not record RTT. Explicit `IDLE_TIMEOUT` = 15 s vs `HANDSHAKE_TIMEOUT` = 5 s. Server `ServerNetStats` atomics; Ctrl+C sends `ServerShutdown`. No gameplay replication. Phase 5.0E follows.
+
+## Gate 5.0E — Security & abuse foundation
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-protocol --lib`; `cargo test -p purgatory-server`; `cargo test --workspace`; `./scripts/check.ps1`
+- Date: 2026-08-27
+- Notes: Central `NetworkAbuseConfig`. Length prefix validated before alloc. Random decoder corpus. Admission cap refuse + release. Malformed churn then healthy connect. Control rate limit and datagram budget isolate offenders. Stream cap 1 bidi / 0 uni. No gameplay replication. Phase 5.0F follows.
+
+## Gate 5.0F — Soak / stress / chaos hardening
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-client`; `cargo test -p purgatory-server`; `cargo test --workspace`; `./scripts/check.ps1`; then `./scripts/network_soak.ps1` (extended `#[ignore]` soaks)
+- Date: 2026-08-27
+- Notes: Recovery-to-baseline is the acceptance criterion. Active gauges (sessions, handshakes, inflight tasks, admission permits) are polled back to baseline by `wait_until_baseline`; cumulative counters and high-water marks (`max_sessions`, `max_inflight`, `max_handshakes`) are reported separately. CI: 50 sequential cycles, 30 rapid reconnects, 4×5 and 8 concurrent clients, admission cap 4 fill/refuse/release ×3, stalled + mixed pressure, 40 malformed handshakes, 16 version mismatches, deterministic chaos over seeds `0x1 / 0xC0FFEE / 0xDEADBEEF` (40 ops each), repeated idle/handshake timeouts, abrupt drops, graceful and abrupt server loss, server restart, telemetry saturation vs lifecycle delivery, command-queue pressure, 500-cycle diagnostic history bound. Extended: 1000 sequential cycles (≈31 s), 10×100 multi-client (≈6 s), 8-seed × 120-op chaos matrix (≈3.5 s), 200 malformed, 20 admission rounds, 4 restart rounds, sustained ping cadence (≈21 s); total ≈68 s. Every chaos family ends with a healthy probe. Localhost stress is not player capacity. No gameplay replication in 5.0F.
+
+## Gate 5.0 final follow-up — Wire stability, live handshake shutdown, bind failure
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-protocol --test wire_golden`; `cargo test -p purgatory-client`; `cargo test -p purgatory-server`; `cargo test --workspace`; `./scripts/check.ps1`
+- Date: 2026-08-27
+- Notes: Protocol v1 golden vectors in `crates/protocol/tests/wire_golden.rs` freeze exact bytes for `Hello` (non-empty + empty string), `Welcome`, `DisconnectReason`, Ping and Pong datagrams, plus the complete framed `Hello` and `Welcome`. Each vector asserts both directions (message → bytes and bytes → message) and pins little-endian layout, `u8`-length + UTF-8 strings, field order, and reason-code discriminants. Byte arrays live in source; there is no fixture file and no auto-update path, so a wire change fails loudly. **No Protocol v1 byte changed.** Live QUIC shutdown during `Handshaking` is regression-tested on both sides: the client test stands up a test-only listener that completes the real transport handshake, reads the Hello, and never answers Welcome (6 CI rounds, 25 in the extended soak), asserting the real `Handshaking` event and a bounded network-thread join; the server tests interrupt 8 pre-Welcome handshakes and 8 post-Hello handshakes, plus a full admission cap of interrupted peers, asserting no session, no permit leak, convergence to baseline, and a mandatory healthy probe afterwards. Bind failure is covered with a reserved ephemeral localhost port (never the fixed dev port): `endpoint::bind` returns `failed to bind <addr>: <io error>`, `run_blocking` returns that error instead of panicking or retrying, the reserved socket keeps the port, and the address binds cleanly once released. Startup order and the `network listening on <addr>` log are asserted to follow a successful bind. No production sleeps or handshake-timing changes were added.
+
+## Gate 5.1 — Authoritative input
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-protocol --lib`; `cargo test -p purgatory-protocol --test wire_golden`; `cargo test -p purgatory-server`; `cargo test -p purgatory-client`; `cargo test --workspace`; `./scripts/check.ps1`
+- Date: 2026-08-27
+- Notes: Protocol v2 `InputCommand` (sequence, move_axis, jump_pressed, down_held). v1 golden vectors unchanged. Old protocol Hello rejected. Server `GameplayOwner` binds `ConnectionId → EntityId`, bounded handoff, held vs jump-edge, separate input rate policy. Packet bursts do not tick `World`. Disconnect/loss despawn the player. Client send-on-change; local FOOTNOTE marked LOCAL DEV / NON-AUTHORITATIVE. No snapshots/prediction.
+
+## Gate 5.2 — Authoritative world snapshots
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-protocol --lib`; `cargo test -p purgatory-protocol --test wire_golden`; `cargo test -p purgatory-server`; `cargo test -p purgatory-client`; `cargo test --workspace`; `./scripts/check.ps1`
+- Date: 2026-08-27
+- Notes: Protocol v3 `WorldSnapshot` (sequence, server_tick, local_player_entity, bounded entities). v1/v2 golden vectors unchanged. Full snapshots; entity count and payload size bounded before allocation; NaN/Inf rejected. SnapshotBuilder + per-connection latest-wins watch. Client `ReplicatedWorld` atomic apply, stale/duplicate ignore. Renderer uses replica positions. Static platforms not replicated. Two clients see both players. Disconnect despawn; reconnect new generation. Slow snapshot consumer does not stall simulation. Closed by Phase 5.3.
+
+## Gate 5.3 — Remote entity interpolation
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-client interp::`; `cargo test -p purgatory-client`; `cargo test --workspace`; `./scripts/check.ps1`
+- Date: 2026-08-28
+- Notes: Client-only `InterpolationBuffer` (cap 16, delay 3 ticks). Monotonic estimated/render clock. Local was replica in 5.3; remotes lerp. Spawn/despawn on render timeline. No cross-generation lerp. Underrun hold; teleport snap presentation-only. No protocol bump. Server unchanged. Closed by Phase 5.4 for local presentation path.
+
+## Gate 5.4 — Local player prediction
+
+- Status: pass
+- Command/test: `cargo test -p purgatory-client prediction::`; `cargo test -p purgatory-client`; `cargo test --workspace`; `./scripts/check.ps1`
+- Date: 2026-08-28
+- Notes: Client-only `LocalPrediction` + shared FOOTNOTE `World::tick`. Local render/camera from predicted pose; remotes unchanged (interp). `ReplicatedWorld` never overwritten. **Lead vs aligned:** re-anchor uses the aligned residual (best history match on position + velocity, within 16 ticks of plausible lag), never pred-now vs lagged snapshot; lead ≥ 8 wu is last-resort safety; settled vertical snap uses aligned `|dy|` at 2 wu (unchanged). Sustained residual ≥ 0.05 wu over 4 snapshots = drift with no temporal explanation → offset correction preserving lead. Covered by `temporal_lag_within_window_is_not_corrected`, `persistent_at_rest_drift_is_corrected_by_offset`, `stale_match_outside_window_does_not_excuse_divergence`. **Input tick alignment:** intent is sent from the same fixed-tick `PlayerInput` sample as prediction (keydown only latches `ActionState`); fixes ±1 tick press/jump/release phase offset that produced same-tick path splits (platform walk-off / failed jumps). Remaining same-tick residual after that is pure RTT/unacked input — Phase 5.5. Protocol v3 unchanged. Catch-up via `SimulationClock` bounds.
+
+## Gate 5.5 — Authoritative input acknowledgement and local reconciliation
+
+- Status: pass (automated); **STOP for two-client manual verification** before Phase 5.6
+- Command/test: `cargo fmt --all`; `cargo check --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`
+- Date: 2026-08-28
+- Notes: Protocol v4. Per-tick commands, continuation debt (`unmatched_continuation_ticks`), late-collapse compaction, HeldCancel idempotent cancel-ack with immutable `(epoch, target_sequence)` barrier, restore+replay via `tick_player`. Covered: split HOL remainder debt, `K=0` no collapse, repeated HeldCancel, late-jump after grounded change (legitimate correction), hitch one-command, two-recipient headers, epoch-at-MAX no wrap. Manual: two clients, movement, hitch, focus-loss Neutral vs HeldCancel. Do not start Phase 5.6.
 
 ## Later gates
 
-Gates 6–17 remain pending. Do not execute Phase 5.1 (authoritative multiplayer movement) during Phase 5.0.
+Gates 6–17 remain pending. Do not execute Phase 5.6 until instructed.

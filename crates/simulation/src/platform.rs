@@ -59,6 +59,8 @@ impl Approach {
 pub struct Platform {
     pub half_extents: [f32; 2],
     pub kind: PlatformKind,
+    /// Stage-local support identity. `0` until [`crate::World::spawn_platform`] stamps it.
+    pub support_id: u16,
 }
 
 impl Platform {
@@ -67,6 +69,7 @@ impl Platform {
         Self {
             half_extents,
             kind: PlatformKind::Solid,
+            support_id: 0,
         }
     }
 
@@ -75,6 +78,7 @@ impl Platform {
         Self {
             half_extents,
             kind: PlatformKind::OneWay,
+            support_id: 0,
         }
     }
 

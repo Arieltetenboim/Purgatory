@@ -18,7 +18,7 @@ mod viz;
 pub use camera_debug::{CameraClampReason, CameraMotionDebug};
 pub use capture::{gameplay_receives_keyboard, gameplay_receives_pointer};
 pub use collision_history::{CollisionHistoryEvent, DiscSubject};
-pub use overlay::{DebugOverlay, OverlayInit, is_debug_toggle};
+pub use overlay::{ConnectionPaint, DebugOverlay, OverlayInit, is_debug_toggle};
 pub use snapshot::{DebugSnapshot, SnapshotExtras};
 #[allow(unused_imports)] // public debug API
 pub use ui_state::DebugUiState;

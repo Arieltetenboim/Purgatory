@@ -20,6 +20,13 @@ pub struct DebugUiState {
     pub verbose_collision_trace: bool,
     pub network_connect: bool,
     pub network_disconnect: bool,
+    pub log_network_lifecycle: bool,
+    pub verbose_network_trace: bool,
+    pub clear_network_history: bool,
+    /// Show authoritative remote positions vs interpolated remotes (default OFF).
+    pub show_interpolation_gizmos: bool,
+    /// Show authoritative vs predicted local markers (default OFF).
+    pub show_prediction_gizmos: bool,
 }
 
 impl Default for DebugUiState {
@@ -39,12 +46,32 @@ impl Default for DebugUiState {
             verbose_collision_trace: false,
             network_connect: false,
             network_disconnect: false,
+            log_network_lifecycle: false,
+            verbose_network_trace: false,
+            clear_network_history: false,
+            show_interpolation_gizmos: false,
+            show_prediction_gizmos: false,
         }
     }
 }
 
 impl DebugUiState {
     pub const TIME_SCALES: [f32; 3] = [1.0, 0.5, 0.25];
+
+    /// Overlay defaults, then honor launcher env (`PURGATORY_NET_LOG` / `PURGATORY_NET_VERBOSE`).
+    #[must_use]
+    pub fn from_env() -> Self {
+        let mut ui = Self::default();
+        let log = std::env::var_os("PURGATORY_NET_LOG").is_some();
+        let verbose = std::env::var_os("PURGATORY_NET_VERBOSE").is_some();
+        if log || verbose {
+            ui.log_network_lifecycle = true;
+        }
+        if verbose {
+            ui.verbose_network_trace = true;
+        }
+        ui
+    }
 
     #[must_use]
     pub fn time_scale_label(&self) -> &'static str {

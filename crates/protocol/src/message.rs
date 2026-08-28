@@ -10,6 +10,8 @@ const TAG_WELCOME: u8 = 2;
 const TAG_DISCONNECT: u8 = 3;
 const TAG_DATAGRAM_PING: u8 = 4;
 const TAG_DATAGRAM_PONG: u8 = 5;
+const TAG_INPUT: u8 = 6;
+const TAG_HELD_CANCEL: u8 = 8;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,6 +22,8 @@ pub enum CodecError {
     StringTooLong,
     TrailingBytes,
     DatagramTooLarge,
+    SnapshotTooLarge,
+    InvalidValue,
 }
 
 impl std::fmt::Display for CodecError {
@@ -31,6 +35,8 @@ impl std::fmt::Display for CodecError {
             Self::StringTooLong => f.write_str("bounded string exceeds MAX_LABEL_BYTES"),
             Self::TrailingBytes => f.write_str("unexpected trailing bytes in payload"),
             Self::DatagramTooLarge => f.write_str("datagram exceeds MAX_DATAGRAM_BYTES"),
+            Self::SnapshotTooLarge => f.write_str("snapshot exceeds MAX_GAMEPLAY_SNAPSHOT_BYTES"),
+            Self::InvalidValue => f.write_str("invalid field value"),
         }
     }
 }
@@ -118,10 +124,92 @@ pub struct Welcome {
     pub server_label: String,
 }
 
+/// Horizontal intent. Wire encoding is a single `u8`. Invalid values are rejected.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub enum MoveAxis {
+    Left = 0,
+    #[default]
+    Neutral = 1,
+    Right = 2,
+}
+
+impl MoveAxis {
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    #[must_use]
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Left),
+            1 => Some(Self::Neutral),
+            2 => Some(Self::Right),
+            _ => None,
+        }
+    }
+
+    /// Simulation `PlayerInput.move_axis`: `-1` / `0` / `1`.
+    #[must_use]
+    pub const fn to_i8(self) -> i8 {
+        match self {
+            Self::Left => -1,
+            Self::Neutral => 0,
+            Self::Right => 1,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_i8(value: i8) -> Self {
+        match value {
+            -1 => Self::Left,
+            1 => Self::Right,
+            _ => Self::Neutral,
+        }
+    }
+}
+
+impl std::fmt::Display for MoveAxis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Left => "Left",
+            Self::Neutral => "Neutral",
+            Self::Right => "Right",
+        })
+    }
+}
+
+/// Client → server intent-only gameplay input. Never carries position, velocity,
+/// grounded state, `EntityId`, or `ConnectionId`.
+///
+/// Identity is `(input_epoch, sequence)`. `sequence` starts at 1 and increases
+/// by 1 per predicted simulation step within an epoch. Wrapping of sequence or
+/// epoch within a session is not supported and is treated as stale / disconnect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputCommand {
+    pub input_epoch: u16,
+    pub sequence: u32,
+    pub move_axis: MoveAxis,
+    pub jump_pressed: bool,
+    pub down_held: bool,
+}
+
+impl InputCommand {
+    /// Command identity used by prediction, acknowledgement, and tests.
+    #[must_use]
+    pub const fn identity(self) -> (u16, u32) {
+        (self.input_epoch, self.sequence)
+    }
+}
+
 /// Client → server reliable control.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientControl {
     Hello(Hello),
+    Input(InputCommand),
+    /// Pathological focus-loss / send-window barrier. No sequence.
+    HeldCancel,
 }
 
 /// Server → client reliable control.
@@ -163,6 +251,17 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             write_bounded_string(&mut out, &hello.client_build)?;
             Ok(out)
         }
+        ClientControl::Input(cmd) => {
+            let mut out = Vec::with_capacity(10);
+            out.push(TAG_INPUT);
+            out.extend_from_slice(&cmd.sequence.to_le_bytes());
+            out.extend_from_slice(&cmd.input_epoch.to_le_bytes());
+            out.push(cmd.move_axis.as_u8());
+            out.push(u8::from(cmd.jump_pressed));
+            out.push(u8::from(cmd.down_held));
+            Ok(out)
+        }
+        ClientControl::HeldCancel => Ok(vec![TAG_HELD_CANCEL]),
     }
 }
 
@@ -177,6 +276,28 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
                 protocol_version,
                 client_build,
             }))
+        }
+        TAG_INPUT => {
+            let (sequence, rest) = read_u32(rest)?;
+            if rest.len() < 5 {
+                return Err(CodecError::Truncated);
+            }
+            let input_epoch = u16::from_le_bytes([rest[0], rest[1]]);
+            let move_axis = MoveAxis::from_u8(rest[2]).ok_or(CodecError::InvalidValue)?;
+            let jump_pressed = read_flag(rest[3])?;
+            let down_held = read_flag(rest[4])?;
+            expect_empty(&rest[5..])?;
+            Ok(ClientControl::Input(InputCommand {
+                input_epoch,
+                sequence,
+                move_axis,
+                jump_pressed,
+                down_held,
+            }))
+        }
+        TAG_HELD_CANCEL => {
+            expect_empty(rest)?;
+            Ok(ClientControl::HeldCancel)
         }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
@@ -335,6 +456,14 @@ fn read_bounded_string(bytes: &[u8]) -> Result<(String, &[u8]), CodecError> {
     Ok((text.to_string(), &rest[len..]))
 }
 
+fn read_flag(value: u8) -> Result<bool, CodecError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(CodecError::InvalidValue),
+    }
+}
+
 fn expect_empty(bytes: &[u8]) -> Result<(), CodecError> {
     if bytes.is_empty() {
         Ok(())
@@ -346,7 +475,7 @@ fn expect_empty(bytes: &[u8]) -> Result<(), CodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{encode_frame, peek_frame_len};
+    use crate::{decode_payload, encode_frame, peek_frame_len};
 
     fn hello_dev() -> Hello {
         Hello {
@@ -398,6 +527,56 @@ mod tests {
         // No timestamp bytes on the wire: tag + u64 only.
         assert_eq!(ping.len(), 9);
         assert_eq!(pong.len(), 9);
+    }
+
+    fn input_dev() -> InputCommand {
+        InputCommand {
+            input_epoch: 0,
+            sequence: 7,
+            move_axis: MoveAxis::Right,
+            jump_pressed: true,
+            down_held: false,
+        }
+    }
+
+    #[test]
+    fn input_command_roundtrip() {
+        let encoded = encode_client_control(&ClientControl::Input(input_dev())).unwrap();
+        let decoded = decode_client_control(&encoded).unwrap();
+        assert_eq!(decoded, ClientControl::Input(input_dev()));
+        // tag + u32 seq + u16 epoch + axis + jump + down
+        assert_eq!(encoded.len(), 1 + 4 + 2 + 1 + 1 + 1);
+    }
+
+    #[test]
+    fn invalid_move_axis_is_rejected() {
+        let mut bytes = vec![TAG_INPUT];
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 3, 0, 0]);
+        assert_eq!(decode_client_control(&bytes), Err(CodecError::InvalidValue));
+    }
+
+    #[test]
+    fn invalid_jump_or_down_flag_is_rejected() {
+        let mut jump = vec![TAG_INPUT];
+        jump.extend_from_slice(&1u32.to_le_bytes());
+        jump.extend_from_slice(&[0, 0, MoveAxis::Neutral.as_u8(), 2, 0]);
+        assert_eq!(decode_client_control(&jump), Err(CodecError::InvalidValue));
+        let mut down = vec![TAG_INPUT];
+        down.extend_from_slice(&1u32.to_le_bytes());
+        down.extend_from_slice(&[0, 0, MoveAxis::Neutral.as_u8(), 0, 9]);
+        assert_eq!(decode_client_control(&down), Err(CodecError::InvalidValue));
+    }
+
+    #[test]
+    fn input_command_has_no_identity_fields() {
+        let src = include_str!("message.rs");
+        let start = src.find("pub struct InputCommand").expect("struct");
+        let body = &src[start..start + 420];
+        assert!(!body.contains("EntityId"));
+        assert!(!body.contains("ConnectionId"));
+        assert!(!body.contains("position"));
+        assert!(!body.contains("velocity"));
     }
 
     #[test]
@@ -454,6 +633,49 @@ mod tests {
     }
 
     #[test]
+    fn old_protocol_version_1_is_rejected() {
+        let hello = Hello {
+            protocol_version: 1,
+            client_build: "legacy-v1".into(),
+        };
+        let err = validate_hello(&hello).expect_err("v1");
+        assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
+        assert_ne!(PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn held_cancel_roundtrip() {
+        let encoded = encode_client_control(&ClientControl::HeldCancel).unwrap();
+        assert_eq!(encoded, vec![TAG_HELD_CANCEL]);
+        assert_eq!(
+            decode_client_control(&encoded).unwrap(),
+            ClientControl::HeldCancel
+        );
+    }
+
+    #[test]
+    fn old_protocol_version_2_is_rejected() {
+        let hello = Hello {
+            protocol_version: 2,
+            client_build: "legacy-v2".into(),
+        };
+        let err = validate_hello(&hello).expect_err("v2");
+        assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
+        assert_ne!(PROTOCOL_VERSION, 2);
+    }
+
+    #[test]
+    fn old_protocol_version_3_is_rejected() {
+        let hello = Hello {
+            protocol_version: 3,
+            client_build: "legacy-v3".into(),
+        };
+        let err = validate_hello(&hello).expect_err("v3");
+        assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
+        assert_ne!(PROTOCOL_VERSION, 3);
+    }
+
+    #[test]
     fn string_too_long_rejected() {
         let hello = Hello {
             protocol_version: PROTOCOL_VERSION,
@@ -485,5 +707,121 @@ mod tests {
         bytes.push(2);
         bytes.extend_from_slice(&[0xff, 0xfe]);
         assert_eq!(decode_client_control(&bytes), Err(CodecError::InvalidUtf8));
+    }
+
+    #[test]
+    fn hello_does_not_carry_connection_id() {
+        let encoded = encode_client_control(&ClientControl::Hello(hello_dev())).unwrap();
+        // tag + u32 version + u8 strlen + "dev"
+        assert_eq!(encoded.len(), 1 + 4 + 1 + 3);
+        let decoded = decode_client_control(&encoded).unwrap();
+        let ClientControl::Hello(hello) = decoded else {
+            panic!("expected Hello");
+        };
+        assert_eq!(hello.client_build, "dev");
+    }
+
+    #[test]
+    fn client_cannot_send_welcome_or_disconnect() {
+        let welcome = encode_server_control(&ServerControl::Welcome(welcome_dev())).unwrap();
+        assert!(matches!(
+            decode_client_control(&welcome),
+            Err(CodecError::UnknownDiscriminant(_))
+        ));
+        let disc = encode_server_control(&ServerControl::Disconnect(DisconnectReason::new(
+            DisconnectReasonCode::Malformed,
+            "x",
+        )))
+        .unwrap();
+        assert!(matches!(
+            decode_client_control(&disc),
+            Err(CodecError::UnknownDiscriminant(_))
+        ));
+    }
+
+    #[test]
+    fn truncation_matrix_never_panics() {
+        let hello = encode_client_control(&ClientControl::Hello(hello_dev())).unwrap();
+        let welcome = encode_server_control(&ServerControl::Welcome(welcome_dev())).unwrap();
+        let ping = encode_client_datagram(1).unwrap();
+        let pong = encode_server_datagram(ServerDatagram::Pong { nonce: 1 }).unwrap();
+        let input = encode_client_control(&ClientControl::Input(input_dev())).unwrap();
+        let snapshot = crate::encode_world_snapshot(&crate::WorldSnapshot {
+            snapshot_sequence: 1,
+            server_tick: 1,
+            local_player_entity: crate::WireEntityId {
+                index: 1,
+                generation: 1,
+            },
+            input_epoch: 0,
+            last_acknowledged_input_sequence: 0,
+            local_grounded: true,
+            local_grounded_on: crate::PlatformSupportId::NONE,
+            local_ignored_platform: crate::PlatformSupportId::NONE,
+            continuation_debt: 0,
+            entities: Vec::new(),
+        })
+        .unwrap();
+        for encoded in [&hello, &welcome, &ping, &pong, &input, &snapshot] {
+            for n in 0..=encoded.len() {
+                let slice = &encoded[..n];
+                let _ = decode_client_control(slice);
+                let _ = decode_server_control(slice);
+                let _ = decode_client_datagram(slice);
+                let _ = decode_server_datagram(slice);
+                let _ = decode_payload(slice);
+                let _ = crate::decode_world_snapshot(slice);
+            }
+        }
+        let mut hello_frame = encode_frame(&hello).unwrap();
+        let full = hello_frame.len();
+        for n in 0..full {
+            hello_frame.truncate(n);
+            let _ = decode_payload(&hello_frame);
+            hello_frame = encode_frame(&hello).unwrap();
+        }
+    }
+
+    #[test]
+    fn random_decoder_corpus_never_panics() {
+        let mut seed = 0xC0FFEE_u64;
+        for _ in 0..4000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let len = (seed % 96) as usize;
+            let mut buf = vec![0u8; len];
+            for byte in &mut buf {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                *byte = (seed >> 24) as u8;
+            }
+            let _ = decode_payload(&buf);
+            let _ = decode_client_control(&buf);
+            let _ = decode_server_control(&buf);
+            let _ = decode_client_datagram(&buf);
+            let _ = decode_server_datagram(&buf);
+            let _ = crate::decode_world_snapshot(&buf);
+            if buf.len() >= 4 {
+                let prefix: [u8; 4] = buf[..4].try_into().unwrap();
+                let _ = peek_frame_len(&prefix);
+                let _ = crate::peek_gameplay_frame_len(&prefix);
+            }
+        }
+    }
+
+    #[test]
+    fn declared_string_length_without_bytes_is_truncated() {
+        let mut bytes = vec![TAG_HELLO];
+        bytes.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+        bytes.push(8);
+        bytes.extend_from_slice(b"ab");
+        assert_eq!(decode_client_control(&bytes), Err(CodecError::Truncated));
+    }
+
+    #[test]
+    fn payload_one_byte_short_is_truncated() {
+        let encoded = encode_client_control(&ClientControl::Hello(hello_dev())).unwrap();
+        assert_eq!(
+            decode_client_control(&encoded[..encoded.len() - 1]),
+            Err(CodecError::Truncated)
+        );
     }
 }

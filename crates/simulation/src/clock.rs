@@ -145,6 +145,15 @@ impl SimulationClock {
             discarded,
         }
     }
+
+    /// Advance exactly one simulation tick without consuming wall elapsed.
+    ///
+    /// Pairs a forced Neutral (or other) command with the clock so gameplay
+    /// never calls `tick_player` without a `SimulationClock` step. Remainder
+    /// is left unchanged.
+    pub fn force_step(&mut self) {
+        self.tick = self.tick.saturating_add(1);
+    }
 }
 
 fn clamp_elapsed(elapsed: Duration, max_catch_up: Duration) -> (Duration, Duration) {
@@ -299,6 +308,16 @@ mod tests {
         assert_eq!(update.ticks_executed, 1);
         assert_eq!(clock.tick().get(), 1);
         assert_eq!(clock.remainder(), Duration::ZERO);
+    }
+
+    #[test]
+    fn force_step_advances_one_tick_without_consuming_remainder() {
+        let mut clock = SimulationClock::new();
+        clock.advance(Duration::from_millis(10));
+        let rem = clock.remainder();
+        clock.force_step();
+        assert_eq!(clock.tick().get(), 1);
+        assert_eq!(clock.remainder(), rem);
     }
 
     #[test]

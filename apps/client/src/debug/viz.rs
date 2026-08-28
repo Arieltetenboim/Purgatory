@@ -19,12 +19,22 @@ const VEL_SCALE: f32 = 0.12;
 const BAR_THICKNESS: f32 = 0.06;
 
 /// Build overlay-gated FOOTNOTE gizmos from live world state and UI toggles.
+///
+/// `local_render_pose` is the same presentation position used to draw the local
+/// player (ReplicatedWorld). Player-attached gizmos (velocity, contact) originate
+/// there so they stay visually locked to the rendered entity. Platform highlights
+/// still use authoritative/local world platform geometry.
 #[must_use]
-pub fn footnote_debug_quads(world: &World, ui: &DebugUiState) -> Vec<DrawQuad> {
+pub fn footnote_debug_quads(
+    world: &World,
+    ui: &DebugUiState,
+    local_render_pose: Option<[f32; 2]>,
+) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(16);
     let Some(player) = world.player_body() else {
         return quads;
     };
+    let origin = local_render_pose.unwrap_or(player.position);
 
     if ui.show_colliders {
         for view in world.iter_platforms() {
@@ -49,16 +59,13 @@ pub fn footnote_debug_quads(world: &World, ui: &DebugUiState) -> Vec<DrawQuad> {
             let top = view.top_surface();
             let width = platform.half_extents[0] * 2.0;
             quads.push(DrawQuad {
-                center: [player.position[0], top],
+                center: [origin[0], top],
                 size: [width.min(player.half_extents[0] * 2.2), 0.05],
                 color: SUPPORT_LINE,
             });
         }
         quads.push(DrawQuad {
-            center: [
-                player.position[0],
-                player.position[1] - player.half_extents[1],
-            ],
+            center: [origin[0], origin[1] - player.half_extents[1]],
             size: [0.12, 0.12],
             color: CONTACT_COLOR,
         });
@@ -73,14 +80,14 @@ pub fn footnote_debug_quads(world: &World, ui: &DebugUiState) -> Vec<DrawQuad> {
         let vy = player.velocity[1] * VEL_SCALE;
         if vx.abs() > 0.02 {
             quads.push(DrawQuad {
-                center: [player.position[0] + vx * 0.5, player.position[1]],
+                center: [origin[0] + vx * 0.5, origin[1]],
                 size: [vx.abs(), BAR_THICKNESS],
                 color: VEL_X_COLOR,
             });
         }
         if vy.abs() > 0.02 {
             quads.push(DrawQuad {
-                center: [player.position[0], player.position[1] + vy * 0.5],
+                center: [origin[0], origin[1] + vy * 0.5],
                 size: [BAR_THICKNESS, vy.abs()],
                 color: VEL_Y_COLOR,
             });
@@ -177,7 +184,7 @@ mod tests {
     fn grounded_player_produces_highlight_and_contact() {
         let world = World::dev_stage();
         let ui = DebugUiState::default();
-        let quads = footnote_debug_quads(&world, &ui);
+        let quads = footnote_debug_quads(&world, &ui, None);
         assert!(
             quads.len() >= 3,
             "expected grounded highlight, support line, contact marker"
@@ -204,7 +211,7 @@ mod tests {
             show_colliders: false,
             ..DebugUiState::default()
         };
-        let quads = footnote_debug_quads(&world, &ui);
+        let quads = footnote_debug_quads(&world, &ui, None);
         assert!(
             quads.iter().any(|q| q.color == IGNORED_HIGHLIGHT),
             "ignored platform highlight missing"
@@ -214,6 +221,40 @@ mod tests {
                 .iter()
                 .any(|q| q.color == VEL_X_COLOR || q.color == VEL_Y_COLOR),
             "velocity bars expected"
+        );
+    }
+
+    #[test]
+    fn velocity_gizmo_uses_local_render_pose_origin() {
+        let mut world = World::dev_stage();
+        if let Some((transform, player)) = world.player_parts_mut() {
+            transform.position = [0.0, 0.0];
+            player.grounded = false;
+            player.grounded_on = None;
+            player.ignored_platform = None;
+            player.velocity = [10.0, 0.0];
+        }
+        let ui = DebugUiState {
+            show_colliders: false,
+            show_grounded_highlight: false,
+            show_velocity: true,
+            ..DebugUiState::default()
+        };
+        let render_pose = [5.0, 1.0];
+        let quads = footnote_debug_quads(&world, &ui, Some(render_pose));
+        let bar = quads
+            .iter()
+            .find(|q| q.color == VEL_X_COLOR)
+            .expect("velocity x bar");
+        // Bar center is origin + vx*0.5 along x; y matches render pose.
+        assert!((bar.center[1] - render_pose[1]).abs() < 1e-4);
+        assert!(
+            (bar.center[0] - render_pose[0]).abs() > 0.1,
+            "bar should be offset from pose along velocity"
+        );
+        assert!(
+            (bar.center[0] - 0.0).abs() > 1.0,
+            "must not use world (0,0) as gizmo origin when render pose is provided"
         );
     }
 
@@ -231,7 +272,7 @@ mod tests {
             show_colliders: false,
             ..DebugUiState::default()
         };
-        let quads = footnote_debug_quads(&world, &ui);
+        let quads = footnote_debug_quads(&world, &ui, None);
         assert!(!quads.iter().any(|q| q.color == GROUNDED_HIGHLIGHT));
         assert!(!quads.iter().any(|q| q.color == IGNORED_HIGHLIGHT));
     }

@@ -2,7 +2,7 @@
 //!
 //! [`EntityId`] is a cheap, copyable handle. It is **not** a content ID and
 //! **not** a raw slot index. A generation field rejects stale IDs after a
-//! slot is reused. Do not serialize this onto the network in Phase 4.
+//! slot is reused. Network snapshots copy index + generation as identity.
 
 use std::fmt;
 
@@ -15,6 +15,12 @@ pub struct EntityId {
 
 impl EntityId {
     pub(crate) const fn new(index: u32, generation: u32) -> Self {
+        Self { index, generation }
+    }
+
+    /// Reconstruct a wire-delivered identity. Generation is part of equality.
+    #[must_use]
+    pub const fn from_raw(index: u32, generation: u32) -> Self {
         Self { index, generation }
     }
 

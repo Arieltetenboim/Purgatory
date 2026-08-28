@@ -9,6 +9,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 /// Skips server certificate identity checks. **DEV ONLY.**
 ///
 /// Production must verify a real certificate chain and server identity.
+/// No production configuration flag maps to this verifier.
 #[derive(Debug)]
 pub(crate) struct DevOnlySkipServerVerification(Arc<rustls::crypto::CryptoProvider>);
 

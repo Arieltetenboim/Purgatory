@@ -49,7 +49,16 @@ impl Default for PlatformScratch {
 impl World {
     /// Integrate one fixed simulation tick for the local player via FOOTNOTE.
     pub fn tick(&mut self, dt_seconds: f32, input: PlayerInput) {
-        self.tick_with_config(dt_seconds, input, FootnoteConfig::DEFAULT);
+        if let Some(id) = self.player_id() {
+            self.tick_player(id, dt_seconds, input);
+        }
+    }
+
+    /// Integrate one fixed tick for a specific player entity.
+    ///
+    /// Stale IDs are a no-op. FOOTNOTE rules are unchanged.
+    pub fn tick_player(&mut self, id: EntityId, dt_seconds: f32, input: PlayerInput) {
+        self.tick_player_with_config(id, dt_seconds, input, FootnoteConfig::DEFAULT);
     }
 
     pub fn tick_with_config(
@@ -58,15 +67,28 @@ impl World {
         input: PlayerInput,
         config: FootnoteConfig,
     ) {
+        if let Some(id) = self.player_id() {
+            self.tick_player_with_config(id, dt_seconds, input, config);
+        }
+    }
+
+    pub fn tick_player_with_config(
+        &mut self,
+        id: EntityId,
+        dt_seconds: f32,
+        input: PlayerInput,
+        config: FootnoteConfig,
+    ) {
         debug_assert!(dt_seconds > 0.0 && dt_seconds.is_finite());
 
-        self.clear_stale_footnote_ids();
-
-        let Some(player_id) = self.player_id() else {
+        if self.get_player(id).is_none() {
             return;
-        };
+        }
+
+        self.clear_stale_footnote_ids_for(id);
+
         let (prev_pos, prev_half, prev_grounded_on) = {
-            let Some((transform, player)) = self.get_player(player_id) else {
+            let Some((transform, player)) = self.get_player(id) else {
                 return;
             };
             (transform.position, player.half_extents, player.grounded_on)
@@ -89,7 +111,7 @@ impl World {
         let mut pre_integrate_velocity;
 
         {
-            let Some((transform, player)) = self.player_parts_mut() else {
+            let Some((transform, player)) = self.player_parts_mut_for(id) else {
                 return;
             };
 
@@ -198,9 +220,12 @@ impl World {
             expire_ignored(player, transform.position, &scratch);
         }
 
-        let before_bounds = self.player_body().map(|b| b.position).unwrap_or(prev_pos);
-        self.apply_world_bounds();
-        if let Some(body) = self.player_body() {
+        let before_bounds = self
+            .player_body_of(id)
+            .map(|b| b.position)
+            .unwrap_or(prev_pos);
+        self.apply_world_bounds_for(id);
+        if let Some(body) = self.player_body_of(id) {
             let bdx = body.position[0] - before_bounds[0];
             let bdy = body.position[1] - before_bounds[1];
             if bdx.abs() > 1e-6 || bdy.abs() > 1e-6 {
@@ -211,7 +236,7 @@ impl World {
             }
         }
 
-        let body = self.player_body();
+        let body = self.player_body_of(id);
         let pos = body.map(|b| b.position).unwrap_or(prev_pos);
         let vel = body.map(|b| b.velocity).unwrap_or(pre_integrate_velocity);
         let grounded_on = body.and_then(|b| b.grounded_on);
@@ -236,13 +261,8 @@ impl World {
         self.set_last_motion_debug(motion);
     }
 
-    /// Contain the player inside [`World::bounds`]. Side hits clamp + zero outward
-    /// velocity. Falling well below `min_y` triggers a development respawn.
-    fn apply_world_bounds(&mut self) {
+    fn apply_world_bounds_for(&mut self, player_id: EntityId) {
         let bounds = self.bounds();
-        let Some(player_id) = self.player_id() else {
-            return;
-        };
         let Some((transform, player)) = self.get_player(player_id) else {
             return;
         };
@@ -250,11 +270,11 @@ impl World {
         let bottom = transform.position[1] - half[1];
         // Development fallback — not a death system.
         if bottom < bounds.min_y - 2.0 {
-            self.reset_dev_player();
+            self.reset_player_entity(player_id);
             return;
         }
 
-        let Some((transform, player)) = self.player_parts_mut() else {
+        let Some((transform, player)) = self.player_parts_mut_for(player_id) else {
             return;
         };
         let min_cx = bounds.min_x + half[0];
@@ -292,10 +312,13 @@ impl World {
 
     /// Clear stale grounded_on / ignored_platform EntityIds.
     pub fn clear_stale_footnote_ids(&mut self) {
-        self.clear_stale_grounding();
-        let Some(id) = self.player_id() else {
-            return;
-        };
+        if let Some(id) = self.player_id() {
+            self.clear_stale_footnote_ids_for(id);
+        }
+    }
+
+    fn clear_stale_footnote_ids_for(&mut self, id: EntityId) {
+        self.clear_stale_grounding_for(id);
         let ignored = match self.get_player(id) {
             Some((_, player)) => player.ignored_platform,
             None => return,
@@ -306,7 +329,7 @@ impl World {
         if self.contains(ignored) && self.kind(ignored) == Some(EntityKind::Platform) {
             return;
         }
-        if let Some((_, player)) = self.player_parts_mut() {
+        if let Some((_, player)) = self.player_parts_mut_for(id) {
             player.ignored_platform = None;
         }
     }

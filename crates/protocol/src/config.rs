@@ -12,6 +12,15 @@ pub const DEFAULT_DEV_PORT: u16 = 5001;
 /// Maximum control-stream payload (excluding the 4-byte length prefix).
 pub const MAX_CONTROL_MESSAGE_BYTES: u32 = 4096;
 
+/// Maximum gameplay snapshot payload (excluding the 4-byte length prefix).
+/// Independent from [`MAX_CONTROL_MESSAGE_BYTES`]. Packet/resource safety, not
+/// a population or bandwidth target.
+pub const MAX_GAMEPLAY_SNAPSHOT_BYTES: u32 = 8192;
+
+/// Maximum replicated entities in one snapshot. Decode validates this before
+/// allocating. Not a gameplay capacity claim.
+pub const MAX_ENTITIES_PER_SNAPSHOT: u16 = 64;
+
 /// Maximum accepted datagram payload.
 pub const MAX_DATAGRAM_BYTES: usize = 256;
 
@@ -23,6 +32,12 @@ pub const ALPN_PROTOCOL: &[u8] = b"purgatory";
 
 /// How long a peer may sit after QUIC connect without a valid Hello.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Explicit QUIC idle timeout (transport liveness only, not AFK).
+///
+/// Ping cadence is 1 s. 15 s is long enough that localhost jitter never trips
+/// it and short enough for development. Distinct from [`HANDSHAKE_TIMEOUT`].
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Development RTT ping cadence. Not a gameplay timer.
 pub const PING_INTERVAL: Duration = Duration::from_secs(1);
@@ -63,8 +78,12 @@ mod tests {
         assert_eq!(addr.ip().to_string(), DEFAULT_DEV_HOST);
         assert_eq!(addr.port(), DEFAULT_DEV_PORT);
         assert_eq!(MAX_CONTROL_MESSAGE_BYTES, 4096);
+        assert_eq!(MAX_GAMEPLAY_SNAPSHOT_BYTES, 8192);
+        assert_eq!(MAX_ENTITIES_PER_SNAPSHOT, 64);
+        assert_ne!(MAX_CONTROL_MESSAGE_BYTES, MAX_GAMEPLAY_SNAPSHOT_BYTES);
         assert_eq!(MAX_LABEL_BYTES, 64);
         assert_eq!(HANDSHAKE_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(IDLE_TIMEOUT, Duration::from_secs(15));
         assert_eq!(PING_INTERVAL, Duration::from_secs(1));
         assert_eq!(ALPN_PROTOCOL, b"purgatory");
     }

@@ -3,13 +3,16 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use purgatory_protocol::{HANDSHAKE_TIMEOUT, NetworkConfig};
+use purgatory_protocol::{IDLE_TIMEOUT, NetworkConfig};
 
-/// Bind address and handshake limits for the dedicated server.
+use super::abuse::NetworkAbuseConfig;
+
+/// Bind address, idle timeout, and centralized abuse policy.
 #[derive(Clone, Copy, Debug)]
 pub struct ServerEndpointConfig {
     pub bind: SocketAddr,
-    pub handshake_timeout: Duration,
+    pub idle_timeout: Duration,
+    pub abuse: NetworkAbuseConfig,
 }
 
 impl ServerEndpointConfig {
@@ -18,7 +21,8 @@ impl ServerEndpointConfig {
     pub const fn dev() -> Self {
         Self {
             bind: NetworkConfig::DEV.socket_addr(),
-            handshake_timeout: HANDSHAKE_TIMEOUT,
+            idle_timeout: IDLE_TIMEOUT,
+            abuse: NetworkAbuseConfig::DEV,
         }
     }
 
@@ -28,7 +32,8 @@ impl ServerEndpointConfig {
     pub fn ephemeral() -> Self {
         Self {
             bind: SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
-            handshake_timeout: HANDSHAKE_TIMEOUT,
+            idle_timeout: IDLE_TIMEOUT,
+            abuse: NetworkAbuseConfig::DEV,
         }
     }
 }

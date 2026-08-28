@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use purgatory_simulation::{
-    Aabb, PlatformKind, PlayerInput, SimulationClock, TICK_DURATION, World,
+    Aabb, PLAYER_HALF_EXTENTS, PlatformKind, PlayerInput, SimulationClock, World,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -12,19 +12,28 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::debug::{
-    CameraMotionDebug, CollisionHistoryEvent, DebugOverlay, DebugSnapshot, DiscSubject,
-    OverlayInit, SnapshotExtras, footnote_debug_quads, gameplay_receives_keyboard,
+    CameraMotionDebug, CollisionHistoryEvent, ConnectionPaint, DebugOverlay, DebugSnapshot,
+    DiscSubject, OverlayInit, SnapshotExtras, footnote_debug_quads, gameplay_receives_keyboard,
     gameplay_receives_pointer, is_debug_toggle,
 };
-use crate::input::ActionState;
-use crate::network::{ClientEndpointConfig, NetworkHandle};
+use crate::frontend::ConnectionFrontend;
+use crate::input::{ActionState, IntentNet};
+use crate::interp::{InterpolationBuffer, PresentationPose};
+use crate::lifecycle::{ClientLifecycle, ClientScreen};
+use crate::network::{ClientEndpointConfig, NetworkCommand, NetworkHandle};
 use crate::platform::{diagnostic_title, window_attributes};
+use crate::prediction::{LocalPrediction, local_presentation_pose};
 use crate::renderer::{
     Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, PARALLAX_FAR, PARALLAX_MID,
     PARALLAX_NEAR, Renderer, is_usable_surface, parallax_debug_quads, parallax_quads,
 };
+use crate::replica::{ReplicatedWorld, SnapshotDecision};
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
+const REMOTE_PLAYER_COLOR: [f32; 4] = [0.72, 0.32, 0.38, 1.0];
+const INTERP_AUTH_GIZMO_COLOR: [f32; 4] = [1.0, 0.85, 0.2, 0.55];
+const PREDICT_AUTH_GIZMO_COLOR: [f32; 4] = [0.95, 0.45, 0.15, 0.55];
+const PREDICT_POSE_GIZMO_COLOR: [f32; 4] = [0.25, 0.85, 0.55, 0.55];
 const SOLID_FLOOR_COLOR: [f32; 4] = [0.22, 0.28, 0.24, 1.0];
 const SOLID_PLATFORM_COLOR: [f32; 4] = [0.45, 0.32, 0.18, 1.0];
 const ONEWAY_COLOR: [f32; 4] = [0.55, 0.62, 0.85, 1.0];
@@ -47,16 +56,23 @@ struct ClientApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     debug: Option<DebugOverlay>,
+    frontend: Option<ConnectionFrontend>,
+    lifecycle: ClientLifecycle,
     clock: SimulationClock,
     world: World,
     actions: ActionState,
     last_input: PlayerInput,
+    intent: IntentNet,
     last_instant: Instant,
     last_title_tick: u64,
     fps: f32,
     fatal: Option<String>,
     last_camera_motion: CameraMotionDebug,
     network: Option<NetworkHandle>,
+    replica: ReplicatedWorld,
+    interp: InterpolationBuffer,
+    prediction: LocalPrediction,
+    snapshot_malformed: u64,
 }
 
 impl ClientApp {
@@ -69,11 +85,14 @@ impl ClientApp {
             world: World::footnote_test_stage(),
             actions: ActionState::default(),
             last_input: PlayerInput::idle(),
+            intent: IntentNet::default(),
             last_instant: Instant::now(),
             last_title_tick: 0,
             fps: 0.0,
             fatal: None,
             last_camera_motion: CameraMotionDebug::default(),
+            lifecycle: ClientLifecycle::new(ClientEndpointConfig::dev().server),
+            frontend: None,
             network: match NetworkHandle::start(ClientEndpointConfig::dev()) {
                 Ok(handle) => Some(handle),
                 Err(err) => {
@@ -81,6 +100,10 @@ impl ClientApp {
                     None
                 }
             },
+            replica: ReplicatedWorld::new(),
+            interp: InterpolationBuffer::new(),
+            prediction: LocalPrediction::new(),
+            snapshot_malformed: 0,
         }
     }
 
@@ -102,6 +125,137 @@ impl ClientApp {
         }
     }
 
+    fn poll_network(&mut self) {
+        if let Some(debug) = &mut self.debug {
+            self.lifecycle.set_log_flags(
+                debug.ui.log_network_lifecycle,
+                debug.ui.verbose_network_trace,
+            );
+            if debug.ui.clear_network_history {
+                self.lifecycle.clear_history();
+                debug.ui.clear_network_history = false;
+            }
+            if let Some(network) = &self.network {
+                network.set_log_flags(
+                    debug.ui.log_network_lifecycle,
+                    debug.ui.verbose_network_trace,
+                );
+            }
+        }
+        let before = self.lifecycle.screen();
+        let mut events = Vec::new();
+        let mut dropped = 0;
+        if let Some(network) = &mut self.network {
+            dropped = network.telemetry_dropped();
+            self.snapshot_malformed = network.snapshot_malformed();
+            network.poll(|event| events.push(event));
+            if let Some(snap) = network.poll_snapshot()
+                && self.replica.apply(snap.clone()) == SnapshotDecision::Accept
+            {
+                self.interp.push(&snap);
+                self.intent.set_epoch(self.replica.input_epoch());
+                self.prediction.sync_from_replica(
+                    &self.replica,
+                    &mut self.world,
+                    self.clock.tick().get(),
+                );
+            }
+        }
+        self.lifecycle.set_events_dropped(dropped);
+        for event in events {
+            self.lifecycle.apply(event);
+        }
+        if self.lifecycle.screen() != before {
+            self.on_screen_changed();
+        }
+    }
+
+    fn on_screen_changed(&mut self) {
+        self.actions.clear();
+        self.last_input = PlayerInput::idle();
+        self.intent.reset();
+        self.replica.clear();
+        self.interp.clear();
+        self.prediction.clear();
+        rebase_wall_clock(&mut self.last_instant, Instant::now());
+    }
+
+    fn request_connect(&mut self) {
+        let Some(id) = self.lifecycle.try_begin_connect() else {
+            return;
+        };
+        println!("PURGATORY connect requested attempt={id}");
+        let sent = self
+            .network
+            .as_ref()
+            .is_some_and(|net| net.try_send(NetworkCommand::Connect { attempt_id: id }));
+        if !sent {
+            eprintln!("PURGATORY connection failed attempt={id} reason=command dropped");
+            self.lifecycle.fail_unsent_connect();
+        }
+    }
+
+    fn request_disconnect(&mut self) {
+        let before = self.lifecycle.screen();
+        let should_send = self.lifecycle.request_disconnect();
+        if should_send && let Some(network) = &self.network {
+            let _ = network.try_send(NetworkCommand::Disconnect);
+        }
+        if self.lifecycle.screen() != before {
+            self.on_screen_changed();
+        }
+    }
+
+    /// Send one per-tick command from the PlayerInput sample applied on this sim tick.
+    fn send_intent_for_tick_input(&mut self, input: PlayerInput) {
+        if !self.lifecycle.gameplay_actions_allowed() {
+            return;
+        }
+        if !self.prediction.active() {
+            return;
+        }
+        let Some(network) = self.network.as_ref() else {
+            return;
+        };
+        self.intent.set_epoch(self.replica.input_epoch());
+        let Some(command) = self.intent.consider_tick_input(input) else {
+            return;
+        };
+        if !self.prediction.try_push_pending(command) {
+            return;
+        }
+        let _ = network.try_send_input(command);
+    }
+
+    /// Focus-loss: ActionState is already released. Pair a Neutral clock step
+    /// with a command, or send HeldCancel when the send window is full.
+    fn on_focus_loss_input(&mut self) {
+        if !self.lifecycle.gameplay_actions_allowed() {
+            return;
+        }
+        let Some(network) = self.network.as_ref() else {
+            return;
+        };
+        if self.prediction.pending_window_full() {
+            let barrier = self.prediction.capture_cancel_barrier();
+            if network.try_send_held_cancel() {
+                self.prediction.enter_cancel_pending(barrier);
+            }
+            return;
+        }
+        self.clock.force_step();
+        let input = PlayerInput::idle();
+        self.last_input = input;
+        let tick = self.clock.tick().get();
+        self.prediction.tick(&mut self.world, input, tick);
+        self.intent.set_epoch(self.replica.input_epoch());
+        if let Some(command) = self.intent.emit_neutral()
+            && self.prediction.try_push_pending(command)
+        {
+            let _ = network.try_send_input(command);
+        }
+    }
+
     fn advance_simulation(&mut self) {
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.last_instant);
@@ -119,7 +273,8 @@ impl ClientApp {
             Duration::from_nanos(nanos)
         };
         let update = self.clock.advance(scaled);
-        let dt = TICK_DURATION.as_secs_f32();
+        let tick_after = self.clock.tick().get();
+        let tick_base = tick_after.saturating_sub(u64::from(update.ticks_executed));
         let detector = self
             .debug
             .as_ref()
@@ -135,11 +290,28 @@ impl ClientApp {
             .as_ref()
             .map(|d| d.ui.verbose_collision_trace)
             .unwrap_or(false);
-        for _ in 0..update.ticks_executed {
+        if update.ticks_executed > 1 {
+            self.prediction
+                .on_hitch_discontinuity(&self.replica, &mut self.world, tick_after);
+            if !self.prediction.pending_window_full() {
+                let input = self.actions.consume_tick_input();
+                self.last_input = input;
+                self.prediction.tick(&mut self.world, input, tick_after);
+                self.send_intent_for_tick_input(input);
+            }
+            return;
+        }
+        for step in 0..update.ticks_executed {
+            if self.prediction.pending_window_full() {
+                continue;
+            }
+            // One sample per tick: predict locally, then send the same sample.
             let input = self.actions.consume_tick_input();
             self.last_input = input;
-            self.world.tick(dt, input);
-            let tick = self.clock.tick().get();
+            let client_tick = tick_base.saturating_add(u64::from(step) + 1);
+            self.prediction.tick(&mut self.world, input, client_tick);
+            self.send_intent_for_tick_input(input);
+            let tick = client_tick;
             let motion = self.world.last_motion_debug();
             if verbose && (motion.correction[0].abs() > 1e-5 || motion.correction[1].abs() > 1e-5) {
                 eprintln!(
@@ -182,10 +354,7 @@ impl ClientApp {
 
     fn update_camera(&mut self) {
         let bounds = self.world.bounds();
-        let player_pos = self
-            .world
-            .player_body()
-            .map(|b| b.position)
+        let player_pos = local_presentation_pose(&self.prediction, &self.world, &self.replica)
             .unwrap_or([0.0, 0.0]);
         let follow = self
             .debug
@@ -264,30 +433,51 @@ impl ClientApp {
     }
 
     fn handle_frame(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(network) = &mut self.network {
-            network.poll();
+        self.poll_network();
+        if simulation_should_advance(self.lifecycle.screen()) {
+            self.advance_simulation();
+            self.update_camera();
+        } else {
+            let now = Instant::now();
+            let elapsed = now.saturating_duration_since(self.last_instant);
+            rebase_wall_clock(&mut self.last_instant, now);
+            let seconds = elapsed.as_secs_f32();
+            self.fps = if seconds > 0.0 { 1.0 / seconds } else { 0.0 };
         }
-        self.advance_simulation();
-        self.update_camera();
 
         let overlay_open = self.debug_overlay_visible();
+        let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
         let camera = self.renderer.as_ref().map(Renderer::camera);
         let Some(camera) = camera else {
             return;
         };
 
-        let mut quads = parallax_quads(&camera, self.world.bounds());
-        quads.extend(scene_quads(&self.world));
-
-        if overlay_open {
-            let ui = self
-                .debug
-                .as_ref()
-                .map(|d| d.ui.clone())
-                .unwrap_or_default();
-            quads.extend(footnote_debug_quads(&self.world, &ui));
-            if ui.show_parallax_debug {
-                quads.extend(parallax_debug_quads(&camera));
+        let mut quads = Vec::new();
+        if !on_connection {
+            self.interp.sample(Instant::now());
+            let local_pose = local_presentation_pose(&self.prediction, &self.world, &self.replica);
+            quads = parallax_quads(&camera, self.world.bounds());
+            quads.extend(scene_quads(&self.world, local_pose, self.interp.poses()));
+            if overlay_open {
+                let ui = self
+                    .debug
+                    .as_ref()
+                    .map(|d| d.ui.clone())
+                    .unwrap_or_default();
+                quads.extend(footnote_debug_quads(&self.world, &ui, local_pose));
+                if ui.show_parallax_debug {
+                    quads.extend(parallax_debug_quads(&camera));
+                }
+                if ui.show_interpolation_gizmos {
+                    quads.extend(interpolation_gizmos(&self.replica, self.interp.poses()));
+                }
+                if ui.show_prediction_gizmos {
+                    quads.extend(prediction_gizmos(
+                        &self.replica,
+                        local_pose,
+                        self.prediction.active(),
+                    ));
+                }
             }
         }
 
@@ -321,30 +511,118 @@ impl ClientApp {
                 },
             )
         };
-        snapshot.network = self
-            .network
-            .as_ref()
-            .map(|net| net.view.snapshot())
-            .unwrap_or_default();
+        snapshot.network = self.lifecycle.snapshot();
+        snapshot.net_input_seq = self.intent.sequence;
+        snapshot.net_input_sent = self.intent.commands_sent;
+        snapshot.net_move_axis = self.intent.move_axis.to_i8();
+        snapshot.net_jump = self.intent.jump_pressed;
+        snapshot.net_down = self.intent.down_held;
+        snapshot.replica_seq = self.replica.last_sequence();
+        snapshot.replica_tick = self.replica.last_server_tick();
+        snapshot.replica_entities = self.replica.len() as u32;
+        snapshot.replica_local = self.replica.local_player().map(|id| id.to_string());
+        snapshot.replica_stale = self.replica.stale_ignored;
+        snapshot.replica_duplicate = self.replica.duplicate_ignored;
+        snapshot.replica_malformed = self.snapshot_malformed;
+        snapshot.replica_age_ms = self
+            .replica
+            .snapshot_age(Instant::now())
+            .map(|d| d.as_millis() as u64);
+        let interp = self.interp.diagnostics();
+        snapshot.interp_enabled = interp.enabled;
+        snapshot.interp_delay_ticks = interp.delay_ticks;
+        snapshot.interp_delay_ms = interp.delay_ms;
+        snapshot.interp_history_depth = interp.history_depth;
+        snapshot.interp_estimated_tick = interp.estimated_server_tick;
+        snapshot.interp_render_tick = interp.render_tick;
+        snapshot.interp_bracket_a = interp.bracket_a_tick;
+        snapshot.interp_bracket_b = interp.bracket_b_tick;
+        snapshot.interp_alpha = interp.alpha;
+        snapshot.interp_holds = interp.holds;
+        snapshot.interp_snaps = interp.snaps;
+        let pred = self.prediction.diagnostics(&self.world, &self.replica);
+        snapshot.pred_enabled = pred.enabled;
+        snapshot.pred_active = pred.active;
+        snapshot.pred_auth_pos = pred.auth_position;
+        snapshot.pred_pos = pred.predicted_position;
+        snapshot.pred_vel = pred.predicted_velocity;
+        snapshot.pred_error = pred.lead_error;
+        snapshot.pred_lead_error = pred.lead_error;
+        snapshot.pred_aligned_error = pred.aligned_error;
+        snapshot.pred_aligned_dx = pred.aligned_dx;
+        snapshot.pred_aligned_dy = pred.aligned_dy;
+        snapshot.pred_best_offset = pred.best_temporal_offset;
+        snapshot.pred_tick = pred.prediction_tick;
+        snapshot.pred_auth_tick = pred.auth_server_tick;
+        snapshot.pred_best_match_tick = pred.best_match_tick;
+        snapshot.pred_resets = pred.reset_count;
+        snapshot.pred_drift_corrections = pred.drift_correction_count;
+        snapshot.pred_aligned_divergence = pred.consecutive_aligned_divergence;
+        snapshot.pred_max_aligned = pred.max_aligned_error;
+        snapshot.pred_last_snap = pred.last_snap_reason.map(str::to_string);
+        snapshot.pred_auth_vel = pred.auth_velocity;
+        snapshot.pred_pending = pred.pending_count;
+        snapshot.pred_ack = pred.last_ack;
+        snapshot.pred_epoch = pred.input_epoch;
+        snapshot.pred_debt = pred.continuation_debt;
+        snapshot.pred_cancel_pending = pred.cancel_pending;
 
         let mut actions = Vec::new();
+        let mut connect_clicked = false;
         let status = {
             let Some(renderer) = self.renderer.as_mut() else {
                 return;
             };
             let overlay = self.debug.as_mut();
+            let frontend = self.frontend.as_ref();
+            let server = format!("{}", self.lifecycle.view().server);
+            let line = self.lifecycle.view().frontend_status();
+            let can_connect = self.lifecycle.can_connect();
+            let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
             renderer.render(&quads, |pass| {
                 let Some(overlay) = overlay else {
                     return Vec::new();
                 };
-                let (extras, emitted) = overlay.paint(&window, pass, &snapshot);
+                let (extras, emitted, connect) = overlay.submit_frame(
+                    &window,
+                    pass,
+                    &snapshot,
+                    if on_connection {
+                        frontend.map(|frontend| ConnectionPaint {
+                            frontend,
+                            server: &server,
+                            status: line,
+                            can_connect,
+                        })
+                    } else {
+                        None
+                    },
+                );
                 actions = emitted;
+                connect_clicked = connect;
                 extras
             })
         };
 
         for action in actions {
-            self.world.apply_debug_action(action);
+            if matches!(action, purgatory_simulation::DebugAction::ResetPlayer)
+                && self.prediction.active()
+                && self.replica.local_entity().is_some()
+            {
+                // Networked: snap prediction to authority — do not FOOTNOTE-spawn
+                // while the orange replica gizmo stays elsewhere.
+                self.prediction.force_reanchor_from_replica(
+                    &self.replica,
+                    &mut self.world,
+                    self.clock.tick().get(),
+                );
+            } else {
+                self.world.apply_debug_action(action);
+            }
+        }
+
+        if connect_clicked {
+            self.request_connect();
         }
 
         if let Some(debug) = &mut self.debug {
@@ -352,13 +630,11 @@ impl ClientApp {
             let disconnect = debug.ui.network_disconnect;
             debug.ui.network_connect = false;
             debug.ui.network_disconnect = false;
-            if let Some(network) = &self.network {
-                if connect {
-                    network.request_reconnect();
-                }
-                if disconnect {
-                    network.request_disconnect();
-                }
+            if connect {
+                self.request_connect();
+            }
+            if disconnect {
+                self.request_disconnect();
             }
         }
 
@@ -379,7 +655,11 @@ impl ClientApp {
     }
 }
 
-fn scene_quads(world: &World) -> Vec<DrawQuad> {
+fn scene_quads(
+    world: &World,
+    local_pose: Option<[f32; 2]>,
+    remote_poses: &[PresentationPose],
+) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(8);
     for view in world.iter_platforms() {
         let color = match view.platform.kind {
@@ -395,8 +675,13 @@ fn scene_quads(world: &World) -> Vec<DrawQuad> {
         };
         quads.push(aabb_quad(view.aabb(), color));
     }
-    if let Some(player) = world.player_body() {
-        quads.push(aabb_quad(player.aabb(), PLAYER_COLOR));
+    if let Some(position) = local_pose {
+        let aabb = Aabb::new(position, PLAYER_HALF_EXTENTS);
+        quads.push(aabb_quad(aabb, PLAYER_COLOR));
+    }
+    for pose in remote_poses {
+        let aabb = Aabb::new(pose.position, PLAYER_HALF_EXTENTS);
+        quads.push(aabb_quad(aabb, REMOTE_PLAYER_COLOR));
     }
     let b = world.bounds();
     quads.push(DrawQuad {
@@ -404,6 +689,45 @@ fn scene_quads(world: &World) -> Vec<DrawQuad> {
         size: [0.35, 0.35],
         color: MARKER_COLOR,
     });
+    quads
+}
+
+/// Authoritative remote positions as small markers (presentation gizmos only).
+fn interpolation_gizmos(
+    replica: &ReplicatedWorld,
+    remote_poses: &[PresentationPose],
+) -> Vec<DrawQuad> {
+    let local = replica.local_player();
+    let mut quads = Vec::new();
+    for entity in replica.iter() {
+        if Some(entity.entity_id) == local {
+            continue;
+        }
+        let aabb = Aabb::new(entity.position, [0.15, 0.15]);
+        quads.push(aabb_quad(aabb, INTERP_AUTH_GIZMO_COLOR));
+    }
+    for pose in remote_poses {
+        let aabb = Aabb::new(pose.position, [0.12, 0.12]);
+        quads.push(aabb_quad(aabb, REMOTE_PLAYER_COLOR));
+    }
+    quads
+}
+
+/// Authoritative vs predicted local markers (presentation gizmos only; default OFF).
+fn prediction_gizmos(
+    replica: &ReplicatedWorld,
+    local_pose: Option<[f32; 2]>,
+    prediction_active: bool,
+) -> Vec<DrawQuad> {
+    let mut quads = Vec::new();
+    if let Some(auth) = replica.local_entity() {
+        let aabb = Aabb::new(auth.position, [0.18, 0.18]);
+        quads.push(aabb_quad(aabb, PREDICT_AUTH_GIZMO_COLOR));
+    }
+    if prediction_active && let Some(pose) = local_pose {
+        let aabb = Aabb::new(pose, [0.14, 0.14]);
+        quads.push(aabb_quad(aabb, PREDICT_POSE_GIZMO_COLOR));
+    }
     quads
 }
 
@@ -448,7 +772,10 @@ impl ApplicationHandler for ClientApp {
                     origin_ndc[1],
                 );
                 println!(
-                    "PURGATORY controls: A/Left=MoveLeft D/Right=MoveRight S/Down=Down Space=Jump | Down+Jump=drop through OneWay | camera follows player"
+                    "PURGATORY connection frontend: CONNECT to 127.0.0.1:5001. No auto-connect."
+                );
+                println!(
+                    "PURGATORY controls (in Game): A/Left=MoveLeft D/Right=MoveRight S/Down=Down Space=Jump | Down+Jump=drop through OneWay | camera follows player"
                 );
                 println!(
                     "PURGATORY debug overlay: Backquote/~ toggles tabs, gizmos, camera follow, slow-mo"
@@ -461,10 +788,13 @@ impl ApplicationHandler for ClientApp {
                         max_texture_side: renderer.max_texture_dimension_2d() as usize,
                     },
                 );
+                let frontend = ConnectionFrontend::load(overlay.context());
                 self.debug = Some(overlay);
+                self.frontend = Some(frontend);
                 self.renderer = Some(renderer);
                 self.window = Some(window);
                 self.last_instant = Instant::now();
+                println!("PURGATORY client frontend ready");
             }
             Err(err) => {
                 self.fatal = Some(err);
@@ -495,13 +825,19 @@ impl ApplicationHandler for ClientApp {
         }
 
         let overlay_open = self.debug_overlay_visible();
-        if overlay_open && let Some(overlay) = &mut self.debug {
+        let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
+        if (overlay_open || on_connection)
+            && let Some(overlay) = &mut self.debug
+        {
             overlay.on_window_event(&window, &event);
         }
 
         match event {
             WindowEvent::CloseRequested => {
                 println!("PURGATORY client closing");
+                if let Some(network) = &self.network {
+                    let _ = network.try_send(NetworkCommand::Shutdown);
+                }
                 self.network = None;
                 event_loop.exit();
             }
@@ -524,8 +860,20 @@ impl ApplicationHandler for ClientApp {
                     .as_ref()
                     .is_some_and(DebugOverlay::wants_keyboard_for_text);
                 let pressed = event.state == ElementState::Pressed;
-                if gameplay_receives_keyboard(overlay_open, text_like, pressed) {
+                if self.lifecycle.gameplay_actions_allowed()
+                    && gameplay_receives_keyboard(overlay_open, text_like, pressed)
+                {
+                    // Latch ActionState only. Intent is emitted on the sim tick
+                    // that consumes the same PlayerInput as prediction.
                     self.actions.apply_key_event(&event);
+                }
+            }
+            WindowEvent::Focused(focused) => {
+                if !focused {
+                    // Missed key-ups while unfocused leave ActionState latched.
+                    // Clear held input and push Neutral immediately.
+                    self.actions.release_on_focus_loss();
+                    self.on_focus_loss_input();
                 }
             }
             WindowEvent::CursorMoved { .. }
@@ -548,6 +896,17 @@ impl ApplicationHandler for ClientApp {
             window.request_redraw();
         }
     }
+}
+
+/// Game simulation advances only on the Game screen. Connection frontend
+/// never feeds elapsed time into [`SimulationClock`].
+#[must_use]
+fn simulation_should_advance(screen: ClientScreen) -> bool {
+    matches!(screen, ClientScreen::Game)
+}
+
+fn rebase_wall_clock(last_instant: &mut Instant, now: Instant) {
+    *last_instant = now;
 }
 
 #[cfg(test)]
@@ -637,15 +996,58 @@ mod tests {
     }
 
     #[test]
-    fn scene_quads_follow_simulation_aabbs() {
+    fn scene_quads_use_presentation_local_and_static_platforms() {
+        use purgatory_simulation::PLAYER_HALF_EXTENTS;
+
         let world = World::dev_stage();
-        let quads = super::scene_quads(&world);
+        let local_pose = Some([1.5, 2.5]);
+        let quads = super::scene_quads(&world, local_pose, &[]);
         assert!(quads.len() >= 5);
-        let player = world.player_body().expect("player");
         let player_quad = quads
             .iter()
-            .find(|quad| quad.center == player.position)
-            .expect("player quad");
-        assert_eq!(player_quad.size, player.aabb().size());
+            .find(|quad| quad.center == [1.5, 2.5])
+            .expect("presentation local player quad");
+        assert_eq!(
+            player_quad.size,
+            [PLAYER_HALF_EXTENTS[0] * 2.0, PLAYER_HALF_EXTENTS[1] * 2.0]
+        );
+    }
+
+    #[test]
+    fn scene_quads_omit_local_when_pose_absent() {
+        let world = World::dev_stage();
+        let quads = super::scene_quads(&world, None, &[]);
+        let world_player = world.player_body().expect("local world player");
+        assert!(
+            quads
+                .iter()
+                .all(|quad| quad.center != world_player.position),
+            "no local pose means no local player quad"
+        );
+    }
+
+    #[test]
+    fn frontend_idle_does_not_catch_up_simulation() {
+        use super::{rebase_wall_clock, simulation_should_advance};
+        use crate::lifecycle::ClientScreen;
+        use std::time::Instant;
+
+        let mut clock = SimulationClock::new();
+        let t0 = Instant::now();
+        let mut last = t0;
+        let after_idle = t0 + Duration::from_secs(60);
+        if !simulation_should_advance(ClientScreen::Connection) {
+            rebase_wall_clock(&mut last, after_idle);
+        }
+        rebase_wall_clock(&mut last, after_idle);
+        let first = after_idle + Duration::from_millis(16);
+        let elapsed = first.saturating_duration_since(last);
+        let update = clock.advance(elapsed);
+        assert!(
+            update.ticks_executed <= 1,
+            "ticks {}",
+            update.ticks_executed
+        );
+        assert_eq!(update.discarded, Duration::ZERO);
     }
 }
