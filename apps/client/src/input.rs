@@ -3,8 +3,12 @@
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-use purgatory_protocol::{InputCommand, MoveAxis};
+use purgatory_protocol::MoveAxis;
+#[cfg(test)]
+use purgatory_protocol::{InputCommand, move_axis_from_i8};
 use purgatory_simulation::PlayerInput;
+
+pub use purgatory_protocol::IntentNet;
 
 /// Gameplay action. Simulation never sees `KeyCode`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -13,6 +17,8 @@ pub enum Action {
     MoveRight,
     MoveDown,
     Jump,
+    Interact,
+    ActivatePortal,
 }
 
 /// Held buttons plus a jump edge queued for the next simulation tick.
@@ -23,6 +29,9 @@ pub struct ActionState {
     move_down: bool,
     jump_held: bool,
     jump_edge: bool,
+    interact_edge: bool,
+    portal_edge: bool,
+    portal_held: bool,
 }
 
 impl ActionState {
@@ -65,6 +74,27 @@ impl ActionState {
                     self.jump_held = true;
                 } else {
                     self.jump_held = false;
+                }
+            }
+            Action::Interact => {
+                if repeat {
+                    return;
+                }
+                if pressed {
+                    self.interact_edge = true;
+                }
+            }
+            Action::ActivatePortal => {
+                if repeat {
+                    return;
+                }
+                if pressed {
+                    if !self.portal_held {
+                        self.portal_edge = true;
+                    }
+                    self.portal_held = true;
+                } else {
+                    self.portal_held = false;
                 }
             }
         }
@@ -112,6 +142,39 @@ impl ActionState {
         self.move_down = false;
         self.jump_held = false;
         self.jump_edge = false;
+        self.interact_edge = false;
+        self.portal_edge = false;
+        self.portal_held = false;
+    }
+
+    /// Drop jump/interact/portal edges without releasing held movement.
+    /// Used while a transition input barrier is active so discrete actions
+    /// cannot replay on unlock.
+    pub fn discard_locked_edges(&mut self) {
+        self.jump_edge = false;
+        self.interact_edge = false;
+        self.portal_edge = false;
+    }
+
+    /// Edge-triggered interact. Not movement. Not authoritative eligibility.
+    #[must_use]
+    pub fn consume_interact_edge(&mut self) -> bool {
+        let edge = self.interact_edge;
+        self.interact_edge = false;
+        edge
+    }
+
+    /// Edge-triggered portal activate (Up Arrow). Holding does not retrigger.
+    #[must_use]
+    pub fn consume_portal_edge(&mut self) -> bool {
+        let edge = self.portal_edge;
+        self.portal_edge = false;
+        edge
+    }
+
+    #[must_use]
+    pub fn portal_held(&self) -> bool {
+        self.portal_held
     }
 
     /// True when any persistent held gameplay control is active.
@@ -128,79 +191,20 @@ impl ActionState {
     }
 }
 
-/// Client → server per-tick command sequencer. Sequence starts at 1 each epoch.
-/// One `InputCommand` per predicted simulation step. No send-on-change, no
-/// refresh coalescing.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct IntentNet {
-    pub sequence: u32,
-    pub commands_sent: u64,
-    pub move_axis: MoveAxis,
-    pub jump_pressed: bool,
-    pub down_held: bool,
-    pub input_epoch: u16,
+/// Client adapter: map simulation [`PlayerInput`] onto shared [`IntentNet`].
+#[cfg(test)]
+pub trait IntentNetExt {
+    fn consider_tick_input(&mut self, input: PlayerInput) -> Option<InputCommand>;
 }
 
-impl IntentNet {
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Adopt the server-owned epoch. Sequence restarts at 1 for the next command.
-    pub fn set_epoch(&mut self, epoch: u16) {
-        if self.input_epoch != epoch {
-            self.input_epoch = epoch;
-            self.sequence = 0;
-        }
-    }
-
-    /// Always emit one command for this predicted tick. `None` if sequence
-    /// would wrap (`u32::MAX`).
-    #[must_use]
-    pub fn consider_tick_input(&mut self, input: PlayerInput) -> Option<InputCommand> {
-        self.emit(
+#[cfg(test)]
+impl IntentNetExt for IntentNet {
+    fn consider_tick_input(&mut self, input: PlayerInput) -> Option<InputCommand> {
+        self.emit_tick(
             move_axis_from_i8(input.move_axis),
             input.jump_pressed,
             input.down_held,
         )
-    }
-
-    /// Forced Neutral command paired with a `SimulationClock` step (focus-loss).
-    #[must_use]
-    pub fn emit_neutral(&mut self) -> Option<InputCommand> {
-        self.emit(MoveAxis::Neutral, false, false)
-    }
-
-    fn emit(
-        &mut self,
-        axis: MoveAxis,
-        jump_pressed: bool,
-        down_held: bool,
-    ) -> Option<InputCommand> {
-        if self.sequence == u32::MAX {
-            return None;
-        }
-        self.sequence = self.sequence.saturating_add(1);
-        self.move_axis = axis;
-        self.down_held = down_held;
-        self.jump_pressed = jump_pressed;
-        self.commands_sent = self.commands_sent.saturating_add(1);
-        Some(InputCommand {
-            input_epoch: self.input_epoch,
-            sequence: self.sequence,
-            move_axis: axis,
-            jump_pressed,
-            down_held,
-        })
-    }
-}
-
-#[must_use]
-pub const fn move_axis_from_i8(axis: i8) -> MoveAxis {
-    match axis {
-        -1 => MoveAxis::Left,
-        1 => MoveAxis::Right,
-        _ => MoveAxis::Neutral,
     }
 }
 
@@ -211,6 +215,8 @@ pub fn map_key(code: KeyCode) -> Option<Action> {
         KeyCode::KeyD | KeyCode::ArrowRight => Some(Action::MoveRight),
         KeyCode::KeyS | KeyCode::ArrowDown => Some(Action::MoveDown),
         KeyCode::Space => Some(Action::Jump),
+        KeyCode::KeyE => Some(Action::Interact),
+        KeyCode::ArrowUp => Some(Action::ActivatePortal),
         _ => None,
     }
 }
@@ -228,12 +234,61 @@ mod tests {
         assert_eq!(map_key(KeyCode::KeyS), Some(Action::MoveDown));
         assert_eq!(map_key(KeyCode::ArrowDown), Some(Action::MoveDown));
         assert_eq!(map_key(KeyCode::Space), Some(Action::Jump));
+        assert_eq!(map_key(KeyCode::KeyE), Some(Action::Interact));
+        assert_eq!(map_key(KeyCode::ArrowUp), Some(Action::ActivatePortal));
         assert_eq!(map_key(KeyCode::KeyW), None);
         assert_eq!(map_key(KeyCode::Backquote), None);
     }
 
     #[test]
-    fn jump_edge_fires_once_until_consumed() {
+    fn interact_edge_fires_once_until_consumed() {
+        let mut state = ActionState::default();
+        state.set_action(Action::Interact, true, false);
+        state.set_action(Action::Interact, true, true);
+        assert!(state.consume_interact_edge());
+        assert!(!state.consume_interact_edge());
+        state.set_action(Action::Interact, false, false);
+        assert!(!state.consume_interact_edge());
+        state.set_action(Action::Interact, true, false);
+        assert!(state.consume_interact_edge());
+    }
+
+    #[test]
+    fn portal_held_does_not_retrigger_until_release() {
+        let mut state = ActionState::default();
+        state.set_action(Action::ActivatePortal, true, false);
+        assert!(state.consume_portal_edge());
+        assert!(state.portal_held());
+        state.set_action(Action::ActivatePortal, true, false);
+        assert!(
+            !state.consume_portal_edge(),
+            "held Up must not synthesize another edge"
+        );
+        state.set_action(Action::ActivatePortal, false, false);
+        assert!(!state.portal_held());
+        assert!(!state.consume_portal_edge());
+        state.set_action(Action::ActivatePortal, true, false);
+        assert!(state.consume_portal_edge());
+    }
+
+    #[test]
+    fn consume_tick_input_does_not_eat_interact_edge() {
+        let mut state = ActionState::default();
+        state.set_action(Action::Interact, true, false);
+        let _ = state.consume_tick_input();
+        assert!(state.consume_interact_edge());
+    }
+
+    #[test]
+    fn consume_tick_input_does_not_eat_portal_edge() {
+        let mut state = ActionState::default();
+        state.set_action(Action::ActivatePortal, true, false);
+        let _ = state.consume_tick_input();
+        assert!(state.consume_portal_edge());
+    }
+
+    #[test]
+    fn jump_edge_fires_once_per_press() {
         let mut state = ActionState::default();
         state.set_action(Action::Jump, true, false);
         state.set_action(Action::Jump, true, true);
@@ -253,6 +308,39 @@ mod tests {
         assert_eq!(b.move_axis, 1);
         state.set_action(Action::MoveRight, false, false);
         assert_eq!(state.consume_tick_input().move_axis, 0);
+    }
+
+    #[test]
+    fn discard_locked_edges_keeps_held_movement() {
+        let mut state = ActionState::default();
+        state.set_action(Action::MoveRight, true, false);
+        state.set_action(Action::Jump, true, false);
+        state.set_action(Action::Interact, true, false);
+        state.set_action(Action::ActivatePortal, true, false);
+        state.discard_locked_edges();
+        let input = state.consume_tick_input();
+        assert_eq!(input.move_axis, 1);
+        assert!(!input.jump_pressed, "locked jump must not replay");
+        assert!(!state.consume_interact_edge());
+        assert!(!state.consume_portal_edge());
+        assert!(state.portal_held());
+        let held = state.consume_tick_input();
+        assert_eq!(held.move_axis, 1, "held Right must resume after unlock");
+    }
+
+    #[test]
+    fn discard_locked_edges_does_not_arm_held_up() {
+        let mut state = ActionState::default();
+        state.set_action(Action::ActivatePortal, true, false);
+        assert!(state.consume_portal_edge());
+        state.discard_locked_edges();
+        assert!(
+            !state.consume_portal_edge(),
+            "held Up across a barrier must not synthesize an edge"
+        );
+        state.set_action(Action::ActivatePortal, false, false);
+        state.set_action(Action::ActivatePortal, true, false);
+        assert!(state.consume_portal_edge());
     }
 
     #[test]

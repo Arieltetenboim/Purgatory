@@ -1,0 +1,49 @@
+---
+description: Official PURGATORY quality gate, test integrity, and verification reporting.
+alwaysApply: true
+---
+
+# Testing and quality
+
+`docs/TEST_GATES.md` and repository scripts define the official verification requirements. Do not invent replacement quality gates.
+
+## Automated quality gate
+
+Windows: `./scripts/check.ps1`  
+Linux / macOS: `./scripts/check.sh`
+
+Those scripts run, in order, failing on the first error:
+
+```text
+cargo fmt --all -- --check
+cargo check --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+```
+
+Clippy warnings are denied. Never claim a task is complete merely because the code compiles.
+
+Extended network soaks are `#[ignore]` and are **not** part of the default gate. Run them only when the task or `docs/TEST_GATES.md` requires them (`./scripts/network_soak.ps1` / `./scripts/network_soak.sh`). Localhost soaks are not player-capacity claims.
+
+## Verification kinds
+
+Separate:
+
+- **Automated verification** — quality-gate commands actually executed and their results.
+- **Manual / runtime verification still required** — visual, multiplayer, timing, networking, or other observed behavior that tests do not prove.
+
+Passing automated tests does not prove visual, multiplayer, timing, networking, or runtime behavior when manual observation is part of the acceptance criteria.
+
+## Test integrity
+
+Never weaken tests, remove legitimate tests, skip failing tests, or change assertions merely to obtain green output, unless the requested feature intentionally changes the underlying contract.
+
+When a test fails, determine whether:
+
+- the implementation is wrong,
+- the test exposes a regression,
+- or the intended contract legitimately changed.
+
+Protocol golden vectors in `crates/protocol/tests/wire_golden.rs` freeze historical wire bytes. A failure means the wire format moved. Do not regenerate fixtures to make a test pass. Review compatibility, update `PROTOCOL_VERSION` if the change is incompatible, then update affected vectors deliberately (`docs/PROTOCOL.md`).
+
+Report which commands were actually executed and their results.

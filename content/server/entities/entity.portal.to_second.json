@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "entity.portal.to_second",
+  "debug_name": "Portal to Map B",
+  "visible": true,
+  "interactable": "portal",
+  "transition": {
+    "map": "map.dev.second",
+    "portal": "entity.portal.to_footnote"
+  }
+}

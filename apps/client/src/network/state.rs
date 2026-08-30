@@ -68,9 +68,12 @@ impl ConnectionState {
 /// Connect is `try_send` on a bounded mpsc (never block winit). Disconnect and
 /// Shutdown are delivered via the runtime watch control plane so they cannot
 /// be stranded behind Connect pressure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkCommand {
-    Connect { attempt_id: ConnectionAttemptId },
+    Connect {
+        attempt_id: ConnectionAttemptId,
+        dev_login: String,
+    },
     Disconnect,
     Shutdown,
 }
@@ -102,6 +105,10 @@ pub enum NetworkEvent {
         attempt_id: ConnectionAttemptId,
         rtt: Duration,
     },
+    Interact {
+        attempt_id: ConnectionAttemptId,
+        event: purgatory_protocol::ServerInteract,
+    },
 }
 
 impl NetworkEvent {
@@ -113,11 +120,13 @@ impl NetworkEvent {
             | Self::Connected { attempt_id, .. }
             | Self::Rejected { attempt_id, .. }
             | Self::Disconnected { attempt_id, .. }
-            | Self::RttUpdated { attempt_id, .. } => attempt_id,
+            | Self::RttUpdated { attempt_id, .. }
+            | Self::Interact { attempt_id, .. } => attempt_id,
         }
     }
 
     /// Lifecycle-critical events must not be dropped under telemetry pressure.
+    /// Interaction control is gameplay, not RTT telemetry.
     #[must_use]
     pub const fn is_lifecycle(&self) -> bool {
         !matches!(self, Self::RttUpdated { .. })
@@ -343,6 +352,7 @@ impl NetworkView {
                 self.messages_rx = self.messages_rx.saturating_add(1);
                 self.counters.telemetry_events = self.counters.telemetry_events.saturating_add(1);
             }
+            NetworkEvent::Interact { .. } => {}
         }
     }
 

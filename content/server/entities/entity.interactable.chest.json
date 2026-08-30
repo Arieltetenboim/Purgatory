@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "entity.interactable.chest",
+  "debug_name": "Dev Chest",
+  "visible": true,
+  "interactable": "chest"
+}

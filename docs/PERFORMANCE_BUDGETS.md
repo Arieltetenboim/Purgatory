@@ -23,14 +23,28 @@ The 30 Hz / ~33.33 ms figures below are **tick spacing**, not permission for sim
 | Collision history (client debug) | 16 events | ring buffer | Presentation-only; detector OFF by default |
 | Client parallax layers | 3 primitive layers | far 0.15 / mid 0.40 / near 0.70 | Presentation-only; batched into existing quad upload |
 | Debug time scale | 1.0 / 0.5 / 0.25 | wall elapsed × scale → clock | Does not change `TICK_RATE_HZ` |
-| Bytes/sec/player | TBD | control + 1 Hz datagram ping + 30 Hz snapshots (dev) | Snapshots are full-state development traffic, not a bandwidth target |
+| Bytes/sec/player | TBD | 6D B N=50 mixed: ~20 KiB/s/client app payload | Characterization only; see [`PHASE_6D_PERFORMANCE.md`](PHASE_6D_PERFORMANCE.md). Not a bandwidth target or capacity claim |
+| Snapshot entity decode bound | 256 | `MAX_ENTITIES_PER_SNAPSHOT` | Mechanical bound; byte cap still 8192 |
+| Replication frame soft budget | 4096 bytes | `REPLICATION_FRAME_BUDGET_BYTES` | Pre-commit encoded size; wall remains `MAX_GAMEPLAY_SNAPSHOT_BYTES` 8192 |
+| Writer queue cap | 4 frames | `WRITER_QUEUE_CAP` | If full, intent stays pending; no encode-and-drop |
+| Spatial grid cell size | 4.0 wu | `SPATIAL_CELL_SIZE_WU` | Initial tunable, not an architectural invariant (ADR-0038) |
+| AOI enter half-extents | 16 × 9 wu | `AOI_POLICY_HALF_EXTENTS` | Server interest policy, not client 16:9 |
+| AOI leave margin | 2 wu | `AOI_LEAVE_MARGIN` | Hysteresis band in ObserverReplicationState only |
+| Snapshot build cost | local interest | 6D A/B N=50: tick mean ~0.95 ms, p99 ~6 ms; C N=50 mean 0.62 ms | `publish_observer_frame` peak ~4 ms. Localhost mixed 45 s. Not capacity. [`PHASE_6D_PERFORMANCE.md`](PHASE_6D_PERFORMANCE.md) |
 | Remote interp delay | 3 ticks (~100 ms) | `INTERPOLATION_DELAY_TICKS` | Client presentation only; uses `TICK_DURATION` |
 | Remote interp history | 16 samples | `INTERPOLATION_HISTORY_CAP` | Bounded; ~0.5 s at 30 Hz |
 | Interp teleport snap | 8 wu | `INTERPOLATION_SNAP_DISTANCE` | Presentation tuning, not gameplay |
 | Local prediction | 1 player | `LocalPrediction` + client `World` | No full World clone; no remote prediction |
 | Prediction re-anchor | 8 wu | `PREDICTION_REANCHOR_DISTANCE` | Hard snap only; no soft reconciliation |
 | Prediction catch-up | ≤ `MAX_CATCH_UP_TICKS` | shared `SimulationClock` | Same bound as sim clock; no unlimited loop |
-| Connected players | TBD | ≥2 network sessions tested | Remotes interpolated; local predicted |
+| Connected players | TBD | ≥2 network sessions; load harness up to admission | Remotes interpolated; local predicted; load mode admission ≤256 |
+| Tick work overrun | server work > 33.333 ms | recorded; not auto-WARN | Phase 5.7: one overrun ≠ classification WARN; sustained server pressure may WARN |
+| Bot scheduler cadence | harness wall clock | `bot_scheduler_*_ms` in metrics.csv | Not server sim cost; not a WARN by itself |
+| Load metrics export | localhost UDP | `127.0.0.1:5002` | Off-protocol `LoadMetricsV1` schema 3; missed poll ≠ zeros; rates from counter deltas. Schema 4 not added in 6G. |
+| Soak duration | configurable | Mixed preset default 30 min | Evidence run length, not a permanent quality threshold or the only soak definition |
+| Scheduler live slots | 4096 | `SCHEDULER_CAPACITY` | Rejects new work rather than growing unbounded |
+| Critical scheduler drain ceiling | 1024 / tick | `CRITICAL_DRAIN_CEILING` | Pathological-overload safeguard; remainder carries forward; not a gameplay budget |
+| Deferred scheduler drain | 32 / tick (min 1) | `DEFERRED_DRAIN_BUDGET` | FIFO progress guarantee; `ceil(N/B)` ticks to drain N due jobs |
 | Handshake timeout | 5 s | `HANDSHAKE_TIMEOUT` | Hello/Welcome incomplete; not idle timeout |
 | Idle timeout | 15 s | `IDLE_TIMEOUT` | Explicit Quinn `max_idle_timeout`; transport liveness, not AFK |
 | Control message max | 4096 bytes | `MAX_CONTROL_MESSAGE_BYTES` | Length prefix checked before alloc |

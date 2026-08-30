@@ -19,7 +19,14 @@ impl ConnectionFrontend {
     }
 
     /// Draw the connection panel. Returns true when CONNECT is clicked.
-    pub fn paint(&self, ctx: &Context, server: &str, status: &str, can_connect: bool) -> bool {
+    pub fn paint(
+        &self,
+        ctx: &Context,
+        server: &str,
+        login: &mut String,
+        status: &str,
+        can_connect: bool,
+    ) -> bool {
         let mut connect = false;
         let screen = ctx.content_rect();
         egui::Area::new(Id::new("purgatory-connection-frontend"))
@@ -35,6 +42,12 @@ impl ConnectionFrontend {
                     ui.add_space(28.0);
                     ui.label("Server:");
                     ui.label(server);
+                    ui.add_space(12.0);
+                    ui.label("DEV login:");
+                    ui.add_sized(
+                        [220.0, 24.0],
+                        egui::TextEdit::singleline(login).char_limit(32),
+                    );
                     ui.add_space(16.0);
                     ui.add_enabled_ui(can_connect, |ui| {
                         if ui

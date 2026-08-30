@@ -1,5 +1,8 @@
 //! Client-owned development debug UI state (not simulation authority).
 
+use super::sections::DebugSectionMap;
+use crate::network::ImpairmentProfile;
+
 /// Presentation / harness toggles controlled by the debug overlay.
 #[derive(Clone, Debug)]
 pub struct DebugUiState {
@@ -20,6 +23,15 @@ pub struct DebugUiState {
     pub verbose_collision_trace: bool,
     pub network_connect: bool,
     pub network_disconnect: bool,
+    /// DEV overlay Channel request. Sent as server-authoritative DevSetChannel.
+    pub request_channel: Option<u32>,
+    pub last_observed_channel: Option<u32>,
+    pub last_observed_epoch: Option<u32>,
+    pub channel_flash_from: Option<u32>,
+    pub channel_flash_to: Option<u32>,
+    pub channel_flash_epoch_from: Option<u32>,
+    pub channel_flash_epoch_to: Option<u32>,
+    pub channel_flash_until: Option<std::time::Instant>,
     pub log_network_lifecycle: bool,
     pub verbose_network_trace: bool,
     pub clear_network_history: bool,
@@ -27,6 +39,23 @@ pub struct DebugUiState {
     pub show_interpolation_gizmos: bool,
     /// Show authoritative vs predicted local markers (default OFF).
     pub show_prediction_gizmos: bool,
+    /// Presentation-only enter/leave interest rectangles (not client aspect).
+    pub show_aoi_rects: bool,
+    /// Camera Dead Zone / center gizmo (overlay only).
+    pub show_camera_deadzone: bool,
+    /// DEV isolation for camera/presentation jitter forensics.
+    pub camera_jitter_mode: crate::jitter_forensics::CameraJitterMode,
+    pub dump_jitter_trace: bool,
+    pub last_jitter_dump: String,
+    /// World-space semantic labels for replica entities (overlay only).
+    pub show_entity_labels: bool,
+    pub last_interact_kind: Option<crate::ui_runtime::InteractKind>,
+    pub interact_flash_text: String,
+    pub interact_flash_until: Option<std::time::Instant>,
+    pub impairment_profile: ImpairmentProfile,
+    pub impairment_stall_ms: Option<u32>,
+    pub reset_impairment_metrics: bool,
+    pub sections: DebugSectionMap,
 }
 
 impl Default for DebugUiState {
@@ -46,11 +75,32 @@ impl Default for DebugUiState {
             verbose_collision_trace: false,
             network_connect: false,
             network_disconnect: false,
+            request_channel: None,
+            last_observed_channel: None,
+            last_observed_epoch: None,
+            channel_flash_from: None,
+            channel_flash_to: None,
+            channel_flash_epoch_from: None,
+            channel_flash_epoch_to: None,
+            channel_flash_until: None,
             log_network_lifecycle: false,
             verbose_network_trace: false,
             clear_network_history: false,
             show_interpolation_gizmos: false,
             show_prediction_gizmos: false,
+            show_aoi_rects: true,
+            show_camera_deadzone: true,
+            camera_jitter_mode: crate::jitter_forensics::CameraJitterMode::Normal,
+            dump_jitter_trace: false,
+            last_jitter_dump: String::new(),
+            show_entity_labels: true,
+            last_interact_kind: None,
+            interact_flash_text: String::new(),
+            interact_flash_until: None,
+            impairment_profile: ImpairmentProfile::Off,
+            impairment_stall_ms: None,
+            reset_impairment_metrics: false,
+            sections: DebugSectionMap::default(),
         }
     }
 }
@@ -70,6 +120,7 @@ impl DebugUiState {
         if verbose {
             ui.verbose_network_trace = true;
         }
+        ui.impairment_profile = crate::network::NetworkImpairmentConfig::from_env().profile;
         ui
     }
 

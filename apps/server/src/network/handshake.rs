@@ -5,11 +5,12 @@ use std::time::Instant;
 
 use quinn::{Connection, RecvStream, SendStream};
 
+use purgatory_common::DevLogin;
 use purgatory_protocol::{
     ClientControl, DisconnectReason, DisconnectReasonCode, Hello, PROTOCOL_VERSION, ServerControl,
-    ServerDatagram, Welcome, WorldSnapshot, decode_client_control, decode_client_datagram,
-    encode_frame, encode_gameplay_frame, encode_server_control, encode_server_datagram,
-    encode_world_snapshot, peek_frame_len, validate_hello,
+    ServerDatagram, Welcome, decode_client_control, decode_client_datagram, encode_frame,
+    encode_gameplay_frame, encode_server_control, encode_server_datagram, peek_frame_len,
+    validate_hello,
 };
 use purgatory_simulation::TICK_RATE_HZ;
 use tokio::time::timeout;
@@ -17,7 +18,9 @@ use tokio::time::timeout;
 use super::abuse::{
     ConnectionAbuse, ControlRateLimit, NetworkAbuseConfig, RateDecision, sanitize_log_text,
 };
-use super::gameplay::GameplayTx;
+use super::gameplay::{EnterError, GameplayTx};
+use super::persist::PersistenceHandle;
+use super::replication::ReplicationPipe;
 use super::session::{ConnectionIdAllocator, ConnectionSession, SessionLease, SessionTable};
 use super::stats::ServerNetStats;
 
@@ -37,6 +40,7 @@ pub(crate) async fn handle_incoming(
     abuse: NetworkAbuseConfig,
     stats: Arc<ServerNetStats>,
     gameplay: Option<GameplayTx>,
+    persist: Option<PersistenceHandle>,
 ) {
     stats.enter_handshake();
     let connection = match incoming.await {
@@ -48,7 +52,11 @@ pub(crate) async fn handle_incoming(
     };
     let remote = connection.remote_address();
 
-    let handshake = timeout(abuse.handshake_timeout, handshake_streams(&connection)).await;
+    let handshake = timeout(
+        abuse.handshake_timeout,
+        handshake_streams(&connection, &stats),
+    )
+    .await;
     let (mut send, recv, hello) = match handshake {
         Ok(Ok(parts)) => parts,
         Ok(Err(reason)) => {
@@ -99,6 +107,90 @@ pub(crate) async fn handle_incoming(
     }
 
     let connection_id = ids.allocate();
+    let login = match DevLogin::parse(&hello.dev_login) {
+        Ok(login) => login,
+        Err(_) => {
+            stats.leave_handshake();
+            let reason = DisconnectReason::new(DisconnectReasonCode::Malformed, "dev_login");
+            stats.note_reject(reason.code);
+            let _ =
+                write_server_control(&mut send, &ServerControl::Disconnect(reason.clone())).await;
+            connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+            return;
+        }
+    };
+
+    let mut snap_rx = None;
+    let mut occupancy = None;
+    match (persist.as_ref(), gameplay.as_ref()) {
+        (Some(persist), Some(tx)) => {
+            let character = match persist.resolve(login).await {
+                Ok(character) => character,
+                Err(err) => {
+                    eprintln!("PURGATORY persist resolve failed: {err}");
+                    stats.leave_handshake();
+                    let reason = DisconnectReason::new(DisconnectReasonCode::Malformed, "identity");
+                    stats.note_reject(reason.code);
+                    let _ =
+                        write_server_control(&mut send, &ServerControl::Disconnect(reason.clone()))
+                            .await;
+                    connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+                    return;
+                }
+            };
+            let (pipe, wake_rx) = ReplicationPipe::new();
+            let (interact_tx, interact_rx) = tokio::sync::mpsc::channel(16);
+            match tx
+                .enter(
+                    connection_id,
+                    character,
+                    Some(pipe.clone()),
+                    Some(interact_tx),
+                )
+                .await
+            {
+                Ok(Ok(())) => {
+                    occupancy = Some(OccupancyLease::new(tx.clone(), connection_id));
+                    snap_rx = Some((pipe, wake_rx, interact_rx));
+                }
+                Ok(Err(EnterError::Occupied)) => {
+                    stats.leave_handshake();
+                    let reason =
+                        DisconnectReason::new(DisconnectReasonCode::AlreadyConnected, "character");
+                    stats.note_reject(reason.code);
+                    let _ =
+                        write_server_control(&mut send, &ServerControl::Disconnect(reason.clone()))
+                            .await;
+                    connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+                    return;
+                }
+                Ok(Err(_)) | Err(()) => {
+                    stats.leave_handshake();
+                    let reason = DisconnectReason::new(DisconnectReasonCode::Malformed, "enter");
+                    stats.note_reject(reason.code);
+                    let _ =
+                        write_server_control(&mut send, &ServerControl::Disconnect(reason.clone()))
+                            .await;
+                    connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+                    return;
+                }
+            }
+        }
+        (None, Some(tx)) => {
+            let (pipe, wake_rx) = ReplicationPipe::new();
+            let (interact_tx, interact_rx) = tokio::sync::mpsc::channel(16);
+            if !tx.attach_with_snapshots(connection_id, Some(pipe.clone()), Some(interact_tx)) {
+                stats
+                    .lifecycle_handoff_dropped
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                occupancy = Some(OccupancyLease::new(tx.clone(), connection_id));
+            }
+            snap_rx = Some((pipe, wake_rx, interact_rx));
+        }
+        _ => {}
+    }
+
     let welcome = Welcome {
         protocol_version: PROTOCOL_VERSION,
         connection_id,
@@ -118,6 +210,9 @@ pub(crate) async fn handle_incoming(
             sanitize_log_text(&remote.to_string())
         );
         connection.close(0u32.into(), b"welcome");
+        if let Some(tx) = &gameplay {
+            let _ = tx.send_detach(connection_id).await;
+        }
         return;
     }
 
@@ -133,17 +228,18 @@ pub(crate) async fn handle_incoming(
         remote,
     };
     let lease = SessionLease::insert(sessions, session.clone());
-    let snap_rx = if let Some(tx) = &gameplay {
-        let (snap_tx, snap_rx) = tokio::sync::watch::channel(None);
-        tx.attach_with_snapshots(session.connection_id, Some(snap_tx));
-        Some(snap_rx)
-    } else {
-        None
-    };
+    stats
+        .session_created
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     println!(
         "handshake accepted connection_id={} protocol={}",
         session.connection_id, session.protocol_version
     );
+
+    let (replication, interact_rx) = match snap_rx {
+        Some((pipe, wake, i)) => (Some((pipe, wake)), Some(i)),
+        None => (None, None),
+    };
 
     serve_connection(LiveSession {
         connection,
@@ -154,9 +250,39 @@ pub(crate) async fn handle_incoming(
         abuse_cfg: abuse,
         stats,
         gameplay,
-        snap_rx,
+        replication,
+        interact_rx,
+        occupancy,
     })
     .await;
+}
+
+/// Releases character occupancy if the connection task is dropped before
+/// the normal `send_detach` teardown (panic, abort, or skipped await).
+struct OccupancyLease {
+    tx: GameplayTx,
+    id: purgatory_protocol::ConnectionId,
+}
+
+impl OccupancyLease {
+    fn new(tx: GameplayTx, id: purgatory_protocol::ConnectionId) -> Self {
+        Self { tx, id }
+    }
+}
+
+impl Drop for OccupancyLease {
+    fn drop(&mut self) {
+        if self.tx.try_detach(self.id) {
+            return;
+        }
+        let tx = self.tx.clone();
+        let id = self.id;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = tx.send_detach(id).await;
+            });
+        }
+    }
 }
 
 struct LiveSession {
@@ -168,17 +294,20 @@ struct LiveSession {
     abuse_cfg: NetworkAbuseConfig,
     stats: Arc<ServerNetStats>,
     gameplay: Option<GameplayTx>,
-    snap_rx: Option<tokio::sync::watch::Receiver<Option<WorldSnapshot>>>,
+    replication: Option<(ReplicationPipe, tokio::sync::watch::Receiver<u64>)>,
+    interact_rx: Option<tokio::sync::mpsc::Receiver<ServerControl>>,
+    occupancy: Option<OccupancyLease>,
 }
 
 async fn handshake_streams(
     connection: &Connection,
+    stats: &ServerNetStats,
 ) -> Result<(SendStream, RecvStream, Hello), DisconnectReason> {
     let (send, mut recv) = connection
         .accept_bi()
         .await
         .map_err(|_| DisconnectReason::new(DisconnectReasonCode::Malformed, "no control stream"))?;
-    let control = match read_client_control(&mut recv).await {
+    let control = match read_client_control(&mut recv, stats).await {
         Ok(msg) => msg,
         Err(ControlReadError::Oversized) => {
             return Err(DisconnectReason::new(
@@ -212,7 +341,9 @@ async fn serve_connection(live: LiveSession) {
         abuse_cfg,
         stats,
         gameplay,
-        mut snap_rx,
+        mut replication,
+        mut interact_rx,
+        occupancy,
     } = live;
     let id = session.connection_id;
     let remote = session.remote;
@@ -220,11 +351,9 @@ async fn serve_connection(live: LiveSession) {
     let mut abuse = ConnectionAbuse::default();
     let mut rate = ControlRateLimit::new(Instant::now());
     let mut input_rate = ControlRateLimit::new(Instant::now());
-    let mut snap_send = if snap_rx.is_some() {
-        connection.open_uni().await.ok()
-    } else {
-        None
-    };
+    let want_uni = replication.is_some();
+    let mut snap_send = None;
+    let mut uni_opened = !want_uni;
     loop {
         tokio::select! {
             biased;
@@ -279,7 +408,14 @@ async fn serve_connection(live: LiveSession) {
                     }
                 }
             }
-            control = read_client_control(&mut recv) => {
+            s = connection.open_uni(), if !uni_opened => {
+                // One long-lived replication uni. Opened in this select so a
+                // dropped peer is observed via read_datagram instead of hanging
+                // occupancy on an exclusive open_uni await.
+                snap_send = s.ok();
+                uni_opened = true;
+            }
+            control = read_client_control(&mut recv, &stats) => {
                 match control {
                     Ok(ClientControl::Input(command)) => match input_rate.note_input(Instant::now(), abuse_cfg) {
                         RateDecision::Disconnect => {
@@ -301,14 +437,11 @@ async fn serve_connection(live: LiveSession) {
                             stats
                                 .input_received
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            match &gameplay {
-                                Some(tx) if tx.try_input(id, command) => {}
-                                Some(_) => {
-                                    stats
-                                        .input_handoff_dropped
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                None => {}
+                            if let Some(tx) = &gameplay
+                                && !tx.send_input(id, command).await
+                            {
+                                // Receiver gone (sim shutdown) — not a capacity drop.
+                                break;
                             }
                         }
                     },
@@ -332,17 +465,133 @@ async fn serve_connection(live: LiveSession) {
                             stats
                                 .input_received
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            match &gameplay {
-                                Some(tx) if tx.try_held_cancel(id) => {}
-                                Some(_) => {
-                                    stats
-                                        .input_handoff_dropped
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                None => {}
+                            if let Some(tx) = &gameplay
+                                && !tx.send_held_cancel(id).await
+                            {
+                                break;
                             }
                         }
                     },
+                    Ok(ClientControl::InteractOpen(open)) => {
+                        println!(
+                            "6B_INTERACT recv InteractOpen connection={id} target={}",
+                            open.target
+                        );
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_interact_open(id, open.target).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ClientControl::InteractClose(close)) => {
+                        println!(
+                            "6B_INTERACT recv InteractClose connection={id} session={}",
+                            close.session_id
+                        );
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_interact_close(id, close.session_id).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ClientControl::PortalActivate(activate)) => {
+                        println!(
+                            "6C_PORTAL recv PortalActivate connection={id} target={}",
+                            activate.target
+                        );
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_portal_activate(id, activate.target).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ClientControl::DevSetChannel(req)) => {
+                        println!(
+                            "6D_CHANNEL recv DevSetChannel connection={id} channel={}",
+                            req.channel
+                        );
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_dev_set_channel(id, req.channel).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Ok(msg) => match rate.note(Instant::now(), abuse_cfg) {
                         RateDecision::Disconnect => {
                             stats
@@ -359,9 +608,8 @@ async fn serve_connection(live: LiveSession) {
                                 .rate_limited
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
-                        RateDecision::Allow => match msg {
-                            ClientControl::HeldCancel => {}
-                            ClientControl::Hello(_) => {
+                        RateDecision::Allow => {
+                            if let ClientControl::Hello(_) = msg {
                                 stats
                                     .unexpected
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -380,8 +628,7 @@ async fn serve_connection(live: LiveSession) {
                                 );
                                 break;
                             }
-                            ClientControl::Input(_) => {}
-                        },
+                        }
                     },
                     Err(ControlReadError::Oversized) => {
                         stats
@@ -453,44 +700,67 @@ async fn serve_connection(live: LiveSession) {
                 }
             }
             changed = async {
-                match snap_rx.as_mut() {
-                    Some(rx) => rx.changed().await.ok(),
+                match replication.as_mut() {
+                    Some((_, rx)) => rx.changed().await.ok(),
                     None => std::future::pending().await,
                 }
             } => {
                 if changed.is_none() {
-                    snap_rx = None;
-                    snap_send = None;
-                    continue;
+                    break;
                 }
-                let Some(rx) = snap_rx.as_mut() else {
-                    continue;
-                };
-                let snap = rx.borrow_and_update().clone();
-                let Some(snap) = snap else {
+                let Some((pipe, _)) = replication.as_ref() else {
                     continue;
                 };
                 let Some(send) = snap_send.as_mut() else {
-                    continue;
+                    break;
                 };
-                if write_world_snapshot(send, &snap).await {
-                    stats
-                        .snapshots_sent
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                } else {
-                    stats
-                        .snapshot_send_failed
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    snap_send = None;
+                let mut write_failed = false;
+                while let Some(frame) = pipe.pop() {
+                    if write_replication_payload(send, &frame.payload, &stats).await {
+                        stats
+                            .snapshots_sent
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        stats
+                            .snapshot_send_failed
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        write_failed = true;
+                        break;
+                    }
+                }
+                if write_failed {
+                    break;
+                }
+            }
+            maybe_interact = async {
+                match interact_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match maybe_interact {
+                    Some(event) => {
+                        if write_server_control(&mut send, &event).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => interact_rx = None,
                 }
             }
         }
     }
 
-    if let Some(tx) = &gameplay {
-        tx.detach(id);
+    if let Some(tx) = &gameplay
+        && !tx.send_detach(id).await
+    {
+        stats
+            .lifecycle_handoff_dropped
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     lease.remove_once();
+    stats
+        .session_destroyed
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if transport_loss {
         stats
             .transport_loss
@@ -505,9 +775,13 @@ async fn serve_connection(live: LiveSession) {
         sanitize_log_text(&remote.to_string()),
         session.connected_since.elapsed().as_millis()
     );
+    drop(occupancy);
 }
 
-async fn read_client_control(recv: &mut RecvStream) -> Result<ClientControl, ControlReadError> {
+async fn read_client_control(
+    recv: &mut RecvStream,
+    stats: &ServerNetStats,
+) -> Result<ClientControl, ControlReadError> {
     let mut prefix = [0u8; 4];
     recv.read_exact(&mut prefix)
         .await
@@ -526,6 +800,10 @@ async fn read_client_control(recv: &mut RecvStream) -> Result<ClientControl, Con
     recv.read_exact(&mut payload)
         .await
         .map_err(|_| ControlReadError::Closed)?;
+    stats.bytes_in.fetch_add(
+        4u64.saturating_add(len_usize as u64),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     decode_client_control(&payload).map_err(|_| ControlReadError::Decode)
 }
 
@@ -543,14 +821,34 @@ async fn write_server_control(
     Ok(())
 }
 
-async fn write_world_snapshot(send: &mut SendStream, snap: &WorldSnapshot) -> bool {
-    let Ok(payload) = encode_world_snapshot(snap) else {
+async fn write_replication_payload(
+    send: &mut SendStream,
+    payload: &[u8],
+    stats: &ServerNetStats,
+) -> bool {
+    let encode_start = std::time::Instant::now();
+    let encode_us = u64::try_from(encode_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    stats
+        .snapshot_encode_time_max_micros
+        .fetch_max(encode_us, std::sync::atomic::Ordering::Relaxed);
+    stats
+        .snapshot_size_max_bytes
+        .fetch_max(payload.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    let Ok(frame) = encode_gameplay_frame(payload) else {
+        stats
+            .snapshot_encode_failed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return false;
     };
-    let Ok(frame) = encode_gameplay_frame(&payload) else {
-        return false;
-    };
-    send.write_all(&frame).await.is_ok()
+    let n = frame.len() as u64;
+    if send.write_all(&frame).await.is_ok() {
+        stats
+            .bytes_out
+            .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        true
+    } else {
+        false
+    }
 }
 
 async fn send_disconnect_best_effort(connection: &Connection, reason: &DisconnectReason) {

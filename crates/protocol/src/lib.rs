@@ -20,12 +20,16 @@
 //! Packet arrival must not directly modify authoritative game state.
 //! Gameplay flow: parse → validate → semantic request → simulation.
 //! Phase 5.5 transmits intent-only `InputCommand` (with `input_epoch`),
-//! `HeldCancel`, and per-recipient `WorldSnapshot` acknowledgement / contact
-//! headers. The server remains authoritative.
+//! `HeldCancel`. Protocol v9 gameplay replication uses `ReplicationFrame`
+//! on the server-initiated uni stream, plus DEV-only `DevSetChannel`.
+//! The server remains authoritative.
 
 mod config;
 mod connection;
+mod frame;
 mod framing;
+mod intent;
+mod interact;
 mod message;
 mod snapshot;
 mod version;
@@ -36,9 +40,18 @@ pub use config::{
     MAX_GAMEPLAY_SNAPSHOT_BYTES, MAX_LABEL_BYTES, NetworkConfig, PING_INTERVAL, dev_socket_addr,
 };
 pub use connection::ConnectionId;
+pub use frame::{
+    DomainMask, ObserverAoiDebug, ReplicatedHealth, ReplicationFrame, ReplicationRecord,
+    decode_replication_frame, encode_replication_frame, encode_replication_record,
+};
 pub use framing::{
     FrameError, decode_gameplay_payload, decode_payload, encode_frame, encode_gameplay_frame,
     peek_frame_len, peek_gameplay_frame_len,
+};
+pub use intent::{IntentNet, move_axis_from_i8};
+pub use interact::{
+    DevSetChannel, InteractClose, InteractCloseReason, InteractOpen, InteractRejectReason,
+    PortalActivate, ServerInteract,
 };
 pub use message::{
     ClientControl, CodecError, DisconnectReason, DisconnectReasonCode, Hello, InputCommand,
@@ -50,7 +63,7 @@ pub use snapshot::{
     PlatformSupportId, ReplicatedKind, SnapshotEntity, WireEntityId, WorldSnapshot,
     decode_world_snapshot, encode_world_snapshot,
 };
-pub use version::PROTOCOL_VERSION;
+pub use version::{DEV_CHANNEL_MAX, HELLO_DEV_LOGIN_SINCE, PROTOCOL_VERSION};
 
 /// Cargo package version for this crate.
 pub fn version() -> &'static str {
@@ -73,7 +86,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 4);
+        assert_eq!(PROTOCOL_VERSION, 10);
     }
 
     #[test]

@@ -163,6 +163,7 @@ impl World {
         let floor_top = P0.top_surface(Transform::from_position(P0_POSITION));
         let (transform, player) = PlayerState::standing_on_at(p0, floor_top, FOOTNOTE_SPAWN_X);
         world.spawn_player(transform, player);
+        world.spawn_dev_interaction_fixtures();
         #[cfg(debug_assertions)]
         if let Some(embed) = first_solid_embed(&world) {
             panic!(
@@ -220,8 +221,17 @@ mod tests {
     fn footnote_test_stage_builds() {
         let world = World::footnote_test_stage();
         assert!(world.len() >= 20);
-        assert!(world.len() <= 32);
+        assert!(world.len() <= 40);
         assert!(world.player_id().is_some());
+        assert_eq!(
+            world
+                .iter()
+                .filter(|&id| world.interactable_of(id).is_some()
+                    && world.address_of(id) == Some(crate::WorldAddress::DEV))
+                .count(),
+            2,
+            "nearby + far 6B fixtures belong in the normal FOOTNOTE stage"
+        );
         assert_eq!(world.bounds(), WorldBounds::FOOTNOTE_TEST);
         let mut solids = 0u32;
         let mut oneways = 0u32;

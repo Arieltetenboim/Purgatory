@@ -1,5 +1,30 @@
 //! Shared primitives for PURGATORY client, server, and tools.
 
+pub mod identity;
+pub mod impairment;
+pub mod load_metrics;
+pub mod load_validation;
+pub mod memory;
+pub mod world_address;
+
+pub use identity::{
+    AuthoredIdError, CharacterId, ContentId, DEFAULT_DEV_LOGIN, DEFAULT_RESTORE_POINT,
+    DEV_LOGIN_MAX_LEN, DEV_LOGIN_MIN_LEN, DevLogin, DevLoginError, InstanceExitContext,
+    MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED, MAX_AUTHORED_CONTENT_ID_LEN, PersistentId,
+    RestoreIntent, fnv1a64, validate_authored_id,
+};
+pub use load_metrics::{
+    DEFAULT_METRICS_PORT, LOAD_METRICS_SCHEMA_VERSION, LoadMetricsV1, METRICS_MAX_DATAGRAM_BYTES,
+    METRICS_MAX_REQUEST_BYTES, METRICS_REQUEST_MAGIC, METRICS_REQUEST_VERSION,
+    decode_metrics_response, encode_metrics_response, is_metrics_request, metrics_request_datagram,
+};
+pub use load_validation::{
+    LOAD_MODE_ADMISSION_ENV, LOAD_VALIDATION_ENV, LoadValidationConfig, SchedulerPressure,
+    SpawnPressure,
+};
+pub use memory::{ProcessMemory, current_process_memory};
+pub use world_address::{ChannelId, InstanceId, MapId, WorldAddress};
+
 /// Cargo package version for this crate.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

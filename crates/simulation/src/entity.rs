@@ -7,6 +7,9 @@
 use std::fmt;
 
 /// Runtime instance identity. Temporary; owned by a [`crate::World`].
+///
+/// Alias [`RuntimeEntityId`] documents the Phase 6 identity domain. Do not use
+/// this as a content id or persistent id.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct EntityId {
     index: u32,
@@ -43,11 +46,17 @@ impl fmt::Display for EntityId {
     }
 }
 
-/// Explicit runtime classification. Later kinds are added when those systems exist.
+/// Phase 6 name for [`EntityId`]. Same generational handle; not a rename of
+/// public APIs.
+pub type RuntimeEntityId = EntityId;
+
+/// Explicit runtime classification. Derived from capabilities in Phase 6A.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EntityKind {
     Player,
     Platform,
+    /// Composed entity without player or platform capability.
+    Generic,
 }
 
 impl fmt::Display for EntityKind {
@@ -55,6 +64,7 @@ impl fmt::Display for EntityKind {
         match self {
             Self::Player => f.write_str("Player"),
             Self::Platform => f.write_str("Platform"),
+            Self::Generic => f.write_str("Generic"),
         }
     }
 }
@@ -72,5 +82,6 @@ mod tests {
         assert_eq!(a.to_string(), "3:1");
         assert_eq!(EntityKind::Player.to_string(), "Player");
         assert_eq!(EntityKind::Platform.to_string(), "Platform");
+        assert_eq!(EntityKind::Generic.to_string(), "Generic");
     }
 }

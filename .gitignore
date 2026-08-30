@@ -4,6 +4,8 @@
 # Editor / OS
 .idea/
 .vscode/
+__pycache__/
+*.pyc
 *.swp
 *~
 Thumbs.db
@@ -13,6 +15,9 @@ Desktop.ini
 # Local logs and diagnostics
 *.log
 /logs/
+
+# Leftover repo-relative persist dir (runtime store is not here)
+/data/
 crash-*.txt
 
 # Profiling / coverage artifacts

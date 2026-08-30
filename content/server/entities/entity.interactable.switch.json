@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "entity.interactable.switch",
+  "debug_name": "Dev Switch",
+  "visible": true,
+  "interactable": "switch"
+}

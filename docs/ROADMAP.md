@@ -24,7 +24,17 @@ Phases execute in order. A later phase starts only after the current gate is gre
 | 5.2 | Authoritative world snapshots | complete |
 | 5.3 | Remote entity interpolation | complete |
 | 5.4 | Local player prediction | complete |
-| 6 | Authoritative multiplayer movement | not started |
+| 5.5 | Authoritative input ack + reconciliation | complete |
+| 5.6 | Controlled network impairment lab | complete |
+| 5.7 | Multiplayer load / soak / churn harness | complete (GREEN) |
+| 6.0 | Runtime foundation and replication contracts | complete |
+| 6A | Runtime model (composition, spawn, dirty tracking) | complete |
+| 6B | Interaction + UI runtime | complete (automated); manual window pending |
+| 6C | World + content runtime | complete (automated); portal refinement pending manual check |
+| 6D | Runtime query, AOI, replication relevance | complete (automated); **TRANSITION INPUT BARRIER READY FOR USER CHECK** |
+| 6E | Character + persistence | complete (automated); **manual first-connect / reconnect / restart / duplicate-login check still required** |
+| 6F | Runtime gameplay readiness | complete (automated); **manual two-client dirty/AOI + opt-in probe check still required** |
+| 6G | Runtime hardening + integrated scale validation | complete (automated); **manual Mixed/soak/process-ownership evidence still required** |
 | 7 | Client reconciliation (input replay) | complete (Phase 5.5) |
 | 8 | Content foundation | not started |
 | 9 | Combat core | not started |
@@ -205,7 +215,72 @@ Phases execute in order. A later phase starts only after the current gate is gre
 - Server always simulates at 30 Hz (Consumed or Continuation). Late-collapse is intentional authoritative input compaction: intermediate historical held commands may be acknowledged without individual physics steps. Continuation debt saturates and never wraps.
 - Client restore+replay via `tick_predicted_player` / `tick_player`. Hitch is a prediction discontinuity (one new command, not N). HeldCancel uses an immutable `(epoch, target_sequence)` barrier.
 - `jump_pressed` OR during late-collapse is not a generic skill-action policy (ADR-0031).
-- Closed: do not start Phase 5.6 (latency lab / combat / skills) until instructed.
+
+## Phase 5.6 notes
+
+- Development-only network impairment lab. Off by default. Protocol stays v4. No prediction/interpolation retune.
+- Reliable-stream loss is delay/stall/HOL, not InputCommand disappearance. Snapshot skip is application-level. Snapshot delay is post-uni-read, not QUIC send-buffer stall.
+- Closed by Phase 5.7 load / soak / churn harness.
+
+## Phase 5.7 notes
+
+- Real headless QUIC bots (`purgatory-load`); no second fake stack; no `purgatory-client` dependency.
+- Mechanical entity decode bound 256; default admission 32; load-mode admission 256.
+- Localhost UDP metrics v1 + in-process Working Set; missed poll ≠ zeros.
+- Gate is infrastructure + truthful metrics + a soak this machine can hold — not a 100-bot PASS.
+- Authoritative close: 5.7 steady-state input-handoff isolation (`logs/load/capacity/20260829_002013/steady_input_final_report.md`). After-fix matrix: `input_handoff_dropped` = 0 at 100/150/200/256 connected.
+- **PHASE 5 GREEN — Phase 6 may begin.** Non-blocking follow-ups: admission/entity wall 256; full-visibility O(N²)-like network fan-out; snapshot/sim-thread pose-copy pressure; WorldAddress / visibility / relevance / dirty tracking / replication budgeting.
+
+## Phase 6.0 notes
+
+- Runtime contracts: `WorldAddress`, identity separation, lifecycle, query, visibility/relevance, replication metadata (ADR-0034).
+- `World::relevance_for(RuntimeEntityId)` feeds SnapshotBuilder. Same-address players keep Phase 5 snapshot contents. Protocol stays v4.
+- Full-world broadcast is not the final replication architecture. Spatial AOI / scheduling / budgets remain later (6D).
+- Report: [`docs/PHASE_60_REPORT.md`](PHASE_60_REPORT.md).
+
+## Phase 6A notes
+
+- Composition on the existing slot-vector `World`: optional Transform / Health / player / platform. `EntityKind::Generic` for non-player, non-platform entities.
+- Per-domain dirty flags (`transform` / `health` / `membership` / `replication`). No replication scheduler. Protocol stays v4.
+- Report: [`docs/PHASE_6A_REPORT.md`](PHASE_6A_REPORT.md).
+
+## Phase 6B notes
+
+- Authoritative interaction + client UI-runtime. `InteractionSession` is not a UI window. Protocol v5. Nearest-target is advisory. Replica-only interactable drawing (no local visual substitute). Automated gate GREEN; user must still confirm E opens/rejects in the overlay.
+- Report: [`docs/PHASE_6B_REPORT.md`](PHASE_6B_REPORT.md).
+
+## Phase 6C notes
+
+- Authored-string `ContentId`, shared vs server-only domains, registry-assigned `MapId`, content-driven Map A/B, lazy `ensure_map`/`destroy_map` (dev-eager A+B in `GameplayOwner`). Protocol v7 observer `WorldAddress` plus `ReplicatedKind::Portal` / `PortalActivate`. Portal travel uses entity `transition.{map,portal}` metadata, not `InteractableKind` matching. Arrival is at the linked portal. Activation is Up Arrow + centered zone; E is generic only. Overlay reports nearest generic, nearest portal, and portal eligible separately.
+- Report: [`docs/PHASE_6C_REPORT.md`](PHASE_6C_REPORT.md).
+
+## Phase 6D notes
+
+- World-owned uniform grid per `WorldAddress`; cell size `4.0` wu is a tunable (ADR-0038).
+- Server interest-policy AOI enter/leave rects; hysteresis only in `ObserverReplicationState`.
+- Protocol **v8** `ReplicationFrame` on the existing one-uni-stream transport. Coalescing mailbox, epoch-aware writer queue cap 4, size-aware progressive Enter (ADR-0039). Protocol **v9** `DevSetChannel` (tag 17). Channel-only WorldAddress transition: live EntityId, spatial relocate, observer epoch reset, membership fade + `MembershipReady` (no map rebuild; ADR-0040 / ADR-0041). **WorldAddress boundary ≠ social identity boundary.** **Transitions are readiness-gated, not timer-revealed.** Visible presentation commits at fully black. **Transition gameplay input barrier** (ADR-0042): server-neutralized held input; client lock until FadeIn. Client camera Dead Zone + exponential follow is presentation-only. Local draw and camera share a finalized presentation pose: remainder extrapolation of the last predicted tick plus a decaying visual offset for small reconcile pops.
+- Load placement `PURGATORY_LOAD_PLACEMENT=cluster|spread|maps` for Scenario A/B/C characterization. Scenario B keeps the same movement/profile/dirty-rate.
+- Evidence: [`docs/PHASE_6D_PERFORMANCE.md`](PHASE_6D_PERFORMANCE.md). Report: [`docs/PHASE_6D_REPORT.md`](PHASE_6D_REPORT.md).
+
+## Phase 6E notes
+
+- Protocol **v10** DEV `Hello.dev_login`. Server-minted `CharacterId`. Same login → same Character; reconnect → new `EntityId`; duplicate live Character → `AlreadyConnected`.
+- File-backed `purgatory-persistence` in a per-user application-data directory (Windows: `%LOCALAPPDATA%\Purgatory\`; `PURGATORY_DATA_DIR` override). Source/install location is not the writable persist root. Identity allocation is serialized on one worker. Saves are revision-protected; JSON/filesystem stay off the 30 Hz sim thread.
+- RestoreIntent ≠ WorldAddress (ADR-0044). Authored map restore policy. Phase 6E placement uses DEFAULT channel/instance as a temporary placement-layer implementation.
+- Welcome only after spawn/bind/replication-ready. Report: [`docs/PHASE_6E_REPORT.md`](PHASE_6E_REPORT.md).
+
+## Phase 6F notes
+
+- World-owned scheduler (Critical ceiling + Deferred budget), lean Action lifecycle, typed action gate (`InputGateReason` → `TransitionLocked`), staged `RuntimeEvent`, test effects, cadence stagger, scheduled spawn. No protocol v11. No `RuntimeServices` bag.
+- Dirty/delta is existing `DomainRevs` + per-observer `ObserverReplicationState`. Metrics are domain-rev advances and observer pending Enter/Update, not a global dirty-pending gauge.
+- Opt-in DEV probe: `PURGATORY_RUNTIME_PROBE=1`. Default off.
+- Report: [`docs/PHASE_6F_REPORT.md`](PHASE_6F_REPORT.md). Stop before the next phase.
+
+## Phase 6G notes
+
+- Final Phase 6 hardening / integrated validation. Protocol **v10**. Metrics schema **3**. Synthetic pressure is `PURGATORY_LOAD_VALIDATION` JSON, applied only in load-mode. MixedRuntime is the canonical workload. Soak duration is configurable; ~30 min Mixed is initial evidence, not a magic threshold.
+- Welcome does not expose `CharacterId`. Queue inventory before new caps: [`docs/PHASE_6G_QUEUE_INVENTORY.md`](PHASE_6G_QUEUE_INVENTORY.md).
+- Report: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md). Exit review: [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md). **Do not begin Phase 7 (MOB).**
 
 ## Priority when tasks compete
 

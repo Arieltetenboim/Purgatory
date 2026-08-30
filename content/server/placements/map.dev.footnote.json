@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "map": "map.dev.footnote",
+  "placements": [
+    {
+      "entity": "entity.interactable.switch",
+      "position": [-17.8, -2.9]
+    },
+    {
+      "entity": "entity.interactable.chest",
+      "position": [-7.4, -2.9]
+    },
+    {
+      "entity": "entity.portal.to_second",
+      "position": [6.0, -2.9]
+    }
+  ]
+}

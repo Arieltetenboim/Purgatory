@@ -100,7 +100,11 @@ impl World {
         let support_kind = prev_grounded_on.and_then(|id| self.platform_kind(id));
 
         let mut scratch = PlatformScratch::default();
+        let addr = self.address_of(id);
         for view in self.iter_platforms() {
+            if addr.is_some_and(|a| self.address_of(view.id) != Some(a)) {
+                continue;
+            }
             scratch.push(view);
         }
 
@@ -259,10 +263,14 @@ impl World {
         };
         // Console spam is client-gated; simulation only records structured data.
         self.set_last_motion_debug(motion);
+        self.refresh_spatial(id, prev_pos);
     }
 
     fn apply_world_bounds_for(&mut self, player_id: EntityId) {
-        let bounds = self.bounds();
+        let bounds = self
+            .address_of(player_id)
+            .map(|a| self.bounds_for(a))
+            .unwrap_or_else(|| self.bounds());
         let Some((transform, player)) = self.get_player(player_id) else {
             return;
         };

@@ -10,16 +10,21 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, TransportConfig, VarInt};
 use tokio::sync::{mpsc, watch};
 
+use purgatory_common::impairment::{
+    EnqueueError, INPUT_DRAIN_PER_TURN, ImpairmentHarness, ImpairmentMetricsSnapshot,
+    NetworkImpairmentConfig, SNAPSHOT_DRAIN_PER_TURN, duration_ns,
+};
+
 use purgatory_protocol::{
     ALPN_PROTOCOL, ClientControl, HANDSHAKE_TIMEOUT, Hello, InputCommand, PING_INTERVAL,
-    PROTOCOL_VERSION, ServerControl, ServerDatagram, WorldSnapshot, decode_server_control,
-    decode_server_datagram, decode_world_snapshot, encode_client_control, encode_client_datagram,
+    PROTOCOL_VERSION, ReplicationFrame, ServerControl, ServerDatagram, decode_replication_frame,
+    decode_server_control, decode_server_datagram, encode_client_control, encode_client_datagram,
     encode_frame, peek_frame_len, peek_gameplay_frame_len,
 };
 
@@ -32,8 +37,16 @@ const CMD_CAP: usize = 8;
 const INPUT_CAP: usize = 128;
 const LIFECYCLE_CAP: usize = 16;
 const TELEMETRY_CAP: usize = 32;
+const STALL_CAP: usize = 8;
+const RESET_CAP: usize = 4;
+/// Bounded replica ingress. The reader awaits when full so Enter/Leave cannot drop.
+const FRAME_CAP: usize = 64;
 /// Oldest outstanding ping is dropped when this many wait for a Pong.
 const MAX_OUTSTANDING_PINGS: usize = 4;
+
+fn ns_since(origin: Instant) -> u64 {
+    u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Control {
@@ -45,6 +58,7 @@ enum RuntimeCommand {
     Connect {
         attempt_id: ConnectionAttemptId,
         epoch: u64,
+        dev_login: String,
     },
 }
 
@@ -54,6 +68,68 @@ enum RuntimeCommand {
 enum ClientGameplayMsg {
     Input(InputCommand),
     HeldCancel,
+    InteractOpen(purgatory_protocol::WireEntityId),
+    InteractClose(u32),
+    PortalActivate(purgatory_protocol::WireEntityId),
+    DevSetChannel(u32),
+}
+
+struct ImpairmentNet {
+    config_rx: watch::Receiver<NetworkImpairmentConfig>,
+    stall_rx: mpsc::Receiver<Duration>,
+    reset_rx: mpsc::Receiver<()>,
+    metrics_tx: watch::Sender<ImpairmentMetricsSnapshot>,
+    stall_dropped: Arc<AtomicU64>,
+    harness: ImpairmentHarness<ClientGameplayMsg, ReplicationFrame>,
+    origin: Instant,
+}
+
+impl ImpairmentNet {
+    fn now_ns(&self) -> u64 {
+        ns_since(self.origin)
+    }
+
+    fn sync_control(&mut self) {
+        if self.config_rx.has_changed().unwrap_or(false) {
+            let cfg = *self.config_rx.borrow_and_update();
+            self.harness.apply_config(cfg, self.now_ns());
+        }
+        while let Ok(dur) = self.stall_rx.try_recv() {
+            self.harness
+                .begin_input_stall(self.now_ns(), duration_ns(dur));
+        }
+        while self.reset_rx.try_recv().is_ok() {
+            self.harness.reset_metrics();
+        }
+        self.harness.tick_auto_stall(self.now_ns());
+        self.publish_metrics();
+    }
+
+    fn publish_metrics(&self) {
+        let mut snap = self.harness.metrics(self.now_ns());
+        snap.stall_trigger_dropped = self.stall_dropped.load(Ordering::Relaxed);
+        let _ = self.metrics_tx.send(snap);
+    }
+
+    fn enqueue_input(&mut self, msg: ClientGameplayMsg) -> Result<(), EnqueueError> {
+        let now = self.now_ns();
+        self.harness.input_mut().enqueue(msg, now)
+    }
+
+    fn should_queue_input(&self) -> bool {
+        let now = self.now_ns();
+        self.harness.input().should_delay(now) || !self.harness.input().is_empty()
+    }
+
+    fn should_queue_snapshot(&self) -> bool {
+        let now = self.now_ns();
+        self.harness.snapshot().should_delay(now) || !self.harness.snapshot().is_empty()
+    }
+
+    fn enqueue_snapshot(&mut self, snap: ReplicationFrame) -> Result<(), EnqueueError> {
+        let now = self.now_ns();
+        self.harness.snapshot_mut().enqueue(snap, now)
+    }
 }
 
 struct EventSink {
@@ -61,7 +137,7 @@ struct EventSink {
     telemetry: mpsc::Sender<NetworkEvent>,
     telemetry_dropped: Arc<AtomicU64>,
     verbose: Arc<AtomicBool>,
-    snapshots: watch::Sender<Option<WorldSnapshot>>,
+    frames: mpsc::Sender<ReplicationFrame>,
     snapshot_malformed: Arc<AtomicU64>,
 }
 
@@ -110,6 +186,9 @@ impl EventSink {
                     ));
                 }
                 NetworkEvent::RttUpdated { .. } => {}
+                NetworkEvent::Interact { attempt_id, event } => {
+                    self.trace(&format!("attempt={attempt_id} Interact {event:?}"));
+                }
             }
         }
         if !event.is_lifecycle() {
@@ -132,24 +211,21 @@ impl EventSink {
         }
     }
 
-    fn push_snapshot(&self, snap: WorldSnapshot) {
+    async fn push_frame(&self, frame: ReplicationFrame) {
         if self.verbose() {
             self.trace(&format!(
-                "snapshot recv seq={} tick={} entities={}",
-                snap.snapshot_sequence,
-                snap.server_tick,
-                snap.entities.len()
+                "replication frame seq={} tick={} epoch={} records={}",
+                frame.snapshot_sequence,
+                frame.server_tick,
+                frame.observer_baseline_epoch,
+                frame.records.len()
             ));
         }
-        let _ = self.snapshots.send(Some(snap));
+        let _ = self.frames.send(frame).await;
     }
 
     fn note_malformed_snapshot(&self) {
         self.snapshot_malformed.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn clear_snapshots(&self) {
-        let _ = self.snapshots.send(None);
     }
 }
 
@@ -162,8 +238,13 @@ pub struct NetworkHandle {
     telemetry: mpsc::Receiver<NetworkEvent>,
     telemetry_dropped: Arc<AtomicU64>,
     log_verbose: Arc<AtomicBool>,
-    snapshots: watch::Receiver<Option<WorldSnapshot>>,
+    frames: mpsc::Receiver<ReplicationFrame>,
     snapshot_malformed: Arc<AtomicU64>,
+    impairment_config: watch::Sender<NetworkImpairmentConfig>,
+    stall_tx: mpsc::Sender<Duration>,
+    reset_metrics_tx: mpsc::Sender<()>,
+    impairment_metrics: watch::Receiver<ImpairmentMetricsSnapshot>,
+    stall_dropped: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -178,14 +259,21 @@ impl NetworkHandle {
         let log_verbose = Arc::new(AtomicBool::new(false));
         let log_verbose_thread = Arc::clone(&log_verbose);
         let (control_tx, control_rx) = watch::channel(Control::default());
-        let (snap_tx, snap_rx) = watch::channel(None);
+        let (frame_tx, frame_rx) = mpsc::channel(FRAME_CAP);
         let snapshot_malformed = Arc::new(AtomicU64::new(0));
+        let initial_impairment = NetworkImpairmentConfig::from_env();
+        let (imp_cfg_tx, imp_cfg_rx) = watch::channel(initial_impairment);
+        let (stall_tx, stall_rx) = mpsc::channel(STALL_CAP);
+        let (reset_tx, reset_rx) = mpsc::channel(RESET_CAP);
+        let (imp_metrics_tx, imp_metrics_rx) = watch::channel(ImpairmentMetricsSnapshot::default());
+        let stall_dropped = Arc::new(AtomicU64::new(0));
+        let stall_dropped_thread = Arc::clone(&stall_dropped);
         let sink = EventSink {
             lifecycle: life_tx,
             telemetry: tel_tx,
             telemetry_dropped: Arc::clone(&telemetry_dropped),
             verbose: Arc::clone(&log_verbose),
-            snapshots: snap_tx,
+            frames: frame_tx,
             snapshot_malformed: Arc::clone(&snapshot_malformed),
         };
         let thread = std::thread::Builder::new()
@@ -202,6 +290,15 @@ impl NetworkHandle {
                     sink,
                     control_rx,
                     log_verbose_thread,
+                    ImpairmentNet {
+                        config_rx: imp_cfg_rx,
+                        stall_rx,
+                        reset_rx,
+                        metrics_tx: imp_metrics_tx,
+                        stall_dropped: stall_dropped_thread,
+                        harness: ImpairmentHarness::new(initial_impairment),
+                        origin: Instant::now(),
+                    },
                 ));
             })
             .map_err(|err| format!("network thread: {err}"))?;
@@ -213,8 +310,13 @@ impl NetworkHandle {
             telemetry: tel_rx,
             telemetry_dropped,
             log_verbose,
-            snapshots: snap_rx,
+            frames: frame_rx,
             snapshot_malformed,
+            impairment_config: imp_cfg_tx,
+            stall_tx,
+            reset_metrics_tx: reset_tx,
+            impairment_metrics: imp_metrics_rx,
+            stall_dropped,
             thread: Some(thread),
         })
     }
@@ -226,10 +328,17 @@ impl NetworkHandle {
     /// Connect pressure.
     pub fn try_send(&self, command: NetworkCommand) -> bool {
         match command {
-            NetworkCommand::Connect { attempt_id } => {
+            NetworkCommand::Connect {
+                attempt_id,
+                dev_login,
+            } => {
                 let epoch = self.control.borrow().disconnect_epoch;
                 self.commands
-                    .try_send(RuntimeCommand::Connect { attempt_id, epoch })
+                    .try_send(RuntimeCommand::Connect {
+                        attempt_id,
+                        epoch,
+                        dev_login,
+                    })
                     .is_ok()
             }
             NetworkCommand::Disconnect => {
@@ -261,6 +370,30 @@ impl NetworkHandle {
         self.input.try_send(ClientGameplayMsg::HeldCancel).is_ok()
     }
 
+    pub fn try_send_interact_open(&self, target: purgatory_protocol::WireEntityId) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::InteractOpen(target))
+            .is_ok()
+    }
+
+    pub fn try_send_interact_close(&self, session_id: u32) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::InteractClose(session_id))
+            .is_ok()
+    }
+
+    pub fn try_send_portal_activate(&self, target: purgatory_protocol::WireEntityId) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::PortalActivate(target))
+            .is_ok()
+    }
+
+    pub fn try_send_dev_set_channel(&self, channel: u32) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::DevSetChannel(channel))
+            .is_ok()
+    }
+
     /// Drain lifecycle events first, then telemetry. Caller applies them to
     /// [`crate::lifecycle::ClientLifecycle`].
     pub fn poll(&mut self, mut apply: impl FnMut(NetworkEvent)) {
@@ -272,12 +405,13 @@ impl NetworkHandle {
         }
     }
 
-    /// Latest coalesced snapshot, if the network thread published a newer one.
-    pub fn poll_snapshot(&mut self) -> Option<WorldSnapshot> {
-        if !self.snapshots.has_changed().unwrap_or(false) {
-            return None;
+    /// Drain every pending replication frame in stream order. Never latest-wins.
+    pub fn poll_frames(&mut self) -> Vec<ReplicationFrame> {
+        let mut out = Vec::new();
+        while let Ok(frame) = self.frames.try_recv() {
+            out.push(frame);
         }
-        self.snapshots.borrow_and_update().clone()
+        out
     }
 
     #[must_use]
@@ -292,6 +426,41 @@ impl NetworkHandle {
 
     pub fn set_log_flags(&self, _lifecycle: bool, verbose: bool) {
         self.log_verbose.store(verbose, Ordering::Relaxed);
+    }
+
+    /// Latest-wins config. Unchanged values do not wake the net thread.
+    pub fn set_impairment_config(&self, config: NetworkImpairmentConfig) {
+        self.impairment_config.send_if_modified(|current| {
+            if *current == config {
+                false
+            } else {
+                *current = config;
+                true
+            }
+        });
+    }
+
+    /// Imperative stall. Dropped if the stall channel is full.
+    pub fn try_trigger_input_stall(&self, duration: Duration) -> bool {
+        if self.stall_tx.try_send(duration).is_ok() {
+            true
+        } else {
+            self.stall_dropped.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
+
+    pub fn try_reset_impairment_metrics(&self) -> bool {
+        self.reset_metrics_tx.try_send(()).is_ok()
+    }
+
+    #[must_use]
+    pub fn poll_impairment_metrics(&mut self) -> ImpairmentMetricsSnapshot {
+        let mut snap = *self.impairment_metrics.borrow_and_update();
+        snap.stall_trigger_dropped = snap
+            .stall_trigger_dropped
+            .max(self.stall_dropped.load(Ordering::Relaxed));
+        snap
     }
 }
 
@@ -342,6 +511,7 @@ async fn network_loop(
     events: EventSink,
     mut control: watch::Receiver<Control>,
     log_verbose: Arc<AtomicBool>,
+    mut impairment: ImpairmentNet,
 ) {
     let endpoint = match make_endpoint(config.idle_timeout) {
         Ok(ep) => ep,
@@ -362,7 +532,11 @@ async fn network_loop(
                         endpoint.close(0u32.into(), b"shutdown");
                         break;
                     }
-                    Some(RuntimeCommand::Connect { attempt_id, epoch }) => {
+                    Some(RuntimeCommand::Connect {
+                        attempt_id,
+                        epoch,
+                        dev_login,
+                    }) => {
                         while let Ok(RuntimeCommand::Connect { .. }) = commands.try_recv() {}
                         drain_inputs(&mut inputs);
                         if log_verbose.load(Ordering::Relaxed) {
@@ -375,13 +549,17 @@ async fn network_loop(
                             config.server,
                             attempt_id,
                             epoch,
+                            &dev_login,
                             &mut commands,
                             &mut inputs,
                             &events,
                             &mut control,
+                            &mut impairment,
                         )
                         .await;
                         drain_inputs(&mut inputs);
+                        impairment.harness.clear_queues();
+                        impairment.publish_metrics();
                         if matches!(end, AfterSession::Shutdown) {
                             endpoint.close(0u32.into(), b"shutdown");
                             break;
@@ -391,6 +569,21 @@ async fn network_loop(
             }
             _ = inputs.recv() => {
                 drain_inputs(&mut inputs);
+            }
+            _ = impairment.config_rx.changed() => {
+                impairment.sync_control();
+            }
+            stall = impairment.stall_rx.recv() => {
+                if let Some(dur) = stall {
+                    impairment.harness.begin_input_stall(impairment.now_ns(), duration_ns(dur));
+                    impairment.publish_metrics();
+                }
+            }
+            reset = impairment.reset_rx.recv() => {
+                if reset.is_some() {
+                    impairment.harness.reset_metrics();
+                    impairment.publish_metrics();
+                }
             }
             changed = control.changed() => {
                 if changed.is_err() || control.borrow().shutdown {
@@ -412,10 +605,12 @@ async fn run_session(
     server: SocketAddr,
     attempt_id: ConnectionAttemptId,
     epoch: u64,
+    dev_login: &str,
     commands: &mut mpsc::Receiver<RuntimeCommand>,
     inputs: &mut mpsc::Receiver<ClientGameplayMsg>,
     events: &EventSink,
     control: &mut watch::Receiver<Control>,
+    impairment: &mut ImpairmentNet,
 ) -> AfterSession {
     events
         .emit(NetworkEvent::Connecting { attempt_id }, control)
@@ -495,7 +690,7 @@ async fn run_session(
         .await;
 
     match handshake_and_live(
-        connection, attempt_id, epoch, commands, inputs, events, control,
+        connection, attempt_id, epoch, dev_login, commands, inputs, events, control, impairment,
     )
     .await
     {
@@ -534,10 +729,12 @@ async fn handshake_and_live(
     connection: Connection,
     attempt_id: ConnectionAttemptId,
     epoch: u64,
+    dev_login: &str,
     commands: &mut mpsc::Receiver<RuntimeCommand>,
     inputs: &mut mpsc::Receiver<ClientGameplayMsg>,
     events: &EventSink,
     control: &mut watch::Receiver<Control>,
+    impairment: &mut ImpairmentNet,
 ) -> Result<AfterSession, NetworkEvent> {
     let (mut send, mut recv) = {
         let open_bi = connection.open_bi();
@@ -587,6 +784,7 @@ async fn handshake_and_live(
     let hello = ClientControl::Hello(Hello {
         protocol_version: PROTOCOL_VERSION,
         client_build: format!("purgatory-client-{}", env!("CARGO_PKG_VERSION")),
+        dev_login: dev_login.to_string(),
     });
     write_client_control(&mut send, &hello)
         .await
@@ -653,6 +851,13 @@ async fn handshake_and_live(
             connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
             return Err(NetworkEvent::Rejected { attempt_id, reason });
         }
+        Ok(ServerControl::Interact(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
         Err(kind) => {
             connection.close(0u32.into(), b"handshake");
             return Err(NetworkEvent::Disconnected { attempt_id, kind });
@@ -660,12 +865,58 @@ async fn handshake_and_live(
     }
 
     drain_inputs(inputs);
-    let result = live_loop(
-        connection, send, recv, attempt_id, epoch, commands, inputs, events, control,
+    live_loop(
+        connection, send, recv, attempt_id, epoch, commands, inputs, events, control, impairment,
     )
-    .await;
-    events.clear_snapshots();
-    result
+    .await
+}
+
+fn to_control(msg: ClientGameplayMsg) -> ClientControl {
+    match msg {
+        ClientGameplayMsg::Input(command) => ClientControl::Input(command),
+        ClientGameplayMsg::HeldCancel => ClientControl::HeldCancel,
+        ClientGameplayMsg::InteractOpen(target) => {
+            ClientControl::InteractOpen(purgatory_protocol::InteractOpen { target })
+        }
+        ClientGameplayMsg::InteractClose(session_id) => {
+            ClientControl::InteractClose(purgatory_protocol::InteractClose { session_id })
+        }
+        ClientGameplayMsg::PortalActivate(target) => {
+            ClientControl::PortalActivate(purgatory_protocol::PortalActivate { target })
+        }
+        ClientGameplayMsg::DevSetChannel(channel) => {
+            ClientControl::DevSetChannel(purgatory_protocol::DevSetChannel { channel })
+        }
+    }
+}
+
+async fn drain_due_inputs(
+    send: &mut SendStream,
+    impairment: &mut ImpairmentNet,
+    attempt_id: ConnectionAttemptId,
+) -> Result<(), NetworkEvent> {
+    let now = impairment.now_ns();
+    let due = impairment
+        .harness
+        .input_mut()
+        .poll_due(now, INPUT_DRAIN_PER_TURN);
+    for msg in due {
+        write_client_control(send, &to_control(msg))
+            .await
+            .map_err(|kind| NetworkEvent::Disconnected { attempt_id, kind })?;
+    }
+    Ok(())
+}
+
+async fn drain_due_snapshots(events: &EventSink, impairment: &mut ImpairmentNet) {
+    let now = impairment.now_ns();
+    let due = impairment
+        .harness
+        .snapshot_mut()
+        .poll_due(now, SNAPSHOT_DRAIN_PER_TURN);
+    for frame in due {
+        events.push_frame(frame).await;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -679,15 +930,33 @@ async fn live_loop(
     inputs: &mut mpsc::Receiver<ClientGameplayMsg>,
     events: &EventSink,
     control: &mut watch::Receiver<Control>,
+    impairment: &mut ImpairmentNet,
 ) -> Result<AfterSession, NetworkEvent> {
     let mut ping = tokio::time::interval(PING_INTERVAL);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut nonce: u64 = 1;
     let mut outstanding: VecDeque<(u64, Instant)> = VecDeque::new();
     let mut snap_recv: Option<RecvStream> = None;
+    let mut uni_accepted = false;
 
     loop {
-        let waiting_uni = snap_recv.is_none();
+        impairment.sync_control();
+        drain_due_inputs(&mut send, impairment, attempt_id).await?;
+        drain_due_snapshots(events, impairment).await;
+        impairment.publish_metrics();
+        let now = impairment.now_ns();
+        let more_due =
+            impairment.harness.input().has_due(now) || impairment.harness.snapshot().has_due(now);
+        let wake = if more_due {
+            Some(Duration::ZERO)
+        } else {
+            impairment
+                .harness
+                .next_wake_ns(now)
+                .map(|ns| Duration::from_nanos(ns.saturating_sub(now)))
+        };
+
+        let waiting_uni = !uni_accepted;
         tokio::select! {
             biased;
             cmd = commands.recv() => {
@@ -708,13 +977,34 @@ async fn live_loop(
                     batch.push(next);
                 }
                 for msg in batch {
-                    let control_msg = match msg {
-                        ClientGameplayMsg::Input(command) => ClientControl::Input(command),
-                        ClientGameplayMsg::HeldCancel => ClientControl::HeldCancel,
-                    };
-                    if let Err(kind) = write_client_control(&mut send, &control_msg).await {
+                    if impairment.should_queue_input() {
+                        if let Err(EnqueueError::Overflow) = impairment.enqueue_input(msg) {
+                            connection.close(0u32.into(), b"impair");
+                            return Err(NetworkEvent::Disconnected {
+                                attempt_id,
+                                kind: NetworkFailureKind::InternalNetworkError,
+                            });
+                        }
+                    } else if let Err(kind) =
+                        write_client_control(&mut send, &to_control(msg)).await
+                    {
                         return Err(NetworkEvent::Disconnected { attempt_id, kind });
                     }
+                }
+            }
+            _ = impairment.config_rx.changed() => {
+                impairment.sync_control();
+            }
+            stall = impairment.stall_rx.recv() => {
+                if let Some(dur) = stall {
+                    impairment
+                        .harness
+                        .begin_input_stall(impairment.now_ns(), duration_ns(dur));
+                }
+            }
+            reset = impairment.reset_rx.recv() => {
+                if reset.is_some() {
+                    impairment.harness.reset_metrics();
                 }
             }
             changed = control.changed() => {
@@ -762,6 +1052,14 @@ async fn live_loop(
                             kind: NetworkFailureKind::UnexpectedMessage,
                         });
                     }
+                    Ok(ServerControl::Interact(event)) => {
+                        events
+                            .emit(
+                                NetworkEvent::Interact { attempt_id, event },
+                                control,
+                            )
+                            .await;
+                    }
                     Err(kind) => {
                         return Err(NetworkEvent::Disconnected {
                             attempt_id,
@@ -784,7 +1082,9 @@ async fn live_loop(
             uni = connection.accept_uni(), if waiting_uni => {
                 match uni {
                     Ok(stream) => {
+                        // A second replication uni in one session is protocol-illegal.
                         snap_recv = Some(stream);
+                        uni_accepted = true;
                     }
                     Err(err) => {
                         return Err(NetworkEvent::Disconnected {
@@ -796,28 +1096,47 @@ async fn live_loop(
             }
             snap = async {
                 if let Some(stream) = snap_recv.as_mut() {
-                    read_world_snapshot(stream, events.verbose()).await
+                    read_replication_frame(stream, events.verbose()).await
                 } else {
-                    std::future::pending::<Result<WorldSnapshot, SnapshotReadError>>().await
+                    std::future::pending::<Result<ReplicationFrame, SnapshotReadError>>().await
                 }
             } => {
                 match snap {
-                    Ok(snapshot) => events.push_snapshot(snapshot),
+                    Ok(frame) => {
+                        if impairment.should_queue_snapshot() {
+                            let _ = impairment.enqueue_snapshot(frame);
+                        } else {
+                            events.push_frame(frame).await;
+                        }
+                    }
                     Err(SnapshotReadError::Closed) => {
-                        snap_recv = None;
+                        return Err(NetworkEvent::Disconnected {
+                            attempt_id,
+                            kind: NetworkFailureKind::TransportLost,
+                        });
                     }
                     Err(SnapshotReadError::Malformed) => {
                         events.note_malformed_snapshot();
                     }
                     Err(SnapshotReadError::FramingBroken) => {
                         events.note_malformed_snapshot();
-                        snap_recv = None;
+                        return Err(NetworkEvent::Disconnected {
+                            attempt_id,
+                            kind: NetworkFailureKind::MalformedMessage,
+                        });
                     }
                     Err(SnapshotReadError::Disconnected(kind)) => {
                         return Err(NetworkEvent::Disconnected { attempt_id, kind });
                     }
                 }
             }
+            _ = async {
+                match wake {
+                    Some(d) if d.is_zero() => tokio::task::yield_now().await,
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {}
         }
     }
 }
@@ -942,10 +1261,10 @@ enum SnapshotReadError {
     Disconnected(NetworkFailureKind),
 }
 
-async fn read_world_snapshot(
+async fn read_replication_frame(
     recv: &mut RecvStream,
     verbose: bool,
-) -> Result<WorldSnapshot, SnapshotReadError> {
+) -> Result<ReplicationFrame, SnapshotReadError> {
     let mut prefix = [0u8; 4];
     recv.read_exact(&mut prefix)
         .await
@@ -964,7 +1283,7 @@ async fn read_world_snapshot(
             NetworkFailureKind::TransportLost => SnapshotReadError::Closed,
             kind => SnapshotReadError::Disconnected(kind),
         })?;
-    decode_world_snapshot(&payload).map_err(|_| SnapshotReadError::Malformed)
+    decode_replication_frame(&payload).map_err(|_| SnapshotReadError::Malformed)
 }
 
 #[cfg(test)]
@@ -972,10 +1291,11 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use crate::replica::ReplicatedWorld;
+    use crate::replica::{FrameDecision, ReplicatedWorld};
     use purgatory_protocol::{
-        ConnectionId, ReplicatedKind, SnapshotEntity, Welcome, WireEntityId, encode_gameplay_frame,
-        encode_server_control, encode_world_snapshot,
+        ConnectionId, PlatformSupportId, ReplicatedKind, ReplicationFrame, ReplicationRecord,
+        SnapshotEntity, Welcome, WireEntityId, encode_gameplay_frame, encode_replication_frame,
+        encode_server_control,
     };
 
     fn attempt() -> ConnectionAttemptId {
@@ -997,7 +1317,7 @@ mod tests {
                 telemetry: tel_tx,
                 telemetry_dropped: Arc::clone(&dropped),
                 verbose: Arc::new(AtomicBool::new(false)),
-                snapshots: watch::channel(None).0,
+                frames: mpsc::channel(FRAME_CAP).0,
                 snapshot_malformed: Arc::new(AtomicU64::new(0)),
             };
             let (_tx, rx) = watch::channel(Control::default());
@@ -1055,7 +1375,7 @@ mod tests {
                 telemetry: tel_tx,
                 telemetry_dropped: Arc::clone(&dropped),
                 verbose: Arc::new(AtomicBool::new(false)),
-                snapshots: watch::channel(None).0,
+                frames: mpsc::channel(FRAME_CAP).0,
                 snapshot_malformed: Arc::new(AtomicU64::new(0)),
             };
             let (_tx, rx) = watch::channel(Control::default());
@@ -1113,6 +1433,7 @@ mod tests {
             let handle = NetworkHandle::start(closed_port_config()).expect("start");
             assert!(handle.try_send(NetworkCommand::Connect {
                 attempt_id: ConnectionAttemptId::from_raw(round as u64 + 1),
+                dev_login: "dev.local".into(),
             }));
             if delay_ms > 0 {
                 std::thread::sleep(Duration::from_millis(delay_ms));
@@ -1132,6 +1453,7 @@ mod tests {
             let handle = NetworkHandle::start(closed_port_config()).expect("start");
             assert!(handle.try_send(NetworkCommand::Connect {
                 attempt_id: ConnectionAttemptId::from_raw(round + 1),
+                dev_login: "dev.local".into(),
             }));
             // Repeated Disconnect and Shutdown in both orders must be harmless.
             for _ in 0..4 {
@@ -1154,11 +1476,13 @@ mod tests {
         let mut handle = NetworkHandle::start(closed_port_config()).expect("start");
         assert!(handle.try_send(NetworkCommand::Connect {
             attempt_id: ConnectionAttemptId::from_raw(1),
+            dev_login: "dev.local".into(),
         }));
         let mut accepted = 0;
         for i in 0..64 {
             if handle.try_send(NetworkCommand::Connect {
                 attempt_id: ConnectionAttemptId::from_raw(i + 2),
+                dev_login: "dev.local".into(),
             }) {
                 accepted += 1;
             }
@@ -1324,7 +1648,8 @@ mod tests {
         .expect("start");
         let attempt = ConnectionAttemptId::from_raw(round + 1);
         assert!(handle.try_send(NetworkCommand::Connect {
-            attempt_id: attempt
+            attempt_id: attempt,
+            dev_login: "dev.local".into(),
         }));
 
         let mut saw_handshaking = false;
@@ -1398,7 +1723,8 @@ mod tests {
         })
         .expect("start");
         assert!(handle.try_send(NetworkCommand::Connect {
-            attempt_id: ConnectionAttemptId::from_raw(1)
+            attempt_id: ConnectionAttemptId::from_raw(1),
+            dev_login: "dev.local".into(),
         }));
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1415,6 +1741,7 @@ mod tests {
         for i in 0..32 {
             let _ = handle.try_send(NetworkCommand::Connect {
                 attempt_id: ConnectionAttemptId::from_raw(i + 1),
+                dev_login: "dev.local".into(),
             });
         }
         assert!(handle.try_send(NetworkCommand::Shutdown));
@@ -1435,7 +1762,8 @@ mod tests {
         })
         .expect("start");
         assert!(handle.try_send(NetworkCommand::Connect {
-            attempt_id: ConnectionAttemptId::from_raw(1)
+            attempt_id: ConnectionAttemptId::from_raw(1),
+            dev_login: "dev.local".into(),
         }));
         std::thread::sleep(Duration::from_millis(20));
         assert!(handle.try_send(NetworkCommand::Disconnect));
@@ -1506,6 +1834,7 @@ mod tests {
     enum UniAfterWelcome {
         Immediate,
         Delayed,
+        TwoFrames,
         CloseConnection,
     }
 
@@ -1579,22 +1908,57 @@ mod tests {
         }
     }
 
-    fn sample_world_snapshot() -> WorldSnapshot {
+    fn sample_replication_frame() -> ReplicationFrame {
         let local = WireEntityId {
             index: 1,
             generation: 1,
         };
-        WorldSnapshot::from_poses(
-            1,
-            10,
-            local,
-            vec![SnapshotEntity {
-                entity_id: local,
-                kind: ReplicatedKind::Player,
-                position: [3.0, 4.0],
-                velocity: [0.0, 0.0],
+        ReplicationFrame {
+            snapshot_sequence: 1,
+            server_tick: 10,
+            local_player_entity: local,
+            input_epoch: 0,
+            last_acknowledged_input_sequence: 0,
+            local_grounded: false,
+            local_grounded_on: PlatformSupportId::NONE,
+            local_ignored_platform: PlatformSupportId::NONE,
+            continuation_debt: 0,
+            local_map: 1,
+            local_channel: 0,
+            local_instance: 0,
+            observer_baseline_epoch: 0,
+            records: vec![ReplicationRecord::Enter {
+                entity: SnapshotEntity {
+                    entity_id: local,
+                    kind: ReplicatedKind::Player,
+                    position: [3.0, 4.0],
+                    velocity: [0.0, 0.0],
+                },
+                health: None,
             }],
-        )
+            aoi_debug: None,
+        }
+    }
+
+    fn sample_followup_update() -> ReplicationFrame {
+        let local = WireEntityId {
+            index: 1,
+            generation: 1,
+        };
+        let mut frame = sample_replication_frame();
+        frame.snapshot_sequence = 2;
+        frame.server_tick = 11;
+        frame.records = vec![ReplicationRecord::Update {
+            entity_id: local,
+            domains: purgatory_protocol::DomainMask {
+                transform: true,
+                health: false,
+            },
+            position: Some([9.0, 4.0]),
+            velocity: Some([0.0, 0.0]),
+            health: None,
+        }];
+        frame
     }
 
     async fn write_welcome_frame(send: &mut SendStream) -> bool {
@@ -1614,16 +1978,25 @@ mod tests {
     }
 
     async fn write_snapshot_uni(connection: &Connection) -> bool {
+        write_snapshot_frames(connection, &[sample_replication_frame()]).await
+    }
+
+    async fn write_snapshot_frames(connection: &Connection, frames: &[ReplicationFrame]) -> bool {
         let Ok(mut uni) = connection.open_uni().await else {
             return false;
         };
-        let Ok(payload) = encode_world_snapshot(&sample_world_snapshot()) else {
-            return false;
-        };
-        let Ok(frame) = encode_gameplay_frame(&payload) else {
-            return false;
-        };
-        uni.write_all(&frame).await.is_ok()
+        for frame in frames {
+            let Ok(payload) = encode_replication_frame(frame) else {
+                return false;
+            };
+            let Ok(encoded) = encode_gameplay_frame(&payload) else {
+                return false;
+            };
+            if uni.write_all(&encoded).await.is_err() {
+                return false;
+            }
+        }
+        true
     }
 
     async fn run_snapshot_script(incoming: quinn::Incoming, mode: UniAfterWelcome) {
@@ -1649,6 +2022,14 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 let _ = write_snapshot_uni(&connection).await;
             }
+            UniAfterWelcome::TwoFrames => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let _ = write_snapshot_frames(
+                    &connection,
+                    &[sample_replication_frame(), sample_followup_update()],
+                )
+                .await;
+            }
             UniAfterWelcome::CloseConnection => {
                 // Test-only: let Welcome reach the client so it enters
                 // `live_loop` with `snap_recv == None` before the close.
@@ -1668,41 +2049,43 @@ mod tests {
         })
         .expect("start");
         assert!(handle.try_send(NetworkCommand::Connect {
-            attempt_id: ConnectionAttemptId::from_raw(1)
+            attempt_id: ConnectionAttemptId::from_raw(1),
+            dev_login: "dev.local".into(),
         }));
         (server, handle)
     }
 
-    /// Real app path: `NetworkHandle` → Connect → Welcome → uni → first snapshot.
-    fn wait_connected_snapshot(
+    /// Real app path: `NetworkHandle` → Connect → Welcome → uni → first frame.
+    fn wait_connected_frames(
         handle: &mut NetworkHandle,
         limit: Duration,
-    ) -> (bool, Option<WorldSnapshot>) {
+        min_frames: usize,
+    ) -> (bool, Vec<ReplicationFrame>) {
         let deadline = Instant::now() + limit;
         let mut connected = false;
-        let mut snapshot = None;
+        let mut frames = Vec::new();
         while Instant::now() < deadline {
             handle.poll(|event| {
                 if matches!(event, NetworkEvent::Connected { .. }) {
                     connected = true;
                 }
             });
-            if let Some(snap) = handle.poll_snapshot() {
-                snapshot = Some(snap);
+            frames.extend(handle.poll_frames());
+            if connected && frames.len() >= min_frames {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        (connected, snapshot)
+        (connected, frames)
     }
 
-    fn assert_replica_from_first_snapshot(snap: WorldSnapshot) {
+    fn assert_replica_from_first_frame(frame: ReplicationFrame) {
         let mut replica = ReplicatedWorld::new();
-        replica.apply(snap.clone());
+        replica.apply_frame(frame.clone());
         assert_eq!(replica.len(), 1, "replica must contain the local player");
-        assert_eq!(replica.local_player(), Some(snap.local_player_entity));
+        assert_eq!(replica.local_player(), Some(frame.local_player_entity));
         assert!(
-            replica.get(snap.local_player_entity).is_some(),
+            replica.get(frame.local_player_entity).is_some(),
             "local player entity must be in the replica map"
         );
         assert_eq!(replica.last_sequence(), Some(1));
@@ -1711,10 +2094,13 @@ mod tests {
     #[test]
     fn live_loop_applies_snapshot_when_uni_arrives_after_welcome() {
         let (mut server, mut handle) = connect_scripted(UniAfterWelcome::Delayed);
-        let (connected, snap) = wait_connected_snapshot(&mut handle, Duration::from_secs(5));
+        let (connected, frames) = wait_connected_frames(&mut handle, Duration::from_secs(5), 1);
         assert!(connected, "Welcome must emit Connected before snapshots");
-        let snap = snap.expect("first WorldSnapshot on delayed uni (live_loop must not panic)");
-        assert_replica_from_first_snapshot(snap);
+        let snap = frames
+            .into_iter()
+            .next()
+            .expect("first ReplicationFrame on delayed uni (live_loop must not panic)");
+        assert_replica_from_first_frame(snap);
         join_on_drop(
             handle,
             Duration::from_secs(5),
@@ -1726,14 +2112,47 @@ mod tests {
     #[test]
     fn live_loop_applies_snapshot_when_uni_is_ready_immediately() {
         let (mut server, mut handle) = connect_scripted(UniAfterWelcome::Immediate);
-        let (connected, snap) = wait_connected_snapshot(&mut handle, Duration::from_secs(5));
+        let (connected, frames) = wait_connected_frames(&mut handle, Duration::from_secs(5), 1);
         assert!(connected, "Welcome must emit Connected");
-        let snap = snap.expect("first WorldSnapshot on immediate uni (live_loop must not panic)");
-        assert_replica_from_first_snapshot(snap);
+        let snap = frames
+            .into_iter()
+            .next()
+            .expect("first ReplicationFrame on immediate uni (live_loop must not panic)");
+        assert_replica_from_first_frame(snap);
         join_on_drop(
             handle,
             Duration::from_secs(5),
             "immediate-uni snapshot session",
+        );
+        server.stop();
+    }
+
+    #[test]
+    fn live_loop_applies_both_frames_when_two_arrive_before_poll() {
+        let (mut server, mut handle) = connect_scripted(UniAfterWelcome::TwoFrames);
+        let (connected, frames) = wait_connected_frames(&mut handle, Duration::from_secs(5), 2);
+        assert!(connected);
+        assert!(
+            frames.len() >= 2,
+            "watch latest-wins must not drop the Enter before the Update, got {}",
+            frames.len()
+        );
+        let mut replica = ReplicatedWorld::new();
+        for frame in frames {
+            assert!(matches!(
+                replica.apply_frame(frame),
+                FrameDecision::Applied { .. }
+            ));
+        }
+        let local = WireEntityId {
+            index: 1,
+            generation: 1,
+        };
+        assert_eq!(replica.get(local).unwrap().position[0], 9.0);
+        join_on_drop(
+            handle,
+            Duration::from_secs(5),
+            "two-frame replication session",
         );
         server.stop();
     }
@@ -1776,5 +2195,16 @@ mod tests {
         assert_eq!(stamped, 1);
         let later = control.borrow().disconnect_epoch;
         assert_eq!(later, 1, "Connect must stamp epoch, not reset it");
+    }
+
+    #[test]
+    fn live_loop_services_control_during_impaired_input_burst() {
+        let src = include_str!("runtime.rs");
+        assert!(src.contains("INPUT_DRAIN_PER_TURN"));
+        assert!(src.contains("SNAPSHOT_DRAIN_PER_TURN"));
+        assert!(src.contains("config_rx.changed"));
+        assert!(src.contains("stall_rx.recv"));
+        assert!(src.contains("drain_due_inputs"));
+        assert!(src.contains("session_cut"));
     }
 }

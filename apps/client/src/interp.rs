@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use purgatory_protocol::{WireEntityId, WorldSnapshot};
+use purgatory_protocol::{ReplicatedKind, WireEntityId, WorldSnapshot};
 use purgatory_simulation::{TICK_DURATION, TICK_DURATION_NANOS};
 
 /// Snapshot intervals to lag the render timeline behind estimated server time.
@@ -49,6 +49,7 @@ impl HistorySample {
             entities: snap
                 .entities
                 .iter()
+                .filter(|e| e.kind == ReplicatedKind::Player)
                 .map(|e| SampleEntity {
                     entity_id: e.entity_id,
                     position: e.position,
@@ -494,6 +495,28 @@ mod tests {
         let pos = lerp_position([0.0, 0.0], [4.0, 0.0], alpha);
         assert!((pos[0] - 2.0).abs() < 1e-5);
         assert!(pos[0].is_finite() && pos[1].is_finite());
+    }
+
+    #[test]
+    fn history_sample_drops_interactables() {
+        let local = eid(1, 1);
+        let sample = HistorySample::from_snapshot(&snap(
+            1,
+            1,
+            local,
+            vec![
+                entity(1, 1, 0.0, 0.0),
+                SnapshotEntity {
+                    entity_id: eid(9, 1),
+                    kind: ReplicatedKind::Interactable,
+                    position: [5.0, 1.0],
+                    velocity: [0.0, 0.0],
+                },
+                entity(2, 1, 3.0, 0.0),
+            ],
+        ));
+        assert_eq!(sample.entities.len(), 2);
+        assert!(sample.entities.iter().all(|e| e.entity_id != eid(9, 1)));
     }
 
     #[test]

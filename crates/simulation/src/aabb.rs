@@ -50,6 +50,24 @@ impl Aabb {
             && self.min_y() < other.max_y()
             && self.max_y() > other.min_y()
     }
+
+    #[must_use]
+    pub fn contains_point(self, position: [f32; 2]) -> bool {
+        position[0] >= self.min_x()
+            && position[0] <= self.max_x()
+            && position[1] >= self.min_y()
+            && position[1] <= self.max_y()
+    }
+
+    #[must_use]
+    pub fn from_min_max(min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> Self {
+        let center = [(min_x + max_x) * 0.5, (min_y + max_y) * 0.5];
+        let half_extents = [(max_x - min_x) * 0.5, (max_y - min_y) * 0.5];
+        Self {
+            center,
+            half_extents,
+        }
+    }
 }
 
 #[cfg(test)]

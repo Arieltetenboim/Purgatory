@@ -653,3 +653,26 @@ fn stacked_oneway_drop_creates_fresh_ignore_per_platform() {
     }
     assert!(landed_c, "expected land on Solid C");
 }
+
+#[test]
+fn idle_grounded_position_is_bit_stable() {
+    let mut world = World::dev_stage();
+    drive(&mut world, 8, DT_30, PlayerInput::idle());
+    let start = player(&world);
+    assert!(start.grounded);
+    let pos = start.position;
+    let vel = start.velocity;
+    let revs = world
+        .domain_revs_of(world.player_id().expect("player"))
+        .expect("revs");
+    for _ in 0..30 {
+        world.tick(DT_30, PlayerInput::idle());
+    }
+    let later = player(&world);
+    assert_eq!(later.position, pos);
+    assert_eq!(later.velocity, vel);
+    let later_revs = world
+        .domain_revs_of(world.player_id().expect("player"))
+        .expect("revs");
+    assert_eq!(later_revs.transform, revs.transform);
+}

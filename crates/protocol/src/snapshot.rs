@@ -11,6 +11,8 @@ use crate::{CodecError, MAX_ENTITIES_PER_SNAPSHOT, MAX_GAMEPLAY_SNAPSHOT_BYTES};
 
 const TAG_WORLD_SNAPSHOT: u8 = 7;
 const KIND_PLAYER: u8 = 1;
+const KIND_INTERACTABLE: u8 = 2;
+const KIND_PORTAL: u8 = 3;
 
 /// Wire entity identity. Generation is part of equality; index reuse is a
 /// different entity.
@@ -54,6 +56,18 @@ impl PlatformSupportId {
 #[repr(u8)]
 pub enum ReplicatedKind {
     Player = 1,
+    Interactable = 2,
+    Portal = 3,
+}
+
+impl std::fmt::Display for ReplicatedKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Player => "Player",
+            Self::Interactable => "Interactable",
+            Self::Portal => "Portal",
+        })
+    }
 }
 
 impl ReplicatedKind {
@@ -66,6 +80,8 @@ impl ReplicatedKind {
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             KIND_PLAYER => Some(Self::Player),
+            KIND_INTERACTABLE => Some(Self::Interactable),
+            KIND_PORTAL => Some(Self::Portal),
             _ => None,
         }
     }
@@ -104,6 +120,10 @@ pub struct WorldSnapshot {
     pub local_grounded_on: PlatformSupportId,
     pub local_ignored_platform: PlatformSupportId,
     pub continuation_debt: u16,
+    /// Observer map membership. A change is a replication baseline boundary.
+    pub local_map: u32,
+    pub local_channel: u32,
+    pub local_instance: u32,
     pub entities: Vec<SnapshotEntity>,
 }
 
@@ -127,8 +147,16 @@ impl WorldSnapshot {
             local_grounded_on: PlatformSupportId::NONE,
             local_ignored_platform: PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_map: 1,
+            local_channel: 0,
+            local_instance: 0,
             entities,
         }
+    }
+
+    #[must_use]
+    pub fn observer_address(&self) -> (u32, u32, u32) {
+        (self.local_map, self.local_channel, self.local_instance)
     }
 }
 
@@ -148,6 +176,9 @@ pub fn encode_world_snapshot(snap: &WorldSnapshot) -> Result<Vec<u8>, CodecError
     out.extend_from_slice(&snap.local_grounded_on.0.to_le_bytes());
     out.extend_from_slice(&snap.local_ignored_platform.0.to_le_bytes());
     out.extend_from_slice(&snap.continuation_debt.to_le_bytes());
+    out.extend_from_slice(&snap.local_map.to_le_bytes());
+    out.extend_from_slice(&snap.local_channel.to_le_bytes());
+    out.extend_from_slice(&snap.local_instance.to_le_bytes());
     out.extend_from_slice(&count.to_le_bytes());
     for entity in &snap.entities {
         write_entity_id(&mut out, entity.entity_id);
@@ -187,6 +218,9 @@ pub fn decode_world_snapshot(bytes: &[u8]) -> Result<WorldSnapshot, CodecError> 
     let (local_grounded_on, rest) = read_u16(&rest[1..])?;
     let (local_ignored_platform, rest) = read_u16(rest)?;
     let (continuation_debt, rest) = read_u16(rest)?;
+    let (local_map, rest) = read_u32(rest)?;
+    let (local_channel, rest) = read_u32(rest)?;
+    let (local_instance, rest) = read_u32(rest)?;
     let (count, rest) = read_u16(rest)?;
     if count > MAX_ENTITIES_PER_SNAPSHOT {
         return Err(CodecError::InvalidValue);
@@ -222,16 +256,19 @@ pub fn decode_world_snapshot(bytes: &[u8]) -> Result<WorldSnapshot, CodecError> 
         local_grounded_on: PlatformSupportId(local_grounded_on),
         local_ignored_platform: PlatformSupportId(local_ignored_platform),
         continuation_debt,
+        local_map,
+        local_channel,
+        local_instance,
         entities,
     })
 }
 
-fn write_entity_id(out: &mut Vec<u8>, id: WireEntityId) {
+pub(crate) fn write_entity_id(out: &mut Vec<u8>, id: WireEntityId) {
     out.extend_from_slice(&id.index.to_le_bytes());
     out.extend_from_slice(&id.generation.to_le_bytes());
 }
 
-fn write_f32(out: &mut Vec<u8>, value: f32) -> Result<(), CodecError> {
+pub(crate) fn write_f32(out: &mut Vec<u8>, value: f32) -> Result<(), CodecError> {
     if !value.is_finite() {
         return Err(CodecError::InvalidValue);
     }
@@ -239,19 +276,19 @@ fn write_f32(out: &mut Vec<u8>, value: f32) -> Result<(), CodecError> {
     Ok(())
 }
 
-fn split_tag(bytes: &[u8]) -> Result<(u8, &[u8]), CodecError> {
+pub(crate) fn split_tag(bytes: &[u8]) -> Result<(u8, &[u8]), CodecError> {
     let (tag, rest) = bytes.split_first().ok_or(CodecError::Truncated)?;
     Ok((*tag, rest))
 }
 
-fn read_u16(bytes: &[u8]) -> Result<(u16, &[u8]), CodecError> {
+pub(crate) fn read_u16(bytes: &[u8]) -> Result<(u16, &[u8]), CodecError> {
     if bytes.len() < 2 {
         return Err(CodecError::Truncated);
     }
     Ok((u16::from_le_bytes([bytes[0], bytes[1]]), &bytes[2..]))
 }
 
-fn read_u32(bytes: &[u8]) -> Result<(u32, &[u8]), CodecError> {
+pub(crate) fn read_u32(bytes: &[u8]) -> Result<(u32, &[u8]), CodecError> {
     if bytes.len() < 4 {
         return Err(CodecError::Truncated);
     }
@@ -261,7 +298,7 @@ fn read_u32(bytes: &[u8]) -> Result<(u32, &[u8]), CodecError> {
     ))
 }
 
-fn read_u64(bytes: &[u8]) -> Result<(u64, &[u8]), CodecError> {
+pub(crate) fn read_u64(bytes: &[u8]) -> Result<(u64, &[u8]), CodecError> {
     if bytes.len() < 8 {
         return Err(CodecError::Truncated);
     }
@@ -270,13 +307,13 @@ fn read_u64(bytes: &[u8]) -> Result<(u64, &[u8]), CodecError> {
     Ok((u64::from_le_bytes(buf), &bytes[8..]))
 }
 
-fn read_entity_id(bytes: &[u8]) -> Result<(WireEntityId, &[u8]), CodecError> {
+pub(crate) fn read_entity_id(bytes: &[u8]) -> Result<(WireEntityId, &[u8]), CodecError> {
     let (index, rest) = read_u32(bytes)?;
     let (generation, rest) = read_u32(rest)?;
     Ok((WireEntityId { index, generation }, rest))
 }
 
-fn read_finite_f32(bytes: &[u8]) -> Result<(f32, &[u8]), CodecError> {
+pub(crate) fn read_finite_f32(bytes: &[u8]) -> Result<(f32, &[u8]), CodecError> {
     if bytes.len() < 4 {
         return Err(CodecError::Truncated);
     }
@@ -287,7 +324,7 @@ fn read_finite_f32(bytes: &[u8]) -> Result<(f32, &[u8]), CodecError> {
     Ok((value, &bytes[4..]))
 }
 
-fn expect_empty(rest: &[u8]) -> Result<(), CodecError> {
+pub(crate) fn expect_empty(rest: &[u8]) -> Result<(), CodecError> {
     if rest.is_empty() {
         Ok(())
     } else {
@@ -313,6 +350,9 @@ mod tests {
             local_grounded_on: PlatformSupportId(1),
             local_ignored_platform: PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_map: 1,
+            local_channel: 0,
+            local_instance: 0,
             entities: vec![SnapshotEntity {
                 entity_id: WireEntityId {
                     index: 5,
@@ -330,6 +370,57 @@ mod tests {
         let snap = sample();
         let encoded = encode_world_snapshot(&snap).expect("encode");
         assert_eq!(decode_world_snapshot(&encoded).expect("decode"), snap);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_interactable_kind() {
+        let snap = WorldSnapshot::from_poses(
+            1,
+            1,
+            WireEntityId {
+                index: 9,
+                generation: 1,
+            },
+            vec![SnapshotEntity {
+                entity_id: WireEntityId {
+                    index: 4,
+                    generation: 2,
+                },
+                kind: ReplicatedKind::Interactable,
+                position: [-18.2, -3.05],
+                velocity: [0.0, 0.0],
+            }],
+        );
+        let encoded = encode_world_snapshot(&snap).expect("encode");
+        let decoded = decode_world_snapshot(&encoded).expect("decode");
+        assert_eq!(decoded.entities.len(), 1);
+        assert_eq!(decoded.entities[0].kind, ReplicatedKind::Interactable);
+        assert_eq!(decoded.entities[0].position, [-18.2, -3.05]);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_portal_kind() {
+        let snap = WorldSnapshot::from_poses(
+            1,
+            1,
+            WireEntityId {
+                index: 9,
+                generation: 1,
+            },
+            vec![SnapshotEntity {
+                entity_id: WireEntityId {
+                    index: 8,
+                    generation: 1,
+                },
+                kind: ReplicatedKind::Portal,
+                position: [6.0, -2.9],
+                velocity: [0.0, 0.0],
+            }],
+        );
+        let encoded = encode_world_snapshot(&snap).expect("encode");
+        let decoded = decode_world_snapshot(&encoded).expect("decode");
+        assert_eq!(decoded.entities[0].kind, ReplicatedKind::Portal);
+        assert_eq!(decoded.entities[0].position, [6.0, -2.9]);
     }
 
     #[test]
@@ -360,6 +451,9 @@ mod tests {
         bytes.extend_from_slice(&0u16.to_le_bytes());
         bytes.extend_from_slice(&0u16.to_le_bytes());
         bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&(MAX_ENTITIES_PER_SNAPSHOT + 1).to_le_bytes());
         assert_eq!(decode_world_snapshot(&bytes), Err(CodecError::InvalidValue));
     }
@@ -386,8 +480,9 @@ mod tests {
     fn invalid_kind_rejected() {
         let mut encoded = encode_world_snapshot(&sample()).expect("encode");
         // header before first entity kind: tag(1)+seq(4)+tick(8)+local(8)
-        // +epoch(2)+ack(4)+grounded(1)+on(2)+ign(2)+debt(2)+count(2)+id(8) = 44
-        encoded[44] = 99;
+        // +epoch(2)+ack(4)+grounded(1)+on(2)+ign(2)+debt(2)+map(4)+ch(4)+inst(4)
+        // +count(2)+id(8) = 56
+        encoded[56] = 99;
         assert_eq!(
             decode_world_snapshot(&encoded),
             Err(CodecError::InvalidValue)
@@ -398,7 +493,7 @@ mod tests {
     fn nan_and_inf_rejected() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let mut encoded = encode_world_snapshot(&sample()).expect("encode");
-            encoded[45..49].copy_from_slice(&bad.to_le_bytes());
+            encoded[57..61].copy_from_slice(&bad.to_le_bytes());
             assert_eq!(
                 decode_world_snapshot(&encoded),
                 Err(CodecError::InvalidValue),

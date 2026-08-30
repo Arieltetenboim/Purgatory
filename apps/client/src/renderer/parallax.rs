@@ -52,11 +52,11 @@ pub fn parallax_quads(camera: &Camera, bounds: WorldBounds) -> Vec<DrawQuad> {
     // Subtle horizon band (near layer).
     let ox = camera.position[0] * PARALLAX_NEAR;
     let oy = camera.position[1] * PARALLAX_NEAR;
-    quads.push(DrawQuad {
-        center: [ox, oy - 2.5],
-        size: [bounds.width() + camera.viewport_width, 0.35],
-        color: BAND_COLOR,
-    });
+    quads.push(DrawQuad::rect(
+        [ox, oy - 2.5],
+        [bounds.width() + camera.viewport_width, 0.35],
+        BAND_COLOR,
+    ));
     quads
 }
 
@@ -76,11 +76,7 @@ fn push_layer(
     for i in start..=end {
         let x = i as f32 * spacing + ox;
         let y = -1.5 + ((i.rem_euclid(3)) as f32) * 1.1 + oy;
-        quads.push(DrawQuad {
-            center: [x, y],
-            size: [size, size * 0.55],
-            color,
-        });
+        quads.push(DrawQuad::rect([x, y], [size, size * 0.55], color));
     }
 }
 
@@ -94,10 +90,12 @@ pub fn parallax_debug_quads(camera: &Camera) -> Vec<DrawQuad> {
     ];
     markers
         .into_iter()
-        .map(|(f, color)| DrawQuad {
-            center: [camera.position[0] * f, camera.position[1] * f],
-            size: [0.25, 0.25],
-            color,
+        .map(|(f, color)| {
+            DrawQuad::rect(
+                [camera.position[0] * f, camera.position[1] * f],
+                [0.25, 0.25],
+                color,
+            )
         })
         .collect()
 }

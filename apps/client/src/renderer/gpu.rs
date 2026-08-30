@@ -8,14 +8,39 @@ use winit::window::Window;
 use super::camera::{Camera, FOOTNOTE_LOGICAL_HEIGHT, is_usable_surface};
 
 const SHADER: &str = include_str!("shaders/primitive.wgsl");
-const MAX_QUADS: usize = 192;
+/// Hard cap on world quads uploaded this frame. Excess is truncated.
+pub const MAX_QUADS: usize = 192;
 
-/// Colored rectangle in world units. Presentation only.
+/// Colored rectangle (or triangle) in world units. Presentation only.
 #[derive(Clone, Copy, Debug)]
 pub struct DrawQuad {
     pub center: [f32; 2],
     pub size: [f32; 2],
     pub color: [f32; 4],
+    /// When true, vertices form an upward triangle instead of an AABB.
+    pub triangle: bool,
+}
+
+impl DrawQuad {
+    #[must_use]
+    pub const fn rect(center: [f32; 2], size: [f32; 2], color: [f32; 4]) -> Self {
+        Self {
+            center,
+            size,
+            color,
+            triangle: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn triangle(center: [f32; 2], size: [f32; 2], color: [f32; 4]) -> Self {
+        Self {
+            center,
+            size,
+            color,
+            triangle: true,
+        }
+    }
 }
 
 #[repr(C)]
@@ -161,7 +186,7 @@ impl Renderer {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -442,6 +467,26 @@ fn quad_vertices(quad: DrawQuad) -> [Vertex; 4] {
     let x = quad.center[0];
     let y = quad.center[1];
     let color = quad.color;
+    if quad.triangle {
+        return [
+            Vertex {
+                position: [x - hx, y - hy],
+                color,
+            },
+            Vertex {
+                position: [x + hx, y - hy],
+                color,
+            },
+            Vertex {
+                position: [x, y + hy],
+                color,
+            },
+            Vertex {
+                position: [x, y + hy],
+                color,
+            },
+        ];
+    }
     [
         Vertex {
             position: [x - hx, y - hy],

@@ -18,8 +18,10 @@ pub const MAX_CONTROL_MESSAGE_BYTES: u32 = 4096;
 pub const MAX_GAMEPLAY_SNAPSHOT_BYTES: u32 = 8192;
 
 /// Maximum replicated entities in one snapshot. Decode validates this before
-/// allocating. Not a gameplay capacity claim.
-pub const MAX_ENTITIES_PER_SNAPSHOT: u16 = 64;
+/// allocating. Not a gameplay capacity claim. Raised 64→256 in Phase 5.7 as a
+/// mechanical protocol-v4 decode bound (count is already `u16`; layout unchanged).
+/// `MAX_GAMEPLAY_SNAPSHOT_BYTES` remains the packet wall (~326 entities at 25 B each).
+pub const MAX_ENTITIES_PER_SNAPSHOT: u16 = 256;
 
 /// Maximum accepted datagram payload.
 pub const MAX_DATAGRAM_BYTES: usize = 256;
@@ -79,7 +81,7 @@ mod tests {
         assert_eq!(addr.port(), DEFAULT_DEV_PORT);
         assert_eq!(MAX_CONTROL_MESSAGE_BYTES, 4096);
         assert_eq!(MAX_GAMEPLAY_SNAPSHOT_BYTES, 8192);
-        assert_eq!(MAX_ENTITIES_PER_SNAPSHOT, 64);
+        assert_eq!(MAX_ENTITIES_PER_SNAPSHOT, 256);
         assert_ne!(MAX_CONTROL_MESSAGE_BYTES, MAX_GAMEPLAY_SNAPSHOT_BYTES);
         assert_eq!(MAX_LABEL_BYTES, 64);
         assert_eq!(HANDSHAKE_TIMEOUT, Duration::from_secs(5));

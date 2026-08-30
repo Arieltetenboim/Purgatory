@@ -8,7 +8,7 @@ The master execution specification is [`PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.m
 
 ## Current status
 
-Phase 4.7 + 4.8 complete. Phase 5.0 networking foundation is complete through 5.0F. **Phase 5.1–5.5 are complete:** intent input, snapshots, remote interpolation, local prediction, and authoritative input acknowledgement with local restore+replay. Protocol is **v4**. Server remains authoritative. Do not start Phase 5.6 (latency lab / combat / skills) until instructed. Two-client manual verification of Phase 5.5 is the current stop.
+Phase 4.7 + 4.8 complete. Phase 5.0 networking foundation is complete through 5.0F. **Phase 5.1–5.7 are complete and GREEN.** **Phase 6.0 / 6A are GREEN.** **Phase 6B is automated GREEN; manual E/overlay interaction check is still required.** **Phase 6C is automated GREEN; manual portal check is still required.** **Phase 6D is automated GREEN; manual runtime check is still required.** **Phase 6E is automated GREEN; manual first-connect / reconnect / restart / two-login / reject-duplicate / sentinel replica check is still required.** **Phase 6F is automated GREEN; manual two-client dirty/AOI, overlay Enter/Update/Leave, and opt-in `PURGATORY_RUNTIME_PROBE` check is still required.** **Phase 6G is automated GREEN; manual Mixed/soak/Developer Tools Runtime Validation and Windows server-Stop/exe-replace checks are still required.** Protocol is **v10** (`Hello.dev_login`). Impairment is **off by default**. Server remains authoritative. File-backed characters live under `%LOCALAPPDATA%\Purgatory\` on Windows (`PURGATORY_DATA_DIR` override). Load validation uses `PURGATORY_LOAD_VALIDATION` only in load-mode; isolated runs must not use the developer persist tree. The repository is not the writable persist root. Do not begin Phase 7 (MOB). Authoritative 5.7 evidence: `logs/load/capacity/20260829_002013/steady_input_final_report.md`. Load testing guide: [`docs/PHASE_57_LOAD_TESTING.md`](docs/PHASE_57_LOAD_TESTING.md). Two-client Phase 5.6 matrix: [`docs/PHASE_56_LATENCY_MATRIX.md`](docs/PHASE_56_LATENCY_MATRIX.md). Phase 6G report: [`docs/PHASE_6G_REPORT.md`](docs/PHASE_6G_REPORT.md). Phase 6 exit review: [`docs/PHASE_6_EXIT_REVIEW.md`](docs/PHASE_6_EXIT_REVIEW.md).
 
 Early runtime output is placeholders only. `Graphic/LOGO.png` is loaded once for the Connection Frontend; the rest of `Graphic/` stays unused until later visual-content phases.
 
@@ -22,8 +22,15 @@ Early runtime output is placeholders only. `Graphic/LOGO.png` is loaded once for
 | `crates/simulation` | `purgatory-simulation` | Authoritative simulation |
 | `crates/protocol` | `purgatory-protocol` | Client/server protocol |
 | `crates/content` | `purgatory-content` | Content definitions |
+| `crates/persistence` | `purgatory-persistence` | File-backed character identity and persistence |
 | `tools/content_validator` | `purgatory-content-validator` | Content validation tool |
-| `tools/bot_client` | `purgatory-bot-client` | Headless load-test client |
+| `tools/bot_client` | `purgatory-bot-client` / `purgatory-load` | Headless QUIC load harness |
+
+## Developer Tools
+
+Windows: run [`DEV.BAT`](DEV.BAT) at this repository root. That opens PURGATORY Developer Tools (PowerShell + Windows Forms) for server/client lifecycle, builds, quality gate, load testing, and diagnostics. Closing the window does not stop game processes.
+
+See [`docs/dev-tools/README.md`](docs/dev-tools/README.md).
 
 ## Requirements
 
@@ -44,7 +51,7 @@ Linux / macOS:
 ./scripts/check.sh
 ```
 
-The gate runs format check, `cargo check`, Clippy with warnings denied, and workspace tests. It stays fast; the longer network soaks are `#[ignore]` and run separately:
+The gate runs format check, `cargo check`, Clippy with warnings denied, workspace tests, and `purgatory-content-validator`. It stays fast; the longer network soaks are `#[ignore]` and run separately:
 
 ```powershell
 ./scripts/network_soak.ps1
@@ -66,11 +73,18 @@ Run the client window:
 cargo run -p purgatory-client
 ```
 
-Development keys (client mapping only, **Game screen**): **A / Left** move left, **D / Right** move right, **S / Down** hold down, **Space** jump, **Down + Jump** drop through OneWay. **Backquote / `~`** toggles the in-window development debug overlay (Network tab shows QUIC session identity, latest RTT, last failure category, and Connect/Disconnect). The client starts on the Connection Frontend and does **not** auto-connect. Click **CONNECT** to `127.0.0.1:5001`. If the server is down the client stays alive, CONNECT remains retryable, and the frontend shows a short status (`Connection failed`, `Version mismatch`, `Connection lost`, …) rather than Quinn/rustls text.
+Development keys (client mapping only, **Game screen**): **A / Left** move left, **D / Right** move right, **S / Down** hold down, **Space** jump, **Down + Jump** drop through OneWay. **Backquote / `~`** toggles the in-window development debug overlay (Network tab shows QUIC session identity, latest RTT, last failure category, and Connect/Disconnect). The client starts on the Connection Frontend and does **not** auto-connect. Click **CONNECT** to `127.0.0.1:5001`. The Connection Frontend has a **DEV login** field (default `dev.local`). Same login restores the same Character after reconnect or server restart. A second client with that login is rejected (`Already connected`) while the first session is live. If the server is down the client stays alive, CONNECT remains retryable, and the frontend shows a short status (`Connection failed`, `Version mismatch`, `Already connected`, `Connection lost`, …) rather than Quinn/rustls text.
 
 Run the headless server (listens on `127.0.0.1:5001` until Ctrl+C):
 
 ```powershell
+cargo run -p purgatory-server
+```
+
+Optional DEV runtime probe (off by default). When enabled, the server schedules one visible Generic entity ~1 s after map-ready; it is not normal runtime behavior:
+
+```powershell
+$env:PURGATORY_RUNTIME_PROBE = "1"
 cargo run -p purgatory-server
 ```
 
@@ -83,3 +97,5 @@ cargo run -p purgatory-server
 - [`docs/PERFORMANCE_BUDGETS.md`](docs/PERFORMANCE_BUDGETS.md)
 - [`docs/TEST_GATES.md`](docs/TEST_GATES.md)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md)
+- [`docs/PHASE_56_LATENCY_MATRIX.md`](docs/PHASE_56_LATENCY_MATRIX.md)
+- [`docs/PHASE_57_LOAD_TESTING.md`](docs/PHASE_57_LOAD_TESTING.md)

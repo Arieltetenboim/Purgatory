@@ -1,12 +1,15 @@
 //! Lightweight presentation snapshot. Not authoritative world state.
 
 use purgatory_simulation::{
-    ContactEvent, EntityId, EntityKind, PlatformKind, PlayerInput, PlayerMotionDebug, TICK_RATE_HZ,
-    World, WorldBounds,
+    ContactEvent, ContentId, DirtyFlags, EntityId, EntityKind, EntityLifecycle, InteractableKind,
+    PlatformKind, PlayerInput, PlayerMotionDebug, ReplicationClass, TICK_RATE_HZ, World,
+    WorldAddress, WorldBounds,
 };
 
 use super::camera_debug::CameraMotionDebug;
-use crate::network::NetworkSnapshot;
+use super::entity_inspector::{InspectorView, WorldEntityInput};
+use super::interact_status::InteractStatusView;
+use crate::network::{ImpairmentMetricsSnapshot, NetworkSnapshot};
 
 /// Read-only player fields copied for one debug frame.
 #[derive(Clone, Copy, Debug)]
@@ -19,6 +22,11 @@ pub struct PlayerDebug {
     pub ignored_platform: Option<EntityId>,
     pub last_contact: ContactEvent,
     pub grounded_kind: Option<PlatformKind>,
+    pub address: WorldAddress,
+    pub lifecycle: EntityLifecycle,
+    pub content_id: Option<ContentId>,
+    pub has_persistent_id: bool,
+    pub replication: ReplicationClass,
 }
 
 /// FOOTNOTE section of the debug snapshot.
@@ -36,6 +44,40 @@ pub struct FootnoteDebug {
     pub last_contact: ContactEvent,
 }
 
+/// Read-only runtime row for the debug overlay. Not authoritative gameplay.
+#[derive(Clone, Copy, Debug)]
+pub struct EntityRuntimeDebug {
+    pub id: EntityId,
+    pub kind: EntityKind,
+    pub address: WorldAddress,
+    pub lifecycle: EntityLifecycle,
+    pub content_id: Option<ContentId>,
+    pub has_persistent_id: bool,
+    pub replication: ReplicationClass,
+    pub has_transform: bool,
+    pub has_health: bool,
+    pub dirty: DirtyFlags,
+    pub interactable: Option<InteractableKind>,
+}
+
+impl From<&EntityRuntimeDebug> for WorldEntityInput {
+    fn from(row: &EntityRuntimeDebug) -> Self {
+        Self {
+            id: row.id,
+            kind: row.kind,
+            address: row.address,
+            lifecycle: row.lifecycle,
+            content_id: row.content_id,
+            has_persistent_id: row.has_persistent_id,
+            replication: row.replication,
+            has_transform: row.has_transform,
+            has_health: row.has_health,
+            dirty: row.dirty,
+            interactable: row.interactable,
+        }
+    }
+}
+
 /// Read-only copy of values the debug overlay may display.
 #[derive(Clone, Debug)]
 pub struct DebugSnapshot {
@@ -49,6 +91,19 @@ pub struct DebugSnapshot {
     pub player_count: u32,
     pub platform_count: u32,
     pub stage_name: &'static str,
+    pub map_id: u32,
+    pub map_debug_name: String,
+    pub observer_address: String,
+    pub observer_map: u32,
+    pub observer_channel: u32,
+    pub observer_instance: u32,
+    pub transition_banner: String,
+    pub transition_missing: String,
+    pub transition_stalled: bool,
+    pub input_gate_label: String,
+    pub input_movement_neutral: bool,
+    pub content_registry_count: u32,
+    pub content_map_labels: Vec<String>,
     pub world_bounds: WorldBounds,
     pub camera_position: [f32; 2],
     pub viewport_width: f32,
@@ -60,7 +115,7 @@ pub struct DebugSnapshot {
     pub footnote: Option<FootnoteDebug>,
     pub motion: PlayerMotionDebug,
     pub camera_motion: CameraMotionDebug,
-    pub entities: Vec<(EntityId, EntityKind)>,
+    pub entities: Vec<EntityRuntimeDebug>,
     pub network: NetworkSnapshot,
     pub net_input_seq: u32,
     pub net_input_sent: u64,
@@ -70,11 +125,40 @@ pub struct DebugSnapshot {
     pub replica_seq: Option<u32>,
     pub replica_tick: u64,
     pub replica_entities: u32,
+    pub replica_epoch: u32,
+    pub replica_frame_enters: u32,
+    pub replica_frame_updates: u32,
+    pub replica_frame_leaves: u32,
+    pub replica_total_enters: u64,
+    pub replica_total_updates: u64,
+    pub replica_total_leaves: u64,
     pub replica_local: Option<String>,
     pub replica_stale: u64,
     pub replica_duplicate: u64,
     pub replica_malformed: u64,
     pub replica_age_ms: Option<u64>,
+    pub interact_ui: String,
+    pub interact_status: InteractStatusView,
+    pub interact_nearest: Option<String>,
+    pub interact_nearest_distance: Option<f32>,
+    pub interact_nearest_portal: Option<String>,
+    pub interact_nearest_portal_distance: Option<f32>,
+    pub portal_eligible: bool,
+    pub interact_last_request: String,
+    pub interact_last_result: String,
+    pub replica_interactables: Vec<String>,
+    pub replica_portals: Vec<String>,
+    pub replica_player_pos: Option<[f32; 2]>,
+    pub presented_player_pos: Option<[f32; 2]>,
+    pub camera_desired: [f32; 2],
+    pub camera_deadzone_half_x: f32,
+    pub camera_deadzone_half_y: f32,
+    pub camera_smooth_time_x: f32,
+    pub camera_smooth_time_y: f32,
+    pub camera_following_x: bool,
+    pub camera_following_y: bool,
+    pub jitter: crate::jitter_forensics::JitterSummary,
+    pub nearest_portal_pos: Option<[f32; 2]>,
     pub interp_enabled: bool,
     pub interp_delay_ticks: u64,
     pub interp_delay_ms: u64,
@@ -111,6 +195,24 @@ pub struct DebugSnapshot {
     pub pred_epoch: u16,
     pub pred_debt: u16,
     pub pred_cancel_pending: bool,
+    pub pred_reconcile_count: u64,
+    pub pred_last_correction: f32,
+    pub pred_max_correction: f32,
+    pub pred_ack_delta: u32,
+    pub pred_ack_jump_count: u64,
+    pub pred_max_ack_delta: u32,
+    pub observer_entity: Option<String>,
+    pub observer_enter_bounds: String,
+    pub observer_leave_bounds: String,
+    pub aoi_candidates: Option<u16>,
+    pub aoi_known: Option<u16>,
+    pub aoi_want_enter: Option<u16>,
+    pub aoi_want_leave: Option<u16>,
+    pub replica_entity_rows: Vec<String>,
+    pub replica_recent_left: Vec<String>,
+    pub replica_label_world: Vec<(String, [f32; 2], u8)>,
+    pub inspector: InspectorView,
+    pub impairment: ImpairmentMetricsSnapshot,
 }
 
 pub struct SnapshotExtras {
@@ -148,6 +250,16 @@ impl DebugSnapshot {
                 ignored_platform: body.ignored_platform,
                 last_contact: body.last_contact,
                 grounded_kind,
+                address: world.address_of(body.id).unwrap_or(WorldAddress::DEV),
+                lifecycle: world
+                    .lifecycle_of(body.id)
+                    .unwrap_or(EntityLifecycle::Active),
+                content_id: world.content_id_of(body.id),
+                has_persistent_id: world.persistent_id_of(body.id).is_some(),
+                replication: world
+                    .replication_of(body.id)
+                    .map(|m| m.class)
+                    .unwrap_or(ReplicationClass::None),
             }
         });
         let footnote = player.map(|p| FootnoteDebug {
@@ -173,6 +285,19 @@ impl DebugSnapshot {
             player_count: world.iter_kind(EntityKind::Player).count() as u32,
             platform_count: world.iter_kind(EntityKind::Platform).count() as u32,
             stage_name: extras.stage_name,
+            map_id: 0,
+            map_debug_name: String::new(),
+            observer_address: String::new(),
+            observer_map: 0,
+            observer_channel: 0,
+            observer_instance: 0,
+            transition_banner: String::new(),
+            transition_missing: String::new(),
+            transition_stalled: false,
+            input_gate_label: "INPUT: ACTIVE".into(),
+            input_movement_neutral: false,
+            content_registry_count: 0,
+            content_map_labels: Vec::new(),
             world_bounds: world.bounds(),
             camera_position: extras.camera_position,
             viewport_width: extras.viewport_width,
@@ -186,7 +311,21 @@ impl DebugSnapshot {
             camera_motion: extras.camera_motion,
             entities: world
                 .iter()
-                .map(|id| (id, world.kind(id).expect("live entity has a kind")))
+                .filter_map(|id| {
+                    Some(EntityRuntimeDebug {
+                        id,
+                        kind: world.kind(id)?,
+                        address: world.address_of(id)?,
+                        lifecycle: world.lifecycle_of(id)?,
+                        content_id: world.content_id_of(id),
+                        has_persistent_id: world.persistent_id_of(id).is_some(),
+                        replication: world.replication_of(id)?.class,
+                        has_transform: world.transform_of(id).is_some(),
+                        has_health: world.health_of(id).is_some(),
+                        dirty: world.dirty_of(id).unwrap_or_default(),
+                        interactable: world.interactable_of(id).map(|i| i.kind),
+                    })
+                })
                 .collect(),
             network: NetworkSnapshot::default(),
             net_input_seq: 0,
@@ -197,11 +336,40 @@ impl DebugSnapshot {
             replica_seq: None,
             replica_tick: 0,
             replica_entities: 0,
+            replica_epoch: 0,
+            replica_frame_enters: 0,
+            replica_frame_updates: 0,
+            replica_frame_leaves: 0,
+            replica_total_enters: 0,
+            replica_total_updates: 0,
+            replica_total_leaves: 0,
             replica_local: None,
             replica_stale: 0,
             replica_duplicate: 0,
             replica_malformed: 0,
             replica_age_ms: None,
+            interact_ui: "Idle".into(),
+            interact_status: InteractStatusView::default(),
+            interact_nearest: None,
+            interact_nearest_distance: None,
+            interact_nearest_portal: None,
+            interact_nearest_portal_distance: None,
+            portal_eligible: false,
+            interact_last_request: "-".into(),
+            interact_last_result: "-".into(),
+            replica_interactables: Vec::new(),
+            replica_portals: Vec::new(),
+            replica_player_pos: None,
+            presented_player_pos: None,
+            camera_desired: [0.0, 0.0],
+            camera_deadzone_half_x: 0.0,
+            camera_deadzone_half_y: 0.0,
+            camera_smooth_time_x: 0.0,
+            camera_smooth_time_y: 0.0,
+            camera_following_x: false,
+            camera_following_y: false,
+            jitter: crate::jitter_forensics::JitterSummary::default(),
+            nearest_portal_pos: None,
             interp_enabled: false,
             interp_delay_ticks: 0,
             interp_delay_ms: 0,
@@ -238,6 +406,24 @@ impl DebugSnapshot {
             pred_epoch: 0,
             pred_debt: 0,
             pred_cancel_pending: false,
+            pred_reconcile_count: 0,
+            pred_last_correction: 0.0,
+            pred_max_correction: 0.0,
+            pred_ack_delta: 0,
+            pred_ack_jump_count: 0,
+            pred_max_ack_delta: 0,
+            observer_entity: None,
+            observer_enter_bounds: "—".into(),
+            observer_leave_bounds: "—".into(),
+            aoi_candidates: None,
+            aoi_known: None,
+            aoi_want_enter: None,
+            aoi_want_leave: None,
+            replica_entity_rows: Vec::new(),
+            replica_recent_left: Vec::new(),
+            replica_label_world: Vec::new(),
+            inspector: InspectorView::default(),
+            impairment: ImpairmentMetricsSnapshot::default(),
         }
     }
 }
@@ -278,6 +464,10 @@ mod tests {
         assert_eq!(snapshot.platform_count, 4);
         let player = snapshot.player.expect("player");
         assert_eq!(player.id, body.id);
+        assert_eq!(player.address, WorldAddress::DEV);
+        assert_eq!(player.lifecycle, EntityLifecycle::Active);
+        assert!(player.content_id.is_none());
+        assert!(!player.has_persistent_id);
         let footnote = snapshot.footnote.expect("footnote");
         assert!(footnote.grounded);
         assert_eq!(footnote.move_axis, 0);

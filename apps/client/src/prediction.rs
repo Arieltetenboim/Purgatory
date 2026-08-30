@@ -147,6 +147,14 @@ pub struct PredictionDiagnostics {
     #[allow(dead_code)]
     pub vertical_settled_count: u64,
     pub cancel_pending: bool,
+    pub total_reconciliation_count: u64,
+    /// Pre-reconcile predicted → post restore+replay predicted.
+    pub last_correction_wu: f32,
+    pub max_correction_wu: f32,
+    /// Client-observed ack advancement between accepted snapshots. Not late-collapse.
+    pub observed_ack_delta: u32,
+    pub observed_ack_jump_count: u64,
+    pub max_observed_ack_delta: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -179,6 +187,15 @@ pub struct LocalPrediction {
     last_snap_reason: Option<&'static str>,
     vertical_settled_count: u64,
     structural_snap_count: u64,
+    total_reconciliation_count: u64,
+    last_correction_wu: f32,
+    last_correction_delta: [f32; 2],
+    last_sync_hard_snap: bool,
+    max_correction_wu: f32,
+    last_observed_ack: u32,
+    observed_ack_delta: u32,
+    observed_ack_jump_count: u64,
+    max_observed_ack_delta: u32,
 }
 
 impl Default for LocalPrediction {
@@ -210,6 +227,15 @@ impl LocalPrediction {
             last_snap_reason: None,
             vertical_settled_count: 0,
             structural_snap_count: 0,
+            total_reconciliation_count: 0,
+            last_correction_wu: 0.0,
+            last_correction_delta: [0.0, 0.0],
+            last_sync_hard_snap: false,
+            max_correction_wu: 0.0,
+            last_observed_ack: 0,
+            observed_ack_delta: 0,
+            observed_ack_jump_count: 0,
+            max_observed_ack_delta: 0,
         }
     }
 
@@ -269,6 +295,16 @@ impl LocalPrediction {
     #[must_use]
     pub fn pending_window_full(&self) -> bool {
         self.pending.len() >= PREDICTION_PENDING_CAP
+    }
+
+    #[must_use]
+    pub fn last_correction_delta(&self) -> [f32; 2] {
+        self.last_correction_delta
+    }
+
+    #[must_use]
+    pub fn last_sync_hard_snap(&self) -> bool {
+        self.last_sync_hard_snap
     }
 
     #[must_use]
@@ -346,6 +382,8 @@ impl LocalPrediction {
             self.clear();
             return;
         };
+        self.last_sync_hard_snap = false;
+        self.last_correction_delta = [0.0, 0.0];
         self.last_auth_position = Some(auth.position);
         self.last_auth_velocity = Some(auth.velocity);
 
@@ -386,6 +424,9 @@ impl LocalPrediction {
             auth_settled && aligned_dy.is_some_and(|d| d >= PREDICTION_VERTICAL_REANCHOR);
 
         let pending_before = self.pending.len();
+        let was_active = self.active;
+        let pre_pos = world.player_body().map(|b| b.position);
+        self.note_ack_advancement(snap_epoch, ack);
 
         let reason = if !self.active {
             Some(SnapReason::FirstActive)
@@ -440,6 +481,7 @@ impl LocalPrediction {
             self.consecutive_aligned_divergence = 0;
             self.last_aligned_error = Some(0.0);
             self.last_snap_reason = reason.map(SnapReason::as_str);
+            self.last_sync_hard_snap = true;
             return;
         }
 
@@ -452,6 +494,10 @@ impl LocalPrediction {
             self.last_sent_seq = ack;
             self.reset_history(client_tick, world);
             self.last_snap_reason = Some(SnapReason::Structural.as_str());
+            self.last_sync_hard_snap = true;
+            if was_active {
+                self.finish_correction(pre_pos, world);
+            }
             return;
         }
 
@@ -471,6 +517,10 @@ impl LocalPrediction {
             self.vertical_settled_count = self.vertical_settled_count.saturating_add(1);
             self.reset_history(client_tick, world);
             self.last_snap_reason = Some(SnapReason::VerticalSettled.as_str());
+            self.last_sync_hard_snap = true;
+            if was_active {
+                self.finish_correction(pre_pos, world);
+            }
             return;
         }
         if matches!(
@@ -481,10 +531,46 @@ impl LocalPrediction {
             self.reset_count = self.reset_count.saturating_add(1);
             self.reset_history(client_tick, world);
             self.last_snap_reason = reason.map(SnapReason::as_str);
+            self.last_sync_hard_snap = true;
+            if was_active {
+                self.finish_correction(pre_pos, world);
+            }
             return;
         }
 
         self.push_history_from_world(client_tick, world);
+        if was_active {
+            self.finish_correction(pre_pos, world);
+        }
+    }
+
+    fn note_ack_advancement(&mut self, snap_epoch: u16, ack: u32) {
+        if self.active && snap_epoch == self.input_epoch {
+            let delta = ack.saturating_sub(self.last_observed_ack);
+            self.observed_ack_delta = delta;
+            if delta > 1 {
+                self.observed_ack_jump_count = self.observed_ack_jump_count.saturating_add(1);
+            }
+            self.max_observed_ack_delta = self.max_observed_ack_delta.max(delta);
+        } else {
+            self.observed_ack_delta = 0;
+        }
+        self.last_observed_ack = ack;
+    }
+
+    fn finish_correction(&mut self, pre: Option<[f32; 2]>, world: &World) {
+        self.total_reconciliation_count = self.total_reconciliation_count.saturating_add(1);
+        if let (Some(a), Some(body)) = (pre, world.player_body()) {
+            self.last_correction_delta = [body.position[0] - a[0], body.position[1] - a[1]];
+            let mag = distance(a, body.position);
+            self.last_correction_wu = mag;
+            if mag > self.max_correction_wu {
+                self.max_correction_wu = mag;
+            }
+        } else {
+            self.last_correction_delta = [0.0, 0.0];
+            self.last_correction_wu = 0.0;
+        }
     }
 
     fn trim_pending(&mut self, epoch: u16, ack: u32) {
@@ -524,6 +610,7 @@ impl LocalPrediction {
         self.last_auth_position = Some(auth.position);
         self.last_auth_velocity = Some(auth.velocity);
         self.last_snap_reason = Some("force_reset");
+        self.last_sync_hard_snap = true;
         restore_durable(world, replica);
         self.replay_pending(world);
         self.local_entity = Some(auth.entity_id);
@@ -613,6 +700,12 @@ impl LocalPrediction {
             hard_snap_count: self.reset_count,
             vertical_settled_count: self.vertical_settled_count,
             cancel_pending: self.cancel_barrier.is_some(),
+            total_reconciliation_count: self.total_reconciliation_count,
+            last_correction_wu: self.last_correction_wu,
+            max_correction_wu: self.max_correction_wu,
+            observed_ack_delta: self.observed_ack_delta,
+            observed_ack_jump_count: self.observed_ack_jump_count,
+            max_observed_ack_delta: self.max_observed_ack_delta,
         }
     }
 
@@ -701,12 +794,27 @@ struct AlignedResidual {
 /// Explicit presentation-pose resolver for the local player.
 ///
 /// Predicted when active; otherwise authoritative replica (or `None`).
+///
+/// This is the **source** pose for [`crate::local_presentation::LocalPresentation`].
+/// Draw and camera follow the finalized presentation pose, not this value
+/// directly, so small restore+replay pops are not shown 1:1.
+///
+/// When `maps_aligned` is false the replica already belongs to a new
+/// `WorldAddress` while local geometry does not. Presentation must keep the
+/// old-map pose and must not snap to the new-epoch self Enter.
 #[must_use]
 pub fn local_presentation_pose(
     prediction: &LocalPrediction,
     world: &World,
     replica: &ReplicatedWorld,
+    maps_aligned: bool,
 ) -> Option<[f32; 2]> {
+    if !maps_aligned {
+        if prediction.active() {
+            return prediction.predicted_pose(world);
+        }
+        return world.player_body().map(|b| b.position);
+    }
     if prediction.active() {
         prediction.predicted_pose(world)
     } else {
@@ -799,6 +907,7 @@ mod tests {
             },
             jump_pressed: input.jump_pressed,
             down_held: input.down_held,
+            portal_held: false,
         }
     }
 
@@ -831,7 +940,7 @@ mod tests {
         let body = world.player_body().expect("player");
         assert_eq!(body.position, [4.0, 3.0]);
         assert_eq!(
-            local_presentation_pose(&pred, &world, &replica),
+            local_presentation_pose(&pred, &world, &replica, true),
             Some([4.0, 3.0])
         );
     }
@@ -1093,7 +1202,7 @@ mod tests {
         replica.clear();
         pred.sync_from_replica(&replica, &mut world, 1);
         assert!(!pred.active());
-        assert!(local_presentation_pose(&pred, &world, &replica).is_none());
+        assert!(local_presentation_pose(&pred, &world, &replica, true).is_none());
     }
 
     #[test]
@@ -1110,9 +1219,27 @@ mod tests {
                 1,
             );
         }
-        let pose = local_presentation_pose(&pred, &world, &replica).unwrap();
+        let pose = local_presentation_pose(&pred, &world, &replica, true).unwrap();
         assert_eq!(pose, world.player_body().unwrap().position);
         assert_ne!(pose, replica.local_entity().unwrap().position);
+    }
+
+    #[test]
+    fn unaligned_maps_do_not_present_new_epoch_replica_pose() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        auth_at(&mut replica, 1, id, [0.0, 2.0]);
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let old = world.player_body().unwrap().position;
+        auth_at(&mut replica, 2, id, [10.0, -2.3]);
+        pred.clear();
+        let presented = local_presentation_pose(&pred, &world, &replica, false).unwrap();
+        assert_eq!(presented, old);
+        assert!((presented[0] - 10.0).abs() > 1.0);
+        let aligned = local_presentation_pose(&pred, &world, &replica, true).unwrap();
+        assert!((aligned[0] - 10.0).abs() < 1e-4);
     }
 
     #[test]
@@ -1712,5 +1839,33 @@ mod tests {
         let replayed = world.player_body().unwrap().position;
         assert!((replayed[0] - predicted[0]).abs() < 1e-3);
         assert!((replayed[1] - predicted[1]).abs() < 1e-3);
+        let d = pred.diagnostics(&world, &replica);
+        assert!(
+            d.last_correction_wu < 1e-3,
+            "restore+replay correction is pre→post predicted, not aligned residual"
+        );
+        assert_eq!(d.total_reconciliation_count, 1);
+        assert!(d.aligned_error.is_some());
+    }
+
+    #[test]
+    fn observed_ack_delta_is_not_late_collapse() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        let mut first = snap(1, 1, id, spawn, [0.0, 0.0]);
+        first.last_acknowledged_input_sequence = 1;
+        let _ = replica.apply(first);
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let mut second = snap(2, 2, id, spawn, [0.0, 0.0]);
+        second.last_acknowledged_input_sequence = 5;
+        let _ = replica.apply(second);
+        pred.sync_from_replica(&replica, &mut world, 2);
+        let d = pred.diagnostics(&world, &replica);
+        assert_eq!(d.observed_ack_delta, 4);
+        assert_eq!(d.observed_ack_jump_count, 1);
+        assert_eq!(d.max_observed_ack_delta, 4);
     }
 }

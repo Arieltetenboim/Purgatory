@@ -1,0 +1,57 @@
+---
+description: Durable PURGATORY project truths, crate roles, and source-of-truth hierarchy.
+alwaysApply: true
+---
+
+# PURGATORY core
+
+PURGATORY is a custom-built native 2D side-scrolling MMORPG. This repository is the project root: a Cargo virtual workspace for a dedicated headless server, a native desktop client, shared crates, and development tools.
+
+## Accepted stack
+
+- Stable Rust, 2024 edition, managed with `rustup` and Cargo. Nightly is not used. Language or toolchain changes need an explicit owner decision (ADR-0001).
+- Custom engine. Unreal, Unity, Godot, Bevy, and other game engines are forbidden unless the owner changes ADR-0002. `winit` and `wgpu` are client platform/graphics libraries, not a game engine. egui is client-only development overlay tooling, not production game UI (ADR-0016).
+- Server-authoritative simulation (ADR-0003). Clients send intents and inputs. Clients never send authoritative results such as position, damage, loot grants, XP, or collision outcomes.
+- Workspace lint: `unsafe_code = deny`.
+
+## Crate roles
+
+| Path | Crate | Role |
+|---|---|---|
+| `apps/client` | `purgatory-client` | Native desktop client |
+| `apps/server` | `purgatory-server` | Headless dedicated server |
+| `crates/common` | `purgatory-common` | Shared primitives |
+| `crates/simulation` | `purgatory-simulation` | Authoritative simulation |
+| `crates/protocol` | `purgatory-protocol` | Client/server protocol types and version semantics |
+| `crates/content` | `purgatory-content` | Content definition loading and validation boundary |
+| `crates/persistence` | `purgatory-persistence` | File-backed character identity and persistent character state |
+| `tools/content_validator` | `purgatory-content-validator` | Content validation tool |
+| `tools/bot_client` | `purgatory-bot-client` / `purgatory-load` | Headless QUIC load harness |
+
+Do not nest another `PURGATORY/` directory. Do not treat a parent folder as the project repo.
+
+## Source of truth
+
+Repository code and documentation are the durable source of truth. Do not invent project facts.
+
+Consult, do not duplicate volatile numbers from:
+
+- `PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md` — master execution specification
+- `README.md` — workspace map, current status, how to run
+- `docs/ARCHITECTURE.md` — structural rules and ownership
+- `docs/DECISIONS.md` — Architecture Decision Records (ADRs)
+- `docs/PROTOCOL.md` — wire protocol and trust boundary
+- `docs/ROADMAP.md` — phase order and status
+- `docs/TEST_GATES.md` — recorded verification gates
+- `docs/PERFORMANCE_BUDGETS.md` — living performance budgets
+- `docs/CONTENT_PIPELINE.md` — content authoring boundary
+- root `PHASE` — current phase marker
+
+`.cursor/rules/` constrain agent behavior. They do not replace the documents above.
+
+## Change policy
+
+- Understand existing architecture before modifying it.
+- Extend existing systems. Do not replace or duplicate them by default.
+- Major technology, engine, protocol, or architecture changes require explicit approval (normally a new or updated ADR).
+- Keep current caps, delays, timeouts, protocol version, tick-rate constants, load-test parameters, and other phase-specific numbers in code and project docs. Do not copy them into these rules.

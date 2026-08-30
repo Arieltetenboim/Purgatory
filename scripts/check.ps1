@@ -28,5 +28,6 @@ Invoke-RequiredCommand -FilePath $cargo.Source -ArgumentList @("fmt", "--all", "
 Invoke-RequiredCommand -FilePath $cargo.Source -ArgumentList @("check", "--workspace")
 Invoke-RequiredCommand -FilePath $cargo.Source -ArgumentList @("clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
 Invoke-RequiredCommand -FilePath $cargo.Source -ArgumentList @("test", "--workspace")
+Invoke-RequiredCommand -FilePath $cargo.Source -ArgumentList @("run", "-p", "purgatory-content-validator", "-q")
 
 Write-Host "PURGATORY quality gate OK"

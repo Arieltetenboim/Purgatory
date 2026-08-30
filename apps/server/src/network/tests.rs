@@ -1,6 +1,6 @@
 //! Handshake and session tests. Localhost only. Never panic on bad input.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -16,9 +16,10 @@ use tokio::time::timeout;
 
 use purgatory_protocol::{
     ClientControl, ConnectionId, DisconnectReasonCode, Hello, InputCommand,
-    MAX_CONTROL_MESSAGE_BYTES, MoveAxis, PROTOCOL_VERSION, ServerControl, WorldSnapshot,
-    decode_client_datagram, decode_server_control, decode_world_snapshot, encode_client_control,
-    encode_client_datagram, encode_frame, peek_frame_len, peek_gameplay_frame_len,
+    MAX_CONTROL_MESSAGE_BYTES, MoveAxis, PROTOCOL_VERSION, ReplicatedKind, ReplicationFrame,
+    ReplicationRecord, ServerControl, SnapshotEntity, WireEntityId, decode_client_datagram,
+    decode_replication_frame, decode_server_control, encode_client_control, encode_client_datagram,
+    encode_frame, peek_frame_len, peek_gameplay_frame_len,
 };
 
 use super::abuse::NetworkAbuseConfig;
@@ -137,7 +138,7 @@ impl TestServer {
         let endpoint = bound.endpoint.clone();
         let abuse = config.abuse;
         let accept = tokio::spawn(async move {
-            accept_loop(bound, abuse, None).await;
+            accept_loop(bound, abuse, None, None).await;
         });
         Self {
             addr,
@@ -281,6 +282,7 @@ async fn accept_loop(
     bound: BoundEndpoint,
     abuse: NetworkAbuseConfig,
     gameplay: Option<super::gameplay::GameplayTx>,
+    persist: Option<super::persist::PersistenceHandle>,
 ) {
     while let Some(incoming) = bound.endpoint.accept().await {
         dispatch_incoming(
@@ -293,6 +295,7 @@ async fn accept_loop(
                 inflight: bound.inflight_tasks.clone(),
                 stats: bound.stats.clone(),
                 gameplay: gameplay.clone(),
+                persist: persist.clone(),
             },
         );
     }
@@ -383,6 +386,7 @@ async fn write_hello_best_effort(send: &mut SendStream, version: u32, build: &st
     let Ok(payload) = encode_client_control(&ClientControl::Hello(Hello {
         protocol_version: version,
         client_build: build.into(),
+        dev_login: next_test_login(),
     })) else {
         return false;
     };
@@ -393,13 +397,23 @@ async fn write_hello_best_effort(send: &mut SendStream, version: u32, build: &st
 }
 
 async fn write_hello(send: &mut SendStream, version: u32, build: &str) {
+    write_hello_login(send, version, build, &next_test_login()).await;
+}
+
+async fn write_hello_login(send: &mut SendStream, version: u32, build: &str, login: &str) {
     let payload = encode_client_control(&ClientControl::Hello(Hello {
         protocol_version: version,
         client_build: build.into(),
+        dev_login: login.into(),
     }))
     .expect("encode hello");
     let frame = encode_frame(&payload).expect("frame");
     send.write_all(&frame).await.expect("write hello");
+}
+
+fn next_test_login() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    format!("t.{:04}", SEQ.fetch_add(1, Ordering::Relaxed) % 10_000)
 }
 
 async fn write_input(
@@ -415,6 +429,7 @@ async fn write_input(
         move_axis,
         jump_pressed,
         down_held,
+        portal_held: false,
     }))
     .expect("encode input");
     let frame = encode_frame(&payload).expect("frame");
@@ -438,6 +453,95 @@ async fn valid_hello_receives_welcome() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(server.contains(id));
     assert_eq!(id.get(), 1);
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn duplicate_live_character_is_rejected() {
+    let (server, sim) = spawn_gameplay().await;
+    let login = "alice";
+    let client_a = connect(server.addr).await;
+    let (mut send_a, mut recv_a) = client_a.conn.open_bi().await.expect("bi");
+    write_hello_login(&mut send_a, PROTOCOL_VERSION, "a", login).await;
+    let id = match timeout(Duration::from_secs(5), read_server_control(&mut recv_a)).await {
+        Ok(Ok(ServerControl::Welcome(welcome))) => welcome.connection_id,
+        other => panic!("expected welcome, got {other:?}"),
+    };
+    assert!(wait_attached(&sim, id).await);
+    let client_b = connect(server.addr).await;
+    let (mut send_b, mut recv_b) = client_b.conn.open_bi().await.expect("bi");
+    write_hello_login(&mut send_b, PROTOCOL_VERSION, "b", login).await;
+    expect_disconnect(&mut recv_b, DisconnectReasonCode::AlreadyConnected).await;
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn abrupt_drop_releases_character_occupancy() {
+    let (server, sim) = spawn_gameplay_abuse(
+        Duration::from_secs(2),
+        Duration::from_millis(400),
+        NetworkAbuseConfig::DEV,
+    )
+    .await;
+    let login = "alice";
+    let client_a = connect(server.addr).await;
+    let (mut send_a, mut recv_a) = client_a.conn.open_bi().await.expect("bi");
+    write_hello_login(&mut send_a, PROTOCOL_VERSION, "a", login).await;
+    let id = match timeout(Duration::from_secs(5), read_server_control(&mut recv_a)).await {
+        Ok(Ok(ServerControl::Welcome(welcome))) => welcome.connection_id,
+        other => panic!("expected welcome, got {other:?}"),
+    };
+    assert!(wait_attached(&sim, id).await);
+    drop(client_a);
+    assert!(
+        wait_until(
+            || {
+                let mut g = lock_sim(&sim);
+                g.pump();
+                g.owner.player_count() == 0
+            },
+            Duration::from_secs(8),
+        )
+        .await,
+        "character occupancy must release after abrupt drop"
+    );
+    let client_b = connect(server.addr).await;
+    let (mut send_b, mut recv_b) = client_b.conn.open_bi().await.expect("bi");
+    write_hello_login(&mut send_b, PROTOCOL_VERSION, "b", login).await;
+    match timeout(Duration::from_secs(5), read_server_control(&mut recv_b)).await {
+        Ok(Ok(ServerControl::Welcome(_))) => {}
+        other => panic!("expected welcome after occupancy release, got {other:?}"),
+    }
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn live_v10_hello_dev_local_receives_welcome() {
+    let (server, sim) = spawn_gameplay().await;
+    let client = connect(server.addr).await;
+    let (mut send, mut recv) = client.conn.open_bi().await.expect("bi");
+    write_hello_login(
+        &mut send,
+        PROTOCOL_VERSION,
+        "purgatory-client-0.1.0",
+        "dev.local",
+    )
+    .await;
+    let id = match timeout(Duration::from_secs(5), read_server_control(&mut recv)).await {
+        Ok(Ok(ServerControl::Welcome(welcome))) => welcome.connection_id,
+        other => panic!("expected welcome after Enter, got {other:?}"),
+    };
+    assert!(wait_attached(&sim, id).await);
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn v9_hello_is_version_mismatch_not_login_failure() {
+    let server = TestServer::spawn(Duration::from_secs(2)).await;
+    let client = connect(server.addr).await;
+    let (mut send, mut recv) = client.conn.open_bi().await.expect("bi");
+    write_hello(&mut send, 9, "test").await;
+    expect_disconnect(&mut recv, DisconnectReasonCode::VersionMismatch).await;
     server.shutdown();
 }
 
@@ -1384,7 +1488,7 @@ impl ServerProcess {
                     let bound = endpoint::bind(&config).expect("bind");
                     let _ = addr_tx.send((bound.local_addr(), bound.sessions.clone()));
                     let endpoint = bound.endpoint.clone();
-                    let accept = tokio::spawn(accept_loop(bound, abuse, None));
+                    let accept = tokio::spawn(accept_loop(bound, abuse, None, None));
                     let mode = kill_rx.await.unwrap_or(StopMode::Abrupt);
                     if mode == StopMode::Graceful {
                         endpoint.close(
@@ -2791,8 +2895,27 @@ async fn spawn_gameplay_abuse(
         life_rx,
         input_rx,
     }));
+    let persist_dir = std::env::temp_dir().join(format!(
+        "purgatory-test-persist-{}-{}",
+        std::process::id(),
+        addr.port()
+    ));
+    let persist = super::persist::PersistenceHandle::spawn(&persist_dir).expect("persist");
+    {
+        let mut g = sim.lock().unwrap_or_else(|err| err.into_inner());
+        g.owner.set_persist(persist.clone());
+    }
+    let sim_pump = sim.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_millis(4));
+        loop {
+            ticker.tick().await;
+            lock_sim(&sim_pump).pump();
+        }
+    });
+    let persist_accept = persist.clone();
     let accept = tokio::spawn(async move {
-        accept_loop(bound, abuse, Some(tx)).await;
+        accept_loop(bound, abuse, Some(tx), Some(persist_accept)).await;
     });
     (
         TestServer {
@@ -3196,21 +3319,46 @@ async fn input_rate_offender_is_isolated() {
 }
 
 #[tokio::test]
-async fn input_handoff_stays_bounded() {
-    let (server, sim) = spawn_gameplay().await;
+async fn input_handoff_awaits_instead_of_dropping() {
+    // Raise input rate so the variable under test is handoff backpressure, not
+    // the abuse window (DEV default is 128 msgs/s).
+    let mut abuse = NetworkAbuseConfig::DEV;
+    abuse.input_messages_per_window = 10_000;
+    abuse.input_drops_before_disconnect = 10_000;
+    let (server, sim) = spawn_gameplay_abuse(
+        Duration::from_secs(2),
+        purgatory_protocol::IDLE_TIMEOUT,
+        abuse,
+    )
+    .await;
     let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
     assert!(wait_attached(&sim, id).await);
+
+    let sim_pump = Arc::clone(&sim);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_pump = Arc::clone(&stop);
+    let pump = tokio::spawn(async move {
+        while !stop_pump.load(Ordering::Relaxed) {
+            lock_sim(&sim_pump).pump();
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        lock_sim(&sim_pump).pump();
+    });
+
     for seq in 1..=200 {
-        let _ = write_input(&mut send, seq, MoveAxis::Right, false, false).await;
+        write_input(&mut send, seq, MoveAxis::Right, false, false).await;
     }
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    assert!(
-        server.stat(|s| &s.input_handoff_dropped) >= 1
-            || lock_sim(&sim).owner.input_received <= super::gameplay::input_cap() as u64 + 8
-    );
-    let ticks = lock_sim(&sim).owner.ticks();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    stop.store(true, Ordering::Relaxed);
+    let _ = timeout(Duration::from_secs(2), pump).await;
     lock_sim(&sim).pump();
-    assert_eq!(lock_sim(&sim).owner.ticks(), ticks);
+
+    assert_eq!(server.stat(|s| &s.input_handoff_dropped), 0);
+    assert!(
+        lock_sim(&sim).owner.input_received >= 200,
+        "received={}",
+        lock_sim(&sim).owner.input_received
+    );
     server.shutdown();
 }
 
@@ -3221,23 +3369,107 @@ async fn accept_snapshot_stream(client: &TestClient) -> RecvStream {
         .expect("accept_uni")
 }
 
-async fn read_world_snapshot_frame(recv: &mut RecvStream) -> WorldSnapshot {
+struct ReplicaView {
+    epoch: u32,
+    snapshot_sequence: u32,
+    local_player_entity: WireEntityId,
+    last_acknowledged_input_sequence: u32,
+    input_epoch: u16,
+    local_grounded: bool,
+    entities: HashMap<WireEntityId, SnapshotEntity>,
+}
+
+impl ReplicaView {
+    fn new() -> Self {
+        Self {
+            epoch: 0,
+            snapshot_sequence: 0,
+            local_player_entity: WireEntityId {
+                index: 0,
+                generation: 0,
+            },
+            last_acknowledged_input_sequence: 0,
+            input_epoch: 0,
+            local_grounded: false,
+            entities: HashMap::new(),
+        }
+    }
+
+    fn apply(&mut self, frame: ReplicationFrame) {
+        if frame.observer_baseline_epoch < self.epoch {
+            return;
+        }
+        if frame.observer_baseline_epoch > self.epoch {
+            self.entities.clear();
+            self.epoch = frame.observer_baseline_epoch;
+        }
+        self.snapshot_sequence = frame.snapshot_sequence;
+        self.local_player_entity = frame.local_player_entity;
+        self.last_acknowledged_input_sequence = frame.last_acknowledged_input_sequence;
+        self.input_epoch = frame.input_epoch;
+        self.local_grounded = frame.local_grounded;
+        for rec in frame.records {
+            match rec {
+                ReplicationRecord::Enter { entity, .. } => {
+                    self.entities.insert(entity.entity_id, entity);
+                }
+                ReplicationRecord::Update {
+                    entity_id,
+                    position,
+                    velocity,
+                    ..
+                } => {
+                    if let Some(e) = self.entities.get_mut(&entity_id) {
+                        if let Some(p) = position {
+                            e.position = p;
+                        }
+                        if let Some(v) = velocity {
+                            e.velocity = v;
+                        }
+                    }
+                }
+                ReplicationRecord::Leave { entity_id } => {
+                    self.entities.remove(&entity_id);
+                }
+            }
+        }
+    }
+
+    fn player_count(&self) -> usize {
+        self.entities
+            .values()
+            .filter(|e| e.kind == ReplicatedKind::Player)
+            .count()
+    }
+
+    fn kind_count(&self, kind: ReplicatedKind) -> usize {
+        self.entities.values().filter(|e| e.kind == kind).count()
+    }
+}
+
+async fn read_replication_frame(recv: &mut RecvStream) -> ReplicationFrame {
     let mut prefix = [0u8; 4];
     recv.read_exact(&mut prefix).await.expect("prefix");
     let len = peek_gameplay_frame_len(&prefix).expect("peek snapshot");
     let mut payload = vec![0u8; len as usize];
     recv.read_exact(&mut payload).await.expect("payload");
-    decode_world_snapshot(&payload).expect("decode snapshot")
+    decode_replication_frame(&payload).expect("decode replication frame")
 }
 
-async fn read_latest_snapshot(recv: &mut RecvStream) -> WorldSnapshot {
-    let mut last = timeout(Duration::from_secs(2), read_world_snapshot_frame(recv))
-        .await
-        .expect("first snapshot");
-    while let Ok(next) = timeout(Duration::from_millis(80), read_world_snapshot_frame(recv)).await {
-        last = next;
+async fn drain_frames(recv: &mut RecvStream, view: &mut ReplicaView, idle: Duration) {
+    while let Ok(frame) = timeout(idle, read_replication_frame(recv)).await {
+        view.apply(frame);
     }
-    last
+}
+
+async fn read_latest_view(recv: &mut RecvStream) -> ReplicaView {
+    let mut view = ReplicaView::new();
+    let first = timeout(Duration::from_secs(2), read_replication_frame(recv))
+        .await
+        .expect("first replication frame");
+    view.apply(first);
+    drain_frames(recv, &mut view, Duration::from_millis(80)).await;
+    view
 }
 
 #[tokio::test]
@@ -3257,16 +3489,31 @@ async fn client_receives_authoritative_snapshot() {
         )
         .await
     );
+    assert!(lock_sim(&sim).owner.set_player_x(id, -8.0));
     lock_sim(&sim).tick_n(8);
     let mut uni = accept_snapshot_stream(&client).await;
-    let snap = read_latest_snapshot(&mut uni).await;
-    assert_eq!(snap.entities.len(), 1);
+    let snap = read_latest_view(&mut uni).await;
+    assert_eq!(snap.player_count(), 1);
     let entity = lock_sim(&sim).owner.entity_of(id).unwrap();
     assert_eq!(
         snap.local_player_entity,
         super::snapshot::to_wire_id(entity)
     );
-    assert!(snap.entities[0].position[0] > purgatory_simulation::FOOTNOTE_SPAWN_X);
+    let player = snap
+        .entities
+        .get(&snap.local_player_entity)
+        .expect("local player in snapshot");
+    assert!(player.position[0] > purgatory_simulation::FOOTNOTE_SPAWN_X);
+    assert_eq!(
+        snap.kind_count(ReplicatedKind::Interactable),
+        2,
+        "AOI at x=-8 must include Map A switch and chest"
+    );
+    assert_eq!(
+        snap.kind_count(ReplicatedKind::Portal),
+        1,
+        "AOI at x=-8 must include the Map A portal"
+    );
     server.shutdown();
 }
 
@@ -3295,27 +3542,17 @@ async fn two_clients_see_both_entities_and_distinct_local_ids() {
     lock_sim(&sim).tick_n(12);
     let mut uni_a = accept_snapshot_stream(&client_a).await;
     let mut uni_b = accept_snapshot_stream(&client_b).await;
-    let snap_a = read_latest_snapshot(&mut uni_a).await;
-    let snap_b = read_latest_snapshot(&mut uni_b).await;
-    assert_eq!(snap_a.entities.len(), 2);
-    assert_eq!(snap_b.entities.len(), 2);
+    let snap_a = read_latest_view(&mut uni_a).await;
+    let snap_b = read_latest_view(&mut uni_b).await;
+    assert_eq!(snap_a.player_count(), 2);
+    assert_eq!(snap_b.player_count(), 2);
     assert_ne!(snap_a.local_player_entity, snap_b.local_player_entity);
     let ea = super::snapshot::to_wire_id(lock_sim(&sim).owner.entity_of(id_a).unwrap());
     let eb = super::snapshot::to_wire_id(lock_sim(&sim).owner.entity_of(id_b).unwrap());
     assert_eq!(snap_a.local_player_entity, ea);
     assert_eq!(snap_b.local_player_entity, eb);
-    let ax = snap_a
-        .entities
-        .iter()
-        .find(|e| e.entity_id == ea)
-        .unwrap()
-        .position[0];
-    let bx = snap_a
-        .entities
-        .iter()
-        .find(|e| e.entity_id == eb)
-        .unwrap()
-        .position[0];
+    let ax = snap_a.entities.get(&ea).unwrap().position[0];
+    let bx = snap_a.entities.get(&eb).unwrap().position[0];
     assert!(ax > 0.2, "A right from 0, got {ax}");
     assert!(bx < -0.2, "B left from 0, got {bx}");
     server.shutdown();
@@ -3330,8 +3567,8 @@ async fn disconnect_removes_entity_from_next_snapshot() {
     assert!(wait_attached(&sim, id_b).await);
     lock_sim(&sim).tick_n(1);
     let mut uni_a = accept_snapshot_stream(&client_a).await;
-    let first = read_latest_snapshot(&mut uni_a).await;
-    assert_eq!(first.entities.len(), 2);
+    let mut view = read_latest_view(&mut uni_a).await;
+    assert_eq!(view.player_count(), 2);
     let old_b = lock_sim(&sim).owner.entity_of(id_b).unwrap();
     drop((client_b, send_b, recv_b));
     assert!(
@@ -3346,24 +3583,20 @@ async fn disconnect_removes_entity_from_next_snapshot() {
         .await
     );
     lock_sim(&sim).tick_n(1);
-    let mut last = first;
     for _ in 0..8 {
-        last = timeout(
-            Duration::from_secs(2),
-            read_world_snapshot_frame(&mut uni_a),
-        )
-        .await
-        .expect("despawn snapshot");
-        if last.entities.len() == 1 {
+        if let Ok(frame) = timeout(Duration::from_secs(2), read_replication_frame(&mut uni_a)).await
+        {
+            view.apply(frame);
+        }
+        if view.player_count() == 1 {
             break;
         }
     }
-    assert_eq!(last.entities.len(), 1);
+    assert_eq!(view.player_count(), 1);
     assert!(
-        !last
+        !view
             .entities
-            .iter()
-            .any(|e| e.entity_id == super::snapshot::to_wire_id(old_b))
+            .contains_key(&super::snapshot::to_wire_id(old_b))
     );
     server.shutdown();
 }
@@ -3377,7 +3610,7 @@ async fn reconnect_uses_fresh_generational_id() {
     assert!(wait_attached(&sim, id_b).await);
     lock_sim(&sim).tick_n(1);
     let mut uni_a = accept_snapshot_stream(&client_a).await;
-    let _ = read_latest_snapshot(&mut uni_a).await;
+    let mut view = read_latest_view(&mut uni_a).await;
     let old = lock_sim(&sim).owner.entity_of(id_b).unwrap();
     drop((client_b, send_b, recv_b));
     assert!(
@@ -3397,16 +3630,15 @@ async fn reconnect_uses_fresh_generational_id() {
     assert_ne!(old, new);
     assert!(!lock_sim(&sim).owner.contains_entity(old));
     lock_sim(&sim).tick_n(2);
-    let snap = read_latest_snapshot(&mut uni_a).await;
+    drain_frames(&mut uni_a, &mut view, Duration::from_millis(200)).await;
     assert!(
-        snap.entities
-            .iter()
-            .any(|e| e.entity_id == super::snapshot::to_wire_id(new))
+        view.entities
+            .contains_key(&super::snapshot::to_wire_id(new))
     );
     assert!(
-        snap.entities
-            .iter()
-            .all(|e| e.entity_id != super::snapshot::to_wire_id(old))
+        !view
+            .entities
+            .contains_key(&super::snapshot::to_wire_id(old))
     );
     let _ = client_c;
     server.shutdown();
@@ -3434,20 +3666,40 @@ async fn slow_snapshot_client_does_not_block_simulation_or_peer() {
     lock_sim(&sim).tick_n(24);
     let mut uni_a = accept_snapshot_stream(&client_a).await;
     assert_eq!(lock_sim(&sim).owner.ticks(), 24);
-    let mut latest = None;
+    let mut view = ReplicaView::new();
     for _ in 0..24 {
         match timeout(
             Duration::from_millis(200),
-            read_world_snapshot_frame(&mut uni_a),
+            read_replication_frame(&mut uni_a),
         )
         .await
         {
-            Ok(snap) => latest = Some(snap),
+            Ok(frame) => view.apply(frame),
             Err(_) => break,
         }
     }
-    let latest = latest.expect("A still receives snapshots");
-    assert!(latest.snapshot_sequence >= 1);
-    assert_eq!(latest.entities.len(), 2);
+    assert!(view.snapshot_sequence >= 1);
+    assert_eq!(view.player_count(), 2);
     server.shutdown();
+}
+
+#[test]
+fn replication_uni_is_opened_once_and_write_failure_ends_the_session() {
+    let src = include_str!("handshake.rs");
+    assert_eq!(
+        src.matches("open_uni()").count(),
+        1,
+        "must not open_uni per frame or reopen a sibling replication stream"
+    );
+    assert!(
+        src.contains("if write_failed"),
+        "write_all failure must tear down the session"
+    );
+    assert!(
+        !src.lines().any(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("snap_send = None")
+        }),
+        "must not drop the stream and continue later frames"
+    );
 }

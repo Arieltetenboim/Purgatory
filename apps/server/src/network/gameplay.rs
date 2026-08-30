@@ -7,11 +7,29 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use purgatory_protocol::{ConnectionId, InputCommand, MoveAxis, WorldSnapshot};
-use purgatory_simulation::{
-    EntityId, FOOTNOTE_SPAWN_X, P0, P0_POSITION, PlayerInput, PlayerState, World,
+use purgatory_common::{
+    ChannelId, CharacterId, ContentId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
+    RestoreIntent, WorldAddress,
 };
-use tokio::sync::watch;
+use purgatory_content::{
+    ContentRegistry, LoadMode, default_content_root, load_registry, map_plan, resolve_restore,
+    runtime_placement, world_address_for_map,
+};
+use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
+use purgatory_protocol::{
+    ConnectionId, DEV_CHANNEL_MAX, InputCommand, InteractCloseReason, InteractRejectReason,
+    MoveAxis, ServerControl, ServerInteract, WireEntityId,
+};
+use purgatory_simulation::{
+    Cadence, CommandClass, CommandDenial, EntityId, FOOTNOTE_SPAWN_X, InputGateReason,
+    InteractionCloseReason, InteractionReject, P0, P0_POSITION, PlayerInput, PlayerState,
+    RuntimeSpawnRequest, ScheduleOwner, SimulationTick, Transform, WorkLane, World,
+    validate_command_preamble,
+};
+
+use super::persist::PersistenceHandle;
+
+use super::replication::{ObserverReplicationState, ReplicationPipe, publish_observer_frame};
 
 /// How a command compared against the last accepted sequence in this epoch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +44,53 @@ pub enum SeqDecision {
 
 const SESSION_QUEUE_CAP: usize = 128;
 
+/// Server-side transition input barrier. Not Phase 6F action-state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum InputGate {
+    #[default]
+    Open,
+    Locked {
+        reason: InputGateReason,
+        remaining_ticks: u16,
+    },
+}
+
+impl InputGate {
+    #[must_use]
+    fn locked(reason: InputGateReason) -> Self {
+        Self::Locked {
+            reason,
+            remaining_ticks: reason.lock_ticks(),
+        }
+    }
+
+    #[must_use]
+    fn is_locked(self) -> bool {
+        matches!(self, Self::Locked { remaining_ticks, .. } if remaining_ticks > 0)
+    }
+
+    #[must_use]
+    fn reason(self) -> Option<InputGateReason> {
+        match self {
+            Self::Open => None,
+            Self::Locked { reason, .. } => Some(reason),
+        }
+    }
+
+    fn tick(&mut self) {
+        let Self::Locked {
+            remaining_ticks, ..
+        } = self
+        else {
+            return;
+        };
+        *remaining_ticks = remaining_ticks.saturating_sub(1);
+        if *remaining_ticks == 0 {
+            *self = Self::Open;
+        }
+    }
+}
+
 /// Per-session command queue and acknowledgement state.
 pub struct SessionInput {
     pub input_epoch: u16,
@@ -39,6 +104,7 @@ pub struct SessionInput {
     pub late_collapse_count: u64,
     pub late_collapse_max_batch: u16,
     pub held_cancel_count: u64,
+    gate: InputGate,
 }
 
 impl Default for SessionInput {
@@ -61,6 +127,7 @@ impl SessionInput {
             late_collapse_count: 0,
             late_collapse_max_batch: 0,
             held_cancel_count: 0,
+            gate: InputGate::Open,
         }
     }
 
@@ -109,7 +176,6 @@ impl SessionInput {
     }
 
     /// Lifecycle rebase. `None` if epoch is `u16::MAX` (do not wrap to 0).
-    #[allow(dead_code)]
     pub fn bump_epoch(&mut self) -> Option<u16> {
         if self.input_epoch == u16::MAX {
             return None;
@@ -121,12 +187,48 @@ impl SessionInput {
         self.unmatched_continuation_ticks = 0;
         self.move_axis = MoveAxis::Neutral;
         self.down_held = false;
+        self.gate = InputGate::Open;
         Some(self.input_epoch)
+    }
+
+    /// Neutralize held/queued movement and bar gameplay until the presentation
+    /// FadeOut + min Hold window elapses (earliest honest FadeIn).
+    pub fn lock_transition(&mut self, reason: InputGateReason) {
+        self.queue.clear();
+        self.move_axis = MoveAxis::Neutral;
+        self.down_held = false;
+        self.unmatched_continuation_ticks = 0;
+        self.gate = InputGate::locked(reason);
+    }
+
+    #[must_use]
+    pub fn input_gated(&self) -> bool {
+        self.gate.is_locked()
+    }
+
+    #[must_use]
+    pub fn input_gate_reason(&self) -> Option<InputGateReason> {
+        self.gate.reason()
+    }
+
+    /// Ack queued commands as idle. Do not adopt their held movement.
+    fn ack_queued_as_idle(&mut self) {
+        while let Some(cmd) = self.queue.pop_front() {
+            self.last_acknowledged_seq = Some(cmd.sequence);
+        }
+        self.move_axis = MoveAxis::Neutral;
+        self.down_held = false;
+        self.unmatched_continuation_ticks = 0;
     }
 
     /// One player simulation step's input. Does not run physics.
     #[must_use]
     pub fn take_for_tick(&mut self) -> PlayerInput {
+        if self.gate.is_locked() {
+            self.ack_queued_as_idle();
+            self.gate.tick();
+            return PlayerInput::idle();
+        }
         if self.queue.is_empty() {
             self.unmatched_continuation_ticks = self.unmatched_continuation_ticks.saturating_add(1);
             return PlayerInput {
@@ -193,29 +295,118 @@ impl SessionInput {
 
 pub struct PlayerBinding {
     pub entity: EntityId,
+    pub character_id: Option<CharacterId>,
+    persistence_revision: u64,
+    restore: RestoreIntent,
     pub input: SessionInput,
-    snapshots: Option<watch::Sender<Option<WorldSnapshot>>>,
+    replication: Option<ReplicationPipe>,
+    interest: ObserverReplicationState,
+    interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
 }
 
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
 pub struct GameplayOwner {
     world: World,
+    registry: ContentRegistry,
     bindings: HashMap<ConnectionId, PlayerBinding>,
+    occupancy: HashMap<CharacterId, ConnectionId>,
+    persist: Option<PersistenceHandle>,
     ticks: u64,
     pub input_received: u64,
     pub input_accepted: u64,
     pub input_duplicate: u64,
     pub input_stale: u64,
+    pub input_queue_overflow: u64,
     pub snapshots_built: u64,
+    pub snapshot_build_count: u64,
     pub snapshot_sequence: u32,
     pub last_snapshot_entities: u16,
     pub snapshot_send_failed: u64,
+    pub player_entity_spawned: u64,
+    pub player_entity_despawned: u64,
+    pub duplicate_session_detected: u64,
+    pub session_queue_max: u64,
+    pub snapshot_build_time_max_us: u64,
+    pub aoi_enters: u64,
+    pub aoi_leaves: u64,
+    pub aoi_updates: u64,
+    pub aoi_churn_reentry: u64,
+    pub aoi_update_bytes: u64,
+    pub oldest_pending_ticks: u64,
+    pub max_deferred_ticks: u64,
+    pub replication_queue_depth_max: u64,
+    pub command_rejects_gate: u64,
+    pub command_rejects_other: u64,
+    pub observer_pending_updates: u64,
+    pub observer_pending_enters: u64,
+    pub cadence_deferred_updates: u64,
+    placement: LoadPlacement,
+    trace_relevance: bool,
+    trace_snapshot: bool,
+    runtime_probe: RuntimeProbe,
+    load_pressure: super::load_pressure::LoadPressure,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoadPlacement {
+    Cluster,
+    Spread,
+    MultiMap,
+}
+
+/// Opt-in DEV demonstration of scheduler/spawn. Off unless `PURGATORY_RUNTIME_PROBE=1`.
+struct RuntimeProbe {
+    enabled: bool,
+    armed: bool,
+}
+
+impl RuntimeProbe {
+    fn from_env() -> Self {
+        let enabled = matches!(
+            std::env::var("PURGATORY_RUNTIME_PROBE")
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        );
+        Self {
+            enabled,
+            armed: false,
+        }
+    }
+}
+
+fn load_placement_from_env() -> LoadPlacement {
+    match std::env::var("PURGATORY_LOAD_PLACEMENT")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "spread" => LoadPlacement::Spread,
+        "maps" | "multimap" => LoadPlacement::MultiMap,
+        _ => LoadPlacement::Cluster,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnterError {
+    Occupied,
+    RestoreFailed,
+    SpawnFailed,
 }
 
 pub enum LifecycleCmd {
     Attach {
         connection_id: ConnectionId,
-        snapshots: Option<watch::Sender<Option<WorldSnapshot>>>,
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+    },
+    Enter {
+        connection_id: ConnectionId,
+        character: PersistentCharacter,
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+        reply: tokio::sync::oneshot::Sender<Result<(), EnterError>>,
     },
     Detach {
         connection_id: ConnectionId,
@@ -230,6 +421,22 @@ pub enum InputUpdate {
     HeldCancel {
         connection_id: ConnectionId,
     },
+    InteractOpen {
+        connection_id: ConnectionId,
+        target: WireEntityId,
+    },
+    InteractClose {
+        connection_id: ConnectionId,
+        session_id: u32,
+    },
+    PortalActivate {
+        connection_id: ConnectionId,
+        target: WireEntityId,
+    },
+    DevSetChannel {
+        connection_id: ConnectionId,
+        channel: u32,
+    },
 }
 
 /// Cloneable senders. Connection tasks only `try_send`; they never lock World.
@@ -242,26 +449,63 @@ pub struct GameplayTx {
 impl GameplayTx {
     #[allow(dead_code)]
     pub fn attach(&self, connection_id: ConnectionId) {
-        self.attach_with_snapshots(connection_id, None);
+        self.attach_with_snapshots(connection_id, None, None);
     }
 
     pub fn attach_with_snapshots(
         &self,
         connection_id: ConnectionId,
-        snapshots: Option<watch::Sender<Option<WorldSnapshot>>>,
-    ) {
-        let _ = self.lifecycle.try_send(LifecycleCmd::Attach {
-            connection_id,
-            snapshots,
-        });
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+    ) -> bool {
+        self.lifecycle
+            .try_send(LifecycleCmd::Attach {
+                connection_id,
+                replication,
+                interact,
+            })
+            .is_ok()
     }
 
-    pub fn detach(&self, connection_id: ConnectionId) {
-        let _ = self
-            .lifecycle
-            .try_send(LifecycleCmd::Detach { connection_id });
+    /// Await backpressure so occupancy is released even if the lifecycle
+    /// channel is full. Used on the live session teardown path.
+    pub async fn send_detach(&self, connection_id: ConnectionId) -> bool {
+        self.lifecycle
+            .send(LifecycleCmd::Detach { connection_id })
+            .await
+            .is_ok()
     }
 
+    /// Non-blocking detach for Drop guards. Idempotent in [`GameplayOwner::detach`].
+    pub fn try_detach(&self, connection_id: ConnectionId) -> bool {
+        self.lifecycle
+            .try_send(LifecycleCmd::Detach { connection_id })
+            .is_ok()
+    }
+
+    pub async fn enter(
+        &self,
+        connection_id: ConnectionId,
+        character: PersistentCharacter,
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+    ) -> Result<Result<(), EnterError>, ()> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.lifecycle
+            .send(LifecycleCmd::Enter {
+                connection_id,
+                character,
+                replication,
+                interact,
+                reply,
+            })
+            .await
+            .map_err(|_| ())?;
+        rx.await.map_err(|_| ())
+    }
+
+    /// Non-blocking probe (tests / diagnostics). Production path uses [`Self::send_input`].
+    #[allow(dead_code)]
     pub fn try_input(&self, connection_id: ConnectionId, command: InputCommand) -> bool {
         self.input
             .try_send(InputUpdate::Command {
@@ -271,9 +515,78 @@ impl GameplayTx {
             .is_ok()
     }
 
+    #[allow(dead_code)]
     pub fn try_held_cancel(&self, connection_id: ConnectionId) -> bool {
         self.input
             .try_send(InputUpdate::HeldCancel { connection_id })
+            .is_ok()
+    }
+
+    /// Authoritative gameplay input must not be silently discarded: sequences are
+    /// contiguous and `jump_pressed` is an edge. Await backpressure instead of
+    /// `try_send` drop (which would open a Gap and soft-brick the session).
+    pub async fn send_input(&self, connection_id: ConnectionId, command: InputCommand) -> bool {
+        self.input
+            .send(InputUpdate::Command {
+                connection_id,
+                command,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_held_cancel(&self, connection_id: ConnectionId) -> bool {
+        self.input
+            .send(InputUpdate::HeldCancel { connection_id })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_interact_open(
+        &self,
+        connection_id: ConnectionId,
+        target: WireEntityId,
+    ) -> bool {
+        self.input
+            .send(InputUpdate::InteractOpen {
+                connection_id,
+                target,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_interact_close(&self, connection_id: ConnectionId, session_id: u32) -> bool {
+        self.input
+            .send(InputUpdate::InteractClose {
+                connection_id,
+                session_id,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_portal_activate(
+        &self,
+        connection_id: ConnectionId,
+        target: WireEntityId,
+    ) -> bool {
+        self.input
+            .send(InputUpdate::PortalActivate {
+                connection_id,
+                target,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_dev_set_channel(&self, connection_id: ConnectionId, channel: u32) -> bool {
+        self.input
+            .send(InputUpdate::DevSetChannel {
+                connection_id,
+                channel,
+            })
+            .await
             .is_ok()
     }
 }
@@ -282,35 +595,106 @@ const LIFECYCLE_CAP: usize = 64;
 const INPUT_CAP: usize = 128;
 
 #[must_use]
+#[allow(dead_code)]
 pub const fn lifecycle_cap() -> usize {
     LIFECYCLE_CAP
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub const fn input_cap() -> usize {
     INPUT_CAP
 }
 
+/// Create gameplay channels sized for the active server config.
+#[must_use]
+pub fn gameplay_channels(
+    lifecycle_cap: usize,
+    input_cap: usize,
+) -> (
+    GameplayTx,
+    tokio::sync::mpsc::Receiver<LifecycleCmd>,
+    tokio::sync::mpsc::Receiver<InputUpdate>,
+) {
+    let (life_tx, life_rx) = tokio::sync::mpsc::channel(lifecycle_cap.max(1));
+    let (input_tx, input_rx) = tokio::sync::mpsc::channel(input_cap.max(1));
+    (
+        GameplayTx {
+            lifecycle: life_tx,
+            input: input_tx,
+        },
+        life_rx,
+        input_rx,
+    )
+}
+
 impl GameplayOwner {
-    /// Platforms-only FOOTNOTE arena. Players spawn on connect.
+    /// Content-backed maps. Dev-eager Map A + Map B; runtime still supports lazy ensure/destroy.
     #[must_use]
     pub fn new() -> Self {
-        let mut world = World::footnote_test_stage();
-        if let Some(id) = world.player_id() {
-            world.despawn(id);
-        }
+        let registry =
+            load_registry(&default_content_root(), LoadMode::Full).unwrap_or_else(|err| {
+                panic!("PURGATORY server content invalid:\n{err}");
+            });
+        Self::with_registry(registry)
+    }
+
+    #[must_use]
+    pub fn with_registry(registry: ContentRegistry) -> Self {
+        let mut world = World::new();
+        instantiate_dev_maps(&mut world, &registry);
+        log_dev_interaction_fixtures(&world);
         Self {
             world,
+            registry,
             bindings: HashMap::new(),
+            occupancy: HashMap::new(),
+            persist: None,
             ticks: 0,
             input_received: 0,
             input_accepted: 0,
             input_duplicate: 0,
             input_stale: 0,
+            input_queue_overflow: 0,
             snapshots_built: 0,
+            snapshot_build_count: 0,
             snapshot_sequence: 0,
             last_snapshot_entities: 0,
             snapshot_send_failed: 0,
+            player_entity_spawned: 0,
+            player_entity_despawned: 0,
+            duplicate_session_detected: 0,
+            session_queue_max: 0,
+            snapshot_build_time_max_us: 0,
+            aoi_enters: 0,
+            aoi_leaves: 0,
+            aoi_updates: 0,
+            aoi_churn_reentry: 0,
+            aoi_update_bytes: 0,
+            oldest_pending_ticks: 0,
+            max_deferred_ticks: 0,
+            replication_queue_depth_max: 0,
+            command_rejects_gate: 0,
+            command_rejects_other: 0,
+            observer_pending_updates: 0,
+            observer_pending_enters: 0,
+            cadence_deferred_updates: 0,
+            placement: load_placement_from_env(),
+            trace_relevance: false,
+            trace_snapshot: false,
+            runtime_probe: RuntimeProbe::from_env(),
+            load_pressure: super::load_pressure::LoadPressure::from_process_env(),
+        }
+    }
+
+    pub fn set_persist(&mut self, persist: PersistenceHandle) {
+        self.persist = Some(persist);
+    }
+
+    pub fn flush_persistent_snapshots(&mut self) {
+        let ids: Vec<ConnectionId> = self.bindings.keys().copied().collect();
+        for id in ids {
+            self.request_save(id);
         }
     }
 
@@ -318,6 +702,17 @@ impl GameplayOwner {
     #[allow(dead_code)] // diagnostic accessors used by tests and the quality gate
     pub fn world(&self) -> &World {
         &self.world
+    }
+
+    #[cfg(test)]
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.world
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn runtime_stats(&self) -> purgatory_simulation::RuntimeStats {
+        self.world.runtime_stats()
     }
 
     #[must_use]
@@ -360,20 +755,24 @@ impl GameplayOwner {
         let Some(entity) = self.entity_of(id) else {
             return false;
         };
-        let Some(view) = self
-            .world
-            .iter_platforms()
-            .find(|view| view.platform.kind == PlatformKind::OneWay)
-        else {
+        let Some(view) = self.world.iter_platforms().find(|view| {
+            view.platform.kind == PlatformKind::OneWay
+                && self.world.address_of(view.id) == self.world.address_of(entity)
+        }) else {
             return false;
         };
         let (transform, state) =
             PlayerState::standing_on_at(view.id, view.top_surface(), view.transform.position[0]);
-        let Some((t, player)) = self.world.player_parts_mut_for(entity) else {
-            return false;
+        let previous = {
+            let Some((t, player)) = self.world.player_parts_mut_for(entity) else {
+                return false;
+            };
+            let previous = t.position;
+            *t = transform;
+            *player = state;
+            previous
         };
-        *t = transform;
-        *player = state;
+        self.world.refresh_spatial(entity, previous);
         true
     }
 
@@ -382,11 +781,24 @@ impl GameplayOwner {
         let Some(entity) = self.entity_of(id) else {
             return false;
         };
-        let Some((transform, _)) = self.world.player_parts_mut_for(entity) else {
+        let Some(prev) = self.world.transform_of(entity) else {
             return false;
         };
-        transform.position[0] = x;
-        true
+        let mut next = prev;
+        next.position[0] = x;
+        self.world.set_transform(entity, next)
+    }
+
+    #[cfg(test)]
+    pub fn set_entity_address(
+        &mut self,
+        id: ConnectionId,
+        address: purgatory_simulation::WorldAddress,
+    ) -> bool {
+        let Some(entity) = self.entity_of(id) else {
+            return false;
+        };
+        self.world.set_address(entity, address)
     }
 
     #[must_use]
@@ -397,40 +809,220 @@ impl GameplayOwner {
 
     pub fn attach(&mut self, connection_id: ConnectionId) {
         if self.bindings.contains_key(&connection_id) {
+            self.duplicate_session_detected = self.duplicate_session_detected.saturating_add(1);
             return;
         }
+        let address = self.map_a_address();
+        let n = self.bindings.len();
+        let spawn_x = match self.placement {
+            LoadPlacement::Cluster => FOOTNOTE_SPAWN_X,
+            LoadPlacement::Spread => FOOTNOTE_SPAWN_X + (n as f32 % 8.0) * 5.0,
+            LoadPlacement::MultiMap => FOOTNOTE_SPAWN_X,
+        };
+        let spawn_address = match self.placement {
+            LoadPlacement::MultiMap if n % 2 == 1 => self.map_b_address(),
+            _ => address,
+        };
+        let _ = self.spawn_player_binding(
+            connection_id,
+            spawn_address,
+            spawn_x,
+            None,
+            0,
+            RestoreIntent::footnote_default(),
+            None,
+            None,
+        );
+    }
+
+    pub fn enter(
+        &mut self,
+        connection_id: ConnectionId,
+        character: PersistentCharacter,
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+    ) -> Result<(), EnterError> {
+        if self.bindings.contains_key(&connection_id) {
+            self.duplicate_session_detected = self.duplicate_session_detected.saturating_add(1);
+            return Err(EnterError::Occupied);
+        }
+        let character_id = character.character_id;
+        if self.occupancy.contains_key(&character_id) {
+            return Err(EnterError::Occupied);
+        }
+        self.occupancy.insert(character_id, connection_id);
+        let logical = resolve_restore(&self.registry, &character.restore);
+        let Some((address, spawn_pos)) = runtime_placement(&self.registry, &logical) else {
+            self.occupancy.remove(&character_id);
+            return Err(EnterError::RestoreFailed);
+        };
+        let plan = match map_plan(&self.registry, &logical.map_authored, address) {
+            Ok(plan) => plan,
+            Err(_) => {
+                self.occupancy.remove(&character_id);
+                return Err(EnterError::RestoreFailed);
+            }
+        };
+        if self.world.ensure_map(&plan).is_err() {
+            self.occupancy.remove(&character_id);
+            return Err(EnterError::RestoreFailed);
+        }
+        match self.spawn_player_binding(
+            connection_id,
+            address,
+            spawn_pos[0],
+            Some(character_id),
+            character.persistence_revision,
+            character.restore.clone(),
+            replication,
+            interact,
+        ) {
+            true => Ok(()),
+            false => {
+                self.occupancy.remove(&character_id);
+                Err(EnterError::SpawnFailed)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_player_binding(
+        &mut self,
+        connection_id: ConnectionId,
+        spawn_address: WorldAddress,
+        spawn_x: f32,
+        character_id: Option<CharacterId>,
+        persistence_revision: u64,
+        restore: RestoreIntent,
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+    ) -> bool {
         let floor = self
             .world
             .iter_platforms()
             .find(|view| {
-                view.platform.half_extents == P0.half_extents
+                self.world.address_of(view.id) == Some(spawn_address)
+                    && view.platform.half_extents == P0.half_extents
                     && (view.transform.position[0] - P0_POSITION[0]).abs() < 0.01
                     && (view.transform.position[1] - P0_POSITION[1]).abs() < 0.01
             })
-            .or_else(|| self.world.iter_platforms().next());
+            .or_else(|| {
+                self.world
+                    .iter_platforms()
+                    .find(|view| self.world.address_of(view.id) == Some(spawn_address))
+            });
         let Some(view) = floor else {
-            return;
+            return false;
         };
-        let (transform, state) =
-            PlayerState::standing_on_at(view.id, view.top_surface(), FOOTNOTE_SPAWN_X);
-        let entity = self.world.spawn_player(transform, state);
+        let (transform, state) = PlayerState::standing_on_at(view.id, view.top_surface(), spawn_x);
+        let entity = self.world.spawn_player_at(spawn_address, transform, state);
         self.bindings.insert(
             connection_id,
             PlayerBinding {
                 entity,
+                character_id,
+                persistence_revision,
+                restore,
                 input: SessionInput::new(),
-                snapshots: None,
+                replication,
+                interest: ObserverReplicationState::new(),
+                interact,
             },
         );
+        self.player_entity_spawned = self.player_entity_spawned.saturating_add(1);
+        true
     }
 
     pub fn detach(&mut self, connection_id: ConnectionId) {
         if let Some(binding) = self.bindings.remove(&connection_id) {
+            if let Some(character_id) = binding.character_id {
+                self.occupancy.remove(&character_id);
+                self.emit_save(&PersistentCharacterSnapshot {
+                    character_id,
+                    persistence_revision: binding.persistence_revision.saturating_add(1),
+                    restore: binding.restore.clone(),
+                    instance_exit: None,
+                });
+            }
+            let closed = self
+                .world
+                .close_sessions_involving(binding.entity, InteractionCloseReason::Disconnected);
+            if let Some(tx) = &binding.interact {
+                for (session, reason) in closed {
+                    let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
+                        session_id: session.id.get(),
+                        reason: map_close_reason(reason),
+                    }));
+                }
+            }
             self.world.despawn(binding.entity);
+            self.player_entity_despawned = self.player_entity_despawned.saturating_add(1);
         }
     }
 
+    fn request_save(&mut self, connection_id: ConnectionId) {
+        let Some(binding) = self.bindings.get_mut(&connection_id) else {
+            return;
+        };
+        let Some(character_id) = binding.character_id else {
+            return;
+        };
+        binding.persistence_revision = binding.persistence_revision.saturating_add(1);
+        let snapshot = PersistentCharacterSnapshot {
+            character_id,
+            persistence_revision: binding.persistence_revision,
+            restore: binding.restore.clone(),
+            instance_exit: None,
+        };
+        self.emit_save(&snapshot);
+    }
+
+    fn emit_save(&self, snapshot: &PersistentCharacterSnapshot) {
+        if let Some(persist) = &self.persist {
+            let _ = persist.try_save(snapshot.clone());
+        }
+    }
+
+    fn note_persistent_restore(&mut self, connection_id: ConnectionId, restore: RestoreIntent) {
+        let Some(binding) = self.bindings.get_mut(&connection_id) else {
+            return;
+        };
+        if binding.character_id.is_none() {
+            return;
+        }
+        binding.restore = restore;
+        self.request_save(connection_id);
+    }
+
     pub fn apply_input(&mut self, update: InputUpdate) -> SeqDecision {
+        if matches!(
+            update,
+            InputUpdate::InteractOpen { .. }
+                | InputUpdate::InteractClose { .. }
+                | InputUpdate::PortalActivate { .. }
+                | InputUpdate::DevSetChannel { .. }
+        ) {
+            match update {
+                InputUpdate::InteractOpen {
+                    connection_id,
+                    target,
+                } => self.handle_interact_open(connection_id, target),
+                InputUpdate::InteractClose {
+                    connection_id,
+                    session_id,
+                } => self.handle_interact_close(connection_id, session_id),
+                InputUpdate::PortalActivate {
+                    connection_id,
+                    target,
+                } => self.handle_portal_activate(connection_id, target),
+                InputUpdate::DevSetChannel {
+                    connection_id,
+                    channel,
+                } => self.handle_dev_set_channel(connection_id, channel),
+                _ => {}
+            }
+            return SeqDecision::Accept;
+        }
         self.input_received = self.input_received.saturating_add(1);
         match update {
             InputUpdate::HeldCancel { connection_id } => {
@@ -438,7 +1030,14 @@ impl GameplayOwner {
                     self.input_stale = self.input_stale.saturating_add(1);
                     return SeqDecision::Stale;
                 };
+                let entity = binding.entity;
                 binding.input.held_cancel();
+                if self.world.release_portal_reentry(entity) {
+                    println!(
+                        "6C_PORTAL reentry_unlock actor={entity} reason=held_cancel tick={}",
+                        self.ticks
+                    );
+                }
                 SeqDecision::Accept
             }
             InputUpdate::Command {
@@ -449,22 +1048,38 @@ impl GameplayOwner {
                     self.input_stale = self.input_stale.saturating_add(1);
                     return SeqDecision::Stale;
                 };
+                let entity = binding.entity;
+                let portal_held = command.portal_held;
+                let seq = command.sequence;
+                let epoch = command.input_epoch;
                 let decision = binding.input.apply(command);
                 match decision {
                     SeqDecision::Accept => {
-                        self.input_accepted = self.input_accepted.saturating_add(1)
+                        self.input_accepted = self.input_accepted.saturating_add(1);
+                        if !portal_held && self.world.release_portal_reentry(entity) {
+                            println!(
+                                "6C_PORTAL reentry_unlock actor={entity} reason=up_released tick={} seq={seq} epoch={epoch}",
+                                self.ticks
+                            );
+                        }
                     }
                     SeqDecision::Duplicate => {
                         self.input_duplicate = self.input_duplicate.saturating_add(1);
                     }
-                    SeqDecision::Stale
-                    | SeqDecision::Gap
-                    | SeqDecision::Overflow
-                    | SeqDecision::OldEpoch => {
+                    SeqDecision::Overflow => {
+                        self.input_queue_overflow = self.input_queue_overflow.saturating_add(1);
+                    }
+                    SeqDecision::Stale | SeqDecision::Gap | SeqDecision::OldEpoch => {
                         self.input_stale = self.input_stale.saturating_add(1)
                     }
                 }
                 decision
+            }
+            InputUpdate::InteractOpen { .. }
+            | InputUpdate::InteractClose { .. }
+            | InputUpdate::PortalActivate { .. }
+            | InputUpdate::DevSetChannel { .. } => {
+                unreachable!("interact/portal/channel handled above")
             }
         }
     }
@@ -478,12 +1093,24 @@ impl GameplayOwner {
             match cmd {
                 LifecycleCmd::Attach {
                     connection_id,
-                    snapshots,
+                    replication,
+                    interact,
                 } => {
                     self.attach(connection_id);
                     if let Some(binding) = self.bindings.get_mut(&connection_id) {
-                        binding.snapshots = snapshots;
+                        binding.replication = replication;
+                        binding.interact = interact;
                     }
+                }
+                LifecycleCmd::Enter {
+                    connection_id,
+                    character,
+                    replication,
+                    interact,
+                    reply,
+                } => {
+                    let result = self.enter(connection_id, character, replication, interact);
+                    let _ = reply.send(result);
                 }
                 LifecycleCmd::Detach { connection_id } => self.detach(connection_id),
             }
@@ -495,62 +1122,755 @@ impl GameplayOwner {
 
     /// One simulation tick for every attached player. Packet count is irrelevant.
     pub fn simulate_tick(&mut self, dt: f32) {
-        let ids: Vec<(ConnectionId, EntityId, PlayerInput)> = self
+        let tick = SimulationTick::from_count(self.ticks.saturating_add(1));
+        self.world.begin_tick(tick);
+        let map_a = self.map_a_address();
+        self.load_pressure.maintain(&mut self.world, map_a, tick);
+        if !self.load_pressure.is_active() {
+            self.maybe_arm_runtime_probe(tick);
+        }
+        self.world.drain_critical_scheduler();
+        let ids: Vec<(ConnectionId, EntityId, PlayerInput, bool)> = self
             .bindings
             .iter_mut()
-            .map(|(cid, binding)| (*cid, binding.entity, binding.input.take_for_tick()))
+            .map(|(cid, binding)| {
+                let gated = binding.input.input_gated();
+                let reason = binding.input.input_gate_reason();
+                let entity = binding.entity;
+                let player_input = binding.input.take_for_tick();
+                if gated && !binding.input.input_gated() {
+                    println!("6D_INPUT unlock actor={entity} reason={reason:?}");
+                }
+                (*cid, entity, player_input, gated)
+            })
             .collect();
-        for (_, entity, player_input) in ids {
+        for (_, entity, player_input, gated) in ids {
+            if gated && let Some((_, player)) = self.world.player_parts_mut_for(entity) {
+                player.velocity = [0.0, 0.0];
+            }
             self.world.tick_player(entity, dt, player_input);
         }
-        self.ticks = self.ticks.saturating_add(1);
+        self.world.maintain_portal_reentry();
+        let closed = self.world.maintain_interaction_sessions();
+        self.emit_closed(closed);
+        let _ = self.world.commit_runtime_events();
+        self.world.pump_cadence();
+        self.world.drain_deferred_scheduler();
+        self.ticks = tick.get();
         self.publish_snapshots();
     }
 
+    fn maybe_arm_runtime_probe(&mut self, tick: SimulationTick) {
+        if !self.runtime_probe.enabled || self.runtime_probe.armed {
+            return;
+        }
+        self.runtime_probe.armed = true;
+        let _ = self.world.register_cadence(Cadence::EveryN { n: 30 }, 6);
+        let due = tick.saturating_add_ticks(30);
+        let req = RuntimeSpawnRequest::transient_at(self.map_a_address())
+            .with_transform(Transform::from_position([FOOTNOTE_SPAWN_X + 6.0, 2.0]))
+            .visible();
+        if self
+            .world
+            .schedule_spawn(req, due, ScheduleOwner::World, WorkLane::Deferred)
+            .is_some()
+        {
+            println!("6F_PROBE scheduled visible generic at tick {}", due.get());
+        }
+    }
+
+    fn command_actor(
+        &mut self,
+        connection_id: ConnectionId,
+        class: CommandClass,
+    ) -> Result<EntityId, CommandDenial> {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            self.command_rejects_other = self.command_rejects_other.saturating_add(1);
+            return Err(CommandDenial::Disconnected);
+        };
+        let transition = binding.input.input_gate_reason();
+        let busy = self.world.active_action(binding.entity).is_some();
+        match validate_command_preamble(Some(binding.entity), transition, busy, class) {
+            Ok(actor) => Ok(actor),
+            Err(denial) => {
+                if denial.is_gate() {
+                    self.command_rejects_gate = self.command_rejects_gate.saturating_add(1);
+                } else {
+                    self.command_rejects_other = self.command_rejects_other.saturating_add(1);
+                }
+                Err(denial)
+            }
+        }
+    }
+
+    fn begin_transition_input_barrier(
+        &mut self,
+        connection_id: ConnectionId,
+        reason: InputGateReason,
+    ) {
+        let Some(binding) = self.bindings.get_mut(&connection_id) else {
+            return;
+        };
+        let entity = binding.entity;
+        binding.input.lock_transition(reason);
+        if let Some((_, player)) = self.world.player_parts_mut_for(entity) {
+            player.velocity = [0.0, 0.0];
+        }
+        println!(
+            "6D_INPUT barrier actor={entity} reason={reason:?} ticks={}",
+            reason.lock_ticks()
+        );
+    }
+
+    fn map_b_address(&self) -> WorldAddress {
+        ContentId::from_authored(MAP_SECOND_AUTHORED)
+            .ok()
+            .and_then(|id| {
+                world_address_for_map(&self.registry, id, ChannelId::DEFAULT, InstanceId::DEFAULT)
+            })
+            .unwrap_or(WorldAddress::DEV)
+    }
+
+    fn map_a_address(&self) -> WorldAddress {
+        ContentId::from_authored(MAP_FOOTNOTE_AUTHORED)
+            .ok()
+            .and_then(|id| {
+                world_address_for_map(&self.registry, id, ChannelId::DEFAULT, InstanceId::DEFAULT)
+            })
+            .unwrap_or(WorldAddress::DEV)
+    }
+
+    fn apply_content_transition(
+        &mut self,
+        connection_id: ConnectionId,
+        actor: EntityId,
+        tr: &purgatory_content::TransitionRef,
+    ) -> Result<EntityId, InteractionReject> {
+        let dest_content = ContentId::from_authored(&tr.map_authored)
+            .map_err(|_| InteractionReject::Unavailable)?;
+        let dest_portal_content = ContentId::from_authored(&tr.portal_authored)
+            .map_err(|_| InteractionReject::Unavailable)?;
+        let Some(current) = self.world.address_of(actor) else {
+            return Err(InteractionReject::Unavailable);
+        };
+        let Some(dest) = world_address_for_map(
+            &self.registry,
+            dest_content,
+            current.channel,
+            current.instance,
+        ) else {
+            return Err(InteractionReject::Unavailable);
+        };
+        let plan = map_plan(&self.registry, &tr.map_authored, dest)
+            .map_err(|_| InteractionReject::Unavailable)?;
+        self.world
+            .ensure_map(&plan)
+            .map_err(|_| InteractionReject::Unavailable)?;
+        let Some(dest_portal) = self.world.entity_with_content_at(dest, dest_portal_content) else {
+            return Err(InteractionReject::Unavailable);
+        };
+        let Some(portal_pos) = self.world.transform_of(dest_portal).map(|t| t.position) else {
+            return Err(InteractionReject::Unavailable);
+        };
+        let pos = self
+            .standing_pose_on_map(dest, portal_pos[0])
+            .unwrap_or(portal_pos);
+        if !self.world.transition_entity(actor, dest, pos) {
+            return Err(InteractionReject::Unavailable);
+        }
+        let floor_id = self
+            .world
+            .iter_platforms()
+            .find(|v| {
+                self.world
+                    .address_of(v.id)
+                    .is_some_and(|a| a.compatible_with(dest))
+                    && pos[0] >= v.aabb().min_x()
+                    && pos[0] <= v.aabb().max_x()
+            })
+            .map(|v| v.id);
+        if let Some(floor_id) = floor_id
+            && let Some((_, player)) = self.world.player_parts_mut_for(actor)
+        {
+            player.grounded = true;
+            player.grounded_on = Some(floor_id);
+            player.velocity = [0.0, 0.0];
+        }
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.interest.bump_epoch();
+            if let Some(pipe) = &binding.replication {
+                pipe.purge_older_than(binding.interest.epoch);
+            }
+            if binding.input.bump_epoch().is_none() {
+                return Err(InteractionReject::Unavailable);
+            }
+        }
+        self.begin_transition_input_barrier(connection_id, InputGateReason::MapTransition);
+        self.world.lock_portal_reentry(actor, dest_portal);
+        let epoch = self
+            .bindings
+            .get(&connection_id)
+            .map(|b| b.interest.epoch)
+            .unwrap_or(0);
+        let pose = self
+            .world
+            .transform_of(actor)
+            .map(|t| t.position)
+            .unwrap_or(pos);
+        println!(
+            "6D_POSE server_dest_ready actor={actor} dest={dest} portal={dest_portal} pose=({:.3},{:.3}) epoch={epoch} before_tick=true",
+            pose[0], pose[1]
+        );
+        self.publish_snapshots();
+        Ok(dest_portal)
+    }
+
+    fn standing_pose_on_map(&self, address: WorldAddress, x: f32) -> Option<[f32; 2]> {
+        let view = self.world.iter_platforms().find(|v| {
+            self.world
+                .address_of(v.id)
+                .is_some_and(|a| a.compatible_with(address))
+                && x >= v.aabb().min_x()
+                && x <= v.aabb().max_x()
+        })?;
+        Some(
+            PlayerState::standing_on_at(view.id, view.top_surface(), x)
+                .0
+                .position,
+        )
+    }
+
+    fn handle_interact_open(&mut self, connection_id: ConnectionId, target: WireEntityId) {
+        let interact_tx = self
+            .bindings
+            .get(&connection_id)
+            .and_then(|b| b.interact.clone());
+        let actor = match self.command_actor(connection_id, CommandClass::Interact) {
+            Ok(actor) => actor,
+            Err(CommandDenial::Disconnected) => {
+                println!(
+                    "6B_INTERACT validate other connection={connection_id} target={target} reason=no_binding"
+                );
+                return;
+            }
+            Err(reason) => {
+                println!(
+                    "6B_INTERACT rejected connection={connection_id} target={target} reason={}",
+                    reason.as_str()
+                );
+                if let Some(tx) = interact_tx {
+                    let _ = tx.try_send(ServerControl::Interact(ServerInteract::Rejected {
+                        target,
+                        reason: InteractRejectReason::Unavailable,
+                    }));
+                }
+                return;
+            }
+        };
+        let target_id = super::snapshot::from_wire_id(target);
+        let event = match self.world.try_open_interaction(actor, target_id) {
+            Ok(session) => {
+                println!(
+                    "6B_INTERACT validate opened actor={actor} target={target} session={}",
+                    session.id.get()
+                );
+                if session.state == purgatory_simulation::InteractionSessionState::Updated {
+                    ServerInteract::Updated {
+                        session_id: session.id.get(),
+                        target,
+                    }
+                } else {
+                    ServerInteract::Opened {
+                        session_id: session.id.get(),
+                        target,
+                    }
+                }
+            }
+            Err(reason) => {
+                println!(
+                    "6B_INTERACT validate {} actor={actor} target={target}",
+                    interact_reject_trace(reason)
+                );
+                ServerInteract::Rejected {
+                    target,
+                    reason: map_reject(reason),
+                }
+            }
+        };
+        println!("6B_INTERACT response {event:?}");
+        if let Some(tx) = interact_tx {
+            if tx.try_send(ServerControl::Interact(event)).is_err() {
+                println!("6B_INTERACT response dropped (interact channel full or closed)");
+            }
+        } else {
+            println!("6B_INTERACT response dropped (no interact channel)");
+        }
+    }
+
+    fn handle_dev_set_channel(&mut self, connection_id: ConnectionId, channel: u32) {
+        if channel > DEV_CHANNEL_MAX {
+            println!(
+                "6D_CHANNEL reject connection={connection_id} channel={channel} reason=invalid_channel max={DEV_CHANNEL_MAX}"
+            );
+            return;
+        }
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            println!("6D_CHANNEL reject connection={connection_id} reason=no_binding");
+            return;
+        };
+        if binding.input.input_gated() {
+            let _ = self.command_actor(connection_id, CommandClass::DevChannel);
+            println!(
+                "6D_CHANNEL reject connection={connection_id} channel={channel} reason=input_gated"
+            );
+            return;
+        }
+        let actor = binding.entity;
+        let Some(current) = self.world.address_of(actor) else {
+            println!("6D_CHANNEL reject connection={connection_id} reason=no_address");
+            return;
+        };
+        let dest = WorldAddress::new(current.map, ChannelId::from_raw(channel), current.instance);
+        if dest == current {
+            println!("6D_CHANNEL no_op actor={actor} address={current} channel={channel}");
+            return;
+        }
+        let Some(map_def) = self.registry.map_by_map_id(dest.map) else {
+            println!("6D_CHANNEL reject actor={actor} dest={dest} reason=no_map");
+            return;
+        };
+        let Ok(plan) = map_plan(&self.registry, &map_def.authored_id, dest) else {
+            println!("6D_CHANNEL reject actor={actor} dest={dest} reason=map_plan");
+            return;
+        };
+        if self.world.ensure_map(&plan).is_err() {
+            println!("6D_CHANNEL reject actor={actor} dest={dest} reason=ensure_map");
+            return;
+        }
+        let known_before = binding.interest.known_count();
+        let epoch_before = binding.interest.epoch;
+        let interact_tx = binding.interact.clone();
+        let existing = self.world.interaction_session_of(actor);
+        let pose = self.world.transform_of(actor).map(|t| t.position);
+        if !self.world.set_address(actor, dest) {
+            println!("6D_CHANNEL reject actor={actor} dest={dest} reason=set_address");
+            return;
+        }
+        if let (Some(tx), Some(session)) = (interact_tx, existing) {
+            let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
+                session_id: session.id.get(),
+                reason: InteractCloseReason::AddressChanged,
+            }));
+            println!(
+                "6D_CHANNEL session_closed actor={actor} session={} reason=AddressChanged",
+                session.id.get()
+            );
+        }
+        if let Some(pos) = pose {
+            let floor_id = self
+                .world
+                .iter_platforms()
+                .find(|v| {
+                    self.world
+                        .address_of(v.id)
+                        .is_some_and(|a| a.compatible_with(dest))
+                        && pos[0] >= v.aabb().min_x()
+                        && pos[0] <= v.aabb().max_x()
+                })
+                .map(|v| v.id);
+            if let Some(floor_id) = floor_id
+                && let Some((_, player)) = self.world.player_parts_mut_for(actor)
+            {
+                player.grounded_on = Some(floor_id);
+            }
+        }
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.interest.bump_epoch();
+            if let Some(pipe) = &binding.replication {
+                pipe.purge_older_than(binding.interest.epoch);
+            }
+            if binding.input.bump_epoch().is_none() {
+                println!("6D_CHANNEL reject actor={actor} dest={dest} reason=epoch_wrap");
+                return;
+            }
+        }
+        self.begin_transition_input_barrier(connection_id, InputGateReason::MembershipTransition);
+        self.publish_snapshots();
+        let epoch = self
+            .bindings
+            .get(&connection_id)
+            .map(|b| b.interest.epoch)
+            .unwrap_or(0);
+        println!(
+            "6D_CHANNEL transition actor={actor} from={current} to={dest} epoch={epoch_before}->{epoch} known_cleared={known_before} pose=({:.3},{:.3})",
+            pose.map(|p| p[0]).unwrap_or(f32::NAN),
+            pose.map(|p| p[1]).unwrap_or(f32::NAN)
+        );
+    }
+
+    fn handle_portal_activate(&mut self, connection_id: ConnectionId, target: WireEntityId) {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            println!(
+                "6C_PORTAL portal_activate connection={connection_id} target={target} reason=no_binding"
+            );
+            return;
+        };
+        let actor = binding.entity;
+        let epoch_before = binding.input.input_epoch;
+        let interact_tx = binding.interact.clone();
+        let gated = binding.input.input_gated();
+        let target_id = super::snapshot::from_wire_id(target);
+        let addr_before = self
+            .world
+            .address_of(actor)
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "-".into());
+        let locked = self.world.portal_reentry_locked(actor, target_id);
+        println!(
+            "6C_PORTAL activate_recv actor={actor} target={target} addr={addr_before} epoch={epoch_before} tick={} reentry_locked={locked} input_gated={gated}",
+            self.ticks
+        );
+        if gated {
+            let _ = self.command_actor(connection_id, CommandClass::Portal);
+            println!(
+                "6C_PORTAL rejected actor={actor} target={target} reason=input_gated locked={locked} addr={addr_before}"
+            );
+            if let Some(tx) = interact_tx {
+                let _ = tx.try_send(ServerControl::Interact(ServerInteract::Rejected {
+                    target,
+                    reason: InteractRejectReason::Unavailable,
+                }));
+            }
+            return;
+        }
+        if let Err(reason) = self.world.validate_portal_activate(actor, target_id) {
+            println!(
+                "6C_PORTAL rejected actor={actor} target={target} reason={} locked={locked} addr={addr_before}",
+                interact_reject_trace(reason)
+            );
+            if let Some(tx) = interact_tx {
+                let _ = tx.try_send(ServerControl::Interact(ServerInteract::Rejected {
+                    target,
+                    reason: map_reject(reason),
+                }));
+            }
+            return;
+        }
+        let Some(tr) = self
+            .world
+            .content_id_of(target_id)
+            .and_then(|id| self.registry.entity_by_id(id))
+            .and_then(|def| def.transition.clone())
+        else {
+            println!("6C_PORTAL rejected actor={actor} target={target} reason=no_link");
+            if let Some(tx) = interact_tx {
+                let _ = tx.try_send(ServerControl::Interact(ServerInteract::Rejected {
+                    target,
+                    reason: InteractRejectReason::Unavailable,
+                }));
+            }
+            return;
+        };
+        let existing = self.world.interaction_session_of(actor);
+        match self.apply_content_transition(connection_id, actor, &tr) {
+            Ok(dest_portal) => {
+                let addr_after = self
+                    .world
+                    .address_of(actor)
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| "-".into());
+                let dest_pos = self
+                    .world
+                    .transform_of(dest_portal)
+                    .map(|t| t.position)
+                    .unwrap_or([f32::NAN, f32::NAN]);
+                let pose = self
+                    .world
+                    .transform_of(actor)
+                    .map(|t| t.position)
+                    .unwrap_or([f32::NAN, f32::NAN]);
+                let epoch_after = self
+                    .bindings
+                    .get(&connection_id)
+                    .map(|b| b.input.input_epoch)
+                    .unwrap_or(epoch_before);
+                println!(
+                    "6C_PORTAL accepted actor={actor} dest_map={} dest_portal={} dest_entity={dest_portal} addr {addr_before} -> {addr_after} pose=({:.2},{:.2}) dest_pose=({:.2},{:.2}) epoch {epoch_before} -> {epoch_after} reentry_lock=on",
+                    tr.map_authored, tr.portal_authored, pose[0], pose[1], dest_pos[0], dest_pos[1]
+                );
+                if let (Some(tx), Some(session)) = (interact_tx, existing) {
+                    let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
+                        session_id: session.id.get(),
+                        reason: InteractCloseReason::AddressChanged,
+                    }));
+                }
+                let restore = RestoreIntent {
+                    map_authored: tr.map_authored.clone(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                };
+                let logical = resolve_restore(&self.registry, &restore);
+                self.note_persistent_restore(
+                    connection_id,
+                    RestoreIntent {
+                        map_authored: logical.map_authored,
+                        point_id: logical.point_id,
+                        checkpoint_id: logical.checkpoint_id,
+                    },
+                );
+            }
+            Err(reason) => {
+                println!(
+                    "6C_PORTAL transition_failed actor={actor} reason={}",
+                    interact_reject_trace(reason)
+                );
+                if let Some(tx) = interact_tx {
+                    let _ = tx.try_send(ServerControl::Interact(ServerInteract::Rejected {
+                        target,
+                        reason: map_reject(reason),
+                    }));
+                }
+            }
+        }
+    }
+
+    fn handle_interact_close(&mut self, connection_id: ConnectionId, session_id: u32) {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            println!(
+                "6B_INTERACT recv InteractClose connection={connection_id} session={session_id} reason=no_binding"
+            );
+            return;
+        };
+        let actor = binding.entity;
+        let interact_tx = binding.interact.clone();
+        let event = match self.world.close_interaction(
+            actor,
+            purgatory_simulation::InteractionSessionId(session_id),
+        ) {
+            Ok(session) => ServerInteract::Closed {
+                session_id: session.id.get(),
+                reason: InteractCloseReason::Requested,
+            },
+            Err(_) => ServerInteract::Rejected {
+                target: WireEntityId {
+                    index: 0,
+                    generation: 0,
+                },
+                reason: InteractRejectReason::InvalidSession,
+            },
+        };
+        println!("6B_INTERACT response {event:?}");
+        if let Some(tx) = interact_tx {
+            let _ = tx.try_send(ServerControl::Interact(event));
+        }
+    }
+
+    fn emit_closed(
+        &mut self,
+        closed: Vec<(
+            purgatory_simulation::InteractionSession,
+            InteractionCloseReason,
+        )>,
+    ) {
+        for (session, reason) in closed {
+            let Some(tx) = self
+                .bindings
+                .values()
+                .find(|b| b.entity == session.actor)
+                .and_then(|b| b.interact.clone())
+            else {
+                continue;
+            };
+            let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
+                session_id: session.id.get(),
+                reason: map_close_reason(reason),
+            }));
+        }
+    }
+
     fn publish_snapshots(&mut self) {
-        let visible: Vec<EntityId> = self.bindings.values().map(|b| b.entity).collect();
         self.snapshot_sequence = self.snapshot_sequence.saturating_add(1);
         self.snapshots_built = self.snapshots_built.saturating_add(1);
         let mut last_entities = 0u16;
         if verbose_snapshots() {
             println!(
-                "snapshot seq={} tick={} entities={}",
-                self.snapshot_sequence,
-                self.ticks,
-                visible.len()
+                "snapshot seq={} tick={}",
+                self.snapshot_sequence, self.ticks,
             );
         }
-        for (cid, binding) in &self.bindings {
-            let Some(tx) = binding.snapshots.as_ref() else {
+        let ids: Vec<ConnectionId> = self.bindings.keys().copied().collect();
+        let mut observer_pending_updates = 0u64;
+        let mut observer_pending_enters = 0u64;
+        let mut cadence_deferred_updates = 0u64;
+        let GameplayOwner {
+            world,
+            bindings,
+            snapshot_sequence,
+            ticks,
+            snapshot_build_count,
+            snapshot_build_time_max_us,
+            aoi_enters,
+            aoi_leaves,
+            aoi_updates,
+            aoi_churn_reentry,
+            aoi_update_bytes,
+            oldest_pending_ticks,
+            max_deferred_ticks,
+            replication_queue_depth_max,
+            last_snapshot_entities: _,
+            snapshot_send_failed: _,
+            trace_relevance,
+            trace_snapshot,
+            ..
+        } = self;
+        for cid in ids {
+            let Some(binding) = bindings.get_mut(&cid) else {
                 continue;
             };
-            let snap = super::snapshot::build(
-                self.snapshot_sequence,
-                self.ticks,
+            let Some(pipe) = binding.replication.clone() else {
+                continue;
+            };
+            if !*trace_relevance {
+                *trace_relevance = true;
+                let visible = world.spatial_candidates(binding.entity);
+                println!(
+                    "6B_TRACE relevance observer={} visible={}",
+                    binding.entity,
+                    visible.len()
+                );
+            }
+            let build_start = std::time::Instant::now();
+            let stats = publish_observer_frame(
+                &mut binding.interest,
+                &pipe,
+                world,
                 binding.entity,
-                &self.world,
-                &visible,
+                *snapshot_sequence,
+                *ticks,
                 binding.input.input_epoch,
                 binding.input.last_acknowledged(),
                 binding.input.unmatched_continuation_ticks,
             );
-            last_entities = u16::try_from(snap.entities.len()).unwrap_or(u16::MAX);
-            if verbose_snapshots() {
+            let build_us = u64::try_from(build_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            *snapshot_build_time_max_us = (*snapshot_build_time_max_us).max(build_us);
+            *snapshot_build_count = snapshot_build_count.saturating_add(1);
+            last_entities = last_entities.max(stats.known as u16);
+            *aoi_enters = aoi_enters.saturating_add(u64::from(stats.enters));
+            *aoi_leaves = aoi_leaves.saturating_add(u64::from(stats.leaves));
+            *aoi_updates = aoi_updates.saturating_add(u64::from(stats.updates));
+            *aoi_churn_reentry = aoi_churn_reentry.saturating_add(u64::from(stats.churn_reentry));
+            *aoi_update_bytes = aoi_update_bytes.saturating_add(u64::from(stats.bytes));
+            *oldest_pending_ticks = (*oldest_pending_ticks).max(stats.oldest_pending_ticks);
+            *max_deferred_ticks = (*max_deferred_ticks).max(stats.oldest_pending_ticks);
+            *replication_queue_depth_max =
+                (*replication_queue_depth_max).max(u64::from(stats.queue_depth));
+            observer_pending_updates =
+                observer_pending_updates.saturating_add(u64::from(stats.pending_updates));
+            observer_pending_enters = observer_pending_enters
+                .saturating_add(u64::from(binding.interest.want_enter_count()));
+            cadence_deferred_updates =
+                cadence_deferred_updates.saturating_add(u64::from(stats.cadence_deferred));
+            if !*trace_snapshot {
+                *trace_snapshot = true;
                 println!(
-                    "cid={cid} snapshot seq={} local_entity={}",
-                    snap.snapshot_sequence, snap.local_player_entity
+                    "6D_TRACE frame cid={cid} enters={} leaves={} updates={} bytes={}",
+                    stats.enters, stats.leaves, stats.updates, stats.bytes
                 );
             }
-            if tx.send(Some(snap)).is_err() {
-                self.snapshot_send_failed = self.snapshot_send_failed.saturating_add(1);
-            }
+            let _ = cid;
         }
         self.last_snapshot_entities = last_entities;
+        self.observer_pending_updates = observer_pending_updates;
+        self.observer_pending_enters = observer_pending_enters;
+        self.cadence_deferred_updates = cadence_deferred_updates;
+        let mut session_max = 0u64;
+        for binding in self.bindings.values() {
+            session_max = session_max.max(binding.input.queued_len() as u64);
+        }
+        self.session_queue_max = self.session_queue_max.max(session_max);
     }
+}
+
+fn instantiate_dev_maps(world: &mut World, registry: &ContentRegistry) {
+    for authored in [MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED] {
+        let cid = ContentId::from_authored(authored).unwrap_or_else(|_| {
+            panic!("authored id {authored}");
+        });
+        let Some(addr) =
+            world_address_for_map(registry, cid, ChannelId::DEFAULT, InstanceId::DEFAULT)
+        else {
+            panic!("no MapId for {authored}");
+        };
+        let plan = map_plan(registry, authored, addr).unwrap_or_else(|err| {
+            panic!("map plan {authored}: {err}");
+        });
+        world.ensure_map(&plan).unwrap_or_else(|err| {
+            panic!("instantiate {authored}: {err:?}");
+        });
+    }
+}
+
+fn log_dev_interaction_fixtures(world: &purgatory_simulation::World) {
+    let mut n = 0u32;
+    for id in world.iter() {
+        if world.interactable_of(id).is_none() {
+            continue;
+        }
+        n += 1;
+        let pos = world
+            .transform_of(id)
+            .map(|t| t.position)
+            .unwrap_or([f32::NAN, f32::NAN]);
+        let addr = world
+            .address_of(id)
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "6B_TRACE spawn id={id} pos=({:.3},{:.3}) address={addr}",
+            pos[0], pos[1]
+        );
+    }
+    println!("6B_TRACE spawn count={n} (startup once, not per tick)");
 }
 
 fn verbose_snapshots() -> bool {
     std::env::var_os("PURGATORY_NET_VERBOSE").is_some()
+}
+
+fn map_reject(reason: InteractionReject) -> InteractRejectReason {
+    match reason {
+        InteractionReject::TargetMissing => InteractRejectReason::TargetMissing,
+        InteractionReject::StaleId => InteractRejectReason::StaleId,
+        InteractionReject::WrongAddress => InteractRejectReason::WrongAddress,
+        InteractionReject::OutOfRange => InteractRejectReason::OutOfRange,
+        InteractionReject::NotInteractable => InteractRejectReason::NotInteractable,
+        InteractionReject::Unavailable => InteractRejectReason::Unavailable,
+        InteractionReject::InvalidSession => InteractRejectReason::InvalidSession,
+        InteractionReject::ReentryLocked => InteractRejectReason::OutOfRange,
+    }
+}
+
+fn interact_reject_trace(reason: InteractionReject) -> &'static str {
+    match reason {
+        InteractionReject::TargetMissing => "target_missing",
+        InteractionReject::StaleId => "stale_id",
+        InteractionReject::WrongAddress => "wrong_address",
+        InteractionReject::OutOfRange => "out_of_range",
+        InteractionReject::NotInteractable => "not_interactable",
+        InteractionReject::Unavailable => "unavailable",
+        InteractionReject::InvalidSession => "invalid_session",
+        InteractionReject::ReentryLocked => "reentry_locked",
+    }
+}
+
+fn map_close_reason(reason: InteractionCloseReason) -> InteractCloseReason {
+    match reason {
+        InteractionCloseReason::Requested => InteractCloseReason::Requested,
+        InteractionCloseReason::TargetGone => InteractCloseReason::TargetGone,
+        InteractionCloseReason::AddressChanged => InteractCloseReason::AddressChanged,
+        InteractionCloseReason::OutOfRange => InteractCloseReason::OutOfRange,
+        InteractionCloseReason::Disconnected => InteractCloseReason::Disconnected,
+    }
 }
 
 impl Default for GameplayOwner {
@@ -562,7 +1882,108 @@ impl Default for GameplayOwner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::watch;
+    use purgatory_protocol::{ReplicationRecord, SnapshotEntity, decode_replication_frame};
+    use std::collections::HashMap;
+
+    struct ReplicaView {
+        epoch: u32,
+        sequence: u32,
+        local_player_entity: WireEntityId,
+        last_acknowledged_input_sequence: u32,
+        input_epoch: u16,
+        local_grounded: bool,
+        local_map: u32,
+        local_channel: u32,
+        local_instance: u32,
+        entities: HashMap<WireEntityId, SnapshotEntity>,
+        saw_update_before_enter: bool,
+    }
+
+    impl ReplicaView {
+        fn new() -> Self {
+            Self {
+                epoch: 0,
+                sequence: 0,
+                local_player_entity: WireEntityId {
+                    index: 0,
+                    generation: 0,
+                },
+                last_acknowledged_input_sequence: 0,
+                input_epoch: 0,
+                local_grounded: false,
+                local_map: 0,
+                local_channel: 0,
+                local_instance: 0,
+                entities: HashMap::new(),
+                saw_update_before_enter: false,
+            }
+        }
+
+        fn apply_payload(&mut self, payload: &[u8]) {
+            let frame = decode_replication_frame(payload).expect("frame");
+            if frame.observer_baseline_epoch < self.epoch {
+                return;
+            }
+            if frame.observer_baseline_epoch > self.epoch {
+                self.entities.clear();
+                self.epoch = frame.observer_baseline_epoch;
+            }
+            self.sequence = frame.snapshot_sequence;
+            self.local_player_entity = frame.local_player_entity;
+            self.last_acknowledged_input_sequence = frame.last_acknowledged_input_sequence;
+            self.input_epoch = frame.input_epoch;
+            self.local_grounded = frame.local_grounded;
+            self.local_map = frame.local_map;
+            self.local_channel = frame.local_channel;
+            self.local_instance = frame.local_instance;
+            for rec in frame.records {
+                match rec {
+                    ReplicationRecord::Enter { entity, .. } => {
+                        self.entities.insert(entity.entity_id, entity);
+                    }
+                    ReplicationRecord::Update {
+                        entity_id,
+                        position,
+                        velocity,
+                        ..
+                    } => {
+                        if let Some(e) = self.entities.get_mut(&entity_id) {
+                            if let Some(p) = position {
+                                e.position = p;
+                            }
+                            if let Some(v) = velocity {
+                                e.velocity = v;
+                            }
+                        } else {
+                            self.saw_update_before_enter = true;
+                        }
+                    }
+                    ReplicationRecord::Leave { entity_id } => {
+                        self.entities.remove(&entity_id);
+                    }
+                }
+            }
+        }
+
+        fn player_count(&self) -> usize {
+            self.entities
+                .values()
+                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Player)
+                .count()
+        }
+    }
+
+    fn bind_pipe(owner: &mut GameplayOwner, id: ConnectionId) -> ReplicationPipe {
+        let (pipe, _rx) = ReplicationPipe::new();
+        owner.bindings.get_mut(&id).unwrap().replication = Some(pipe.clone());
+        pipe
+    }
+
+    fn drain(pipe: &ReplicationPipe, view: &mut ReplicaView) {
+        while let Some(frame) = pipe.pop() {
+            view.apply_payload(&frame.payload);
+        }
+    }
 
     fn cmd(seq: u32, axis: MoveAxis, jump: bool, down: bool) -> InputCommand {
         InputCommand {
@@ -571,6 +1992,29 @@ mod tests {
             move_axis: axis,
             jump_pressed: jump,
             down_held: down,
+            portal_held: false,
+        }
+    }
+
+    fn latch_cmd(epoch: u16, seq: u32, portal_held: bool) -> InputCommand {
+        InputCommand {
+            input_epoch: epoch,
+            sequence: seq,
+            move_axis: MoveAxis::Neutral,
+            jump_pressed: false,
+            down_held: false,
+            portal_held,
+        }
+    }
+
+    fn cmd_epoch(epoch: u16, seq: u32, axis: MoveAxis, jump: bool, down: bool) -> InputCommand {
+        InputCommand {
+            input_epoch: epoch,
+            sequence: seq,
+            move_axis: axis,
+            jump_pressed: jump,
+            down_held: down,
+            portal_held: false,
         }
     }
 
@@ -578,6 +2022,16 @@ mod tests {
         InputUpdate::Command {
             connection_id: id,
             command,
+        }
+    }
+
+    fn expire_input_gate(owner: &mut GameplayOwner) {
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        let n = purgatory_simulation::map_transition_input_lock_ticks()
+            .max(purgatory_simulation::membership_transition_input_lock_ticks())
+            .saturating_add(1);
+        for _ in 0..n {
+            owner.simulate_tick(dt);
         }
     }
 
@@ -789,6 +2243,56 @@ mod tests {
     }
 
     #[test]
+    fn transition_lock_neutralizes_and_ignores_queued_movement() {
+        let mut s = SessionInput::new();
+        assert_eq!(
+            s.apply(cmd(1, MoveAxis::Right, false, false)),
+            SeqDecision::Accept
+        );
+        assert_eq!(s.take_for_tick().move_axis, 1);
+        assert_eq!(s.bump_epoch(), Some(1));
+        s.lock_transition(InputGateReason::MapTransition);
+        assert!(s.input_gated());
+        assert_eq!(s.input_gate_reason(), Some(InputGateReason::MapTransition));
+        assert_eq!(s.queued_len(), 0);
+        let mut held = cmd(1, MoveAxis::Right, true, true);
+        held.input_epoch = 1;
+        assert_eq!(s.apply(held), SeqDecision::Accept);
+        assert_eq!(s.queued_len(), 1);
+        let ticks = InputGateReason::MapTransition.lock_ticks();
+        for i in 0..ticks {
+            let input = s.take_for_tick();
+            assert_eq!(input.move_axis, 0, "tick {i} must stay idle while gated");
+            assert!(!input.jump_pressed);
+            assert!(!input.down_held);
+            assert_eq!(s.move_axis, MoveAxis::Neutral);
+        }
+        assert!(!s.input_gated());
+        assert_eq!(s.input_gate_reason(), None);
+        assert_eq!(s.queued_len(), 0);
+        let continued = s.take_for_tick();
+        assert_eq!(
+            continued.move_axis, 0,
+            "stale gated command must not become continuation"
+        );
+        let mut resume = cmd(2, MoveAxis::Right, false, false);
+        resume.input_epoch = 1;
+        assert_eq!(s.apply(resume), SeqDecision::Accept);
+        assert_eq!(s.take_for_tick().move_axis, 1);
+    }
+
+    #[test]
+    fn old_epoch_still_rejected_while_gated() {
+        let mut s = SessionInput::new();
+        assert_eq!(s.bump_epoch(), Some(1));
+        s.lock_transition(InputGateReason::MapTransition);
+        let mut old = cmd(1, MoveAxis::Right, false, false);
+        old.input_epoch = 0;
+        assert_eq!(s.apply(old), SeqDecision::OldEpoch);
+        assert_eq!(s.take_for_tick().move_axis, 0);
+    }
+
+    #[test]
     fn reconnect_starts_clean() {
         let mut owner = GameplayOwner::new();
         let a = ConnectionId::from_raw(1);
@@ -806,6 +2310,27 @@ mod tests {
         let grounded = owner.world().player_body_of(new).unwrap();
         assert!(grounded.grounded);
         assert_eq!(grounded.velocity, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn character_occupancy_rejects_second_session_and_reconnect_gets_new_entity() {
+        let mut owner = GameplayOwner::new();
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(7));
+        let a = ConnectionId::from_raw(1);
+        let b = ConnectionId::from_raw(2);
+        assert_eq!(owner.enter(a, character.clone(), None, None), Ok(()));
+        let first = owner.entity_of(a).expect("spawned");
+        assert_eq!(
+            owner.enter(b, character.clone(), None, None),
+            Err(EnterError::Occupied)
+        );
+        assert!(owner.entity_of(b).is_none());
+        owner.detach(a);
+        let c = ConnectionId::from_raw(3);
+        assert_eq!(owner.enter(c, character, None, None), Ok(()));
+        let second = owner.entity_of(c).expect("respawned");
+        assert_ne!(first, second);
+        assert!(!owner.contains_entity(first));
     }
 
     #[test]
@@ -858,9 +2383,9 @@ mod tests {
         let a = ConnectionId::from_raw(1);
         owner.attach(a);
         let entity = owner.entity_of(a).unwrap();
-        if let Some((transform, _)) = owner.world.player_parts_mut_for(entity) {
-            transform.position[0] = 0.0;
-        }
+        let mut t = owner.world().transform_of(entity).unwrap();
+        t.position[0] = 0.0;
+        owner.world.set_transform(entity, t);
         let x0 = owner.world().player_body_of(entity).unwrap().position[0];
         owner.apply_input(command_update(a, cmd(1, MoveAxis::Left, false, false)));
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
@@ -921,41 +2446,73 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_watch_keeps_latest_and_does_not_block_ticks() {
+    fn replication_queue_does_not_block_ticks() {
         let mut owner = GameplayOwner::new();
         let a = ConnectionId::from_raw(1);
         let b = ConnectionId::from_raw(2);
-        let (tx_a, rx_a) = watch::channel(None);
-        let (tx_b, rx_b) = watch::channel(None);
         owner.attach(a);
         owner.attach(b);
-        owner.bindings.get_mut(&a).unwrap().snapshots = Some(tx_a);
-        owner.bindings.get_mut(&b).unwrap().snapshots = Some(tx_b);
+        let pipe_a = bind_pipe(&mut owner, a);
+        let pipe_b = bind_pipe(&mut owner, b);
+        assert!(owner.set_player_x(a, -8.0));
+        assert!(owner.set_player_x(b, -8.0));
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
         for _ in 0..40 {
             owner.simulate_tick(dt);
         }
         assert_eq!(owner.ticks(), 40);
         assert_eq!(owner.snapshot_sequence, 40);
-        let latest_a = rx_a.borrow().clone().expect("a snapshot");
-        let latest_b = rx_b.borrow().clone().expect("b snapshot");
-        assert_eq!(latest_a.snapshot_sequence, 40);
-        assert_eq!(latest_b.snapshot_sequence, 40);
-        assert_eq!(latest_a.entities.len(), 2);
-        assert_eq!(latest_b.entities.len(), 2);
-        assert_ne!(latest_a.local_player_entity, latest_b.local_player_entity);
+        assert!(pipe_a.len() <= super::super::replication::WRITER_QUEUE_CAP);
+        assert!(pipe_b.len() <= super::super::replication::WRITER_QUEUE_CAP);
+        let mut view_a = ReplicaView::new();
+        drain(&pipe_a, &mut view_a);
+        let mut view_b = ReplicaView::new();
+        drain(&pipe_b, &mut view_b);
         assert_eq!(
-            latest_a.local_player_entity,
+            view_a
+                .entities
+                .values()
+                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Player)
+                .count(),
+            2
+        );
+        assert_eq!(
+            view_b
+                .entities
+                .values()
+                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Player)
+                .count(),
+            2
+        );
+        assert_ne!(view_a.local_player_entity, view_b.local_player_entity);
+        assert_eq!(
+            view_a
+                .entities
+                .values()
+                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Interactable)
+                .count(),
+            2,
+            "AOI at x=-8 must include Map A switch and chest"
+        );
+        assert_eq!(
+            view_a
+                .entities
+                .values()
+                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Portal)
+                .count(),
+            1,
+            "AOI at x=-8 must include the Map A portal as ReplicatedKind::Portal"
+        );
+        assert_eq!(
+            view_a.local_player_entity,
             super::super::snapshot::to_wire_id(owner.entity_of(a).unwrap())
         );
-        drop(rx_a);
         for _ in 0..8 {
             owner.simulate_tick(dt);
         }
         assert_eq!(owner.ticks(), 48);
-        assert!(owner.snapshot_send_failed >= 1);
-        let still_b = rx_b.borrow().clone().expect("b still updating");
-        assert_eq!(still_b.snapshot_sequence, 48);
+        drain(&pipe_b, &mut view_b);
+        assert!(view_b.sequence >= 1);
     }
 
     #[test]
@@ -963,36 +2520,282 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let a = ConnectionId::from_raw(1);
         let b = ConnectionId::from_raw(2);
-        let (tx, rx) = watch::channel(None);
         owner.attach(a);
         owner.attach(b);
-        owner.bindings.get_mut(&a).unwrap().snapshots = Some(tx);
+        let pipe = bind_pipe(&mut owner, a);
         assert!(owner.set_player_x(a, 0.0));
         assert!(owner.set_player_x(b, 0.0));
         owner.apply_input(command_update(a, cmd(1, MoveAxis::Right, false, false)));
         owner.apply_input(command_update(b, cmd(1, MoveAxis::Left, false, false)));
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        let mut view = ReplicaView::new();
         for _ in 0..12 {
             owner.simulate_tick(dt);
+            drain(&pipe, &mut view);
         }
-        let snap = rx.borrow().clone().expect("snapshot");
-        assert_eq!(snap.entities.len(), 2);
+        assert_eq!(
+            view.entities
+                .values()
+                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Player)
+                .count(),
+            2
+        );
         let ea = super::super::snapshot::to_wire_id(owner.entity_of(a).unwrap());
         let eb = super::super::snapshot::to_wire_id(owner.entity_of(b).unwrap());
-        let ax = snap
-            .entities
-            .iter()
-            .find(|e| e.entity_id == ea)
-            .unwrap()
-            .position[0];
-        let bx = snap
-            .entities
-            .iter()
-            .find(|e| e.entity_id == eb)
-            .unwrap()
-            .position[0];
+        let ax = view.entities.get(&ea).unwrap().position[0];
+        let bx = view.entities.get(&eb).unwrap().position[0];
         assert!(ax > 0.2, "A right from 0, got {ax}");
         assert!(bx < -0.2, "B left from 0, got {bx}");
+    }
+
+    #[test]
+    fn snapshot_relevance_excludes_incompatible_world_address() {
+        let mut owner = GameplayOwner::new();
+        let a = ConnectionId::from_raw(1);
+        let b = ConnectionId::from_raw(2);
+        owner.attach(a);
+        owner.attach(b);
+        let pipe = bind_pipe(&mut owner, a);
+        let other = purgatory_simulation::WorldAddress::new(
+            purgatory_simulation::MapId::DEV,
+            purgatory_simulation::ChannelId::DEFAULT,
+            purgatory_simulation::InstanceId::from_raw(2),
+        );
+        assert!(owner.set_entity_address(b, other));
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        let mut view = ReplicaView::new();
+        drain(&pipe, &mut view);
+        let ea = super::super::snapshot::to_wire_id(owner.entity_of(a).unwrap());
+        let eb = super::super::snapshot::to_wire_id(owner.entity_of(b).unwrap());
+        assert!(view.entities.contains_key(&ea));
+        assert!(!view.entities.contains_key(&eb));
+        assert!(owner.contains_entity(owner.entity_of(b).unwrap()));
+    }
+
+    #[test]
+    fn channel_transition_isolates_then_rejoins_without_despawn() {
+        let mut owner = GameplayOwner::new();
+        let a = ConnectionId::from_raw(1);
+        let b = ConnectionId::from_raw(2);
+        owner.attach(a);
+        owner.attach(b);
+        let pipe_a = bind_pipe(&mut owner, a);
+        let pipe_b = bind_pipe(&mut owner, b);
+        assert!(owner.set_player_x(a, -8.0));
+        assert!(owner.set_player_x(b, -8.0));
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        owner.simulate_tick(dt);
+        let mut view_a = ReplicaView::new();
+        let mut view_b = ReplicaView::new();
+        drain(&pipe_a, &mut view_a);
+        drain(&pipe_b, &mut view_b);
+        assert_eq!(view_a.player_count(), 2);
+        assert_eq!(view_b.player_count(), 2);
+        assert_eq!(view_a.local_channel, 0);
+        assert_eq!(view_b.local_channel, 0);
+
+        let entity_a = owner.entity_of(a).unwrap();
+        let entity_b = owner.entity_of(b).unwrap();
+        let pose_b = owner.world().transform_of(entity_b).unwrap().position;
+        let epoch_a0 = owner.bindings.get(&a).unwrap().interest.epoch;
+        let epoch_b0 = owner.bindings.get(&b).unwrap().interest.epoch;
+        let known_b0 = owner.bindings.get(&b).unwrap().interest.known_count();
+        assert!(known_b0 >= 1);
+
+        owner.apply_input(InputUpdate::DevSetChannel {
+            connection_id: b,
+            channel: 1,
+        });
+        assert_eq!(owner.entity_of(b), Some(entity_b));
+        assert_eq!(
+            owner.world().lifecycle_of(entity_b),
+            Some(purgatory_simulation::EntityLifecycle::Active)
+        );
+        assert_eq!(
+            owner.world().address_of(entity_b).unwrap().channel,
+            purgatory_simulation::ChannelId::from_raw(1)
+        );
+        assert_eq!(
+            owner.world().address_of(entity_a).unwrap().channel,
+            purgatory_simulation::ChannelId::DEFAULT
+        );
+        assert_eq!(
+            owner.world().transform_of(entity_b).unwrap().position,
+            pose_b
+        );
+        let epoch_b1 = owner.bindings.get(&b).unwrap().interest.epoch;
+        assert!(epoch_b1 > epoch_b0);
+        assert_eq!(owner.bindings.get(&a).unwrap().interest.epoch, epoch_a0);
+        assert!(
+            !owner.bindings.get(&b).unwrap().interest.is_known(entity_a),
+            "old-channel remote must not remain Known after B's epoch reset"
+        );
+
+        owner.simulate_tick(dt);
+        drain(&pipe_a, &mut view_a);
+        drain(&pipe_b, &mut view_b);
+        let wa = super::super::snapshot::to_wire_id(entity_a);
+        let wb = super::super::snapshot::to_wire_id(entity_b);
+        assert!(view_a.entities.contains_key(&wa));
+        assert!(!view_a.entities.contains_key(&wb));
+        assert!(view_b.entities.contains_key(&wb));
+        assert!(!view_b.entities.contains_key(&wa));
+        assert_eq!(view_a.player_count(), 1);
+        assert_eq!(view_b.player_count(), 1);
+        assert_eq!(view_a.local_channel, 0);
+        assert_eq!(view_b.local_channel, 1);
+        assert!(!view_a.saw_update_before_enter);
+        assert!(!view_b.saw_update_before_enter);
+        assert_eq!(view_a.epoch, epoch_a0);
+        assert_eq!(view_b.epoch, epoch_b1);
+
+        let membership_ticks =
+            purgatory_simulation::membership_transition_input_lock_ticks().saturating_add(1);
+        for _ in 0..membership_ticks {
+            owner.simulate_tick(dt);
+            drain(&pipe_a, &mut view_a);
+            drain(&pipe_b, &mut view_b);
+        }
+
+        owner.apply_input(InputUpdate::DevSetChannel {
+            connection_id: a,
+            channel: 1,
+        });
+        assert_eq!(owner.entity_of(a), Some(entity_a));
+        assert_eq!(
+            owner.world().lifecycle_of(entity_a),
+            Some(purgatory_simulation::EntityLifecycle::Active)
+        );
+        owner.simulate_tick(dt);
+        drain(&pipe_a, &mut view_a);
+        drain(&pipe_b, &mut view_b);
+        assert_eq!(view_a.player_count(), 2);
+        assert_eq!(view_b.player_count(), 2);
+        assert!(view_a.entities.contains_key(&wb));
+        assert!(view_b.entities.contains_key(&wa));
+        assert_eq!(view_a.local_channel, 1);
+        assert_eq!(view_b.local_channel, 1);
+        assert!(!view_a.saw_update_before_enter);
+        assert!(!view_b.saw_update_before_enter);
+        assert!(owner.bindings.get(&a).unwrap().interest.epoch > epoch_a0);
+
+        owner.apply_input(InputUpdate::DevSetChannel {
+            connection_id: b,
+            channel: 0,
+        });
+        owner.simulate_tick(dt);
+        drain(&pipe_a, &mut view_a);
+        drain(&pipe_b, &mut view_b);
+        assert!(!view_a.entities.contains_key(&wb));
+        assert!(!view_b.entities.contains_key(&wa));
+        assert_eq!(view_a.local_channel, 1);
+        assert_eq!(view_b.local_channel, 0);
+        assert_eq!(
+            owner.world().lifecycle_of(entity_b),
+            Some(purgatory_simulation::EntityLifecycle::Active)
+        );
+    }
+
+    #[test]
+    fn channel_transition_rejects_out_of_range_and_is_idempotent() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let addr = owner.world().address_of(actor).unwrap();
+        let epoch = owner.bindings.get(&id).unwrap().interest.epoch;
+        owner.apply_input(InputUpdate::DevSetChannel {
+            connection_id: id,
+            channel: 99,
+        });
+        assert_eq!(owner.world().address_of(actor), Some(addr));
+        assert_eq!(owner.bindings.get(&id).unwrap().interest.epoch, epoch);
+        owner.apply_input(InputUpdate::DevSetChannel {
+            connection_id: id,
+            channel: 0,
+        });
+        assert_eq!(owner.world().address_of(actor), Some(addr));
+        assert_eq!(owner.bindings.get(&id).unwrap().interest.epoch, epoch);
+    }
+
+    #[test]
+    fn channel_transition_closes_world_interaction_session() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let pose = owner.world().transform_of(actor).unwrap().position;
+        let target = nearby_dev_interactable(&owner, actor);
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(target),
+        });
+        let opened = match rx.try_recv().expect("opened") {
+            ServerControl::Interact(ServerInteract::Opened { session_id, .. }) => session_id,
+            other => panic!("expected Opened, got {other:?}"),
+        };
+        assert!(owner.world().interaction_session_of(actor).is_some());
+        owner.apply_input(InputUpdate::DevSetChannel {
+            connection_id: id,
+            channel: 1,
+        });
+        assert_eq!(owner.entity_of(id), Some(actor));
+        assert_eq!(
+            owner.world().lifecycle_of(actor),
+            Some(purgatory_simulation::EntityLifecycle::Active)
+        );
+        assert_eq!(owner.world().transform_of(actor).unwrap().position, pose);
+        assert!(
+            owner.world().interaction_session_of(actor).is_none(),
+            "world-bound session must close on Channel change"
+        );
+        match rx.try_recv().expect("closed") {
+            ServerControl::Interact(ServerInteract::Closed { session_id, reason }) => {
+                assert_eq!(session_id, opened);
+                assert_eq!(reason, InteractCloseReason::AddressChanged);
+            }
+            other => panic!("expected Closed AddressChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn portal_preserves_current_channel_id() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let pipe = bind_pipe(&mut owner, id);
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        owner.simulate_tick(dt);
+        let mut view = ReplicaView::new();
+        drain(&pipe, &mut view);
+        owner.apply_input(InputUpdate::DevSetChannel {
+            connection_id: id,
+            channel: 1,
+        });
+        expire_input_gate(&mut owner);
+        let actor = owner.entity_of(id).unwrap();
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().channel,
+            purgatory_simulation::ChannelId::from_raw(1)
+        );
+        let map_before = owner.world().address_of(actor).unwrap().map;
+        let dest_addr = owner.world().address_of(actor).unwrap();
+        let portal = find_content_at(&owner, "entity.portal.to_second", dest_addr);
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        let dest = owner.world().address_of(actor).unwrap();
+        assert_eq!(dest.channel, purgatory_simulation::ChannelId::from_raw(1));
+        assert_eq!(dest.instance, purgatory_simulation::InstanceId::DEFAULT);
+        assert_ne!(dest.map, map_before);
+        assert_eq!(
+            owner.world().lifecycle_of(actor),
+            Some(purgatory_simulation::EntityLifecycle::Active)
+        );
     }
 
     #[test]
@@ -1069,24 +2872,762 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let a = ConnectionId::from_raw(1);
         let b = ConnectionId::from_raw(2);
-        let (tx_a, rx_a) = watch::channel(None);
-        let (tx_b, rx_b) = watch::channel(None);
         owner.attach(a);
         owner.attach(b);
-        owner.bindings.get_mut(&a).unwrap().snapshots = Some(tx_a);
-        owner.bindings.get_mut(&b).unwrap().snapshots = Some(tx_b);
+        let pipe_a = bind_pipe(&mut owner, a);
+        let pipe_b = bind_pipe(&mut owner, b);
         owner.apply_input(command_update(a, cmd(1, MoveAxis::Right, false, false)));
         owner.apply_input(command_update(b, cmd(1, MoveAxis::Left, false, false)));
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
         owner.simulate_tick(dt);
-        let snap_a = rx_a.borrow().clone().expect("a");
-        let snap_b = rx_b.borrow().clone().expect("b");
-        assert_eq!(snap_a.last_acknowledged_input_sequence, 1);
-        assert_eq!(snap_b.last_acknowledged_input_sequence, 1);
-        assert_ne!(snap_a.local_player_entity, snap_b.local_player_entity);
-        assert_eq!(snap_a.input_epoch, 0);
-        assert_eq!(snap_b.input_epoch, 0);
-        assert!(snap_a.local_grounded);
-        assert!(snap_b.local_grounded);
+        let mut view_a = ReplicaView::new();
+        let mut view_b = ReplicaView::new();
+        drain(&pipe_a, &mut view_a);
+        drain(&pipe_b, &mut view_b);
+        assert_eq!(view_a.last_acknowledged_input_sequence, 1);
+        assert_eq!(view_b.last_acknowledged_input_sequence, 1);
+        assert_ne!(view_a.local_player_entity, view_b.local_player_entity);
+        assert_eq!(view_a.input_epoch, 0);
+        assert_eq!(view_b.input_epoch, 0);
+        assert!(view_a.local_grounded);
+        assert!(view_b.local_grounded);
+    }
+
+    #[test]
+    fn impairment_stall_then_burst_late_collapses_and_clears_debt() {
+        use purgatory_common::impairment::{INPUT_DRAIN_PER_TURN, ImpairmentLane, OverflowPolicy};
+        const TICK_NS: u64 = 33_333_333;
+        const STALL_NS: u64 = 500_000_000;
+        let ticks = (STALL_NS / TICK_NS) as u32;
+        let mut lane: ImpairmentLane<InputCommand> =
+            ImpairmentLane::new(256, OverflowPolicy::Fail, 1);
+        let mut session = SessionInput::new();
+        let mut now = 0_u64;
+        lane.begin_stall(now, STALL_NS);
+        for seq in 1..=ticks {
+            lane.enqueue(cmd(seq, MoveAxis::Right, false, false), now)
+                .unwrap();
+            let _ = session.take_for_tick();
+            now += TICK_NS;
+        }
+        assert_eq!(session.unmatched_continuation_ticks, ticks as u16);
+        assert_eq!(session.queued_len(), 0);
+        assert!(lane.poll_due(STALL_NS.saturating_sub(1), 256).is_empty());
+        now = STALL_NS;
+        let mut released = Vec::new();
+        loop {
+            let batch = lane.poll_due(now, INPUT_DRAIN_PER_TURN);
+            if batch.is_empty() {
+                break;
+            }
+            released.extend(batch);
+        }
+        assert_eq!(released.len(), ticks as usize);
+        for command in released {
+            assert_eq!(session.apply(command), SeqDecision::Accept);
+        }
+        let collapsed = session.take_for_tick();
+        assert_eq!(collapsed.move_axis, 1);
+        assert_eq!(session.last_acknowledged(), ticks);
+        assert_eq!(session.unmatched_continuation_ticks, 0);
+        assert_eq!(session.queued_len(), 0);
+        assert_eq!(session.late_collapse_count, 1);
+        assert_eq!(session.late_collapse_max_batch, ticks as u16);
+    }
+
+    fn wire_id(id: EntityId) -> WireEntityId {
+        WireEntityId {
+            index: id.index(),
+            generation: id.generation(),
+        }
+    }
+
+    fn nearby_dev_interactable(owner: &GameplayOwner, actor: EntityId) -> EntityId {
+        let actor_x = owner.world().transform_of(actor).unwrap().position[0];
+        owner
+            .world()
+            .iter()
+            .find(|&eid| {
+                owner
+                    .world()
+                    .interactable_of(eid)
+                    .is_some_and(|cap| cap.kind != purgatory_simulation::InteractableKind::Portal)
+                    && owner.world().address_of(eid)
+                        == Some(purgatory_simulation::WorldAddress::DEV)
+                    && {
+                        let x = owner.world().transform_of(eid).unwrap().position[0];
+                        (x - actor_x).abs() < purgatory_simulation::INTERACT_RANGE
+                    }
+            })
+            .expect("nearby DEV interactable")
+    }
+
+    fn far_dev_interactable(owner: &GameplayOwner, actor: EntityId) -> EntityId {
+        let actor_x = owner.world().transform_of(actor).unwrap().position[0];
+        owner
+            .world()
+            .iter()
+            .find(|&eid| {
+                owner
+                    .world()
+                    .interactable_of(eid)
+                    .is_some_and(|cap| cap.kind != purgatory_simulation::InteractableKind::Portal)
+                    && owner.world().address_of(eid)
+                        == Some(purgatory_simulation::WorldAddress::DEV)
+                    && {
+                        let x = owner.world().transform_of(eid).unwrap().position[0];
+                        (x - actor_x).abs() > purgatory_simulation::INTERACT_RANGE
+                    }
+            })
+            .expect("far DEV interactable")
+    }
+
+    #[test]
+    fn interact_open_nearby_fixture_opens() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let target = nearby_dev_interactable(&owner, actor);
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(target),
+        });
+        match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Opened { target: opened, .. }) => {
+                assert_eq!(opened, wire_id(target));
+            }
+            other => panic!("expected Opened, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interact_open_far_fixture_rejects_out_of_range() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let target = far_dev_interactable(&owner, actor);
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(target),
+        });
+        match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Rejected {
+                reason,
+                target: rejected,
+            }) => {
+                assert_eq!(reason, InteractRejectReason::OutOfRange);
+                assert_eq!(rejected, wire_id(target));
+            }
+            other => panic!("expected Rejected OutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interact_open_other_player_rejects_not_interactable() {
+        let mut owner = GameplayOwner::new();
+        let a = ConnectionId::from_raw(1);
+        let b = ConnectionId::from_raw(2);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(a);
+        owner.attach(b);
+        owner.bindings.get_mut(&a).unwrap().interact = Some(tx);
+        let other = owner.entity_of(b).unwrap();
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: a,
+            target: wire_id(other),
+        });
+        match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                assert_eq!(reason, InteractRejectReason::NotInteractable);
+            }
+            other => panic!("expected Rejected NotInteractable, got {other:?}"),
+        }
+    }
+
+    fn find_content(owner: &GameplayOwner, authored: &str) -> EntityId {
+        let cid = ContentId::from_authored(authored).unwrap();
+        owner
+            .world()
+            .iter()
+            .find(|&eid| owner.world().content_id_of(eid) == Some(cid))
+            .unwrap_or_else(|| panic!("missing {authored}"))
+    }
+
+    fn find_content_at(
+        owner: &GameplayOwner,
+        authored: &str,
+        address: purgatory_simulation::WorldAddress,
+    ) -> EntityId {
+        let cid = ContentId::from_authored(authored).unwrap();
+        owner
+            .world()
+            .iter()
+            .find(|&eid| {
+                owner.world().content_id_of(eid) == Some(cid)
+                    && owner.world().address_of(eid) == Some(address)
+            })
+            .unwrap_or_else(|| panic!("missing {authored} at {address}"))
+    }
+
+    #[test]
+    fn portal_e_does_not_activate() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let portal = find_content(&owner, "entity.portal.to_second");
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                assert_eq!(reason, InteractRejectReason::NotInteractable);
+            }
+            other => panic!("expected Rejected NotInteractable, got {other:?}"),
+        }
+        let actor = owner.entity_of(id).unwrap();
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::DEV
+        );
+    }
+
+    #[test]
+    fn portal_outside_zone_rejected() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let portal = find_content(&owner, "entity.portal.to_second");
+        assert!(owner.set_player_x(id, 4.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                assert_eq!(reason, InteractRejectReason::OutOfRange);
+            }
+            other => panic!("expected Rejected OutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn portal_a_to_b_arrives_at_linked_portal() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let portal = find_content(&owner, "entity.portal.to_second");
+        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        let dest = owner.world().address_of(actor).expect("address");
+        assert_eq!(dest.map, purgatory_simulation::MapId::from_raw(2));
+        let pos = owner.world().transform_of(actor).unwrap().position;
+        let dest_pos = owner.world().transform_of(dest_portal).unwrap().position;
+        assert!(
+            (pos[0] - dest_pos[0]).abs() < 0.05,
+            "must arrive at Map B portal x={}, got {}",
+            dest_pos[0],
+            pos[0]
+        );
+        assert_eq!(
+            owner.world().lifecycle_of(actor),
+            Some(purgatory_simulation::EntityLifecycle::Active)
+        );
+        assert!(owner.world().interaction_session_of(actor).is_none());
+        assert_eq!(owner.bindings.get(&id).unwrap().input.input_epoch, 1);
+        let visible = owner.world().relevance_for(actor);
+        let map_a_switch = find_content(&owner, "entity.interactable.switch");
+        assert!(
+            !visible.contains(&map_a_switch),
+            "Map A switch must not be relevant on Map B"
+        );
+        assert!(visible.contains(&dest_portal));
+    }
+
+    #[test]
+    fn held_movement_does_not_drift_during_portal_input_barrier() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let portal = find_content(&owner, "entity.portal.to_second");
+        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        let dest_pos = owner.world().transform_of(dest_portal).unwrap().position;
+        let arrived = owner.world().transform_of(actor).unwrap().position;
+        assert!((arrived[0] - dest_pos[0]).abs() < 0.05);
+        assert!(owner.bindings.get(&id).unwrap().input.input_gated());
+        let epoch = owner.bindings.get(&id).unwrap().input.input_epoch;
+        let lock_ticks = InputGateReason::MapTransition.lock_ticks();
+        for seq in 1..=u32::from(lock_ticks) {
+            owner.apply_input(command_update(
+                id,
+                cmd_epoch(epoch, seq, MoveAxis::Right, false, false),
+            ));
+            owner.simulate_tick(dt);
+            let pos = owner.world().transform_of(actor).unwrap().position;
+            assert!(
+                (pos[0] - dest_pos[0]).abs() < 0.05,
+                "held Right must not move dest pose during barrier: dest={} got={}",
+                dest_pos[0],
+                pos[0]
+            );
+            let vel = owner.world().player_body_of(actor).unwrap().velocity;
+            assert!(
+                vel[0].abs() < 1e-4,
+                "authoritative velocity must stay neutral"
+            );
+        }
+        assert!(!owner.bindings.get(&id).unwrap().input.input_gated());
+        let next_seq = u32::from(lock_ticks) + 1;
+        owner.apply_input(command_update(
+            id,
+            cmd_epoch(epoch, next_seq, MoveAxis::Right, false, false),
+        ));
+        owner.simulate_tick(dt);
+        let after = owner.world().transform_of(actor).unwrap().position[0];
+        assert!(
+            after > dest_pos[0] + 0.01,
+            "held movement must resume after unlock, dest={} after={after}",
+            dest_pos[0]
+        );
+    }
+
+    #[test]
+    fn queued_pre_transition_command_cannot_move_destination() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let portal = find_content(&owner, "entity.portal.to_second");
+        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
+        owner.apply_input(command_update(id, cmd(2, MoveAxis::Right, true, false)));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        let dest_x = owner.world().transform_of(dest_portal).unwrap().position[0];
+        assert!((owner.world().transform_of(actor).unwrap().position[0] - dest_x).abs() < 0.05);
+        let epoch = owner.bindings.get(&id).unwrap().input.input_epoch;
+        owner.apply_input(command_update(
+            id,
+            cmd_epoch(epoch, 1, MoveAxis::Right, true, true),
+        ));
+        owner.simulate_tick(dt);
+        let pos = owner.world().transform_of(actor).unwrap().position;
+        assert!((pos[0] - dest_x).abs() < 0.05);
+        let vel = owner.world().player_body_of(actor).unwrap().velocity;
+        assert!(
+            vel[0].abs() < 1e-3 && vel[1].abs() < 1e-3,
+            "queued jump must not fire on destination during barrier, vel={vel:?}"
+        );
+    }
+
+    #[test]
+    fn gated_jump_and_interact_do_not_execute() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let portal = find_content(&owner, "entity.portal.to_second");
+        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        let dest_x = owner.world().transform_of(dest_portal).unwrap().position[0];
+        let epoch = owner.bindings.get(&id).unwrap().input.input_epoch;
+        owner.apply_input(command_update(
+            id,
+            cmd_epoch(epoch, 1, MoveAxis::Neutral, true, false),
+        ));
+        owner.simulate_tick(dt);
+        let body = owner.world().player_body_of(actor).unwrap();
+        assert!(body.grounded, "gated jump must not launch");
+        assert!((owner.world().transform_of(actor).unwrap().position[0] - dest_x).abs() < 0.05);
+
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(dest_portal),
+        });
+        match rx.try_recv().expect("gated interact reject") {
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                assert_eq!(reason, InteractRejectReason::Unavailable);
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        assert!(owner.world().interaction_session_of(actor).is_none());
+
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(dest_portal),
+        });
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::from_raw(2),
+            "portal during barrier must not bounce"
+        );
+    }
+
+    #[test]
+    fn channel_held_movement_does_not_drift_through_membership_ready() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        assert!(owner.set_player_x(id, -8.0));
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
+        owner.simulate_tick(dt);
+        owner.simulate_tick(dt);
+        let pose_before = owner.world().transform_of(actor).unwrap().position;
+        owner.apply_input(InputUpdate::DevSetChannel {
+            connection_id: id,
+            channel: 1,
+        });
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().channel,
+            purgatory_simulation::ChannelId::from_raw(1)
+        );
+        let epoch = owner.bindings.get(&id).unwrap().input.input_epoch;
+        assert!(owner.bindings.get(&id).unwrap().input.input_gated());
+        let lock_ticks = InputGateReason::MembershipTransition.lock_ticks();
+        for seq in 1..=u32::from(lock_ticks) {
+            owner.apply_input(command_update(
+                id,
+                cmd_epoch(epoch, seq, MoveAxis::Right, false, false),
+            ));
+            owner.simulate_tick(dt);
+            let pose = owner.world().transform_of(actor).unwrap().position;
+            assert!(
+                (pose[0] - pose_before[0]).abs() < 0.05 && (pose[1] - pose_before[1]).abs() < 0.05,
+                "channel barrier must keep pose stable"
+            );
+        }
+        assert!(!owner.bindings.get(&id).unwrap().input.input_gated());
+        let next_seq = u32::from(lock_ticks) + 1;
+        owner.apply_input(command_update(
+            id,
+            cmd_epoch(epoch, next_seq, MoveAxis::Right, false, false),
+        ));
+        owner.simulate_tick(dt);
+        let after = owner.world().transform_of(actor).unwrap().position[0];
+        assert!(after > pose_before[0] + 0.01);
+    }
+
+    #[test]
+    fn normal_movement_outside_transition_unchanged() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        let start = owner.world().transform_of(actor).unwrap().position[0];
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
+        owner.simulate_tick(dt);
+        owner.apply_input(command_update(id, cmd(2, MoveAxis::Right, false, false)));
+        owner.simulate_tick(dt);
+        let after = owner.world().transform_of(actor).unwrap().position[0];
+        assert!(after > start + 0.05);
+        assert!(!owner.bindings.get(&id).unwrap().input.input_gated());
+    }
+
+    #[test]
+    fn portal_new_epoch_first_self_enter_is_destination_pose() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let pipe = bind_pipe(&mut owner, id);
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        owner.simulate_tick(dt);
+        let mut view = ReplicaView::new();
+        drain(&pipe, &mut view);
+        let epoch_before = owner.bindings.get(&id).unwrap().interest.epoch;
+        let actor = owner.entity_of(id).unwrap();
+        let portal = find_content(&owner, "entity.portal.to_second");
+        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        let world_pose = owner.world().transform_of(actor).unwrap().position;
+        let dest_pos = owner.world().transform_of(dest_portal).unwrap().position;
+        let epoch_after = owner.bindings.get(&id).unwrap().interest.epoch;
+        assert!(
+            epoch_after > epoch_before,
+            "epoch must bump after dest pose"
+        );
+        assert!(
+            (world_pose[0] - dest_pos[0]).abs() < 0.05,
+            "world dest pose must be established before new-epoch baseline"
+        );
+        let mut saw_self = false;
+        while let Some(queued) = pipe.pop() {
+            let frame = decode_replication_frame(&queued.payload).expect("frame");
+            if frame.observer_baseline_epoch != epoch_after {
+                continue;
+            }
+            let local = frame.local_player_entity;
+            let enter = frame.records.iter().find_map(|rec| match rec {
+                ReplicationRecord::Enter { entity, .. } if entity.entity_id == local => {
+                    Some(entity.position)
+                }
+                _ => None,
+            });
+            let pose = enter.expect("first new-epoch frame must Enter self");
+            assert!(
+                (pose[0] - world_pose[0]).abs() < 1e-4 && (pose[1] - world_pose[1]).abs() < 1e-4,
+                "self Enter must match dest Transform ({:.3},{:.3}), got ({:.3},{:.3})",
+                world_pose[0],
+                world_pose[1],
+                pose[0],
+                pose[1]
+            );
+            assert!(
+                (pose[0] - dest_pos[0]).abs() < 0.05,
+                "self Enter must be linked portal dest, got {}",
+                pose[0]
+            );
+            saw_self = true;
+            view.apply_payload(&queued.payload);
+        }
+        assert!(
+            saw_self,
+            "new-epoch baseline must be published before the next tick"
+        );
+        let presented = view
+            .entities
+            .get(&view.local_player_entity)
+            .expect("known self")
+            .position;
+        assert!((presented[0] - dest_pos[0]).abs() < 0.05);
+    }
+
+    #[test]
+    fn portal_b_to_a_arrives_at_linked_portal() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let a_portal = find_content(&owner, "entity.portal.to_second");
+        let b_portal = find_content(&owner, "entity.portal.to_footnote");
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(a_portal),
+        });
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(b_portal),
+        });
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::from_raw(2),
+            "held/reentry lock must block bounce-back"
+        );
+        let epoch = owner.bindings.get(&id).unwrap().input.input_epoch;
+        owner.apply_input(command_update(id, latch_cmd(epoch, 1, true)));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(b_portal),
+        });
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::from_raw(2),
+            "portal_held true must keep the reentry lock"
+        );
+        owner.apply_input(command_update(id, latch_cmd(epoch, 2, false)));
+        assert!(
+            !owner.world().portal_reentry_locked(actor, b_portal),
+            "Up release must clear the lock without leaving the zone"
+        );
+        expire_input_gate(&mut owner);
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(b_portal),
+        });
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::DEV
+        );
+        let pos = owner.world().transform_of(actor).unwrap().position;
+        let a_pos = owner.world().transform_of(a_portal).unwrap().position;
+        assert!((pos[0] - a_pos[0]).abs() < 0.05);
+    }
+
+    #[test]
+    fn portal_return_trip_does_not_require_leaving_the_zone() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let a_portal = find_content(&owner, "entity.portal.to_second");
+        let b_portal = find_content(&owner, "entity.portal.to_footnote");
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(a_portal),
+        });
+        let dest_x = owner.world().transform_of(b_portal).unwrap().position[0];
+        let actor_x = owner.world().transform_of(actor).unwrap().position[0];
+        assert!(
+            (actor_x - dest_x).abs() < 0.05,
+            "must remain centered on dest portal"
+        );
+        let epoch = owner.bindings.get(&id).unwrap().input.input_epoch;
+        owner.apply_input(command_update(id, latch_cmd(epoch, 1, false)));
+        expire_input_gate(&mut owner);
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(b_portal),
+        });
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::DEV
+        );
+    }
+
+    #[test]
+    fn invalid_portal_destination_rejected() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        assert!(owner.world_mut().despawn(dest_portal));
+        let portal = find_content(&owner, "entity.portal.to_second");
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                assert_eq!(reason, InteractRejectReason::Unavailable);
+            }
+            other => panic!("expected Rejected Unavailable, got {other:?}"),
+        }
+        let actor = owner.entity_of(id).unwrap();
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::DEV
+        );
+    }
+
+    #[test]
+    fn generic_e_interaction_still_opens() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let switch = find_content(&owner, "entity.interactable.switch");
+        assert!(owner.set_player_x(id, -17.8));
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(switch),
+        });
+        match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Opened { .. }) => {}
+            other => panic!("expected Opened, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generic_e_opens_chest() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let chest = find_content(&owner, "entity.interactable.chest");
+        assert!(owner.set_player_x(id, -7.4));
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(chest),
+        });
+        match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Opened { .. }) => {}
+            other => panic!("expected Opened, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_and_activation_zone_agree_on_centered_portal() {
+        use purgatory_protocol::ReplicatedKind;
+        use purgatory_simulation::in_portal_activation_zone;
+
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        assert!(owner.set_player_x(id, 6.0));
+        let actor = owner.entity_of(id).unwrap();
+        let portal = find_content(&owner, "entity.portal.to_second");
+        let actor_pos = owner.world().transform_of(actor).unwrap().position;
+        let portal_pos = owner.world().transform_of(portal).unwrap().position;
+        owner
+            .world()
+            .validate_portal_activate(actor, portal)
+            .expect("authored portal x at standing y is inside the activation zone");
+        assert!(in_portal_activation_zone(actor_pos, portal_pos));
+
+        let visible = owner.world().relevance_for(actor);
+        let snap = super::super::snapshot::build(1, 1, actor, owner.world(), &visible, 0, 0, 0);
+        let snap_player = snap
+            .entities
+            .iter()
+            .find(|e| e.entity_id == snap.local_player_entity)
+            .expect("player");
+        let snap_portal = snap
+            .entities
+            .iter()
+            .find(|e| e.kind == ReplicatedKind::Portal)
+            .expect("portal");
+        assert_eq!(snap_player.position, actor_pos);
+        assert_eq!(snap_portal.position, portal_pos);
+        assert_eq!(snap_portal.entity_id, wire_id(portal));
+        assert!(in_portal_activation_zone(
+            snap_player.position,
+            snap_portal.position
+        ));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::from_raw(2)
+        );
     }
 }

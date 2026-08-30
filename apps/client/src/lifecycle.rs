@@ -169,6 +169,9 @@ impl ClientLifecycle {
                     kind.retryable()
                 ));
             }
+            NetworkEvent::Interact { event, .. } => {
+                self.emit_log(&format!("Interact {event:?}"));
+            }
         }
     }
 
@@ -200,6 +203,9 @@ impl ClientLifecycle {
                     | ConnectionState::Connected
             ),
             NetworkEvent::RttUpdated { .. } => {
+                matches!(state, ConnectionState::Connected)
+            }
+            NetworkEvent::Interact { .. } => {
                 matches!(state, ConnectionState::Connected)
             }
         }
@@ -241,6 +247,26 @@ mod tests {
         NetworkEvent::Connecting {
             attempt_id: attempt(n),
         }
+    }
+
+    #[test]
+    fn interact_event_is_lifecycle_not_droppable_telemetry() {
+        let event = NetworkEvent::Interact {
+            attempt_id: attempt(1),
+            event: purgatory_protocol::ServerInteract::Rejected {
+                target: purgatory_protocol::WireEntityId {
+                    index: 1,
+                    generation: 1,
+                },
+                reason: purgatory_protocol::InteractRejectReason::OutOfRange,
+            },
+        };
+        assert!(event.is_lifecycle());
+        let rtt = NetworkEvent::RttUpdated {
+            attempt_id: attempt(1),
+            rtt: Duration::from_millis(10),
+        };
+        assert!(!rtt.is_lifecycle());
     }
 
     fn handshaking(n: u64) -> NetworkEvent {

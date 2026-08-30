@@ -56,11 +56,34 @@ impl SimulationTick {
         Self(self.0.saturating_add(u64::from(ticks)))
     }
 
+    /// Construct from a completed-tick count.
+    #[must_use]
+    pub const fn from_count(ticks: u64) -> Self {
+        Self(ticks)
+    }
+
+    /// Saturating add of a tick offset (schedule-after).
+    #[must_use]
+    pub const fn saturating_add_ticks(self, ticks: u64) -> Self {
+        Self(self.0.saturating_add(ticks))
+    }
+
     /// Completed tick count.
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
     }
+}
+
+/// Ceiling conversion of a simulation-time duration into tick steps.
+#[must_use]
+pub fn ticks_from_duration(duration: Duration) -> u64 {
+    let nanos = duration.as_nanos();
+    let step = u128::from(TICK_DURATION_NANOS);
+    if step == 0 {
+        return 0;
+    }
+    nanos.div_ceil(step) as u64
 }
 
 /// Elapsed authoritative simulation time.

@@ -64,7 +64,8 @@ impl World {
             let top = FLOOR.top_surface(Transform::from_position(FLOOR_POSITION));
             ([-2.0, top + PLAYER_HALF_EXTENTS[1]], false, None)
         };
-        if let Some((transform, player)) = self.player_parts_mut_for(id) {
+        let previous = if let Some((transform, player)) = self.player_parts_mut_for(id) {
+            let previous = transform.position;
             transform.position = position;
             player.velocity = [0.0, 0.0];
             player.grounded = grounded;
@@ -72,6 +73,12 @@ impl World {
             player.ignored_platform = None;
             player.last_contact = ContactEvent::None;
             player.half_extents = PLAYER_HALF_EXTENTS;
+            Some(previous)
+        } else {
+            None
+        };
+        if let Some(previous) = previous {
+            self.refresh_spatial(id, previous);
         }
     }
 }

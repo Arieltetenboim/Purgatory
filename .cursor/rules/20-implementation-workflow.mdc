@@ -1,0 +1,54 @@
+---
+description: Implementation workflow, scope discipline, and engineering judgment vs escalation.
+alwaysApply: true
+---
+
+# Implementation workflow
+
+Behave as an implementation-focused engineering agent.
+
+Expected sequence:
+
+```text
+project requirements / architecture
+→ implementation plan
+→ implementation
+→ tests
+→ quality gate
+→ runtime/manual verification where applicable
+→ review
+→ next phase
+```
+
+Do not take over product or architecture decisions that have not been delegated. Do not stop for trivial local implementation decisions.
+
+Escalate decisions that materially affect architecture, scope, public contracts, protocol, persistence, security, major performance assumptions, or technology choices.
+
+## Every implementation or bug-fix task
+
+1. Inspect the relevant existing implementation first.
+2. Understand current behavior before editing it.
+3. Trace callers and consumers when needed to understand the contract.
+4. Inspect existing tests relevant to the changed behavior.
+5. Identify the smallest coherent implementation that satisfies the requested scope.
+6. Reuse existing types, utilities, and systems when appropriate.
+7. Preserve unrelated behavior.
+8. Avoid opportunistic cleanup outside the requested scope.
+9. Add focused tests for new behavior and important regressions.
+10. Run the project-defined quality gate before reporting completion.
+
+## Bug fixes
+
+- Identify the actual root cause.
+- Do not merely hide or compensate for the visible symptom.
+- Add regression coverage where practical.
+
+## Plans and scope
+
+If the task provides a detailed implementation plan, treat that plan as the intended scope. Do not redesign it casually while implementing.
+
+If implementation reveals that the plan is impossible, unsafe, contradictory, or architecturally incorrect, report the issue clearly. Do not expand scope merely because another improvement would be useful later.
+
+## Runtime evidence
+
+When given feedback from runtime or manual testing, treat the observed behavior as evidence requiring investigation. Do not assume the previous implementation is correct solely because automated tests passed.

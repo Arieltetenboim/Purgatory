@@ -12,8 +12,9 @@ fn main() {
         purgatory_protocol::version(),
     );
     println!(
-        "PURGATORY server bootstrap OK {}",
-        purgatory_common::identity()
+        "PURGATORY server bootstrap OK {} protocol_version={}",
+        purgatory_common::identity(),
+        purgatory_protocol::PROTOCOL_VERSION
     );
     run_headless_clock_sample();
     run_headless_world_sample();

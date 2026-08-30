@@ -4,29 +4,73 @@
 //! [`EntityId`] is index + generation; reusing a slot never resurrects a
 //! stale ID. Pointers and memory addresses are not used as identity.
 
+use std::collections::HashMap;
+
+use crate::action::ActionTable;
+use crate::aoi::{AoiRects, aoi_policy_rects, point_in_aabb};
 use crate::body::{PlayerBody, PlayerState};
 use crate::bounds::WorldBounds;
+use crate::cadence::CadenceTable;
+use crate::dirty::DirtyFlags;
+use crate::domain::DomainRevs;
+use crate::effect::EffectTable;
 use crate::entity::{EntityId, EntityKind};
+use crate::health::Health;
+use crate::interactable::{
+    INTERACT_RANGE, Interactable, InteractableKind, in_portal_activation_zone,
+};
+use crate::interaction::{
+    InteractionCloseReason, InteractionReject, InteractionSession, InteractionSessionId,
+    InteractionSessionState,
+};
+use crate::lifecycle::EntityLifecycle;
+use crate::map_runtime::InstantiatedMap;
 use crate::motion_debug::PlayerMotionDebug;
 use crate::platform::{
     FLOOR, FLOOR_POSITION, ONEWAY_A, ONEWAY_A_POSITION, ONEWAY_B, ONEWAY_B_POSITION, Platform,
     PlatformView, RAISED_PLATFORM, RAISED_PLATFORM_POSITION,
 };
+use crate::replication::{ReplicationClass, ReplicationMeta};
+use crate::runtime_event::EventQueue;
+use crate::runtime_stats::RuntimeStats;
+use crate::scheduler::Scheduler;
+use crate::spatial::SpatialIndex;
+use crate::spawn::RuntimeSpawnRequest;
+use crate::spawn_schedule::SpawnSchedule;
+use crate::time::SimulationTick;
 use crate::transform::Transform;
+use purgatory_common::{ContentId, PersistentId, WorldAddress};
 
 struct Slot {
     generation: u32,
     data: Option<EntityData>,
 }
 
-struct EntityData {
-    transform: Transform,
-    payload: Payload,
+pub(crate) struct EntityData {
+    transform: Option<Transform>,
+    address: WorldAddress,
+    lifecycle: EntityLifecycle,
+    content_id: Option<ContentId>,
+    persistent_id: Option<PersistentId>,
+    replication: ReplicationMeta,
+    player: Option<PlayerState>,
+    platform: Option<Platform>,
+    health: Option<Health>,
+    interactable: Option<Interactable>,
+    dirty: DirtyFlags,
+    domain_revs: DomainRevs,
 }
 
-enum Payload {
-    Player(PlayerState),
-    Platform(Platform),
+impl EntityData {
+    fn kind(&self) -> EntityKind {
+        if self.player.is_some() {
+            EntityKind::Player
+        } else if self.platform.is_some() {
+            EntityKind::Platform
+        } else {
+            EntityKind::Generic
+        }
+    }
 }
 
 /// Simulation container. Owns entity lifecycle.
@@ -38,6 +82,19 @@ pub struct World {
     bounds: WorldBounds,
     last_motion: PlayerMotionDebug,
     next_support_id: u16,
+    interaction_sessions: Vec<InteractionSession>,
+    next_interaction_session_id: u32,
+    pub(crate) instantiated: HashMap<WorldAddress, InstantiatedMap>,
+    portal_reentry: HashMap<EntityId, EntityId>,
+    spatial: SpatialIndex,
+    pub(crate) tick: SimulationTick,
+    pub(crate) scheduler: Scheduler,
+    pub(crate) actions: ActionTable,
+    pub(crate) effects: EffectTable,
+    pub(crate) events: EventQueue,
+    pub(crate) spawn_schedule: SpawnSchedule,
+    pub(crate) cadence: CadenceTable,
+    pub(crate) runtime_stats: RuntimeStats,
 }
 
 impl Default for World {
@@ -50,6 +107,19 @@ impl Default for World {
             bounds: WorldBounds::DEV_COMPACT,
             last_motion: PlayerMotionDebug::default(),
             next_support_id: 1,
+            interaction_sessions: Vec::new(),
+            next_interaction_session_id: 1,
+            instantiated: HashMap::new(),
+            portal_reentry: HashMap::new(),
+            spatial: SpatialIndex::default(),
+            tick: SimulationTick::ZERO,
+            scheduler: Scheduler::new(),
+            actions: ActionTable::new(),
+            effects: EffectTable::new(),
+            events: EventQueue::new(),
+            spawn_schedule: SpawnSchedule::new(),
+            cadence: CadenceTable::new(),
+            runtime_stats: RuntimeStats::default(),
         }
     }
 }
@@ -63,6 +133,14 @@ impl World {
     #[must_use]
     pub fn bounds(&self) -> WorldBounds {
         self.bounds
+    }
+
+    #[must_use]
+    pub fn bounds_for(&self, address: WorldAddress) -> WorldBounds {
+        self.instantiated
+            .get(&address)
+            .map(|m| m.bounds)
+            .unwrap_or(self.bounds)
     }
 
     pub fn set_bounds(&mut self, bounds: WorldBounds) {
@@ -114,11 +192,732 @@ impl World {
 
     #[must_use]
     pub fn kind(&self, id: EntityId) -> Option<EntityKind> {
-        let data = self.slot_live(id)?;
-        Some(match data.payload {
-            Payload::Player(_) => EntityKind::Player,
-            Payload::Platform(_) => EntityKind::Platform,
+        Some(self.slot_live(id)?.kind())
+    }
+
+    #[must_use]
+    pub fn address_of(&self, id: EntityId) -> Option<WorldAddress> {
+        Some(self.slot_live(id)?.address)
+    }
+
+    /// Explicit membership change. Does not despawn. Re-enters [`EntityLifecycle::Active`].
+    ///
+    /// Relocates the spatial grid. Closes world-bound [`InteractionSession`]
+    /// rows involving `id` with [`InteractionCloseReason::AddressChanged`].
+    /// That is not a generic session closer: identity/social sessions must not
+    /// share this path.
+    pub fn set_address(&mut self, id: EntityId, address: WorldAddress) -> bool {
+        let old = self
+            .slot_live(id)
+            .map(|d| (d.address, d.transform.map(|t| t.position)));
+        let mut bumped = false;
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return false;
+            };
+            if data.address != address {
+                data.domain_revs.bump_membership();
+                bumped = true;
+            }
+            data.address = address;
+            data.lifecycle = EntityLifecycle::Active;
+            data.dirty.membership = true;
+        }
+        if bumped {
+            self.note_domain_rev();
+        }
+        if let Some((_, Some(pos))) = old {
+            self.spatial.relocate(id, address, pos);
+        }
+        self.close_sessions_involving(id, InteractionCloseReason::AddressChanged);
+        true
+    }
+
+    /// Move every live entity (and the instantiated-map record) from `from` to `to`.
+    ///
+    /// Same-Map Channel/Instance retarget for client presentation. Does not
+    /// despawn. Returns false if `to` is already instantiated or maps differ.
+    pub fn rebind_map_address(&mut self, from: WorldAddress, to: WorldAddress) -> bool {
+        if from == to {
+            return true;
+        }
+        if from.map != to.map {
+            return false;
+        }
+        if self.instantiated.contains_key(&to) {
+            return false;
+        }
+        if let Some(mut record) = self.instantiated.remove(&from) {
+            record.address = to;
+            self.instantiated.insert(to, record);
+        }
+        let ids: Vec<EntityId> = self
+            .iter()
+            .filter(|&id| self.address_of(id) == Some(from))
+            .collect();
+        for id in ids {
+            self.set_address(id, to);
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn lifecycle_of(&self, id: EntityId) -> Option<EntityLifecycle> {
+        Some(self.slot_live(id)?.lifecycle)
+    }
+
+    /// Leave world membership without destroying the slot. Not a despawn.
+    pub fn leave_world(&mut self, id: EntityId) -> bool {
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return false;
+            };
+            data.lifecycle = EntityLifecycle::LeftWorld;
+            data.dirty.membership = true;
+            data.domain_revs.bump_membership();
+        }
+        self.note_domain_rev();
+        self.spatial.remove(id);
+        self.close_sessions_involving(id, InteractionCloseReason::AddressChanged);
+        true
+    }
+
+    #[must_use]
+    pub fn content_id_of(&self, id: EntityId) -> Option<ContentId> {
+        self.slot_live(id)?.content_id
+    }
+
+    /// Content identity is independent of spawn/despawn of the runtime slot.
+    pub fn set_content_id(&mut self, id: EntityId, content_id: Option<ContentId>) -> bool {
+        let Some(data) = self.slot_live_mut(id) else {
+            return false;
+        };
+        data.content_id = content_id;
+        true
+    }
+
+    #[must_use]
+    pub fn persistent_id_of(&self, id: EntityId) -> Option<PersistentId> {
+        self.slot_live(id)?.persistent_id
+    }
+
+    pub fn set_persistent_id(&mut self, id: EntityId, persistent_id: Option<PersistentId>) -> bool {
+        let Some(data) = self.slot_live_mut(id) else {
+            return false;
+        };
+        data.persistent_id = persistent_id;
+        true
+    }
+
+    #[must_use]
+    pub fn replication_of(&self, id: EntityId) -> Option<ReplicationMeta> {
+        Some(self.slot_live(id)?.replication)
+    }
+
+    pub fn set_replication(&mut self, id: EntityId, replication: ReplicationMeta) -> bool {
+        let mut bumped = false;
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return false;
+            };
+            if data.replication != replication {
+                data.domain_revs.bump_replication();
+                bumped = true;
+            }
+            data.replication = replication;
+            data.dirty.replication = true;
+        }
+        if bumped {
+            self.note_domain_rev();
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn transform_of(&self, id: EntityId) -> Option<Transform> {
+        self.slot_live(id)?.transform
+    }
+
+    pub fn set_transform(&mut self, id: EntityId, transform: Transform) -> bool {
+        let prev = self
+            .slot_live(id)
+            .and_then(|d| d.transform.map(|t| t.position));
+        let address = self.slot_live(id).map(|d| d.address);
+        let lifecycle = self.slot_live(id).map(|d| d.lifecycle);
+        let mut bumped = false;
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return false;
+            };
+            if prev != Some(transform.position) {
+                data.domain_revs.bump_transform();
+                bumped = true;
+            }
+            data.transform = Some(transform);
+            data.dirty.transform = true;
+        }
+        if bumped {
+            self.note_domain_rev();
+        }
+        if lifecycle == Some(EntityLifecycle::Active)
+            && let Some(address) = address
+        {
+            self.spatial.relocate(id, address, transform.position);
+        }
+        true
+    }
+
+    pub fn clear_transform(&mut self, id: EntityId) -> bool {
+        let mut bumped = false;
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return false;
+            };
+            if data.transform.is_some() {
+                data.domain_revs.bump_transform();
+                bumped = true;
+            }
+            data.transform = None;
+            data.dirty.transform = true;
+        }
+        if bumped {
+            self.note_domain_rev();
+        }
+        self.spatial.remove(id);
+        true
+    }
+
+    #[must_use]
+    pub fn health_of(&self, id: EntityId) -> Option<Health> {
+        self.slot_live(id)?.health
+    }
+
+    pub fn set_health(&mut self, id: EntityId, health: Health) -> bool {
+        let mut bumped = false;
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return false;
+            };
+            if data.health != Some(health) {
+                data.domain_revs.bump_health();
+                bumped = true;
+            }
+            data.health = Some(health);
+            data.dirty.health = true;
+        }
+        if bumped {
+            self.note_domain_rev();
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn domain_revs_of(&self, id: EntityId) -> Option<DomainRevs> {
+        Some(self.slot_live(id)?.domain_revs)
+    }
+
+    #[must_use]
+    pub fn dirty_of(&self, id: EntityId) -> Option<DirtyFlags> {
+        Some(self.slot_live(id)?.dirty)
+    }
+
+    /// Consume and reset domain dirty flags. Read-only queries do not call this.
+    pub fn consume_dirty(&mut self, id: EntityId) -> Option<DirtyFlags> {
+        Some(self.slot_live_mut(id)?.dirty.take())
+    }
+
+    /// Spawn from a composition request. Transient entities need no content id.
+    pub fn spawn(&mut self, mut request: RuntimeSpawnRequest) -> Option<EntityId> {
+        if let Some(platform) = request.platform.as_mut()
+            && platform.support_id == 0
+        {
+            if self.next_support_id == 0 {
+                self.next_support_id = 1;
+            }
+            platform.support_id = self.next_support_id;
+            self.next_support_id = match self.next_support_id.checked_add(1) {
+                Some(next) if next != 0 => next,
+                _ => u16::MAX,
+            };
+        }
+        let is_player = request.player.is_some();
+        let id = self.allocate(entity_from_request(request));
+        if is_player
+            && self
+                .player
+                .filter(|existing| self.contains(*existing))
+                .is_none()
+        {
+            self.player = Some(id);
+        }
+        self.note_entity_spawned(id);
+        Some(id)
+    }
+
+    pub fn movable_in_address(&self, address: WorldAddress) -> impl Iterator<Item = EntityId> + '_ {
+        self.entities_at(address)
+            .filter(|&id| self.slot_live(id).is_some_and(|d| d.player.is_some()))
+    }
+
+    pub fn replicated_in_address(
+        &self,
+        address: WorldAddress,
+    ) -> impl Iterator<Item = EntityId> + '_ {
+        self.entities_at(address).filter(|&id| {
+            matches!(
+                self.replication_of(id).map(|m| m.class),
+                Some(ReplicationClass::VisibleObservers | ReplicationClass::OwnerOnly)
+            )
         })
+    }
+
+    /// Active interactables near `position` in `address`. Range checks require Transform.
+    pub fn interactable_near(
+        &self,
+        address: WorldAddress,
+        position: [f32; 2],
+        radius: f32,
+    ) -> impl Iterator<Item = EntityId> + '_ {
+        self.entities_near(address, position, radius)
+            .filter(|&id| self.interactable_of(id).is_some())
+    }
+
+    #[must_use]
+    pub fn interactable_of(&self, id: EntityId) -> Option<Interactable> {
+        self.slot_live(id)?.interactable
+    }
+
+    pub fn set_interactable(&mut self, id: EntityId, interactable: Option<Interactable>) -> bool {
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return false;
+            };
+            data.interactable = interactable;
+            data.dirty.replication = true;
+            data.domain_revs.bump_replication();
+        }
+        self.note_domain_rev();
+        true
+    }
+
+    #[must_use]
+    pub fn interaction_session_of(&self, actor: EntityId) -> Option<InteractionSession> {
+        self.interaction_sessions
+            .iter()
+            .copied()
+            .find(|s| s.actor == actor && s.state != InteractionSessionState::Closed)
+    }
+
+    /// Authoritative open. Client-supplied distance/validity is ignored.
+    pub fn try_open_interaction(
+        &mut self,
+        actor: EntityId,
+        target: EntityId,
+    ) -> Result<InteractionSession, InteractionReject> {
+        self.validate_interaction(actor, target)?;
+        if let Some(existing) = self.interaction_session_of(actor) {
+            if existing.target == target {
+                let mut session = existing;
+                session.state = InteractionSessionState::Updated;
+                self.upsert_session(session);
+                return Ok(session);
+            }
+            self.close_interaction(actor, existing.id).map(|_| ()).ok();
+        }
+        let id = InteractionSessionId(self.next_interaction_session_id);
+        self.next_interaction_session_id =
+            self.next_interaction_session_id.saturating_add(1).max(1);
+        let session = InteractionSession {
+            id,
+            actor,
+            target,
+            state: InteractionSessionState::Opened,
+        };
+        self.interaction_sessions.push(session);
+        let mut active = session;
+        active.state = InteractionSessionState::Active;
+        self.upsert_session(active);
+        Ok(session)
+    }
+
+    pub fn close_interaction(
+        &mut self,
+        actor: EntityId,
+        session_id: InteractionSessionId,
+    ) -> Result<InteractionSession, InteractionReject> {
+        let Some(pos) = self
+            .interaction_sessions
+            .iter()
+            .position(|s| s.id == session_id)
+        else {
+            return Err(InteractionReject::InvalidSession);
+        };
+        if self.interaction_sessions[pos].actor != actor {
+            return Err(InteractionReject::InvalidSession);
+        }
+        let mut session = self.interaction_sessions.remove(pos);
+        session.state = InteractionSessionState::Closed;
+        Ok(session)
+    }
+
+    /// Close [`InteractionSession`] rows involving `entity` (actor or target).
+    ///
+    /// World-bound interactables only. Not a catch-all for every player-related
+    /// session. Whisper / friends / party / guild must not call this.
+    pub fn close_sessions_involving(
+        &mut self,
+        entity: EntityId,
+        reason: InteractionCloseReason,
+    ) -> Vec<(InteractionSession, InteractionCloseReason)> {
+        let mut closed = Vec::new();
+        let mut remain = Vec::new();
+        for mut session in self.interaction_sessions.drain(..) {
+            if session.actor == entity || session.target == entity {
+                session.state = InteractionSessionState::Closed;
+                closed.push((session, reason));
+            } else {
+                remain.push(session);
+            }
+        }
+        self.interaction_sessions = remain;
+        closed
+    }
+
+    /// Close sessions that failed range/address/lifecycle after a tick.
+    pub fn maintain_interaction_sessions(
+        &mut self,
+    ) -> Vec<(InteractionSession, InteractionCloseReason)> {
+        let ids: Vec<_> = self.interaction_sessions.iter().map(|s| s.id).collect();
+        let mut closed = Vec::new();
+        for sid in ids {
+            let Some(session) = self
+                .interaction_sessions
+                .iter()
+                .copied()
+                .find(|s| s.id == sid)
+            else {
+                continue;
+            };
+            let reason = match self.validate_interaction(session.actor, session.target) {
+                Ok(()) => continue,
+                Err(InteractionReject::TargetMissing | InteractionReject::StaleId) => {
+                    InteractionCloseReason::TargetGone
+                }
+                Err(InteractionReject::WrongAddress) => InteractionCloseReason::AddressChanged,
+                Err(InteractionReject::OutOfRange) => InteractionCloseReason::OutOfRange,
+                Err(_) => InteractionCloseReason::TargetGone,
+            };
+            if let Ok(closed_session) = self.close_interaction(session.actor, sid) {
+                closed.push((closed_session, reason));
+            }
+        }
+        closed
+    }
+
+    fn validate_interaction(
+        &self,
+        actor: EntityId,
+        target: EntityId,
+    ) -> Result<(), InteractionReject> {
+        let actor_data = self.slot_live(actor).ok_or(self.classify_missing(actor))?;
+        if actor_data.player.is_none() || actor_data.lifecycle != EntityLifecycle::Active {
+            return Err(InteractionReject::Unavailable);
+        }
+        let actor_pos = actor_data
+            .transform
+            .ok_or(InteractionReject::Unavailable)?
+            .position;
+        let actor_addr = actor_data.address;
+        let target_data = match self.slot_live(target) {
+            Some(data) => data,
+            None => return Err(self.classify_missing(target)),
+        };
+        if target_data.lifecycle != EntityLifecycle::Active {
+            return Err(InteractionReject::Unavailable);
+        }
+        if target_data.interactable.is_none() {
+            return Err(InteractionReject::NotInteractable);
+        }
+        if target_data
+            .interactable
+            .is_some_and(|cap| cap.kind == InteractableKind::Portal)
+        {
+            return Err(InteractionReject::NotInteractable);
+        }
+        if !target_data.address.compatible_with(actor_addr) {
+            return Err(InteractionReject::WrongAddress);
+        }
+        let target_pos = target_data
+            .transform
+            .ok_or(InteractionReject::NotInteractable)?
+            .position;
+        let dx = actor_pos[0] - target_pos[0];
+        let dy = actor_pos[1] - target_pos[1];
+        if dx * dx + dy * dy > INTERACT_RANGE * INTERACT_RANGE {
+            return Err(InteractionReject::OutOfRange);
+        }
+        Ok(())
+    }
+
+    fn classify_missing(&self, id: EntityId) -> InteractionReject {
+        let index = id.index() as usize;
+        match self.slots.get(index) {
+            Some(slot) if slot.generation != id.generation() || slot.data.is_none() => {
+                InteractionReject::StaleId
+            }
+            Some(_) => InteractionReject::TargetMissing,
+            None => InteractionReject::TargetMissing,
+        }
+    }
+
+    /// Live entity at `address` whose content id matches.
+    #[must_use]
+    pub fn entity_with_content_at(
+        &self,
+        address: WorldAddress,
+        content: ContentId,
+    ) -> Option<EntityId> {
+        self.entities_at(address)
+            .find(|&id| self.content_id_of(id) == Some(content))
+    }
+
+    /// Authoritative portal travel check. Does not move the actor.
+    pub fn validate_portal_activate(
+        &self,
+        actor: EntityId,
+        target: EntityId,
+    ) -> Result<(), InteractionReject> {
+        let actor_data = self.slot_live(actor).ok_or(self.classify_missing(actor))?;
+        if actor_data.player.is_none() || actor_data.lifecycle != EntityLifecycle::Active {
+            return Err(InteractionReject::Unavailable);
+        }
+        let actor_pos = actor_data
+            .transform
+            .ok_or(InteractionReject::Unavailable)?
+            .position;
+        let actor_addr = actor_data.address;
+        let target_data = match self.slot_live(target) {
+            Some(data) => data,
+            None => return Err(self.classify_missing(target)),
+        };
+        if target_data.lifecycle != EntityLifecycle::Active {
+            return Err(InteractionReject::Unavailable);
+        }
+        let Some(cap) = target_data.interactable else {
+            return Err(InteractionReject::NotInteractable);
+        };
+        if cap.kind != InteractableKind::Portal {
+            return Err(InteractionReject::NotInteractable);
+        }
+        if !target_data.address.compatible_with(actor_addr) {
+            return Err(InteractionReject::WrongAddress);
+        }
+        let target_pos = target_data
+            .transform
+            .ok_or(InteractionReject::NotInteractable)?
+            .position;
+        if !in_portal_activation_zone(actor_pos, target_pos) {
+            return Err(InteractionReject::OutOfRange);
+        }
+        if self.portal_reentry.get(&actor) == Some(&target) {
+            return Err(InteractionReject::ReentryLocked);
+        }
+        Ok(())
+    }
+
+    /// After arrival, the destination portal cannot fire until Up is released
+    /// (or the actor leaves its activation zone). Zone exit is not required.
+    pub fn lock_portal_reentry(&mut self, actor: EntityId, portal: EntityId) {
+        self.portal_reentry.insert(actor, portal);
+    }
+
+    /// Up released: re-arm the locked destination portal while still standing on it.
+    pub fn release_portal_reentry(&mut self, actor: EntityId) -> bool {
+        self.portal_reentry.remove(&actor).is_some()
+    }
+
+    #[must_use]
+    pub fn portal_reentry_locked(&self, actor: EntityId, portal: EntityId) -> bool {
+        self.portal_reentry.get(&actor) == Some(&portal)
+    }
+
+    /// Drop arrival locks when the actor leaves the locked portal zone, or when
+    /// the portal/actor is gone. Does not wait for a new Up press.
+    pub fn maintain_portal_reentry(&mut self) {
+        let actors: Vec<EntityId> = self.portal_reentry.keys().copied().collect();
+        for actor in actors {
+            let Some(&portal) = self.portal_reentry.get(&actor) else {
+                continue;
+            };
+            let Some(actor_pos) = self.transform_of(actor).map(|t| t.position) else {
+                self.portal_reentry.remove(&actor);
+                continue;
+            };
+            let Some(portal_data) = self.slot_live(portal) else {
+                self.portal_reentry.remove(&actor);
+                continue;
+            };
+            let Some(portal_pos) = portal_data.transform.map(|t| t.position) else {
+                self.portal_reentry.remove(&actor);
+                continue;
+            };
+            if !in_portal_activation_zone(actor_pos, portal_pos) {
+                self.portal_reentry.remove(&actor);
+            }
+        }
+    }
+
+    fn upsert_session(&mut self, session: InteractionSession) {
+        if let Some(existing) = self
+            .interaction_sessions
+            .iter_mut()
+            .find(|s| s.id == session.id)
+        {
+            *existing = session;
+        } else {
+            self.interaction_sessions.push(session);
+        }
+    }
+
+    /// Live active entities at `address`, slot-index order.
+    pub fn entities_at(&self, address: WorldAddress) -> impl Iterator<Item = EntityId> + '_ {
+        self.iter_active().filter(move |&id| {
+            self.address_of(id)
+                .is_some_and(|a| a.compatible_with(address))
+        })
+    }
+
+    pub fn entities_in_map(
+        &self,
+        map: purgatory_common::MapId,
+    ) -> impl Iterator<Item = EntityId> + '_ {
+        self.iter_active()
+            .filter(move |&id| self.address_of(id).is_some_and(|a| a.map == map))
+    }
+
+    pub fn entities_in_instance(
+        &self,
+        instance: purgatory_common::InstanceId,
+    ) -> impl Iterator<Item = EntityId> + '_ {
+        self.iter_active()
+            .filter(move |&id| self.address_of(id).is_some_and(|a| a.instance == instance))
+    }
+
+    /// Active entities at `address` whose transform is within `radius`.
+    pub fn entities_near(
+        &self,
+        address: WorldAddress,
+        position: [f32; 2],
+        radius: f32,
+    ) -> impl Iterator<Item = EntityId> + '_ {
+        let r2 = radius * radius;
+        let candidates = self.spatial.query_radius(address, position, radius);
+        candidates.into_iter().filter(move |&id| {
+            self.lifecycle_of(id) == Some(EntityLifecycle::Active)
+                && self.address_of(id) == Some(address)
+                && self.transform_of(id).is_some_and(|t| {
+                    let dx = t.position[0] - position[0];
+                    let dy = t.position[1] - position[1];
+                    dx * dx + dy * dy <= r2
+                })
+        })
+    }
+
+    /// World-owned query: entities whose **points** lie in `aabb` at `address`.
+    #[must_use]
+    pub fn query_aabb(&self, address: WorldAddress, aabb: crate::aabb::Aabb) -> Vec<EntityId> {
+        self.spatial
+            .query_aabb(address, aabb)
+            .into_iter()
+            .filter(|&id| {
+                self.lifecycle_of(id) == Some(EntityLifecycle::Active)
+                    && self.address_of(id) == Some(address)
+                    && self
+                        .transform_of(id)
+                        .is_some_and(|t| point_in_aabb(t.position, aabb))
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn query_point(&self, address: WorldAddress, position: [f32; 2]) -> Vec<EntityId> {
+        self.query_aabb(address, crate::aabb::Aabb::new(position, [0.0, 0.0]))
+    }
+
+    #[must_use]
+    pub fn query_radius(
+        &self,
+        address: WorldAddress,
+        position: [f32; 2],
+        radius: f32,
+    ) -> Vec<EntityId> {
+        self.entities_near(address, position, radius).collect()
+    }
+
+    /// Policy enter/leave rects for an observer entity. Geometry only; no hysteresis.
+    #[must_use]
+    pub fn aoi_rects_for(&self, observer: EntityId) -> Option<AoiRects> {
+        let transform = self.transform_of(observer)?;
+        let address = self.address_of(observer)?;
+        Some(aoi_policy_rects(
+            transform.position,
+            self.bounds_for(address),
+        ))
+    }
+
+    /// Class-visible entities in the observer **leave** rect. No hysteresis. No ConnectionId.
+    #[must_use]
+    pub fn spatial_candidates(&self, observer: EntityId) -> Vec<EntityId> {
+        let Some(obs_addr) = self.address_of(observer) else {
+            return Vec::new();
+        };
+        if self.lifecycle_of(observer) != Some(EntityLifecycle::Active) {
+            return Vec::new();
+        }
+        let Some(rects) = self.aoi_rects_for(observer) else {
+            return self.owner_only_self(observer);
+        };
+        let mut out = Vec::new();
+        for id in self.query_aabb(obs_addr, rects.leave) {
+            if !self.class_visible_to(observer, id) {
+                continue;
+            }
+            out.push(id);
+        }
+        if self.class_visible_to(observer, observer) && !out.contains(&observer) {
+            out.push(observer);
+        }
+        out.sort_by_key(|id| (id.index(), id.generation()));
+        out
+    }
+
+    fn owner_only_self(&self, observer: EntityId) -> Vec<EntityId> {
+        if self.class_visible_to(observer, observer) {
+            vec![observer]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn class_visible_to(&self, observer: EntityId, id: EntityId) -> bool {
+        match self.replication_of(id).map(|m| m.class) {
+            Some(ReplicationClass::VisibleObservers) => self.transform_of(id).is_some(),
+            Some(ReplicationClass::OwnerOnly) => id == observer,
+            Some(ReplicationClass::None) | None => false,
+        }
+    }
+
+    /// Non-hysteretic spatial candidates (leave-rect + class). Not AOI membership.
+    ///
+    /// Observer-history Enter/Stay/Leave lives in the gameplay replication owner.
+    #[must_use]
+    pub fn relevance_for(&self, observer: EntityId) -> Vec<EntityId> {
+        self.spatial_candidates(observer)
+    }
+
+    fn iter_active(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.iter()
+            .filter(|&id| self.lifecycle_of(id) == Some(EntityLifecycle::Active))
     }
 
     #[must_use]
@@ -129,12 +928,11 @@ impl World {
     #[must_use]
     pub fn player_body_of(&self, id: EntityId) -> Option<PlayerBody> {
         let data = self.slot_live(id)?;
-        let Payload::Player(player) = data.payload else {
-            return None;
-        };
+        let player = data.player.as_ref()?;
+        let position = data.transform?.position;
         Some(PlayerBody {
             id,
-            position: data.transform.position,
+            position,
             velocity: player.velocity,
             grounded: player.grounded,
             grounded_on: player.grounded_on,
@@ -150,33 +948,76 @@ impl World {
     }
 
     pub fn spawn_player(&mut self, transform: Transform, player: PlayerState) -> EntityId {
-        let id = self.allocate(EntityData {
-            transform,
-            payload: Payload::Player(player),
-        });
-        if self
-            .player
-            .filter(|existing| self.contains(*existing))
-            .is_none()
-        {
-            self.player = Some(id);
-        }
-        id
+        self.spawn_player_at(WorldAddress::DEV, transform, player)
     }
 
-    pub fn spawn_platform(&mut self, transform: Transform, mut platform: Platform) -> EntityId {
-        if self.next_support_id == 0 {
-            self.next_support_id = 1;
-        }
-        platform.support_id = self.next_support_id;
-        self.next_support_id = match self.next_support_id.checked_add(1) {
-            Some(next) if next != 0 => next,
-            _ => u16::MAX,
-        };
-        self.allocate(EntityData {
-            transform,
-            payload: Payload::Platform(platform),
+    pub fn spawn_player_at(
+        &mut self,
+        address: WorldAddress,
+        transform: Transform,
+        player: PlayerState,
+    ) -> EntityId {
+        self.spawn(RuntimeSpawnRequest {
+            address,
+            transform: Some(transform),
+            content_id: None,
+            persistent_id: None,
+            replication: ReplicationMeta::visible_observers(),
+            player: Some(player),
+            platform: None,
+            health: None,
+            interactable: None,
         })
+        .expect("player spawn")
+    }
+
+    pub fn spawn_platform(&mut self, transform: Transform, platform: Platform) -> EntityId {
+        self.spawn_platform_at(WorldAddress::DEV, transform, platform)
+    }
+
+    pub fn spawn_platform_at(
+        &mut self,
+        address: WorldAddress,
+        transform: Transform,
+        platform: Platform,
+    ) -> EntityId {
+        self.spawn(
+            RuntimeSpawnRequest::transient_at(address)
+                .with_transform(transform)
+                .with_platform(platform),
+        )
+        .expect("platform spawn")
+    }
+
+    pub(crate) fn set_transform_position(&mut self, id: EntityId, position: [f32; 2]) -> bool {
+        let address = self.address_of(id);
+        let lifecycle = self.lifecycle_of(id);
+        let mut bumped = false;
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return false;
+            };
+            let Some(current) = data.transform else {
+                return false;
+            };
+            if current.position != position {
+                data.domain_revs.bump_transform();
+                data.dirty.transform = true;
+                bumped = true;
+            }
+            if let Some(transform) = data.transform.as_mut() {
+                transform.position = position;
+            }
+        }
+        if bumped {
+            self.note_domain_rev();
+        }
+        if lifecycle == Some(EntityLifecycle::Active)
+            && let Some(address) = address
+        {
+            self.spatial.relocate(id, address, position);
+        }
+        true
     }
 
     /// Stage-local support id → live platform entity. `0` is never a valid id.
@@ -210,24 +1051,31 @@ impl World {
         let grounded_on = grounded_on_support.and_then(|id| self.platform_entity_by_support_id(id));
         let ignored_platform =
             ignored_support.and_then(|id| self.platform_entity_by_support_id(id));
-        let Some((transform, player)) = self.player_parts_mut() else {
-            return;
-        };
-        transform.position = position;
-        player.velocity = velocity;
-        player.ignored_platform = ignored_platform;
-        player.last_contact = crate::footnote::ContactEvent::None;
-        if grounded {
-            if let Some(on) = grounded_on {
-                player.grounded = true;
-                player.grounded_on = Some(on);
+        let previous = {
+            let Some((transform, player)) = self.player_parts_mut() else {
+                return;
+            };
+            let previous = transform.position;
+            transform.position = position;
+            player.velocity = velocity;
+            player.ignored_platform = ignored_platform;
+            player.last_contact = crate::footnote::ContactEvent::None;
+            if grounded {
+                if let Some(on) = grounded_on {
+                    player.grounded = true;
+                    player.grounded_on = Some(on);
+                } else {
+                    player.grounded = false;
+                    player.grounded_on = None;
+                }
             } else {
                 player.grounded = false;
                 player.grounded_on = None;
             }
-        } else {
-            player.grounded = false;
-            player.grounded_on = None;
+            previous
+        };
+        if let Some(id) = self.player_id() {
+            self.refresh_spatial(id, previous);
         }
     }
 
@@ -245,6 +1093,11 @@ impl World {
         let Some(index) = self.live_index(id) else {
             return false;
         };
+        self.cleanup_owned_runtime(id);
+        self.spatial.remove(id);
+        self.close_sessions_involving(id, InteractionCloseReason::TargetGone);
+        self.portal_reentry
+            .retain(|&actor, portal| actor != id && *portal != id);
         let slot = &mut self.slots[index];
         slot.data = None;
         slot.generation = next_generation(slot.generation);
@@ -257,23 +1110,64 @@ impl World {
         true
     }
 
+    /// Resync the spatial index after a leaked Transform write.
+    ///
+    /// Prefer [`Self::set_transform`] / [`Self::set_transform_position`]. Call this
+    /// after [`Self::player_parts_mut_for`] if position may have changed.
+    pub fn refresh_spatial(&mut self, id: EntityId, previous_position: [f32; 2]) {
+        let info = self
+            .slot_live(id)
+            .map(|d| (d.transform, d.address, d.lifecycle));
+        let Some((transform, address, lifecycle)) = info else {
+            self.spatial.remove(id);
+            return;
+        };
+        let Some(t) = transform else {
+            self.spatial.remove(id);
+            return;
+        };
+        let mut bumped = false;
+        if t.position != previous_position
+            && let Some(data) = self.slot_live_mut(id)
+        {
+            data.domain_revs.bump_transform();
+            data.dirty.transform = true;
+            bumped = true;
+        }
+        if bumped {
+            self.note_domain_rev();
+        }
+        if lifecycle == EntityLifecycle::Active {
+            self.spatial.relocate(id, address, t.position);
+        } else {
+            self.spatial.remove(id);
+        }
+    }
+
+    #[must_use]
+    pub fn spatial_contains(&self, id: EntityId, position: [f32; 2]) -> bool {
+        let Some(address) = self.address_of(id) else {
+            return false;
+        };
+        self.spatial.contains(id, address, position)
+    }
+
     pub fn player_parts_mut(&mut self) -> Option<(&mut Transform, &mut PlayerState)> {
         let id = self.player_id()?;
         self.player_parts_mut_for(id)
     }
 
+    /// Mutable player parts. Does **not** keep the spatial index in sync.
+    /// Call [`Self::refresh_spatial`] after writes, or use transform helpers.
     pub fn player_parts_mut_for(
         &mut self,
         id: EntityId,
     ) -> Option<(&mut Transform, &mut PlayerState)> {
         let index = self.live_index(id)?;
-        match self.slots[index].data.as_mut()? {
-            EntityData {
-                transform,
-                payload: Payload::Player(player),
-            } => Some((transform, player)),
-            _ => None,
-        }
+        let data = self.slots[index].data.as_mut()?;
+        let transform = data.transform.as_mut()?;
+        let player = data.player.as_mut()?;
+        Some((transform, player))
     }
 
     /// Immutable lookup. Stale IDs yield `None`.
@@ -281,8 +1175,9 @@ impl World {
     pub fn get_player(&self, id: EntityId) -> Option<(&Transform, &PlayerState)> {
         match self.slot_live(id)? {
             EntityData {
-                transform,
-                payload: Payload::Player(player),
+                transform: Some(transform),
+                player: Some(player),
+                ..
             } => Some((transform, player)),
             _ => None,
         }
@@ -292,8 +1187,9 @@ impl World {
     pub fn get_platform(&self, id: EntityId) -> Option<(&Transform, &Platform)> {
         match self.slot_live(id)? {
             EntityData {
-                transform,
-                payload: Payload::Platform(platform),
+                transform: Some(transform),
+                platform: Some(platform),
+                ..
             } => Some((transform, platform)),
             _ => None,
         }
@@ -312,10 +1208,7 @@ impl World {
             .enumerate()
             .filter_map(move |(index, slot)| {
                 let data = slot.data.as_ref()?;
-                let actual = match data.payload {
-                    Payload::Player(_) => EntityKind::Player,
-                    Payload::Platform(_) => EntityKind::Platform,
-                };
+                let actual = data.kind();
                 (actual == kind).then_some(EntityId::new(index as u32, slot.generation))
             })
     }
@@ -323,12 +1216,11 @@ impl World {
     pub fn iter_platforms(&self) -> impl Iterator<Item = PlatformView> + '_ {
         self.slots.iter().enumerate().filter_map(|(index, slot)| {
             let data = slot.data.as_ref()?;
-            let Payload::Platform(platform) = data.payload else {
-                return None;
-            };
+            let platform = data.platform?;
+            let transform = data.transform?;
             Some(PlatformView {
                 id: EntityId::new(index as u32, slot.generation),
-                transform: data.transform,
+                transform,
                 platform,
             })
         })
@@ -370,7 +1262,9 @@ impl World {
             let generation = slot.generation;
             slot.data = Some(data);
             self.live = self.live.saturating_add(1);
-            EntityId::new(index, generation)
+            let id = EntityId::new(index, generation);
+            self.spatial_insert_if_active(id);
+            id
         } else {
             let index = u32::try_from(self.slots.len()).expect("entity index fits u32");
             self.slots.push(Slot {
@@ -378,8 +1272,24 @@ impl World {
                 data: Some(data),
             });
             self.live = self.live.saturating_add(1);
-            EntityId::new(index, 1)
+            let id = EntityId::new(index, 1);
+            self.spatial_insert_if_active(id);
+            id
         }
+    }
+
+    fn spatial_insert_if_active(&mut self, id: EntityId) {
+        let Some(data) = self.slot_live(id) else {
+            return;
+        };
+        if data.lifecycle != EntityLifecycle::Active {
+            return;
+        }
+        let Some(transform) = data.transform else {
+            return;
+        };
+        let address = data.address;
+        self.spatial.insert(id, address, transform.position);
     }
 
     fn live_index(&self, id: EntityId) -> Option<usize> {
@@ -395,6 +1305,82 @@ impl World {
     fn slot_live(&self, id: EntityId) -> Option<&EntityData> {
         let index = self.live_index(id)?;
         self.slots[index].data.as_ref()
+    }
+
+    pub(crate) fn slot_live_mut(&mut self, id: EntityId) -> Option<&mut EntityData> {
+        let index = self.live_index(id)?;
+        self.slots[index].data.as_mut()
+    }
+
+    /// FOOTNOTE-stage 6B developer fixtures. Not a map loader.
+    ///
+    /// Nearby switch stands on P0 beside spawn so the client marker is on-camera.
+    pub fn spawn_dev_interaction_fixtures(&mut self) {
+        use crate::interactable::InteractableKind;
+        use crate::stage::{FOOTNOTE_SPAWN_X, P0, P0_POSITION};
+        let floor_top = P0.top_surface(Transform::from_position(P0_POSITION));
+        let y = floor_top + DEV_INTERACTABLE_HALF_Y;
+        let _near = self.spawn(
+            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                .with_transform(Transform::from_position([FOOTNOTE_SPAWN_X + 1.6, y]))
+                .with_content(purgatory_common::ContentId::from_token(6101))
+                .visible()
+                .with_interactable(Interactable::new(InteractableKind::Switch)),
+        );
+        let _far = self.spawn(
+            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                .with_transform(Transform::from_position([FOOTNOTE_SPAWN_X + 12.0, y]))
+                .with_content(purgatory_common::ContentId::from_token(6102))
+                .visible()
+                .with_interactable(Interactable::new(InteractableKind::Chest)),
+        );
+        if let Some(other) = self.spawn(
+            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                .with_transform(Transform::from_position([FOOTNOTE_SPAWN_X + 1.2, y]))
+                .with_content(purgatory_common::ContentId::from_token(6103))
+                .visible()
+                .with_interactable(Interactable::new(InteractableKind::Portal)),
+        ) {
+            self.set_address(
+                other,
+                WorldAddress::new(
+                    purgatory_common::MapId::DEV,
+                    purgatory_common::ChannelId::DEFAULT,
+                    purgatory_common::InstanceId::from_raw(2),
+                ),
+            );
+        }
+    }
+}
+
+/// Half-height of the 6B developer interactable marker. Presentation size
+/// on the client matches this so the fixture sits on P0, not inside it.
+const DEV_INTERACTABLE_HALF_Y: f32 = 0.7;
+
+fn entity_from_request(request: RuntimeSpawnRequest) -> EntityData {
+    EntityData {
+        transform: request.transform,
+        address: request.address,
+        lifecycle: EntityLifecycle::Active,
+        content_id: request.content_id,
+        persistent_id: request.persistent_id,
+        replication: request.replication,
+        player: request.player,
+        platform: request.platform,
+        health: request.health,
+        interactable: request.interactable,
+        dirty: DirtyFlags {
+            membership: true,
+            replication: true,
+            transform: request.transform.is_some(),
+            health: request.health.is_some(),
+        },
+        domain_revs: DomainRevs {
+            transform: u64::from(request.transform.is_some()),
+            health: u64::from(request.health.is_some()),
+            membership: 1,
+            replication: 1,
+        },
     }
 }
 

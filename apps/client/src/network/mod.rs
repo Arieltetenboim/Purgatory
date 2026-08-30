@@ -25,5 +25,8 @@ pub mod state;
 pub use config::ClientEndpointConfig;
 pub use diagnostics::NETWORK_HISTORY_CAP;
 pub use failure::NetworkFailureKind;
+pub use purgatory_common::impairment::{
+    ImpairmentMetricsSnapshot, ImpairmentProfile, NetworkImpairmentConfig,
+};
 pub use runtime::NetworkHandle;
 pub use state::{NetworkCommand, NetworkSnapshot};

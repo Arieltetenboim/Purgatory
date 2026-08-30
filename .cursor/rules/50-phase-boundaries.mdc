@@ -1,0 +1,46 @@
+---
+description: Honor PURGATORY phase/sub-phase scope, non-goals, and end-of-phase reporting.
+alwaysApply: true
+---
+
+# Phase boundaries
+
+PURGATORY is developed incrementally through explicit phases and sub-phases.
+
+Current phase marker: root `PHASE`. Status and notes: `docs/ROADMAP.md`, `README.md`, `docs/TEST_GATES.md`. The master execution specification is `PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md`.
+
+Do not start the next phase until instructed. Do not treat a future phase document as authorization to start that phase.
+
+Research, prototypes, and fixes inside an existing phase are in scope when requested. Phase order is not a ban on that work.
+
+## When given a phase-scoped task
+
+- Implement only the requested phase or sub-phase.
+- Honor explicit goals and explicit non-goals.
+- Do not begin the next phase.
+- Do not pre-build future systems merely because they will eventually be needed.
+- Avoid speculative extensibility outside current requirements.
+- Stop at the requested boundary.
+
+## Missing prerequisites
+
+If a genuine missing prerequisite prevents correct implementation:
+
+- Identify it clearly.
+- Make the minimum necessary prerequisite change only if it is clearly required and compatible with project architecture.
+- Report it explicitly.
+
+Do not use a missing prerequisite as justification for silently expanding project scope.
+
+## End-of-phase report
+
+At the end of a phase implementation, state:
+
+- implemented scope
+- important files/modules changed
+- tests added or changed
+- quality-gate results (commands actually run)
+- manual/runtime verification still required
+- deviations from the original plan
+- unresolved issues or risks
+- confirmation that work stopped at the requested phase boundary

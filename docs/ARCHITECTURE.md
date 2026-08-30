@@ -12,7 +12,7 @@ PURGATORY is a custom 2D side-scrolling MMORPG engine. This document records the
 
 ## What is not being built yet
 
-Phase 4 is the world/entity foundation. Phase 4.1 adds a client-only development debug overlay. Phase 4.5 adds the FOOTNOTE movement foundation. Phase 4.6 expands the hard-coded FOOTNOTE development test arena. Phase 4.8 adds camera follow, world bounds, parallax background, and debug harness improvements. Phase 5.0 adds the Quinn/QUIC session foundation (handshake, ConnectionId, RTT, Network debug tab) **without** gameplay replication. Phase 5.0B adds a Connection Frontend and a client-local connection lifecycle (manual Connect, `ConnectionAttemptId`, Game only after Welcome). Phase 5.0C hardens that lifecycle under races, concurrent clients, retries, stale events, queue pressure, and shutdown. Phase 5.0D adds semantic failure categories, bounded diagnostics, explicit idle timeout, and Network-tab observability. Phase 5.0E hardens the untrusted-peer / abuse foundation. Phase 5.0F proves that foundation converges back to baseline after soak, stress, and deterministic chaos. Phase 5.1 adds intent-only `InputCommand` and server-owned movement (protocol v2). Phase 5.2 adds bounded full `WorldSnapshot` replication and client replica rendering (protocol v3). Phase 5.3 adds client-only remote entity interpolation (no protocol bump). Phase 5.4 adds client-only local player prediction (no protocol bump; no reconciliation). Later phases add reconciliation, combat, persistence, maps, and presentation.
+Phase 4 is the world/entity foundation. Phase 4.1 adds a client-only development debug overlay. Phase 4.5 adds the FOOTNOTE movement foundation. Phase 4.6 expands the hard-coded FOOTNOTE development test arena. Phase 4.8 adds camera follow, world bounds, parallax background, and debug harness improvements. Phase 5.0 adds the Quinn/QUIC session foundation (handshake, ConnectionId, RTT, Network debug tab) **without** gameplay replication. Phase 5.0B adds a Connection Frontend and a client-local connection lifecycle (manual Connect, `ConnectionAttemptId`, Game only after Welcome). Phase 5.0C hardens that lifecycle under races, concurrent clients, retries, stale events, queue pressure, and shutdown. Phase 5.0D adds semantic failure categories, bounded diagnostics, explicit idle timeout, and Network-tab observability. Phase 5.0E hardens the untrusted-peer / abuse foundation. Phase 5.0F proves that foundation converges back to baseline after soak, stress, and deterministic chaos. Phase 5.1 adds intent-only `InputCommand` and server-owned movement (protocol v2). Phase 5.2 adds bounded full `WorldSnapshot` replication and client replica rendering (protocol v3). Phase 5.3 adds client-only remote entity interpolation (no protocol bump). Phase 5.4 adds client-only local player prediction (no protocol bump; no reconciliation). Phase 5.5 adds acknowledgement and restore+replay (protocol v4). Phase 5.6 adds a development-only network impairment lab. Phase 5.7 adds a headless multiplayer load / soak / churn harness (real QUIC bots, localhost metrics). Phase 6.0–6C add runtime identity, composition, interaction, and content/maps. Phase 6D adds a World-owned spatial grid, server interest-policy AOI, protocol **v8** `ReplicationFrame` deltas on the existing persistent uni stream, and protocol **v9** DEV `DevSetChannel` so same-Map Channel membership is a real `WorldAddress` boundary. Phase **6E** adds persistent `CharacterId`, DEV login lookup, file-backed character restore (not last coordinates), and protocol **v10**. Phase **6F** adds World-owned runtime services (scheduler, actions, gates, staged events, effects, cadence, spawn schedule) without a protocol bump. Later phases add combat, accounts, and presentation.
 
 Do not add in early phases:
 
@@ -76,7 +76,7 @@ The render loop never `.block_on`s network IO. Async tasks must not call `World:
 
 Development listen address: `127.0.0.1:5001` (`NetworkConfig::DEV` in `purgatory-protocol`). Handshake timeout 5 s. Idle timeout 15 s (transport liveness, not AFK). Datagram ping ~1 s, nonce only. Max datagram payload 256 bytes.
 
-`ConnectionId` (network session) is not `EntityId` (simulation instance). Phase 5.1 binds `ConnectionId → EntityId` on the server only. Snapshots carry generational `EntityId` and an explicit `local_player_entity`. A later `MapInstanceId` will also be a distinct, server-owned identity.
+`ConnectionId` (network session) is not `EntityId` / `RuntimeEntityId` (simulation instance). Phase 5.1 binds `ConnectionId → EntityId` on the server only. Snapshots carry generational `EntityId` and an explicit `local_player_entity`. `WorldAddress` is `MapId + ChannelId + InstanceId` — logical **world membership**, distinct from transform. All three components participate in relevance isolation. **WorldAddress boundary ≠ social identity boundary** (ADR-0040): Channel/Map/Instance isolates replication, AOI, interpolation tied to old relevance, and world-bound `InteractionSession`. `InteractionCloseReason::AddressChanged` invalidates those world-bound runtime interactions, not arbitrary identity/social sessions (whisper, friends, party/guild, presence — not implemented). The DEV Channel control does not mutate client `WorldAddress` until the authoritative observer address/epoch arrives. **Transitions are readiness-gated, not timer-revealed** (ADR-0041): FadeOut hides old presentation; the **visible** presentation world stays on the source until FadeOut is fully black (`MapFade::is_fully_black` / Hold), then presentation commits; the screen may stay black while destination state is prepared; FadeIn starts only on `DestinationReady` (map) or `MembershipReady` (same-map Channel/Instance). Authoritative replica/network may already be on the destination during visible FadeOut. Map readiness ≠ Channel membership readiness. Simulation and replication continue while presentation is obscured. A WorldAddress/Map/Channel transition is also a **gameplay input barrier** (ADR-0042): the server neutralizes held input and rejects movement/actions for the FadeOut+Hold window; the client does not apply live gameplay movement until FadeIn begins. `ContentId` and `PersistentId` are separate domains (ADR-0034).
 
 The server accept loop never awaits a full handshake. Each `Incoming` is refused at a concurrency cap of 32 or spawned as a per-connection task that owns Hello/Welcome and the live session. `SessionLease` removes the table entry exactly once (including panic unwind). `ConnectionId` is server-allocated monotonic `u64` starting at 1; the client cannot choose it. Wraparound is not handled (development scope).
 
@@ -204,30 +204,31 @@ network tasks
 - Gameplay input rate is separate from control-message rate (dev: 128/s command stream, 256 drops then disconnect).
 - Client local FOOTNOTE is the Phase 5.4/5.5 prediction body (presentation only). Authority remains server-side.
 
-Do not start Phase 5.6 from this section.
+This section records Phase 5.1 behavior. Phase 6 runtime foundations are separate.
 
 ## Authoritative snapshots (Phase 5.2)
 
 ```text
 World (read-only)
-→ SnapshotBuilder (visibility set)
-→ WorldSnapshot
-→ per-connection watch (latest wins)
-→ server-initiated uni stream
-→ ReplicatedWorld (atomic apply)
+→ spatial_candidates + ObserverReplicationState
+→ ReplicationFrame (budgeted Enter/Update/Leave)
+→ bounded epoch-tagged writer queue (cap 4)
+→ server-initiated persistent uni stream
+→ client drains every frame (no watch coalesce)
+→ ReplicatedWorld::apply_frame
 → renderer
 ```
 
-- Full snapshots. Cadence: one per simulation tick (30 Hz) in development.
-- Sequence: no wrap within process; stale/duplicate ignored; no rewind.
-- Visibility is the shared arena's dynamic players, not “every entity on the server”. Static platforms stay local content.
-- Snapshot buffering is replaceable state. Old snapshots are dropped. One slow client cannot stall simulation or peers. Lifecycle/control stays higher priority (`biased` select).
-- Local cyan marker; remote a distinct debug color. Stepped/delayed remotes until Phase 5.3; local delay until Phase 5.4.
+- Full snapshots through protocol v7. Phase 6D sends incremental `ReplicationFrame` records. Cadence is still one sim-tick publish attempt (30 Hz) in development; EventOnly entities skip periodic resend but still send on domain-rev change.
+- Sequence: no wrap within process; client ignores older `observer_baseline_epoch`; a newer epoch resets the replica.
+- Visibility is the observer AOI policy set (enter/leave rects around the observer, clamped to `WorldBounds`), not “every entity on the server”. Static platforms stay local content.
+- The writer queue is bounded (cap 4). If full, intent stays pending (coalesced); the sim does not drop-and-forget a later Update without a committed Enter. One slow client cannot stall simulation. `write_all` failure tears down that session.
+- Local cyan marker; remote a distinct debug color.
 
 ## Remote interpolation (Phase 5.3)
 
 ```text
-WorldSnapshot (accepted)
+WorldSnapshot view (from replica after apply_frame)
 → ReplicatedWorld (authoritative)
 → InterpolationBuffer (bounded history)
 → estimated_server_tick (monotonic) − delay
@@ -240,17 +241,18 @@ WorldSnapshot (accepted)
 - Clock: advance from local `Instant`; snapshot `server_tick` may catch up forward only. `render_tick` never moves backward.
 - Despawn waits until `render_tick` reaches the later bracket B. Wire arrival of a newer snapshot does not hide early.
 - No extrapolation. Buffer underrun holds newest. Teleport snap (≥ 8 wu) is client presentation tuning.
-- Scalability: interpolation is entirely client-side; server keeps latest-wins watches with no per-client history.
+- Scalability: interpolation is entirely client-side; the server keeps a coalescing per-observer mailbox plus an ordered writer queue, not latest-wins `watch`.
 
 ## Local prediction (Phase 5.4)
 
 ```text
 physical input → PlayerInput
   ├─ InputCommand → server (authority unchanged)
-  └─ LocalPrediction → World::tick (FOOTNOTE) → predicted pose
+  └─ LocalPrediction → World::tick (FOOTNOTE) → predicted tick pose
+       → remainder extrapolation + correction offset (render only)
        → renderer + camera (local only)
 
-WorldSnapshot → ReplicatedWorld (never overwritten by prediction)
+WorldSnapshot view → ReplicatedWorld (never overwritten by prediction)
 Remotes → InterpolationBuffer (unchanged)
 ```
 
@@ -260,8 +262,6 @@ Remotes → InterpolationBuffer (unchanged)
 - Prediction clock = shared `SimulationClock` at 30 Hz. Render frames consume 0..N ticks from `clock.advance`; catch-up bounded by `MAX_CATCH_UP` / `MAX_CATCH_UP_TICKS`.
 - Init/reset from replica on first local, generation change, screen/disconnect clear. **Lead** is expected RTT×speed — not a correction trigger. Phase 5.5 replays unacked commands after restore.
 
-Do not start Phase 5.6 from this section.
-
 ## Authoritative input acknowledgement and local reconciliation (Phase 5.5)
 
 ```text
@@ -270,8 +270,8 @@ SimulationClock tick
   ├─ InputCommand (epoch, sequence) → pending window → server queue
   └─ tick_predicted_player (FOOTNOTE)
 
-WorldSnapshot (per-recipient)
-→ restore durable pose/vel/grounded/PlatformSupportId
+ReplicationFrame (per-recipient)
+→ apply_frame → restore durable pose/vel/grounded/PlatformSupportId
 → drop pending with sequence ≤ last_acknowledged_input_sequence
 → replay remaining via tick_player
 ```
@@ -286,7 +286,49 @@ WorldSnapshot (per-recipient)
 - Focus-loss: release `ActionState` immediately. Normal path: one forced `SimulationClock` Neutral step paired with a Neutral command. Full send window: `HeldCancel` with an immutable `(epoch, target_sequence)` barrier captured at send; pre-confirm snapshots are restore+replay, not a pending hole.
 - Failsafes while pending > 0 skip 8 wu / VerticalSettled / LeadSafety. Empty pending may still hard-snap. DriftCorrection is not used.
 
-Do not start Phase 5.6 from this section.
+## Controlled network impairment lab (Phase 5.6)
+
+Development-only. Off by default. Does not change protocol v4, prediction, or interpolation parameters.
+
+```text
+winit InputCommand (after pending append)
+→ mpsc
+→ live_loop ImpairmentLane (optional one-way delay / stall)
+→ write_client_control (same long-lived bi stream)
+
+uni ReplicationFrame read
+→ ImpairmentLane (optional one-way application-delivery delay)
+→ drain all frames → replica / interp / prediction
+```
+
+- Input impairment sits **after** prediction/pending and **before** the QUIC write. Snapshots are delayed **after a successful uni-stream read**, not as server send-buffer / flow-control stall.
+- Reliable ordered FIFO: no InputCommand drops, holes, or reordering in normal profiles. Overflow of the input delay queue is an explicit disconnect, not a silent hole.
+- `watch` carries current config/profile. `mpsc` carries `TriggerInputStall`. Off makes queued items immediately eligible; they still drain through the bounded FIFO path (8 input writes / 4 snapshot applies per live-loop turn) so a burst cannot starve snapshot reads, config, stall, or disconnect.
+- Ping/Pong RTT stays unimpaired. Overlay labels configured one-way delay separately from measured ping.
+- Do not treat interpolation underrun beyond the fixed 3-tick buffer as an automatic 5.6 correctness failure; measure it first.
+
+This section records Phase 5.6 behavior. Phase 6 runtime foundations are separate.
+
+## Multiplayer load harness (Phase 5.7)
+
+Headless real-QUIC bots (`purgatory-load` in `tools/bot_client`) exercise Hello → Welcome → 30 Hz `InputCommand` → snapshots. Shared `IntentNet` lives in `purgatory-protocol`; bots omit prediction, HeldCancel, and the graphical client.
+
+```text
+purgatory-load
+→ shared Quinn Endpoint
+→ BotSession × N
+→ server FOOTNOTE + SnapshotBuilder
+→ UDP LoadMetricsV1 (127.0.0.1:5002)
+→ logs/load/<run>/
+```
+
+- `MAX_ENTITIES_PER_SNAPSHOT = 256` (mechanical decode bound); byte cap remains 8192.
+- Default admission 32; load mode raises admission/channels via env (cap 256).
+- Tick overrun = tick work > 33.333 ms (recorded; one overrun ≠ WARN).
+- Snapshot physics O(N); sim-thread snapshot builds O(N²) pose copies; encode/send up to O(N²) if writers keep up.
+- Artifacts: `latest.txt` vs `last_finished.txt`; charts offline only.
+
+This section records Phase 5.7 behavior. Phase 5 closed GREEN; remaining O(N²) snapshot fan-out is a Phase 6 follow-up, not a Phase 5 blocker.
 
 ## Coordinate convention
 
@@ -313,7 +355,7 @@ Client visual path (LOCAL DEV / NON-AUTHORITATIVE, not prediction):
 → World::tick(dt, input)  // local FOOTNOTE for presentation
 ```
 
-`move_axis` and `down_held` are held state. `jump_pressed` is an edge consumed once per simulation tick. Temporary development bindings: A / Left Arrow → MoveLeft, D / Right Arrow → MoveRight, S / Down Arrow → MoveDown, Space → Jump. **Down + Jump** while grounded on a OneWay platform drops through (FOOTNOTE); otherwise Jump is a normal grounded jump.
+`move_axis` and `down_held` are held state. `jump_pressed` is an edge consumed once per simulation tick. Temporary development bindings: A / Left Arrow → MoveLeft, D / Right Arrow → MoveRight, S / Down Arrow → MoveDown, Space → Jump, **E → Interact** (intent only; server validates). **Down + Jump** while grounded on a OneWay platform drops through (FOOTNOTE); otherwise Jump is a normal grounded jump.
 
 The physical Backquote / Grave key (`~`) is **not** a gameplay action. It toggles the client development debug overlay and is never stored in `PlayerInput`.
 
@@ -325,19 +367,76 @@ The physical Backquote / Grave key (`~`) is **not** a gameplay action. It toggle
 
 Runtime identity is [`EntityId`]: `{ index, generation }`. It is cheap to copy. The index is a storage slot, not permanent identity. After despawn, the slot’s generation advances; a later occupant in the same slot has a different `EntityId`. Lookups with a stale ID return `None`. IDs are not memory addresses, Rust references, or UUIDs. They are not serialized on the network in this phase.
 
-**EntityId vs Content ID:** `EntityId` is a temporary runtime instance. A future content ID (for example `monster.slime.green`) is a stable authored definition. Two green slimes will share one content ID and have two different `EntityId`s. Do not mix the two.
+**EntityId vs Content ID vs CharacterId vs Persistent ID:** `EntityId` (`RuntimeEntityId`) is a temporary runtime instance. `ContentId` is a stable authored definition string (compact FNV-1a storage is an implementation detail; ADR-0036). `CharacterId` is the server-minted persistent player identity (ADR-0043). `PersistentId` is an optional runtime-entity placeholder and is **not** a Character handle. Two green slimes share one content id and have two different `EntityId`s. Do not mix the namespaces. Do not map `CharacterId::raw()` onto `PersistentId`.
 
 Storage is a generational slot vector plus a free list. Live records sit in a contiguous `Vec`. Vacant slots are reused. This is not an ECS and not a general object graph.
 
-`EntityKind` is currently `Player` or `Platform` only. Monster, projectile, loot, and NPC kinds are added when those systems exist.
+`EntityKind` is **derived** from capabilities: player → `Player`, else platform → `Platform`, else `Generic`. Monster, projectile, loot, and NPC **gameplay** are added when those systems exist; they are not separate storage families.
 
-Every entity has a 2D [`Transform`] (`position`, **+X right, +Y up**). Players also store velocity, grounded, `grounded_on: Option<EntityId>`, and collider half-extents. Platforms store half-extents and `PlatformKind`. Velocity is not forced onto platforms.
+Every live entity has a [`WorldAddress`] and a lifecycle. [`Transform`] is optional (Phase 6A). Address is independent of coordinates. Players also store velocity, grounded, `grounded_on: Option<EntityId>`, and collider half-extents. Platforms store half-extents and `PlatformKind`. Velocity is not forced onto platforms. Optional `Health` is a container only, not combat.
+
+Dirty tracking is per domain (`transform` / `health` / `membership` / `replication`), not a single entity-dirty bit. Read-only queries do not mark dirty.
+
+Optional `Interactable` is a type/intent marker. `World` owns `InteractionSession` domain state (Opened / Active / Updated / Closed). That session is **not** a UI window. The client maps server results to `UIRuntimeState` for overlay presentation. Visible ≠ interactable. Client nearest-target is advisory (ADR-0035).
+
+`World::spatial_candidates(observer: EntityId)` is the replication candidate set (leave-rect + class; no hysteresis, no `ConnectionId`). Observer is a runtime entity, not a connection. `ObserverReplicationState` owns enter/leave hysteresis and `last_committed_rev`. AOI half-extents `[16, 9]` wu plus leave margin `2` wu are **server interest policy**, not client 16:9. Grid cell size `4.0` wu is a tunable (ADR-0038). Missing Transform is not globally visible. Full-world player broadcast is **not** the replication architecture (ADR-0034, ADR-0038, ADR-0039).
+
+Leaving an observer's relevance does not despawn the server entity. Changing address is not destruction.
+
+Gameplay spatial queries (`query_aabb` / `query_radius`, plus `QueryFilter` / optional cap) take `WorldAddress`. The grid already isolates address. There is no second spatial tree. Despawned entities are absent from query results.
+
+A **Channel transition** (same `MapId` and `InstanceId`, different `ChannelId`) is a `WorldAddress` boundary. The runtime player `EntityId` stays live and Active. `World::set_address` relocates spatial-grid membership. Observer replication reuses the map-transition epoch reset (bump `observer_baseline_epoch`, clear Known / WantEnter, purge older queued frames). It is not a despawn, not a reconnect, and not a Portal. Client presentation must not rebuild map geometry or start Portal fade when only Channel/Instance changed; fade and geometry swap are **MapId** changes. Replication reset is shared; presentation is not.
+
+Portal travel preserves the actor's current `ChannelId` and `InstanceId` unless authored transition metadata later overrides them (none exists today). ChannelId and runtime InstanceId are **not** persistent restore identity (ADR-0044). Phase 6E placement currently uses `ChannelId::DEFAULT` / `InstanceId::DEFAULT` as a temporary placement-layer implementation. Production channel allocation remains deferred.
 
 `grounded_on` names a platform `EntityId`. If that platform is despawned, the next tick clears grounding and the player falls. Stale IDs are never dereferenced as live records.
 
 Iteration is ordinary loops (`iter`, `iter_kind`, `iter_platforms`). No thread, task, or timer per entity.
 
 The renderer copies AABBs from `World` each frame. It does not own lifecycle and does not keep a second entity database.
+
+## Runtime services (Phase 6F)
+
+`World` owns focused runtime modules. There is no `RuntimeServices` god object. `GameplayOwner::simulate_tick` orchestrates explicit stages on the simulation thread:
+
+```text
+begin_tick (SimulationTick)
+→ load-validation pressure (only if load-mode + PURGATORY_LOAD_VALIDATION)
+→ optional opt-in DEV probe arm (skipped when load-validation is active)
+→ drain critical scheduler
+→ tick_player (FOOTNOTE, every tick)
+→ portal / interaction maintain
+→ commit runtime events once
+→ cadence-due pumps
+→ drain deferred scheduler (budget)
+→ publish_snapshots (DomainRevs + AOI)
+```
+
+30 Hz is tick spacing, not a requirement that every system or entity update every tick. Movement stays every tick. Cadence (`EveryTick` / `EveryN`) and replication Normal/Low intervals are staggered.
+
+**Scheduler.** Generational `TimerId`. Critical due work should complete this tick; `CRITICAL_DRAIN_CEILING` is a pathological-overload safeguard (remainder carries forward; `scheduler_critical_ceiling_hits` counts hits). Deferred work is FIFO with a per-tick budget and a progress guarantee. Same-pass recursion is forbidden. Owner despawn cancels owned jobs.
+
+**Actions.** A slot exists only after start succeeds. Stored phase is `Active` or terminal. `ActionDenialReason::TransitionLocked` absorbs `InputGateReason` without rewriting the ADR-0042 remaining-tick lock. `InteractionSession` stays distinct from Action.
+
+**Commands vs events.** Client envelopes are untrusted commands. Runtime facts are staged `RuntimeEvent` values (double buffer, commit once per tick). No global bus.
+
+**Effects / spawn schedule.** Temporary test effects expire through the same scheduler. Scheduled spawn always calls `World::spawn` at commit (fresh `EntityId`; never reuse a despawned id). Immediate spawn remains `World::spawn`.
+
+**Dirty/delta.** `DomainRevs` are World change versions. `ObserverReplicationState` decides whether a given observer still needs Enter/Update/Leave. Production replication must not `consume_dirty`. AOI ≠ dirty. Visible ≠ full replicate every tick. One observer’s commit must not clear another’s pending delta.
+
+**DEV probe.** `PURGATORY_RUNTIME_PROBE=1|true|yes|on` may schedule one visible Generic after a known delay. Default off. Map-ready does not spawn automatically.
+
+**Load validation (Phase 6G).** Synthetic density/scheduler/action/effect/event/cadence pressure is test infrastructure. The server applies `PURGATORY_LOAD_VALIDATION` JSON only when load-mode is on (`PURGATORY_ADMISSION_CAP` set). Production `World` tick does not read that env. Metrics stay schema **3**. MixedRuntime (`purgatory-load --preset mixed`) is the canonical integrated workload. Protocol stays v10. Welcome still does not carry `CharacterId`. Do not begin Phase 7 (MOB).
+
+Error containment:
+
+```text
+invalid command → typed reject
+stale runtime target → controlled no-op/cancel
+expired/cancelled timer → cannot fire twice
+missing owner → cleanup
+internal impossible invariant → debug_assert according to project rules
+```
 
 ## Local movement (FOOTNOTE)
 
@@ -399,7 +498,7 @@ Do not assume every platform is permanently solid from every direction. Geometri
 
 ## World bounds
 
-`WorldBounds { min_x, max_x, min_y, max_y }` lives on `World`. The player is clamped at horizontal (and soft vertical) edges with outward velocity zeroed — no teleport correction. Falling well below `min_y` triggers a **development** respawn at stage spawn (not a final death system). Camera clamping is presentation-only and reads the same bounds.
+`WorldBounds { min_x, max_x, min_y, max_y }` lives on `World`. The player is clamped at horizontal (and soft vertical) edges with outward velocity zeroed — no teleport correction. Falling well below `min_y` triggers a **development** respawn at stage spawn (not a final death system). Camera clamping is presentation-only and reads the same bounds. Camera Dead Zone / damping does not feed server AOI; interest policy still uses the local player pose.
 
 ## Client presentation
 
@@ -412,15 +511,19 @@ platform events (including keyboard)
 → semantic ActionState only on ClientScreen::Game (unless a text-like widget owns the keyboard)
 → if Connection: rebase last_instant; do not SimulationClock::advance
 → if Game: collect elapsed Duration × debug_time_scale → SimulationClock::advance
-→ for each executed tick: World::tick(fixed_dt, PlayerInput)
-→ update follow camera; clamp to WorldBounds
-→ Connection: ConnectionFrontend::paint (logo + CONNECT); Game: parallax → AABBs → optional gizmos
+→ for each executed tick: World::tick(fixed_dt, PlayerInput) / local prediction tick
+→ replica apply + reconcile (poll, before or with ticks)
+→ finalize local presentation pose once (remainder extrapolation of last predicted tick + correction-smoothing offset; not the remote interp buffer)
+→ update follow camera from that same pose (Dead Zone containment + damp, then clamp to WorldBounds)
+→ Connection: ConnectionFrontend::paint (logo + CONNECT); Game: parallax → AABBs (local player uses the finalized presentation pose) → optional gizmos
 → optional development egui overlay
 ```
 
 Rendering continues when zero simulation ticks are due. Frame delta is never the simulation step. Movement executes only inside those fixed ticks.
 
-Logical world coordinates are independent of physical pixels. The FOOTNOTE arena uses a taller logical viewport height (`FOOTNOTE_TEST_VIEWPORT_HEIGHT`). Phase 4.8 camera **follows the local player** and clamps so the viewport stays inside world bounds when the world is larger than the viewport.
+Logical world coordinates are independent of physical pixels. The FOOTNOTE arena uses a taller logical viewport height (`FOOTNOTE_TEST_VIEWPORT_HEIGHT`). The client camera uses a **Dead Zone** around the current camera center plus frame-rate-independent exponential follow (named DEV tunables in `apps/client/src/camera_follow.rs`). The zone is a free-movement box: the camera does not move while the player is inside it. Crossing an edge moves the camera only enough to keep the player at that boundary (excess only; the target does not jump to player center and does not recenter). When the player stops just outside an edge, the same damper finishes residual containment so they settle on that edge. Horizontal and vertical half-extents and smooth times are independent. Map destinations snap/seed the camera to the dest local pose (no smoothing across maps). Channel/Instance commits preserve the current camera pose. Viewport clamping still keeps the camera inside `WorldBounds`. Camera pose is not AOI.
+
+The drawn local player and the camera follow target share one per-frame **presentation pose**. That pose starts from client prediction (or replica when prediction is inactive), then a decaying visual offset absorbs small restore+replay corrections so a damped camera cannot expose them as screen-space flicker. Large corrections, map/teleport/reset, and hitch discontinuities snap. The offset does not feed simulation, commands, reconciliation, or server AOI. Remotes keep the delayed interpolation buffer.
 
 **Parallax** (far ≈ 0.15, mid ≈ 0.40, near ≈ 0.70) is presentation-only: `layer_offset = camera_position * factor`. Simulation entities, collision, FOOTNOTE, and the server are unaware of background layers.
 
@@ -440,10 +543,12 @@ The client hosts an in-window **development** overlay. It is not production game
 - Toggle: physical Backquote / Grave (`~`). Press opens; press again closes. OS key-repeat does not toggle. The egui close button also hides it; `~` reopens it.
 - Technology: `egui` 0.36.1 + `egui-winit` 0.36.1 + `egui-wgpu` 0.36.1, integrated directly with the existing winit/wgpu client. **eframe is not used.**
 - Crate boundary: egui crates are `purgatory-client` dependencies only. They must not enter `purgatory-simulation`, `purgatory-server`, `purgatory-protocol`, `purgatory-content`, or `purgatory-common`.
-- Tabs: **Runtime**, **Player**, **FOOTNOTE**, **World**, **Camera**, **Diagnostics**, **Network**. Player tab marks local simulation **LOCAL DEV / NON-AUTHORITATIVE**. Network tab adds last input sequence sent, input commands sent, and current semantic input.
+- Tabs: **Runtime**, **Player**, **FOOTNOTE**, **World**, **Camera**, **Diagnostics**, **Network**. Player tab marks local simulation **LOCAL DEV / NON-AUTHORITATIVE**. Network tab adds last input sequence sent, input commands sent, and current semantic input. **Authoritative Replica** (default open) reports last-frame and session Enter/Update/Leave counts plus Known entities without an Update this frame (client-observable dirty/delta proof).
 - Runtime includes development **time scale** (1.0 / 0.5 / 0.25): scales wall-clock elapsed fed to `SimulationClock` only. `TICK_RATE_HZ` is unchanged. Local-client only; once authoritative networking exists this cannot independently slow the server.
-- Gizmo toggles: colliders, velocity, grounded highlight, world bounds, grid, parallax debug.
-- Camera tab: position, viewport, follow checkbox, center-on-player.
+- Gizmo toggles: colliders, velocity, grounded highlight, world bounds, grid, parallax debug, AOI policy rects, camera Dead Zone, replica entity labels.
+- World **Entities** inspector: categorized tree (Players / Interactables / Portals / Platforms / Other). Players, Interactables, and Portals start expanded; Platforms and Other start collapsed. Each row labels **World** vs **Replication** separately. Replica rows are observer Known-set only; local World slots are a different identity namespace and are not merged by matching `index:generation`. The **local player** is one semantic entry: `server RuntimeEntityId` and `client World EntityId` are labeled explicitly under that entry and are not peer rows.
+- Network **Observer AOI** section: observer `RuntimeEntityId`, `MapId`, `ChannelId`, `InstanceId`, `WorldAddress`, enter/leave policy bounds, mailbox candidate/Known/WantEnter/WantLeave counts, replication epoch, plus Known counts per replica kind. The overlay header shows `Map / Channel / Instance` with DEV `[0] [1]` Channel buttons that send `DevSetChannel` (server-authoritative; the client does not mutate WorldAddress). World-space labels are compact semantic chips (`LOCAL PLAYER`, `REMOTE PLAYER`, `INTERACTABLE`, `PORTAL`) with near-white glyphs, a dark outline, a drop shadow, and category color only as an accent border. The `LOCAL PLAYER` chip uses the same presented pose as the local body and camera. Namespace IDs live in the World Entities inspector, not over the entity. Labels are projected only when `maps_aligned` and the presentation world is ready (idle fade or `DestinationReady` / `MembershipReady`); they are suppressed while a transition is unaligned or still waiting. Overlay header shows DEV transition banners (`MAP TRANSITION · Waiting DestinationReady`, `CHANNEL TRANSITION · Waiting MembershipReady`) plus missing-flag detail and a stall warning. The screen-space inspector stays visible during the blackout. The overlay header is a compact INTERACTION / TARGET / PORTAL status strip plus WORLD Channel control (DEV only; not production UI).
+- Camera tab: position, viewport, presentation player, desired target, Dead Zone half-extents, smooth times, following X/Y, DEV jitter (pred/replica/presented/cam/screen X, correction, 90-frame screen-X range, follow-X flips), follow checkbox, center-on-player.
 - Mutation: `DebugAction` values (currently `ResetPlayer`). egui must not poke arbitrary `World` fields.
 - Input: movement stays live while the overlay is open except when a text-like egui widget owns key presses.
 - Render order: parallax → world primitives → FOOTNOTE/debug gizmos → egui (`LoadOp::Load`).
@@ -467,18 +572,30 @@ protocol
   ↑
 client / server / bot_client
 
-common
+common → simulation
   ↑
 content
   ↑
 server / client / content_validator
+
+common
+  ↑
+persistence
+  ↑
+server
 ```
 
+`purgatory-content` may depend on `purgatory-simulation` to build typed spawn plans. JSON stays in the content crate. `purgatory-simulation` must not depend on `purgatory-content`, serde, or JSON.
+
 `simulation` must not depend on `winit`, `wgpu`, renderer code, UI, or OS window APIs.
+
+`purgatory-persistence` depends on `purgatory-common` and serde only. Simulation does not depend on it. JSON serialization and filesystem IO run on the persistence worker, not the 30 Hz simulation thread. The live data root is a per-user application-data directory (Windows `%LOCALAPPDATA%\Purgatory\`), not the source tree. `PURGATORY_DATA_DIR` overrides it.
 
 `server` must not depend on `winit`, `wgpu`, `egui`, or the client crate.
 
 The existing `Graphic/` directory stays in place. Phase 5.0B loads **only** `Graphic/LOGO.png` for the Connection Frontend (temporary filesystem path). The rest of `Graphic/` is unused until sprite and Paper Doll phases. Do not modify files in `Graphic/` as part of networking work.
+
+Windows development control lives in **Developer Tools** (`DEV.BAT` → `tools/dev/`), not in a Cargo crate. It owns local server/client/cargo processes and verifies Ready via metrics Health plus `purgatory-load --probe`. It must not reimplement Quinn or the game protocol. See [`docs/dev-tools/`](dev-tools/README.md) and ADR-0050.
 
 ## Content
 

@@ -1,15 +1,20 @@
 mod app;
 mod assets;
+mod camera_follow;
 mod debug;
 mod frontend;
 mod input;
 mod interp;
+mod jitter_forensics;
 mod lifecycle;
+mod local_presentation;
+mod map_fade;
 mod network;
 mod platform;
 mod prediction;
 mod renderer;
 mod replica;
+mod ui_runtime;
 
 use tracing_subscriber::EnvFilter;
 
@@ -22,8 +27,9 @@ fn main() {
         purgatory_simulation::version(),
     );
     println!(
-        "PURGATORY client bootstrap OK {}",
-        purgatory_common::identity()
+        "PURGATORY client bootstrap OK {} protocol_version={}",
+        purgatory_common::identity(),
+        purgatory_protocol::PROTOCOL_VERSION
     );
     if let Err(err) = app::run() {
         eprintln!("PURGATORY client error: {err}");

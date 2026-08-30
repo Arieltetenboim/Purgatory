@@ -190,8 +190,87 @@ Owner Phase 0 clarifications:
 - Status: pass (automated); **STOP for two-client manual verification** before Phase 5.6
 - Command/test: `cargo fmt --all`; `cargo check --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`
 - Date: 2026-08-28
-- Notes: Protocol v4. Per-tick commands, continuation debt (`unmatched_continuation_ticks`), late-collapse compaction, HeldCancel idempotent cancel-ack with immutable `(epoch, target_sequence)` barrier, restore+replay via `tick_player`. Covered: split HOL remainder debt, `K=0` no collapse, repeated HeldCancel, late-jump after grounded change (legitimate correction), hitch one-command, two-recipient headers, epoch-at-MAX no wrap. Manual: two clients, movement, hitch, focus-loss Neutral vs HeldCancel. Do not start Phase 5.6.
+- Notes: Protocol v4. Per-tick commands, continuation debt (`unmatched_continuation_ticks`), late-collapse compaction, HeldCancel idempotent cancel-ack with immutable `(epoch, target_sequence)` barrier, restore+replay via `tick_player`. Covered: split HOL remainder debt, `K=0` no collapse, repeated HeldCancel, late-jump after grounded change (legitimate correction), hitch one-command, two-recipient headers, epoch-at-MAX no wrap. Manual: two clients, movement, hitch, focus-loss Neutral vs HeldCancel.
+
+## Gate 5.6 — Controlled network impairment lab
+
+- Status: pass (automated); **STOP for two-client manual matrix** before Phase 5.7
+- Command/test: `cargo fmt --all`; `cargo check --workspace --all-targets`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`
+- Date: 2026-08-28
+- Notes: Dev-only deterministic FIFO delay/stall lanes. Off by default. No protocol bump. Input delay after pending / before QUIC write. Snapshot delay is post-uni-read application delivery. Watch=config, mpsc=stall. Off flush is bounded FIFO. Independent PRNG streams. Correction = pre→post restore+replay. Ack delta is not late-collapse. Interpolation 3-tick buffer unchanged; underrun is measured, not an automatic fail. Manual matrix: [`docs/PHASE_56_LATENCY_MATRIX.md`](PHASE_56_LATENCY_MATRIX.md). Closed by Phase 5.7.
+
+## Gate 5.7 — Multiplayer load, soak, churn & scaling validation
+
+- Status: **GREEN**
+- Command/test: `cargo fmt --all`; `cargo check --workspace --all-targets`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`; Phase 5.7 steady-state input-handoff isolation (before/after matrix)
+- Date: 2026-08-29
+- Notes: Real QUIC bots (`purgatory-load`). `MAX_ENTITIES_PER_SNAPSHOT` 256 (mechanical). Default admission 32; load mode `PURGATORY_ADMISSION_CAP=256`. UDP localhost metrics `LoadMetricsV1`. Guide: [`docs/PHASE_57_LOAD_TESTING.md`](PHASE_57_LOAD_TESTING.md).
+- **Authoritative final gate:** steady-state input-handoff isolation, Mixed / seed 4242 / quiet then 180 s active, 100 / 150 / 200 / 256 connected. After the correctness-preserving handoff fix (`send().await` + inter-tick drain), `input_handoff_dropped` = 0 at every population; all four after-runs COMPLETE. Report: `logs/load/capacity/20260829_002013/steady_input_final_report.md` (mirrored at `logs/load/capacity/20260828_235654/steady_input_final_report.md`).
+- Verdict: **PHASE 5 GREEN — Phase 6 may begin.**
+- Non-blocking Phase 6 follow-ups (not Phase 5 failures): admission/entity wall remains 256; full-visibility snapshot fan-out is O(N²)-like on the network; snapshot/sim-thread pose-copy pressure remains; WorldAddress / visibility / relevance / dirty tracking / replication budgeting are Phase 6 contracts.
+
+## Gate 6.0 — Runtime foundation and replication contracts
+
+- Status: **GREEN**
+- Command/test: `./scripts/check.ps1`
+- Date: 2026-08-29
+- Notes: `WorldAddress`, identity separation, lifecycle, query, `World::relevance_for(RuntimeEntityId)`, replication metadata (no scheduler). Protocol v4 unchanged. ADR-0034. Report: [`docs/PHASE_60_REPORT.md`](PHASE_60_REPORT.md). Phase 6A may begin.
+
+## Gate 6A — Runtime model
+
+- Status: **GREEN**
+- Command/test: `./scripts/check.ps1`
+- Date: 2026-08-29
+- Notes: Optional capabilities on the existing slot-vector `World` (not an ECS). `Transform` is optional. Per-domain dirty flags. `RuntimeSpawnRequest`. Protocol v4 unchanged. No scheduler. Report: [`docs/PHASE_6A_REPORT.md`](PHASE_6A_REPORT.md). Phase 6B may begin.
+
+## Gate 6B — Interaction + UI runtime
+
+- Status: **GREEN**
+- Command/test: `./scripts/check.ps1`
+- Date: 2026-08-29
+- Notes: Server-authoritative interaction. `InteractionSession` is domain state, not a UI window. Protocol **v5**. Client nearest-target is advisory. Replica interactables are the only client draw source (no local-World visual substitute). Automated gate GREEN; **manual E/overlay interaction check is still required**. Report: [`docs/PHASE_6B_REPORT.md`](PHASE_6B_REPORT.md). Stop before 6C.
+
+## Gate 6C — World + content runtime
+
+- Status: **GREEN (automated).** Manual Map A ↔ Map B portal check is **still required**.
+- Command/test: `./scripts/check.ps1` (includes `purgatory-content-validator`)
+- Date: 2026-08-29
+- Notes: Authored-string `ContentId`. Shared vs server-only content. Registry-assigned `MapId`. Protocol **v7** observer address, `ReplicatedKind::Portal`, and `PortalActivate`. Content-driven linked portal travel. E excludes portals; Up Arrow uses the activation zone. Client fails clearly on missing MapId. Report: [`docs/PHASE_6C_REPORT.md`](PHASE_6C_REPORT.md).
+
+## Gate 6D — Runtime query, AOI, and replication relevance
+
+- Status: **GREEN (automated).** Manual runtime check is **still required**. Final status: `CAMERA DEAD-ZONE SMOOTH FOLLOW READY FOR USER CHECK` / `TRANSITION BLACKOUT COMMIT FIX READY FOR USER CHECK` / `LOCAL PLAYER CAMERA JITTER READY FOR USER CHECK` / `TRANSITION INPUT BARRIER READY FOR USER CHECK`.
+- Command/test: `./scripts/check.ps1` (includes `purgatory-content-validator`)
+- Date: 2026-08-30
+- Notes: World-owned spatial grid. Server interest-policy AOI. Protocol **v9** (`ReplicationFrame` tag 16 plus DEV `DevSetChannel` tag 17). Epoch purge after queue-commit. `write_all` failure tears down the session. Load metrics schema **2**. Channel transition: same MapId, live `RuntimeEntityId`, spatial relocate, observer epoch reset. Presentation is **readiness-gated** (ADR-0041): map `DestinationReady`, membership `MembershipReady`; FadeIn is not timer-revealed; visible presentation commits only at fully black. **Transition gameplay input barrier** (ADR-0042): server-neutralized held input + tick-gated idle apply; client lock until FadeIn. Client camera is Dead Zone + exponential follow (presentation only; not AOI). Local player draw and camera follow share one finalized presentation pose; small reconcile corrections are absorbed into a decaying visual offset. **WorldAddress boundary ≠ social identity boundary** (`AddressChanged` closes world-bound `InteractionSession` only; server emits Closed on Channel change). Overlay: categorized inspector; Observer AOI Map/Channel/Instance; DEV Channel `[0] [1]`; transition banners; `INPUT:` gate chip; camera Dead Zone gizmo. Automated gate GREEN; **manual two-client Channel + portal fade + held-input barrier + camera-feel check is still required**. Report: [`docs/PHASE_6D_REPORT.md`](PHASE_6D_REPORT.md).
+
+## Gate 6E — Character + persistence
+
+- Status: **GREEN (automated).** Manual first-connect / reconnect / restart / duplicate-login / sentinel replica check is **still required**.
+- Command/test: `./scripts/check.ps1` (includes `purgatory-content-validator`)
+- Date: 2026-08-30
+- Notes: Protocol **v10** `Hello.dev_login`. Server-minted `CharacterId` (not `PersistentId`). File-backed identity + character store. RestoreIntent ≠ WorldAddress. Welcome after bind. Report: [`docs/PHASE_6E_REPORT.md`](PHASE_6E_REPORT.md).
+
+## Gate 6F — Runtime gameplay readiness
+
+- Status: **GREEN (automated).** Manual two-client dirty/AOI, overlay Enter/Update/Leave, and opt-in `PURGATORY_RUNTIME_PROBE` check is **still required**.
+- Command/test: `./scripts/check.ps1` (includes `purgatory-content-validator`)
+- Date: 2026-08-30
+- Notes: No protocol bump (v10). Simulation-time scheduler (Critical ceiling 1024, Deferred budget 32, capacity 4096). Lean Action storage (`Active` + terminal). `InputGateReason` absorbed as `ActionDenialReason::TransitionLocked`. Staged events, not a bus. Dirty/delta = `DomainRevs` per observer. Load metrics schema **3**. Probe is opt-in. Report: [`docs/PHASE_6F_REPORT.md`](PHASE_6F_REPORT.md). Stop before the next phase.
+
+## Gate 6G — Runtime hardening and Phase 6 exit
+
+- Status: **GREEN (automated).** Manual Mixed/soak/Developer Tools/process-ownership evidence is **still required**.
+- Command/test: `./scripts/check.ps1` (includes `purgatory-content-validator`)
+- Date: 2026-08-30
+- Notes: Protocol stays v10. Metrics schema stays 3. `PURGATORY_LOAD_VALIDATION` is load-mode-only. Isolated persist / failure injection never uses `%LOCALAPPDATA%\Purgatory`. MixedRuntime is the canonical workload. Soak duration is configurable. Reports: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md), [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md), [`docs/PHASE_6G_QUEUE_INVENTORY.md`](PHASE_6G_QUEUE_INVENTORY.md). **Do not begin Phase 7.**
+
+## Developer Tools — connection probe (tooling, not a gameplay phase)
+
+- Status: recorded with the Developer Tools foundation (ADR-0050). Not a substitute for Gate 6F.
+- Command/test: `cargo test -p purgatory-bot-client`; `purgatory-load --probe` is exercised by those tests (parse + fail-when-nothing-listens). Full Ready path is a manual/integration check via `DEV.BAT`.
+- Notes: Protocol stays v10. Probe login `dev.probe` uses the normal persist/enter path (documented debt). Docs: [`docs/dev-tools/`](dev-tools/README.md).
 
 ## Later gates
 
-Gates 6–17 remain pending. Do not execute Phase 5.6 until instructed.
+Gates 7–17 remain pending until their phases start (Phase 7 client reconciliation already shipped as 5.5). Phase 5 is GREEN; Phase 6.0 / 6A / 6B / 6C / 6D / 6E / 6F / 6G (automated) are GREEN. **Do not begin gameplay Phase 7 (MOB).**

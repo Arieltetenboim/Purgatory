@@ -1,6 +1,20 @@
 fn main() {
-    let _ = (purgatory_common::version(), purgatory_content::version());
-    println!("PURGATORY content validator bootstrap OK");
+    let root = purgatory_content::default_content_root();
+    match purgatory_content::load_registry(&root, purgatory_content::LoadMode::Full) {
+        Ok(registry) => {
+            println!(
+                "PURGATORY content validator OK root={} maps={} entities={} defs={}",
+                root.display(),
+                registry.map_count(),
+                registry.entity_count(),
+                registry.definition_count()
+            );
+        }
+        Err(err) => {
+            eprintln!("PURGATORY content validator FAILED\n{err}");
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -9,5 +23,13 @@ mod tests {
     fn workspace_crates_are_linked() {
         assert!(!purgatory_common::version().is_empty());
         assert!(!purgatory_content::version().is_empty());
+    }
+
+    #[test]
+    fn workspace_pack_validates() {
+        let root = purgatory_content::default_content_root();
+        let registry = purgatory_content::load_registry(&root, purgatory_content::LoadMode::Full)
+            .expect("workspace content");
+        assert!(registry.map_count() >= 2);
     }
 }

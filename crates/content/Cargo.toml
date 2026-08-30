@@ -9,6 +9,9 @@ description = "Content definition loading and validation boundary."
 
 [dependencies]
 purgatory-common = { path = "../common" }
+purgatory-simulation = { path = "../simulation" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

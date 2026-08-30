@@ -15,6 +15,7 @@ pub enum NetworkFailureKind {
     UnexpectedMessage,
     IdleTimeout,
     ServerShutdown,
+    AlreadyConnected,
     ClientRequestedDisconnect,
     LocalShutdown,
     InternalNetworkError,
@@ -47,6 +48,7 @@ impl NetworkFailureKind {
             DisconnectReasonCode::HandshakeTimeout => Self::HandshakeTimeout,
             DisconnectReasonCode::UnexpectedMessage => Self::UnexpectedMessage,
             DisconnectReasonCode::ServerShutdown => Self::ServerShutdown,
+            DisconnectReasonCode::AlreadyConnected => Self::AlreadyConnected,
         }
     }
 
@@ -73,7 +75,8 @@ impl NetworkFailureKind {
             | Self::MalformedMessage
             | Self::UnexpectedMessage
             | Self::ProtocolRejected
-            | Self::ServerShutdown => FailureOrigin::Wire,
+            | Self::ServerShutdown
+            | Self::AlreadyConnected => FailureOrigin::Wire,
             Self::ConnectFailed
             | Self::TransportLost
             | Self::IdleTimeout
@@ -99,6 +102,7 @@ impl NetworkFailureKind {
             | Self::MalformedMessage
             | Self::UnexpectedMessage
             | Self::ProtocolRejected
+            | Self::AlreadyConnected
             | Self::ClientRequestedDisconnect
             | Self::LocalShutdown => false,
         }
@@ -124,6 +128,7 @@ impl NetworkFailureKind {
                 "Connection rejected"
             }
             Self::ServerShutdown => "Server shutting down",
+            Self::AlreadyConnected => "Already connected",
             Self::ClientRequestedDisconnect | Self::LocalShutdown => "Disconnected",
         }
     }
@@ -140,6 +145,7 @@ impl NetworkFailureKind {
             Self::UnexpectedMessage => "UnexpectedMessage",
             Self::IdleTimeout => "IdleTimeout",
             Self::ServerShutdown => "ServerShutdown",
+            Self::AlreadyConnected => "AlreadyConnected",
             Self::ClientRequestedDisconnect => "ClientRequestedDisconnect",
             Self::LocalShutdown => "LocalShutdown",
             Self::InternalNetworkError => "InternalNetworkError",
@@ -172,6 +178,10 @@ mod tests {
         assert_eq!(
             NetworkFailureKind::from_wire(DisconnectReasonCode::ServerShutdown),
             NetworkFailureKind::ServerShutdown
+        );
+        assert_eq!(
+            NetworkFailureKind::from_wire(DisconnectReasonCode::AlreadyConnected),
+            NetworkFailureKind::AlreadyConnected
         );
     }
 

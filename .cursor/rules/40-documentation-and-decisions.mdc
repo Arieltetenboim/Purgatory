@@ -1,0 +1,44 @@
+---
+description: Treat repository docs as contract; ADR policy and how to resolve doc/code conflicts.
+alwaysApply: true
+---
+
+# Documentation and decisions
+
+Repository documentation is part of the implementation contract. Update a document when the implementation changes something that document is responsible for.
+
+## Document roles
+
+- `docs/ARCHITECTURE.md` — structural rules, ownership, invariants
+- `docs/DECISIONS.md` — Architecture Decision Records
+- `docs/PROTOCOL.md` — wire protocol, trust, versioning
+- `docs/ROADMAP.md` — phase order, status, per-phase notes
+- `docs/TEST_GATES.md` — recorded gates and how they were verified
+- `docs/PERFORMANCE_BUDGETS.md` — living budgets and measurements (values may be TBD)
+- `docs/CONTENT_PIPELINE.md` — authoring, IDs, validation
+- `README.md` — orientation and current status
+- `PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md` — master execution specification
+- root `PHASE` — current phase marker
+
+Keep these consistent with their intended roles. Avoid copying the same fact into many documents. Prefer one authoritative location for each durable truth. Volatile numbers belong in code and the document that owns them (often `PERFORMANCE_BUDGETS.md` or `PROTOCOL.md`), not in Cursor rules.
+
+## ADRs
+
+ADR = Architecture Decision Record: a durable record of an important architectural decision, its reasoning, and relevant alternatives/tradeoffs.
+
+Process lives in `docs/DECISIONS.md`. Status values: `accepted`, `superseded`, `deferred`.
+
+Create or update an ADR for significant architectural decisions (authority, protocol, identity, persistence, concurrency, major dependencies, crate boundaries).
+
+Do **not** create ADRs for ordinary implementation details (local helpers, numeric tuning that docs already treat as configuration, test arrangement).
+
+## Conflicts
+
+If documentation and implementation materially disagree:
+
+1. Do not silently choose whichever is convenient.
+2. Identify the inconsistency.
+3. Determine whether the current task includes resolving it.
+4. Report unresolved conflicts clearly.
+
+Do not rewrite existing project documentation merely to match agent rules. Rules must reflect the project; they must not redefine it.

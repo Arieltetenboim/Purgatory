@@ -3,7 +3,11 @@
 //! Unknown discriminants, truncated payloads, and oversized strings fail
 //! with [`CodecError`]. Decoders never panic on untrusted input.
 
-use crate::{ConnectionId, MAX_DATAGRAM_BYTES, MAX_LABEL_BYTES, PROTOCOL_VERSION};
+use crate::interact::{DevSetChannel, InteractClose, InteractOpen, PortalActivate, ServerInteract};
+use crate::snapshot::WireEntityId;
+use crate::{
+    ConnectionId, HELLO_DEV_LOGIN_SINCE, MAX_DATAGRAM_BYTES, MAX_LABEL_BYTES, PROTOCOL_VERSION,
+};
 
 const TAG_HELLO: u8 = 1;
 const TAG_WELCOME: u8 = 2;
@@ -12,6 +16,14 @@ const TAG_DATAGRAM_PING: u8 = 4;
 const TAG_DATAGRAM_PONG: u8 = 5;
 const TAG_INPUT: u8 = 6;
 const TAG_HELD_CANCEL: u8 = 8;
+const TAG_INTERACT_OPEN: u8 = 9;
+const TAG_INTERACT_CLOSE: u8 = 10;
+const TAG_INTERACT_OPENED: u8 = 11;
+const TAG_INTERACT_REJECTED: u8 = 12;
+const TAG_INTERACT_UPDATED: u8 = 13;
+const TAG_INTERACT_CLOSED: u8 = 14;
+const TAG_PORTAL_ACTIVATE: u8 = 15;
+const TAG_DEV_SET_CHANNEL: u8 = 17;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,6 +64,7 @@ pub enum DisconnectReasonCode {
     HandshakeTimeout = 3,
     UnexpectedMessage = 4,
     ServerShutdown = 5,
+    AlreadyConnected = 6,
 }
 
 impl DisconnectReasonCode {
@@ -68,6 +81,7 @@ impl DisconnectReasonCode {
             3 => Some(Self::HandshakeTimeout),
             4 => Some(Self::UnexpectedMessage),
             5 => Some(Self::ServerShutdown),
+            6 => Some(Self::AlreadyConnected),
             _ => None,
         }
     }
@@ -80,6 +94,7 @@ impl DisconnectReasonCode {
             Self::HandshakeTimeout => "handshake timeout",
             Self::UnexpectedMessage => "unexpected message",
             Self::ServerShutdown => "server shutdown",
+            Self::AlreadyConnected => "already connected",
         }
     }
 }
@@ -109,10 +124,14 @@ impl DisconnectReason {
 }
 
 /// Client Hello. Does not include a client-chosen connection id.
+///
+/// `dev_login` is a temporary DEV lookup identity (protocol v10+). The client
+/// cannot choose `ConnectionId` or `CharacterId`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Hello {
     pub protocol_version: u32,
     pub client_build: String,
+    pub dev_login: String,
 }
 
 /// Server Welcome after a valid Hello.
@@ -193,6 +212,9 @@ pub struct InputCommand {
     pub move_axis: MoveAxis,
     pub jump_pressed: bool,
     pub down_held: bool,
+    /// True while Up (portal activate) is held. Optional 1-byte trailer; omitted when false.
+    /// Server uses a falling edge to clear the portal reentry lock. Not movement.
+    pub portal_held: bool,
 }
 
 impl InputCommand {
@@ -210,6 +232,11 @@ pub enum ClientControl {
     Input(InputCommand),
     /// Pathological focus-loss / send-window barrier. No sequence.
     HeldCancel,
+    InteractOpen(InteractOpen),
+    InteractClose(InteractClose),
+    PortalActivate(PortalActivate),
+    /// DEV overlay Channel request. Server validates and owns WorldAddress.
+    DevSetChannel(DevSetChannel),
 }
 
 /// Server → client reliable control.
@@ -217,6 +244,7 @@ pub enum ClientControl {
 pub enum ServerControl {
     Welcome(Welcome),
     Disconnect(DisconnectReason),
+    Interact(ServerInteract),
 }
 
 /// Server datagram (pong only in Phase 5.0).
@@ -239,6 +267,12 @@ pub fn validate_hello(hello: &Hello) -> Result<(), DisconnectReason> {
             "client_build too long",
         ));
     }
+    if purgatory_common::DevLogin::parse(&hello.dev_login).is_err() {
+        return Err(DisconnectReason::new(
+            DisconnectReasonCode::Malformed,
+            "dev_login",
+        ));
+    }
     Ok(())
 }
 
@@ -249,6 +283,9 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             out.push(TAG_HELLO);
             out.extend_from_slice(&hello.protocol_version.to_le_bytes());
             write_bounded_string(&mut out, &hello.client_build)?;
+            if hello.protocol_version >= HELLO_DEV_LOGIN_SINCE {
+                write_bounded_string(&mut out, &hello.dev_login)?;
+            }
             Ok(out)
         }
         ClientControl::Input(cmd) => {
@@ -259,9 +296,36 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             out.push(cmd.move_axis.as_u8());
             out.push(u8::from(cmd.jump_pressed));
             out.push(u8::from(cmd.down_held));
+            if cmd.portal_held {
+                out.push(1);
+            }
             Ok(out)
         }
         ClientControl::HeldCancel => Ok(vec![TAG_HELD_CANCEL]),
+        ClientControl::InteractOpen(open) => {
+            let mut out = Vec::with_capacity(1 + 8);
+            out.push(TAG_INTERACT_OPEN);
+            write_wire_entity(&mut out, open.target);
+            Ok(out)
+        }
+        ClientControl::InteractClose(close) => {
+            let mut out = Vec::with_capacity(1 + 4);
+            out.push(TAG_INTERACT_CLOSE);
+            out.extend_from_slice(&close.session_id.to_le_bytes());
+            Ok(out)
+        }
+        ClientControl::PortalActivate(activate) => {
+            let mut out = Vec::with_capacity(1 + 8);
+            out.push(TAG_PORTAL_ACTIVATE);
+            write_wire_entity(&mut out, activate.target);
+            Ok(out)
+        }
+        ClientControl::DevSetChannel(req) => {
+            let mut out = Vec::with_capacity(1 + 4);
+            out.push(TAG_DEV_SET_CHANNEL);
+            out.extend_from_slice(&req.channel.to_le_bytes());
+            Ok(out)
+        }
     }
 }
 
@@ -271,10 +335,16 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
         TAG_HELLO => {
             let (protocol_version, rest) = read_u32(rest)?;
             let (client_build, rest) = read_bounded_string(rest)?;
+            let (dev_login, rest) = if protocol_version >= HELLO_DEV_LOGIN_SINCE {
+                read_bounded_string(rest)?
+            } else {
+                (String::new(), rest)
+            };
             expect_empty(rest)?;
             Ok(ClientControl::Hello(Hello {
                 protocol_version,
                 client_build,
+                dev_login,
             }))
         }
         TAG_INPUT => {
@@ -286,18 +356,46 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
             let move_axis = MoveAxis::from_u8(rest[2]).ok_or(CodecError::InvalidValue)?;
             let jump_pressed = read_flag(rest[3])?;
             let down_held = read_flag(rest[4])?;
-            expect_empty(&rest[5..])?;
+            let trailer = &rest[5..];
+            let portal_held = if trailer.is_empty() {
+                false
+            } else if trailer.len() == 1 {
+                read_flag(trailer[0])?
+            } else {
+                return Err(CodecError::InvalidValue);
+            };
             Ok(ClientControl::Input(InputCommand {
                 input_epoch,
                 sequence,
                 move_axis,
                 jump_pressed,
                 down_held,
+                portal_held,
             }))
         }
         TAG_HELD_CANCEL => {
             expect_empty(rest)?;
             Ok(ClientControl::HeldCancel)
+        }
+        TAG_INTERACT_OPEN => {
+            let (target, rest) = read_wire_entity(rest)?;
+            expect_empty(rest)?;
+            Ok(ClientControl::InteractOpen(InteractOpen { target }))
+        }
+        TAG_INTERACT_CLOSE => {
+            let (session_id, rest) = read_u32(rest)?;
+            expect_empty(rest)?;
+            Ok(ClientControl::InteractClose(InteractClose { session_id }))
+        }
+        TAG_PORTAL_ACTIVATE => {
+            let (target, rest) = read_wire_entity(rest)?;
+            expect_empty(rest)?;
+            Ok(ClientControl::PortalActivate(PortalActivate { target }))
+        }
+        TAG_DEV_SET_CHANNEL => {
+            let (channel, rest) = read_u32(rest)?;
+            expect_empty(rest)?;
+            Ok(ClientControl::DevSetChannel(DevSetChannel { channel }))
         }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
@@ -321,6 +419,7 @@ pub fn encode_server_control(msg: &ServerControl) -> Result<Vec<u8>, CodecError>
             write_bounded_string(&mut out, &reason.detail)?;
             Ok(out)
         }
+        ServerControl::Interact(event) => encode_server_interact(event),
     }
 }
 
@@ -350,6 +449,10 @@ pub fn decode_server_control(bytes: &[u8]) -> Result<ServerControl, CodecError> 
             expect_empty(rest)?;
             Ok(ServerControl::Disconnect(DisconnectReason { code, detail }))
         }
+        TAG_INTERACT_OPENED
+        | TAG_INTERACT_REJECTED
+        | TAG_INTERACT_UPDATED
+        | TAG_INTERACT_CLOSED => Ok(ServerControl::Interact(decode_server_interact(tag, rest)?)),
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
 }
@@ -402,6 +505,88 @@ pub fn decode_server_datagram(bytes: &[u8]) -> Result<ServerDatagram, CodecError
     let (nonce, rest) = read_u64(rest)?;
     expect_empty(rest)?;
     Ok(ServerDatagram::Pong { nonce })
+}
+
+fn write_wire_entity(out: &mut Vec<u8>, id: WireEntityId) {
+    out.extend_from_slice(&id.index.to_le_bytes());
+    out.extend_from_slice(&id.generation.to_le_bytes());
+}
+
+fn read_wire_entity(bytes: &[u8]) -> Result<(WireEntityId, &[u8]), CodecError> {
+    let (index, rest) = read_u32(bytes)?;
+    let (generation, rest) = read_u32(rest)?;
+    Ok((WireEntityId { index, generation }, rest))
+}
+
+fn encode_server_interact(event: &ServerInteract) -> Result<Vec<u8>, CodecError> {
+    match *event {
+        ServerInteract::Opened { session_id, target } => {
+            let mut out = Vec::with_capacity(1 + 4 + 8);
+            out.push(TAG_INTERACT_OPENED);
+            out.extend_from_slice(&session_id.to_le_bytes());
+            write_wire_entity(&mut out, target);
+            Ok(out)
+        }
+        ServerInteract::Rejected { target, reason } => {
+            let mut out = Vec::with_capacity(1 + 8 + 1);
+            out.push(TAG_INTERACT_REJECTED);
+            write_wire_entity(&mut out, target);
+            out.push(reason.as_u8());
+            Ok(out)
+        }
+        ServerInteract::Updated { session_id, target } => {
+            let mut out = Vec::with_capacity(1 + 4 + 8);
+            out.push(TAG_INTERACT_UPDATED);
+            out.extend_from_slice(&session_id.to_le_bytes());
+            write_wire_entity(&mut out, target);
+            Ok(out)
+        }
+        ServerInteract::Closed { session_id, reason } => {
+            let mut out = Vec::with_capacity(1 + 4 + 1);
+            out.push(TAG_INTERACT_CLOSED);
+            out.extend_from_slice(&session_id.to_le_bytes());
+            out.push(reason.as_u8());
+            Ok(out)
+        }
+    }
+}
+
+fn decode_server_interact(tag: u8, rest: &[u8]) -> Result<ServerInteract, CodecError> {
+    match tag {
+        TAG_INTERACT_OPENED => {
+            let (session_id, rest) = read_u32(rest)?;
+            let (target, rest) = read_wire_entity(rest)?;
+            expect_empty(rest)?;
+            Ok(ServerInteract::Opened { session_id, target })
+        }
+        TAG_INTERACT_REJECTED => {
+            let (target, rest) = read_wire_entity(rest)?;
+            if rest.is_empty() {
+                return Err(CodecError::Truncated);
+            }
+            let reason = crate::interact::InteractRejectReason::from_u8(rest[0])
+                .ok_or(CodecError::InvalidValue)?;
+            expect_empty(&rest[1..])?;
+            Ok(ServerInteract::Rejected { target, reason })
+        }
+        TAG_INTERACT_UPDATED => {
+            let (session_id, rest) = read_u32(rest)?;
+            let (target, rest) = read_wire_entity(rest)?;
+            expect_empty(rest)?;
+            Ok(ServerInteract::Updated { session_id, target })
+        }
+        TAG_INTERACT_CLOSED => {
+            let (session_id, rest) = read_u32(rest)?;
+            if rest.is_empty() {
+                return Err(CodecError::Truncated);
+            }
+            let reason = crate::interact::InteractCloseReason::from_u8(rest[0])
+                .ok_or(CodecError::InvalidValue)?;
+            expect_empty(&rest[1..])?;
+            Ok(ServerInteract::Closed { session_id, reason })
+        }
+        other => Err(CodecError::UnknownDiscriminant(other)),
+    }
 }
 
 fn split_tag(bytes: &[u8]) -> Result<(u8, &[u8]), CodecError> {
@@ -481,6 +666,7 @@ mod tests {
         Hello {
             protocol_version: PROTOCOL_VERSION,
             client_build: "dev".into(),
+            dev_login: purgatory_common::DEFAULT_DEV_LOGIN.into(),
         }
     }
 
@@ -536,6 +722,7 @@ mod tests {
             move_axis: MoveAxis::Right,
             jump_pressed: true,
             down_held: false,
+            portal_held: false,
         }
     }
 
@@ -546,6 +733,24 @@ mod tests {
         assert_eq!(decoded, ClientControl::Input(input_dev()));
         // tag + u32 seq + u16 epoch + axis + jump + down
         assert_eq!(encoded.len(), 1 + 4 + 2 + 1 + 1 + 1);
+    }
+
+    #[test]
+    fn portal_held_trailer_roundtrips_and_absence_is_false() {
+        let mut held = input_dev();
+        held.portal_held = true;
+        let encoded = encode_client_control(&ClientControl::Input(held)).unwrap();
+        assert_eq!(encoded.len(), 1 + 4 + 2 + 1 + 1 + 1 + 1);
+        assert_eq!(encoded[encoded.len() - 1], 1);
+        assert_eq!(
+            decode_client_control(&encoded).unwrap(),
+            ClientControl::Input(held)
+        );
+        let omitted = encode_client_control(&ClientControl::Input(input_dev())).unwrap();
+        match decode_client_control(&omitted).unwrap() {
+            ClientControl::Input(cmd) => assert!(!cmd.portal_held),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -626,6 +831,7 @@ mod tests {
         let hello = Hello {
             protocol_version: PROTOCOL_VERSION + 9,
             client_build: "dev".into(),
+            dev_login: String::new(),
         };
         let err = validate_hello(&hello).expect_err("mismatch");
         assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
@@ -637,10 +843,38 @@ mod tests {
         let hello = Hello {
             protocol_version: 1,
             client_build: "legacy-v1".into(),
+            dev_login: String::new(),
         };
         let err = validate_hello(&hello).expect_err("v1");
         assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
         assert_ne!(PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn malformed_dev_login_is_rejected_after_version_ok() {
+        let hello = Hello {
+            protocol_version: PROTOCOL_VERSION,
+            client_build: "dev".into(),
+            dev_login: "A".into(),
+        };
+        let err = validate_hello(&hello).expect_err("login");
+        assert_eq!(err.code, DisconnectReasonCode::Malformed);
+    }
+
+    #[test]
+    fn v9_hello_bytes_decode_then_version_mismatch() {
+        let encoded = encode_client_control(&ClientControl::Hello(Hello {
+            protocol_version: 9,
+            client_build: "test".into(),
+            dev_login: String::new(),
+        }))
+        .unwrap();
+        let ClientControl::Hello(hello) = decode_client_control(&encoded).unwrap() else {
+            panic!("hello");
+        };
+        assert_eq!(hello.dev_login, "");
+        let err = validate_hello(&hello).expect_err("v9");
+        assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
     }
 
     #[test]
@@ -654,10 +888,58 @@ mod tests {
     }
 
     #[test]
+    fn interact_open_roundtrip() {
+        let msg = ClientControl::InteractOpen(InteractOpen {
+            target: WireEntityId {
+                index: 42,
+                generation: 3,
+            },
+        });
+        let encoded = encode_client_control(&msg).unwrap();
+        assert_eq!(encoded[0], TAG_INTERACT_OPEN);
+        assert_eq!(decode_client_control(&encoded).unwrap(), msg);
+    }
+
+    #[test]
+    fn portal_activate_roundtrip() {
+        let msg = ClientControl::PortalActivate(PortalActivate {
+            target: WireEntityId {
+                index: 11,
+                generation: 2,
+            },
+        });
+        let encoded = encode_client_control(&msg).unwrap();
+        assert_eq!(encoded[0], TAG_PORTAL_ACTIVATE);
+        assert_eq!(decode_client_control(&encoded).unwrap(), msg);
+    }
+
+    #[test]
+    fn dev_set_channel_roundtrip() {
+        let msg = ClientControl::DevSetChannel(DevSetChannel { channel: 1 });
+        let encoded = encode_client_control(&msg).unwrap();
+        assert_eq!(encoded[0], TAG_DEV_SET_CHANNEL);
+        assert_eq!(decode_client_control(&encoded).unwrap(), msg);
+    }
+
+    #[test]
+    fn interact_rejected_server_roundtrip() {
+        let msg = ServerControl::Interact(ServerInteract::Rejected {
+            target: WireEntityId {
+                index: 42,
+                generation: 3,
+            },
+            reason: crate::InteractRejectReason::OutOfRange,
+        });
+        let encoded = encode_server_control(&msg).unwrap();
+        assert_eq!(decode_server_control(&encoded).unwrap(), msg);
+    }
+
+    #[test]
     fn old_protocol_version_2_is_rejected() {
         let hello = Hello {
             protocol_version: 2,
             client_build: "legacy-v2".into(),
+            dev_login: String::new(),
         };
         let err = validate_hello(&hello).expect_err("v2");
         assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
@@ -669,6 +951,7 @@ mod tests {
         let hello = Hello {
             protocol_version: 3,
             client_build: "legacy-v3".into(),
+            dev_login: String::new(),
         };
         let err = validate_hello(&hello).expect_err("v3");
         assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
@@ -676,10 +959,36 @@ mod tests {
     }
 
     #[test]
+    fn old_protocol_version_4_is_rejected() {
+        let hello = Hello {
+            protocol_version: 4,
+            client_build: "legacy-v4".into(),
+            dev_login: String::new(),
+        };
+        let err = validate_hello(&hello).expect_err("v4");
+        assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
+        assert_ne!(PROTOCOL_VERSION, 4);
+    }
+
+    #[test]
+    fn old_protocol_version_5_is_rejected() {
+        let hello = Hello {
+            protocol_version: 5,
+            client_build: "legacy-v5".into(),
+            dev_login: String::new(),
+        };
+        let err = validate_hello(&hello).expect_err("v5");
+        assert_eq!(err.code, DisconnectReasonCode::VersionMismatch);
+        assert_ne!(PROTOCOL_VERSION, 5);
+        assert_ne!(PROTOCOL_VERSION, 7);
+    }
+
+    #[test]
     fn string_too_long_rejected() {
         let hello = Hello {
             protocol_version: PROTOCOL_VERSION,
             client_build: "x".repeat(MAX_LABEL_BYTES + 1),
+            dev_login: String::new(),
         };
         assert_eq!(
             encode_client_control(&ClientControl::Hello(hello)),
@@ -712,8 +1021,8 @@ mod tests {
     #[test]
     fn hello_does_not_carry_connection_id() {
         let encoded = encode_client_control(&ClientControl::Hello(hello_dev())).unwrap();
-        // tag + u32 version + u8 strlen + "dev"
-        assert_eq!(encoded.len(), 1 + 4 + 1 + 3);
+        // tag + u32 version + u8 strlen + "dev" + u8 strlen + "dev.local"
+        assert_eq!(encoded.len(), 1 + 4 + 1 + 3 + 1 + 9);
         let decoded = decode_client_control(&encoded).unwrap();
         let ClientControl::Hello(hello) = decoded else {
             panic!("expected Hello");
@@ -759,6 +1068,9 @@ mod tests {
             local_grounded_on: crate::PlatformSupportId::NONE,
             local_ignored_platform: crate::PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_map: 1,
+            local_channel: 0,
+            local_instance: 0,
             entities: Vec::new(),
         })
         .unwrap();

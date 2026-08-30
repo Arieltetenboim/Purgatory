@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "entity.interactable.map_b_switch",
+  "debug_name": "Map B Switch",
+  "visible": true,
+  "interactable": "switch"
+}

@@ -1,0 +1,64 @@
+---
+description: Preserve PURGATORY architectural boundaries, ownership, and identity models.
+alwaysApply: true
+---
+
+# Architecture guardrails
+
+Inspect existing types, ownership, module responsibilities, callers/consumers, related tests, and relevant ADRs before changing architecture.
+
+## Do not silently change
+
+- Server/client authority
+- Simulation ownership and the fixed-timestep clock
+- Network protocol semantics and trust boundary
+- Persistent / runtime / content identity models
+- Threading or concurrency strategy (Tokio for async I/O; simulation clock is not Tokio)
+- Persistence architecture
+- Major public contracts
+- Major dependencies
+- Core runtime ownership boundaries
+
+If a requested implementation exposes a genuine architectural conflict that project documentation does not already resolve, surface the conflict. Do not invent a new architecture.
+
+## Verified boundaries
+
+Crate graph (from `docs/ARCHITECTURE.md` and crate manifests):
+
+```text
+common → simulation → server
+common → protocol → client / server / bot_client
+common → content → server / client / content_validator
+common → persistence → server
+```
+
+The client also depends on `purgatory-simulation` for local simulation/presentation where currently required by the repository. That dependency does not make the client authoritative and does not by itself require client prediction.
+
+- `purgatory-simulation` must not depend on `winit`, `wgpu`, renderer code, UI, OS window APIs, Quinn, or Tokio.
+- `purgatory-server` must not depend on `winit`, `wgpu`, `egui`, or `purgatory-client`.
+- `purgatory-protocol` stays free of Quinn and Tokio. The game protocol is logically separate from transport (ADR-0008, ADR-0021).
+- Quinn/QUIC belongs in network-facing binaries (`apps/server`, `apps/client`, `tools/bot_client`), not in simulation or content.
+- egui crates are `purgatory-client` development-overlay dependencies only.
+- Tokio handles asynchronous network and service I/O. Authoritative simulation uses `SimulationClock` in `crates/simulation`. Gameplay rules must not read wall-clock sources for tick identity. The outer loop supplies elapsed `Duration`.
+- The render loop must not `.block_on` network I/O. Async tasks must not call `World::tick`. Connection tasks must not lock or tick `World`. Packet arrival must not mutate `World`.
+- All client network input is untrusted. Parse and validate before session insert or gameplay handoff. No network parser may panic on arbitrary bytes.
+- `World` is the authoritative simulation container. It is not an ECS and not a global registry (ADR-0010, ADR-0015). FOOTNOTE is the movement/contact layer inside simulation; it must not live in the renderer or input mapping.
+
+## Identity (keep distinct)
+
+- `ConnectionId` — server-allocated network session
+- `EntityId` — temporary runtime instance `{ index, generation }`
+- Content / author IDs — stable authored definitions (see `docs/CONTENT_PIPELINE.md`)
+- `CharacterId` — server-minted persistent character identity (Phase 6E). Not `PersistentId`.
+- Future `MapInstanceId` — distinct, server-owned; not implemented as a substitute for the above
+
+The client cannot choose `ConnectionId` or `EntityId`. Do not mix these namespaces.
+
+## Architectural vs local decisions
+
+1. Architectural decisions: authority, protocol, identity, persistence, concurrency, crate boundaries, major dependencies. Escalate; record as ADRs when significant.
+2. Ordinary local implementation decisions: naming, helper extraction, test arrangement, and details that do not change architecture, scope, or public contracts. Handle these autonomously.
+
+Prefer simple, explicit, testable, deterministic-where-appropriate, architecture-consistent solutions.
+
+Avoid speculative abstractions, premature generalization, duplicate infrastructure, parallel replacement systems, unrelated refactors, and unnecessary dependencies.

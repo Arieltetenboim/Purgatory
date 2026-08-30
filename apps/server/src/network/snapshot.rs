@@ -20,7 +20,6 @@ pub fn to_wire_id(id: EntityId) -> WireEntityId {
 }
 
 #[must_use]
-#[allow(dead_code)]
 pub fn from_wire_id(id: WireEntityId) -> EntityId {
     EntityId::from_raw(id.index, id.generation)
 }
@@ -29,6 +28,7 @@ pub fn from_wire_id(id: WireEntityId) -> EntityId {
 ///
 /// Header acknowledgement and local contact are recipient-specific.
 #[must_use]
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     snapshot_sequence: u32,
@@ -62,22 +62,50 @@ pub fn build(
         local_grounded_on,
         local_ignored_platform,
         continuation_debt,
+        local_map: world
+            .address_of(local_player)
+            .map(|a| a.map.raw())
+            .unwrap_or(1),
+        local_channel: world
+            .address_of(local_player)
+            .map(|a| a.channel.raw())
+            .unwrap_or(0),
+        local_instance: world
+            .address_of(local_player)
+            .map(|a| a.instance.raw())
+            .unwrap_or(0),
         entities: collect_entities(world, visible),
     }
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub fn collect_entities(world: &World, visible: &[EntityId]) -> Vec<SnapshotEntity> {
     visible
         .iter()
         .filter_map(|&id| {
-            let body = world.player_body_of(id)?;
-            Some(SnapshotEntity {
-                entity_id: to_wire_id(id),
-                kind: ReplicatedKind::Player,
-                position: body.position,
-                velocity: body.velocity,
-            })
+            if let Some(body) = world.player_body_of(id) {
+                return Some(SnapshotEntity {
+                    entity_id: to_wire_id(id),
+                    kind: ReplicatedKind::Player,
+                    position: body.position,
+                    velocity: body.velocity,
+                });
+            }
+            if let Some(interactable) = world.interactable_of(id) {
+                let transform = world.transform_of(id)?;
+                let kind = match interactable.kind {
+                    purgatory_simulation::InteractableKind::Portal => ReplicatedKind::Portal,
+                    _ => ReplicatedKind::Interactable,
+                };
+                return Some(SnapshotEntity {
+                    entity_id: to_wire_id(id),
+                    kind,
+                    position: transform.position,
+                    velocity: [0.0, 0.0],
+                });
+            }
+            None
         })
         .collect()
 }
@@ -164,5 +192,94 @@ mod tests {
         assert_eq!(snap_a.input_epoch, 0);
         assert_eq!(snap_b.input_epoch, 1);
         assert_eq!(snap_b.continuation_debt, 2);
+    }
+
+    #[test]
+    fn builder_includes_visible_interactables() {
+        let mut world = World::footnote_test_stage();
+        if let Some(id) = world.player_id() {
+            world.despawn(id);
+        }
+        let floor = world.iter_platforms().next().expect("platform");
+        let (transform, state) = purgatory_simulation::PlayerState::standing_on_at(
+            floor.id,
+            floor.top_surface(),
+            FOOTNOTE_SPAWN_X,
+        );
+        let player = world.spawn_player(transform, state);
+        let visible = world.relevance_for(player);
+        let snap = build(1, 1, player, &world, &visible, 0, 0, 0);
+        assert_eq!(
+            snap.entities
+                .iter()
+                .filter(|e| e.kind == ReplicatedKind::Player)
+                .count(),
+            1
+        );
+        assert_eq!(
+            snap.entities
+                .iter()
+                .filter(|e| e.kind == ReplicatedKind::Interactable)
+                .count(),
+            2,
+            "nearby switch + far chest; other-instance portal is not relevant"
+        );
+        let near = snap
+            .entities
+            .iter()
+            .filter(|e| e.kind == ReplicatedKind::Interactable)
+            .min_by(|a, b| {
+                a.position[0]
+                    .partial_cmp(&b.position[0])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("near interactable");
+        assert!((near.position[0] - (FOOTNOTE_SPAWN_X + 1.6)).abs() < 1e-3);
+        assert!(
+            near.position[1] > -3.6,
+            "fixture must sit on P0, not inside the floor (y={})",
+            near.position[1]
+        );
+    }
+
+    #[test]
+    fn builder_consumes_world_relevance_set() {
+        let mut world = World::footnote_test_stage();
+        if let Some(id) = world.player_id() {
+            world.despawn(id);
+        }
+        let floor = world.iter_platforms().next().expect("platform");
+        let (t, s) = purgatory_simulation::PlayerState::standing_on_at(
+            floor.id,
+            floor.top_surface(),
+            FOOTNOTE_SPAWN_X,
+        );
+        let a = world.spawn_player(t, s);
+        let (t, s) = purgatory_simulation::PlayerState::standing_on_at(
+            floor.id,
+            floor.top_surface(),
+            FOOTNOTE_SPAWN_X + 1.0,
+        );
+        let b = world.spawn_player(t, s);
+        world.set_address(
+            b,
+            purgatory_simulation::WorldAddress::new(
+                purgatory_simulation::MapId::DEV,
+                purgatory_simulation::ChannelId::DEFAULT,
+                purgatory_simulation::InstanceId::from_raw(2),
+            ),
+        );
+        let visible = world.relevance_for(a);
+        let snap = build(1, 1, a, &world, &visible, 0, 0, 0);
+        assert!(
+            snap.entities
+                .iter()
+                .any(|e| e.entity_id == to_wire_id(a) && e.kind == ReplicatedKind::Player)
+        );
+        assert!(
+            !snap.entities.iter().any(|e| e.entity_id == to_wire_id(b)),
+            "other-instance player must not be relevant"
+        );
+        assert!(world.contains(b));
     }
 }

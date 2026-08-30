@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "map.dev.second",
+  "debug_name": "Second (Map B)",
+  "bounds": {
+    "min_x": 0.0,
+    "max_x": 16.0,
+    "min_y": -8.0,
+    "max_y": 6.0
+  },
+  "spawn_points": [
+    {
+      "id": "default",
+      "position": [8.0, -3.0]
+    }
+  ],
+  "restore": {
+    "policy": "safe_point",
+    "point": "default"
+  },
+  "platforms": [
+    {
+      "position": [8.0, -4.0],
+      "half_extents": [8.0, 0.4],
+      "kind": "solid"
+    },
+    {
+      "position": [8.0, -1.4],
+      "half_extents": [1.4, 0.2],
+      "kind": "solid"
+    },
+    {
+      "position": [11.0, -0.2],
+      "half_extents": [1.2, 0.09],
+      "kind": "one_way"
+    }
+  ]
+}
