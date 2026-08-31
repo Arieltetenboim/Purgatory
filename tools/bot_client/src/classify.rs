@@ -72,6 +72,37 @@ pub struct ClassifyInput {
     pub metrics_health: MetricsHealth,
     pub metrics_samples_ok: u64,
     pub metrics_samples_missed: u64,
+    /// Mixed/soak continuity. `None` keeps Phase 5 / non-mixed classify unchanged.
+    pub soak: Option<SoakClassify>,
+}
+
+/// Evidence for mixed/soak real-client correctness. Not a metrics-schema bump.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoakClassify {
+    pub require_persistent_baseline: bool,
+    pub require_portal_transition: bool,
+    pub require_churn: bool,
+    pub persistent_target: u32,
+    pub min_persistent_connected: u32,
+    pub avg_persistent_connected: f64,
+    pub time_below_baseline_secs: f64,
+    pub consecutive_below_baseline_secs: f64,
+    pub connected_seconds: f64,
+    pub duration_secs: f64,
+    pub ramp_complete: bool,
+    pub portal_transitions: u64,
+    pub portal_attempts: u64,
+    pub aoi_updates_delta: u64,
+    pub aoi_enters_delta: u64,
+    pub aoi_observed: bool,
+    pub churn_disconnects: u64,
+    pub early_fail: Option<String>,
+}
+
+/// Persistent occupancy integral: `count × elapsed seconds`, not one unit per sample.
+#[must_use]
+pub fn occupancy_seconds(persistent: u32, dt_secs: f64) -> f64 {
+    f64::from(persistent) * dt_secs.max(0.0)
 }
 
 impl Default for ClassifyInput {
@@ -97,6 +128,7 @@ impl Default for ClassifyInput {
             metrics_health: MetricsHealth::Healthy,
             metrics_samples_ok: 0,
             metrics_samples_missed: 0,
+            soak: None,
         }
     }
 }
@@ -219,6 +251,9 @@ impl ClassifyInput {
                 None,
             ));
         }
+        if let Some(soak) = &self.soak {
+            append_soak_failures(&mut failed, soak);
+        }
         if self.ramp_complete
             && self.connected_bots > 0
             && (self.consecutive_starvation_samples >= 5 || self.all_connected_starved)
@@ -319,6 +354,107 @@ impl ClassifyInput {
             status: RunStatus::Complete,
             reasons: Vec::new(),
         }
+    }
+}
+
+fn append_soak_failures(failed: &mut Vec<StatusReason>, soak: &SoakClassify) {
+    if let Some(reason) = &soak.early_fail {
+        failed.push(StatusReason::new("early_fail", reason.clone(), None));
+    }
+    if soak.require_persistent_baseline && soak.ramp_complete {
+        if soak.persistent_target > 0 && soak.min_persistent_connected == 0 {
+            failed.push(StatusReason::new(
+                "persistent_clients_lost",
+                format!(
+                    "persistent real clients reached 0 (target={})",
+                    soak.persistent_target
+                ),
+                Some(serde_json::json!({
+                    "target": soak.persistent_target,
+                    "min": soak.min_persistent_connected,
+                    "time_below_secs": soak.time_below_baseline_secs,
+                })),
+            ));
+        }
+        if soak.time_below_baseline_secs > 5.0 || soak.consecutive_below_baseline_secs >= 8.0 {
+            failed.push(StatusReason::new(
+                "persistent_baseline_lost",
+                format!(
+                    "persistent real clients below target {} for {:.1}s (consecutive {:.1}s)",
+                    soak.persistent_target,
+                    soak.time_below_baseline_secs,
+                    soak.consecutive_below_baseline_secs
+                ),
+                Some(serde_json::json!({
+                    "target": soak.persistent_target,
+                    "min": soak.min_persistent_connected,
+                    "avg": soak.avg_persistent_connected,
+                    "time_below_secs": soak.time_below_baseline_secs,
+                    "consecutive_below_secs": soak.consecutive_below_baseline_secs,
+                    "connected_seconds": soak.connected_seconds,
+                })),
+            ));
+        }
+        let min_exposure = f64::from(soak.persistent_target) * soak.duration_secs * 0.5;
+        if soak.duration_secs >= 8.0 && soak.connected_seconds + 0.01 < min_exposure {
+            failed.push(StatusReason::new(
+                "real_client_exposure",
+                format!(
+                    "connected-seconds {:.1} below required {:.1} (target={} duration={}s)",
+                    soak.connected_seconds,
+                    min_exposure,
+                    soak.persistent_target,
+                    soak.duration_secs
+                ),
+                Some(serde_json::json!({
+                    "connected_seconds": soak.connected_seconds,
+                    "required": min_exposure,
+                })),
+            ));
+        }
+    }
+    if soak.require_portal_transition && soak.portal_transitions == 0 {
+        failed.push(StatusReason::new(
+            "portal_transition_missing",
+            format!(
+                "no authoritative portal transition (attempts={} rejects counted separately)",
+                soak.portal_attempts
+            ),
+            Some(serde_json::json!({
+                "attempts": soak.portal_attempts,
+                "transitions": soak.portal_transitions,
+            })),
+        ));
+    }
+    if soak.require_persistent_baseline
+        && soak.aoi_observed
+        && soak.ramp_complete
+        && soak.duration_secs >= 8.0
+        && soak.aoi_updates_delta == 0
+        && soak.aoi_enters_delta <= 3
+    {
+        failed.push(StatusReason::new(
+            "aoi_replication_idle",
+            format!(
+                "AOI/replication did not continue past startup (enters_delta={} updates_delta={})",
+                soak.aoi_enters_delta, soak.aoi_updates_delta
+            ),
+            Some(serde_json::json!({
+                "aoi_enters_delta": soak.aoi_enters_delta,
+                "aoi_updates_delta": soak.aoi_updates_delta,
+            })),
+        ));
+    }
+    if soak.require_churn
+        && soak.ramp_complete
+        && soak.duration_secs >= 12.0
+        && soak.churn_disconnects == 0
+    {
+        failed.push(StatusReason::new(
+            "churn_missing",
+            "mixed soak produced no churn disconnects after ramp",
+            None,
+        ));
     }
 }
 
@@ -439,6 +575,101 @@ mod tests {
         let c = ClassifyInput::default().classify();
         assert_eq!(c.status, RunStatus::Complete);
         assert!(c.reasons.is_empty());
+    }
+
+    fn mixed_ok() -> SoakClassify {
+        SoakClassify {
+            require_persistent_baseline: true,
+            require_portal_transition: true,
+            require_churn: true,
+            persistent_target: 6,
+            min_persistent_connected: 6,
+            avg_persistent_connected: 6.0,
+            time_below_baseline_secs: 0.0,
+            consecutive_below_baseline_secs: 0.0,
+            connected_seconds: 120.0,
+            duration_secs: 20.0,
+            ramp_complete: true,
+            portal_transitions: 1,
+            portal_attempts: 1,
+            aoi_updates_delta: 40,
+            aoi_enters_delta: 12,
+            aoi_observed: true,
+            churn_disconnects: 2,
+            early_fail: None,
+        }
+    }
+
+    #[test]
+    fn mixed_shaped_input_passes() {
+        let input = ClassifyInput {
+            soak: Some(mixed_ok()),
+            ..Default::default()
+        };
+        assert_eq!(input.classify().status, RunStatus::Complete);
+    }
+
+    #[test]
+    fn occupancy_seconds_is_count_times_dt() {
+        assert!((occupancy_seconds(6, 2.5) - 15.0).abs() < f64::EPSILON);
+        assert_eq!(occupancy_seconds(6, -1.0), 0.0);
+    }
+
+    #[test]
+    fn mixed_exposure_boundary_uses_integral_not_sample_count() {
+        let mut soak = mixed_ok();
+        soak.connected_seconds = 60.0;
+        let pass = ClassifyInput {
+            soak: Some(soak.clone()),
+            ..Default::default()
+        };
+        assert_eq!(pass.classify().status, RunStatus::Complete);
+
+        soak.connected_seconds = 59.0;
+        let fail = ClassifyInput {
+            soak: Some(soak),
+            ..Default::default()
+        };
+        assert!(
+            fail.classify()
+                .reasons
+                .iter()
+                .any(|r| r.code == "real_client_exposure")
+        );
+    }
+
+    #[test]
+    fn mixed_zero_portal_transitions_fails() {
+        let mut soak = mixed_ok();
+        soak.portal_transitions = 0;
+        soak.portal_attempts = 4;
+        let input = ClassifyInput {
+            soak: Some(soak),
+            ..Default::default()
+        };
+        let c = input.classify();
+        assert_eq!(c.status, RunStatus::Failed);
+        assert!(
+            c.reasons
+                .iter()
+                .any(|r| r.code == "portal_transition_missing")
+        );
+    }
+
+    #[test]
+    fn mixed_persistent_baseline_lost_fails() {
+        let mut soak = mixed_ok();
+        soak.time_below_baseline_secs = 6.5;
+        soak.min_persistent_connected = 0;
+        let input = ClassifyInput {
+            soak: Some(soak),
+            ..Default::default()
+        };
+        let c = input.classify();
+        assert_eq!(c.status, RunStatus::Failed);
+        assert!(c.reasons.iter().any(|r| {
+            r.code == "persistent_baseline_lost" || r.code == "persistent_clients_lost"
+        }));
     }
 
     #[test]

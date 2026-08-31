@@ -89,6 +89,12 @@ pub struct ForensicSample {
     pub d_camera_x: f32,
     pub d_screen_x: f32,
     pub d_desired_x: f32,
+    pub velocity: [f32; 2],
+    pub extra_dx: f32,
+    pub interp_alpha: f32,
+    pub prev_y: f32,
+    pub tick_y: f32,
+    pub auth_tick: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -114,6 +120,13 @@ pub struct JitterSummary {
     pub idle_frames: u32,
     pub mean_d_presented_on_tick: f32,
     pub mean_d_presented_idle: f32,
+    pub extra_dx: f32,
+    pub interp_alpha: f32,
+    pub prev_y: f32,
+    pub tick_y: f32,
+    pub presented_y: f32,
+    pub velocity: [f32; 2],
+    pub auth_tick: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -183,6 +196,12 @@ impl ForensicTrace {
             d_camera_x: prev.map(|p| camera[0] - p.camera[0]).unwrap_or(0.0),
             d_screen_x: prev.map(|p| screen[0] - p.screen[0]).unwrap_or(0.0),
             d_desired_x: prev.map(|p| input.desired[0] - p.desired[0]).unwrap_or(0.0),
+            velocity: frame.velocity,
+            extra_dx: frame.extra_dx,
+            interp_alpha: frame.interp_alpha,
+            prev_y: frame.prev_y,
+            tick_y: frame.tick_y,
+            auth_tick: frame.auth_tick,
         };
         self.frame_index = self.frame_index.saturating_add(1);
         self.samples.push_back(sample);
@@ -262,6 +281,13 @@ impl ForensicTrace {
             } else {
                 0.0
             },
+            extra_dx: last.extra_dx,
+            interp_alpha: last.interp_alpha,
+            prev_y: last.prev_y,
+            tick_y: last.tick_y,
+            presented_y: last.presented[1],
+            velocity: last.velocity,
+            auth_tick: last.auth_tick,
         }
     }
 
@@ -277,13 +303,13 @@ impl ForensicTrace {
             fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
         writeln!(
             file,
-            "frame,dt,pred_x,pred_y,replica_x,replica_y,offset_x,offset_y,presented_x,presented_y,desired_x,desired_y,camera_x,camera_y,screen_x,screen_y,reconciled,corr_mag,ticks,net_frames,epoch,replica_seq,following_x,fade,tick_alpha,ndc_x,pixel_x,d_pred_x,d_presented_x,d_camera_x,d_screen_x,d_desired_x"
+            "frame,dt,pred_x,pred_y,replica_x,replica_y,offset_x,offset_y,presented_x,presented_y,desired_x,desired_y,camera_x,camera_y,screen_x,screen_y,reconciled,corr_mag,ticks,net_frames,epoch,replica_seq,following_x,fade,tick_alpha,ndc_x,pixel_x,d_pred_x,d_presented_x,d_camera_x,d_screen_x,d_desired_x,vx,vy,extra_dx,yalpha,prev_y,tick_y,auth_tick"
         )
         .map_err(|e| e.to_string())?;
         for s in &self.samples {
             writeln!(
                 file,
-                "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{},{},{},{},{},{},{:.6},{:.6},{:.4},{:.6},{:.6},{:.6},{:.6},{:.6}",
+                "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{},{},{},{},{},{},{:.6},{:.6},{:.4},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{}",
                 s.frame,
                 s.dt,
                 s.pred[0],
@@ -315,7 +341,14 @@ impl ForensicTrace {
                 s.d_presented_x,
                 s.d_camera_x,
                 s.d_screen_x,
-                s.d_desired_x
+                s.d_desired_x,
+                s.velocity[0],
+                s.velocity[1],
+                s.extra_dx,
+                s.interp_alpha,
+                s.prev_y,
+                s.tick_y,
+                s.auth_tick
             )
             .map_err(|e| e.to_string())?;
         }
@@ -375,6 +408,13 @@ mod tests {
                     predicted: Some([pred_x, 0.0]),
                     presented: Some([pred_x, 0.0]),
                     replica: None,
+                    velocity: [0.0, 0.0],
+                    extra_dx: 0.0,
+                    interp_alpha: 0.0,
+                    prev_y: 0.0,
+                    tick_y: 0.0,
+                    auth_tick: 0,
+                    replica_seq: 0,
                     correction_delta: [0.0, 0.0],
                     reconciled: false,
                 },

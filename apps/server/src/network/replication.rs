@@ -623,7 +623,7 @@ pub fn publish_observer_frame_with_budget(
             stats.cadence_deferred = stats.cadence_deferred.saturating_add(1);
         }
     }
-    update_ids.sort_by_key(|id| (id.index(), id.generation()));
+    update_ids.sort_by_key(|id| (u8::from(*id != observer), id.index(), id.generation()));
     for id in update_ids {
         if matches!(state.entities.get(&id), Some(Life::WantEnter { .. })) {
             continue;
@@ -1069,7 +1069,9 @@ mod tests {
         assert!(state.is_known(remote));
         let far = floor.top_surface();
         let mut t = world.transform_of(observer).unwrap();
-        t.position[0] = -80.0;
+        // 6G interest is a clamped view envelope, not a player-centered radius.
+        // x = -80 clamps to the left wall and still sees spawn; the right edge does not.
+        t.position[0] = world.bounds().max_x - 0.4;
         t.position[1] = far;
         world.set_transform(observer, t);
         publish_observer_frame(&mut state, &pipe, &world, observer, 2, 2, 0, 0, 0);

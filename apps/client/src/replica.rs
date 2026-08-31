@@ -8,8 +8,8 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use purgatory_protocol::{
-    ObserverAoiDebug, PlatformSupportId, ReplicatedHealth, ReplicationFrame, ReplicationRecord,
-    SnapshotEntity, WireEntityId, WorldSnapshot,
+    ObserverAoiDebug, PlatformSupportId, ReplicatedHealth, ReplicatedKind, ReplicationFrame,
+    ReplicationRecord, SnapshotEntity, WireEntityId, WorldSnapshot,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +53,14 @@ pub struct ReplicaLifecycleNote {
 
 const RECENT_LIFECYCLE_CAP: usize = 24;
 
+/// Last-known pose of entities removed by a Leave on the most recent applied frame.
+#[derive(Clone, Copy, Debug)]
+pub struct ReplicaLeavePose {
+    pub entity_id: WireEntityId,
+    pub kind: ReplicatedKind,
+    pub position: [f32; 2],
+}
+
 #[derive(Debug)]
 pub struct ReplicatedWorld {
     entities: HashMap<WireEntityId, ReplicatedEntity>,
@@ -81,6 +89,9 @@ pub struct ReplicatedWorld {
     total_enters: u64,
     total_updates: u64,
     total_leaves: u64,
+    last_leave_poses: Vec<ReplicaLeavePose>,
+    /// True when the last applied snapshot/frame refreshed local pose+velocity.
+    local_durable_updated: bool,
 }
 
 impl Default for ReplicatedWorld {
@@ -119,6 +130,8 @@ impl ReplicatedWorld {
             total_enters: 0,
             total_updates: 0,
             total_leaves: 0,
+            last_leave_poses: Vec::new(),
+            local_durable_updated: false,
         }
     }
 
@@ -179,6 +192,7 @@ impl ReplicatedWorld {
         self.local_instance = snap.local_instance;
         self.last_valid_at = Some(Instant::now());
         self.applied = self.applied.saturating_add(1);
+        self.local_durable_updated = true;
         decision
     }
 
@@ -198,6 +212,9 @@ impl ReplicatedWorld {
         }
         self.apply_frame_header(&frame);
         self.aoi_debug = frame.aoi_debug;
+        self.last_leave_poses.clear();
+        self.local_durable_updated = false;
+        let local_id = frame.local_player_entity;
         let mut enters = 0u32;
         let mut updates = 0u32;
         let mut leaves = 0u32;
@@ -205,6 +222,9 @@ impl ReplicatedWorld {
             match rec {
                 ReplicationRecord::Enter { entity, health } => {
                     enters = enters.saturating_add(1);
+                    if entity.entity_id == local_id {
+                        self.local_durable_updated = true;
+                    }
                     self.push_lifecycle(ReplicaLifecycleNote {
                         entity_id: entity.entity_id,
                         kind: entity.kind,
@@ -230,6 +250,9 @@ impl ReplicatedWorld {
                     ..
                 } => {
                     updates = updates.saturating_add(1);
+                    if entity_id == local_id && (position.is_some() || velocity.is_some()) {
+                        self.local_durable_updated = true;
+                    }
                     if let Some(existing) = self.entities.get_mut(&entity_id) {
                         if let Some(p) = position {
                             existing.position = p;
@@ -244,11 +267,16 @@ impl ReplicatedWorld {
                 }
                 ReplicationRecord::Leave { entity_id } => {
                     leaves = leaves.saturating_add(1);
-                    let kind = self
+                    let (kind, position) = self
                         .entities
                         .get(&entity_id)
-                        .map(|e| e.kind)
-                        .unwrap_or(purgatory_protocol::ReplicatedKind::Player);
+                        .map(|e| (e.kind, e.position))
+                        .unwrap_or((ReplicatedKind::Player, [0.0, 0.0]));
+                    self.last_leave_poses.push(ReplicaLeavePose {
+                        entity_id,
+                        kind,
+                        position,
+                    });
                     self.push_lifecycle(ReplicaLifecycleNote {
                         entity_id,
                         kind,
@@ -344,6 +372,8 @@ impl ReplicatedWorld {
         self.total_enters = 0;
         self.total_updates = 0;
         self.total_leaves = 0;
+        self.last_leave_poses.clear();
+        self.local_durable_updated = false;
     }
 
     #[must_use]
@@ -419,6 +449,17 @@ impl ReplicatedWorld {
     #[must_use]
     pub fn last_frame_leaves(&self) -> u32 {
         self.last_frame_leaves
+    }
+
+    #[must_use]
+    pub fn last_leave_poses(&self) -> &[ReplicaLeavePose] {
+        &self.last_leave_poses
+    }
+
+    /// Last applied frame/snapshot included a local-player pose or velocity.
+    #[must_use]
+    pub fn local_durable_updated(&self) -> bool {
+        self.local_durable_updated
     }
 
     #[must_use]
@@ -722,6 +763,32 @@ mod tests {
         ));
         assert_eq!(world.len(), 2);
         assert_eq!(world.get(remote).unwrap().position[0], 9.0);
+        assert!(
+            !world.local_durable_updated(),
+            "remote-only Update must not mark local pose fresh"
+        );
+    }
+
+    #[test]
+    fn header_only_frame_does_not_mark_local_durable() {
+        let mut world = ReplicatedWorld::new();
+        let a = WireEntityId {
+            index: 1,
+            generation: 1,
+        };
+        let enter = frame(
+            0,
+            1,
+            a,
+            vec![ReplicationRecord::Enter {
+                entity: entity(1, 1, 1.0),
+                health: None,
+            }],
+        );
+        world.apply_frame(enter);
+        assert!(world.local_durable_updated());
+        world.apply_frame(frame(0, 2, a, vec![]));
+        assert!(!world.local_durable_updated());
     }
 
     #[test]

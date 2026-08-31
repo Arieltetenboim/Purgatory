@@ -6,6 +6,7 @@
 //! A later release profile may compile this module out (for example
 //! `cfg(debug_assertions)` or a cargo feature). That switch is not wired yet.
 
+pub(crate) mod agent_log;
 pub(crate) mod aoi_view;
 mod camera_debug;
 mod capture;

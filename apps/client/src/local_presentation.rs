@@ -24,6 +24,13 @@ pub struct FrameLocalPose {
     pub predicted: Option<[f32; 2]>,
     pub presented: Option<[f32; 2]>,
     pub replica: Option<[f32; 2]>,
+    pub velocity: [f32; 2],
+    pub extra_dx: f32,
+    pub interp_alpha: f32,
+    pub prev_y: f32,
+    pub tick_y: f32,
+    pub auth_tick: u64,
+    pub replica_seq: u32,
     pub correction_delta: [f32; 2],
     pub reconciled: bool,
 }
@@ -94,11 +101,68 @@ impl LocalPresentation {
     }
 }
 
-/// Advance last-tick pose by leftover accumulator time using last-tick velocity.
+/// Remainder as a 0..1 fraction of one simulation tick.
+#[must_use]
+pub fn remainder_alpha(remainder: Duration) -> f32 {
+    let tick = TICK_DURATION.as_secs_f32();
+    if !tick.is_finite() || tick <= 0.0 {
+        return 0.0;
+    }
+    let t = remainder.as_secs_f32();
+    if !t.is_finite() || t <= 0.0 {
+        return 0.0;
+    }
+    (t / tick).clamp(0.0, 1.0)
+}
+
+/// Y on the segment between two consecutive post-FOOTNOTE tick poses.
+///
+/// `alpha = 0` (just ticked) shows `prev_y`. `alpha = 1` shows `current_y`.
+/// Does not query collision. Both endpoints must already be contact-resolved.
+#[must_use]
+pub fn interpolate_tick_y(prev_y: f32, current_y: f32, remainder: Duration) -> f32 {
+    if !prev_y.is_finite() {
+        return current_y;
+    }
+    if !current_y.is_finite() {
+        return prev_y;
+    }
+    let a = remainder_alpha(remainder);
+    prev_y + (current_y - prev_y) * a
+}
+
+/// Local render pose: horizontal remainder extra + Y lerp between tick poses.
+///
+/// Falling `vy * remainder` is still not applied (`extrapolate_tick_pose` keeps
+/// tick Y). Compose then **replaces Y** with the tick-to-tick lerp so jump
+/// ascent and descent are both render-rate smooth without inventing contact.
+#[must_use]
+pub fn compose_local_render_pose(
+    predicted: [f32; 2],
+    prev_tick: Option<[f32; 2]>,
+    current_tick: [f32; 2],
+    velocity: [f32; 2],
+    remainder: Duration,
+) -> [f32; 2] {
+    let extra = extrapolate_tick_pose(predicted, velocity, remainder);
+    let y = match prev_tick {
+        Some(prev) => interpolate_tick_y(prev[1], current_tick[1], remainder),
+        None => current_tick[1],
+    };
+    [extra[0], y]
+}
+
+/// Advance last-tick pose by leftover accumulator time using last-tick
+/// **horizontal** velocity.
 ///
 /// Remainder `0` shows the tick pose immediately (no added delay). Does not
 /// mutate simulation. Clamps remainder to one tick so hitch leftovers cannot
 /// overshoot a full extra step.
+///
+/// Vertical remainder is **not** applied here. FOOTNOTE contact runs only on
+/// the tick; `vy * remainder` while falling walks the sprite through the floor.
+/// Local Y presentation uses [`compose_local_render_pose`] (lerp between
+/// consecutive tick poses) instead of ballistic extra.
 ///
 /// Speeds below [`EXTRAPOLATE_MIN_SPEED`] are treated as idle: leftover replica
 /// velocity after the last moving Update must not sawtooth the sprite against
@@ -118,11 +182,10 @@ pub fn extrapolate_tick_pose(pose: [f32; 2], velocity: [f32; 2], remainder: Dura
         t = tick;
     }
     let dx = velocity[0] * t;
-    let dy = velocity[1] * t;
-    if !dx.is_finite() || !dy.is_finite() {
+    if !dx.is_finite() {
         return pose;
     }
-    [pose[0] + dx, pose[1] + dy]
+    [pose[0] + dx, pose[1]]
 }
 
 #[must_use]
@@ -320,6 +383,13 @@ mod tests {
             predicted: Some([2.4, 0.0]),
             presented: Some(presented),
             replica: Some([2.35, 0.0]),
+            velocity: [0.0, 0.0],
+            extra_dx: 0.0,
+            interp_alpha: 0.0,
+            prev_y: 0.0,
+            tick_y: 0.0,
+            auth_tick: 0,
+            replica_seq: 0,
             correction_delta: [0.05, 0.0],
             reconciled: true,
         };
@@ -359,6 +429,127 @@ mod tests {
         let pose = [3.0, -1.0];
         let out = extrapolate_tick_pose(pose, [6.0, 2.0], Duration::ZERO);
         assert_eq!(out, pose);
+    }
+
+    #[test]
+    fn remainder_does_not_extrapolate_vertical_through_floor() {
+        let pose = [-19.4, -2.4];
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.5);
+        let out = extrapolate_tick_pose(pose, [0.0, -12.0], rem);
+        assert_eq!(
+            out[1], pose[1],
+            "falling remainder must not sink Y below the tick pose"
+        );
+        assert_eq!(out[0], pose[0]);
+    }
+
+    #[test]
+    fn jump_ascent_remainder_does_not_invent_y() {
+        let pose = [-19.4, -2.4];
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.5);
+        let out = extrapolate_tick_pose(pose, [3.0, 13.0], rem);
+        assert_eq!(
+            out[1], pose[1],
+            "extra must not ballistic-Y; Y lerp owns it"
+        );
+        assert!(out[0] > pose[0]);
+    }
+
+    #[test]
+    fn y_lerp_stays_on_segment_between_tick_poses() {
+        let prev = [0.0, 1.0];
+        let current = [0.2, 3.0];
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.5);
+        let y = interpolate_tick_y(prev[1], current[1], rem);
+        assert!((y - 2.0).abs() < 1e-5, "got {y}");
+        let lo = prev[1].min(current[1]);
+        let hi = prev[1].max(current[1]);
+        assert!(y >= lo && y <= hi);
+        assert_eq!(
+            interpolate_tick_y(prev[1], current[1], Duration::ZERO),
+            prev[1]
+        );
+        assert_eq!(
+            interpolate_tick_y(prev[1], current[1], TICK_DURATION),
+            current[1]
+        );
+    }
+
+    #[test]
+    fn compose_keeps_x_extra_and_lerps_y() {
+        let prev = [1.0, 2.0];
+        let current = [1.2, 4.0];
+        let vel = [6.0, 13.0];
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.5);
+        let out = compose_local_render_pose(current, Some(prev), current, vel, rem);
+        let extra = extrapolate_tick_pose(current, vel, rem);
+        assert_eq!(out[0], extra[0]);
+        assert!(
+            (out[1] - 3.0).abs() < 1e-5,
+            "Y must be midpoint, got {}",
+            out[1]
+        );
+        assert_eq!(extra[1], current[1]);
+    }
+
+    #[test]
+    fn compose_landing_y_never_below_either_tick() {
+        let airborne = [0.0, -1.0];
+        let landed = [0.0, -2.4];
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.8);
+        let out = compose_local_render_pose(landed, Some(airborne), landed, [0.0, -12.0], rem);
+        let lo = airborne[1].min(landed[1]);
+        assert!(
+            out[1] + 1e-6 >= lo,
+            "rendered Y {} below segment min {lo}",
+            out[1]
+        );
+        assert!(out[1] <= airborne[1] + 1e-6);
+    }
+
+    #[test]
+    fn y_lerp_wrap_stays_continuous() {
+        let dt = 1.0 / 144.0;
+        let tick = TICK_DURATION.as_secs_f32();
+        let rem_before = tick - dt * 0.4;
+        let y0 = 1.0;
+        let y1 = 2.0;
+        let y2 = 3.0;
+        let before = interpolate_tick_y(y0, y1, Duration::from_secs_f32(rem_before));
+        let rem_after = rem_before + dt - tick;
+        let after = interpolate_tick_y(y1, y2, Duration::from_secs_f32(rem_after));
+        let step = after - before;
+        let want = (y1 - y0) / tick * dt;
+        assert!(
+            (step - want).abs() < 1e-4,
+            "Y wrap must equal tick-delta * dt/tick, got {step} want {want} (before {before} after {after})"
+        );
+    }
+
+    #[test]
+    fn snap_history_holds_y_across_remainder() {
+        let pose = [3.0, -2.4];
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.9);
+        let out = compose_local_render_pose(pose, Some(pose), pose, [0.0, 13.0], rem);
+        assert_eq!(out[1], pose[1]);
+    }
+
+    #[test]
+    fn high_speed_fall_remainder_stays_on_tick_y() {
+        let pose = [-19.4, 2.0];
+        let rem = TICK_DURATION;
+        let out = extrapolate_tick_pose(pose, [4.0, -24.0], rem);
+        assert_eq!(out[1], pose[1]);
+        assert!(out[0] > pose[0]);
+    }
+
+    #[test]
+    fn falling_horizontal_remainder_does_not_change_y() {
+        let pose = [0.5, -0.5];
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.9);
+        let out = extrapolate_tick_pose(pose, [6.0, -12.0], rem);
+        assert_eq!(out[1], pose[1]);
+        assert!((out[0] - (pose[0] + 6.0 * rem.as_secs_f32())).abs() < 1e-5);
     }
 
     #[test]

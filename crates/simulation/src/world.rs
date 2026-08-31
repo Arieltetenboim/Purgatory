@@ -1144,6 +1144,19 @@ impl World {
         }
     }
 
+    /// Replicated transform domain includes velocity. Call when FOOTNOTE vx/vy
+    /// changes without a position delta (idle stop, wall clamp).
+    pub(crate) fn bump_transform_rev(&mut self, id: EntityId) {
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return;
+            };
+            data.domain_revs.bump_transform();
+            data.dirty.transform = true;
+        }
+        self.note_domain_rev();
+    }
+
     #[must_use]
     pub fn spatial_contains(&self, id: EntityId, position: [f32; 2]) -> bool {
         let Some(address) = self.address_of(id) else {

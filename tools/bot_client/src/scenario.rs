@@ -143,6 +143,15 @@ impl LoadScenario {
             isolate = true;
         }
 
+        // `--timeout` is a wall-clock abort. An explicit `--duration` overlay
+        // (Developer Tools duration combo, soak evidence length, etc.) must not
+        // keep a shorter preset timeout. Explicit `--timeout` still wins and
+        // can still be rejected below.
+        if user("duration") && !user("timeout") {
+            let floor = duration.saturating_add(Duration::from_secs(60));
+            timeout = Some(timeout.unwrap_or(floor).max(floor));
+        }
+
         let timeout = timeout.unwrap_or(duration.saturating_add(Duration::from_secs(60)));
         if timeout < duration {
             return Err("timeout must be >= duration".into());
@@ -488,6 +497,71 @@ mod tests {
         assert_eq!(spec.duration_secs, 30);
         assert_eq!(spec.seed, 7);
         assert_eq!(spec.kind, LoadKind::MixedRuntime);
+        assert!(spec.timeout_secs >= spec.duration_secs);
+        assert_eq!(spec.timeout_secs, 180);
+    }
+
+    #[test]
+    fn explicit_duration_longer_than_preset_timeout_raises_timeout() {
+        let (_cli, spec) = parse(&["purgatory-load", "--preset", "mixed", "--duration", "30m"]);
+        assert_eq!(spec.duration_secs, 30 * 60);
+        assert!(
+            spec.timeout_secs >= spec.duration_secs,
+            "timeout {} duration {}",
+            spec.timeout_secs,
+            spec.duration_secs
+        );
+        assert!(spec.timeout_secs >= 30 * 60 + 60);
+    }
+
+    /// Exact argv shape Developer Tools Runtime Validation forwards
+    /// (`Get-RuntimeValidationArgv` + `--print-server-env`).
+    #[test]
+    fn developer_tools_runtime_validation_argv_parses() {
+        let persist = isolated_persist_dir(Path::new("logs/load/rv_test"));
+        let persist_s = persist.to_string_lossy();
+        let (_cli, spec) = parse(&[
+            "purgatory-load",
+            "--preset",
+            "mixed",
+            "--seed",
+            "1234",
+            "--allow-high-count",
+            "--max-bots",
+            "256",
+            "--server",
+            "127.0.0.1:5001",
+            "--metrics",
+            "127.0.0.1:5002",
+            "--duration",
+            "5m",
+            "--persist-root",
+            persist_s.as_ref(),
+            "--print-server-env",
+        ]);
+        assert_eq!(spec.preset, Some(ValidationPreset::Mixed));
+        assert_eq!(spec.duration_secs, 300);
+        assert!(spec.timeout_secs >= spec.duration_secs);
+        assert!(spec.isolate_persist);
+    }
+
+    #[test]
+    fn developer_tools_soak_duration_overlay_parses() {
+        let (_cli, spec) = parse(&[
+            "purgatory-load",
+            "--preset",
+            "soak",
+            "--seed",
+            "1234",
+            "--allow-high-count",
+            "--max-bots",
+            "256",
+            "--duration",
+            "30m",
+        ]);
+        assert_eq!(spec.preset, Some(ValidationPreset::Soak));
+        assert_eq!(spec.duration_secs, 30 * 60);
+        assert!(spec.timeout_secs >= spec.duration_secs);
     }
 
     #[test]

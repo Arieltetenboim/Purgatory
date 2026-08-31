@@ -37,8 +37,10 @@ function Initialize-DevState {
     $script:Clients = New-Object System.Collections.ArrayList
 
     $script:LoadTest = @{
-        Process = $null
-        State   = "Stopped"
+        Process    = $null
+        State      = "Stopped"
+        Kind       = $null
+        StartedAt  = $null
     }
 
     $script:Health = @{

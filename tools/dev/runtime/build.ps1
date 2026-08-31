@@ -87,14 +87,32 @@ function Request-Rebuild {
     }
 
     $packages = New-Object System.Collections.Generic.List[string]
-    [void]$packages.Add($script:ServerPackage)
+    $serverRunning = (@(Find-WorkspaceProcesses -Name "purgatory-server")).Count -gt 0
+    if ($serverRunning) {
+        Write-LaunchLog "Rebuild skips server (purgatory-server.exe is running; Stop first)"
+    }
+    else {
+        [void]$packages.Add($script:ServerPackage)
+    }
     $clientsRunning = (@(Find-WorkspaceProcesses -Name "purgatory-client")).Count -gt 0
     if ($clientsRunning) {
-        Write-LaunchLog "Rebuild $($script:BuildProfile): server only (clients are running)"
+        Write-LaunchLog "Rebuild $($script:BuildProfile): skips client (clients are running)"
     }
     else {
         [void]$packages.Add($script:ClientPackage)
+    }
+    if ($packages.Count -eq 0) {
+        Write-LaunchLog "Rebuild skipped: server and client are running (Stop first)"
+        return
+    }
+    if (-not $serverRunning -and -not $clientsRunning) {
         Write-LaunchLog "Rebuild $($script:BuildProfile) server + client"
+    }
+    elseif (-not $serverRunning) {
+        Write-LaunchLog "Rebuild $($script:BuildProfile) server only"
+    }
+    elseif (-not $clientsRunning) {
+        Write-LaunchLog "Rebuild $($script:BuildProfile) client only"
     }
     [void](Start-OwnedBuild -Packages $packages.ToArray() -Reason "rebuild")
 }

@@ -30,15 +30,17 @@ common → simulation → server
 common → protocol → client / server / bot_client
 common → content → server / client / content_validator
 common → persistence → server
+common → dev_runtime → dev_hub
 ```
 
 The client also depends on `purgatory-simulation` for local simulation/presentation where currently required by the repository. That dependency does not make the client authoritative and does not by itself require client prediction.
 
 - `purgatory-simulation` must not depend on `winit`, `wgpu`, renderer code, UI, OS window APIs, Quinn, or Tokio.
+- `purgatory-dev-runtime` must not depend on `purgatory-client`, `purgatory-simulation`, Quinn, egui, winit, or wgpu. Ready is spawned `purgatory-load --probe`, not a second protocol stack.
 - `purgatory-server` must not depend on `winit`, `wgpu`, `egui`, or `purgatory-client`.
 - `purgatory-protocol` stays free of Quinn and Tokio. The game protocol is logically separate from transport (ADR-0008, ADR-0021).
 - Quinn/QUIC belongs in network-facing binaries (`apps/server`, `apps/client`, `tools/bot_client`), not in simulation or content.
-- egui crates are `purgatory-client` development-overlay dependencies only.
+- egui crates may be used by `purgatory-client` (in-window overlay; not eframe) and `purgatory-dev-hub` (provisional eframe). They must not enter simulation, server, protocol, content, common, or `purgatory-dev-runtime`.
 - Tokio handles asynchronous network and service I/O. Authoritative simulation uses `SimulationClock` in `crates/simulation`. Gameplay rules must not read wall-clock sources for tick identity. The outer loop supplies elapsed `Duration`.
 - The render loop must not `.block_on` network I/O. Async tasks must not call `World::tick`. Connection tasks must not lock or tick `World`. Packet arrival must not mutate `World`.
 - All client network input is untrusted. Parse and validate before session insert or gameplay handoff. No network parser may panic on arbitrary bytes.

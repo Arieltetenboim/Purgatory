@@ -39,7 +39,7 @@ pub struct DebugUiState {
     pub show_interpolation_gizmos: bool,
     /// Show authoritative vs predicted local markers (default OFF).
     pub show_prediction_gizmos: bool,
-    /// Presentation-only enter/leave interest rectangles (not client aspect).
+    /// Presentation-only copy of server view-envelope enter/leave rects.
     pub show_aoi_rects: bool,
     /// Camera Dead Zone / center gizmo (overlay only).
     pub show_camera_deadzone: bool,

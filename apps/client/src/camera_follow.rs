@@ -177,6 +177,18 @@ mod tests {
     use super::*;
     use crate::renderer::Camera;
 
+    #[test]
+    fn dead_zone_matches_server_aoi_policy() {
+        assert!(
+            (DEAD_ZONE_HALF_X - purgatory_simulation::AOI_CAMERA_DEAD_ZONE_HALF[0]).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (DEAD_ZONE_HALF_Y - purgatory_simulation::AOI_CAMERA_DEAD_ZONE_HALF[1]).abs()
+                < f32::EPSILON
+        );
+    }
+
     fn cam_at(position: [f32; 2]) -> Camera {
         Camera {
             position,

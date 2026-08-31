@@ -15,6 +15,7 @@ pub mod log;
 pub mod metrics;
 pub mod prng;
 pub mod probe;
+pub mod roles;
 pub mod scenario;
 pub mod server_metrics;
 pub mod session;
@@ -114,6 +115,14 @@ pub fn run_from_env() -> ! {
         spec.duration_secs,
         spec.timeout_secs,
         spec.isolate_persist
+    );
+    let plan = crate::roles::role_plan(spec.kind, spec.bot_count);
+    println!(
+        "roles portal={} churn={} persistent_move={} baseline={}",
+        plan.portal,
+        plan.churn,
+        plan.persistent_move,
+        plan.persistent_target()
     );
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

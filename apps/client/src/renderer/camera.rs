@@ -271,4 +271,16 @@ mod tests {
         assert!((cam.position[0] - target[0]).abs() < 1e-3);
         assert!((cam.position[1] - target[1]).abs() < 1e-3);
     }
+
+    #[test]
+    fn clamp_matches_server_aoi_camera_clamp() {
+        let bounds = WorldBounds::FOOTNOTE_TEST;
+        let [vw, vh] = purgatory_simulation::aoi_viewport_size();
+        let desired = [-19.4, -3.0];
+        let client = clamp_camera_center(desired, vw, vh, bounds);
+        let server = purgatory_simulation::aoi_clamp_camera_center(desired, vw, vh, bounds);
+        assert!((client[0] - server[0]).abs() < 1e-5);
+        assert!((client[1] - server[1]).abs() < 1e-5);
+        assert!((client[0] - (-11.556)).abs() < 0.01);
+    }
 }

@@ -224,4 +224,14 @@ mod tests {
         assert!(cli.probe);
         assert!(cli.validate().is_ok());
     }
+
+    #[test]
+    fn preset_flag_is_part_of_cli_help() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("--preset"), "{help}");
+        assert!(help.contains("mixed"), "{help}");
+        assert!(help.contains("soak"), "{help}");
+        assert!(help.contains("--duration"), "{help}");
+        assert!(help.contains("--print-server-env"), "{help}");
+    }
 }

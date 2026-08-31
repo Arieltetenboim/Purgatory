@@ -1,24 +1,38 @@
 # Developer Tools architecture
 
-Developer Tools is one product concept. The current shell is PowerShell + Windows Forms. That is a deliberate, bounded choice, not a requirement that every future tool be written in PowerShell.
+Developer Tools is one product concept. The current operational shell is PowerShell + Windows Forms. The target shell is the Rust Developer Hub (ADR-0052). PowerShell is not a requirement that every future tool be written in PowerShell.
 
 ## Technology boundary
 
-PowerShell + Windows Forms is suitable for:
+PowerShell + Windows Forms remains the fallback for capabilities not yet on the Hub ([`PARITY.md`](PARITY.md)).
 
-- runtime control
-- builds
-- process management
-- diagnostics
-- settings
-- simple property forms
-- reports
+The Hub is two crates:
 
-A future visual Map Editor may be a dedicated native tool using project-native technology (`winit` / `wgpu` or similar). Developer Tools may later launch or integrate that process. Do not build that editor here.
+```text
+apps/dev_hub          purgatory-dev-hub       provisional eframe application shell
+crates/dev_runtime    purgatory-dev-runtime   orchestration (no GUI)
+```
 
-The game protocol stays in Rust (`purgatory-protocol`, Quinn in `apps/server` and `tools/bot_client`). PowerShell must not reimplement Quinn or Hello/Welcome.
+Hub GUI modules (presentation only):
 
-## Module layout
+```text
+apps/dev_hub/src/
+    main.rs              Windows GUI subsystem; entry
+    app.rs               window chrome, nav, status bar
+    navigation.rs        pages / live vs placeholder
+    theme.rs             restrained desktop visuals
+    ui/dashboard.rs      Slice 1 overview + quick actions
+    ui/runtime_server.rs Slice 1 server controls
+    ui/logs.rs           bounded activity + OPEN LOGS
+    ui/placeholders.rs   future categories
+    ui/status.rs         global status strip
+```
+
+The GUI may only invoke and present `purgatory-dev-runtime`. eframe is revisitable; do not freeze it. The game protocol stays in Rust (`purgatory-protocol`, Quinn in `apps/server` and `tools/bot_client`). Neither PowerShell nor the Hub reimplements Quinn or Hello/Welcome. Ready is `purgatory-load --probe`.
+
+A future visual Map Editor may be a dedicated native tool. Do not build that editor in Slice 1.
+
+## PowerShell module layout
 
 Scripts live under `tools/dev/`. They are **dot-sourced** `.ps1` files, not `.psm1` modules. The application is one STA process that shares `$script:` state. A module manifest would isolate that state for no gain. Dynamic discovery is not used; the entry script loads files in a fixed order.
 
@@ -46,33 +60,31 @@ tools/dev/
 
 `tools/dev_launcher.ps1` is a compatibility stub that re-invokes `tools/dev/dev_launcher.ps1`.
 
+Do not invest in new PowerShell architecture beyond fixes required to keep this shell usable.
+
 ## Dependency direction
 
 ```text
-UI
+Hub GUI (eframe)
  ↓
-feature / runtime services
+purgatory-dev-runtime
  ↓
-process / build / health abstractions
+process / build / health
  ↓
 OS / Cargo / PURGATORY executables
 ```
 
-UI click handlers call `Request-*` / `Start-*` / `Stop-*` functions. They do not own process orchestration, Cargo inference, or readiness policy.
+UI click handlers send `HubCommand` values. They do not own process orchestration, Cargo inference, or readiness policy.
 
 ## Process ownership
 
-Primary source of truth: retained `System.Diagnostics.Process` objects on `DevRuntimeState`.
+Spawned, adopted, and discovered are distinct ([`PARITY.md`](PARITY.md), [`RUNTIME_LIFECYCLE.md`](RUNTIME_LIFECYCLE.md)).
 
-```text
-Developer Tools → ProcessStartInfo (cwd, env, args) → purgatory-server.exe
-Developer Tools → ProcessStartInfo → purgatory-client.exe
-Developer Tools → ProcessStartInfo → cargo.exe
-```
+Workspace `target\` scans are **recovery-only**: startup adopt, duplicate detection, explicit Stop when nothing is tracked. They are not the lifecycle source of truth for processes this session started.
 
-Workspace `Get-Process` scans (path under this repo `target\`) are **recovery-only**: startup adopt, duplicate detection, Kill All. They are not the 1 Hz source of truth for processes this session started.
+Closing Developer Tools / the Hub does not stop the dedicated server. Cargo and probes may die with the Hub (session-owned). The next open **discovers** a workspace `target\` server (exe path under this repo, not a raw PID), **adopts** it, and **verifies** with `--probe` before Ready.
 
-Closing Developer Tools does not stop children. The next open **adopts** surviving workspace processes and verifies them. Parent-PID “orphan” killing is gone; it existed to compensate for Windows Terminal tabs.
+The operational Hub launch is `DEV_HUB.BAT` → independent `purgatory-dev-hub.exe`. Do not leave the Hub under `cargo run` (Windows job / console process group).
 
 ## Connection probe
 
@@ -80,24 +92,11 @@ Closing Developer Tools does not stop children. The next open **adopts** survivi
 
 Reserved DEV login: `dev.probe`. See [README.md](README.md) (probe persistence debt) and [RUNTIME_LIFECYCLE.md](RUNTIME_LIFECYCLE.md).
 
-## Visible shells
-
-A process does not get a visible console merely because it is executable.
-
-| Task | Window |
-|---|---|
-| Server | None (redirected to `logs/dev-tools/`) |
-| Client | Game window only |
-| Cargo | None (redirected; status in Activity) |
-| Quality Gate | Visible PowerShell (`-NoExit`) |
-| Load harness | Owned `purgatory-load.exe` console (dashboard) |
-| Analyze last run | Visible console |
-
 ## Related crates
 
-Developer Tools itself is not a Cargo member. It drives:
+The Hub is a Cargo workspace member. It drives:
 
 - `purgatory-server`
-- `purgatory-client`
+- `purgatory-client` (PowerShell / later Hub slices)
 - `purgatory-bot-client` / `purgatory-load` (harness + `--probe`)
-- `scripts/check.ps1` (fmt, check, clippy, test, content-validator)
+- `scripts/check.ps1` (PowerShell / later Hub slices)

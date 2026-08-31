@@ -67,7 +67,9 @@ pub use aabb::Aabb;
 pub use action::{Action, ActionEnd, ActionError, ActionId, ActionKind, ActionPhase};
 pub use action_gate::{ActionDenialReason, ActionGateContext, evaluate_action_gate};
 pub use aoi::{
-    AOI_LEAVE_MARGIN, AOI_POLICY_HALF_EXTENTS, AoiRects, aoi_policy_rects, point_in_aabb,
+    AOI_CAMERA_DEAD_ZONE_HALF, AOI_LEAVE_MARGIN, AOI_POLICY_HALF_EXTENTS, AOI_PREFETCH_MARGIN,
+    AOI_VIEWPORT_ASPECT, AoiRects, aoi_clamp_camera_center, aoi_policy_rects, aoi_view_envelope,
+    aoi_viewport_size, point_in_aabb,
 };
 pub use body::{PLAYER_HALF_EXTENTS, PlayerBody, PlayerState};
 pub use bounds::WorldBounds;

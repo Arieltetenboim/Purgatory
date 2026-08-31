@@ -25,7 +25,12 @@ public static class PurgatoryNative {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
     [DllImport("shcore.dll")] public static extern int SetProcessDpiAwareness(int value);
+    public const int WM_VSCROLL = 0x0115;
+    public const int SB_BOTTOM = 7;
+    public const int EM_SETSEL = 0x00B1;
 }
 "@
 }

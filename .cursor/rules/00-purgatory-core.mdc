@@ -20,11 +20,13 @@ PURGATORY is a custom-built native 2D side-scrolling MMORPG. This repository is 
 |---|---|---|
 | `apps/client` | `purgatory-client` | Native desktop client |
 | `apps/server` | `purgatory-server` | Headless dedicated server |
+| `apps/dev_hub` | `purgatory-dev-hub` | Developer Hub GUI (provisional eframe; ADR-0052) |
 | `crates/common` | `purgatory-common` | Shared primitives |
 | `crates/simulation` | `purgatory-simulation` | Authoritative simulation |
 | `crates/protocol` | `purgatory-protocol` | Client/server protocol types and version semantics |
 | `crates/content` | `purgatory-content` | Content definition loading and validation boundary |
 | `crates/persistence` | `purgatory-persistence` | File-backed character identity and persistent character state |
+| `crates/dev_runtime` | `purgatory-dev-runtime` | Headless Developer Hub orchestration (no GUI) |
 | `tools/content_validator` | `purgatory-content-validator` | Content validation tool |
 | `tools/bot_client` | `purgatory-bot-client` / `purgatory-load` | Headless QUIC load harness |
 

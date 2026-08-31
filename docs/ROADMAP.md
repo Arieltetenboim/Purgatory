@@ -35,17 +35,19 @@ Phases execute in order. A later phase starts only after the current gate is gre
 | 6E | Character + persistence | complete (automated); **manual first-connect / reconnect / restart / duplicate-login check still required** |
 | 6F | Runtime gameplay readiness | complete (automated); **manual two-client dirty/AOI + opt-in probe check still required** |
 | 6G | Runtime hardening + integrated scale validation | complete (automated); **manual Mixed/soak/process-ownership evidence still required** |
-| 7 | Client reconciliation (input replay) | complete (Phase 5.5) |
-| 8 | Content foundation | not started |
-| 9 | Combat core | not started |
-| 10 | Loot, inventory, and progression | not started |
-| 11 | Persistence boundary | not started |
-| 12 | Maps, zones, and interest management | not started |
-| 13 | Scalability harness | not started |
-| 14 | Sprite and asset pipeline | not started |
-| 15 | Animation and Paper Doll | not started |
-| 16 | Content authoring quality | not started |
-| 17 | Hardening | not started |
+| 7 | Gameplay vocabulary (attributes, actions, runtime actor) | **planned, not started** — blocked on 6G GREEN. Plan: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) |
+| 8 | Content foundation | legacy numbering (superseded) |
+| 9 | Combat core | legacy numbering (superseded) |
+| 10 | Loot, inventory, and progression | legacy numbering (superseded) |
+| 11 | Persistence boundary | legacy numbering (superseded) |
+| 12 | Maps, zones, and interest management | legacy numbering (superseded) |
+| 13 | Scalability harness | legacy numbering (superseded) |
+| 14 | Sprite and asset pipeline | legacy numbering (superseded) |
+| 15 | Animation and Paper Doll | legacy numbering (superseded) |
+| 16 | Content authoring quality | legacy numbering (superseded) |
+| 17 | Hardening | legacy numbering (superseded) |
+
+Legacy roadmap numbering is **superseded by the post-6G roadmap**. Historical completed work is unchanged: client reconciliation (legacy table Phase 7 / master-plan §14) shipped as Phase 5.5; maps/content, character persistence, AOI/interest, and scale harness shipped inside Phase 6 / 5.7 without consuming legacy rows 8–13. Rows 8–17 remain historical product direction from the master execution plan; they are **not** the next implementation order. Post-6G Phase 7 is defined in [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) and is **not started**. Do not mark 6G complete.
 
 ## Phase 0 notes
 
@@ -278,9 +280,19 @@ Phases execute in order. A later phase starts only after the current gate is gre
 
 ## Phase 6G notes
 
-- Final Phase 6 hardening / integrated validation. Protocol **v10**. Metrics schema **3**. Synthetic pressure is `PURGATORY_LOAD_VALIDATION` JSON, applied only in load-mode. MixedRuntime is the canonical workload. Soak duration is configurable; ~30 min Mixed is initial evidence, not a magic threshold.
+- Final Phase 6 hardening / integrated validation. Protocol **v10**. Metrics schema **3**. Synthetic pressure is `PURGATORY_LOAD_VALIDATION` JSON, applied only in load-mode. MixedRuntime is the canonical workload (persistent real clients + churn + in-zone portal + AOI over `--duration`). Soak duration is configurable; ~30 min Mixed is initial evidence, not a magic threshold.
+- AOI interest is a server-derived visible-view envelope (FOOTNOTE viewport + Dead Zone + camera clamp) plus 2 wu prefetch and 2 wu leave hysteresis, not a player-centered `[16, 9]` radius. Client camera coordinates are not trusted.
 - Welcome does not expose `CharacterId`. Queue inventory before new caps: [`docs/PHASE_6G_QUEUE_INVENTORY.md`](PHASE_6G_QUEUE_INVENTORY.md).
-- Report: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md). Exit review: [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md). **Do not begin Phase 7 (MOB).**
+- Report: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md). Exit review: [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md). **Do not begin Phase 7.** Planned next phase after 6G GREEN: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) (gameplay vocabulary). Not started. 6G is not complete while manual Mixed/soak/process-ownership and open AOI evidence remain.
+- Local-player standing jitter (~0.02 wu X while idle): remainder extra was using replica velocity after an empty-pending restore. Extra now uses last locally executed tick velocity; `rest_lead` skips leftover walk-`vx` rewind. Falling extra keeps tick Y (FOOTNOTE contact is tick-only). Local Y presentation lerps between consecutive predicted tick poses so jump ascent and descent are render-rate smooth without renderer collision.
+- The previously observed ~128-client load stall is a **separate unresolved empirical issue**. This pass did not reproduce it and did not change `PREDICTION_PENDING_CAP` (128). `pending_window_stall_ticks` is instrumentation only for the upcoming capacity phase.
+
+## Phase 7 notes
+
+- Status: **planned, not started.** Implementation must not begin until Phase 6G is declared GREEN.
+- Purpose: content-driven attributes/resources/modifiers and executable actions, proven by a server runtime actor, then actor replication/presentation, then a player-issued authored action request. Combat, inventory, production UI, and mouse/pointer foundation are out of scope.
+- Sub-stages: 7A attributes/resources/modifiers → 7B action execution → 7C runtime actor foundation → 7D actor replication/presentation → 7E player action request. Canonical text: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md).
+- Legacy “Phase 7 = client reconciliation” remains historically true as Phase 5.5; that numbering is superseded for work after 6G.
 
 ## Priority when tasks compete
 

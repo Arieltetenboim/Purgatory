@@ -6,18 +6,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
+use tokio::task::JoinSet;
 use tokio::time::interval;
 
 use purgatory_common::{LoadMetricsV1, current_process_memory};
 use purgatory_simulation::{SimulationClock, TICK_DURATION};
 
 use crate::aggregate::ServerRunAggregator;
-use crate::classify::{ClassifyInput, RunStatus};
+use crate::classify::{ClassifyInput, RunStatus, SoakClassify, occupancy_seconds};
 use crate::cli::Cli;
 use crate::dashboard::Dashboard;
 use crate::endpoint::SharedEndpoint;
-use crate::log::{MetricsSample, RunLog, WriteSummaryArgs};
+use crate::log::{MetricsSample, RunLog, SoakEvidence, WriteSummaryArgs};
 use crate::metrics::{BotMetrics, HarnessMetrics};
+use crate::roles::{
+    BotRole, RolePlan, requires_mixed_churn, requires_persistent_baseline, requires_portal_gate,
+    role_for, role_plan,
+};
 use crate::scenario::{LoadKind, LoadScenario, Scenario};
 use crate::server_metrics::ServerMetricsPoller;
 use crate::session::{BotSession, SessionState};
@@ -61,7 +66,35 @@ pub struct Controller {
     /// Elapsed secs at input activation (for artifacts).
     input_activation_elapsed_secs: Option<f64>,
     duplicate_probed: bool,
-    sim_ticks: u64,
+    role_plan: RolePlan,
+    min_persistent_connected: u32,
+    max_persistent_connected: u32,
+    persistent_connected_sum: f64,
+    persistent_connected_samples: u64,
+    time_below_baseline_secs: f64,
+    consecutive_below_secs: f64,
+    connected_seconds: f64,
+    churn_connects: u64,
+    churn_disconnects: u64,
+    persistent_unexpected_disconnects: u64,
+    portal_attempts: u64,
+    portal_out_of_range: u64,
+    portal_rejected: u64,
+    portal_transitions: u64,
+    aoi_enters_start: Option<u64>,
+    aoi_enters_end: Option<u64>,
+    aoi_updates_start: Option<u64>,
+    aoi_updates_end: Option<u64>,
+    early_fail: Option<String>,
+    ramp_completed_at: Option<Instant>,
+    last_soak_observe: Option<Instant>,
+    pending_spawns: JoinSet<SpawnOutcome>,
+}
+
+struct SpawnOutcome {
+    bot_id: u32,
+    session: BotSession,
+    error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +111,7 @@ impl Controller {
         cli.validate()?;
         spec.validate_count(cli.max_bots, cli.allow_high_count)?;
         let endpoint = SharedEndpoint::new()?;
+        let plan = role_plan(spec.kind, spec.bot_count);
         Ok(Self {
             cli,
             spec,
@@ -106,7 +140,29 @@ impl Controller {
             input_activated_at: None,
             input_activation_elapsed_secs: None,
             duplicate_probed: false,
-            sim_ticks: 0,
+            role_plan: plan,
+            min_persistent_connected: u32::MAX,
+            max_persistent_connected: 0,
+            persistent_connected_sum: 0.0,
+            persistent_connected_samples: 0,
+            time_below_baseline_secs: 0.0,
+            consecutive_below_secs: 0.0,
+            connected_seconds: 0.0,
+            churn_connects: 0,
+            churn_disconnects: 0,
+            persistent_unexpected_disconnects: 0,
+            portal_attempts: 0,
+            portal_out_of_range: 0,
+            portal_rejected: 0,
+            portal_transitions: 0,
+            aoi_enters_start: None,
+            aoi_enters_end: None,
+            aoi_updates_start: None,
+            aoi_updates_end: None,
+            early_fail: None,
+            ramp_completed_at: None,
+            last_soak_observe: None,
+            pending_spawns: JoinSet::new(),
         })
     }
 
@@ -129,19 +185,19 @@ impl Controller {
         let mut metrics_interval = interval(Duration::from_secs(1));
         metrics_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        let mut ramp_interval = interval(Duration::from_millis(self.spec.ramp_ms.max(1)));
-        ramp_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
         let mut churn_interval =
             interval(Duration::from_secs(self.spec.churn_interval_secs.max(1)));
         churn_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         let start_time = Instant::now();
+        self.last_soak_observe = Some(start_time);
         let mut bots_to_spawn = self.spec.bot_count;
         let steady = self.spec.connect == Scenario::Steady;
         self.input_active = !steady;
         let mut quiet_since: Option<Instant> = None;
         let mut active_since: Option<Instant> = None;
+        let mut last_spawn_at: Option<Instant> = None;
+        let mut last_metrics_at = Instant::now();
         let mut timed_out = false;
 
         if self.spec.connect == Scenario::Burst {
@@ -154,6 +210,7 @@ impl Controller {
             }
             bots_to_spawn = 0;
             self.ramp_complete = true;
+            self.ramp_completed_at = Some(Instant::now());
             log.emit_event(
                 "ramp_target_reached",
                 json!({ "connected": self.sessions.len() }),
@@ -187,30 +244,48 @@ impl Controller {
             if duration_elapsed {
                 break;
             }
+            if self.early_fail.is_some() {
+                break;
+            }
 
             tokio::select! {
-                biased;
-
                 _ = tick_interval.tick() => {
                     let now = Instant::now();
                     let elapsed = now.duration_since(last_tick_time);
                     last_tick_time = now;
                     let update = clock.advance(elapsed);
 
-                    for _ in 0..update.ticks_executed {
-                        self.sim_ticks = self.sim_ticks.saturating_add(1);
+                    self.drain_pending_spawns(&mut log).await?;
+
+                    // One I/O pass per interval. Catch-up ticks after a hitch
+                    // (handshake on this loop, etc.) used to run 60–90 snapshot
+                    // polls with 1 ms timeouts and stall the soak clock.
+                    let bot_ticks = update.ticks_executed.min(1);
+                    for _ in 0..bot_ticks {
                         self.tick_all_bots(&mut log).await?;
                     }
 
                     let tick_ms = elapsed.as_secs_f64() * 1000.0;
                     self.metrics.record_tick_time(tick_ms);
-                }
 
-                _ = ramp_interval.tick(), if bots_to_spawn > 0 && !self.ramp_complete => {
-                    self.spawn_bot(&mut log).await?;
-                    bots_to_spawn -= 1;
-                    if bots_to_spawn == 0 {
+                    if bots_to_spawn > 0 && !self.ramp_complete {
+                        let due = last_spawn_at.is_none_or(|t| {
+                            t.elapsed() >= Duration::from_millis(self.spec.ramp_ms.max(1))
+                        });
+                        if due {
+                            self.queue_bot_connect();
+                            last_spawn_at = Some(Instant::now());
+                            bots_to_spawn -= 1;
+                        }
+                    }
+
+                    if !self.ramp_complete
+                        && bots_to_spawn == 0
+                        && self.pending_spawns.is_empty()
+                        && self.spec.bot_count > 0
+                    {
                         self.ramp_complete = true;
+                        self.ramp_completed_at = Some(Instant::now());
                         log.emit_event(
                             "ramp_target_reached",
                             json!({ "target": self.spec.bot_count }),
@@ -226,14 +301,23 @@ impl Controller {
                             )?;
                         }
                     }
+
+                    if last_metrics_at.elapsed() >= Duration::from_secs(1) {
+                        self.sample_metrics(&mut log, &mut server_poller, start_time)
+                            .await?;
+                        last_metrics_at = Instant::now();
+                    }
                 }
 
                 _ = churn_interval.tick(), if self.ramp_complete
                     && (self.spec.kind == LoadKind::ReconnectChurn
-                        || self.spec.connect == Scenario::Churn) =>
+                        || self.spec.connect == Scenario::Churn
+                        || requires_mixed_churn(self.spec.kind)) =>
                 {
                     if self.spec.kind == LoadKind::ReconnectChurn {
                         self.reconnect_churn_bots(&mut log).await?;
+                    } else if requires_mixed_churn(self.spec.kind) {
+                        self.mixed_churn_bots(&mut log).await?;
                     } else {
                         self.churn_bots(&mut log).await?;
                     }
@@ -278,7 +362,11 @@ impl Controller {
                             }
                         }
                     }
-                    self.sample_metrics(&mut log, &mut server_poller, start_time).await?;
+                    if last_metrics_at.elapsed() >= Duration::from_millis(800) {
+                        self.sample_metrics(&mut log, &mut server_poller, start_time)
+                            .await?;
+                        last_metrics_at = Instant::now();
+                    }
                     if self.ramp_complete
                         && self.spec.kind == LoadKind::DuplicateIdentity
                         && !self.duplicate_probed
@@ -290,6 +378,12 @@ impl Controller {
         }
 
         let aborted = self.shutdown.load(Ordering::Relaxed);
+        self.drain_pending_spawns(&mut log).await?;
+        self.update_bot_metrics();
+        {
+            let end_server = server_poller.as_ref().and_then(|p| p.last_metrics());
+            self.observe_soak(start_time, end_server);
+        }
 
         // Final poll after the loop so shutdown does not drop the last window.
         if let Some(p) = server_poller.as_mut() {
@@ -331,10 +425,18 @@ impl Controller {
             metrics_health,
             metrics_samples_ok: self.server_agg.samples_ok(),
             metrics_samples_missed: self.server_agg.samples_missed(),
+            soak: self.soak_classify(),
             ..ClassifyInput::default()
         }
         .with_server_counters(&self.metrics, server_metrics);
         let classification = classify_input.classify();
+        let soak_out = if requires_persistent_baseline(self.spec.kind)
+            || requires_portal_gate(self.spec.kind)
+        {
+            Some(self.soak_evidence())
+        } else {
+            None
+        };
 
         self.close_all_bots().await;
 
@@ -356,6 +458,10 @@ impl Controller {
             server_metrics_samples_missed: self.server_agg.samples_missed(),
             extras,
             failure_class: classification.failure_class(),
+            requested_duration_secs: self.spec.duration_secs,
+            preset: self.spec.preset.map(|p| format!("{p:?}").to_lowercase()),
+            seed: self.spec.seed,
+            soak: soak_out,
         })?;
 
         print_status_line(classification.status, &classification.reasons);
@@ -587,6 +693,8 @@ impl Controller {
             rates.bytes_out_per_sec,
             harness_mb,
         );
+        self.observe_soak(start_time, server_metrics.as_ref());
+        self.write_live_status(log, start_time)?;
 
         self.metrics.clear_tick_times();
         Ok(())
@@ -622,11 +730,71 @@ impl Controller {
         rates
     }
 
+    fn queue_bot_connect(&mut self) {
+        let bot_id = self.next_bot_id;
+        self.next_bot_id += 1;
+        let endpoint = self.endpoint.endpoint().clone();
+        let server = self.cli.server;
+        let login = self.spec.bot_login(bot_id);
+        let profile = self.spec.profile;
+        let seed = self.spec.seed;
+        let role = role_for(self.spec.kind, self.spec.bot_count, bot_id);
+        self.pending_spawns.spawn(async move {
+            let mut session = BotSession::new(bot_id, profile, seed);
+            session.role = role;
+            match session.connect_with_login(&endpoint, server, &login).await {
+                Ok(()) => SpawnOutcome {
+                    bot_id,
+                    session,
+                    error: None,
+                },
+                Err(e) => SpawnOutcome {
+                    bot_id,
+                    session,
+                    error: Some(e),
+                },
+            }
+        });
+    }
+
+    async fn drain_pending_spawns(&mut self, log: &mut RunLog) -> Result<(), String> {
+        while let Some(joined) = self.pending_spawns.try_join_next() {
+            match joined {
+                Ok(outcome) => {
+                    let SpawnOutcome {
+                        bot_id,
+                        mut session,
+                        error,
+                    } = outcome;
+                    if let Some(e) = error {
+                        session.state = SessionState::Failed;
+                        self.sessions.insert(bot_id, session);
+                        log.emit_event(
+                            "bot_connect_failed",
+                            json!({ "bot_id": bot_id, "error": e }),
+                        )?;
+                    } else {
+                        let _ = session.poll_accept_snapshot().await;
+                        self.sessions.insert(bot_id, session);
+                    }
+                }
+                Err(err) => {
+                    log.emit_event(
+                        "bot_connect_failed",
+                        json!({ "error": format!("join: {err}") }),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn spawn_bot(&mut self, log: &mut RunLog) -> Result<(), String> {
         let bot_id = self.next_bot_id;
         self.next_bot_id += 1;
 
         let mut session = BotSession::new(bot_id, self.spec.profile, self.spec.seed);
+        session.role = role_for(self.spec.kind, self.spec.bot_count, bot_id);
         let login = self.spec.bot_login(bot_id);
 
         match session
@@ -634,7 +802,7 @@ impl Controller {
             .await
         {
             Ok(()) => {
-                let _ = session.accept_snapshot_stream().await;
+                let _ = session.poll_accept_snapshot().await;
                 self.sessions.insert(bot_id, session);
             }
             Err(e) => {
@@ -650,33 +818,109 @@ impl Controller {
     }
 
     async fn tick_all_bots(&mut self, log: &mut RunLog) -> Result<(), String> {
-        let send_portal = self.should_send_portal();
         let mut failed_ids = Vec::new();
         for (id, session) in self.sessions.iter_mut() {
             if session.state != SessionState::Connected {
                 continue;
             }
 
-            let _ = session.poll_snapshot().await;
+            if let Err(e) = session.poll_accept_snapshot().await {
+                session.state = SessionState::Failed;
+                if session.role != BotRole::Churn {
+                    self.metrics.unexpected_disconnects += 1;
+                    self.persistent_unexpected_disconnects =
+                        self.persistent_unexpected_disconnects.saturating_add(1);
+                }
+                failed_ids.push((*id, e));
+                continue;
+            }
+            let mut drained = 0u32;
+            loop {
+                match session.poll_snapshot().await {
+                    Ok(Some(_)) => {
+                        drained += 1;
+                        if drained >= 8 {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        session.state = SessionState::Failed;
+                        if session.role != BotRole::Churn {
+                            self.metrics.unexpected_disconnects += 1;
+                            self.persistent_unexpected_disconnects =
+                                self.persistent_unexpected_disconnects.saturating_add(1);
+                        }
+                        failed_ids.push((*id, e));
+                        break;
+                    }
+                }
+            }
+            if session.state != SessionState::Connected {
+                continue;
+            }
+            match session.poll_control().await {
+                Ok(poll) => {
+                    self.portal_out_of_range =
+                        self.portal_out_of_range.saturating_add(poll.out_of_range);
+                    self.portal_rejected = self.portal_rejected.saturating_add(poll.rejected);
+                    if poll.out_of_range > 0 {
+                        session.replica.note_out_of_range();
+                    }
+                    if poll.disconnected {
+                        session.state = SessionState::Failed;
+                        if session.role != BotRole::Churn {
+                            self.metrics.unexpected_disconnects += 1;
+                            self.persistent_unexpected_disconnects =
+                                self.persistent_unexpected_disconnects.saturating_add(1);
+                        }
+                        failed_ids.push((*id, "server disconnect".into()));
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    session.state = SessionState::Failed;
+                    if session.role != BotRole::Churn {
+                        self.metrics.unexpected_disconnects += 1;
+                        self.persistent_unexpected_disconnects =
+                            self.persistent_unexpected_disconnects.saturating_add(1);
+                    }
+                    failed_ids.push((*id, e));
+                    continue;
+                }
+            }
 
             if !self.input_active {
                 continue;
             }
 
-            if let Err(e) = session.send_tick().await {
+            let send_result = if session.role == BotRole::PersistentPortal {
+                let intent = session.replica.portal_intent();
+                let tick = session.send_input(intent.axis, false, false).await;
+                if tick.is_ok()
+                    && intent.activate
+                    && let Some(target) = intent.target
+                    && session.send_portal_activate(target).await.is_ok()
+                {
+                    self.portal_attempts = self.portal_attempts.saturating_add(1);
+                    self.metrics.portal_activates_sent =
+                        self.metrics.portal_activates_sent.saturating_add(1);
+                }
+                tick
+            } else {
+                session.send_tick().await
+            };
+            if let Err(e) = send_result {
                 session.state = SessionState::Failed;
-                self.metrics.unexpected_disconnects += 1;
+                if session.role != BotRole::Churn {
+                    self.metrics.unexpected_disconnects += 1;
+                    self.persistent_unexpected_disconnects =
+                        self.persistent_unexpected_disconnects.saturating_add(1);
+                }
                 failed_ids.push((*id, e));
-                continue;
-            }
-            if send_portal
-                && let Some(target) = session.visible_portals.first().copied()
-                && session.send_portal_activate(target).await.is_ok()
-            {
-                self.metrics.portal_activates_sent =
-                    self.metrics.portal_activates_sent.saturating_add(1);
             }
         }
+        self.portal_transitions = self.sessions.values().map(|s| s.replica.transitions).sum();
         for (bot_id, error) in failed_ids {
             log.emit_event(
                 "bot_unexpected_disconnect",
@@ -709,15 +953,210 @@ impl Controller {
         Ok(())
     }
 
-    fn should_send_portal(&self) -> bool {
-        matches!(
-            self.spec.kind,
-            LoadKind::PortalChurn
-                | LoadKind::MixedRuntime
-                | LoadKind::Soak
-                | LoadKind::PersistenceChurn
-        ) && self.sim_ticks > 0
-            && self.sim_ticks.is_multiple_of(90)
+    async fn mixed_churn_bots(&mut self, log: &mut RunLog) -> Result<(), String> {
+        let ids: Vec<u32> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.role == BotRole::Churn && s.state == SessionState::Connected)
+            .map(|(id, _)| *id)
+            .collect();
+        log.emit_event(
+            "churn_wave_start",
+            json!({ "disconnect": ids.len(), "role": "churn" }),
+        )?;
+        let server = self.cli.server;
+        for bot_id in ids {
+            if let Some(session) = self.sessions.get_mut(&bot_id) {
+                self.churn_disconnects = self.churn_disconnects.saturating_add(1);
+                match session
+                    .reconnect_same_login(self.endpoint.endpoint(), server)
+                    .await
+                {
+                    Ok(()) => {
+                        self.churn_connects = self.churn_connects.saturating_add(1);
+                    }
+                    Err(err) => {
+                        log.emit_event(
+                            "bot_reconnect_failed",
+                            json!({ "bot_id": bot_id, "error": err, "role": "churn" }),
+                        )?;
+                    }
+                }
+            }
+        }
+        log.emit_event(
+            "churn_wave_complete",
+            json!({ "reconnected": self.churn_connects }),
+        )?;
+        Ok(())
+    }
+
+    fn observe_soak(&mut self, start_time: Instant, server: Option<&LoadMetricsV1>) {
+        let now = Instant::now();
+        let dt = self
+            .last_soak_observe
+            .map(|t| now.saturating_duration_since(t).as_secs_f64())
+            .unwrap_or_else(|| start_time.elapsed().as_secs_f64());
+        self.last_soak_observe = Some(now);
+
+        let persistent = self.persistent_connected();
+        let target = self.role_plan.persistent_target();
+        self.connected_seconds += occupancy_seconds(persistent, dt);
+        if self.ramp_complete {
+            self.min_persistent_connected = if self.min_persistent_connected == u32::MAX {
+                persistent
+            } else {
+                self.min_persistent_connected.min(persistent)
+            };
+            self.max_persistent_connected = self.max_persistent_connected.max(persistent);
+            self.persistent_connected_sum += f64::from(persistent);
+            self.persistent_connected_samples = self.persistent_connected_samples.saturating_add(1);
+            if target > 0 && persistent < target {
+                self.time_below_baseline_secs += dt;
+                self.consecutive_below_secs += dt;
+            } else {
+                self.consecutive_below_secs = 0.0;
+            }
+        }
+        if let Some(s) = server {
+            if self.aoi_enters_start.is_none() && self.ramp_complete {
+                self.aoi_enters_start = Some(s.aoi_enters);
+                self.aoi_updates_start = Some(s.aoi_updates);
+            }
+            self.aoi_enters_end = Some(s.aoi_enters);
+            self.aoi_updates_end = Some(s.aoi_updates);
+        }
+
+        let grace_ok = self
+            .ramp_completed_at
+            .is_some_and(|t| t.elapsed() >= Duration::from_secs(5));
+        if self.early_fail.is_none() && grace_ok && requires_persistent_baseline(self.spec.kind) {
+            if target > 0 && persistent == 0 && self.consecutive_below_secs >= 5.0 {
+                self.early_fail = Some(format!(
+                    "persistent real clients dropped to 0 for {:.0}s",
+                    self.consecutive_below_secs
+                ));
+            }
+            let portal_dead = self.sessions.iter().any(|(_, s)| {
+                s.role == BotRole::PersistentPortal && s.state == SessionState::Failed
+            });
+            if requires_portal_gate(self.spec.kind)
+                && portal_dead
+                && self.portal_transitions == 0
+                && start_time.elapsed() >= Duration::from_secs(12)
+            {
+                self.early_fail =
+                    Some("portal scenario client failed before an authoritative transition".into());
+            }
+        }
+    }
+
+    fn write_live_status(&self, log: &mut RunLog, start_time: Instant) -> Result<(), String> {
+        let elapsed = start_time.elapsed().as_secs_f64();
+        let persistent = self.persistent_connected();
+        let churn = self
+            .sessions
+            .values()
+            .filter(|s| s.role == BotRole::Churn && s.state == SessionState::Connected)
+            .count();
+        let failures = self.persistent_unexpected_disconnects;
+        let line = format!(
+            "RUNNING {elapsed} / {duration} | real {persistent}/{target} | churn {churn} | portal {portal}/1 | failures {failures}",
+            elapsed = format_mmss(elapsed),
+            duration = format_mmss(self.spec.duration_secs as f64),
+            target = self.role_plan.persistent_target(),
+            portal = self.portal_transitions,
+        );
+        log.write_live_status(&json!({
+            "state": if self.early_fail.is_some() { "failing" } else { "running" },
+            "elapsed_secs": elapsed,
+            "duration_secs": self.spec.duration_secs,
+            "process": "alive",
+            "real_connected": persistent,
+            "persistent_target": self.role_plan.persistent_target(),
+            "churn_connected": churn,
+            "portal_transitions": self.portal_transitions,
+            "portal_attempts": self.portal_attempts,
+            "failures": failures,
+            "status_line": line,
+            "early_fail": self.early_fail,
+        }))
+    }
+
+    fn persistent_connected(&self) -> u32 {
+        self.sessions
+            .values()
+            .filter(|s| s.role != BotRole::Churn && s.state == SessionState::Connected)
+            .count() as u32
+    }
+
+    fn soak_evidence(&self) -> SoakEvidence {
+        let min = if self.min_persistent_connected == u32::MAX {
+            0
+        } else {
+            self.min_persistent_connected
+        };
+        let avg = if self.persistent_connected_samples == 0 {
+            0.0
+        } else {
+            self.persistent_connected_sum / self.persistent_connected_samples as f64
+        };
+        SoakEvidence {
+            persistent_target: self.role_plan.persistent_target(),
+            min_persistent_connected: min,
+            avg_persistent_connected: avg,
+            max_persistent_connected: self.max_persistent_connected,
+            final_persistent_connected: self.persistent_connected(),
+            time_below_baseline_secs: self.time_below_baseline_secs,
+            connected_seconds: self.connected_seconds,
+            churn_connects: self.churn_connects,
+            churn_disconnects: self.churn_disconnects,
+            unexpected_disconnects: self.persistent_unexpected_disconnects,
+            portal_attempts: self.portal_attempts,
+            portal_out_of_range: self.portal_out_of_range,
+            portal_rejected: self.portal_rejected,
+            portal_transitions: self.portal_transitions,
+            aoi_enters_start: self.aoi_enters_start,
+            aoi_enters_end: self.aoi_enters_end,
+            aoi_updates_start: self.aoi_updates_start,
+            aoi_updates_end: self.aoi_updates_end,
+        }
+    }
+
+    fn soak_classify(&self) -> Option<SoakClassify> {
+        let kind = self.spec.kind;
+        if !requires_persistent_baseline(kind) && !requires_portal_gate(kind) {
+            return None;
+        }
+        let evidence = self.soak_evidence();
+        let aoi_enters_delta = match (evidence.aoi_enters_start, evidence.aoi_enters_end) {
+            (Some(start), Some(end)) => end.saturating_sub(start),
+            _ => 0,
+        };
+        let aoi_updates_delta = match (self.aoi_updates_start, self.aoi_updates_end) {
+            (Some(start), Some(end)) => end.saturating_sub(start),
+            _ => 0,
+        };
+        Some(SoakClassify {
+            require_persistent_baseline: requires_persistent_baseline(kind),
+            require_portal_transition: requires_portal_gate(kind),
+            require_churn: requires_mixed_churn(kind) && self.role_plan.churn > 0,
+            persistent_target: evidence.persistent_target,
+            min_persistent_connected: evidence.min_persistent_connected,
+            avg_persistent_connected: evidence.avg_persistent_connected,
+            time_below_baseline_secs: evidence.time_below_baseline_secs,
+            consecutive_below_baseline_secs: self.consecutive_below_secs,
+            connected_seconds: evidence.connected_seconds,
+            duration_secs: self.spec.duration_secs as f64,
+            ramp_complete: self.ramp_complete,
+            portal_transitions: evidence.portal_transitions,
+            portal_attempts: evidence.portal_attempts,
+            aoi_updates_delta,
+            aoi_enters_delta,
+            aoi_observed: evidence.aoi_enters_start.is_some(),
+            churn_disconnects: evidence.churn_disconnects,
+            early_fail: self.early_fail.clone(),
+        })
     }
 
     async fn reconnect_churn_bots(&mut self, log: &mut RunLog) -> Result<(), String> {
@@ -869,4 +1308,9 @@ fn print_status_line(status: RunStatus, reasons: &[crate::classify::StatusReason
         .collect::<Vec<_>>()
         .join("; ");
     println!("run_status={} — {joined}", status.as_str());
+}
+
+fn format_mmss(secs: f64) -> String {
+    let total = secs.max(0.0) as u64;
+    format!("{:02}:{:02}", total / 60, total % 60)
 }

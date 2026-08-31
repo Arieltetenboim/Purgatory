@@ -122,6 +122,36 @@ pub struct RunSummary {
     pub scheduler_critical_ceiling_hits: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduler_deferred_exhausted: Option<u64>,
+    pub requested_duration_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soak: Option<SoakEvidence>,
+}
+
+/// Mixed/soak evidence recorded in the harness summary (not a metrics schema bump).
+#[derive(Clone, Debug, Serialize)]
+pub struct SoakEvidence {
+    pub persistent_target: u32,
+    pub min_persistent_connected: u32,
+    pub avg_persistent_connected: f64,
+    pub max_persistent_connected: u32,
+    pub final_persistent_connected: u32,
+    pub time_below_baseline_secs: f64,
+    pub connected_seconds: f64,
+    pub churn_connects: u64,
+    pub churn_disconnects: u64,
+    pub unexpected_disconnects: u64,
+    pub portal_attempts: u64,
+    pub portal_out_of_range: u64,
+    pub portal_rejected: u64,
+    pub portal_transitions: u64,
+    pub aoi_enters_start: Option<u64>,
+    pub aoi_enters_end: Option<u64>,
+    pub aoi_updates_start: Option<u64>,
+    pub aoi_updates_end: Option<u64>,
 }
 
 /// One 1 Hz sample. `Option` fields stay empty in CSV when the poll missed.
@@ -243,6 +273,10 @@ pub struct WriteSummaryArgs<'a> {
     pub server_metrics_samples_missed: u64,
     pub extras: SummaryExtras,
     pub failure_class: &'a str,
+    pub requested_duration_secs: u64,
+    pub preset: Option<String>,
+    pub seed: u64,
+    pub soak: Option<SoakEvidence>,
 }
 
 impl RunLog {
@@ -316,6 +350,7 @@ impl RunLog {
 
         let latest_path = logs_base.join("latest.txt");
         fs::write(&latest_path, &dir_name).ok();
+        fs::write(logs_base.join("current_run.txt"), &dir_name).ok();
 
         let mut log = Self {
             dir,
@@ -434,6 +469,13 @@ impl RunLog {
             .map_err(|e| format!("write metrics: {e}"))
     }
 
+    pub fn write_live_status(&mut self, status: &serde_json::Value) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(status)
+            .map_err(|e| format!("serialize live status: {e}"))?;
+        fs::write(self.dir.join("live_status.json"), json)
+            .map_err(|e| format!("write live_status.json: {e}"))
+    }
+
     pub fn write_event(&mut self, event: &serde_json::Value) -> Result<(), String> {
         serde_json::to_writer(&mut self.events_writer, event)
             .map_err(|e| format!("write event: {e}"))?;
@@ -508,6 +550,10 @@ impl RunLog {
             aoi_updates_total: args.extras.aoi_updates_total,
             scheduler_critical_ceiling_hits: args.extras.scheduler_critical_ceiling_hits,
             scheduler_deferred_exhausted: args.extras.scheduler_deferred_exhausted,
+            requested_duration_secs: args.requested_duration_secs,
+            preset: args.preset.clone(),
+            seed: Some(args.seed),
+            soak: args.soak.clone(),
         };
         let summary_json = serde_json::to_string_pretty(&summary)
             .map_err(|e| format!("serialize summary: {e}"))?;
@@ -516,6 +562,10 @@ impl RunLog {
 
         let dir_name = self.dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
         fs::write(self.logs_base.join("last_finished.txt"), dir_name).ok();
+        if args.preset.is_some() {
+            fs::write(self.logs_base.join("last_runtime_validation.txt"), dir_name).ok();
+        }
+        let _ = fs::remove_file(self.logs_base.join("current_run.txt"));
 
         self.flush()
     }
@@ -552,24 +602,36 @@ pub struct SummaryExtras {
 }
 
 fn chrono_like_timestamp() -> String {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let days = secs / 86400;
-    let years_since_1970 = days / 365;
-    let year = 1970 + years_since_1970;
-    let day_of_year = days % 365;
-    let month = (day_of_year / 30).min(11) + 1;
-    let day = (day_of_year % 30) + 1;
-    let hour = (secs % 86400) / 3600;
+    format_unix_timestamp(
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+}
+
+/// Civil date from Unix days (Howard Hinnant, public domain). Leap-year aware.
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m as u32, d as u32)
+}
+
+fn format_unix_timestamp(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let (year, month, day) = civil_from_days(days);
+    let hour = (secs % 86_400) / 3600;
     let minute = (secs % 3600) / 60;
     let second = secs % 60;
-    format!(
-        "{:04}{:02}{:02}_{:02}{:02}{:02}",
-        year, month, day, hour, minute, second
-    )
+    format!("{year:04}{month:02}{day:02}_{hour:02}{minute:02}{second:02}")
 }
 
 #[cfg(test)]
@@ -581,6 +643,20 @@ mod tests {
         let ts = chrono_like_timestamp();
         assert_eq!(ts.len(), 15);
         assert!(ts.contains('_'));
+    }
+
+    #[test]
+    fn unix_epoch_formats_1970() {
+        assert_eq!(format_unix_timestamp(0), "19700101_000000");
+    }
+
+    #[test]
+    fn timestamp_is_leap_aware_not_365_day_months() {
+        // 2026-08-31 00:00:00 UTC must not format as 20260916.
+        let ts = format_unix_timestamp(1_788_134_400);
+        assert!(ts.starts_with("20260831_"), "got {ts}");
+        let ts_noon = format_unix_timestamp(1_788_177_600);
+        assert!(ts_noon.starts_with("20260831_"), "got {ts_noon}");
     }
 
     #[test]

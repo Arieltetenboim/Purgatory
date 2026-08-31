@@ -18,19 +18,21 @@ Early runtime output is placeholders only. `Graphic/LOGO.png` is loaded once for
 |---|---|---|
 | `apps/client` | `purgatory-client` | Native desktop client |
 | `apps/server` | `purgatory-server` | Headless dedicated server |
+| `apps/dev_hub` | `purgatory-dev-hub` | Developer Hub GUI (provisional eframe) |
 | `crates/common` | `purgatory-common` | Shared primitives |
 | `crates/simulation` | `purgatory-simulation` | Authoritative simulation |
 | `crates/protocol` | `purgatory-protocol` | Client/server protocol |
 | `crates/content` | `purgatory-content` | Content definitions |
 | `crates/persistence` | `purgatory-persistence` | File-backed character identity and persistence |
+| `crates/dev_runtime` | `purgatory-dev-runtime` | Headless Developer Hub orchestration |
 | `tools/content_validator` | `purgatory-content-validator` | Content validation tool |
 | `tools/bot_client` | `purgatory-bot-client` / `purgatory-load` | Headless QUIC load harness |
 
 ## Developer Tools
 
-Windows: run [`DEV.BAT`](DEV.BAT) at this repository root. That opens PURGATORY Developer Tools (PowerShell + Windows Forms) for server/client lifecycle, builds, quality gate, load testing, and diagnostics. Closing the window does not stop game processes.
+Windows: run [`DEV.BAT`](DEV.BAT) at this repository root. That opens the current PowerShell Developer Tools shell (fallback). The Rust Developer Hub (Slice 1 server lifecycle / probe / logs, Slice 2 Runtime Validation) is [`DEV_HUB.BAT`](DEV_HUB.BAT): it builds if needed, launches `purgatory-dev-hub.exe`, and exits so the Hub is not bound to that console. Do not use `cargo run -p purgatory-dev-hub` as the normal launch path (that keeps the Hub under cargo’s process job). Closing the Hub does not stop the dedicated server. A second Hub for the same workspace is refused (`logs/dev-tools/hub.lock`). Do not drive the same workspace from both shells at once.
 
-See [`docs/dev-tools/README.md`](docs/dev-tools/README.md).
+See [`docs/dev-tools/README.md`](docs/dev-tools/README.md) and [`docs/dev-tools/PARITY.md`](docs/dev-tools/PARITY.md).
 
 ## Requirements
 

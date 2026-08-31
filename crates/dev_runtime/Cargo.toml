@@ -1,0 +1,18 @@
+[package]
+name = "purgatory-dev-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Headless Developer Hub orchestration (process lifecycle, probe, logs)."
+
+[dependencies]
+purgatory-common = { path = "../common" }
+serde_json = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+sysinfo = { version = "0.35", default-features = false, features = ["system"] }
+
+[lints]
+workspace = true

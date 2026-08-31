@@ -10,14 +10,14 @@ use purgatory_protocol::{ReplicatedKind, ReplicationFrame, ServerInteract, move_
 use purgatory_simulation::{
     Aabb, ChannelId, INTERACT_RANGE, InstanceId, MapId, PLAYER_HALF_EXTENTS, PlatformKind,
     PlayerInput, PlayerState, SimulationClock, TICK_DURATION, World, WorldAddress,
-    aoi_policy_rects, in_portal_activation_zone,
+    aoi_policy_rects, in_portal_activation_zone, point_in_aabb,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::camera_follow::{CameraCommit, CameraFollow};
+use crate::camera_follow::{CameraCommit, CameraFollow, DEAD_ZONE_HALF_X, DEAD_ZONE_HALF_Y};
 use crate::debug::aoi_view::{
     bind_local_player_label_pose, compact_world_space_label, replica_entity_debug_rows,
     semantic_label, world_space_label_entries, world_space_labels_eligible,
@@ -35,8 +35,8 @@ use crate::interp::{InterpolationBuffer, PresentationPose};
 use crate::jitter_forensics::{CameraJitterMode, ForensicPush, ForensicTrace};
 use crate::lifecycle::{ClientLifecycle, ClientScreen};
 use crate::local_presentation::{
-    FrameLocalPose, LocalPresentation, PRESENTATION_SNAP_DISTANCE, extrapolate_tick_pose,
-    offset_length,
+    FrameLocalPose, LocalPresentation, PRESENTATION_SNAP_DISTANCE, compose_local_render_pose,
+    offset_length, remainder_alpha,
 };
 use crate::map_fade::{
     DestinationReady, MapFade, MembershipReady, ReadinessFlags, TransitionKind, pose_stable,
@@ -139,6 +139,8 @@ struct ClientApp {
     network_frames_this_frame: u32,
     last_jitter_mode: CameraJitterMode,
     dev_login: String,
+    /// Last committed camera center + viewport size for AOI vs view logs.
+    agent_cam: Option<([f32; 2], f32, f32)>,
 }
 
 impl ClientApp {
@@ -195,6 +197,7 @@ impl ClientApp {
             network_frames_this_frame: 0,
             last_jitter_mode: CameraJitterMode::Normal,
             dev_login: purgatory_common::DEFAULT_DEV_LOGIN.to_string(),
+            agent_cam: None,
         }
     }
 
@@ -291,6 +294,7 @@ impl ClientApp {
                                 self.network_frames_this_frame.saturating_add(1);
                             self.trace_replica_apply_once();
                             self.note_replica_interactable_lifetime();
+                            self.agent_log_aoi_leaves();
                         }
                     }
                 }
@@ -426,11 +430,15 @@ impl ClientApp {
         let render_target = if mode.use_raw_presentation() {
             predicted
         } else if let Some(pose) = predicted {
-            let vel = self
-                .prediction
-                .predicted_velocity(&self.world)
-                .unwrap_or([0.0, 0.0]);
-            Some(extrapolate_tick_pose(pose, vel, self.clock.remainder()))
+            let vel = self.prediction.last_tick_velocity();
+            let current_tick = self.prediction.tick_pose().unwrap_or(pose);
+            Some(compose_local_render_pose(
+                pose,
+                self.prediction.prev_tick_pose(),
+                current_tick,
+                vel,
+                self.clock.remainder(),
+            ))
         } else {
             None
         };
@@ -441,6 +449,21 @@ impl ClientApp {
             debug_assert_eq!(p, self.local_presentation.pose());
             p
         };
+        let extra_dx = match (predicted, render_target) {
+            (Some(p), Some(r)) => r[0] - p[0],
+            _ => 0.0,
+        };
+        let tick_y = self
+            .prediction
+            .tick_pose()
+            .or(predicted)
+            .map(|p| p[1])
+            .unwrap_or(0.0);
+        let prev_y = self
+            .prediction
+            .prev_tick_pose()
+            .map(|p| p[1])
+            .unwrap_or(tick_y);
         let delta = if self.reconciled_this_frame {
             self.prediction.last_correction_delta()
         } else {
@@ -450,9 +473,17 @@ impl ClientApp {
             predicted,
             presented,
             replica: self.replica.local_entity().map(|e| e.position),
+            velocity: self.prediction.last_tick_velocity(),
+            extra_dx,
+            interp_alpha: remainder_alpha(self.clock.remainder()),
+            prev_y,
+            tick_y,
+            auth_tick: self.replica.last_server_tick(),
+            replica_seq: self.replica.last_sequence().unwrap_or(0),
             correction_delta: delta,
             reconciled: self.reconciled_this_frame,
         };
+        self.agent_log_jitter();
     }
 
     fn apply_observer_baseline_if_due(&mut self) -> Result<(), String> {
@@ -1012,16 +1043,12 @@ impl ClientApp {
         if !self.lifecycle.gameplay_actions_allowed() {
             return;
         }
+        if self.send_held_cancel_if_window_full() {
+            return;
+        }
         let Some(network) = self.network.as_ref() else {
             return;
         };
-        if self.prediction.pending_window_full() {
-            let barrier = self.prediction.capture_cancel_barrier();
-            if network.try_send_held_cancel() {
-                self.prediction.enter_cancel_pending(barrier);
-            }
-            return;
-        }
         self.clock.force_step();
         let input = PlayerInput::idle();
         self.last_input = input;
@@ -1033,6 +1060,22 @@ impl ClientApp {
         {
             let _ = network.try_send_input(command);
         }
+    }
+
+    /// ADR-0031: full send window is a HeldCancel barrier, not silent stall.
+    fn send_held_cancel_if_window_full(&mut self) -> bool {
+        if !self.prediction.pending_window_full() || self.prediction.cancel_pending() {
+            return false;
+        }
+        let Some(network) = self.network.as_ref() else {
+            return false;
+        };
+        let barrier = self.prediction.capture_cancel_barrier();
+        if network.try_send_held_cancel() {
+            self.prediction.enter_cancel_pending(barrier);
+            return true;
+        }
+        false
     }
 
     fn advance_simulation(&mut self) {
@@ -1074,16 +1117,22 @@ impl ClientApp {
             self.prediction
                 .on_hitch_discontinuity(&self.replica, &mut self.world, tick_after);
             self.local_presentation.request_snap();
+            if self.send_held_cancel_if_window_full() {
+                return;
+            }
             if !self.prediction.pending_window_full() {
                 let input = self.sample_tick_input();
                 self.last_input = input;
                 self.prediction.tick(&mut self.world, input, tick_after);
                 self.send_intent_for_tick_input(input);
+            } else {
+                self.prediction.note_input_stall();
             }
             return;
         }
         for step in 0..update.ticks_executed {
-            if self.prediction.pending_window_full() {
+            if self.send_held_cancel_if_window_full() || self.prediction.pending_window_full() {
+                self.prediction.note_input_stall();
                 continue;
             }
             // One sample per tick: predict locally, then send the same sample.
@@ -1216,6 +1265,227 @@ impl ClientApp {
             }
         }
         renderer.set_camera(camera);
+        self.agent_log_aoi_view(camera, player_pos, bounds);
+    }
+
+    fn agent_log_aoi_leaves(&self) {
+        let leaves = self.replica.last_leave_poses();
+        if leaves.is_empty() {
+            return;
+        }
+        let observer = self
+            .replica
+            .local_entity()
+            .map(|e| e.position)
+            .unwrap_or([0.0, 0.0]);
+        let rects = aoi_policy_rects(observer, self.world.bounds());
+        let view = self
+            .agent_cam
+            .map(|(cam, vw, vh)| Aabb::new(cam, [vw * 0.5, vh * 0.5]));
+        for leave in leaves {
+            let in_view = view.is_some_and(|v| point_in_aabb(leave.position, v));
+            let in_enter = point_in_aabb(leave.position, rects.enter);
+            let in_leave = point_in_aabb(leave.position, rects.leave);
+            let hid = if in_view { "A" } else { "D" };
+            let cam_x = self.agent_cam.map(|c| c.0[0]).unwrap_or(0.0);
+            // #region agent log
+            crate::debug::agent_log::emit(
+                hid,
+                "app.rs:agent_log_aoi_leaves",
+                "replica_leave",
+                &format!(
+                    "{{\"idx\":{},\"gen\":{},\"kind\":\"{:?}\",\"px\":{:.4},\"py\":{:.4},\"in_view\":{},\"in_enter\":{},\"in_leave\":{},\"obs_x\":{:.4},\"obs_y\":{:.4},\"cam_x\":{:.4}}}",
+                    leave.entity_id.index,
+                    leave.entity_id.generation,
+                    leave.kind,
+                    leave.position[0],
+                    leave.position[1],
+                    in_view,
+                    in_enter,
+                    in_leave,
+                    observer[0],
+                    observer[1],
+                    cam_x
+                ),
+            );
+            // #endregion
+        }
+    }
+
+    fn agent_log_aoi_view(
+        &mut self,
+        camera: Camera,
+        player: [f32; 2],
+        bounds: purgatory_simulation::WorldBounds,
+    ) {
+        self.agent_cam = Some((
+            camera.position,
+            camera.viewport_width,
+            camera.viewport_height,
+        ));
+        let half_w = camera.viewport_width * 0.5;
+        let half_h = camera.viewport_height * 0.5;
+        let view = Aabb::new(camera.position, [half_w, half_h]);
+        let rects = aoi_policy_rects(player, bounds);
+        let uncovered_l = view.min_x() < rects.enter.min_x() - 0.05;
+        let uncovered_r = view.max_x() > rects.enter.max_x() + 0.05;
+        let uncovered_b = view.min_y() < rects.enter.min_y() - 0.05;
+        let uncovered_t = view.max_y() > rects.enter.max_y() + 0.05;
+        let clamp_eps = 0.08;
+        let clamped_l = (camera.position[0] - (bounds.min_x + half_w)).abs() < clamp_eps;
+        let clamped_r = (camera.position[0] - (bounds.max_x - half_w)).abs() < clamp_eps;
+        let local = self.replica.local_player();
+        let mut in_view = 0u32;
+        let mut in_view_out_enter = 0u32;
+        for entity in self.replica.iter() {
+            if Some(entity.entity_id) == local {
+                continue;
+            }
+            if !point_in_aabb(entity.position, view) {
+                continue;
+            }
+            in_view = in_view.saturating_add(1);
+            if !point_in_aabb(entity.position, rects.enter) {
+                in_view_out_enter = in_view_out_enter.saturating_add(1);
+            }
+        }
+        let mismatch =
+            uncovered_l || uncovered_r || uncovered_b || uncovered_t || in_view_out_enter > 0;
+        if !mismatch && !crate::debug::agent_log::should_emit(0, 400) {
+            return;
+        }
+        let hid = if clamped_l || clamped_r {
+            "B"
+        } else if mismatch {
+            "A"
+        } else {
+            "C"
+        };
+        let aoi_dbg = self.replica.aoi_debug();
+        // #region agent log
+        crate::debug::agent_log::emit(
+            hid,
+            "app.rs:agent_log_aoi_view",
+            "aoi_vs_viewport",
+            &format!(
+                "{{\"px\":{:.4},\"py\":{:.4},\"cx\":{:.4},\"cy\":{:.4},\"vw\":{:.4},\"vh\":{:.4},\"view_l\":{:.4},\"view_r\":{:.4},\"aoi_l\":{:.4},\"aoi_r\":{:.4},\"aoi_hx\":{:.4},\"aoi_hy\":{:.4},\"dz_x\":{:.3},\"dz_y\":{:.3},\"pcx\":{:.4},\"un_l\":{},\"un_r\":{},\"un_b\":{},\"un_t\":{},\"cl_l\":{},\"cl_r\":{},\"in_view\":{},\"in_view_out_aoi\":{},\"want_leave\":{},\"known\":{}}}",
+                player[0],
+                player[1],
+                camera.position[0],
+                camera.position[1],
+                camera.viewport_width,
+                camera.viewport_height,
+                view.min_x(),
+                view.max_x(),
+                rects.enter.min_x(),
+                rects.enter.max_x(),
+                rects.enter.half_extents[0],
+                rects.enter.half_extents[1],
+                DEAD_ZONE_HALF_X,
+                DEAD_ZONE_HALF_Y,
+                player[0] - camera.position[0],
+                uncovered_l,
+                uncovered_r,
+                uncovered_b,
+                uncovered_t,
+                clamped_l,
+                clamped_r,
+                in_view,
+                in_view_out_enter,
+                aoi_dbg.map(|d| d.want_leave).unwrap_or(0),
+                aoi_dbg.map(|d| d.known).unwrap_or(0)
+            ),
+        );
+        // #endregion
+    }
+
+    fn agent_log_jitter(&self) {
+        let pred = self.prediction.diagnostics(&self.world, &self.replica);
+        let offset = self.local_presentation.offset();
+        let off = (offset[0] * offset[0] + offset[1] * offset[1]).sqrt();
+        let idle = self.last_input.move_axis == 0 && !self.last_input.jump_pressed;
+        let (p0, p1) = self.prediction.pending_seq_range().unwrap_or((0, 0));
+        let grounded = self.world.player_body().is_some_and(|b| b.grounded);
+        let interesting = (idle
+            && (off > 0.015
+                || pred.pending_count > 0
+                || pred.last_correction_wu > 0.02
+                || pred.continuation_debt > 0
+                || pred.cancel_pending))
+            || pred.last_correction_wu > 0.08
+            || !grounded;
+        if !interesting && !crate::debug::agent_log::should_emit(1, 300) {
+            return;
+        }
+        let source = if pred.active { "predicted" } else { "replica" };
+        let local_in_interp = self
+            .replica
+            .local_player()
+            .is_some_and(|id| self.interp.poses().iter().any(|p| p.entity_id == id));
+        let presented = self.frame_local.presented.unwrap_or([0.0, 0.0]);
+        let predicted = self.frame_local.predicted.unwrap_or([0.0, 0.0]);
+        let replica = self.frame_local.replica.unwrap_or([0.0, 0.0]);
+        let vel = pred.predicted_velocity.unwrap_or([0.0, 0.0]);
+        let interp = self.interp.diagnostics();
+        let hid = if idle && (off > 0.015 || pred.pending_count > 0) {
+            "F"
+        } else if !pred.active {
+            "G"
+        } else if off > 0.015 {
+            "H"
+        } else if pred.continuation_debt > 0 || pred.cancel_pending {
+            "I"
+        } else if local_in_interp {
+            "J"
+        } else {
+            "G"
+        };
+        // #region agent log
+        crate::debug::agent_log::emit(
+            hid,
+            "app.rs:agent_log_jitter",
+            "local_pipeline",
+            &format!(
+                "{{\"idle\":{},\"axis\":{},\"src\":\"{source}\",\"active\":{},\"auth_x\":{:.4},\"auth_y\":{:.4},\"pred_x\":{:.4},\"pred_y\":{:.4},\"pres_x\":{:.4},\"pres_y\":{:.4},\"off\":{:.4},\"corr\":{:.4},\"pending\":{},\"p0\":{},\"p1\":{},\"ack\":{},\"sent\":{},\"debt\":{},\"cancel\":{},\"recon\":{},\"tick\":{},\"auth_tick\":{},\"rtick\":{},\"ialpha\":{:.3},\"yalpha\":{:.3},\"y_prev\":{:.4},\"y_tick\":{:.4},\"local_interp\":{},\"vx\":{:.4},\"vy\":{:.4},\"tick_vx\":{:.4},\"tick_vy\":{:.4},\"extra_dx\":{:.4},\"stall\":{},\"maps\":{},\"gnd\":{},\"py_ex\":{:.4}}}",
+                idle,
+                self.last_input.move_axis,
+                pred.active,
+                replica[0],
+                replica[1],
+                predicted[0],
+                predicted[1],
+                presented[0],
+                presented[1],
+                off,
+                pred.last_correction_wu,
+                pred.pending_count,
+                p0,
+                p1,
+                pred.last_ack,
+                self.prediction.last_sent_seq(),
+                pred.continuation_debt,
+                pred.cancel_pending,
+                pred.total_reconciliation_count,
+                pred.prediction_tick,
+                pred.auth_server_tick,
+                interp.render_tick,
+                interp.alpha,
+                self.frame_local.interp_alpha,
+                self.frame_local.prev_y,
+                self.frame_local.tick_y,
+                local_in_interp,
+                vel[0],
+                vel[1],
+                pred.last_tick_velocity[0],
+                pred.last_tick_velocity[1],
+                self.frame_local.extra_dx,
+                pred.pending_window_stall_ticks,
+                self.replica_matches_local_map(),
+                grounded,
+                presented[1] - predicted[1]
+            ),
+        );
+        // #endregion
     }
 
     fn record_jitter_sample(&mut self, dt: f32) {
@@ -1697,6 +1967,8 @@ impl ClientApp {
         snapshot.pred_ack_delta = pred.observed_ack_delta;
         snapshot.pred_ack_jump_count = pred.observed_ack_jump_count;
         snapshot.pred_max_ack_delta = pred.max_observed_ack_delta;
+        snapshot.pred_tick_vel = pred.last_tick_velocity;
+        snapshot.pred_pending_stall = pred.pending_window_stall_ticks;
         if let Some(network) = &mut self.network {
             snapshot.impairment = network.poll_impairment_metrics();
         }

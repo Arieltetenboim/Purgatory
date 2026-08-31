@@ -4,14 +4,77 @@ function Get-LoadLogsRoot {
     return (Join-Path $script:Root "logs\load")
 }
 
-function Get-LastFinishedRunDir {
-    $pointer = Join-Path (Get-LoadLogsRoot) "last_finished.txt"
-    if (-not (Test-Path -LiteralPath $pointer)) { return $null }
-    $name = (Get-Content -LiteralPath $pointer -Raw).Trim()
+function Get-PointerRunName {
+    param([string]$FileName)
+    $path = Join-Path (Get-LoadLogsRoot) $FileName
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    $name = (Get-Content -LiteralPath $path -Raw).Trim()
     if ([string]::IsNullOrWhiteSpace($name)) { return $null }
-    $dir = Join-Path (Get-LoadLogsRoot) $name
-    if (-not (Test-Path -LiteralPath $dir)) { return $null }
+    return $name
+}
+
+function Test-CompletedRunDir {
+    param([string]$Dir)
+    if ([string]::IsNullOrWhiteSpace($Dir)) { return $false }
+    if (-not (Test-Path -LiteralPath $Dir)) { return $false }
+    return [bool](Test-Path -LiteralPath (Join-Path $Dir "run_summary.json"))
+}
+
+function Resolve-CompletedRunDir {
+    param([string]$Name, [string]$Current, [bool]$Running)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+    if ($Running -and $Current -and ($Name -eq $Current)) { return $null }
+    $dir = Join-Path (Get-LoadLogsRoot) $Name
+    if (-not (Test-CompletedRunDir -Dir $dir)) { return $null }
+    if (Test-FutureDatedRunName -Name $Name) {
+        Write-LaunchLog "Run folder name looks future-dated ($Name); using it anyway (old harness timestamp)"
+    }
     return $dir
+}
+
+function Get-LastFinishedRunDir {
+    $current = Get-PointerRunName -FileName "current_run.txt"
+    $running = $script:LoadTest.State -eq "Running" -or (Test-ProcessAlive -Process $script:LoadTest.Process)
+
+    foreach ($pointer in @("last_runtime_validation.txt", "last_finished.txt", "latest.txt")) {
+        $dir = Resolve-CompletedRunDir -Name (Get-PointerRunName -FileName $pointer) -Current $current -Running $running
+        if ($dir) { return $dir }
+    }
+
+    $exclude = $null
+    if ($running) { $exclude = $current }
+    return Get-LatestCompletedRunDir -ExcludeName $exclude
+}
+
+function Test-FutureDatedRunName {
+    param([string]$Name)
+    if ($Name -notmatch '^(\d{8})_') { return $false }
+    try {
+        $parsed = [datetime]::ParseExact($Matches[1], "yyyyMMdd", [Globalization.CultureInfo]::InvariantCulture)
+        return $parsed.Date -gt ([datetime]::UtcNow.Date.AddDays(1))
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-LatestCompletedRunDir {
+    param([string]$ExcludeName)
+    $root = Get-LoadLogsRoot
+    if (-not (Test-Path -LiteralPath $root)) { return $null }
+    $best = $null
+    $bestTime = [datetime]::MinValue
+    Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($ExcludeName -and $_.Name -eq $ExcludeName) { return }
+        $summary = Join-Path $_.FullName "run_summary.json"
+        if (-not (Test-Path -LiteralPath $summary)) { return }
+        $t = (Get-Item -LiteralPath $summary).LastWriteTimeUtc
+        if ($t -gt $bestTime) {
+            $bestTime = $t
+            $best = $_.FullName
+        }
+    }
+    return $best
 }
 
 function Show-LoadTestDialog {
@@ -141,6 +204,8 @@ function Start-LoadHarness {
 
     $script:LoadTest.Process = $proc
     $script:LoadTest.State = "Running"
+    $script:LoadTest.Kind = "load-test"
+    $script:LoadTest.StartedAt = [datetime]::UtcNow
     Write-LaunchLog "Starting load test: $Count bots / $Profile / $Duration / seed $Seed"
     return $true
 }
@@ -151,6 +216,12 @@ function Request-StopLoadTest {
     $script:LoadTest.Process = $null
     $n = Stop-WorkspaceByName -Name "purgatory-load"
     $script:LoadTest.State = "Stopped"
+    $script:LoadTest.Kind = $null
+    $script:LoadTest.StartedAt = $null
+    $current = Join-Path (Get-LoadLogsRoot) "current_run.txt"
+    if (Test-Path -LiteralPath $current) {
+        Remove-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+    }
     Write-LaunchLog "Stopped load harness ($n)"
 }
 
@@ -229,7 +300,7 @@ function Invoke-AnalyzeLastRun {
     $dir = Get-LastFinishedRunDir
     if (-not $dir) {
         [Windows.Forms.MessageBox]::Show(
-            "No finished run found (logs\load\last_finished.txt).",
+            "No finished run found under logs\load (need a folder with run_summary.json).`nUse LOAD LOGS if a run directory exists.",
             "ANALYZE",
             "OK",
             "Information"
@@ -270,16 +341,13 @@ function Invoke-OpenLastReport {
         return
     }
     $report = Join-Path $dir "report"
-    if (-not (Test-Path -LiteralPath $report)) {
-        [Windows.Forms.MessageBox]::Show(
-            "No report yet for $dir.`nRun ANALYZE LAST RUN first.",
-            "REPORT",
-            "OK",
-            "Information"
-        ) | Out-Null
+    if (Test-Path -LiteralPath $report) {
+        Start-Process explorer.exe $report | Out-Null
+        Write-LaunchLog "Opened last report: $report"
         return
     }
-    Start-Process explorer.exe $report | Out-Null
+    Start-Process explorer.exe $dir | Out-Null
+    Write-LaunchLog "No report/ yet; opened run folder (run_summary.json): $dir"
 }
 
 function Update-LoadTestProcess {
@@ -288,20 +356,25 @@ function Update-LoadTestProcess {
         $code = Get-ProcessExitCode -Process $script:LoadTest.Process
         $script:LoadTest.Process = $null
         $script:LoadTest.State = "Stopped"
+        $kind = [string]$script:LoadTest.Kind
+        $script:LoadTest.Kind = $null
+        $script:LoadTest.StartedAt = $null
+        $label = "Load harness"
+        if ($kind -eq "runtime-validation") { $label = "Runtime Validation" }
         if ($code -eq 2) {
-            Write-LaunchLog "Load harness exited (2) — CLI parse/usage, not a scenario result. Often a stale purgatory-load.exe (missing --preset). Rebuild purgatory-bot-client and retry."
+            Write-LaunchLog "$label exited (2) - CLI parse/usage, not a scenario result. Often a stale purgatory-load.exe (missing --preset). Rebuild purgatory-bot-client and retry."
         }
         elseif ($code -eq 1) {
-            Write-LaunchLog "Load harness exited (1) — scenario FAILED. Server Ready is separate from this result."
+            Write-LaunchLog "$label exited (1) - scenario FAILED. Server Ready is separate from this result."
         }
         elseif ($code -eq 0) {
-            Write-LaunchLog "Load harness exited (0) — harness completed without FAIL"
+            Write-LaunchLog "$label exited (0) - harness completed without FAIL"
         }
         elseif ($code -eq 130) {
-            Write-LaunchLog "Load harness exited (130) — interrupted"
+            Write-LaunchLog "$label exited (130) - interrupted"
         }
         else {
-            Write-LaunchLog "Load harness exited ($code)"
+            Write-LaunchLog "$label exited ($code)"
         }
     }
 }

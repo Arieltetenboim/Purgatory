@@ -80,6 +80,12 @@ function Update-LiveStatus {
         }
         Set-LabelIfChanged -Label $script:ClientCountLabel -Value $clientText -Color $script:Accent
 
+        $rvLine = "Runtime Val:  -"
+        if (Get-Command Get-RuntimeValidationUiLine -ErrorAction SilentlyContinue) {
+            $rvLine = Get-RuntimeValidationUiLine
+        }
+        Set-LabelIfChanged -Label $script:RuntimeValLine -Value $rvLine -Color $script:Accent
+
         $procMark = "FAIL"
         if ($script:Health.ProcessAlive) { $procMark = "PASS" }
         $procText = "Server process      $procMark"
@@ -169,8 +175,7 @@ function Show-ActivityLogWindow {
     try {
         if ($null -ne $script:LogBox -and -not $script:LogBox.IsDisposed -and $script:LogBox.Rtf) {
             $box.Rtf = $script:LogBox.Rtf
-            $box.SelectionStart = $box.TextLength
-            $box.ScrollToCaret()
+            Scroll-LogBoxToEnd -Box $box
         }
     }
     catch { }
@@ -307,12 +312,13 @@ function Show-DevMainWindow {
 
     [void](New-Label $form "TESTING" 28 418 0 $script:Accent 8 ([Drawing.FontStyle]::Bold))
     $script:BtnCheck = New-Button $form "QUALITY GATE" 28 442 172 $script:Text { Start-QualityGate } "scripts\check.ps1 - fmt, check, clippy, tests (visible console)"
-    $script:BtnBuild = New-Button $form "REBUILD" 216 442 172 $script:Yellow { Request-Rebuild } "Owned cargo build. Skips client while client.exe is running."
+    $script:BtnBuild = New-Button $form "REBUILD" 216 442 172 $script:Yellow { Request-Rebuild } "Owned cargo build. Skips a package whose .exe is running."
     $script:BtnLoadRun = New-Button $form "LOAD TEST" 404 442 172 $script:Accent { Invoke-RunLoadTest } "Headless bots via purgatory-load. May restart server in load mode."
     $script:BtnLoadStop = New-Button $form "STOP LOAD" 28 486 172 $script:Red { Request-StopLoadTest } "Stop workspace-owned purgatory-load only."
-    $script:BtnLoadAnalyze = New-Button $form "ANALYZE LAST RUN" 216 486 172 $script:Text { Invoke-AnalyzeLastRun } "Offline charts from logs\load\last_finished.txt"
+    $script:BtnLoadAnalyze = New-Button $form "ANALYZE LAST RUN" 216 486 172 $script:Text { Invoke-AnalyzeLastRun } "Offline charts from a completed logs\load artifact (not an in-progress or future-dated folder)"
     $script:BtnLoadReport = New-Button $form "LAST REPORT" 404 486 172 $script:Text { Invoke-OpenLastReport } "Open last finished run report folder"
-    $script:BtnRuntimeVal = New-Button $form "RUNTIME VAL" 28 530 172 $script:Accent { Invoke-RunRuntimeValidation } "Same purgatory-load --preset CLI as headless. Requires Ready. Pass/fail in Rust."
+    $script:BtnRuntimeVal = New-Button $form "RUNTIME VAL" 28 530 172 $script:Accent { Invoke-RunRuntimeValidation } "Same purgatory-load --preset CLI as headless. Always restarts a clean load-mode server. Pass/fail in Rust."
+    $script:RuntimeValLine = New-Label $form "Runtime Val:  idle" 216 536 360 $script:Muted 8
 
     [void](New-Label $form "DIAGNOSTICS" 28 584 0 $script:Accent 8 ([Drawing.FontStyle]::Bold))
     $diag = New-Card $form 28 604 548 118

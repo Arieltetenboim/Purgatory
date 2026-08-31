@@ -3,7 +3,9 @@ resolver = "3"
 members = [
     "apps/client",
     "apps/server",
+    "apps/dev_hub",
     "crates/common",
+    "crates/dev_runtime",
     "crates/simulation",
     "crates/protocol",
     "crates/content",

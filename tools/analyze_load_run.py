@@ -291,6 +291,36 @@ def status_block(summary: dict) -> list[str]:
     return lines
 
 
+def soak_block(summary: dict) -> list[str]:
+    soak = summary.get("soak")
+    if not isinstance(soak, dict) or not soak:
+        return []
+    lines = [
+        "## Mixed / soak real-client evidence",
+        "",
+        f"- persistent target: {soak.get('persistent_target')}",
+        f"- min/avg/max/final concurrent persistent: "
+        f"{soak.get('min_persistent_connected')} / "
+        f"{soak.get('avg_persistent_connected')} / "
+        f"{soak.get('max_persistent_connected')} / "
+        f"{soak.get('final_persistent_connected')}",
+        f"- time below baseline (s): {soak.get('time_below_baseline_secs')}",
+        f"- real-client connected-seconds: {soak.get('connected_seconds')}",
+        f"- churn connects/disconnects: "
+        f"{soak.get('churn_connects')} / {soak.get('churn_disconnects')}",
+        f"- unexpected persistent disconnects: {soak.get('unexpected_disconnects')}",
+        f"- portal attempts / out_of_range / rejected / transitions: "
+        f"{soak.get('portal_attempts')} / {soak.get('portal_out_of_range')} / "
+        f"{soak.get('portal_rejected')} / {soak.get('portal_transitions')}",
+        f"- AOI enters start/end: {soak.get('aoi_enters_start')} / {soak.get('aoi_enters_end')}",
+        f"- AOI updates start/end: {soak.get('aoi_updates_start')} / {soak.get('aoi_updates_end')}",
+        "",
+        "A sent PortalActivate is not success. Transitions must be authoritative.",
+        "",
+    ]
+    return lines
+
+
 def write_summary(
     report_dir: Path,
     config: dict,
@@ -320,8 +350,10 @@ def write_summary(
         "",
         workload_line(config, scenario),
         f"- requested bots: {summary.get('requested_bots', config.get('count', '?'))}",
+        f"- requested duration (s): {summary.get('requested_duration_secs', config.get('duration_secs', '?'))}",
+        f"- actual duration (s): {summary.get('elapsed_secs', '?')}",
+        f"- preset/seed: {summary.get('preset', scenario.get('preset', '?'))} / {summary.get('seed', config.get('seed', '?'))}",
         f"- peak connected: {summary.get('peak_connected', '?')}",
-        f"- duration (s): {summary.get('elapsed_secs', '?')}",
         f"- server metrics health: {summary.get('server_metrics_health', '?')} "
         f"(ok={summary.get('server_metrics_ok')}, "
         f"samples_ok={summary.get('server_metrics_samples_ok')}, "
@@ -362,6 +394,7 @@ def write_summary(
         f"- unexpected disconnects: {summary.get('unexpected_disconnects')}",
         f"- snapshot starvation samples: {summary.get('snapshot_starvation_samples')}",
         "",
+        *soak_block(summary),
         "## Graphs",
         "",
     ]

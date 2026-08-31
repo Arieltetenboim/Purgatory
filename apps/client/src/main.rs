@@ -31,6 +31,7 @@ fn main() {
         purgatory_common::identity(),
         purgatory_protocol::PROTOCOL_VERSION
     );
+    crate::debug::agent_log::emit("boot", "main.rs:main", "client_boot", "{\"ok\":true}");
     if let Err(err) = app::run() {
         eprintln!("PURGATORY client error: {err}");
         std::process::exit(1);

@@ -87,11 +87,16 @@ impl World {
 
         self.clear_stale_footnote_ids_for(id);
 
-        let (prev_pos, prev_half, prev_grounded_on) = {
+        let (prev_pos, prev_half, prev_grounded_on, prev_vel) = {
             let Some((transform, player)) = self.get_player(id) else {
                 return;
             };
-            (transform.position, player.half_extents, player.grounded_on)
+            (
+                transform.position,
+                player.half_extents,
+                player.grounded_on,
+                player.velocity,
+            )
         };
         let previous_bottom = prev_pos[1] - prev_half[1];
         let previous_top = prev_pos[1] + prev_half[1];
@@ -264,6 +269,9 @@ impl World {
         // Console spam is client-gated; simulation only records structured data.
         self.set_last_motion_debug(motion);
         self.refresh_spatial(id, prev_pos);
+        if vel != prev_vel && pos == prev_pos {
+            self.bump_transform_rev(id);
+        }
     }
 
     fn apply_world_bounds_for(&mut self, player_id: EntityId) {

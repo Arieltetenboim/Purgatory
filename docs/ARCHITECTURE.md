@@ -249,7 +249,7 @@ WorldSnapshot view (from replica after apply_frame)
 physical input → PlayerInput
   ├─ InputCommand → server (authority unchanged)
   └─ LocalPrediction → World::tick (FOOTNOTE) → predicted tick pose
-       → remainder extrapolation + correction offset (render only)
+       → remainder extra X + Y lerp between consecutive tick poses + correction offset (render only)
        → renderer + camera (local only)
 
 WorldSnapshot view → ReplicatedWorld (never overwritten by prediction)
@@ -379,7 +379,7 @@ Dirty tracking is per domain (`transform` / `health` / `membership` / `replicati
 
 Optional `Interactable` is a type/intent marker. `World` owns `InteractionSession` domain state (Opened / Active / Updated / Closed). That session is **not** a UI window. The client maps server results to `UIRuntimeState` for overlay presentation. Visible ≠ interactable. Client nearest-target is advisory (ADR-0035).
 
-`World::spatial_candidates(observer: EntityId)` is the replication candidate set (leave-rect + class; no hysteresis, no `ConnectionId`). Observer is a runtime entity, not a connection. `ObserverReplicationState` owns enter/leave hysteresis and `last_committed_rev`. AOI half-extents `[16, 9]` wu plus leave margin `2` wu are **server interest policy**, not client 16:9. Grid cell size `4.0` wu is a tunable (ADR-0038). Missing Transform is not globally visible. Full-world player broadcast is **not** the replication architecture (ADR-0034, ADR-0038, ADR-0039).
+`World::spatial_candidates(observer: EntityId)` is the replication candidate set (leave-rect + class; no hysteresis, no `ConnectionId`). Observer is a runtime entity, not a connection. `ObserverReplicationState` owns enter/leave hysteresis and `last_committed_rev`. AOI enter/leave rectangles are a **server-derived visible-view envelope** (FOOTNOTE logical viewport + camera Dead Zone + clamp to `WorldBounds`) plus documented prefetch (`AOI_PREFETCH_MARGIN = 2` wu) and leave hysteresis (`AOI_LEAVE_MARGIN = 2` wu). They are not a player-centered radius and not client-authored camera coordinates. Grid cell size `4.0` wu is a tunable (ADR-0038). Missing Transform is not globally visible. Full-world player broadcast is **not** the replication architecture (ADR-0034, ADR-0038, ADR-0039).
 
 Leaving an observer's relevance does not despawn the server entity. Changing address is not destruction.
 
@@ -426,7 +426,7 @@ begin_tick (SimulationTick)
 
 **DEV probe.** `PURGATORY_RUNTIME_PROBE=1|true|yes|on` may schedule one visible Generic after a known delay. Default off. Map-ready does not spawn automatically.
 
-**Load validation (Phase 6G).** Synthetic density/scheduler/action/effect/event/cadence pressure is test infrastructure. The server applies `PURGATORY_LOAD_VALIDATION` JSON only when load-mode is on (`PURGATORY_ADMISSION_CAP` set). Production `World` tick does not read that env. Metrics stay schema **3**. MixedRuntime (`purgatory-load --preset mixed`) is the canonical integrated workload. Protocol stays v10. Welcome still does not carry `CharacterId`. Do not begin Phase 7 (MOB).
+**Load validation (Phase 6G).** Synthetic density/scheduler/action/effect/event/cadence pressure is test infrastructure. The server applies `PURGATORY_LOAD_VALIDATION` JSON only when load-mode is on (`PURGATORY_ADMISSION_CAP` set). Production `World` tick does not read that env. Metrics stay schema **3**. MixedRuntime (`purgatory-load --preset mixed`) is the canonical integrated workload: a persistent real-QUIC baseline plus separate churn, replica-guided portal travel (activate only inside `in_portal_activation_zone`), and AOI/replication evidence over the soak — `--duration` is not “connect and idle.” Protocol stays v10. Welcome still does not carry `CharacterId`. Do not begin Phase 7 (MOB).
 
 Error containment:
 
@@ -498,7 +498,7 @@ Do not assume every platform is permanently solid from every direction. Geometri
 
 ## World bounds
 
-`WorldBounds { min_x, max_x, min_y, max_y }` lives on `World`. The player is clamped at horizontal (and soft vertical) edges with outward velocity zeroed — no teleport correction. Falling well below `min_y` triggers a **development** respawn at stage spawn (not a final death system). Camera clamping is presentation-only and reads the same bounds. Camera Dead Zone / damping does not feed server AOI; interest policy still uses the local player pose.
+`WorldBounds { min_x, max_x, min_y, max_y }` lives on `World`. The player is clamped at horizontal (and soft vertical) edges with outward velocity zeroed — no teleport correction. Falling well below `min_y` triggers a **development** respawn at stage spawn (not a final death system). Camera clamping is presentation-only and reads the same bounds. Server AOI derives a legal-camera view envelope from the observer pose, those bounds, the FOOTNOTE viewport, and the same Dead Zone half-extents as the client camera, then adds prefetch/leave margins. The client does not send camera coordinates.
 
 ## Client presentation
 
@@ -513,7 +513,7 @@ platform events (including keyboard)
 → if Game: collect elapsed Duration × debug_time_scale → SimulationClock::advance
 → for each executed tick: World::tick(fixed_dt, PlayerInput) / local prediction tick
 → replica apply + reconcile (poll, before or with ticks)
-→ finalize local presentation pose once (remainder extrapolation of last predicted tick + correction-smoothing offset; not the remote interp buffer)
+→ finalize local presentation pose once (X remainder extra from last local tick velocity; Y lerp between consecutive predicted FOOTNOTE poses using remainder/tick as alpha + correction-smoothing offset; not the remote interp buffer)
 → update follow camera from that same pose (Dead Zone containment + damp, then clamp to WorldBounds)
 → Connection: ConnectionFrontend::paint (logo + CONNECT); Game: parallax → AABBs (local player uses the finalized presentation pose) → optional gizmos
 → optional development egui overlay
@@ -523,7 +523,7 @@ Rendering continues when zero simulation ticks are due. Frame delta is never the
 
 Logical world coordinates are independent of physical pixels. The FOOTNOTE arena uses a taller logical viewport height (`FOOTNOTE_TEST_VIEWPORT_HEIGHT`). The client camera uses a **Dead Zone** around the current camera center plus frame-rate-independent exponential follow (named DEV tunables in `apps/client/src/camera_follow.rs`). The zone is a free-movement box: the camera does not move while the player is inside it. Crossing an edge moves the camera only enough to keep the player at that boundary (excess only; the target does not jump to player center and does not recenter). When the player stops just outside an edge, the same damper finishes residual containment so they settle on that edge. Horizontal and vertical half-extents and smooth times are independent. Map destinations snap/seed the camera to the dest local pose (no smoothing across maps). Channel/Instance commits preserve the current camera pose. Viewport clamping still keeps the camera inside `WorldBounds`. Camera pose is not AOI.
 
-The drawn local player and the camera follow target share one per-frame **presentation pose**. That pose starts from client prediction (or replica when prediction is inactive), then a decaying visual offset absorbs small restore+replay corrections so a damped camera cannot expose them as screen-space flicker. Large corrections, map/teleport/reset, and hitch discontinuities snap. The offset does not feed simulation, commands, reconciliation, or server AOI. Remotes keep the delayed interpolation buffer.
+The drawn local player and the camera follow target share one per-frame **presentation pose**. That pose starts from client prediction (or replica when prediction is inactive). Remainder extra uses the velocity from the last **locally executed** predicted tick (or non-empty replay), not replica velocity after an empty-pending restore. Horizontal remainder follows last-tick `vx`. Vertical presentation lerps Y between the previous and current **tick-boundary** predicted poses (`alpha = remainder / tick`); both endpoints are post-FOOTNOTE contact-resolved. That is up to one sim tick of **vertical visual** delay, not extra input/sim latency. Falling `vy * remainder` is still not applied (floor-clip guard on extra). Speeds below `EXTRAPOLATE_MIN_SPEED` (0.5 wu/s) are treated as idle so leftover sub-walk residuals cannot modulate with `clock.remainder()`; this is not a positional dead-zone. A decaying visual offset then absorbs small restore+replay corrections so a damped camera cannot expose them as screen-space flicker. Large corrections, map/teleport/reset, hitch, and restore+replay snap Y-lerp history (`prev = current`) rather than blending unrelated poses. The offset does not feed simulation, commands, reconciliation, or server AOI. Remotes keep the delayed interpolation buffer. Header-only frames, a lagged falling replica while local is already grounded (`landing_lead`), and a lagged leftover walk `vx` while local is grounded at rest (`rest_lead`) skip restore so stale replica pose/velocity cannot rewind prediction.
 
 **Parallax** (far ≈ 0.15, mid ≈ 0.40, near ≈ 0.70) is presentation-only: `layer_offset = camera_position * factor`. Simulation entities, collision, FOOTNOTE, and the server are unaware of background layers.
 
@@ -542,13 +542,13 @@ The client hosts an in-window **development** overlay. It is not production game
 
 - Toggle: physical Backquote / Grave (`~`). Press opens; press again closes. OS key-repeat does not toggle. The egui close button also hides it; `~` reopens it.
 - Technology: `egui` 0.36.1 + `egui-winit` 0.36.1 + `egui-wgpu` 0.36.1, integrated directly with the existing winit/wgpu client. **eframe is not used.**
-- Crate boundary: egui crates are `purgatory-client` dependencies only. They must not enter `purgatory-simulation`, `purgatory-server`, `purgatory-protocol`, `purgatory-content`, or `purgatory-common`.
+- Crate boundary: egui crates may be used by `purgatory-client` (in-window overlay; **eframe is not used** there, ADR-0016) and by `purgatory-dev-hub` (provisional eframe GUI, ADR-0052, revisitable). They must not enter `purgatory-simulation`, `purgatory-server`, `purgatory-protocol`, `purgatory-content`, `purgatory-common`, or `purgatory-dev-runtime`.
 - Tabs: **Runtime**, **Player**, **FOOTNOTE**, **World**, **Camera**, **Diagnostics**, **Network**. Player tab marks local simulation **LOCAL DEV / NON-AUTHORITATIVE**. Network tab adds last input sequence sent, input commands sent, and current semantic input. **Authoritative Replica** (default open) reports last-frame and session Enter/Update/Leave counts plus Known entities without an Update this frame (client-observable dirty/delta proof).
 - Runtime includes development **time scale** (1.0 / 0.5 / 0.25): scales wall-clock elapsed fed to `SimulationClock` only. `TICK_RATE_HZ` is unchanged. Local-client only; once authoritative networking exists this cannot independently slow the server.
 - Gizmo toggles: colliders, velocity, grounded highlight, world bounds, grid, parallax debug, AOI policy rects, camera Dead Zone, replica entity labels.
 - World **Entities** inspector: categorized tree (Players / Interactables / Portals / Platforms / Other). Players, Interactables, and Portals start expanded; Platforms and Other start collapsed. Each row labels **World** vs **Replication** separately. Replica rows are observer Known-set only; local World slots are a different identity namespace and are not merged by matching `index:generation`. The **local player** is one semantic entry: `server RuntimeEntityId` and `client World EntityId` are labeled explicitly under that entry and are not peer rows.
 - Network **Observer AOI** section: observer `RuntimeEntityId`, `MapId`, `ChannelId`, `InstanceId`, `WorldAddress`, enter/leave policy bounds, mailbox candidate/Known/WantEnter/WantLeave counts, replication epoch, plus Known counts per replica kind. The overlay header shows `Map / Channel / Instance` with DEV `[0] [1]` Channel buttons that send `DevSetChannel` (server-authoritative; the client does not mutate WorldAddress). World-space labels are compact semantic chips (`LOCAL PLAYER`, `REMOTE PLAYER`, `INTERACTABLE`, `PORTAL`) with near-white glyphs, a dark outline, a drop shadow, and category color only as an accent border. The `LOCAL PLAYER` chip uses the same presented pose as the local body and camera. Namespace IDs live in the World Entities inspector, not over the entity. Labels are projected only when `maps_aligned` and the presentation world is ready (idle fade or `DestinationReady` / `MembershipReady`); they are suppressed while a transition is unaligned or still waiting. Overlay header shows DEV transition banners (`MAP TRANSITION · Waiting DestinationReady`, `CHANNEL TRANSITION · Waiting MembershipReady`) plus missing-flag detail and a stall warning. The screen-space inspector stays visible during the blackout. The overlay header is a compact INTERACTION / TARGET / PORTAL status strip plus WORLD Channel control (DEV only; not production UI).
-- Camera tab: position, viewport, presentation player, desired target, Dead Zone half-extents, smooth times, following X/Y, DEV jitter (pred/replica/presented/cam/screen X, correction, 90-frame screen-X range, follow-X flips), follow checkbox, center-on-player.
+- Camera tab: position, viewport, presentation player, desired target, Dead Zone half-extents, smooth times, following X/Y, DEV jitter (pred/replica/presented/cam/screen X, extra Δx, remainder vx, auth tick, correction, 180-frame screen-X range, follow-X flips), follow checkbox, center-on-player.
 - Mutation: `DebugAction` values (currently `ResetPlayer`). egui must not poke arbitrary `World` fields.
 - Input: movement stays live while the overlay is open except when a text-like egui widget owns key presses.
 - Render order: parallax → world primitives → FOOTNOTE/debug gizmos → egui (`LoadOp::Load`).
@@ -583,6 +583,12 @@ common
 persistence
   ↑
 server
+
+common
+  ↑
+dev_runtime
+  ↑
+dev_hub
 ```
 
 `purgatory-content` may depend on `purgatory-simulation` to build typed spawn plans. JSON stays in the content crate. `purgatory-simulation` must not depend on `purgatory-content`, serde, or JSON.
@@ -593,9 +599,11 @@ server
 
 `server` must not depend on `winit`, `wgpu`, `egui`, or the client crate.
 
+`purgatory-dev-runtime` must not depend on `purgatory-client`, `purgatory-simulation`, Quinn, egui, winit, or wgpu. It may depend on `purgatory-common` for metrics decode. It spawns `purgatory-load --probe`; it does not open a game protocol session itself.
+
 The existing `Graphic/` directory stays in place. Phase 5.0B loads **only** `Graphic/LOGO.png` for the Connection Frontend (temporary filesystem path). The rest of `Graphic/` is unused until sprite and Paper Doll phases. Do not modify files in `Graphic/` as part of networking work.
 
-Windows development control lives in **Developer Tools** (`DEV.BAT` → `tools/dev/`), not in a Cargo crate. It owns local server/client/cargo processes and verifies Ready via metrics Health plus `purgatory-load --probe`. It must not reimplement Quinn or the game protocol. See [`docs/dev-tools/`](dev-tools/README.md) and ADR-0050.
+Windows development control is **Developer Tools** (ADR-0050). The current operational shell is PowerShell (`DEV.BAT` → `tools/dev/`). The target shell is the Rust Developer Hub (`purgatory-dev-runtime` + provisional `purgatory-dev-hub` GUI, ADR-0052). Both verify Ready via `purgatory-load --probe`; neither reimplements Quinn or the game protocol. Hub Slice 2 Runtime Validation forwards `purgatory-load --preset` and holds a workspace `logs/dev-tools/hub.lock`. The Hub must not poke `World`. Do not drive the same workspace from both shells at once. See [`docs/dev-tools/`](dev-tools/README.md).
 
 ## Content
 

@@ -28,8 +28,8 @@ The 30 Hz / ~33.33 ms figures below are **tick spacing**, not permission for sim
 | Replication frame soft budget | 4096 bytes | `REPLICATION_FRAME_BUDGET_BYTES` | Pre-commit encoded size; wall remains `MAX_GAMEPLAY_SNAPSHOT_BYTES` 8192 |
 | Writer queue cap | 4 frames | `WRITER_QUEUE_CAP` | If full, intent stays pending; no encode-and-drop |
 | Spatial grid cell size | 4.0 wu | `SPATIAL_CELL_SIZE_WU` | Initial tunable, not an architectural invariant (ADR-0038) |
-| AOI enter half-extents | 16 × 9 wu | `AOI_POLICY_HALF_EXTENTS` | Server interest policy, not client 16:9 |
-| AOI leave margin | 2 wu | `AOI_LEAVE_MARGIN` | Hysteresis band in ObserverReplicationState only |
+| AOI enter | view envelope + 2 wu prefetch | `AOI_PREFETCH_MARGIN` | Server-derived from observer pose, FOOTNOTE viewport, Dead Zone, camera clamp. Not client-authored camera. |
+| AOI leave margin | +2 wu beyond enter | `AOI_LEAVE_MARGIN` | Hysteresis band; ObserverReplicationState still owns Known/WantLeave |
 | Snapshot build cost | local interest | 6D A/B N=50: tick mean ~0.95 ms, p99 ~6 ms; C N=50 mean 0.62 ms | `publish_observer_frame` peak ~4 ms. Localhost mixed 45 s. Not capacity. [`PHASE_6D_PERFORMANCE.md`](PHASE_6D_PERFORMANCE.md) |
 | Remote interp delay | 3 ticks (~100 ms) | `INTERPOLATION_DELAY_TICKS` | Client presentation only; uses `TICK_DURATION` |
 | Remote interp history | 16 samples | `INTERPOLATION_HISTORY_CAP` | Bounded; ~0.5 s at 30 Hz |
@@ -73,3 +73,5 @@ The 30 Hz / ~33.33 ms figures below are **tick spacing**, not permission for sim
 - Do not claim MMO scale from an unmeasured prototype.
 - Database latency must not stall the simulation tick.
 - Do not treat the tick interval as a CPU budget.
+
+Open empirical issue, **not** a budget and **not** resolved: previously observed load-only stall around the 128-client case. Recorded for the upcoming capacity phase. Client `pending_window_stall_ticks` counts skipped predicted ticks when the 128-command pending window is full. Do not raise that cap from a budget document.

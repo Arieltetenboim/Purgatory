@@ -105,6 +105,7 @@ function New-Label {
 
     $label = New-Object Windows.Forms.Label
     $label.Text = $Text
+    $label.UseMnemonic = $false
     $label.Location = New-Object Drawing.Point($X, $Y)
     $label.ForeColor = $Color
     $label.BackColor = [Drawing.Color]::Transparent

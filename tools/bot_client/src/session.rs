@@ -7,13 +7,20 @@ use quinn::{Connection, Endpoint, RecvStream, SendStream};
 
 use purgatory_protocol::{
     ClientControl, ConnectionId, DevSetChannel, DisconnectReasonCode, HANDSHAKE_TIMEOUT, Hello,
-    PROTOCOL_VERSION, PortalActivate, ReplicatedKind, ReplicationFrame, ReplicationRecord,
-    ServerControl, WireEntityId, decode_replication_frame, decode_server_control,
-    encode_client_control, encode_frame, peek_frame_len, peek_gameplay_frame_len,
+    InteractRejectReason, MoveAxis, PROTOCOL_VERSION, PortalActivate, ReplicatedKind,
+    ReplicationFrame, ReplicationRecord, ServerControl, ServerInteract, WireEntityId,
+    decode_replication_frame, decode_server_control, encode_client_control, encode_frame,
+    peek_frame_len, peek_gameplay_frame_len,
 };
 
 use crate::behavior::{BotBehavior, BotProfile};
 use crate::client_build;
+use crate::roles::{BotRole, ReplicaView};
+
+/// Non-blocking poll so the single-threaded controller cannot stall.
+pub const STREAM_POLL_TIMEOUT: Duration = Duration::from_millis(1);
+/// Payload `read_exact` must not block other bots past the idle timeout.
+pub const SNAPSHOT_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -31,11 +38,22 @@ pub struct SessionMetrics {
     pub last_snapshot_at: Option<Instant>,
     pub last_snapshot_sequence: u32,
     pub local_grounded: bool,
+    pub portal_attempts: u64,
+    pub portal_out_of_range: u64,
+    pub portal_rejected: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ControlPoll {
+    pub out_of_range: u64,
+    pub rejected: u64,
+    pub disconnected: bool,
 }
 
 pub struct BotSession {
     pub bot_id: u32,
     pub login: String,
+    pub role: BotRole,
     pub state: SessionState,
     pub metrics: SessionMetrics,
     pub behavior: BotBehavior,
@@ -45,8 +63,10 @@ pub struct BotSession {
     pub previous_local_entity: Option<WireEntityId>,
     pub last_disconnect: Option<DisconnectReasonCode>,
     pub visible_portals: Vec<WireEntityId>,
+    pub replica: ReplicaView,
     connection: Option<Connection>,
     send_stream: Option<SendStream>,
+    control_recv: Option<RecvStream>,
     snapshot_recv: Option<RecvStream>,
 }
 
@@ -55,6 +75,7 @@ impl BotSession {
         Self {
             bot_id,
             login: String::new(),
+            role: BotRole::PersistentMove,
             state: SessionState::Disconnected,
             metrics: SessionMetrics::default(),
             behavior: BotBehavior::new(profile, seed, bot_id),
@@ -64,8 +85,10 @@ impl BotSession {
             previous_local_entity: None,
             last_disconnect: None,
             visible_portals: Vec::new(),
+            replica: ReplicaView::default(),
             connection: None,
             send_stream: None,
+            control_recv: None,
             snapshot_recv: None,
         }
     }
@@ -87,6 +110,9 @@ impl BotSession {
         self.previous_local_entity = self.local_entity.take();
         self.local_entity = None;
         self.visible_portals.clear();
+        self.replica = ReplicaView::default();
+        self.control_recv = None;
+        self.snapshot_recv = None;
 
         let connecting = endpoint
             .connect(server, "localhost")
@@ -122,6 +148,7 @@ impl BotSession {
                 self.connection_id = Some(welcome.connection_id);
                 self.connection = Some(connection);
                 self.send_stream = Some(send);
+                self.control_recv = Some(recv);
                 self.state = SessionState::Connected;
                 Ok(())
             }
@@ -137,14 +164,32 @@ impl BotSession {
         }
     }
 
-    pub async fn accept_snapshot_stream(&mut self) -> Result<(), String> {
+    /// Non-blocking uni accept. Must not stall the controller tick loop.
+    pub async fn poll_accept_snapshot(&mut self) -> Result<(), String> {
+        if self.snapshot_recv.is_some() {
+            return Ok(());
+        }
         let conn = self.connection.as_ref().ok_or("not connected")?;
-        let stream = conn
-            .accept_uni()
-            .await
-            .map_err(|e| format!("accept uni: {e}"))?;
-        self.snapshot_recv = Some(stream);
-        Ok(())
+        match tokio::time::timeout(STREAM_POLL_TIMEOUT, conn.accept_uni()).await {
+            Ok(Ok(stream)) => {
+                self.snapshot_recv = Some(stream);
+                Ok(())
+            }
+            Ok(Err(e)) => Err(format!("accept uni: {e}")),
+            Err(_) => Ok(()),
+        }
+    }
+
+    pub async fn accept_snapshot_stream(&mut self) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            self.poll_accept_snapshot().await?;
+            if self.snapshot_recv.is_some() {
+                return Ok(());
+            }
+            tokio::time::sleep(STREAM_POLL_TIMEOUT).await;
+        }
+        Err("accept uni timeout".into())
     }
 
     pub async fn poll_snapshot(&mut self) -> Result<Option<ReplicationFrame>, String> {
@@ -153,7 +198,7 @@ impl BotSession {
         };
 
         let mut prefix = [0u8; 4];
-        match tokio::time::timeout(Duration::from_millis(1), recv.read_exact(&mut prefix)).await {
+        match tokio::time::timeout(STREAM_POLL_TIMEOUT, recv.read_exact(&mut prefix)).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
                 self.snapshot_recv = None;
@@ -164,9 +209,17 @@ impl BotSession {
 
         let len = peek_gameplay_frame_len(&prefix).map_err(|_| "framing broken")?;
         let mut payload = vec![0u8; len as usize];
-        recv.read_exact(&mut payload)
-            .await
-            .map_err(|e| format!("read snapshot payload: {e}"))?;
+        match tokio::time::timeout(SNAPSHOT_PAYLOAD_TIMEOUT, recv.read_exact(&mut payload)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                self.snapshot_recv = None;
+                return Err(format!("read snapshot payload: {e}"));
+            }
+            Err(_) => {
+                self.snapshot_recv = None;
+                return Err("snapshot payload timeout".into());
+            }
+        }
 
         let frame = decode_replication_frame(&payload).map_err(|e| format!("decode frame: {e}"))?;
 
@@ -177,6 +230,7 @@ impl BotSession {
         self.intent.set_epoch(frame.input_epoch);
         self.behavior.on_snapshot(frame.local_grounded);
         self.local_entity = Some(frame.local_player_entity);
+        self.replica.apply_frame(&frame);
         for record in &frame.records {
             match record {
                 ReplicationRecord::Enter { entity, .. }
@@ -196,20 +250,69 @@ impl BotSession {
         Ok(Some(frame))
     }
 
+    pub async fn poll_control(&mut self) -> Result<ControlPoll, String> {
+        let mut poll = ControlPoll::default();
+        let Some(recv) = self.control_recv.as_mut() else {
+            return Ok(poll);
+        };
+
+        let mut prefix = [0u8; 4];
+        match tokio::time::timeout(STREAM_POLL_TIMEOUT, recv.read_exact(&mut prefix)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                self.control_recv = None;
+                return Ok(poll);
+            }
+            Err(_) => return Ok(poll),
+        }
+
+        let len = peek_frame_len(&prefix).map_err(|e| format!("peek len: {e}"))?;
+        let mut payload = vec![0u8; len as usize];
+        match tokio::time::timeout(SNAPSHOT_PAYLOAD_TIMEOUT, recv.read_exact(&mut payload)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(format!("read control payload: {e}")),
+            Err(_) => return Err("control payload timeout".into()),
+        }
+
+        match decode_server_control(&payload).map_err(|e| format!("decode control: {e}"))? {
+            ServerControl::Disconnect(reason) => {
+                self.last_disconnect = Some(reason.code);
+                poll.disconnected = true;
+            }
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                poll.rejected = 1;
+                self.metrics.portal_rejected = self.metrics.portal_rejected.saturating_add(1);
+                if reason == InteractRejectReason::OutOfRange {
+                    poll.out_of_range = 1;
+                    self.metrics.portal_out_of_range =
+                        self.metrics.portal_out_of_range.saturating_add(1);
+                }
+            }
+            ServerControl::Welcome(_) | ServerControl::Interact(_) => {}
+        }
+        Ok(poll)
+    }
+
     pub async fn send_tick(&mut self) -> Result<(), String> {
+        let action = self.behavior.next_action();
+        let (axis, jump, down) = self.behavior.action_to_input(action);
+        self.send_input(axis, jump, down).await
+    }
+
+    pub async fn send_input(
+        &mut self,
+        axis: MoveAxis,
+        jump: bool,
+        down: bool,
+    ) -> Result<(), String> {
         let Some(send) = self.send_stream.as_mut() else {
             return Err("not connected".into());
         };
-
-        let action = self.behavior.next_action();
-        let (axis, jump, down) = self.behavior.action_to_input(action);
         let cmd = self
             .intent
             .emit_tick(axis, jump, down)
             .ok_or("sequence overflow")?;
-
-        let msg = ClientControl::Input(cmd);
-        write_client_control(send, &msg).await?;
+        write_client_control(send, &ClientControl::Input(cmd)).await?;
         self.metrics.commands_sent += 1;
         Ok(())
     }
@@ -222,7 +325,9 @@ impl BotSession {
             send,
             &ClientControl::PortalActivate(PortalActivate { target }),
         )
-        .await
+        .await?;
+        self.metrics.portal_attempts = self.metrics.portal_attempts.saturating_add(1);
+        Ok(())
     }
 
     pub async fn send_dev_set_channel(&mut self, channel: u32) -> Result<(), String> {
@@ -248,7 +353,6 @@ impl BotSession {
         }
         self.close_and_wait(Duration::from_millis(200)).await;
         self.connect_with_login(endpoint, server, &login).await?;
-        self.accept_snapshot_stream().await?;
         Ok(())
     }
 
@@ -265,6 +369,7 @@ impl BotSession {
             conn.close(0u32.into(), b"bot shutdown");
         }
         self.send_stream = None;
+        self.control_recv = None;
         self.snapshot_recv = None;
         self.state = SessionState::Disconnected;
     }
@@ -275,6 +380,7 @@ impl BotSession {
             let _ = tokio::time::timeout(wait, conn.closed()).await;
         }
         self.send_stream = None;
+        self.control_recv = None;
         self.snapshot_recv = None;
         self.state = SessionState::Disconnected;
     }
@@ -299,4 +405,16 @@ async fn read_server_control(recv: &mut RecvStream) -> Result<ServerControl, Str
         .await
         .map_err(|e| format!("read payload: {e}"))?;
     decode_server_control(&payload).map_err(|e| format!("decode: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_timeouts_are_shorter_than_idle() {
+        assert!(STREAM_POLL_TIMEOUT < Duration::from_secs(1));
+        assert!(SNAPSHOT_PAYLOAD_TIMEOUT < purgatory_protocol::IDLE_TIMEOUT);
+        assert!(SNAPSHOT_PAYLOAD_TIMEOUT > STREAM_POLL_TIMEOUT);
+    }
 }

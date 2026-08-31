@@ -93,6 +93,10 @@ function Get-CargoArgumentList {
     foreach ($pkg in $Packages) {
         [void]$list.Add("-p")
         [void]$list.Add($pkg)
+        if ($pkg -eq $script:LoadPackage) {
+            [void]$list.Add("--bin")
+            [void]$list.Add("purgatory-load")
+        }
     }
     return $list.ToArray()
 }
@@ -137,4 +141,8 @@ function Initialize-DevEnvironment {
     if (-not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
+
+    # DEV.BAT starts a hidden console host. VisibleConsole children would inherit it
+    # and every writeln (dashboard / live status) can ding that hidden console.
+    try { [void][PurgatoryNative]::FreeConsole() } catch { }
 }

@@ -155,6 +155,10 @@ pub struct PredictionDiagnostics {
     pub observed_ack_delta: u32,
     pub observed_ack_jump_count: u64,
     pub max_observed_ack_delta: u32,
+    /// Last locally executed predicted tick velocity. Remainder extra uses this.
+    pub last_tick_velocity: [f32; 2],
+    /// Ticks the client skipped because [`PREDICTION_PENDING_CAP`] was full.
+    pub pending_window_stall_ticks: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -191,6 +195,15 @@ pub struct LocalPrediction {
     last_correction_wu: f32,
     last_correction_delta: [f32; 2],
     last_sync_hard_snap: bool,
+    last_sync_durable: bool,
+    /// Velocity after the last locally executed predicted tick (or non-empty replay).
+    /// Remainder extrapolation must use this, not a lagged restore's replica velocity.
+    last_tick_velocity: [f32; 2],
+    pending_window_stall_ticks: u64,
+    /// Post-FOOTNOTE pose after the last predicted tick (Y-lerp current).
+    tick_pose: Option<[f32; 2]>,
+    /// Post-FOOTNOTE pose after the previous predicted tick (Y-lerp previous).
+    prev_tick_pose: Option<[f32; 2]>,
     max_correction_wu: f32,
     last_observed_ack: u32,
     observed_ack_delta: u32,
@@ -231,6 +244,11 @@ impl LocalPrediction {
             last_correction_wu: 0.0,
             last_correction_delta: [0.0, 0.0],
             last_sync_hard_snap: false,
+            last_sync_durable: true,
+            last_tick_velocity: [0.0, 0.0],
+            pending_window_stall_ticks: 0,
+            tick_pose: None,
+            prev_tick_pose: None,
             max_correction_wu: 0.0,
             last_observed_ack: 0,
             observed_ack_delta: 0,
@@ -286,7 +304,6 @@ impl LocalPrediction {
         self.pending.len()
     }
 
-    #[cfg(test)]
     #[must_use]
     pub fn cancel_pending(&self) -> bool {
         self.cancel_barrier.is_some()
@@ -300,6 +317,42 @@ impl LocalPrediction {
     #[must_use]
     pub fn last_correction_delta(&self) -> [f32; 2] {
         self.last_correction_delta
+    }
+
+    #[must_use]
+    pub fn last_tick_velocity(&self) -> [f32; 2] {
+        self.last_tick_velocity
+    }
+
+    #[must_use]
+    pub fn tick_pose(&self) -> Option<[f32; 2]> {
+        self.tick_pose
+    }
+
+    #[must_use]
+    pub fn prev_tick_pose(&self) -> Option<[f32; 2]> {
+        self.prev_tick_pose
+    }
+
+    #[must_use]
+    pub fn pending_window_stall_ticks(&self) -> u64 {
+        self.pending_window_stall_ticks
+    }
+
+    pub fn note_input_stall(&mut self) {
+        self.pending_window_stall_ticks = self.pending_window_stall_ticks.saturating_add(1);
+    }
+
+    #[must_use]
+    pub fn last_sent_seq(&self) -> u32 {
+        self.last_sent_seq
+    }
+
+    #[must_use]
+    pub fn pending_seq_range(&self) -> Option<(u32, u32)> {
+        let first = self.pending.front()?.sequence;
+        let last = self.pending.back()?.sequence;
+        Some((first, last))
     }
 
     #[must_use]
@@ -363,6 +416,8 @@ impl LocalPrediction {
         }
         restore_durable(world, replica);
         self.replay_pending(world);
+        self.capture_tick_velocity(world);
+        self.snap_tick_poses(world);
         self.reset_history(client_tick, world);
     }
 
@@ -384,8 +439,12 @@ impl LocalPrediction {
         };
         self.last_sync_hard_snap = false;
         self.last_correction_delta = [0.0, 0.0];
-        self.last_auth_position = Some(auth.position);
-        self.last_auth_velocity = Some(auth.velocity);
+        let durable = replica.local_durable_updated();
+        self.last_sync_durable = durable;
+        if durable {
+            self.last_auth_position = Some(auth.position);
+            self.last_auth_velocity = Some(auth.velocity);
+        }
 
         let lead = predicted_error(world, auth.position);
         let split = self.aligned_residual(&auth);
@@ -436,6 +495,8 @@ impl LocalPrediction {
             Some(SnapReason::Structural)
         } else if epoch_changed {
             Some(SnapReason::Generation)
+        } else if !durable {
+            None
         } else if pending_before == 0 && aligned.is_some_and(|e| e >= PREDICTION_REANCHOR_DISTANCE)
         {
             Some(SnapReason::AlignedDistance)
@@ -478,6 +539,8 @@ impl LocalPrediction {
             self.prediction_tick = 0;
             self.last_sent_seq = 0;
             self.reset_history(client_tick, world);
+            self.capture_tick_velocity(world);
+            self.snap_tick_poses(world);
             self.consecutive_aligned_divergence = 0;
             self.last_aligned_error = Some(0.0);
             self.last_snap_reason = reason.map(SnapReason::as_str);
@@ -493,8 +556,36 @@ impl LocalPrediction {
             self.structural_snap_count = self.structural_snap_count.saturating_add(1);
             self.last_sent_seq = ack;
             self.reset_history(client_tick, world);
+            self.capture_tick_velocity(world);
+            self.snap_tick_poses(world);
             self.last_snap_reason = Some(SnapReason::Structural.as_str());
             self.last_sync_hard_snap = true;
+            if was_active {
+                self.finish_correction(pre_pos, world);
+            }
+            return;
+        }
+
+        let predicted_grounded = world.player_body().is_some_and(|b| b.grounded);
+        let predicted_at_rest = world
+            .player_body()
+            .is_some_and(|b| b.grounded && b.velocity[0] == 0.0 && b.velocity[1] == 0.0);
+        let landing_lead = predicted_grounded
+            && auth.velocity[1] < -PREDICTION_AUTH_SETTLED_VY
+            && pre_pos.is_some_and(|p| auth.position[1] > p[1] + 0.05);
+        // Replica still carrying leftover walk velocity must not rewind a
+        // locally settled idle body (remainder extra would sawtooth ~vx*dt).
+        let rest_lead = predicted_at_rest && auth.velocity[0] != 0.0;
+
+        if !durable || landing_lead || rest_lead {
+            self.trim_pending(snap_epoch, ack);
+            if let Some(barrier) = self.cancel_barrier
+                && snap_epoch == barrier.epoch
+                && ack >= barrier.target_sequence
+            {
+                self.cancel_barrier = None;
+            }
+            self.push_history_from_world(client_tick, world);
             if was_active {
                 self.finish_correction(pre_pos, world);
             }
@@ -509,13 +600,20 @@ impl LocalPrediction {
         {
             self.cancel_barrier = None;
         }
+        let replayed = !self.pending.is_empty();
         self.replay_pending(world);
+        if replayed {
+            self.capture_tick_velocity(world);
+        }
+        self.snap_tick_poses(world);
 
         if reason == Some(SnapReason::VerticalSettled) {
             restore_durable(world, replica);
             self.reset_count = self.reset_count.saturating_add(1);
             self.vertical_settled_count = self.vertical_settled_count.saturating_add(1);
             self.reset_history(client_tick, world);
+            self.capture_tick_velocity(world);
+            self.snap_tick_poses(world);
             self.last_snap_reason = Some(SnapReason::VerticalSettled.as_str());
             self.last_sync_hard_snap = true;
             if was_active {
@@ -530,6 +628,8 @@ impl LocalPrediction {
             restore_durable(world, replica);
             self.reset_count = self.reset_count.saturating_add(1);
             self.reset_history(client_tick, world);
+            self.capture_tick_velocity(world);
+            self.snap_tick_poses(world);
             self.last_snap_reason = reason.map(SnapReason::as_str);
             self.last_sync_hard_snap = true;
             if was_active {
@@ -571,6 +671,30 @@ impl LocalPrediction {
             self.last_correction_delta = [0.0, 0.0];
             self.last_correction_wu = 0.0;
         }
+        // #region agent log
+        if self.last_correction_wu > 0.02 || crate::debug::agent_log::should_emit(2, 250) {
+            let (p0, p1) = self.pending_seq_range().unwrap_or((0, 0));
+            crate::debug::agent_log::emit(
+                "F",
+                "prediction.rs:finish_correction",
+                "reconcile",
+                &format!(
+                    "{{\"corr\":{:.4},\"dx\":{:.4},\"dy\":{:.4},\"pending\":{},\"p0\":{},\"p1\":{},\"sent\":{},\"tick\":{},\"auth_tick\":{},\"hard\":{},\"fresh\":{}}}",
+                    self.last_correction_wu,
+                    self.last_correction_delta[0],
+                    self.last_correction_delta[1],
+                    self.pending.len(),
+                    p0,
+                    p1,
+                    self.last_sent_seq,
+                    self.prediction_tick,
+                    self.last_auth_server_tick,
+                    self.last_sync_hard_snap,
+                    self.last_sync_durable
+                ),
+            );
+        }
+        // #endregion
     }
 
     fn trim_pending(&mut self, epoch: u16, ack: u32) {
@@ -583,6 +707,27 @@ impl LocalPrediction {
         for cmd in self.pending.iter().copied() {
             world.tick_predicted_player(dt, player_input_from_command(cmd));
         }
+    }
+
+    fn capture_tick_velocity(&mut self, world: &World) {
+        self.last_tick_velocity = world
+            .player_body()
+            .map(|b| b.velocity)
+            .unwrap_or([0.0, 0.0]);
+    }
+
+    fn note_tick_pose(&mut self, world: &World) {
+        let Some(pos) = world.player_body().map(|b| b.position) else {
+            return;
+        };
+        self.prev_tick_pose = self.tick_pose.or(Some(pos));
+        self.tick_pose = Some(pos);
+    }
+
+    fn snap_tick_poses(&mut self, world: &World) {
+        let pos = world.player_body().map(|b| b.position);
+        self.tick_pose = pos;
+        self.prev_tick_pose = pos;
     }
 
     fn push_history_from_world(&mut self, client_tick: u64, world: &World) {
@@ -618,6 +763,8 @@ impl LocalPrediction {
         self.reset_count = self.reset_count.saturating_add(1);
         self.prediction_tick = 0;
         self.reset_history(client_tick, world);
+        self.capture_tick_velocity(world);
+        self.snap_tick_poses(world);
         self.consecutive_aligned_divergence = 0;
         self.last_aligned_error = Some(0.0);
     }
@@ -634,6 +781,8 @@ impl LocalPrediction {
         let dt = TICK_DURATION.as_secs_f32();
         world.tick_predicted_player(dt, input);
         self.prediction_tick = self.prediction_tick.saturating_add(1);
+        self.capture_tick_velocity(world);
+        self.note_tick_pose(world);
         self.push_history_from_world(client_tick, world);
     }
 
@@ -706,6 +855,8 @@ impl LocalPrediction {
             observed_ack_delta: self.observed_ack_delta,
             observed_ack_jump_count: self.observed_ack_jump_count,
             max_observed_ack_delta: self.max_observed_ack_delta,
+            last_tick_velocity: self.last_tick_velocity(),
+            pending_window_stall_ticks: self.pending_window_stall_ticks(),
         }
     }
 
@@ -860,7 +1011,8 @@ mod tests {
     use crate::input::ActionState;
     use crate::interp::{InterpolationBuffer, PresentationPose};
     use purgatory_protocol::{
-        InputCommand, MoveAxis, PlatformSupportId, ReplicatedKind, SnapshotEntity, WorldSnapshot,
+        InputCommand, MoveAxis, PlatformSupportId, ReplicatedKind, ReplicationFrame,
+        SnapshotEntity, WorldSnapshot,
     };
     use purgatory_simulation::{MAX_CATCH_UP_TICKS, SimulationClock};
     use std::time::Duration;
@@ -1867,5 +2019,290 @@ mod tests {
         assert_eq!(d.observed_ack_delta, 4);
         assert_eq!(d.observed_ack_jump_count, 1);
         assert_eq!(d.max_observed_ack_delta, 4);
+    }
+
+    #[test]
+    fn header_only_frame_does_not_restore_stale_local_pose() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let right = PlayerInput::from_buttons_ext(false, true, false, false);
+        for seq in 1..=8 {
+            tick_recorded(&mut pred, &mut world, right, u64::from(seq) + 1, seq);
+        }
+        let predicted = world.player_body().unwrap().position;
+        assert!(
+            (predicted[0] - spawn[0]).abs() > 0.5,
+            "setup must have walked away from spawn"
+        );
+        let header = ReplicationFrame {
+            snapshot_sequence: 2,
+            server_tick: 2,
+            local_player_entity: id,
+            input_epoch: 0,
+            last_acknowledged_input_sequence: 0,
+            local_grounded: true,
+            local_grounded_on: PlatformSupportId(1),
+            local_ignored_platform: PlatformSupportId::NONE,
+            continuation_debt: 0,
+            local_map: 1,
+            local_channel: 0,
+            local_instance: 0,
+            observer_baseline_epoch: 0,
+            records: vec![],
+            aoi_debug: None,
+        };
+        assert!(matches!(
+            replica.apply_frame(header),
+            crate::replica::FrameDecision::Applied { .. }
+        ));
+        assert!(
+            !replica.local_durable_updated(),
+            "header-only must not claim a fresh local pose"
+        );
+        pred.sync_from_replica(&replica, &mut world, 9);
+        let after = world.player_body().unwrap().position;
+        assert!(
+            (after[0] - predicted[0]).abs() < 1e-3,
+            "stale replica pose must not rewind predicted x: {after:?} vs {predicted:?}"
+        );
+        assert!(
+            (after[1] - predicted[1]).abs() < 1e-3,
+            "stale replica pose must not rewind predicted y: {after:?} vs {predicted:?}"
+        );
+    }
+
+    #[test]
+    fn landed_prediction_is_not_rewound_to_falling_replica() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let jump = PlayerInput::from_buttons_ext(false, false, true, false);
+        let idle = PlayerInput::idle();
+        tick_recorded(&mut pred, &mut world, jump, 2, 1);
+        for seq in 2..=24 {
+            tick_recorded(&mut pred, &mut world, idle, u64::from(seq) + 1, seq);
+        }
+        let landed = world.player_body().unwrap();
+        assert!(landed.grounded, "setup must have landed");
+        let floor_y = landed.position[1];
+        let mut falling = snap(2, 30, id, [spawn[0], spawn[1] + 1.5], [0.0, -8.0]);
+        falling.local_grounded = false;
+        falling.local_grounded_on = PlatformSupportId::NONE;
+        falling.last_acknowledged_input_sequence = 0;
+        let _ = replica.apply(falling);
+        pred.sync_from_replica(&replica, &mut world, 25);
+        let body = world.player_body().unwrap();
+        assert!(
+            body.grounded,
+            "local landing must not be rewound to a lagged falling replica"
+        );
+        assert!(
+            (body.position[1] - floor_y).abs() < 1e-3,
+            "must stay on the floor, got {} want {floor_y}",
+            body.position[1]
+        );
+    }
+
+    #[test]
+    fn idle_rest_does_not_restore_lagged_walk_velocity() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let right = PlayerInput::from_buttons_ext(false, true, false, false);
+        let idle = PlayerInput::idle();
+        for seq in 1..=12 {
+            tick_recorded(&mut pred, &mut world, right, u64::from(seq) + 1, seq);
+        }
+        for seq in 13..=36 {
+            tick_recorded(&mut pred, &mut world, idle, u64::from(seq) + 1, seq);
+        }
+        let settled = world.player_body().unwrap();
+        assert!(settled.grounded);
+        assert_eq!(settled.velocity[0], 0.0);
+        let rest_x = settled.position[0];
+        let tick_vx = pred.last_tick_velocity()[0];
+        assert_eq!(tick_vx, 0.0);
+        let mut lagged = snap(2, 40, id, [rest_x - 0.05, spawn[1]], [1.2, 0.0]);
+        lagged.local_grounded = true;
+        lagged.local_grounded_on = PlatformSupportId(1);
+        lagged.last_acknowledged_input_sequence = 36;
+        let _ = replica.apply(lagged);
+        pred.sync_from_replica(&replica, &mut world, 37);
+        let body = world.player_body().unwrap();
+        assert_eq!(
+            body.velocity[0], 0.0,
+            "must not rewind idle vx from replica"
+        );
+        assert!(
+            (body.position[0] - rest_x).abs() < 1e-4,
+            "idle X must stay, got {} want {rest_x}",
+            body.position[0]
+        );
+        assert_eq!(pred.last_tick_velocity()[0], 0.0);
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.8);
+        let extra = crate::local_presentation::extrapolate_tick_pose(
+            body.position,
+            pred.last_tick_velocity(),
+            rem,
+        );
+        assert_eq!(
+            extra[0], body.position[0],
+            "remainder extra must not sawtooth idle X"
+        );
+        let mut settled = snap(3, 50, id, [rest_x - 0.05, spawn[1]], [0.0, 0.0]);
+        settled.local_grounded = true;
+        settled.local_grounded_on = PlatformSupportId(1);
+        settled.last_acknowledged_input_sequence = 36;
+        let _ = replica.apply(settled);
+        pred.sync_from_replica(&replica, &mut world, 38);
+        let restored = world.player_body().unwrap();
+        assert!(
+            (restored.position[0] - (rest_x - 0.05)).abs() < 1e-3,
+            "idle replica with vx=0 must still restore, got {}",
+            restored.position[0]
+        );
+    }
+
+    #[test]
+    fn last_tick_velocity_drives_walk_remainder_not_replica() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let right = PlayerInput::from_buttons_ext(false, true, false, false);
+        tick_recorded(&mut pred, &mut world, right, 2, 1);
+        let vx = pred.last_tick_velocity()[0];
+        assert!(
+            vx > 1.0,
+            "walking tick must leave remainder velocity, got {vx}"
+        );
+        let pose = world.player_body().unwrap().position;
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.5);
+        let extra =
+            crate::local_presentation::extrapolate_tick_pose(pose, pred.last_tick_velocity(), rem);
+        assert!(
+            extra[0] > pose[0] + 0.01,
+            "walk remainder must still advance X"
+        );
+        assert_eq!(extra[1], pose[1]);
+    }
+
+    #[test]
+    fn remainder_extra_never_invents_vertical_on_jump_fall_land() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let rem = Duration::from_secs_f32(TICK_DURATION.as_secs_f32() * 0.9);
+        let jump = PlayerInput::from_buttons_ext(false, false, true, false);
+        let idle = PlayerInput::idle();
+        pred.tick(&mut world, jump, 2);
+        let mut airborne = false;
+        let mut landed = false;
+        let mut min_y = f32::MAX;
+        for t in 3..45u64 {
+            pred.tick(&mut world, idle, t);
+            let body = world.player_body().unwrap();
+            let current = pred.tick_pose().unwrap_or(body.position);
+            let composed = crate::local_presentation::compose_local_render_pose(
+                body.position,
+                pred.prev_tick_pose(),
+                current,
+                pred.last_tick_velocity(),
+                rem,
+            );
+            if let (Some(prev), Some(cur)) = (pred.prev_tick_pose(), pred.tick_pose()) {
+                let lo = prev[1].min(cur[1]);
+                let hi = prev[1].max(cur[1]);
+                assert!(
+                    composed[1] + 1e-4 >= lo && composed[1] <= hi + 1e-4,
+                    "rendered Y {} outside [{lo}, {hi}]",
+                    composed[1]
+                );
+            }
+            min_y = min_y.min(composed[1]);
+            if composed[1] < spawn[1] - 0.001 {
+                panic!(
+                    "presented Y {:.4} dropped below spawn floor {:.4}",
+                    composed[1], spawn[1]
+                );
+            }
+            if !body.grounded {
+                airborne = true;
+            } else if airborne {
+                landed = true;
+                assert!(
+                    (body.position[1] - spawn[1]).abs() < 0.05,
+                    "must land on the Solid floor, got {} want {}",
+                    body.position[1],
+                    spawn[1]
+                );
+                break;
+            }
+        }
+        assert!(airborne && landed, "jump must leave the ground and land");
+        assert!(
+            min_y + 0.002 >= spawn[1],
+            "presented Y must never cross the contact floor"
+        );
+        let right = PlayerInput::from_buttons_ext(false, true, false, false);
+        pred.tick(&mut world, right, 50);
+        let walking = world.player_body().unwrap();
+        let walk = crate::local_presentation::compose_local_render_pose(
+            walking.position,
+            pred.prev_tick_pose(),
+            pred.tick_pose().unwrap_or(walking.position),
+            pred.last_tick_velocity(),
+            rem,
+        );
+        assert!(walk[0] > walking.position[0] + 0.01);
+    }
+
+    #[test]
+    fn restore_snaps_y_interp_history() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let jump = PlayerInput::from_buttons_ext(false, false, true, false);
+        pred.tick(&mut world, jump, 2);
+        pred.tick(&mut world, PlayerInput::idle(), 3);
+        let airborne = world.player_body().unwrap().position;
+        assert!(pred.prev_tick_pose().is_some());
+        assert_ne!(
+            pred.prev_tick_pose().unwrap()[1],
+            pred.tick_pose().unwrap()[1]
+        );
+        auth_at(&mut replica, 2, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 4);
+        let prev = pred.prev_tick_pose().unwrap();
+        let cur = pred.tick_pose().unwrap();
+        assert_eq!(
+            prev[1], cur[1],
+            "hard/restore must not lerp from airborne Y"
+        );
+        assert!((cur[1] - spawn[1]).abs() < 0.05 || (cur[1] - airborne[1]).abs() < 0.05);
     }
 }

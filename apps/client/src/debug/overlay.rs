@@ -1205,12 +1205,19 @@ fn draw_camera_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut D
                 j.cam_x, j.desired_x, j.screen_x
             ));
             ui.label(format!(
-                "Corr {:.3} wu  this frame {}  follow X {}  offset ({:.3}, {:.3})",
+                "Corr {:.3} wu  extra Δx {:.4}  vx {:.3}  auth tick {}  this frame {}  follow X {}  offset ({:.3}, {:.3})",
                 j.corr_mag,
+                j.extra_dx,
+                j.velocity[0],
+                j.auth_tick,
                 if j.reconciled { "yes" } else { "no" },
                 if j.following_x { "yes" } else { "no" },
                 j.offset[0],
                 j.offset[1]
+            ));
+            ui.label(format!(
+                "Y lerp α {:.3}  prev Y {:.3}  tick Y {:.3}  presented Y {:.3}  vy {:.3}",
+                j.interp_alpha, j.prev_y, j.tick_y, j.presented_y, j.velocity[1]
             ));
             ui.label(format!(
                 "Screen-X range (180f) {:.3}  follow-X flips {}",
@@ -1538,7 +1545,7 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
                     .category_summary(InspectorCategory::Platforms)
             ));
             ui.small("Mailbox counts are server-authored. WantEnter / spatial candidates that are not Known are not in the replica and are not drawn.");
-            ui.small("Band labels (Enter AOI / Leave band / outside leave) are policy-rect presentation around the local pose, not a client interest decision.");
+            ui.small("Band labels (Enter AOI / Leave band / outside leave) are the server view-envelope policy around the local pose (viewport + Dead Zone + prefetch), not a client interest decision.");
             ui.small("ContentId is not on the replica (server placement only). Kinds: Player, Interactable, Portal. World vs Replication rows are labeled separately in World → Entities.");
             ui.checkbox(&mut ui_state.show_aoi_rects, "Show AOI Policy Rects");
             ui.checkbox(&mut ui_state.show_entity_labels, "Show entity labels");
@@ -1933,6 +1940,10 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
             ui.label(format!(
                 "Observed ack delta / jumps / max: {} / {} / {}",
                 snapshot.pred_ack_delta, snapshot.pred_ack_jump_count, snapshot.pred_max_ack_delta
+            ));
+            ui.label(format!(
+                "Remainder extra vel: ({:.3}, {:.3})  pending-window stalls: {}",
+                snapshot.pred_tick_vel[0], snapshot.pred_tick_vel[1], snapshot.pred_pending_stall
             ));
             ui.small("Ack delta is client-observed advancement between accepted snapshots. It is not late-collapse (delayed/skipped snapshots can jump ack).");
             ui.small(

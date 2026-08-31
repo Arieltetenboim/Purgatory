@@ -29,11 +29,13 @@ public static class PurgatoryStreamPump {
                         }
                     }
                     leftover.Append(Encoding.UTF8.GetString(buf, 0, n));
+                    leftover.Replace("\u0007", "");
                     string all = leftover.ToString();
                     int start = 0;
                     for (int i = 0; i < all.Length; i++) {
                         if (all[i] != '\n') { continue; }
                         string line = all.Substring(start, i - start).TrimEnd('\r');
+                        line = line.Replace("\u0007", "");
                         start = i + 1;
                         if (line.Length > 0) { EnqueueUi(name, line); }
                     }
@@ -42,6 +44,7 @@ public static class PurgatoryStreamPump {
                 }
                 if (leftover.Length > 0) {
                     string line = leftover.ToString().TrimEnd('\r', '\n');
+                    line = line.Replace("\u0007", "");
                     if (line.Length > 0) { EnqueueUi(name, line); }
                 }
             } catch { }
@@ -51,8 +54,16 @@ public static class PurgatoryStreamPump {
         t.Start();
     }
 
+    static bool IsNoisyLoadLine(string line) {
+        if (string.IsNullOrEmpty(line)) { return true; }
+        if (line.StartsWith("RUNNING ")) { return true; }
+        if (line.IndexOf("] Bots ", StringComparison.Ordinal) >= 0) { return true; }
+        return false;
+    }
+
     static void EnqueueUi(string name, string line) {
         if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(line)) { return; }
+        if (name == "load" && IsNoisyLoadLine(line)) { return; }
         string drop;
         while (UiQueue.Count >= UiCap) {
             if (!UiQueue.TryDequeue(out drop)) { break; }
@@ -134,6 +145,8 @@ function Start-OwnedProcess {
     $psi.UseShellExecute = $false
 
     if ($VisibleConsole) {
+        # Parent has FreeConsole()'d so this console app gets a real window
+        # instead of writing into DEV.BAT's hidden console (which dings).
         $psi.CreateNoWindow = $false
         $psi.RedirectStandardOutput = $false
         $psi.RedirectStandardError = $false
@@ -222,6 +235,20 @@ function Stop-OwnedProcess {
         Stop-ProcessTree -ProcessId $Process.Id
     }
     catch { }
+}
+
+function Test-ExeUnlocked {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    try {
+        $fs = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+        $fs.Close()
+        return $true
+    }
+    catch {
+        return $false
+    }
 }
 
 # Recovery-only: processes whose image path is under this workspace target\.

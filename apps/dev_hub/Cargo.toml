@@ -1,0 +1,20 @@
+[package]
+name = "purgatory-dev-hub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Provisional Developer Hub desktop application (eframe). Orchestration lives in purgatory-dev-runtime."
+
+[[bin]]
+name = "purgatory-dev-hub"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.36.1"
+purgatory-dev-runtime = { path = "../../crates/dev_runtime" }
+
+[lints]
+workspace = true

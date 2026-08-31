@@ -665,7 +665,7 @@ fn idle_grounded_position_is_bit_stable() {
     let revs = world
         .domain_revs_of(world.player_id().expect("player"))
         .expect("revs");
-    for _ in 0..30 {
+    for _ in 0..120 {
         world.tick(DT_30, PlayerInput::idle());
     }
     let later = player(&world);

@@ -78,15 +78,17 @@ If clients are already running, do not rebuild the client exe (Windows file lock
 
 ## Recovery / reopen
 
-On Developer Tools start:
+On Developer Tools / Hub start:
 
-1. Scan `target\` for `purgatory-server`, `purgatory-client`, `purgatory-load`.
-2. Adopt surviving processes (retain `Process` objects, subscribe Exited).
-3. If more than one server for this workspace, stop extras; keep one.
-4. Run readiness verification before declaring Ready.
-5. Do not kill a live server solely because its parent PID is dead (that used to mean “terminal tab closed”; now it usually means “Developer Tools was closed”).
+1. Scan this workspace `target\` for a `purgatory-server` whose **exe path** is under that prefix (PID alone is not identity; Windows may reuse PIDs).
+2. If none: **Stopped**. Do not report unexpected exit.
+3. If one: **Adopted** (origin is not Spawned), then **Starting → Verifying**, then `purgatory-load --probe`. Ready only after probe exit 0.
+4. If more than one server for this workspace, stop extras; keep one.
+5. Do not kill a live server because the Hub, `DEV_HUB.BAT`, or a parent PID is gone.
 
 Kill All / Stop still terminate workspace-owned trees. Cargo kill on Kill All is **recovery-scoped**: `cargo.exe` whose command line contains this repository root.
+
+The Hub GUI process does not own dedicated-server lifetime. Session-owned children (cargo, `--probe`, Runtime Validation harness) may exit with the Hub.
 
 ## Build lifecycle
 
@@ -101,10 +103,26 @@ BUILD REQUESTED
 
 There is no “saw cargo / exe timestamp / launch anyway” path. A hung cargo is Stoppable; it is not treated as success.
 
+## Runtime Validation
+
+Official Runtime Validation is a caller of the same server state machine, not a new `Validating` server state.
+
+```text
+Server Ready
+→ rebuild purgatory-load (runtime-val-prep)
+→ --print-server-env (hard-fail if stale/nonzero)
+→ stop server; start Detached with ExtraEnv + isolated persist
+→ existing --probe Ready
+→ session-owned purgatory-load --preset …
+→ harness exit 0/1/2/130
+```
+
+Cancel kills the harness (and ValidatePrep cargo), not the detached server. Load-mode ExtraEnv is generic `ServerLaunchOptions`, not a special spawn path.
+
 ## Load mode
 
 Load tests that need admission above the default restart the owned server with `PURGATORY_ADMISSION_CAP=256` and `PURGATORY_METRICS_PORT=5002`, wait until **Ready** plus metrics `admission_cap` / `max_entities_per_snapshot` compatibility, then start the harness. Same state machine as a normal server.
 
 ## Exit policy
 
-FormClosed releases the mutex and disposes UI resources. It does **not** stop server, client, load, or cargo. Footer text states this.
+FormClosed / Hub window close releases UI resources. It does **not** stop the dedicated server. Footer / status bar should make server state visible without returning to the Server page.

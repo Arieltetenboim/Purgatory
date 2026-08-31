@@ -112,8 +112,10 @@ function Request-Clients {
     }
 
     $clientsRunning = (Get-ClientLiveCount) -gt 0
-    if ($clientsRunning) {
-        Write-LaunchLog "WARNING: client already running; cannot rebuild. Launching existing exe."
+    $workspaceClients = @(Find-WorkspaceProcesses -Name "purgatory-client")
+    $exeLocked = -not (Test-ExeUnlocked -Path (Get-ClientExe))
+    if ($clientsRunning -or $workspaceClients.Count -gt 0 -or $exeLocked) {
+        Write-LaunchLog "WARNING: client already running; cannot rebuild (exe locked). Stop clients first to pick up a new build. Launching existing exe."
         Start-QueuedClientLaunches
         return
     }

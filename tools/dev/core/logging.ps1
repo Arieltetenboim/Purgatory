@@ -87,6 +87,45 @@ function Get-LogLineColor {
     return $script:LogColor
 }
 
+function Strip-LogBellCharacters {
+    param([string]$Line)
+
+    if ([string]::IsNullOrEmpty($Line)) { return $Line }
+    return $Line.Replace([string][char]7, "")
+}
+
+function Set-LogBoxSelection {
+    param($Box, [int]$Start, [int]$End)
+
+    if ($null -eq $Box -or $Box.IsDisposed) { return }
+    if (-not ("PurgatoryNative" -as [type])) { return }
+    try {
+        [void][PurgatoryNative]::SendMessage(
+            $Box.Handle,
+            [PurgatoryNative]::EM_SETSEL,
+            [IntPtr]$Start,
+            [IntPtr]$End
+        )
+    }
+    catch { }
+}
+
+function Scroll-LogBoxToEnd {
+    param($Box)
+
+    if ($null -eq $Box -or $Box.IsDisposed) { return }
+    if (-not ("PurgatoryNative" -as [type])) { return }
+    try {
+        [void][PurgatoryNative]::SendMessage(
+            $Box.Handle,
+            [PurgatoryNative]::WM_VSCROLL,
+            [IntPtr][PurgatoryNative]::SB_BOTTOM,
+            [IntPtr]::Zero
+        )
+    }
+    catch { }
+}
+
 function Add-LogBoxLine {
     param(
         $Box,
@@ -96,24 +135,23 @@ function Add-LogBoxLine {
     )
 
     if ($null -eq $Box -or $Box.IsDisposed) { return }
+    $Line = Strip-LogBellCharacters -Line $Line
     try {
         if ($MaxLines -gt 0 -and $Box.Lines.Count -gt $MaxLines) {
             $keep = [Math]::Max(1, [int]($MaxLines * 2 / 3))
             $cut = $Box.GetFirstCharIndexFromLine($Box.Lines.Count - $keep)
             if ($cut -gt 0) {
-                $Box.SelectionStart = 0
-                $Box.SelectionLength = $cut
-                $Box.SelectedText = ""
+                $Box.Text = $Box.Text.Substring($cut)
             }
         }
     }
     catch { }
-    $Box.SelectionStart = $Box.TextLength
-    $Box.SelectionLength = 0
-    $Box.SelectionColor = $Color
+    try {
+        if ($Box.Focused) { $Box.SelectionColor = $Color }
+    }
+    catch { }
     $Box.AppendText($Line + [Environment]::NewLine)
-    $Box.SelectionStart = $Box.TextLength
-    $Box.ScrollToCaret()
+    Scroll-LogBoxToEnd -Box $Box
 }
 
 function Write-LaunchLog {

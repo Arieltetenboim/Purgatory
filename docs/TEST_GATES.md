@@ -262,8 +262,8 @@ Owner Phase 0 clarifications:
 
 - Status: **GREEN (automated).** Manual Mixed/soak/Developer Tools/process-ownership evidence is **still required**.
 - Command/test: `./scripts/check.ps1` (includes `purgatory-content-validator`)
-- Date: 2026-08-30
-- Notes: Protocol stays v10. Metrics schema stays 3. `PURGATORY_LOAD_VALIDATION` is load-mode-only. Isolated persist / failure injection never uses `%LOCALAPPDATA%\Purgatory`. MixedRuntime is the canonical workload. Soak duration is configurable. Reports: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md), [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md), [`docs/PHASE_6G_QUEUE_INVENTORY.md`](PHASE_6G_QUEUE_INVENTORY.md). **Do not begin Phase 7.**
+- Date: 2026-08-31
+- Notes: Protocol stays v10. Metrics schema stays 3. `PURGATORY_LOAD_VALIDATION` is load-mode-only. Isolated persist / failure injection never uses `%LOCALAPPDATA%\Purgatory`. MixedRuntime is the canonical workload: persistent real QUIC baseline + independent churn + in-zone portal transition + AOI/replication over the soak (not timer `PortalActivate`, not “duration after all bots disconnected”). Soak duration is configurable. Gate re-run after the harness tick-path spawn / replica-lag portal walk fix (see [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md)). Reports: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md), [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md), [`docs/PHASE_6G_QUEUE_INVENTORY.md`](PHASE_6G_QUEUE_INVENTORY.md). **Do not begin Phase 7 until 6G is GREEN.** Planned Phase 7 gates: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md). Local-player standing jitter / falling remainder-Y clip were corrected on the presentation path (see 6G report); the ~128-client load stall remains a separate unresolved empirical issue and is **not** marked fixed.
 
 ## Developer Tools — connection probe (tooling, not a gameplay phase)
 
@@ -271,6 +271,22 @@ Owner Phase 0 clarifications:
 - Command/test: `cargo test -p purgatory-bot-client`; `purgatory-load --probe` is exercised by those tests (parse + fail-when-nothing-listens). Full Ready path is a manual/integration check via `DEV.BAT`.
 - Notes: Protocol stays v10. Probe login `dev.probe` uses the normal persist/enter path (documented debt). Docs: [`docs/dev-tools/`](dev-tools/README.md).
 
+## Developer Tools — Hub Slice 1 / 1.1 (tooling, not a gameplay phase)
+
+- Status: recorded. Not a 6G gameplay gate and not Phase 7.
+- Command/test: `cargo test -p purgatory-dev-runtime` (22 passed, 1 ignored real-process lifetime test run separately and passed). `cargo test -p purgatory-dev-hub` (2 passed). `./scripts/check.ps1` GREEN on 2026-08-31 (including `leave_then_reenter_sends_baseline_again`; that test had been a pre-existing dirty-tree failure in an earlier Hub Slice 1 gate and was **not** changed in this work).
+- Notes: ADR-0052. Headless orchestration + provisional eframe application shell. `DEV_HUB.BAT` builds then launches `purgatory-dev-hub.exe` independently. Dedicated server is detached from Hub lifetime; reopen adopts + `--probe` before Ready. Dashboard / Runtime → Server / Logs are live. PowerShell `DEV.BAT` remains the operational fallback. Inventory: [`docs/dev-tools/PARITY.md`](dev-tools/PARITY.md).
+
+## Developer Tools — Hub Slice 2 Runtime Validation (tooling, not a gameplay phase)
+
+- Status: recorded. Not a 6G gameplay gate and not Phase 7. Slice 3 (load dialog) is not started.
+- Command/test: `cargo test -p purgatory-dev-runtime` (37 passed; 1 ignored real-process lifetime test unchanged). `cargo test -p purgatory-dev-hub` (2 passed). `./scripts/check.ps1` GREEN on 2026-08-31 (including `leave_then_reenter_sends_baseline_again`; replication was not changed).
+- Notes: Official RV rebuilds `purgatory-load`, captures `--print-server-env`, restarts a detached load-mode server, waits for existing `--probe` Ready, then runs a session-owned harness. CLI exit is pass/fail. Workspace lock `logs/dev-tools/hub.lock` refuses a second Hub. Cancel kills the harness, not the server. Manual smoke (`--preset smoke`, 20s) and a second-Hub lock check are still required. Inventory: [`docs/dev-tools/PARITY.md`](dev-tools/PARITY.md).
+
 ## Later gates
 
-Gates 7–17 remain pending until their phases start (Phase 7 client reconciliation already shipped as 5.5). Phase 5 is GREEN; Phase 6.0 / 6A / 6B / 6C / 6D / 6E / 6F / 6G (automated) are GREEN. **Do not begin gameplay Phase 7 (MOB).**
+Legacy Gate 7 (client reconciliation / input replay) already shipped as Phase 5.5. Legacy Gates 8–17 follow superseded numbering and are **not** the post-6G sequence.
+
+Gameplay Phase 7 is **planned, not started.** Sub-stage gates (7A–7E) are defined in [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) and will be recorded here when each stage starts. **Do not begin Phase 7 until 6G is GREEN** (automated gate is recorded; manual Mixed/soak/process-ownership and open AOI evidence still required). Standing-jitter / falling remainder-Y were corrected on the local presentation path; quiet-play visual sign-off is still required. The ~128-client load stall remains unresolved. A 30-minute soak is **not** required for every Phase 7 sub-stage.
+
+Phase 5 is GREEN; Phase 6.0 / 6A / 6B / 6C / 6D / 6E / 6F / 6G (automated) are GREEN. 6G is not marked complete.
