@@ -1,6 +1,8 @@
 # Phase 6G — Runtime Hardening, Integrated Scale Validation
 
-Phase marker: `6G`. Protocol **v10**. Metrics schema **3** (not bumped). Do **not** begin Phase 7 (MOB).
+Phase marker: `6G`. Protocol **v10**. Metrics schema **4** (execution totals; gauges unchanged).
+
+**Status (2026-09-01):** **GREEN — architecture closed, production replication-policy tuning deferred.** Closing chain completed in 6G.7A–C; see [`docs/PHASE_6G7C_REPORT.md`](PHASE_6G7C_REPORT.md). Phase 7 remains **not started** until instructed.
 
 ## Implemented scope
 
@@ -62,7 +64,7 @@ Prerequisite for that workspace run: four `purgatory-client` camera/presentation
 
 ## Deviations from the original plan
 
-- No metrics schema 4: schema 3 already exports scheduler, AOI, actions, events, spawn queue, cadence, rejects, observer pending. Missing candidates (`effects_active`, persist save counters, occupancy, non-player entity count) were inventoried and not added.
+- Schema 4 adds monotonic execution totals (`scheduler_*_executed_total`, action/effect/spawn/cadence/entity counters) so Mixed validation can be audited from `run_summary.json` when 1 Hz gauges of queue depth / active count stay zero. `effects_active` and persist save counters remain off the datagram. Domain timings stay 6G.2 run artifacts.
 - Welcome still has no `CharacterId`. Same-login identity is occupancy / `AlreadyConnected` / in-process tests. `EntityId` comes from `ReplicationFrame.local_player_entity`.
 - Portal churn uses existing `ReplicatedKind::Portal` replica data; no test-only protocol. In-process portal ordering remains in earlier phase tests.
 - Soak duration is `--duration` overlayable; 30 minutes is the soak **preset default**, not the only soak definition. Mixed/soak duration is real-client continuity, not “harness process stayed alive after bots dropped.”

@@ -7,11 +7,15 @@ pub const LISTEN_PORT: u16 = 5001;
 pub const METRICS_PORT: u16 = 5002;
 
 pub const SERVER_PACKAGE: &str = "purgatory-server";
+pub const CLIENT_PACKAGE: &str = "purgatory-client";
 pub const LOAD_PACKAGE: &str = "purgatory-bot-client";
 pub const LOAD_BIN: &str = "purgatory-load";
 pub const SERVER_STEM: &str = "purgatory-server";
+pub const CLIENT_STEM: &str = "purgatory-client";
 pub const LOAD_STEM: &str = "purgatory-load";
 pub const LOAD_ADMISSION_CAP: u16 = 256;
+
+pub const CLIENT_STAGGER: Duration = Duration::from_millis(140);
 
 pub const READY_TIMEOUT: Duration = Duration::from_secs(45);
 pub const PROBE_RETRY: Duration = Duration::from_secs(1);

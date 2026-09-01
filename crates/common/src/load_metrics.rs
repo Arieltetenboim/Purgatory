@@ -3,27 +3,27 @@
 //! Used by the development UDP metrics export on the server and by the
 //! headless load harness. Not part of gameplay protocol v4.
 //!
-//! Schema **3** (Phase 6F) already exports scheduler, AOI, actions, events,
-//! spawn queue, cadence, command rejects, and observer pending gauges.
-//! Phase 6G records those fields in run CSV/summary. Do not bump the schema
-//! merely because 6G exists.
+//! Schema **4** adds monotonic execution totals so Mixed validation can prove
+//! scheduler/action/effect/spawn/cadence work ran even when 1 Hz gauge samples
+//! of queue depth / active count stay zero. Schema 3 gauges remain. Do not
+//! put 6G.2 domain timings on this datagram (those stay run artifacts).
 //!
-//! Schema 4 candidates (not added yet — none of these are on the datagram):
-//! `effects_active`, persistence save requested/coalesced/completed/failed/
-//! queue depth/stale revision, non-player runtime entity count, occupancy
-//! count, event next-buffer depth. Bump only if exporting them materially
-//! improves validation, and update the datagram-size test together.
+//! Remaining schema candidates (not added): `effects_active` as a live gauge,
+//! persistence save counters, occupancy, non-player entity count. Bump only
+//! if exporting them materially improves validation, and update the
+//! datagram-size test together. Schema 4 needs a 4096-byte localhost cap
+//! (was 2048) so execution-total field names fit beside existing gauges.
 
 use serde::{Deserialize, Serialize};
 
 /// Schema version for [`LoadMetricsV1`]. Bump when fields change meaning.
-pub const LOAD_METRICS_SCHEMA_VERSION: u32 = 3;
+pub const LOAD_METRICS_SCHEMA_VERSION: u32 = 4;
 
 /// Request magic bytes: `PURGSTAT` (8) + version u8.
 pub const METRICS_REQUEST_MAGIC: &[u8; 8] = b"PURGSTAT";
 pub const METRICS_REQUEST_VERSION: u8 = 1;
 pub const METRICS_MAX_REQUEST_BYTES: usize = 32;
-pub const METRICS_MAX_DATAGRAM_BYTES: usize = 2048;
+pub const METRICS_MAX_DATAGRAM_BYTES: usize = 4096;
 pub const DEFAULT_METRICS_PORT: u16 = 5002;
 
 /// Flat numeric snapshot exported at ~1 Hz for load testing.
@@ -133,6 +133,32 @@ pub struct LoadMetricsV1 {
     pub observer_pending_enters: u64,
     #[serde(default)]
     pub cadence_deferred_updates: u64,
+    #[serde(default)]
+    pub scheduler_scheduled_total: u64,
+    #[serde(default)]
+    pub scheduler_cancelled_total: u64,
+    #[serde(default)]
+    pub scheduler_critical_executed_total: u64,
+    #[serde(default)]
+    pub scheduler_deferred_executed_total: u64,
+    #[serde(default)]
+    pub actions_started_total: u64,
+    #[serde(default)]
+    pub actions_completed_total: u64,
+    #[serde(default)]
+    pub effects_applied_total: u64,
+    #[serde(default)]
+    pub effects_expired_total: u64,
+    #[serde(default)]
+    pub spawn_requests_total: u64,
+    #[serde(default)]
+    pub spawns_completed_total: u64,
+    #[serde(default)]
+    pub despawns_completed_total: u64,
+    #[serde(default)]
+    pub cadence_executions_total: u64,
+    #[serde(default)]
+    pub entities_spawned_total: u64,
 }
 
 impl LoadMetricsV1 {
@@ -234,14 +260,79 @@ mod tests {
     }
 
     #[test]
-    fn schema3_default_fits_datagram() {
+    fn schema_default_fits_datagram() {
         let encoded = encode_metrics_response(&LoadMetricsV1::with_schema()).expect("encode");
-        assert!(encoded.len() <= METRICS_MAX_DATAGRAM_BYTES);
+        assert!(
+            encoded.len() <= METRICS_MAX_DATAGRAM_BYTES,
+            "datagram {} exceeds max {}",
+            encoded.len(),
+            METRICS_MAX_DATAGRAM_BYTES
+        );
         assert_eq!(
             decode_metrics_response(&encoded)
                 .expect("decode")
                 .metrics_schema_version,
             LOAD_METRICS_SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn schema4_populated_totals_fit_datagram() {
+        let mut m = LoadMetricsV1::with_schema();
+        m.scheduler_scheduled_total = 10_000_000;
+        m.scheduler_cancelled_total = 1_000_000;
+        m.scheduler_critical_executed_total = 5_000_000;
+        m.scheduler_deferred_executed_total = 5_000_000;
+        m.actions_started_total = 100_000;
+        m.actions_completed_total = 100_000;
+        m.effects_applied_total = 100_000;
+        m.effects_expired_total = 100_000;
+        m.spawn_requests_total = 50_000;
+        m.spawns_completed_total = 50_000;
+        m.despawns_completed_total = 50_000;
+        m.cadence_executions_total = 2_000_000;
+        m.entities_spawned_total = 200_000;
+        m.events_produced = 8_000_000;
+        m.events_processed = 8_000_000;
+        let encoded = encode_metrics_response(&m).expect("encode");
+        assert!(
+            encoded.len() <= METRICS_MAX_DATAGRAM_BYTES,
+            "populated datagram {} exceeds max {}",
+            encoded.len(),
+            METRICS_MAX_DATAGRAM_BYTES
+        );
+    }
+
+    #[test]
+    fn schema3_json_decodes_new_totals_as_zero() {
+        let mut legacy = LoadMetricsV1::with_schema();
+        legacy.metrics_schema_version = 3;
+        legacy.scheduler_scheduled_total = 0;
+        let json = serde_json::to_vec(&legacy).expect("json");
+        // Drop schema-4 keys so this is a true schema-3 body.
+        let mut value: serde_json::Value = serde_json::from_slice(&json).expect("parse");
+        if let serde_json::Value::Object(map) = &mut value {
+            for key in [
+                "scheduler_scheduled_total",
+                "scheduler_cancelled_total",
+                "scheduler_critical_executed_total",
+                "scheduler_deferred_executed_total",
+                "actions_started_total",
+                "actions_completed_total",
+                "effects_applied_total",
+                "effects_expired_total",
+                "spawn_requests_total",
+                "spawns_completed_total",
+                "despawns_completed_total",
+                "cadence_executions_total",
+                "entities_spawned_total",
+            ] {
+                map.remove(key);
+            }
+        }
+        let stripped = serde_json::to_vec(&value).expect("strip");
+        let decoded: LoadMetricsV1 = serde_json::from_slice(&stripped).expect("decode");
+        assert_eq!(decoded.scheduler_scheduled_total, 0);
+        assert_eq!(decoded.entities_spawned_total, 0);
     }
 }

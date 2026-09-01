@@ -34,8 +34,17 @@ Phases execute in order. A later phase starts only after the current gate is gre
 | 6D | Runtime query, AOI, replication relevance | complete (automated); **TRANSITION INPUT BARRIER READY FOR USER CHECK** |
 | 6E | Character + persistence | complete (automated); **manual first-connect / reconnect / restart / duplicate-login check still required** |
 | 6F | Runtime gameplay readiness | complete (automated); **manual two-client dirty/AOI + opt-in probe check still required** |
-| 6G | Runtime hardening + integrated scale validation | complete (automated); **manual Mixed/soak/process-ownership evidence still required** |
-| 7 | Gameplay vocabulary (attributes, actions, runtime actor) | **planned, not started** — blocked on 6G GREEN. Plan: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) |
+| 6G | Runtime hardening + integrated scale validation | **GREEN 2026-09-01** — architecture closed; production policy tuning deferred |
+| 6G.2 | Capacity characterization (instrument + ladder + soak) | **recorded 2026-09-01** — closed |
+| 6G.3 | Targeted AOI fan-out optimization | **recorded 2026-09-01** — idle@256 AOI/tick ↓; motion AOI remains |
+| 6G.4 | Motion / capacity gate (measure only) | **recorded 2026-09-01** — **A: GREEN WITH KNOWN LIMIT** |
+| 6G.5 | Incremental AOI invalidation | **recorded 2026-09-01** — global gen removed; locality proven; hotspot@256 AOI↓ |
+| 6G.6 | AOI locality + relevance replication characterization | **recorded 2026-09-01** — recommendation **D** (drove 6G.7A–C) |
+| 6G.7A | Exact incremental AOI invalidation (enter/leave XOR) | **recorded 2026-09-01** — dirtied/move ≈1.5–1.8; accepted/closed for AOI scope |
+| 6G.7B | Dirty-driven replication fan-out foundation | **recorded 2026-09-01** — scanned/update ≈1.3; idle scanned=0; accepted/closed for fan-out scope |
+| 6G.7C | Relationship / density / budget policy foundation | **recorded 2026-09-01** — selective ≈3× fewer hotspot updates; **accepted; closes 6G architecture** |
+| 6G.4 | Performance regression gate | deferred follow-up — budgets from measured results (not required to reopen 6G) |
+| 7 | Gameplay vocabulary (attributes, actions, runtime actor) | **planned, not started** — unblocked by 6G GREEN; do not begin until instructed. Plan: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) |
 | 8 | Content foundation | legacy numbering (superseded) |
 | 9 | Combat core | legacy numbering (superseded) |
 | 10 | Loot, inventory, and progression | legacy numbering (superseded) |
@@ -47,7 +56,7 @@ Phases execute in order. A later phase starts only after the current gate is gre
 | 16 | Content authoring quality | legacy numbering (superseded) |
 | 17 | Hardening | legacy numbering (superseded) |
 
-Legacy roadmap numbering is **superseded by the post-6G roadmap**. Historical completed work is unchanged: client reconciliation (legacy table Phase 7 / master-plan §14) shipped as Phase 5.5; maps/content, character persistence, AOI/interest, and scale harness shipped inside Phase 6 / 5.7 without consuming legacy rows 8–13. Rows 8–17 remain historical product direction from the master execution plan; they are **not** the next implementation order. Post-6G Phase 7 is defined in [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) and is **not started**. Do not mark 6G complete.
+Legacy roadmap numbering is **superseded by the post-6G roadmap**. Historical completed work is unchanged: client reconciliation (legacy table Phase 7 / master-plan §14) shipped as Phase 5.5; maps/content, character persistence, AOI/interest, and scale harness shipped inside Phase 6 / 5.7 without consuming legacy rows 8–13. Rows 8–17 remain historical product direction from the master execution plan; they are **not** the next implementation order. **Phase 6G is GREEN** (architecture closed; production replication-policy tuning deferred). Post-6G Phase 7 is defined in [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) and is **not started** until explicitly instructed.
 
 ## Phase 0 notes
 
@@ -280,16 +289,25 @@ Legacy roadmap numbering is **superseded by the post-6G roadmap**. Historical co
 
 ## Phase 6G notes
 
-- Final Phase 6 hardening / integrated validation. Protocol **v10**. Metrics schema **3**. Synthetic pressure is `PURGATORY_LOAD_VALIDATION` JSON, applied only in load-mode. MixedRuntime is the canonical workload (persistent real clients + churn + in-zone portal + AOI over `--duration`). Soak duration is configurable; ~30 min Mixed is initial evidence, not a magic threshold.
+- Final Phase 6 hardening / integrated validation. Protocol **v10**. Metrics schema **4** (execution totals). Synthetic pressure is `PURGATORY_LOAD_VALIDATION` JSON, applied only in load-mode. MixedRuntime is the canonical workload (persistent real clients + churn + in-zone portal + AOI over `--duration`). Soak duration is configurable; ~30 min Mixed is initial evidence, not a magic threshold.
 - AOI interest is a server-derived visible-view envelope (FOOTNOTE viewport + Dead Zone + camera clamp) plus 2 wu prefetch and 2 wu leave hysteresis, not a player-centered `[16, 9]` radius. Client camera coordinates are not trusted.
 - Welcome does not expose `CharacterId`. Queue inventory before new caps: [`docs/PHASE_6G_QUEUE_INVENTORY.md`](PHASE_6G_QUEUE_INVENTORY.md).
-- Report: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md). Exit review: [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md). **Do not begin Phase 7.** Planned next phase after 6G GREEN: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) (gameplay vocabulary). Not started. 6G is not complete while manual Mixed/soak/process-ownership and open AOI evidence remain.
-- Local-player standing jitter (~0.02 wu X while idle): remainder extra was using replica velocity after an empty-pending restore. Extra now uses last locally executed tick velocity; `rest_lead` skips leftover walk-`vx` rewind. Falling extra keeps tick Y (FOOTNOTE contact is tick-only). Local Y presentation lerps between consecutive predicted tick poses so jump ascent and descent are render-rate smooth without renderer collision.
-- The previously observed ~128-client load stall is a **separate unresolved empirical issue**. This pass did not reproduce it and did not change `PREDICTION_PENDING_CAP` (128). `pending_window_stall_ticks` is instrumentation only for the upcoming capacity phase.
+- Report: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md). Exit review: [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md). **6G = GREEN — architecture closed, production policy tuning deferred.** Next: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) (gameplay vocabulary). **Not started** until instructed.
+- **6G endpoint reinterpretation (ADR-0053):** 6G.1 correctness → **6G.2** capacity characterization → 6G.3–6G.7C remediation/foundation → GREEN. Freeze doc: [`docs/MMO_RUNTIME_BASELINE.md`](MMO_RUNTIME_BASELINE.md).
+- Local-player standing jitter and floor-clip/landing are **closed** (presentation path + owner confirmation). Duration overlay (`timeout >= duration`) is closed in CLI.
+- The previously observed ~128-client load stall was **investigated with 6G.2 timings** and **not reproduced** as a server-domain hang/blow-up on this machine (see [`PHASE_6G2_REPORT.md`](PHASE_6G2_REPORT.md)). `PREDICTION_PENDING_CAP` stays 128.
+- Capacity Pass 1 recorded: coarse tick domains + process CPU/memory as **run artifacts** (`PURGATORY_CAPACITY_ARTIFACT_DIR`). Report: [`docs/PHASE_6G2_REPORT.md`](PHASE_6G2_REPORT.md).
+- **6G.3 (targeted AOI):** skip steady-interest classify + single unsorted candidate query. Idle@256 AOI/tick ≈ half; continuous-motion AOI still O(observers×candidates). Report: [`docs/PHASE_6G3_REPORT.md`](PHASE_6G3_REPORT.md).
+- **6G.4 (motion gate, measure only):** distributed + hotspot @ 64/128/256. Classification **A — GREEN WITH KNOWN LIMIT** (128 motion stable with headroom; 256 characterized limit). Report: [`docs/PHASE_6G4_REPORT.md`](PHASE_6G4_REPORT.md).
+- **6G.5 (incremental AOI invalidation):** replaced global `interest_generation` with per-observer dirty + spatial influence invalidation. Report: [`docs/PHASE_6G5_REPORT.md`](PHASE_6G5_REPORT.md).
+- **6G.6 (locality + relevance characterization):** recommendation **D** (drove 6G.7A–C). Report: [`docs/PHASE_6G6_REPORT.md`](PHASE_6G6_REPORT.md).
+- **6G.7A (exact AOI XOR invalidation):** influence prefilter + enter/leave XOR; tiny-move dirties mover only. Report: [`docs/PHASE_6G7A_REPORT.md`](PHASE_6G7A_REPORT.md).
+- **6G.7B (dirty replication fan-out foundation):** entity/domain dirty → interested-observer pending → existing cadence/budget packer. Report: [`docs/PHASE_6G7B_REPORT.md`](PHASE_6G7B_REPORT.md).
+- **6G.7C (relationship/density/budget policy foundation):** same protocol; selective stranger cadence/domain/priority; hotspot updates ≈3× down vs baseline. Accepted recommendation **A**. Report: [`docs/PHASE_6G7C_REPORT.md`](PHASE_6G7C_REPORT.md). Design: [`docs/PHASE_6G7C_DESIGN.md`](PHASE_6G7C_DESIGN.md). **Closes 6G architecture.**
 
 ## Phase 7 notes
 
-- Status: **planned, not started.** Implementation must not begin until Phase 6G is declared GREEN.
+- Status: **planned, not started.** Unblocked by 6G GREEN; do not begin until explicitly instructed.
 - Purpose: content-driven attributes/resources/modifiers and executable actions, proven by a server runtime actor, then actor replication/presentation, then a player-issued authored action request. Combat, inventory, production UI, and mouse/pointer foundation are out of scope.
 - Sub-stages: 7A attributes/resources/modifiers → 7B action execution → 7C runtime actor foundation → 7D actor replication/presentation → 7E player action request. Canonical text: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md).
 - Legacy “Phase 7 = client reconciliation” remains historically true as Phase 5.5; that numbering is superseded for work after 6G.

@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use crate::config::{LOAD_STEM, SERVER_STEM};
+use crate::config::{CLIENT_STEM, LOAD_STEM, SERVER_STEM};
+use crate::settings::BuildProfile;
 
 #[derive(Clone, Debug)]
 pub struct WorkspacePaths {
     pub root: PathBuf,
+    pub profile: BuildProfile,
 }
 
 impl WorkspacePaths {
@@ -15,13 +17,19 @@ impl WorkspacePaths {
         if let Ok(cwd) = std::env::current_dir()
             && let Some(root) = walk_for_root(&cwd)
         {
-            return Ok(Self { root });
+            return Ok(Self {
+                root,
+                profile: BuildProfile::Debug,
+            });
         }
         if let Ok(exe) = std::env::current_exe()
             && let Some(start) = exe.parent()
             && let Some(root) = walk_for_root(start)
         {
-            return Ok(Self { root });
+            return Ok(Self {
+                root,
+                profile: BuildProfile::Debug,
+            });
         }
         Err("could not find PURGATORY workspace root (PHASE + Cargo.toml)".to_string())
     }
@@ -33,7 +41,14 @@ impl WorkspacePaths {
                 root.display()
             ));
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            profile: BuildProfile::Debug,
+        })
+    }
+
+    pub fn set_profile(&mut self, profile: BuildProfile) {
+        self.profile = profile;
     }
 
     pub fn target_prefix(&self) -> PathBuf {
@@ -41,11 +56,15 @@ impl WorkspacePaths {
     }
 
     pub fn profile_dir(&self) -> PathBuf {
-        self.target_prefix().join("debug")
+        self.target_prefix().join(self.profile.as_str())
     }
 
     pub fn server_exe(&self) -> PathBuf {
         self.profile_dir().join(exe_name(SERVER_STEM))
+    }
+
+    pub fn client_exe(&self) -> PathBuf {
+        self.profile_dir().join(exe_name(CLIENT_STEM))
     }
 
     pub fn load_exe(&self) -> PathBuf {
@@ -55,41 +74,53 @@ impl WorkspacePaths {
     pub fn dev_log_dir(&self) -> PathBuf {
         self.root.join("logs").join("dev-tools")
     }
-}
 
-pub fn exe_name(stem: &str) -> String {
-    if cfg!(windows) {
-        format!("{stem}.exe")
-    } else {
-        stem.to_string()
+    pub fn check_script(&self) -> PathBuf {
+        self.root.join("scripts").join("check.ps1")
     }
 }
 
-fn walk_for_root(start: &Path) -> Option<PathBuf> {
-    let mut dir = start.to_path_buf();
-    loop {
-        if dir.join("PHASE").is_file() && dir.join("Cargo.toml").is_file() {
-            return Some(dir);
-        }
-        if !dir.pop() {
-            return None;
-        }
+pub fn exe_name(stem: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("{stem}.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        stem.to_string()
     }
 }
 
 pub fn find_in_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
+        let candidate = dir.join(exe_name(name));
         if candidate.is_file() {
             return Some(candidate);
         }
-        if cfg!(windows) {
-            let exe = dir.join(format!("{name}.exe"));
-            if exe.is_file() {
-                return Some(exe);
+        #[cfg(windows)]
+        {
+            let bat = dir.join(format!("{name}.bat"));
+            if bat.is_file() {
+                return Some(bat);
+            }
+            let cmd = dir.join(format!("{name}.cmd"));
+            if cmd.is_file() {
+                return Some(cmd);
             }
         }
     }
     None
+}
+
+fn walk_for_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = start.to_path_buf();
+    loop {
+        if cur.join("PHASE").is_file() && cur.join("Cargo.toml").is_file() {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
 }

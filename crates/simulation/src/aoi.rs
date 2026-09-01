@@ -36,6 +36,15 @@ pub const AOI_POLICY_HALF_EXTENTS: [f32; 2] = [
     FOOTNOTE_TEST_VIEWPORT_HEIGHT * 0.5 + AOI_CAMERA_DEAD_ZONE_HALF[1] + AOI_PREFETCH_MARGIN,
 ];
 
+/// Conservative half-extents for inverse observer invalidation (6G.5).
+///
+/// Any observer who could gain/lose an entity at pose `P` under leave policy
+/// must lie inside expand(`P`, these halves). Sized from FOOTNOTE measured max
+/// distance from an observer to a point in their leave rect (edge clamp makes
+/// this larger than [`AOI_POLICY_HALF_EXTENTS`] + leave margin). Guarded by
+/// `measure_max_leave_extent_from_observer` / `influence_covers_leave_inverse_on_footnote`.
+pub const AOI_INFLUENCE_HALF_EXTENTS: [f32; 2] = [28.5, 17.6];
+
 /// Enter/leave policy rectangles for one observer pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AoiRects {
@@ -196,6 +205,73 @@ mod tests {
         let rects = aoi_policy_rects([0.0, 0.0], bounds);
         assert!(rects.leave.size()[0] < bounds.width() - 1.0);
         assert!(rects.leave.size()[1] <= bounds.height() + 1e-3);
+    }
+
+    #[test]
+    fn measure_max_leave_extent_from_observer() {
+        let bounds = WorldBounds::FOOTNOTE_TEST;
+        let mut max_dx = 0.0f32;
+        let mut max_dy = 0.0f32;
+        let step = 0.5;
+        let mut ox = bounds.min_x + 0.5;
+        while ox <= bounds.max_x - 0.5 {
+            let mut oy = bounds.min_y + 0.5;
+            while oy <= bounds.max_y - 0.5 {
+                let rects = aoi_policy_rects([ox, oy], bounds);
+                max_dx = max_dx
+                    .max((rects.leave.max_x() - ox).abs())
+                    .max((rects.leave.min_x() - ox).abs());
+                max_dy = max_dy
+                    .max((rects.leave.max_y() - oy).abs())
+                    .max((rects.leave.min_y() - oy).abs());
+                oy += step;
+            }
+            ox += step;
+        }
+        eprintln!("FOOTNOTE max leave extent dx={max_dx} dy={max_dy}");
+        assert!(
+            AOI_INFLUENCE_HALF_EXTENTS[0] + 1e-3 >= max_dx,
+            "influence x {} < max leave extent {}",
+            AOI_INFLUENCE_HALF_EXTENTS[0],
+            max_dx
+        );
+        assert!(
+            AOI_INFLUENCE_HALF_EXTENTS[1] + 1e-3 >= max_dy,
+            "influence y {} < max leave extent {}",
+            AOI_INFLUENCE_HALF_EXTENTS[1],
+            max_dy
+        );
+    }
+
+    #[test]
+    fn influence_covers_leave_inverse_on_footnote() {
+        let bounds = WorldBounds::FOOTNOTE_TEST;
+        let half = AOI_INFLUENCE_HALF_EXTENTS;
+        let step = 2.0;
+        let mut ox = bounds.min_x + 0.5;
+        while ox <= bounds.max_x - 0.5 {
+            let mut oy = bounds.min_y + 0.5;
+            while oy <= bounds.max_y - 0.5 {
+                let rects = aoi_policy_rects([ox, oy], bounds);
+                let mut ex = bounds.min_x + 0.5;
+                while ex <= bounds.max_x - 0.5 {
+                    let mut ey = bounds.min_y + 0.5;
+                    while ey <= bounds.max_y - 0.5 {
+                        if point_in_aabb([ex, ey], rects.leave) {
+                            assert!(
+                                (ox - ex).abs() <= half[0] + 1e-3
+                                    && (oy - ey).abs() <= half[1] + 1e-3,
+                                "observer ({ox},{oy}) sees entity ({ex},{ey}) in leave but outside influence"
+                            );
+                        }
+                        ey += step;
+                    }
+                    ex += step;
+                }
+                oy += step;
+            }
+            ox += step;
+        }
     }
 
     #[test]

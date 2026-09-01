@@ -92,8 +92,21 @@ impl FakeHealthSource {
     }
 
     pub fn healthy() -> Self {
+        let mut metrics = LoadMetricsV1::with_schema();
+        metrics.admission_cap = 256;
+        metrics.max_entities_per_snapshot = 256;
         Self {
-            metrics: Some(LoadMetricsV1::with_schema()),
+            metrics: Some(metrics),
+            listener: ListenerDiag::Yes,
+        }
+    }
+
+    pub fn load_incompatible() -> Self {
+        let mut metrics = LoadMetricsV1::with_schema();
+        metrics.admission_cap = 1;
+        metrics.max_entities_per_snapshot = 1;
+        Self {
+            metrics: Some(metrics),
             listener: ListenerDiag::Yes,
         }
     }

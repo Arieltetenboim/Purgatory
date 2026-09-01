@@ -35,6 +35,10 @@ pub trait ProcessBackend {
     /// Drop the wait-handle without killing. Used so Hub exit does not reap a detached server.
     fn detach(&mut self, pid: u32);
     fn run_capture(&mut self, spec: SpawnSpec) -> Result<CapturedOutput, String>;
+    /// Visible console (quality gate / analyze). Detached from Hub lifetime.
+    fn spawn_visible(&mut self, spec: SpawnSpec) -> Result<u32, String>;
+    /// Kill All only: cargo.exe whose command line contains this workspace root.
+    fn kill_workspace_cargo(&mut self, root: &Path) -> usize;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -214,6 +218,34 @@ impl ProcessBackend for StdProcessBackend {
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
+
+    fn spawn_visible(&mut self, spec: SpawnSpec) -> Result<u32, String> {
+        let mut cmd = Command::new(&spec.program);
+        cmd.args(&spec.args).current_dir(&spec.cwd);
+        for (k, v) in &spec.env {
+            cmd.env(k, v);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0000_0010 | CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP);
+        }
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to start visible {}: {e}", spec.program.display()))?;
+        let pid = child.id();
+        self.children.insert(pid, OwnedChild::Detached(child));
+        Ok(pid)
+    }
+
+    fn kill_workspace_cargo(&mut self, root: &Path) -> usize {
+        let pids = discover_workspace_cargo(root);
+        let n = pids.len();
+        for pid in pids {
+            self.kill_tree(pid);
+        }
+        n
+    }
 }
 
 fn open_inheritable_append(path: &Path) -> Result<std::fs::File, String> {
@@ -359,6 +391,40 @@ fn discover_pid_exists(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
+fn discover_workspace_cargo(root: &Path) -> Vec<u32> {
+    use sysinfo::{ProcessesToUpdate, System};
+    let root_needle = root.to_string_lossy().to_lowercase();
+    if root_needle.is_empty() {
+        return Vec::new();
+    }
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let mut out = Vec::new();
+    for (pid, proc) in sys.processes() {
+        let name = proc.name().to_string_lossy();
+        if !(name.eq_ignore_ascii_case("cargo.exe") || name.eq_ignore_ascii_case("cargo")) {
+            continue;
+        }
+        let line = proc
+            .cmd()
+            .iter()
+            .map(|s| s.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        if line.contains(&root_needle) {
+            out.push(pid.as_u32());
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn discover_workspace_cargo(_root: &Path) -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(windows)]
 fn discover_under_target(stem: &str, target_prefix: &Path) -> Vec<DiscoveredProcess> {
     use sysinfo::{ProcessesToUpdate, System};
     let want = exe_name(stem);
@@ -476,6 +542,8 @@ impl ProcessBackend for FakeProcessBackend {
             (FakeKind::Probe, self.probe_exit)
         } else if name.contains("purgatory-load") {
             (FakeKind::Harness, self.harness_exit)
+        } else if name.contains("purgatory-client") {
+            (FakeKind::Other, None)
         } else if name.contains("purgatory-server") {
             (FakeKind::Server, None)
         } else {
@@ -503,8 +571,17 @@ impl ProcessBackend for FakeProcessBackend {
         self.alive.remove(&pid);
     }
 
-    fn discover_workspace(&mut self, _stem: &str, _target_prefix: &Path) -> Vec<DiscoveredProcess> {
-        self.discovered.clone()
+    fn discover_workspace(&mut self, stem: &str, _target_prefix: &Path) -> Vec<DiscoveredProcess> {
+        self.discovered
+            .iter()
+            .filter(|d| {
+                d.exe_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.eq_ignore_ascii_case(stem))
+            })
+            .cloned()
+            .collect()
     }
 
     fn detach(&mut self, pid: u32) {
@@ -522,5 +599,29 @@ impl ProcessBackend for FakeProcessBackend {
             stdout: self.print_env_stdout.clone(),
             stderr: self.print_env_stderr.clone(),
         })
+    }
+
+    fn spawn_visible(&mut self, spec: SpawnSpec) -> Result<u32, String> {
+        self.spawn_log.push(format!(
+            "visible {} {}",
+            spec.program.display(),
+            spec.args.join(" ")
+        ));
+        self.lifetimes.push(ProcessLifetime::Detached);
+        Ok(self.alloc())
+    }
+
+    fn kill_workspace_cargo(&mut self, _root: &Path) -> usize {
+        let pids: Vec<u32> = self
+            .alive
+            .iter()
+            .filter(|(_, p)| p.kind == FakeKind::Cargo)
+            .map(|(pid, _)| *pid)
+            .collect();
+        let n = pids.len();
+        for pid in pids {
+            self.kill_tree(pid);
+        }
+        n
     }
 }

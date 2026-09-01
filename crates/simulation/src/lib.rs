@@ -28,6 +28,7 @@ mod input;
 mod input_gate;
 mod interactable;
 mod interaction;
+mod interest_locality;
 mod lifecycle;
 mod map_runtime;
 mod motion_debug;
@@ -46,6 +47,10 @@ mod phase6c_tests;
 mod phase6d_tests;
 #[cfg(test)]
 mod phase6f_tests;
+#[cfg(test)]
+mod phase6g6_tests;
+#[cfg(test)]
+mod phase6g7a_tests;
 #[cfg(test)]
 mod phase6g_tests;
 mod platform;
@@ -67,9 +72,9 @@ pub use aabb::Aabb;
 pub use action::{Action, ActionEnd, ActionError, ActionId, ActionKind, ActionPhase};
 pub use action_gate::{ActionDenialReason, ActionGateContext, evaluate_action_gate};
 pub use aoi::{
-    AOI_CAMERA_DEAD_ZONE_HALF, AOI_LEAVE_MARGIN, AOI_POLICY_HALF_EXTENTS, AOI_PREFETCH_MARGIN,
-    AOI_VIEWPORT_ASPECT, AoiRects, aoi_clamp_camera_center, aoi_policy_rects, aoi_view_envelope,
-    aoi_viewport_size, point_in_aabb,
+    AOI_CAMERA_DEAD_ZONE_HALF, AOI_INFLUENCE_HALF_EXTENTS, AOI_LEAVE_MARGIN,
+    AOI_POLICY_HALF_EXTENTS, AOI_PREFETCH_MARGIN, AOI_VIEWPORT_ASPECT, AoiRects,
+    aoi_clamp_camera_center, aoi_policy_rects, aoi_view_envelope, aoi_viewport_size, point_in_aabb,
 };
 pub use body::{PLAYER_HALF_EXTENTS, PlayerBody, PlayerState};
 pub use bounds::WorldBounds;
@@ -85,7 +90,7 @@ pub use command::{CommandClass, CommandDenial, validate_command_preamble};
 pub use contact::{CONTACT_EPSILON, MAX_RECOVERY_TRANSLATION, RECOVERY_PENETRATION_MIN};
 pub use debug_action::DebugAction;
 pub use dirty::DirtyFlags;
-pub use domain::DomainRevs;
+pub use domain::{DomainRevs, ReplicationDirtyMask};
 pub use effect::{EffectError, EffectId, EffectKind, TempEffect};
 pub use entity::{EntityId, EntityKind, RuntimeEntityId};
 pub use footnote::{BlockQuery, ContactEvent, FootnoteConfig, surface_blocks};
@@ -102,6 +107,7 @@ pub use interaction::{
     InteractionCloseReason, InteractionReject, InteractionSession, InteractionSessionId,
     InteractionSessionState,
 };
+pub use interest_locality::InterestLocalityAccounting;
 pub use lifecycle::EntityLifecycle;
 pub use map_runtime::{InstantiateError, InstantiatedMap, MapRuntimePlan, PlanPlatform};
 pub use motion_debug::{CorrectionAxis, PlayerMotionDebug, ResponseKind};

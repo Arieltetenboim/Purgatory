@@ -92,6 +92,19 @@ pub struct ServerNetStats {
     pub observer_pending_updates: AtomicU64,
     pub observer_pending_enters: AtomicU64,
     pub cadence_deferred_updates: AtomicU64,
+    pub scheduler_scheduled_total: AtomicU64,
+    pub scheduler_cancelled_total: AtomicU64,
+    pub scheduler_critical_executed_total: AtomicU64,
+    pub scheduler_deferred_executed_total: AtomicU64,
+    pub actions_started_total: AtomicU64,
+    pub actions_completed_total: AtomicU64,
+    pub effects_applied_total: AtomicU64,
+    pub effects_expired_total: AtomicU64,
+    pub spawn_requests_total: AtomicU64,
+    pub spawns_completed_total: AtomicU64,
+    pub despawns_completed_total: AtomicU64,
+    pub cadence_executions_total: AtomicU64,
+    pub entities_spawned_total: AtomicU64,
 }
 
 impl ServerNetStats {

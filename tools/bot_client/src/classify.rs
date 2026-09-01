@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::aggregate::MetricsHealth;
 use crate::metrics::HarnessMetrics;
-use purgatory_common::LoadMetricsV1;
+use purgatory_common::{LoadMetricsV1, LoadValidationConfig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunStatus {
@@ -74,6 +74,30 @@ pub struct ClassifyInput {
     pub metrics_samples_missed: u64,
     /// Mixed/soak continuity. `None` keeps Phase 5 / non-mixed classify unchanged.
     pub soak: Option<SoakClassify>,
+    /// Configured synthetic pressure. `None` skips execution-proof checks.
+    pub validation: Option<LoadValidationConfig>,
+    /// Last-observed schema-4 execution totals. Gauges are not pass/fail.
+    pub execution: Option<ValidationExecution>,
+}
+
+/// Monotonic runtime-service totals used to prove Mixed validation ran.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ValidationExecution {
+    pub scheduler_scheduled_total: Option<u64>,
+    pub scheduler_cancelled_total: Option<u64>,
+    pub scheduler_critical_executed_total: Option<u64>,
+    pub scheduler_deferred_executed_total: Option<u64>,
+    pub actions_started_total: Option<u64>,
+    pub actions_completed_total: Option<u64>,
+    pub effects_applied_total: Option<u64>,
+    pub effects_expired_total: Option<u64>,
+    pub spawn_requests_total: Option<u64>,
+    pub spawns_completed_total: Option<u64>,
+    pub despawns_completed_total: Option<u64>,
+    pub cadence_executions_total: Option<u64>,
+    pub entities_spawned_total: Option<u64>,
+    pub events_produced_total: Option<u64>,
+    pub events_processed_total: Option<u64>,
 }
 
 /// Evidence for mixed/soak real-client correctness. Not a metrics-schema bump.
@@ -92,6 +116,8 @@ pub struct SoakClassify {
     pub ramp_complete: bool,
     pub portal_transitions: u64,
     pub portal_attempts: u64,
+    pub portal_seen_ticks: u64,
+    pub portal_in_zone_ticks: u64,
     pub aoi_updates_delta: u64,
     pub aoi_enters_delta: u64,
     pub aoi_observed: bool,
@@ -129,6 +155,8 @@ impl Default for ClassifyInput {
             metrics_samples_ok: 0,
             metrics_samples_missed: 0,
             soak: None,
+            validation: None,
+            execution: None,
         }
     }
 }
@@ -254,6 +282,18 @@ impl ClassifyInput {
         if let Some(soak) = &self.soak {
             append_soak_failures(&mut failed, soak);
         }
+        if self.metrics_samples_ok > 0
+            && let Some(cfg) = &self.validation
+            && cfg.is_active()
+        {
+            append_validation_execution_failures(
+                &mut failed,
+                cfg,
+                self.execution
+                    .as_ref()
+                    .unwrap_or(&ValidationExecution::default()),
+            );
+        }
         if self.ramp_complete
             && self.connected_bots > 0
             && (self.consecutive_starvation_samples >= 5 || self.all_connected_starved)
@@ -357,6 +397,120 @@ impl ClassifyInput {
     }
 }
 
+fn total(v: Option<u64>) -> u64 {
+    v.unwrap_or(0)
+}
+
+fn append_validation_execution_failures(
+    failed: &mut Vec<StatusReason>,
+    cfg: &LoadValidationConfig,
+    exec: &ValidationExecution,
+) {
+    let mut idle: Vec<serde_json::Value> = Vec::new();
+    let mut note = |workload: &str, configured: u32, counter: &str, observed: u64| {
+        if configured > 0 && observed == 0 {
+            idle.push(serde_json::json!({
+                "workload": workload,
+                "configured": configured,
+                "counter": counter,
+                "observed": observed,
+            }));
+        }
+    };
+    note(
+        "scheduler_critical",
+        cfg.scheduler.critical,
+        "scheduler_critical_executed_total",
+        total(exec.scheduler_critical_executed_total),
+    );
+    note(
+        "scheduler_deferred",
+        cfg.scheduler.deferred,
+        "scheduler_deferred_executed_total",
+        total(exec.scheduler_deferred_executed_total),
+    );
+    note(
+        "scheduler_cancel_churn",
+        cfg.scheduler.cancel_churn,
+        "scheduler_cancelled_total",
+        total(exec.scheduler_cancelled_total),
+    );
+    note(
+        "actions",
+        cfg.actions,
+        "actions_started_total",
+        total(exec.actions_started_total),
+    );
+    note(
+        "effects",
+        cfg.effects,
+        "effects_applied_total",
+        total(exec.effects_applied_total),
+    );
+    note(
+        "spawn_despawn",
+        cfg.spawn_despawn.count,
+        "spawn_requests_total",
+        total(exec.spawn_requests_total),
+    );
+    note(
+        "spawn_despawn",
+        cfg.spawn_despawn.count,
+        "despawns_completed_total",
+        total(exec.despawns_completed_total),
+    );
+    note(
+        "events",
+        cfg.events,
+        "events_produced_total",
+        total(exec.events_produced_total),
+    );
+    note(
+        "cadence_consumers",
+        cfg.cadence_consumers,
+        "cadence_executions_total",
+        total(exec.cadence_executions_total),
+    );
+    note(
+        "synthetic_entities",
+        cfg.synthetic_entities,
+        "entities_spawned_total",
+        total(exec.entities_spawned_total),
+    );
+    if !idle.is_empty() {
+        failed.push(StatusReason::new(
+            "validation_workload_idle",
+            "configured load-validation workload produced zero execution totals",
+            Some(serde_json::json!({ "idle": idle })),
+        ));
+    }
+
+    let started = total(exec.actions_started_total);
+    let completed = total(exec.actions_completed_total);
+    if completed > started {
+        failed.push(StatusReason::new(
+            "validation_counter_inconsistent",
+            format!("actions_completed_total {completed} > actions_started_total {started}"),
+            Some(serde_json::json!({
+                "actions_started_total": started,
+                "actions_completed_total": completed,
+            })),
+        ));
+    }
+    let produced = total(exec.events_produced_total);
+    let processed = total(exec.events_processed_total);
+    if processed > produced {
+        failed.push(StatusReason::new(
+            "validation_counter_inconsistent",
+            format!("events_processed_total {processed} > events_produced_total {produced}"),
+            Some(serde_json::json!({
+                "events_produced_total": produced,
+                "events_processed_total": processed,
+            })),
+        ));
+    }
+}
+
 fn append_soak_failures(failed: &mut Vec<StatusReason>, soak: &SoakClassify) {
     if let Some(reason) = &soak.early_fail {
         failed.push(StatusReason::new("early_fail", reason.clone(), None));
@@ -414,17 +568,35 @@ fn append_soak_failures(failed: &mut Vec<StatusReason>, soak: &SoakClassify) {
         }
     }
     if soak.require_portal_transition && soak.portal_transitions == 0 {
-        failed.push(StatusReason::new(
-            "portal_transition_missing",
-            format!(
-                "no authoritative portal transition (attempts={} rejects counted separately)",
-                soak.portal_attempts
-            ),
-            Some(serde_json::json!({
-                "attempts": soak.portal_attempts,
-                "transitions": soak.portal_transitions,
-            })),
-        ));
+        if soak.portal_in_zone_ticks == 0 {
+            failed.push(StatusReason::new(
+                "portal_never_eligible",
+                format!(
+                    "portal bot never entered activation zone (portal_seen_ticks={} attempts={})",
+                    soak.portal_seen_ticks, soak.portal_attempts
+                ),
+                Some(serde_json::json!({
+                    "attempts": soak.portal_attempts,
+                    "portal_seen_ticks": soak.portal_seen_ticks,
+                    "portal_in_zone_ticks": soak.portal_in_zone_ticks,
+                    "transitions": soak.portal_transitions,
+                })),
+            ));
+        } else {
+            failed.push(StatusReason::new(
+                "portal_transition_missing",
+                format!(
+                    "no authoritative portal transition after in-zone eligibility (in_zone_ticks={} attempts={})",
+                    soak.portal_in_zone_ticks, soak.portal_attempts
+                ),
+                Some(serde_json::json!({
+                    "attempts": soak.portal_attempts,
+                    "portal_seen_ticks": soak.portal_seen_ticks,
+                    "portal_in_zone_ticks": soak.portal_in_zone_ticks,
+                    "transitions": soak.portal_transitions,
+                })),
+            ));
+        }
     }
     if soak.require_persistent_baseline
         && soak.aoi_observed
@@ -592,6 +764,8 @@ mod tests {
             ramp_complete: true,
             portal_transitions: 1,
             portal_attempts: 1,
+            portal_seen_ticks: 30,
+            portal_in_zone_ticks: 10,
             aoi_updates_delta: 40,
             aoi_enters_delta: 12,
             aoi_observed: true,
@@ -643,6 +817,7 @@ mod tests {
         let mut soak = mixed_ok();
         soak.portal_transitions = 0;
         soak.portal_attempts = 4;
+        soak.portal_in_zone_ticks = 8;
         let input = ClassifyInput {
             soak: Some(soak),
             ..Default::default()
@@ -654,6 +829,22 @@ mod tests {
                 .iter()
                 .any(|r| r.code == "portal_transition_missing")
         );
+    }
+
+    #[test]
+    fn mixed_portal_never_eligible_fails_distinctly() {
+        let mut soak = mixed_ok();
+        soak.portal_transitions = 0;
+        soak.portal_attempts = 0;
+        soak.portal_seen_ticks = 0;
+        soak.portal_in_zone_ticks = 0;
+        let input = ClassifyInput {
+            soak: Some(soak),
+            ..Default::default()
+        };
+        let c = input.classify();
+        assert_eq!(c.status, RunStatus::Failed);
+        assert!(c.reasons.iter().any(|r| r.code == "portal_never_eligible"));
     }
 
     #[test]
@@ -723,5 +914,112 @@ mod tests {
             assert_eq!(c.status, RunStatus::Warn);
             assert!(!c.reasons.is_empty());
         }
+    }
+
+    fn mixed_cfg() -> LoadValidationConfig {
+        LoadValidationConfig {
+            synthetic_entities: 64,
+            scheduler: purgatory_common::SchedulerPressure {
+                critical: 32,
+                deferred: 48,
+                cancel_churn: 8,
+            },
+            spawn_despawn: purgatory_common::SpawnPressure {
+                count: 16,
+                interval_ticks: 60,
+            },
+            actions: 4,
+            effects: 8,
+            events: 16,
+            cadence_consumers: 32,
+        }
+    }
+
+    fn mixed_exec() -> ValidationExecution {
+        ValidationExecution {
+            scheduler_scheduled_total: Some(200),
+            scheduler_cancelled_total: Some(16),
+            scheduler_critical_executed_total: Some(80),
+            scheduler_deferred_executed_total: Some(120),
+            actions_started_total: Some(8),
+            actions_completed_total: Some(8),
+            effects_applied_total: Some(16),
+            effects_expired_total: Some(8),
+            spawn_requests_total: Some(16),
+            spawns_completed_total: Some(16),
+            despawns_completed_total: Some(16),
+            cadence_executions_total: Some(200),
+            entities_spawned_total: Some(80),
+            events_produced_total: Some(400),
+            events_processed_total: Some(390),
+        }
+    }
+
+    #[test]
+    fn configured_workload_with_zero_execution_totals_fails() {
+        let input = ClassifyInput {
+            metrics_samples_ok: 20,
+            validation: Some(mixed_cfg()),
+            execution: Some(ValidationExecution::default()),
+            ..Default::default()
+        };
+        let c = input.classify();
+        assert_eq!(c.status, RunStatus::Failed);
+        assert!(
+            c.reasons
+                .iter()
+                .any(|r| r.code == "validation_workload_idle")
+        );
+    }
+
+    #[test]
+    fn gauges_are_not_pass_fail_when_execution_totals_move() {
+        let input = ClassifyInput {
+            metrics_samples_ok: 20,
+            validation: Some(mixed_cfg()),
+            execution: Some(mixed_exec()),
+            ..Default::default()
+        };
+        let c = input.classify();
+        assert_eq!(c.status, RunStatus::Complete);
+        assert!(c.reasons.is_empty());
+    }
+
+    #[test]
+    fn zero_execution_without_metrics_samples_does_not_fail() {
+        let input = ClassifyInput {
+            metrics_samples_ok: 0,
+            metrics_health: MetricsHealth::None,
+            validation: Some(mixed_cfg()),
+            execution: Some(ValidationExecution::default()),
+            ..Default::default()
+        };
+        let c = input.classify();
+        assert_eq!(c.status, RunStatus::Warn);
+        assert!(
+            c.reasons
+                .iter()
+                .all(|r| r.code != "validation_workload_idle")
+        );
+    }
+
+    #[test]
+    fn completed_greater_than_started_fails() {
+        let mut exec = mixed_exec();
+        exec.actions_completed_total = Some(9);
+        exec.actions_started_total = Some(8);
+        let input = ClassifyInput {
+            metrics_samples_ok: 5,
+            validation: Some(mixed_cfg()),
+            execution: Some(exec),
+            ..Default::default()
+        };
+        let c = input.classify();
+        assert_eq!(c.status, RunStatus::Failed);
+        assert!(
+            c.reasons
+                .iter()
+                .any(|r| r.code == "validation_counter_inconsistent")
+        );
     }
 }

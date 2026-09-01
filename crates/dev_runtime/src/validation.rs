@@ -173,16 +173,55 @@ pub struct ValidationJob {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ValidationLiveStatus {
     pub status_line: Option<String>,
     pub available: bool,
+    pub state: Option<String>,
+    pub elapsed_secs: Option<f64>,
+    pub duration_secs: Option<u64>,
+    pub real_connected: Option<u32>,
+    pub persistent_target: Option<u32>,
+    pub churn_connected: Option<u32>,
+    pub portal_transitions: Option<u64>,
+    pub portal_attempts: Option<u64>,
+    pub failures: Option<u64>,
+    pub early_fail: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StatusReasonView {
+    pub code: String,
+    pub message: String,
+}
+
+/// Selected fields from `run_summary.json` for Hub presentation (not pass/fail authority).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunSummaryBrief {
+    pub available: bool,
+    pub run_status: String,
+    pub elapsed_secs: f64,
+    pub requested_duration_secs: u64,
+    pub requested_bots: u32,
+    pub peak_connected: u32,
+    pub failure_class: String,
+    pub reasons: Vec<StatusReasonView>,
+    pub tick_work_mean_ms: Option<f64>,
+    pub tick_work_p95_ms: Option<f64>,
+    pub tick_work_max_ms: Option<f64>,
+    pub memory_peak_mb: Option<f64>,
+    pub unexpected_disconnects: u64,
+    pub overflow_events: u64,
+    pub admission_refusals: u64,
+    pub preset: Option<String>,
+    pub seed: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ValidationLastResult {
     pub outcome: Option<ValidationState>,
     pub dir: Option<PathBuf>,
+    pub summary: RunSummaryBrief,
 }
 
 /// Keep in sync with `Get-RuntimeValidationArgv` / `developer_tools_runtime_validation_argv_parses`.
@@ -313,24 +352,126 @@ pub fn read_pointer_dir(load_root: &Path, name: &str) -> Option<PathBuf> {
 pub fn read_live_status(run_dir: &Path) -> ValidationLiveStatus {
     let path = run_dir.join("live_status.json");
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return ValidationLiveStatus {
-            status_line: None,
-            available: false,
-        };
+        return ValidationLiveStatus::default();
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return ValidationLiveStatus {
-            status_line: None,
-            available: false,
-        };
+        return ValidationLiveStatus::default();
     };
     let line = v
         .get("status_line")
         .and_then(|x| x.as_str())
         .map(str::to_string);
+    let early = v.get("early_fail").and_then(|x| {
+        if x.is_null() {
+            None
+        } else {
+            x.as_str()
+                .map(str::to_string)
+                .or_else(|| Some(x.to_string()))
+        }
+    });
     ValidationLiveStatus {
-        available: line.is_some(),
+        available: line.is_some() || v.get("elapsed_secs").is_some(),
         status_line: line,
+        state: v.get("state").and_then(|x| x.as_str()).map(str::to_string),
+        elapsed_secs: v.get("elapsed_secs").and_then(|x| x.as_f64()),
+        duration_secs: v
+            .get("duration_secs")
+            .and_then(|x| x.as_u64().or_else(|| x.as_f64().map(|f| f as u64))),
+        real_connected: v
+            .get("real_connected")
+            .and_then(|x| x.as_u64().map(|n| n as u32)),
+        persistent_target: v
+            .get("persistent_target")
+            .and_then(|x| x.as_u64().map(|n| n as u32)),
+        churn_connected: v
+            .get("churn_connected")
+            .and_then(|x| x.as_u64().map(|n| n as u32)),
+        portal_transitions: v.get("portal_transitions").and_then(|x| x.as_u64()),
+        portal_attempts: v.get("portal_attempts").and_then(|x| x.as_u64()),
+        failures: v.get("failures").and_then(|x| x.as_u64()),
+        early_fail: early,
+    }
+}
+
+/// Best-effort parse of `run_summary.json`. Missing/malformed → unavailable (not failure).
+#[must_use]
+pub fn read_run_summary(run_dir: &Path) -> RunSummaryBrief {
+    let path = run_dir.join("run_summary.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return RunSummaryBrief::default();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return RunSummaryBrief::default();
+    };
+    let reasons = v
+        .get("status_reasons")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| {
+                    Some(StatusReasonView {
+                        code: r.get("code")?.as_str()?.to_string(),
+                        message: r
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    RunSummaryBrief {
+        available: true,
+        run_status: v
+            .get("run_status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        elapsed_secs: v
+            .get("elapsed_secs")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0),
+        requested_duration_secs: v
+            .get("requested_duration_secs")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0),
+        requested_bots: v
+            .get("requested_bots")
+            .and_then(|x| x.as_u64().map(|n| n as u32))
+            .unwrap_or(0),
+        peak_connected: v
+            .get("peak_connected")
+            .and_then(|x| x.as_u64().map(|n| n as u32))
+            .unwrap_or(0),
+        failure_class: v
+            .get("failure_class")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        reasons,
+        tick_work_mean_ms: v.get("server_tick_work_mean_ms").and_then(|x| x.as_f64()),
+        tick_work_p95_ms: v.get("server_tick_work_p95_ms").and_then(|x| x.as_f64()),
+        tick_work_max_ms: v.get("server_tick_work_max_ms").and_then(|x| x.as_f64()),
+        memory_peak_mb: v
+            .get("server_memory_peak_mb")
+            .and_then(|x| x.as_f64())
+            .or_else(|| v.get("harness_memory_peak_mb").and_then(|x| x.as_f64())),
+        unexpected_disconnects: v
+            .get("unexpected_disconnects")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0),
+        overflow_events: v
+            .get("overflow_events")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0),
+        admission_refusals: v
+            .get("admission_refusals")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0),
+        preset: v.get("preset").and_then(|x| x.as_str().map(str::to_string)),
+        seed: v.get("seed").and_then(|x| x.as_u64()),
     }
 }
 
@@ -382,5 +523,41 @@ mod tests {
         assert_eq!(classify_harness_exit(1), ValidationState::Failed);
         assert_eq!(classify_harness_exit(2), ValidationState::Failed);
         assert_eq!(classify_harness_exit(130), ValidationState::Cancelled);
+    }
+
+    #[test]
+    fn live_status_parses_structured_fields() {
+        let dir = std::env::temp_dir().join(format!("purgatory-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("live_status.json"),
+            r#"{"state":"running","elapsed_secs":12.5,"duration_secs":120,"real_connected":2,"persistent_target":4,"churn_connected":1,"portal_transitions":0,"portal_attempts":0,"failures":0,"status_line":"RUNNING 00:12 / 02:00","early_fail":null}"#,
+        )
+        .unwrap();
+        let live = read_live_status(&dir);
+        assert!(live.available);
+        assert_eq!(live.elapsed_secs, Some(12.5));
+        assert_eq!(live.real_connected, Some(2));
+        assert_eq!(live.persistent_target, Some(4));
+        assert!(live.status_line.as_ref().unwrap().contains("RUNNING"));
+    }
+
+    #[test]
+    fn run_summary_brief_parses_key_fields() {
+        let dir = std::env::temp_dir().join(format!("purgatory-sum-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("run_summary.json"),
+            r#"{"run_status":"FAIL","status_reasons":[{"code":"disconnect","message":"unexpected"}],"elapsed_secs":30.0,"requested_bots":10,"peak_connected":8,"failure_class":"scenario","unexpected_disconnects":2,"overflow_events":0,"admission_refusals":0,"requested_duration_secs":60,"server_tick_work_p95_ms":4.2,"preset":"smoke"}"#,
+        )
+        .unwrap();
+        let s = read_run_summary(&dir);
+        assert!(s.available);
+        assert_eq!(s.run_status, "FAIL");
+        assert_eq!(s.peak_connected, 8);
+        assert_eq!(s.reasons.len(), 1);
+        assert_eq!(s.tick_work_p95_ms, Some(4.2));
     }
 }

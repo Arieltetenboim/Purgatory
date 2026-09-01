@@ -65,7 +65,7 @@ Developer Tools
 ├── Content        PLANNED
 ├── Maps           PLANNED (visual editor may be a native tool)
 ├── NPCs           PLANNED
-└── Settings       PLANNED (log level / profile exist today as Runtime controls)
+└── Settings       CURRENT (profile / log level / quality gate / rebuild / Kill All)
 ```
 
 Maps, NPC, dialogue, item, and gameplay-admin editors are out of scope until a later Developer Tools step.
@@ -82,7 +82,14 @@ PowerShell fallback. Requires: Windows, PowerShell (STA), Rust/`cargo` on PATH f
 DEV_HUB.BAT
 ```
 
-Builds if needed, launches `purgatory-dev-hub.exe`, then the bootstrap exits. Slice 1 server lifecycle / probe / logs and Slice 2 Runtime Validation (Dashboard, Runtime → Server, Validation, Logs). Other nav entries are placeholders. Closing the Hub does **not** stop the dedicated server; reopen adopts the workspace process and re-verifies with `--probe` before Ready. A second Hub for this workspace is refused (`logs/dev-tools/hub.lock`). Do not drive the same workspace from both shells at once.
+Builds if needed, launches `purgatory-dev-hub.exe`, then the bootstrap exits. Live pages: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings. World / Content remain placeholders (editors). The Hub window is **fixed size** (1280×800, non-resizable) until a full responsive layout pass exists. Closing the Hub does **not** stop the dedicated server or detached clients; reopen adopts workspace processes and re-verifies the server with `--probe` before Ready. Kill All **does** stop server/clients/load. A second Hub for this workspace is refused (`logs/dev-tools/hub.lock`). Do not drive the same workspace from both shells at once.
+
+### Hub UI presentation (current)
+
+- **Dashboard** — shared design-system modules (StatusCard / Project / Attention / Quick Actions + real ActivityLog strip). Semantic wide/medium/narrow composition; primary/ghost/destructive buttons; no invented host System Status gauges.
+- **Validation & Performance** — live run header + structured `live_status.json` fields, bounded `load.log` tail, `metrics.csv` chart (connected bots / tick mean), completed **Result summary** with **Show full details** expander over `run_summary.json`. Pass/fail remains harness CLI authority. Cancelled is distinct from Failed / OrchestrationFailed.
+- **Visual system** — shared cards, status pills, metric tiles, page headers in `apps/dev_hub` (`theme` + `ui/layout`). Minimum practical window ~720×520.
+- Runtime snapshot owns presentation data (`ValidationLiveStatus`, `RunSummaryBrief`, `MetricsSeries`, `load_log_lines`). GUI does not spawn harnesses or decide PASS/FAIL.
 
 Do not use `cargo run -p purgatory-dev-hub` as the operational launch path.
 

@@ -31,6 +31,11 @@ impl ActivityLog {
         self.lines.push_back(line);
     }
 
+    /// Clear the in-memory activity ring (does not delete files on disk).
+    pub fn clear(&mut self) {
+        self.lines.clear();
+    }
+
     #[must_use]
     pub fn view_lines(&self) -> Vec<String> {
         let skip = self.lines.len().saturating_sub(ACTIVITY_VIEW_LINES);
@@ -102,10 +107,11 @@ pub fn drain_into_activity(incoming: &IncomingLog, activity: &mut ActivityLog) {
 }
 
 pub fn stamp_line(message: &str) -> String {
-    format!("{}  {}", utc_hms(), message)
+    format!("{}  {}", hms_now(), message)
 }
 
-pub fn utc_hms() -> String {
+/// Wall-clock `HH:MM:SS` (no date) for Hub activity and file-tail views.
+pub fn hms_now() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

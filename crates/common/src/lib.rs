@@ -1,5 +1,6 @@
 //! Shared primitives for PURGATORY client, server, and tools.
 
+pub mod capacity_accounting;
 pub mod identity;
 pub mod impairment;
 pub mod load_metrics;
@@ -7,6 +8,10 @@ pub mod load_validation;
 pub mod memory;
 pub mod world_address;
 
+pub use capacity_accounting::{
+    CAPACITY_ARTIFACT_DIR_ENV, DomainTimingMs, IntDistribution, InterestLocalitySnapshot,
+    ProcessResourceSnapshot, ReplicationFanoutSnapshot, TickDomainSnapshot,
+};
 pub use identity::{
     AuthoredIdError, CharacterId, ContentId, DEFAULT_DEV_LOGIN, DEFAULT_RESTORE_POINT,
     DEV_LOGIN_MAX_LEN, DEV_LOGIN_MIN_LEN, DevLogin, DevLoginError, InstanceExitContext,
@@ -22,7 +27,10 @@ pub use load_validation::{
     LOAD_MODE_ADMISSION_ENV, LOAD_VALIDATION_ENV, LoadValidationConfig, SchedulerPressure,
     SpawnPressure,
 };
-pub use memory::{ProcessMemory, current_process_memory};
+pub use memory::{
+    ProcessCpu, ProcessMemory, ProcessResources, current_process_memory, current_process_resources,
+    logical_cpu_count,
+};
 pub use world_address::{ChannelId, InstanceId, MapId, WorldAddress};
 
 /// Cargo package version for this crate.

@@ -11,11 +11,17 @@ use purgatory_protocol::{
     encode_replication_frame, encode_replication_record,
 };
 use purgatory_simulation::{
-    DomainRevs, EntityId, UpdateFrequencyTier, World, aoi_policy_rects, point_in_aabb,
-    staggered_interval_due,
+    DomainRevs, EntityId, ReplicationDirtyMask, UpdateFrequencyTier, World, aoi_policy_rects,
+    point_in_aabb, staggered_interval_due,
 };
 use tokio::sync::watch;
 
+use super::replication_policy::{
+    DomainEligibility, PolicyContext, PolicyMode, PopulationClass, RelationOverrides,
+    ReplicationPriority, classify_relation, decide_update_policy, observer_frame_budget_bytes,
+};
+#[cfg(test)]
+use super::replication_policy::{ObserverRelationKind, PressureLevel};
 use super::snapshot::to_wire_id;
 
 /// Encoded-frame queue cap. If full, sim does not encode-and-drop.
@@ -24,10 +30,158 @@ pub const WRITER_QUEUE_CAP: usize = 4;
 /// Soft per-frame budget. Must not exceed [`MAX_GAMEPLAY_SNAPSHOT_BYTES`].
 pub const REPLICATION_FRAME_BUDGET_BYTES: usize = 4096;
 
-const HIGH_DISTANCE: f32 = 10.0;
+const NEARBY_DISTANCE: f32 = 10.0;
 const NORMAL_INTERVAL: u64 = 2;
 const LOW_INTERVAL: u64 = 4;
 const CHURN_WINDOW_TICKS: u64 = 30;
+/// Staggered full Known rev-reconcile interval (≈2s at 30 Hz). Safety net only.
+const RECOVERY_SCAN_INTERVAL: u64 = 60;
+
+/// Inputs for 6G.7C policy during one observer publish.
+#[derive(Clone, Copy, Debug)]
+pub struct PublishPolicyInput<'a> {
+    pub mode: PolicyMode,
+    pub population: PopulationClass,
+    pub overrides: &'a RelationOverrides,
+    pub recent_observer_bytes: u32,
+    pub tick_overrun_hint: bool,
+}
+
+impl<'a> PublishPolicyInput<'a> {
+    #[must_use]
+    #[cfg(test)]
+    pub fn baseline(overrides: &'a RelationOverrides) -> Self {
+        Self {
+            mode: PolicyMode::Baseline,
+            population: PopulationClass::Low,
+            overrides,
+            recent_observer_bytes: 0,
+            tick_overrun_hint: false,
+        }
+    }
+}
+
+/// Compatibility wrapper used by older call sites / tests.
+#[cfg(test)]
+#[must_use]
+pub fn domain_eligibility_for(
+    relation: ObserverRelationKind,
+    dirty: ReplicationDirtyMask,
+) -> DomainEligibility {
+    let ctx = PolicyContext {
+        mode: PolicyMode::Selective,
+        population: PopulationClass::Low,
+        pressure: PressureLevel::Calm,
+        observer_known: 0,
+        subject_interested: 0,
+    };
+    decide_update_policy(ctx, relation, dirty).eligibility
+}
+
+/// Entity → observers that currently have the subject in `Life::Known`.
+#[derive(Debug, Default)]
+pub struct InterestFanoutIndex {
+    observers_of: HashMap<EntityId, HashSet<EntityId>>,
+}
+
+impl InterestFanoutIndex {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert_known(&mut self, observer: EntityId, subject: EntityId) {
+        self.observers_of
+            .entry(subject)
+            .or_default()
+            .insert(observer);
+    }
+
+    pub fn remove_known(&mut self, observer: EntityId, subject: EntityId) {
+        let Some(set) = self.observers_of.get_mut(&subject) else {
+            return;
+        };
+        set.remove(&observer);
+        if set.is_empty() {
+            self.observers_of.remove(&subject);
+        }
+    }
+
+    pub fn clear_observer(&mut self, observer: EntityId) {
+        let subjects: Vec<EntityId> = self.observers_of.keys().copied().collect();
+        for subject in subjects {
+            self.remove_known(observer, subject);
+        }
+    }
+
+    pub fn clear_subject(&mut self, subject: EntityId) {
+        self.observers_of.remove(&subject);
+    }
+
+    #[must_use]
+    pub fn observer_count(&self, subject: EntityId) -> usize {
+        self.observers_of
+            .get(&subject)
+            .map(|s| s.len())
+            .unwrap_or(0)
+    }
+
+    pub fn observers(&self, subject: EntityId) -> impl Iterator<Item = EntityId> + '_ {
+        self.observers_of
+            .get(&subject)
+            .into_iter()
+            .flat_map(|s| s.iter().copied())
+    }
+}
+
+/// Enqueue pending updates from the current world dirty set (does not clear).
+///
+/// Call [`World::clear_replication_dirty`] once after all observers are enqueued.
+#[cfg(test)]
+#[must_use]
+pub fn distribute_replication_dirty(
+    world: &World,
+    fanout: &InterestFanoutIndex,
+    mut enqueue: impl FnMut(EntityId, EntityId, ReplicationDirtyMask),
+) -> (u32, u32, u32, u32) {
+    let overrides = RelationOverrides::default();
+    let mut dirty_entities = 0u32;
+    let mut dirty_transform = 0u32;
+    let mut dirty_health = 0u32;
+    let mut interested = 0u32;
+    for (subject, mask) in world.replication_dirty_iter() {
+        dirty_entities = dirty_entities.saturating_add(1);
+        if mask.transform {
+            dirty_transform = dirty_transform.saturating_add(1);
+        }
+        if mask.health {
+            dirty_health = dirty_health.saturating_add(1);
+        }
+        for observer in fanout.observers(subject) {
+            let relation = classify_relation(world, observer, subject, &overrides);
+            let ctx = PolicyContext {
+                mode: PolicyMode::Baseline,
+                population: PopulationClass::Low,
+                pressure: PressureLevel::Calm,
+                observer_known: 0,
+                subject_interested: fanout.observer_count(subject) as u32,
+            };
+            let decision = decide_update_policy(ctx, relation, mask);
+            if !decision.eligibility.any() && !decision.suppress_emit {
+                continue;
+            }
+            // Always enqueue when any domain lagged; policy filters at emit time.
+            interested = interested.saturating_add(1);
+            enqueue(observer, subject, mask);
+        }
+    }
+    (
+        dirty_entities,
+        dirty_transform,
+        dirty_health,
+        interested,
+    )
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CommittedRevs {
@@ -57,6 +211,11 @@ pub struct ObserverReplicationState {
     entities: HashMap<EntityId, Life>,
     enter_cursor: usize,
     last_leave_tick: HashMap<EntityId, u64>,
+    /// True after at least one successful classify since bind/epoch (6G.5).
+    interest_classified: bool,
+    /// Subjects with pending domain work (dirty fan-out or recovery) (6G.7B).
+    pending_update_ids: HashSet<EntityId>,
+    last_recovery_tick: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -155,6 +314,34 @@ pub struct ReplicationTickStats {
     pub churn_reentry: u32,
     pub queue_depth: u32,
     pub mailbox_merge: u32,
+    /// Micros spent in spatial query + AOI classify (6G.2 capacity).
+    pub aoi_us: u64,
+    /// Micros spent encoding/pushing the frame after classify.
+    pub replicate_us: u64,
+    /// 1 when this observer ran spatial query + classify this tick (6G.5).
+    pub classified: u32,
+    /// Known→WantLeave or new WantEnter transitions during classify (6G.6).
+    pub membership_transitions: u32,
+    /// Classify ran but produced zero membership transitions (wasted classify).
+    pub classify_unchanged: u32,
+    /// |Known| relationships for this observer (baseline scan volume).
+    pub known_relationships_present: u32,
+    /// Relationships examined for update discovery this tick (6G.7B).
+    pub known_relationships_scanned: u32,
+    /// Update encode attempts (includes budget rejects).
+    pub serialize_attempts: u32,
+    /// Pending updates skipped due to frame byte budget.
+    pub budget_deferred_updates: u32,
+    /// Lagging Known subjects found only by recovery scan.
+    pub recovery_rescues: u32,
+    /// Interested edges that remain eligible after policy (6G.7C).
+    pub policy_eligible: u32,
+    /// Health (or other) domains suppressed by relation policy.
+    pub policy_domain_suppressed: u32,
+    /// Updates deferred because lower priority lost the byte race.
+    pub priority_deferred: u32,
+    /// State updates held for coalescing/cadence (same as cadence_deferred; explicit).
+    pub state_coalesced: u32,
 }
 
 impl ObserverReplicationState {
@@ -169,6 +356,19 @@ impl ObserverReplicationState {
         self.entities.clear();
         self.enter_cursor = 0;
         self.last_leave_tick.clear();
+        self.interest_classified = false;
+        self.pending_update_ids.clear();
+        self.last_recovery_tick = 0;
+    }
+
+    pub fn queue_pending_update(&mut self, subject: EntityId) {
+        self.pending_update_ids.insert(subject);
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub fn pending_update_count(&self) -> usize {
+        self.pending_update_ids.len()
     }
 
     #[must_use]
@@ -224,18 +424,39 @@ impl ObserverReplicationState {
             .unwrap_or(0)
     }
 
-    pub fn classify(&mut self, world: &World, observer: EntityId, now_tick: u64) {
+    /// True when this observer's interest may be stale (never classified or dirty).
+    #[must_use]
+    pub fn needs_classify(&self, world: &World, observer: EntityId) -> bool {
+        !self.interest_classified || world.interest_observer_dirty(observer)
+    }
+
+    pub fn classify_with_candidates(
+        &mut self,
+        world: &mut World,
+        observer: EntityId,
+        now_tick: u64,
+        candidates: &[EntityId],
+        fanout: &mut InterestFanoutIndex,
+    ) -> u32 {
+        let mut membership_transitions = 0u32;
         let Some(obs_addr) = world.address_of(observer) else {
+            fanout.clear_observer(observer);
             self.entities.clear();
-            return;
+            self.pending_update_ids.clear();
+            self.interest_classified = false;
+            world.clear_interest_observer_dirty(observer);
+            return 0;
         };
         let Some(obs_pos) = world.transform_of(observer).map(|t| t.position) else {
+            fanout.clear_observer(observer);
             self.entities.clear();
-            return;
+            self.pending_update_ids.clear();
+            self.interest_classified = false;
+            world.clear_interest_observer_dirty(observer);
+            return 0;
         };
         let rects = aoi_policy_rects(obs_pos, world.bounds_for(obs_addr));
-        let candidates: HashSet<EntityId> =
-            world.spatial_candidates(observer).into_iter().collect();
+        let candidate_set: HashSet<EntityId> = candidates.iter().copied().collect();
 
         let tracked: Vec<EntityId> = self.entities.keys().copied().collect();
         for id in tracked {
@@ -246,7 +467,7 @@ impl ObserverReplicationState {
                 .transform_of(id)
                 .is_some_and(|t| point_in_aabb(t.position, rects.leave))
                 && world.address_of(id) == Some(obs_addr)
-                && candidates.contains(&id);
+                && candidate_set.contains(&id);
             let in_enter = world
                 .transform_of(id)
                 .is_some_and(|t| point_in_aabb(t.position, rects.enter))
@@ -254,8 +475,11 @@ impl ObserverReplicationState {
             match self.entities.get(&id).copied() {
                 Some(Life::WantEnter { .. }) if !in_enter => {
                     self.entities.remove(&id);
+                    membership_transitions = membership_transitions.saturating_add(1);
                 }
                 Some(Life::Known { revs, .. }) if !in_leave => {
+                    fanout.remove_known(observer, id);
+                    self.pending_update_ids.remove(&id);
                     self.entities.insert(
                         id,
                         Life::WantLeave {
@@ -263,6 +487,7 @@ impl ObserverReplicationState {
                             since_tick: now_tick,
                         },
                     );
+                    membership_transitions = membership_transitions.saturating_add(1);
                 }
                 Some(Life::WantLeave { revs, since_tick }) if in_enter => {
                     // Leave must go first; stay WantLeave until committed.
@@ -272,7 +497,7 @@ impl ObserverReplicationState {
             }
         }
 
-        for id in &candidates {
+        for id in candidates {
             if *id == observer {
                 continue;
             }
@@ -289,6 +514,7 @@ impl ObserverReplicationState {
                         since_tick: now_tick,
                     },
                 );
+                membership_transitions = membership_transitions.saturating_add(1);
             }
         }
 
@@ -299,6 +525,7 @@ impl ObserverReplicationState {
                     since_tick: now_tick,
                 },
             );
+            membership_transitions = membership_transitions.saturating_add(1);
         } else if matches!(self.entities.get(&observer), Some(Life::WantLeave { .. })) {
             // Local player is never left for the controlling observer.
             if let Some(Life::WantLeave { revs, .. }) = self.entities.get(&observer).copied() {
@@ -309,8 +536,12 @@ impl ObserverReplicationState {
                         since_tick: now_tick,
                     },
                 );
+                fanout.insert_known(observer, observer);
             }
         }
+        self.interest_classified = true;
+        world.clear_interest_observer_dirty(observer);
+        membership_transitions
     }
 }
 
@@ -335,7 +566,7 @@ fn cadence_for(world: &World, observer: EntityId, id: EntityId) -> Cadence {
         };
         let dx = a.position[0] - b.position[0];
         let dy = a.position[1] - b.position[1];
-        if dx * dx + dy * dy <= HIGH_DISTANCE * HIGH_DISTANCE {
+        if dx * dx + dy * dy <= NEARBY_DISTANCE * NEARBY_DISTANCE {
             Cadence::High
         } else {
             Cadence::Normal
@@ -397,20 +628,54 @@ fn enter_record(world: &World, id: EntityId) -> Option<ReplicationRecord> {
     })
 }
 
-fn update_record(world: &World, id: EntityId, last: CommittedRevs) -> Option<ReplicationRecord> {
+struct UpdateReconcile {
+    /// `None` = ineligible domains caught up without wire payload.
+    record: Option<ReplicationRecord>,
+    next: CommittedRevs,
+}
+
+fn reconcile_update(
+    world: &World,
+    id: EntityId,
+    last: CommittedRevs,
+    allow: DomainEligibility,
+) -> Option<UpdateReconcile> {
     let revs = world.domain_revs_of(id)?;
-    let transform = revs.transform > last.transform;
-    let health = revs.health > last.health;
-    if !transform && !health {
+    let transform = revs.transform > last.transform && allow.transform;
+    let health = revs.health > last.health && allow.health;
+    let silent_transform = revs.transform > last.transform && !allow.transform;
+    let silent_health = revs.health > last.health && !allow.health;
+    if !transform && !health && !silent_transform && !silent_health {
         return None;
     }
+    let next = CommittedRevs {
+        transform: if transform || silent_transform {
+            revs.transform
+        } else {
+            last.transform
+        },
+        health: if health || silent_health {
+            revs.health
+        } else {
+            last.health
+        },
+    };
+    if !transform && !health {
+        return Some(UpdateReconcile {
+            record: None,
+            next,
+        });
+    }
     let entity = snapshot_entity(world, id)?;
-    Some(ReplicationRecord::Update {
-        entity_id: to_wire_id(id),
-        domains: DomainMask { transform, health },
-        position: transform.then_some(entity.position),
-        velocity: transform.then_some(entity.velocity),
-        health: health.then_some(wire_health(world, id)).flatten(),
+    Some(UpdateReconcile {
+        record: Some(ReplicationRecord::Update {
+            entity_id: to_wire_id(id),
+            domains: DomainMask { transform, health },
+            position: transform.then_some(entity.position),
+            velocity: transform.then_some(entity.velocity),
+            health: health.then_some(wire_health(world, id)).flatten(),
+        }),
+        next,
     })
 }
 
@@ -472,25 +737,37 @@ fn encoded_len(frame: &ReplicationFrame) -> Option<usize> {
 pub fn publish_observer_frame(
     state: &mut ObserverReplicationState,
     pipe: &ReplicationPipe,
-    world: &World,
+    world: &mut World,
+    fanout: &mut InterestFanoutIndex,
     observer: EntityId,
     sequence: u32,
     tick: u64,
     input_epoch: u16,
     ack: u32,
     debt: u16,
+    policy: PublishPolicyInput<'_>,
 ) -> ReplicationTickStats {
+    let pressure = PolicyContext::classify_pressure(
+        policy.population,
+        state.known_count() as u32,
+        0,
+        policy.recent_observer_bytes,
+        policy.tick_overrun_hint,
+    );
+    let budget = observer_frame_budget_bytes(REPLICATION_FRAME_BUDGET_BYTES, pressure);
     publish_observer_frame_with_budget(
         state,
         pipe,
         world,
+        fanout,
         observer,
         sequence,
         tick,
         input_epoch,
         ack,
         debt,
-        REPLICATION_FRAME_BUDGET_BYTES,
+        budget,
+        policy,
     )
 }
 
@@ -499,7 +776,8 @@ pub fn publish_observer_frame(
 pub fn publish_observer_frame_with_budget(
     state: &mut ObserverReplicationState,
     pipe: &ReplicationPipe,
-    world: &World,
+    world: &mut World,
+    fanout: &mut InterestFanoutIndex,
     observer: EntityId,
     sequence: u32,
     tick: u64,
@@ -507,10 +785,12 @@ pub fn publish_observer_frame_with_budget(
     ack: u32,
     debt: u16,
     budget_bytes: usize,
+    policy: PublishPolicyInput<'_>,
 ) -> ReplicationTickStats {
+    let aoi_t0 = std::time::Instant::now();
     let mut stats = ReplicationTickStats {
-        candidates: world.spatial_candidates(observer).len() as u32,
         known: state.known_count() as u32,
+        known_relationships_present: state.known_count() as u32,
         queue_depth: pipe.len() as u32,
         oldest_pending_ticks: state.oldest_pending_age(tick),
         ..ReplicationTickStats::default()
@@ -518,10 +798,29 @@ pub fn publish_observer_frame_with_budget(
     if pipe.len() >= WRITER_QUEUE_CAP {
         stats.mailbox_merge = 1;
         stats.pending = state.entities.len() as u32;
+        stats.candidates = state.entities.len() as u32;
+        stats.aoi_us = u64::try_from(aoi_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         return stats;
     }
 
-    state.classify(world, observer, tick);
+    if state.needs_classify(world, observer) {
+        let candidates = world.spatial_candidates_unsorted(observer);
+        stats.candidates = candidates.len() as u32;
+        let transitions =
+            state.classify_with_candidates(world, observer, tick, &candidates, fanout);
+        stats.classified = 1;
+        stats.membership_transitions = transitions;
+        if transitions == 0 {
+            stats.classify_unchanged = 1;
+        }
+    } else {
+        // Steady interest: skip spatial query + classify (6G.3 / 6G.5).
+        stats.candidates = state.entities.len() as u32;
+    }
+    stats.known = state.known_count() as u32;
+    stats.known_relationships_present = stats.known;
+    stats.aoi_us = u64::try_from(aoi_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let repl_t0 = std::time::Instant::now();
 
     let budget = budget_bytes.min(MAX_GAMEPLAY_SNAPSHOT_BYTES as usize);
     let empty = header_frame(
@@ -536,13 +835,16 @@ pub fn publish_observer_frame_with_budget(
         Vec::new(),
     );
     let Some(mut total) = encoded_len(&empty) else {
+        stats.replicate_us = u64::try_from(repl_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         return stats;
     };
 
     let mut records: Vec<ReplicationRecord> = Vec::new();
     let mut commit_leaves: Vec<EntityId> = Vec::new();
     let mut commit_enters: Vec<(EntityId, DomainRevs)> = Vec::new();
-    let mut commit_updates: Vec<(EntityId, DomainRevs)> = Vec::new();
+    let mut commit_updates: Vec<(EntityId, CommittedRevs)> = Vec::new();
+    let mut clear_pending: Vec<EntityId> = Vec::new();
+    let mut keep_pending: Vec<EntityId> = Vec::new();
 
     let mut leave_ids: Vec<EntityId> = state
         .entities
@@ -603,49 +905,128 @@ pub fn publish_observer_frame_with_budget(
         state.enter_cursor = state.enter_cursor.wrapping_add(advanced.max(1));
     }
 
-    let mut update_ids: Vec<EntityId> = Vec::new();
-    for (id, life) in &state.entities {
-        let Life::Known { revs: last, .. } = life else {
+    // Staggered recovery: full Known rev reconcile (not the hot path).
+    if staggered_interval_due(tick, RECOVERY_SCAN_INTERVAL, observer.index()) {
+        state.last_recovery_tick = tick;
+        for (id, life) in &state.entities {
+            let Life::Known { revs: last, .. } = life else {
+                continue;
+            };
+            let Some(revs) = world.domain_revs_of(*id) else {
+                continue;
+            };
+            if (revs.transform > last.transform || revs.health > last.health)
+                && state.pending_update_ids.insert(*id)
+            {
+                stats.recovery_rescues = stats.recovery_rescues.saturating_add(1);
+            }
+        }
+    }
+
+    let pending_ids: Vec<EntityId> = state.pending_update_ids.iter().copied().collect();
+    let mut ranked: Vec<(ReplicationPriority, EntityId, DomainEligibility)> = Vec::new();
+    let known_n = state.known_count() as u32;
+    for id in pending_ids {
+        stats.known_relationships_scanned = stats.known_relationships_scanned.saturating_add(1);
+        let Some(Life::Known { revs: last, .. }) = state.entities.get(&id).copied() else {
+            clear_pending.push(id);
             continue;
         };
-        let Some(revs) = world.domain_revs_of(*id) else {
+        let Some(revs) = world.domain_revs_of(id) else {
+            clear_pending.push(id);
             continue;
         };
         let pending = revs.transform > last.transform || revs.health > last.health;
         if !pending {
+            clear_pending.push(id);
             continue;
         }
         stats.pending_updates = stats.pending_updates.saturating_add(1);
-        let cadence = cadence_for(world, observer, *id);
-        if cadence_allows(cadence, tick, *id, true) {
-            update_ids.push(*id);
+        let relation = classify_relation(world, observer, id, policy.overrides);
+        let interested = fanout.observer_count(id) as u32;
+        let pressure = PolicyContext::classify_pressure(
+            policy.population,
+            known_n,
+            interested,
+            policy.recent_observer_bytes,
+            policy.tick_overrun_hint,
+        );
+        let ctx = PolicyContext {
+            mode: policy.mode,
+            population: policy.population,
+            pressure,
+            observer_known: known_n,
+            subject_interested: interested,
+        };
+        let dirty = ReplicationDirtyMask {
+            transform: revs.transform > last.transform,
+            health: revs.health > last.health,
+        };
+        let decision = decide_update_policy(ctx, relation, dirty);
+        if decision.suppress_emit || !decision.eligibility.any() {
+            // Ineligible domains: silent catch-up without emit.
+            if dirty.health && !decision.eligibility.health {
+                stats.policy_domain_suppressed = stats.policy_domain_suppressed.saturating_add(1);
+            }
+            let allow = decision.eligibility;
+            if let Some(reconcile) = reconcile_update(world, id, last, allow) {
+                commit_updates.push((id, reconcile.next));
+            }
+            clear_pending.push(id);
+            continue;
+        }
+        stats.policy_eligible = stats.policy_eligible.saturating_add(1);
+        let interval = decision.cadence_interval.max(1);
+        let due = if interval <= 1 {
+            true
+        } else {
+            staggered_interval_due(tick, interval, id.index())
+        };
+        // Non-player entities keep legacy frequency tiers as a floor.
+        let legacy = cadence_for(world, observer, id);
+        let legacy_ok = cadence_allows(legacy, tick, id, true);
+        if due && legacy_ok {
+            if dirty.health && !decision.eligibility.health {
+                stats.policy_domain_suppressed = stats.policy_domain_suppressed.saturating_add(1);
+            }
+            ranked.push((decision.priority, id, decision.eligibility));
         } else {
             stats.cadence_deferred = stats.cadence_deferred.saturating_add(1);
+            stats.state_coalesced = stats.state_coalesced.saturating_add(1);
+            keep_pending.push(id);
         }
     }
-    update_ids.sort_by_key(|id| (u8::from(*id != observer), id.index(), id.generation()));
-    for id in update_ids {
-        if matches!(state.entities.get(&id), Some(Life::WantEnter { .. })) {
-            continue;
-        }
+    ranked.sort_by_key(|(prio, id, _)| (*prio, u8::from(*id != observer), id.index(), id.generation()));
+    for (_prio, id, allow) in ranked {
         let Some(Life::Known { revs: last, .. }) = state.entities.get(&id).copied() else {
+            clear_pending.push(id);
             continue;
         };
-        let Some(rec) = update_record(world, id, last) else {
+        let Some(reconcile) = reconcile_update(world, id, last, allow) else {
             stats.skipped_unchanged = stats.skipped_unchanged.saturating_add(1);
+            clear_pending.push(id);
             continue;
         };
+        let Some(rec) = reconcile.record else {
+            commit_updates.push((id, reconcile.next));
+            clear_pending.push(id);
+            continue;
+        };
+        stats.serialize_attempts = stats.serialize_attempts.saturating_add(1);
         let Ok(bytes) = encode_replication_record(&rec) else {
+            keep_pending.push(id);
             continue;
         };
         if total + bytes.len() > budget {
+            stats.budget_deferred_updates = stats.budget_deferred_updates.saturating_add(1);
+            stats.priority_deferred = stats.priority_deferred.saturating_add(1);
+            keep_pending.push(id);
             continue;
         }
         total += bytes.len();
         records.push(rec);
-        if let Some(revs) = world.domain_revs_of(id) {
-            commit_updates.push((id, revs));
-        }
+        commit_updates.push((id, reconcile.next));
+        clear_pending.push(id);
         stats.updates = stats.updates.saturating_add(1);
     }
 
@@ -667,9 +1048,11 @@ pub fn publish_observer_frame_with_budget(
         want_leave: u16::try_from(state.want_leave_count()).unwrap_or(u16::MAX),
     });
     let Ok(payload) = encode_replication_frame(&frame) else {
+        stats.replicate_us = u64::try_from(repl_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         return stats;
     };
     if encode_gameplay_frame(&payload).is_err() {
+        stats.replicate_us = u64::try_from(repl_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         return stats;
     }
     stats.bytes = payload.len() as u32;
@@ -680,10 +1063,13 @@ pub fn publish_observer_frame_with_budget(
     };
     if !pipe.try_push(queued) {
         stats.mailbox_merge = 1;
+        stats.replicate_us = u64::try_from(repl_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         return stats;
     }
 
     for id in commit_leaves {
+        fanout.remove_known(observer, id);
+        state.pending_update_ids.remove(&id);
         state.entities.remove(&id);
         state.last_leave_tick.insert(id, tick);
     }
@@ -705,20 +1091,24 @@ pub fn publish_observer_frame_with_budget(
                 since_tick: tick,
             },
         );
+        fanout.insert_known(observer, id);
     }
-    for (id, revs) in commit_updates {
+    for (id, next) in commit_updates {
         if let Some(Life::Known { since_tick, .. }) = state.entities.get(&id).copied() {
             state.entities.insert(
                 id,
                 Life::Known {
-                    revs: CommittedRevs {
-                        transform: revs.transform,
-                        health: revs.health,
-                    },
+                    revs: next,
                     since_tick,
                 },
             );
         }
+    }
+    for id in clear_pending {
+        state.pending_update_ids.remove(&id);
+    }
+    for id in keep_pending {
+        state.pending_update_ids.insert(id);
     }
     stats.pending = state
         .entities
@@ -728,6 +1118,7 @@ pub fn publish_observer_frame_with_budget(
     stats.known = state.known_count() as u32;
     stats.queue_depth = pipe.len() as u32;
     stats.oldest_pending_ticks = state.oldest_pending_age(tick);
+    stats.replicate_us = u64::try_from(repl_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
     stats
 }
 
@@ -759,12 +1150,114 @@ mod tests {
         (world, a, b)
     }
 
+    fn publish(
+        state: &mut ObserverReplicationState,
+        pipe: &ReplicationPipe,
+        world: &mut World,
+        fanout: &mut InterestFanoutIndex,
+        observer: EntityId,
+        sequence: u32,
+        tick: u64,
+    ) -> ReplicationTickStats {
+        let overrides = RelationOverrides::default();
+        let _ = distribute_replication_dirty(world, fanout, |obs, subject, _mask| {
+            if obs == observer {
+                state.queue_pending_update(subject);
+            }
+        });
+        world.clear_replication_dirty();
+        publish_observer_frame(
+            state,
+            pipe,
+            world,
+            fanout,
+            observer,
+            sequence,
+            tick,
+            0,
+            0,
+            0,
+            PublishPolicyInput::baseline(&overrides),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_budget(
+        state: &mut ObserverReplicationState,
+        pipe: &ReplicationPipe,
+        world: &mut World,
+        fanout: &mut InterestFanoutIndex,
+        observer: EntityId,
+        sequence: u32,
+        tick: u64,
+        budget: usize,
+    ) -> ReplicationTickStats {
+        let overrides = RelationOverrides::default();
+        let _ = distribute_replication_dirty(world, fanout, |obs, subject, _mask| {
+            if obs == observer {
+                state.queue_pending_update(subject);
+            }
+        });
+        world.clear_replication_dirty();
+        publish_observer_frame_with_budget(
+            state,
+            pipe,
+            world,
+            fanout,
+            observer,
+            sequence,
+            tick,
+            0,
+            0,
+            0,
+            budget,
+            PublishPolicyInput::baseline(&overrides),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_shared(
+        states: &mut HashMap<EntityId, ObserverReplicationState>,
+        pipe: &ReplicationPipe,
+        world: &mut World,
+        fanout: &mut InterestFanoutIndex,
+        observer: EntityId,
+        sequence: u32,
+        tick: u64,
+        clear_dirty: bool,
+    ) -> ReplicationTickStats {
+        let overrides = RelationOverrides::default();
+        let _ = distribute_replication_dirty(world, fanout, |obs, subject, _mask| {
+            if let Some(state) = states.get_mut(&obs) {
+                state.queue_pending_update(subject);
+            }
+        });
+        if clear_dirty {
+            world.clear_replication_dirty();
+        }
+        let state = states.get_mut(&observer).unwrap();
+        publish_observer_frame(
+            state,
+            pipe,
+            world,
+            fanout,
+            observer,
+            sequence,
+            tick,
+            0,
+            0,
+            0,
+            PublishPolicyInput::baseline(&overrides),
+        )
+    }
+
     #[test]
     fn epoch_purge_after_queue_commit_resets_committed_revs() {
-        let (world, observer, remote) = two_players();
+        let (mut world, observer, remote) = two_players();
         let (pipe, _rx) = ReplicationPipe::new();
         let mut state = ObserverReplicationState::new();
-        let stats = publish_observer_frame(&mut state, &pipe, &world, observer, 1, 1, 0, 0, 0);
+        let mut fanout = InterestFanoutIndex::new();
+        let stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
         assert!(stats.enters >= 2, "observer and nearby remote must Enter");
         assert_eq!(pipe.len(), 1);
         assert!(
@@ -779,6 +1272,7 @@ mod tests {
         assert_eq!(queued_epoch, 0);
 
         state.bump_epoch();
+        fanout.clear_observer(observer);
         let purged = pipe.purge_older_than(state.epoch);
         assert_eq!(purged, 1, "queued old-epoch frame must be dropped");
         assert_eq!(pipe.len(), 0);
@@ -789,7 +1283,7 @@ mod tests {
         assert!(!state.is_known(remote));
         assert!(!state.is_known(observer));
 
-        let stats2 = publish_observer_frame(&mut state, &pipe, &world, observer, 2, 2, 0, 0, 0);
+        let stats2 = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
         assert!(
             stats2.enters >= 2,
             "new epoch must send a current baseline, not skip Enters as already-delivered"
@@ -818,10 +1312,11 @@ mod tests {
 
     #[test]
     fn updates_do_not_precede_enter() {
-        let (world, observer, remote) = two_players();
+        let (mut world, observer, remote) = two_players();
         let (pipe, _rx) = ReplicationPipe::new();
         let mut state = ObserverReplicationState::new();
-        publish_observer_frame(&mut state, &pipe, &world, observer, 1, 1, 0, 0, 0);
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
         let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
         let mut seen_enter = HashSet::new();
         for rec in &frame.records {
@@ -846,7 +1341,8 @@ mod tests {
         let (mut world, observer, remote) = two_players();
         let (pipe, _rx) = ReplicationPipe::new();
         let mut state = ObserverReplicationState::new();
-        publish_observer_frame(&mut state, &pipe, &world, observer, 1, 1, 0, 0, 0);
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
         let _ = pipe.pop();
         let start = world.transform_of(remote).unwrap();
         for i in 0..10 {
@@ -854,7 +1350,7 @@ mod tests {
             t.position[0] += i as f32;
             world.set_transform(remote, t);
         }
-        publish_observer_frame(&mut state, &pipe, &world, observer, 2, 2, 0, 0, 0);
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
         let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
         let updates: Vec<_> = frame
             .records
@@ -884,7 +1380,9 @@ mod tests {
         let (t, s) = PlayerState::standing_on_at(floor.id, floor.top_surface(), band_x);
         let remote = world.spawn_player(t, s);
         let mut state = ObserverReplicationState::new();
-        state.classify(&world, observer, 1);
+        let mut fanout = InterestFanoutIndex::new();
+        let candidates = world.spatial_candidates_unsorted(observer);
+        state.classify_with_candidates(&mut world, observer, 1, &candidates, &mut fanout);
         assert!(
             !matches!(state.entities.get(&remote), Some(Life::WantEnter { .. })),
             "band must not WantEnter"
@@ -914,22 +1412,12 @@ mod tests {
         let budget = empty_len + 8 * enter_len;
         let (pipe, _rx) = ReplicationPipe::new();
         let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
         let mut entered = HashSet::new();
         let mut saw_update = false;
         for seq in 1..=12 {
             let _ = pipe.pop();
-            publish_observer_frame_with_budget(
-                &mut state,
-                &pipe,
-                &world,
-                observer,
-                seq,
-                u64::from(seq),
-                0,
-                0,
-                0,
-                budget,
-            );
+            publish_budget(&mut state, &pipe, &mut world, &mut fanout, observer, seq, u64::from(seq), budget);
             let Some(queued) = pipe.pop() else {
                 continue;
             };
@@ -964,10 +1452,11 @@ mod tests {
 
     #[test]
     fn first_observe_is_enter_baseline() {
-        let (world, observer, remote) = two_players();
+        let (mut world, observer, remote) = two_players();
         let (pipe, _rx) = ReplicationPipe::new();
         let mut state = ObserverReplicationState::new();
-        let stats = publish_observer_frame(&mut state, &pipe, &world, observer, 1, 1, 0, 0, 0);
+        let mut fanout = InterestFanoutIndex::new();
+        let stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
         assert!(stats.enters >= 2);
         assert_eq!(stats.updates, 0);
         let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
@@ -983,12 +1472,13 @@ mod tests {
 
     #[test]
     fn unchanged_known_does_not_emit_update() {
-        let (world, observer, remote) = two_players();
+        let (mut world, observer, remote) = two_players();
         let (pipe, _rx) = ReplicationPipe::new();
         let mut state = ObserverReplicationState::new();
-        publish_observer_frame(&mut state, &pipe, &world, observer, 1, 1, 0, 0, 0);
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
         let _ = pipe.pop();
-        let stats = publish_observer_frame(&mut state, &pipe, &world, observer, 2, 2, 0, 0, 0);
+        let stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
         assert_eq!(stats.updates, 0);
         assert_eq!(stats.pending_updates, 0);
         let _ = remote;
@@ -999,12 +1489,13 @@ mod tests {
         let (mut world, observer, remote) = two_players();
         let (pipe, _rx) = ReplicationPipe::new();
         let mut state = ObserverReplicationState::new();
-        publish_observer_frame(&mut state, &pipe, &world, observer, 1, 1, 0, 0, 0);
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
         let _ = pipe.pop();
         let mut t = world.transform_of(remote).unwrap();
         t.position[0] += 0.5;
         world.set_transform(remote, t);
-        let stats = publish_observer_frame(&mut state, &pipe, &world, observer, 2, 2, 0, 0, 0);
+        let stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
         assert!(stats.updates >= 1);
         assert!(stats.pending_updates >= 1);
         let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
@@ -1021,17 +1512,32 @@ mod tests {
         let (pipe_b, _rx_b) = ReplicationPipe::new();
         let mut state_a = ObserverReplicationState::new();
         let mut state_b = ObserverReplicationState::new();
-        publish_observer_frame(&mut state_a, &pipe_a, &world, a, 1, 1, 0, 0, 0);
-        publish_observer_frame(&mut state_b, &pipe_b, &world, b, 1, 1, 0, 0, 0);
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state_a, &pipe_a, &mut world, &mut fanout, a, 1, 1);
+        publish(&mut state_b, &pipe_b, &mut world, &mut fanout, b, 1, 1);
         let _ = pipe_a.pop();
         let _ = pipe_b.pop();
         let mut t = world.transform_of(a).unwrap();
         t.position[0] += 0.4;
         world.set_transform(a, t);
-        let stats_a = publish_observer_frame(&mut state_a, &pipe_a, &world, a, 2, 2, 0, 0, 0);
+        let _ = distribute_replication_dirty(&world, &fanout, |obs, subject, _mask| {
+            if obs == a {
+                state_a.queue_pending_update(subject);
+            } else if obs == b {
+                state_b.queue_pending_update(subject);
+            }
+        });
+        world.clear_replication_dirty();
+        let overrides = RelationOverrides::default();
+        let policy = PublishPolicyInput::baseline(&overrides);
+        let stats_a = publish_observer_frame(
+            &mut state_a, &pipe_a, &mut world, &mut fanout, a, 2, 2, 0, 0, 0, policy,
+        );
         let _ = pipe_a.pop();
         assert!(stats_a.updates >= 1 || stats_a.pending_updates >= 1);
-        let stats_b = publish_observer_frame(&mut state_b, &pipe_b, &world, b, 2, 2, 0, 0, 0);
+        let stats_b = publish_observer_frame(
+            &mut state_b, &pipe_b, &mut world, &mut fanout, b, 2, 2, 0, 0, 0, policy,
+        );
         assert!(
             stats_b.pending_updates >= 1 || stats_b.updates >= 1,
             "observer B still needs the mutated entity after A committed"
@@ -1064,7 +1570,8 @@ mod tests {
         let remote = world.spawn_player(t, s);
         let (pipe, _rx) = ReplicationPipe::new();
         let mut state = ObserverReplicationState::new();
-        publish_observer_frame(&mut state, &pipe, &world, observer, 1, 1, 0, 0, 0);
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
         let _ = pipe.pop();
         assert!(state.is_known(remote));
         let far = floor.top_surface();
@@ -1074,7 +1581,7 @@ mod tests {
         t.position[0] = world.bounds().max_x - 0.4;
         t.position[1] = far;
         world.set_transform(observer, t);
-        publish_observer_frame(&mut state, &pipe, &world, observer, 2, 2, 0, 0, 0);
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
         let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
         assert!(frame.records.iter().any(|r| matches!(
             r,
@@ -1082,11 +1589,305 @@ mod tests {
         )));
         t.position[0] = purgatory_simulation::FOOTNOTE_SPAWN_X;
         world.set_transform(observer, t);
-        publish_observer_frame(&mut state, &pipe, &world, observer, 3, 3, 0, 0, 0);
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 3, 3);
         let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
         assert!(frame.records.iter().any(|r| matches!(
             r,
             ReplicationRecord::Enter { entity, .. } if entity.entity_id == to_wire_id(remote)
         )));
+    }
+
+    #[test]
+    fn steady_interest_skips_reclassify_until_membership_can_change() {
+        let (mut world, observer, remote) = two_players();
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let stats1 = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+        assert_eq!(stats1.classified, 1);
+        assert!(state.is_known(remote) || state.want_enter_count() > 0 || state.is_known(observer));
+        assert!(!state.needs_classify(&world, observer));
+        assert!(!world.interest_observer_dirty(observer));
+        // Second tick: no world pose/membership change → skip classify.
+        let known_before = state.known_count();
+        let stats2 = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
+        let _ = pipe.pop();
+        assert_eq!(stats2.classified, 0);
+        assert!(!state.needs_classify(&world, observer));
+        assert_eq!(state.known_count(), known_before);
+        // Tiny remote move inside leave: 6G.7A must NOT dirty observer (transform
+        // updates still flow via DomainRevs without reclassify).
+        let mut t = world.transform_of(remote).unwrap();
+        t.position[0] += 0.5;
+        world.set_transform(remote, t);
+        assert!(!world.interest_observer_dirty(observer));
+        assert!(!state.needs_classify(&world, observer));
+        let stats3 = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 3, 3);
+        assert_eq!(stats3.classified, 0);
+        // Drive remote far enough to exit leave → observer must reclassify.
+        let mut t = world.transform_of(remote).unwrap();
+        t.position[0] = world.bounds().max_x - 0.5;
+        world.set_transform(remote, t);
+        assert!(world.interest_observer_dirty(observer));
+        assert!(state.needs_classify(&world, observer));
+        let stats4 = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 4, 4);
+        assert_eq!(stats4.classified, 1);
+        assert!(!state.needs_classify(&world, observer));
+    }
+
+    #[test]
+    fn local_motion_does_not_reclassify_unrelated_observers() {
+        let mut world = World::footnote_test_stage();
+        if let Some(id) = world.player_id() {
+            world.despawn(id);
+        }
+        let floor = world.iter_platforms().next().expect("floor");
+        let top = floor.top_surface();
+        let left_x = world.bounds().min_x + 1.0;
+        let right_x = world.bounds().max_x - 1.0;
+        let mut left_observers = Vec::new();
+        for i in 0..24 {
+            let (t, s) = PlayerState::standing_on_at(floor.id, top, left_x + (i as f32) * 0.05);
+            left_observers.push(world.spawn_player(t, s));
+        }
+        let (t, s) = PlayerState::standing_on_at(floor.id, top, right_x);
+        let mover = world.spawn_player(t, s);
+        let (t, s) = PlayerState::standing_on_at(floor.id, top, right_x - 0.5);
+        let near = world.spawn_player(t, s);
+
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let mut states: HashMap<EntityId, ObserverReplicationState> = HashMap::new();
+        for id in left_observers.iter().copied().chain([mover, near]) {
+            states.insert(id, ObserverReplicationState::new());
+        }
+        // Baseline classify everyone.
+        let ids: Vec<_> = states.keys().copied().collect();
+        for (i, id) in ids.iter().copied().enumerate() {
+            let _ = publish_shared(
+                &mut states,
+                &pipe,
+                &mut world,
+                &mut fanout,
+                id,
+                1,
+                1,
+                i + 1 == ids.len(),
+            );
+            let _ = pipe.pop();
+        }
+        assert_eq!(world.interest_dirty_observer_count(), 0);
+
+        let mut t = world.transform_of(mover).unwrap();
+        t.position[0] -= 0.25;
+        world.set_transform(mover, t);
+
+        let dirty = world.interest_dirty_observers_sorted();
+        assert!(dirty.contains(&mover), "mover must be dirty as an observer");
+        // Nearby observer is dirtied only when enter/leave XOR is non-empty (6G.7A).
+        for id in &left_observers {
+            assert!(
+                !dirty.contains(id),
+                "left-side observer {id:?} must not be reclassified for right-side motion"
+            );
+        }
+
+        let mut reclassified = 0u32;
+        let ids: Vec<_> = states.keys().copied().collect();
+        for (i, id) in ids.iter().copied().enumerate() {
+            let stats = publish_shared(
+                &mut states,
+                &pipe,
+                &mut world,
+                &mut fanout,
+                id,
+                2,
+                2,
+                i + 1 == ids.len(),
+            );
+            let _ = pipe.pop();
+            reclassified = reclassified.saturating_add(stats.classified);
+        }
+        assert!(
+            reclassified < left_observers.len() as u32,
+            "reclassified={reclassified} must be local, not all {} left observers",
+            left_observers.len()
+        );
+        assert!(
+            reclassified <= 4,
+            "expected a small local dirty set, got {reclassified}"
+        );
+        let _ = near;
+    }
+
+    #[test]
+    fn one_dirty_among_many_known_scans_only_pending() {
+        let (mut world, observer, remote) = two_players();
+        let floor = world.iter_platforms().next().unwrap();
+        let top = floor.top_surface();
+        let base = purgatory_simulation::FOOTNOTE_SPAWN_X + 2.0;
+        let mut crowd = Vec::new();
+        for i in 0..20 {
+            let (t, s) = PlayerState::standing_on_at(floor.id, top, base + (i as f32) * 0.15);
+            crowd.push(world.spawn_player(t, s));
+        }
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let _ = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+        let known = state.known_count();
+        assert!(known >= 20, "crowd must be Known, got {known}");
+
+        // Stationary crowd: no dirty → scan only recovery/pending (empty).
+        let idle = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
+        let _ = pipe.pop();
+        assert_eq!(idle.updates, 0);
+        assert_eq!(idle.known_relationships_present, known as u32);
+        assert_eq!(
+            idle.known_relationships_scanned, 0,
+            "idle tick must not scan all Known"
+        );
+
+        let mut t = world.transform_of(remote).unwrap();
+        t.position[0] += 0.35;
+        world.set_transform(remote, t);
+        let stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 3, 3);
+        assert!(stats.updates >= 1);
+        assert!(
+            stats.known_relationships_scanned <= 4,
+            "one dirty should not scan full Known ({}); scanned={}",
+            known,
+            stats.known_relationships_scanned
+        );
+        assert!(
+            (stats.known_relationships_scanned as usize) < known / 2,
+            "scanned must be << present Known"
+        );
+        assert_eq!(fanout.observer_count(remote), 1);
+        assert!(state.pending_update_count() <= 2);
+        let _ = crowd;
+    }
+
+    #[test]
+    fn domain_eligibility_hook_can_suppress_health() {
+        let allow = domain_eligibility_for(
+            ObserverRelationKind::NearbyStranger,
+            ReplicationDirtyMask {
+                transform: true,
+                health: true,
+            },
+        );
+        assert!(allow.transform);
+        assert!(!allow.health);
+        assert!(allow.any());
+    }
+
+    #[test]
+    fn selective_policy_suppresses_stranger_health_on_emit() {
+        let (mut world, observer, remote) = two_players();
+        // Ensure remote has health so domain can dirty.
+        let _ = world.set_health(remote, purgatory_simulation::Health::full(100.0));
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let overrides = RelationOverrides::default();
+        let _ = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+        let _ = world.set_health(
+            remote,
+            purgatory_simulation::Health {
+                current: 50.0,
+                max: 100.0,
+            },
+        );
+        let _ = distribute_replication_dirty(&world, &fanout, |obs, subject, _| {
+            if obs == observer {
+                state.queue_pending_update(subject);
+            }
+        });
+        world.clear_replication_dirty();
+        let policy = PublishPolicyInput {
+            mode: PolicyMode::Selective,
+            population: PopulationClass::High,
+            overrides: &overrides,
+            recent_observer_bytes: 3000,
+            tick_overrun_hint: false,
+        };
+        let stats = publish_observer_frame(
+            &mut state, &pipe, &mut world, &mut fanout, observer, 2, 2, 0, 0, 0, policy,
+        );
+        assert!(stats.policy_domain_suppressed >= 1 || stats.updates == 0);
+        if let Some(frame) = pipe.pop() {
+            let decoded = decode_replication_frame(&frame.payload).unwrap();
+            for rec in &decoded.records {
+                if let ReplicationRecord::Update {
+                    entity_id,
+                    domains,
+                    health,
+                    ..
+                } = rec
+                    && *entity_id == to_wire_id(remote)
+                {
+                    assert!(!domains.health, "stranger health must be policy-suppressed");
+                    assert!(health.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn priority_prefers_self_under_tiny_budget() {
+        let (mut world, observer, remote) = two_players();
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let overrides = RelationOverrides::default();
+        let _ = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+        let mut t = world.transform_of(observer).unwrap();
+        t.position[0] += 0.2;
+        world.set_transform(observer, t);
+        let mut t = world.transform_of(remote).unwrap();
+        t.position[0] += 0.2;
+        world.set_transform(remote, t);
+        let _ = distribute_replication_dirty(&world, &fanout, |obs, subject, _| {
+            if obs == observer {
+                state.queue_pending_update(subject);
+            }
+        });
+        world.clear_replication_dirty();
+        // Tiny budget: header + one update only.
+        let empty_len = {
+            let empty = header_frame(1, 1, observer, &world, 0, 0, 0, 0, Vec::new());
+            encoded_len(&empty).unwrap()
+        };
+        let policy = PublishPolicyInput::baseline(&overrides);
+        let stats = publish_observer_frame_with_budget(
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            2,
+            2,
+            0,
+            0,
+            0,
+            empty_len + 40,
+            policy,
+        );
+        assert!(stats.updates >= 1);
+        let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
+        let first_update = frame.records.iter().find_map(|r| match r {
+            ReplicationRecord::Update { entity_id, .. } => Some(*entity_id),
+            _ => None,
+        });
+        assert_eq!(
+            first_update,
+            Some(to_wire_id(observer)),
+            "self should win priority under budget pressure"
+        );
     }
 }

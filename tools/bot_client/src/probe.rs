@@ -1,9 +1,11 @@
 //! One-shot Hello/Welcome connection probe for Developer Tools readiness.
 //!
 //! Uses the existing Quinn client stack and protocol v10. A successful probe
-//! follows the normal DEV login / persistence / enter path (`dev.probe`) and
-//! may therefore create or restore that character. That is documented debt,
-//! not a dedicated health protocol.
+//! follows the normal DEV login / persistence / enter path (`dev.probe`).
+//! Hub-spawned servers set `PURGATORY_DATA_DIR` under
+//! `logs/dev-tools/hub_server_persist` so Ready does not mint into
+//! `%LOCALAPPDATA%\Purgatory`. Adopted servers without that env still hit the
+//! default persist root (documented debt).
 
 use std::net::SocketAddr;
 use std::time::Duration;

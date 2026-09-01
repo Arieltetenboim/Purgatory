@@ -6,6 +6,7 @@
 //! held commands may be acknowledged without individual physics steps.
 
 use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
 
 use purgatory_common::{
     ChannelId, CharacterId, ContentId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
@@ -28,8 +29,13 @@ use purgatory_simulation::{
 };
 
 use super::persist::PersistenceHandle;
-
-use super::replication::{ObserverReplicationState, ReplicationPipe, publish_observer_frame};
+use super::replication::{
+    InterestFanoutIndex, ObserverReplicationState, PublishPolicyInput, ReplicationPipe,
+    publish_observer_frame,
+};
+use super::replication_fanout::ReplicationFanoutAccounting;
+use super::replication_policy::{PolicyMode, PopulationClass, population_class_from_env};
+use super::tick_domains::TickDomainSample;
 
 /// How a command compared against the last accepted sequence in this epoch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -340,16 +346,27 @@ pub struct GameplayOwner {
     pub observer_pending_updates: u64,
     pub observer_pending_enters: u64,
     pub cadence_deferred_updates: u64,
+    /// Cumulative micros spent in persist try_save during the current tick window.
+    persist_enqueue_us: u64,
     placement: LoadPlacement,
     trace_relevance: bool,
     trace_snapshot: bool,
     runtime_probe: RuntimeProbe,
     load_pressure: super::load_pressure::LoadPressure,
+    /// Shared entity → Known-observer reverse index (6G.7B).
+    interest_fanout: InterestFanoutIndex,
+    replication_fanout_accounting: ReplicationFanoutAccounting,
+    replication_policy_mode: PolicyMode,
+    population_class: PopulationClass,
+    last_observer_bytes: HashMap<ConnectionId, u32>,
+    tick_overrun_hint: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LoadPlacement {
     Cluster,
+    /// Pack every spawn inside a small shared AOI (mutual relevance hotspot).
+    Hotspot,
     Spread,
     MultiMap,
 }
@@ -382,6 +399,7 @@ fn load_placement_from_env() -> LoadPlacement {
         .to_ascii_lowercase()
         .as_str()
     {
+        "hotspot" => LoadPlacement::Hotspot,
         "spread" => LoadPlacement::Spread,
         "maps" | "multimap" => LoadPlacement::MultiMap,
         _ => LoadPlacement::Cluster,
@@ -679,11 +697,18 @@ impl GameplayOwner {
             observer_pending_updates: 0,
             observer_pending_enters: 0,
             cadence_deferred_updates: 0,
+            persist_enqueue_us: 0,
             placement: load_placement_from_env(),
             trace_relevance: false,
             trace_snapshot: false,
             runtime_probe: RuntimeProbe::from_env(),
             load_pressure: super::load_pressure::LoadPressure::from_process_env(),
+            interest_fanout: InterestFanoutIndex::new(),
+            replication_fanout_accounting: ReplicationFanoutAccounting::default(),
+            replication_policy_mode: PolicyMode::from_env(),
+            population_class: population_class_from_env(),
+            last_observer_bytes: HashMap::new(),
+            tick_overrun_hint: false,
         }
     }
 
@@ -815,7 +840,10 @@ impl GameplayOwner {
         let address = self.map_a_address();
         let n = self.bindings.len();
         let spawn_x = match self.placement {
+            // Default cluster and hotspot both pack near spawn. Hotspot keeps
+            // every index within ~2 wu so AOI leave rects fully overlap.
             LoadPlacement::Cluster => FOOTNOTE_SPAWN_X,
+            LoadPlacement::Hotspot => FOOTNOTE_SPAWN_X + (n as f32 % 8.0) * 0.25,
             LoadPlacement::Spread => FOOTNOTE_SPAWN_X + (n as f32 % 8.0) * 5.0,
             LoadPlacement::MultiMap => FOOTNOTE_SPAWN_X,
         };
@@ -955,6 +983,8 @@ impl GameplayOwner {
                     }));
                 }
             }
+            self.interest_fanout.clear_observer(binding.entity);
+            self.interest_fanout.clear_subject(binding.entity);
             self.world.despawn(binding.entity);
             self.player_entity_despawned = self.player_entity_despawned.saturating_add(1);
         }
@@ -977,9 +1007,12 @@ impl GameplayOwner {
         self.emit_save(&snapshot);
     }
 
-    fn emit_save(&self, snapshot: &PersistentCharacterSnapshot) {
+    fn emit_save(&mut self, snapshot: &PersistentCharacterSnapshot) {
         if let Some(persist) = &self.persist {
+            let t0 = std::time::Instant::now();
             let _ = persist.try_save(snapshot.clone());
+            let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+            self.persist_enqueue_us = self.persist_enqueue_us.saturating_add(us);
         }
     }
 
@@ -1120,8 +1153,30 @@ impl GameplayOwner {
         }
     }
 
+    /// 6G.6 capacity artifact: interest-invalidation locality snapshot.
+    #[must_use]
+    pub fn world_interest_locality(&self) -> purgatory_common::InterestLocalitySnapshot {
+        self.world.interest_locality_snapshot()
+    }
+
+    /// 6G.7B capacity artifact: replication dirty fan-out discovery snapshot.
+    #[must_use]
+    pub fn replication_fanout_snapshot(&self) -> purgatory_common::ReplicationFanoutSnapshot {
+        self.replication_fanout_accounting.snapshot()
+    }
+
+    pub fn set_tick_overrun_hint(&mut self, overrun: bool) {
+        self.tick_overrun_hint = overrun;
+    }
+
     /// One simulation tick for every attached player. Packet count is irrelevant.
-    pub fn simulate_tick(&mut self, dt: f32) {
+    /// Returns coarse domain timings for capacity characterization (6G.2).
+    pub fn simulate_tick(&mut self, dt: f32) -> TickDomainSample {
+        let tick_t0 = std::time::Instant::now();
+        let mut sample = TickDomainSample::default();
+        self.persist_enqueue_us = 0;
+
+        let services_t0 = std::time::Instant::now();
         let tick = SimulationTick::from_count(self.ticks.saturating_add(1));
         self.world.begin_tick(tick);
         let map_a = self.map_a_address();
@@ -1130,6 +1185,9 @@ impl GameplayOwner {
             self.maybe_arm_runtime_probe(tick);
         }
         self.world.drain_critical_scheduler();
+        sample.gameplay_services += services_t0.elapsed();
+
+        let input_t0 = std::time::Instant::now();
         let ids: Vec<(ConnectionId, EntityId, PlayerInput, bool)> = self
             .bindings
             .iter_mut()
@@ -1144,20 +1202,33 @@ impl GameplayOwner {
                 (*cid, entity, player_input, gated)
             })
             .collect();
+        sample.commands_input += input_t0.elapsed();
+
+        let move_t0 = std::time::Instant::now();
         for (_, entity, player_input, gated) in ids {
             if gated && let Some((_, player)) = self.world.player_parts_mut_for(entity) {
                 player.velocity = [0.0, 0.0];
             }
             self.world.tick_player(entity, dt, player_input);
         }
+        sample.simulation_movement += move_t0.elapsed();
+
+        let services2_t0 = std::time::Instant::now();
         self.world.maintain_portal_reentry();
         let closed = self.world.maintain_interaction_sessions();
         self.emit_closed(closed);
         let _ = self.world.commit_runtime_events();
         self.world.pump_cadence();
         self.world.drain_deferred_scheduler();
+        sample.gameplay_services += services2_t0.elapsed();
+
         self.ticks = tick.get();
-        self.publish_snapshots();
+        let (aoi_us, repl_us) = self.publish_snapshots();
+        sample.spatial_aoi += Duration::from_micros(aoi_us);
+        sample.replication += Duration::from_micros(repl_us);
+        sample.persistence_enqueue += Duration::from_micros(self.persist_enqueue_us);
+        sample.total = tick_t0.elapsed();
+        sample
     }
 
     fn maybe_arm_runtime_probe(&mut self, tick: SimulationTick) {
@@ -1297,6 +1368,7 @@ impl GameplayOwner {
             player.velocity = [0.0, 0.0];
         }
         if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            self.interest_fanout.clear_observer(binding.entity);
             binding.interest.bump_epoch();
             if let Some(pipe) = &binding.replication {
                 pipe.purge_older_than(binding.interest.epoch);
@@ -1485,6 +1557,7 @@ impl GameplayOwner {
             }
         }
         if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            self.interest_fanout.clear_observer(binding.entity);
             binding.interest.bump_epoch();
             if let Some(pipe) = &binding.replication {
                 pipe.purge_older_than(binding.interest.epoch);
@@ -1688,96 +1761,150 @@ impl GameplayOwner {
         }
     }
 
-    fn publish_snapshots(&mut self) {
+    /// Returns `(spatial_aoi_us, replication_us)` accumulated across observers.
+    fn publish_snapshots(&mut self) -> (u64, u64) {
         self.snapshot_sequence = self.snapshot_sequence.saturating_add(1);
         self.snapshots_built = self.snapshots_built.saturating_add(1);
         let mut last_entities = 0u16;
+        let mut aoi_us_total = 0u64;
+        let mut repl_us_total = 0u64;
         if verbose_snapshots() {
             println!(
                 "snapshot seq={} tick={}",
                 self.snapshot_sequence, self.ticks,
             );
         }
+
+        // 6G.7B: dirty entity → interested observers before per-observer pack.
+        let dirty: Vec<_> = self.world.drain_replication_dirty().into_iter().collect();
+        let mut dirty_entities = 0u32;
+        let mut dirty_transform = 0u32;
+        let mut dirty_health = 0u32;
+        let mut interested = 0u32;
+        let entity_to_cid: HashMap<EntityId, ConnectionId> = self
+            .bindings
+            .iter()
+            .map(|(cid, b)| (b.entity, *cid))
+            .collect();
+        for (subject, mask) in dirty {
+            dirty_entities = dirty_entities.saturating_add(1);
+            if mask.transform {
+                dirty_transform = dirty_transform.saturating_add(1);
+            }
+            if mask.health {
+                dirty_health = dirty_health.saturating_add(1);
+            }
+            for obs in self.interest_fanout.observers(subject).collect::<Vec<_>>() {
+                // Enqueue all Known interested; domain/cadence/priority policy runs at emit.
+                interested = interested.saturating_add(1);
+                if let Some(cid) = entity_to_cid.get(&obs)
+                    && let Some(binding) = self.bindings.get_mut(cid)
+                {
+                    binding.interest.queue_pending_update(subject);
+                }
+            }
+        }
+        self.replication_fanout_accounting.note_dirty_pass(
+            dirty_entities,
+            dirty_transform,
+            dirty_health,
+            interested,
+        );
+
         let ids: Vec<ConnectionId> = self.bindings.keys().copied().collect();
         let mut observer_pending_updates = 0u64;
         let mut observer_pending_enters = 0u64;
         let mut cadence_deferred_updates = 0u64;
-        let GameplayOwner {
-            world,
-            bindings,
-            snapshot_sequence,
-            ticks,
-            snapshot_build_count,
-            snapshot_build_time_max_us,
-            aoi_enters,
-            aoi_leaves,
-            aoi_updates,
-            aoi_churn_reentry,
-            aoi_update_bytes,
-            oldest_pending_ticks,
-            max_deferred_ticks,
-            replication_queue_depth_max,
-            last_snapshot_entities: _,
-            snapshot_send_failed: _,
-            trace_relevance,
-            trace_snapshot,
-            ..
-        } = self;
+        let policy_mode = self.replication_policy_mode;
+        let population = self.population_class;
+        let overrun_hint = self.tick_overrun_hint;
         for cid in ids {
-            let Some(binding) = bindings.get_mut(&cid) else {
+            let Some(binding) = self.bindings.get_mut(&cid) else {
                 continue;
             };
             let Some(pipe) = binding.replication.clone() else {
                 continue;
             };
-            if !*trace_relevance {
-                *trace_relevance = true;
-                let visible = world.spatial_candidates(binding.entity);
+            if !self.trace_relevance {
+                self.trace_relevance = true;
+                let visible = self.world.spatial_candidates(binding.entity);
                 println!(
                     "6B_TRACE relevance observer={} visible={}",
                     binding.entity,
                     visible.len()
                 );
             }
+            let recent_bytes = self.last_observer_bytes.get(&cid).copied().unwrap_or(0);
+            let overrides = super::replication_policy::RelationOverrides::default();
+            let policy = PublishPolicyInput {
+                mode: policy_mode,
+                population,
+                overrides: &overrides,
+                recent_observer_bytes: recent_bytes,
+                tick_overrun_hint: overrun_hint,
+            };
             let build_start = std::time::Instant::now();
             let stats = publish_observer_frame(
                 &mut binding.interest,
                 &pipe,
-                world,
+                &mut self.world,
+                &mut self.interest_fanout,
                 binding.entity,
-                *snapshot_sequence,
-                *ticks,
+                self.snapshot_sequence,
+                self.ticks,
                 binding.input.input_epoch,
                 binding.input.last_acknowledged(),
                 binding.input.unmatched_continuation_ticks,
+                policy,
             );
             let build_us = u64::try_from(build_start.elapsed().as_micros()).unwrap_or(u64::MAX);
-            *snapshot_build_time_max_us = (*snapshot_build_time_max_us).max(build_us);
-            *snapshot_build_count = snapshot_build_count.saturating_add(1);
+            self.snapshot_build_time_max_us = self.snapshot_build_time_max_us.max(build_us);
+            self.snapshot_build_count = self.snapshot_build_count.saturating_add(1);
+            aoi_us_total = aoi_us_total.saturating_add(stats.aoi_us);
+            repl_us_total = repl_us_total.saturating_add(stats.replicate_us);
             last_entities = last_entities.max(stats.known as u16);
-            *aoi_enters = aoi_enters.saturating_add(u64::from(stats.enters));
-            *aoi_leaves = aoi_leaves.saturating_add(u64::from(stats.leaves));
-            *aoi_updates = aoi_updates.saturating_add(u64::from(stats.updates));
-            *aoi_churn_reentry = aoi_churn_reentry.saturating_add(u64::from(stats.churn_reentry));
-            *aoi_update_bytes = aoi_update_bytes.saturating_add(u64::from(stats.bytes));
-            *oldest_pending_ticks = (*oldest_pending_ticks).max(stats.oldest_pending_ticks);
-            *max_deferred_ticks = (*max_deferred_ticks).max(stats.oldest_pending_ticks);
-            *replication_queue_depth_max =
-                (*replication_queue_depth_max).max(u64::from(stats.queue_depth));
+            self.aoi_enters = self.aoi_enters.saturating_add(u64::from(stats.enters));
+            self.aoi_leaves = self.aoi_leaves.saturating_add(u64::from(stats.leaves));
+            self.aoi_updates = self.aoi_updates.saturating_add(u64::from(stats.updates));
+            self.aoi_churn_reentry = self
+                .aoi_churn_reentry
+                .saturating_add(u64::from(stats.churn_reentry));
+            self.aoi_update_bytes = self.aoi_update_bytes.saturating_add(u64::from(stats.bytes));
+            self.last_observer_bytes.insert(cid, stats.bytes);
+            self.oldest_pending_ticks = self.oldest_pending_ticks.max(stats.oldest_pending_ticks);
+            self.max_deferred_ticks = self.max_deferred_ticks.max(stats.oldest_pending_ticks);
+            self.replication_queue_depth_max = self
+                .replication_queue_depth_max
+                .max(u64::from(stats.queue_depth));
             observer_pending_updates =
                 observer_pending_updates.saturating_add(u64::from(stats.pending_updates));
             observer_pending_enters = observer_pending_enters
                 .saturating_add(u64::from(binding.interest.want_enter_count()));
             cadence_deferred_updates =
                 cadence_deferred_updates.saturating_add(u64::from(stats.cadence_deferred));
-            if !*trace_snapshot {
-                *trace_snapshot = true;
+            self.replication_fanout_accounting.note_observer_publish(
+                stats.known_relationships_present,
+                stats.known_relationships_scanned,
+                stats.updates,
+                stats.serialize_attempts,
+                stats.budget_deferred_updates,
+                stats.cadence_deferred,
+                stats.recovery_rescues,
+            );
+            self.replication_fanout_accounting.note_policy(
+                stats.policy_eligible,
+                stats.policy_domain_suppressed,
+                stats.priority_deferred,
+                stats.state_coalesced,
+                stats.bytes,
+            );
+            if !self.trace_snapshot {
+                self.trace_snapshot = true;
                 println!(
                     "6D_TRACE frame cid={cid} enters={} leaves={} updates={} bytes={}",
                     stats.enters, stats.leaves, stats.updates, stats.bytes
                 );
             }
-            let _ = cid;
         }
         self.last_snapshot_entities = last_entities;
         self.observer_pending_updates = observer_pending_updates;
@@ -1788,6 +1915,7 @@ impl GameplayOwner {
             session_max = session_max.max(binding.input.queued_len() as u64);
         }
         self.session_queue_max = self.session_queue_max.max(session_max);
+        (aoi_us_total, repl_us_total)
     }
 }
 

@@ -470,7 +470,7 @@ Combat resolution, projectiles, threat tables, targeting lock, death-as-gameplay
 
 ## Phase 6G blockers
 
-**Hard rule:** no Phase 7 implementation until Phase 6G is declared GREEN (automated gate already recorded; manual Mixed/soak/process-ownership and the open jitter / prediction / AOI issues still required).
+**Hard rule:** no Phase 7 implementation until Phase 6G is declared GREEN (automated gate already recorded; 6G.2 capacity characterization + manual Mixed/soak/process-ownership evidence still required — see ADR-0053). Standing jitter / floor-clip presentation P0s are closed; do not reopen them as Phase 7 blockers.
 
 Do not use the planning distinctions below to start code early.
 

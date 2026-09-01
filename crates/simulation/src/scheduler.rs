@@ -122,6 +122,10 @@ pub struct Scheduler {
     live: u32,
     critical_ceiling_hits: u64,
     deferred_exhausted: u64,
+    scheduled_total: u64,
+    cancelled_total: u64,
+    critical_executed_total: u64,
+    deferred_executed_total: u64,
 }
 
 impl Default for Scheduler {
@@ -142,6 +146,10 @@ impl Scheduler {
             live: 0,
             critical_ceiling_hits: 0,
             deferred_exhausted: 0,
+            scheduled_total: 0,
+            cancelled_total: 0,
+            critical_executed_total: 0,
+            deferred_executed_total: 0,
         }
     }
 
@@ -158,6 +166,26 @@ impl Scheduler {
     #[must_use]
     pub fn deferred_exhausted(&self) -> u64 {
         self.deferred_exhausted
+    }
+
+    #[must_use]
+    pub fn scheduled_total(&self) -> u64 {
+        self.scheduled_total
+    }
+
+    #[must_use]
+    pub fn cancelled_total(&self) -> u64 {
+        self.cancelled_total
+    }
+
+    #[must_use]
+    pub fn critical_executed_total(&self) -> u64 {
+        self.critical_executed_total
+    }
+
+    #[must_use]
+    pub fn deferred_executed_total(&self) -> u64 {
+        self.deferred_executed_total
     }
 
     #[must_use]
@@ -190,6 +218,7 @@ impl Scheduler {
         };
         self.slots[index as usize] = Some(job);
         self.live = self.live.saturating_add(1);
+        self.scheduled_total = self.scheduled_total.saturating_add(1);
         if let ScheduleOwner::Entity(entity) = owner {
             self.by_owner
                 .entry(entity)
@@ -217,6 +246,7 @@ impl Scheduler {
             return false;
         };
         self.unlink_owner(job.owner, id);
+        self.cancelled_total = self.cancelled_total.saturating_add(1);
         true
     }
 
@@ -231,6 +261,7 @@ impl Scheduler {
                 n = n.saturating_add(1);
             }
         }
+        self.cancelled_total = self.cancelled_total.saturating_add(u64::from(n));
         n
     }
 
@@ -279,6 +310,17 @@ impl Scheduler {
                 kind: job.kind,
                 due: job.due,
             });
+        }
+        let executed = u64::try_from(fired.len()).unwrap_or(u64::MAX);
+        match lane {
+            WorkLane::Critical => {
+                self.critical_executed_total =
+                    self.critical_executed_total.saturating_add(executed);
+            }
+            WorkLane::Deferred => {
+                self.deferred_executed_total =
+                    self.deferred_executed_total.saturating_add(executed);
+            }
         }
         let remaining_due = remaining_after_full;
         let mut ceiling_hit = false;
@@ -550,5 +592,30 @@ mod tests {
         let second = s.drain_due(now, WorkLane::Critical);
         assert_eq!(second.fired.len(), 3);
         assert!(!second.ceiling_hit);
+        assert_eq!(
+            s.critical_executed_total(),
+            u64::from(CRITICAL_DRAIN_CEILING + 3)
+        );
+    }
+
+    #[test]
+    fn execution_totals_count_schedule_fire_and_cancel() {
+        let mut s = Scheduler::new();
+        let now = SimulationTick::from_count(1);
+        let keep = s
+            .schedule_at(now, ScheduleOwner::World, WorkLane::Critical, probe(1))
+            .unwrap();
+        let drop = s
+            .schedule_at(now, ScheduleOwner::World, WorkLane::Deferred, probe(2))
+            .unwrap();
+        assert_eq!(s.scheduled_total(), 2);
+        assert!(s.cancel(drop));
+        assert_eq!(s.cancelled_total(), 1);
+        let _ = keep;
+        let crit = s.drain_due(now, WorkLane::Critical);
+        assert_eq!(crit.fired.len(), 1);
+        assert_eq!(s.critical_executed_total(), 1);
+        assert_eq!(s.deferred_executed_total(), 0);
+        assert_eq!(s.live_count(), 0);
     }
 }

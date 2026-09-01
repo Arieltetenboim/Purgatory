@@ -19,9 +19,12 @@ mod load_pressure;
 mod metrics_export;
 mod persist;
 mod replication;
+mod replication_fanout;
+mod replication_policy;
 mod session;
 mod snapshot;
 mod stats;
+mod tick_domains;
 
 pub use config::ServerEndpointConfig;
 
@@ -35,6 +38,7 @@ use tokio::sync::Semaphore;
 use purgatory_simulation::{SimulationClock, TICK_DURATION};
 
 use metrics_export::{MetricsExportCtx, TickSampleRing, spawn_metrics_export};
+use tick_domains::{TickDomainAccounting, TickDomainSample};
 
 pub(crate) struct IncomingDispatch {
     pub sessions: Arc<Mutex<session::SessionTable>>,
@@ -120,6 +124,10 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     let mut ticker = tokio::time::interval(Duration::from_millis(8));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut samples = TickSampleRing::new(120);
+    let mut domains = TickDomainAccounting::new();
+    if let Some(dir) = domains.artifact_dir() {
+        println!("PURGATORY capacity artifacts dir={}", dir.display());
+    }
     let outer_period = Duration::from_millis(8);
 
     loop {
@@ -168,13 +176,23 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                 let dt = TICK_DURATION.as_secs_f32();
                 for _ in 0..update.ticks_executed {
                     let tick_start = Instant::now();
-                    owner.simulate_tick(dt);
+                    let domain = owner.simulate_tick(dt);
                     let work = tick_start.elapsed();
                     bound.stats.tick_count.fetch_add(1, Ordering::Relaxed);
                     if work > TICK_DURATION {
                         bound.stats.tick_overrun_count.fetch_add(1, Ordering::Relaxed);
+                        domains.note_overrun();
+                        owner.set_tick_overrun_hint(true);
+                    } else {
+                        owner.set_tick_overrun_hint(false);
                     }
                     samples.push(work, lateness);
+                    domains.push(TickDomainSample {
+                        total: work,
+                        ..domain
+                    });
+                    domains.note_interest_locality(owner.world_interest_locality());
+                    domains.note_replication_fanout(owner.replication_fanout_snapshot());
                     // Drain between ticks so long snapshot work does not starve
                     // awaiting producers on the input handoff.
                     owner.drain(&mut life_rx, &mut input_rx);
@@ -209,6 +227,7 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                     )
                 );
                 owner.flush_persistent_snapshots();
+                domains.force_write();
                 persist
                     .shutdown(config.persistence_shutdown_timeout)
                     .await;
@@ -331,6 +350,45 @@ fn mirror_owner_stats(stats: &stats::ServerNetStats, owner: &gameplay::GameplayO
     stats
         .domain_rev_advances
         .store(rt.domain_rev_advances, Ordering::Relaxed);
+    stats
+        .scheduler_scheduled_total
+        .store(rt.scheduler_scheduled_total, Ordering::Relaxed);
+    stats
+        .scheduler_cancelled_total
+        .store(rt.scheduler_cancelled_total, Ordering::Relaxed);
+    stats
+        .scheduler_critical_executed_total
+        .store(rt.scheduler_critical_executed_total, Ordering::Relaxed);
+    stats
+        .scheduler_deferred_executed_total
+        .store(rt.scheduler_deferred_executed_total, Ordering::Relaxed);
+    stats
+        .actions_started_total
+        .store(rt.actions_started_total, Ordering::Relaxed);
+    stats
+        .actions_completed_total
+        .store(rt.actions_completed_total, Ordering::Relaxed);
+    stats
+        .effects_applied_total
+        .store(rt.effects_applied_total, Ordering::Relaxed);
+    stats
+        .effects_expired_total
+        .store(rt.effects_expired_total, Ordering::Relaxed);
+    stats
+        .spawn_requests_total
+        .store(rt.spawn_requests_total, Ordering::Relaxed);
+    stats
+        .spawns_completed_total
+        .store(rt.spawns_completed_total, Ordering::Relaxed);
+    stats
+        .despawns_completed_total
+        .store(rt.despawns_completed_total, Ordering::Relaxed);
+    stats
+        .cadence_executions_total
+        .store(rt.cadence_executions_total, Ordering::Relaxed);
+    stats
+        .entities_spawned_total
+        .store(rt.entities_spawned_total, Ordering::Relaxed);
     let entities = owner.player_count() as u64;
     stats
         .active_player_entities

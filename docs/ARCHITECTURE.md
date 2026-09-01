@@ -426,8 +426,9 @@ begin_tick (SimulationTick)
 
 **DEV probe.** `PURGATORY_RUNTIME_PROBE=1|true|yes|on` may schedule one visible Generic after a known delay. Default off. Map-ready does not spawn automatically.
 
-**Load validation (Phase 6G).** Synthetic density/scheduler/action/effect/event/cadence pressure is test infrastructure. The server applies `PURGATORY_LOAD_VALIDATION` JSON only when load-mode is on (`PURGATORY_ADMISSION_CAP` set). Production `World` tick does not read that env. Metrics stay schema **3**. MixedRuntime (`purgatory-load --preset mixed`) is the canonical integrated workload: a persistent real-QUIC baseline plus separate churn, replica-guided portal travel (activate only inside `in_portal_activation_zone`), and AOI/replication evidence over the soak — `--duration` is not “connect and idle.” Protocol stays v10. Welcome still does not carry `CharacterId`. Do not begin Phase 7 (MOB).
+**Load validation (Phase 6G).** Synthetic density/scheduler/action/effect/event/cadence pressure is test infrastructure. The server applies `PURGATORY_LOAD_VALIDATION` JSON only when load-mode is on (`PURGATORY_ADMISSION_CAP` set). Production `World` tick does not read that env. Metrics are schema **4** (execution totals plus existing gauges). MixedRuntime (`purgatory-load --preset mixed`) is the canonical integrated workload: a persistent real-QUIC baseline plus separate churn, replica-guided portal travel (activate only inside `in_portal_activation_zone`), and AOI/replication evidence over the soak — `--duration` is not “connect and idle.” Protocol stays v10. Welcome still does not carry `CharacterId`. Do not begin Phase 7 (MOB).
 
+**Capacity characterization (6G.2).** Coarse per-tick domain timings and process CPU/memory are written under `PURGATORY_CAPACITY_ARTIFACT_DIR` (run artifacts only). Live UDP `PURGSTAT` is schema 4 for validation execution totals; domain timings are not on the datagram. Localhost ladder numbers are not player-capacity claims. Architectural AOI/replication/scheduler redesign waits for owner review of measured evidence (ADR-0053).
 Error containment:
 
 ```text
@@ -603,7 +604,7 @@ dev_hub
 
 The existing `Graphic/` directory stays in place. Phase 5.0B loads **only** `Graphic/LOGO.png` for the Connection Frontend (temporary filesystem path). The rest of `Graphic/` is unused until sprite and Paper Doll phases. Do not modify files in `Graphic/` as part of networking work.
 
-Windows development control is **Developer Tools** (ADR-0050). The current operational shell is PowerShell (`DEV.BAT` → `tools/dev/`). The target shell is the Rust Developer Hub (`purgatory-dev-runtime` + provisional `purgatory-dev-hub` GUI, ADR-0052). Both verify Ready via `purgatory-load --probe`; neither reimplements Quinn or the game protocol. Hub Slice 2 Runtime Validation forwards `purgatory-load --preset` and holds a workspace `logs/dev-tools/hub.lock`. The Hub must not poke `World`. Do not drive the same workspace from both shells at once. See [`docs/dev-tools/`](dev-tools/README.md).
+Windows development control is **Developer Tools** (ADR-0050). The current operational shell is PowerShell (`DEV.BAT` → `tools/dev/`). The target shell is the Rust Developer Hub (`purgatory-dev-runtime` + provisional `purgatory-dev-hub` GUI, ADR-0052). Both verify Ready via `purgatory-load --probe`; neither reimplements Quinn or the game protocol. Hub orchestration covers server Ready, Runtime Validation, load/soak, clients, quality gate, Rebuild, Kill All, and settings; it holds a workspace `logs/dev-tools/hub.lock`. The Hub must not poke `World`. Do not drive the same workspace from both shells at once. See [`docs/dev-tools/`](dev-tools/README.md).
 
 ## Content
 

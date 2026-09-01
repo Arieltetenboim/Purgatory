@@ -48,9 +48,24 @@ impl HubPage {
     }
 
     #[must_use]
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Dashboard => "⌂",
+            Self::RuntimeServer => "▣",
+            Self::RuntimeClients => "▤",
+            Self::Validation => "⛨",
+            Self::Performance => "▥",
+            Self::World => "◈",
+            Self::Content => "◇",
+            Self::Logs => "≡",
+            Self::Settings => "⚙",
+        }
+    }
+
+    #[must_use]
     pub fn group(self) -> Option<&'static str> {
         match self {
-            Self::Dashboard => None,
+            Self::Dashboard => Some("Overview"),
             Self::RuntimeServer | Self::RuntimeClients => Some("Runtime"),
             Self::Validation | Self::Performance => Some("Testing"),
             Self::World | Self::Content => Some("Authoring"),
@@ -61,7 +76,13 @@ impl HubPage {
     #[must_use]
     pub fn kind(self) -> PageKind {
         match self {
-            Self::Dashboard | Self::RuntimeServer | Self::Logs | Self::Validation => PageKind::Live,
+            Self::Dashboard
+            | Self::RuntimeServer
+            | Self::RuntimeClients
+            | Self::Logs
+            | Self::Validation
+            | Self::Performance
+            | Self::Settings => PageKind::Live,
             _ => PageKind::Placeholder,
         }
     }
@@ -69,16 +90,14 @@ impl HubPage {
     #[must_use]
     pub fn placeholder_blurb(self) -> &'static str {
         match self {
-            Self::RuntimeClients => {
-                "Client launch controls are later Hub parity. Use PowerShell Developer Tools for now."
-            }
+            Self::RuntimeClients => "Open +1/+2/+3 clients after Server Ready. F6 queues one.",
             Self::Validation => "Runtime Validation is live. Use this page to start a harness.",
-            Self::Performance => {
-                "Load/soak and capacity tools are Developer Hub Slice 3. Not started."
+            Self::Performance => "Load/soak launcher is live on this page.",
+            Self::World => "Map/world editing is reserved for a future Hub module.",
+            Self::Content => {
+                "Content browser/importer/editors are reserved for a future Hub module."
             }
-            Self::World => "Map/world editing is not in Slice 1. Reserved for a future Hub module.",
-            Self::Content => "Content browser/importer/editors are not in Slice 1.",
-            Self::Settings => "Settings (persist dir, ports, autostart) are later parity.",
+            Self::Settings => "Build profile, log level, quality gate, rebuild, Kill All.",
             _ => "",
         }
     }
@@ -89,7 +108,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_pages_are_slice1_and_slice2() {
+    fn live_pages_cover_launcher_parity() {
         let live: Vec<_> = HubPage::ALL
             .iter()
             .copied()
@@ -100,8 +119,11 @@ mod tests {
             vec![
                 HubPage::Dashboard,
                 HubPage::RuntimeServer,
+                HubPage::RuntimeClients,
                 HubPage::Validation,
+                HubPage::Performance,
                 HubPage::Logs,
+                HubPage::Settings,
             ]
         );
     }

@@ -371,7 +371,153 @@ mod tests {
             stats.scheduler_queued > 0 || stats.actions_active > 0 || stats.effects_active > 0,
             "runtime work must be queued"
         );
+        assert!(stats.scheduler_scheduled_total > 0);
+        assert!(stats.entities_spawned_total >= 8);
         assert!(pressure.synthetics.len() >= 8);
+    }
+
+    fn mixed_like_config() -> LoadValidationConfig {
+        LoadValidationConfig {
+            synthetic_entities: 64,
+            scheduler: SchedulerPressure {
+                critical: 32,
+                deferred: 48,
+                cancel_churn: 8,
+            },
+            spawn_despawn: SpawnPressure {
+                count: 16,
+                interval_ticks: 60,
+            },
+            actions: 4,
+            effects: 8,
+            events: 16,
+            cadence_consumers: 32,
+        }
+    }
+
+    fn server_like_tick(pressure: &mut LoadPressure, world: &mut World, tick: u64) {
+        let t = SimulationTick::from_count(tick);
+        world.begin_tick(t);
+        pressure.maintain(world, WorldAddress::DEV, t);
+        world.drain_critical_scheduler();
+        let _ = world.commit_runtime_events();
+        world.pump_cadence();
+        world.drain_deferred_scheduler();
+    }
+
+    #[test]
+    fn mixed_validation_executes_every_configured_workload() {
+        let mut world = World::new();
+        let mut pressure = LoadPressure::from_config(mixed_like_config());
+        let mut sampled_queued_max = 0u32;
+        let mut sampled_actions_max = 0u32;
+        let mut sampled_spawn_max = 0u32;
+        let mut actions_at_tick_29 = None;
+        for t in 1..=90 {
+            server_like_tick(&mut pressure, &mut world, t);
+            let stats = world.runtime_stats();
+            if t == 29 {
+                actions_at_tick_29 = Some(stats.actions_active);
+            }
+            if t.is_multiple_of(30) {
+                sampled_queued_max = sampled_queued_max.max(stats.scheduler_queued);
+                sampled_actions_max = sampled_actions_max.max(stats.actions_active);
+                sampled_spawn_max = sampled_spawn_max.max(stats.spawn_queue_depth);
+            }
+        }
+        let stats = world.runtime_stats();
+        assert!(
+            stats.entities_spawned_total >= 64,
+            "synthetic entities must spawn (got {})",
+            stats.entities_spawned_total
+        );
+        assert!(
+            stats.scheduler_scheduled_total >= 32 + 48,
+            "scheduler arm must schedule critical+deferred (got {})",
+            stats.scheduler_scheduled_total
+        );
+        assert!(
+            stats.scheduler_critical_executed_total >= 32,
+            "critical TestProbe/CompleteAction/ExpireEffect must fire (got {})",
+            stats.scheduler_critical_executed_total
+        );
+        assert!(
+            stats.scheduler_deferred_executed_total >= 48,
+            "deferred TestProbe/RaiseEvent/spawn/despawn must fire (got {})",
+            stats.scheduler_deferred_executed_total
+        );
+        assert!(
+            stats.scheduler_cancelled_total >= 4,
+            "cancel churn must cancel (got {})",
+            stats.scheduler_cancelled_total
+        );
+        assert!(
+            stats.actions_started_total >= 4,
+            "validation actions must start (got {})",
+            stats.actions_started_total
+        );
+        assert!(
+            stats.actions_completed_total >= 4,
+            "validation actions must complete (got {})",
+            stats.actions_completed_total
+        );
+        assert!(
+            stats.effects_applied_total >= 8,
+            "validation effects must apply (got {})",
+            stats.effects_applied_total
+        );
+        assert!(
+            stats.effects_expired_total >= 8,
+            "validation effects must expire (got {})",
+            stats.effects_expired_total
+        );
+        assert!(
+            stats.spawn_requests_total >= 16,
+            "seed spawn queue must request (got {})",
+            stats.spawn_requests_total
+        );
+        assert!(
+            stats.spawns_completed_total >= 16,
+            "seed spawn queue must complete (got {})",
+            stats.spawns_completed_total
+        );
+        assert!(
+            stats.despawns_completed_total >= 16,
+            "spawn/despawn churn must despawn (got {})",
+            stats.despawns_completed_total
+        );
+        assert!(
+            stats.events_produced >= 16,
+            "typed events must be produced (got {})",
+            stats.events_produced
+        );
+        assert!(
+            stats.events_processed >= 16,
+            "typed events must be committed (got {})",
+            stats.events_processed
+        );
+        assert!(
+            stats.cadence_executions_total >= 32,
+            "cadence consumers must fire (got {})",
+            stats.cadence_executions_total
+        );
+        assert!(
+            sampled_queued_max > 0,
+            "end-of-tick 1 Hz samples should see remaining scheduler live jobs"
+        );
+        assert_eq!(
+            sampled_spawn_max, 0,
+            "spawn_queue_depth is a short-lived gauge; 1 Hz samples after the seed window may be zero"
+        );
+        assert_eq!(
+            actions_at_tick_29,
+            Some(0),
+            "actions last 12 ticks then idle until refill; a 1 Hz sample can miss the active window"
+        );
+        assert!(
+            sampled_actions_max > 0,
+            "refill ticks (30/60/90) start actions, so aligned 1 Hz samples can see actions_active"
+        );
     }
 
     #[test]

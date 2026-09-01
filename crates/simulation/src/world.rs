@@ -4,15 +4,16 @@
 //! [`EntityId`] is index + generation; reusing a slot never resurrects a
 //! stale ID. Pointers and memory addresses are not used as identity.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use crate::aabb::Aabb;
 use crate::action::ActionTable;
-use crate::aoi::{AoiRects, aoi_policy_rects, point_in_aabb};
+use crate::aoi::{AOI_INFLUENCE_HALF_EXTENTS, AoiRects, aoi_policy_rects, point_in_aabb};
 use crate::body::{PlayerBody, PlayerState};
 use crate::bounds::WorldBounds;
 use crate::cadence::CadenceTable;
 use crate::dirty::DirtyFlags;
-use crate::domain::DomainRevs;
+use crate::domain::{DomainRevs, ReplicationDirtyMask};
 use crate::effect::EffectTable;
 use crate::entity::{EntityId, EntityKind};
 use crate::health::Health;
@@ -23,6 +24,7 @@ use crate::interaction::{
     InteractionCloseReason, InteractionReject, InteractionSession, InteractionSessionId,
     InteractionSessionState,
 };
+use crate::interest_locality::InterestLocalityAccounting;
 use crate::lifecycle::EntityLifecycle;
 use crate::map_runtime::InstantiatedMap;
 use crate::motion_debug::PlayerMotionDebug;
@@ -87,6 +89,12 @@ pub struct World {
     pub(crate) instantiated: HashMap<WorldAddress, InstantiatedMap>,
     portal_reentry: HashMap<EntityId, EntityId>,
     spatial: SpatialIndex,
+    /// Observers (players) whose AOI classify is stale (6G.5 incremental dirty).
+    interest_dirty_observers: HashSet<EntityId>,
+    /// 6G.6 characterization: observers dirtied per invalidation.
+    interest_locality: InterestLocalityAccounting,
+    /// Entities with transform/health domain bumps since last drain (6G.7B).
+    replication_dirty: HashMap<EntityId, ReplicationDirtyMask>,
     pub(crate) tick: SimulationTick,
     pub(crate) scheduler: Scheduler,
     pub(crate) actions: ActionTable,
@@ -112,6 +120,9 @@ impl Default for World {
             instantiated: HashMap::new(),
             portal_reentry: HashMap::new(),
             spatial: SpatialIndex::default(),
+            interest_dirty_observers: HashSet::new(),
+            interest_locality: InterestLocalityAccounting::default(),
+            replication_dirty: HashMap::new(),
             tick: SimulationTick::ZERO,
             scheduler: Scheduler::new(),
             actions: ActionTable::new(),
@@ -125,6 +136,223 @@ impl Default for World {
 }
 
 impl World {
+    /// True when this observer's AOI membership may be stale (6G.5).
+    #[must_use]
+    pub fn interest_observer_dirty(&self, observer: EntityId) -> bool {
+        self.interest_dirty_observers.contains(&observer)
+    }
+
+    /// Clear dirty after a successful classify for `observer`.
+    pub fn clear_interest_observer_dirty(&mut self, observer: EntityId) {
+        self.interest_dirty_observers.remove(&observer);
+    }
+
+    /// Mark a single observer dirty (e.g. first bind / tests).
+    pub fn mark_interest_observer_dirty(&mut self, observer: EntityId) {
+        if self.kind(observer) == Some(EntityKind::Player) {
+            self.interest_dirty_observers.insert(observer);
+        }
+    }
+
+    /// Record a transform/health domain change for replication fan-out (6G.7B).
+    pub fn mark_replication_dirty(&mut self, id: EntityId, mask: ReplicationDirtyMask) {
+        if !mask.any() || !self.contains(id) {
+            return;
+        }
+        self.replication_dirty.entry(id).or_default().merge(mask);
+    }
+
+    /// Drain pending replication dirty set (consumed once per publish pass).
+    #[must_use]
+    pub fn drain_replication_dirty(&mut self) -> HashMap<EntityId, ReplicationDirtyMask> {
+        std::mem::take(&mut self.replication_dirty)
+    }
+
+    /// Peek pending replication dirty without consuming.
+    pub fn replication_dirty_iter(
+        &self,
+    ) -> impl Iterator<Item = (EntityId, ReplicationDirtyMask)> + '_ {
+        self.replication_dirty
+            .iter()
+            .map(|(id, mask)| (*id, *mask))
+    }
+
+    /// Clear pending replication dirty after fan-out enqueue completes.
+    pub fn clear_replication_dirty(&mut self) {
+        self.replication_dirty.clear();
+    }
+
+    /// Peek dirty count without draining (tests / diagnostics).
+    #[must_use]
+    pub fn replication_dirty_len(&self) -> usize {
+        self.replication_dirty.len()
+    }
+
+    /// How many observers are currently marked dirty.
+    #[must_use]
+    pub fn interest_dirty_observer_count(&self) -> usize {
+        self.interest_dirty_observers.len()
+    }
+
+    /// Snapshot of dirty observer ids (sorted for tests).
+    #[must_use]
+    pub fn interest_dirty_observers_sorted(&self) -> Vec<EntityId> {
+        let mut ids: Vec<EntityId> = self.interest_dirty_observers.iter().copied().collect();
+        ids.sort_by_key(|id| (id.index(), id.generation()));
+        ids
+    }
+
+    /// Snapshot interest-invalidation locality counters (6G.6).
+    #[must_use]
+    pub fn interest_locality_snapshot(&self) -> purgatory_common::InterestLocalitySnapshot {
+        self.interest_locality.snapshot()
+    }
+
+    /// Reset locality accounting (tests / run boundaries).
+    pub fn reset_interest_locality(&mut self) {
+        self.interest_locality.reset();
+    }
+
+    /// Invalidate observers for a pose pair (6G.7A: enter/leave XOR after influence prefilter).
+    fn invalidate_interest_motion(
+        &mut self,
+        address: WorldAddress,
+        old: [f32; 2],
+        new: [f32; 2],
+        subject: Option<EntityId>,
+    ) {
+        let half = AOI_INFLUENCE_HALF_EXTENTS;
+        let cell_size = self.spatial.cell_size();
+        let c0 = crate::spatial::cell_of(old, cell_size);
+        let c1 = crate::spatial::cell_of(new, cell_size);
+        let cell_crossed = c0 != c1;
+        let cells_touched = if cell_crossed { 2 } else { 1 };
+
+        let min_x = old[0].min(new[0]) - half[0];
+        let min_y = old[1].min(new[1]) - half[1];
+        let max_x = old[0].max(new[0]) + half[0];
+        let max_y = old[1].max(new[1]) + half[1];
+        let aabb = Aabb::from_min_max(min_x, min_y, max_x, max_y);
+        let found = self.spatial.query_aabb_unsorted(address, aabb);
+        let bounds = self.bounds_for(address);
+
+        let mut prefilter = 0u32;
+        let mut xor_hits = 0u32;
+        let mut subject_marked = false;
+
+        for id in found {
+            if self.kind(id) != Some(EntityKind::Player) {
+                continue;
+            }
+            prefilter = prefilter.saturating_add(1);
+            if Some(id) == subject {
+                self.interest_dirty_observers.insert(id);
+                subject_marked = true;
+                continue;
+            }
+            let Some(obs_pos) = self.transform_of(id).map(|t| t.position) else {
+                continue;
+            };
+            let rects = aoi_policy_rects(obs_pos, bounds);
+            let old_enter = point_in_aabb(old, rects.enter);
+            let new_enter = point_in_aabb(new, rects.enter);
+            let old_leave = point_in_aabb(old, rects.leave);
+            let new_leave = point_in_aabb(new, rects.leave);
+            if old_enter != new_enter || old_leave != new_leave {
+                xor_hits = xor_hits.saturating_add(1);
+                self.interest_dirty_observers.insert(id);
+            }
+        }
+
+        if let Some(id) = subject
+            && self.kind(id) == Some(EntityKind::Player)
+        {
+            if !subject_marked {
+                prefilter = prefilter.saturating_add(1);
+            }
+            self.interest_dirty_observers.insert(id);
+            subject_marked = true;
+        }
+
+        let marked = xor_hits.saturating_add(u32::from(subject_marked));
+        self.interest_locality.record_invalidation(
+            marked,
+            cell_crossed,
+            cells_touched,
+            true,
+            prefilter,
+            xor_hits,
+        );
+    }
+
+    /// Appear/disappear/class at `pos`: dirty observers that could gain/lose the entity.
+    fn invalidate_interest_presence(
+        &mut self,
+        address: WorldAddress,
+        pos: [f32; 2],
+        subject: Option<EntityId>,
+    ) {
+        let half = AOI_INFLUENCE_HALF_EXTENTS;
+        let aabb = Aabb::from_min_max(
+            pos[0] - half[0],
+            pos[1] - half[1],
+            pos[0] + half[0],
+            pos[1] + half[1],
+        );
+        let found = self.spatial.query_aabb_unsorted(address, aabb);
+        let bounds = self.bounds_for(address);
+        let cell = crate::spatial::cell_of(pos, self.spatial.cell_size());
+        let _ = cell;
+
+        let mut prefilter = 0u32;
+        let mut hits = 0u32;
+        let mut subject_seen = false;
+        for id in found {
+            if self.kind(id) != Some(EntityKind::Player) {
+                continue;
+            }
+            prefilter = prefilter.saturating_add(1);
+            if Some(id) == subject {
+                subject_seen = true;
+                self.interest_dirty_observers.insert(id);
+                hits = hits.saturating_add(1);
+                continue;
+            }
+            let Some(obs_pos) = self.transform_of(id).map(|t| t.position) else {
+                continue;
+            };
+            let rects = aoi_policy_rects(obs_pos, bounds);
+            if point_in_aabb(pos, rects.enter) || point_in_aabb(pos, rects.leave) {
+                self.interest_dirty_observers.insert(id);
+                hits = hits.saturating_add(1);
+            }
+        }
+        if let Some(id) = subject
+            && self.kind(id) == Some(EntityKind::Player)
+            && !subject_seen
+        {
+            prefilter = prefilter.saturating_add(1);
+            self.interest_dirty_observers.insert(id);
+            hits = hits.saturating_add(1);
+        }
+        self.interest_locality
+            .record_invalidation(hits, false, 1, true, prefilter, hits);
+    }
+
+    /// Invalidate around an entity's current address/pose (class/meta changes).
+    fn invalidate_interest_entity(&mut self, id: EntityId) {
+        let Some(data) = self.slot_live(id) else {
+            return;
+        };
+        let address = data.address;
+        let pos = data.transform.map(|t| t.position);
+        if let Some(p) = pos {
+            self.invalidate_interest_presence(address, p, Some(id));
+        } else {
+            self.mark_interest_observer_dirty(id);
+        }
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -225,8 +453,16 @@ impl World {
         }
         if bumped {
             self.note_domain_rev();
-        }
-        if let Some((_, Some(pos))) = old {
+            if let Some((old_addr, Some(pos))) = old {
+                self.spatial.relocate(id, address, pos);
+                if old_addr != address {
+                    self.invalidate_interest_presence(old_addr, pos, Some(id));
+                }
+                self.invalidate_interest_presence(address, pos, Some(id));
+            } else {
+                self.mark_interest_observer_dirty(id);
+            }
+        } else if let Some((_, Some(pos))) = old {
             self.spatial.relocate(id, address, pos);
         }
         self.close_sessions_involving(id, InteractionCloseReason::AddressChanged);
@@ -268,6 +504,9 @@ impl World {
 
     /// Leave world membership without destroying the slot. Not a despawn.
     pub fn leave_world(&mut self, id: EntityId) -> bool {
+        let prev = self
+            .slot_live(id)
+            .map(|d| (d.address, d.transform.map(|t| t.position)));
         {
             let Some(data) = self.slot_live_mut(id) else {
                 return false;
@@ -278,6 +517,11 @@ impl World {
         }
         self.note_domain_rev();
         self.spatial.remove(id);
+        if let Some((addr, Some(pos))) = prev {
+            self.invalidate_interest_presence(addr, pos, Some(id));
+        } else {
+            self.mark_interest_observer_dirty(id);
+        }
         self.close_sessions_involving(id, InteractionCloseReason::AddressChanged);
         true
     }
@@ -329,6 +573,7 @@ impl World {
         }
         if bumped {
             self.note_domain_rev();
+            self.invalidate_interest_entity(id);
         }
         true
     }
@@ -358,6 +603,13 @@ impl World {
         }
         if bumped {
             self.note_domain_rev();
+            self.mark_replication_dirty(id, ReplicationDirtyMask::transform_only());
+            let old = prev.unwrap_or(transform.position);
+            if let Some(address) = address {
+                self.invalidate_interest_motion(address, old, transform.position, Some(id));
+            } else {
+                self.mark_interest_observer_dirty(id);
+            }
         }
         if lifecycle == Some(EntityLifecycle::Active)
             && let Some(address) = address
@@ -368,6 +620,9 @@ impl World {
     }
 
     pub fn clear_transform(&mut self, id: EntityId) -> bool {
+        let prev = self
+            .slot_live(id)
+            .map(|d| (d.address, d.transform.map(|t| t.position)));
         let mut bumped = false;
         {
             let Some(data) = self.slot_live_mut(id) else {
@@ -382,8 +637,16 @@ impl World {
         }
         if bumped {
             self.note_domain_rev();
+            self.mark_replication_dirty(id, ReplicationDirtyMask::transform_only());
         }
         self.spatial.remove(id);
+        if bumped {
+            if let Some((addr, Some(pos))) = prev {
+                self.invalidate_interest_presence(addr, pos, Some(id));
+            } else {
+                self.mark_interest_observer_dirty(id);
+            }
+        }
         true
     }
 
@@ -407,6 +670,7 @@ impl World {
         }
         if bumped {
             self.note_domain_rev();
+            self.mark_replication_dirty(id, ReplicationDirtyMask::health_only());
         }
         true
     }
@@ -826,8 +1090,31 @@ impl World {
     /// World-owned query: entities whose **points** lie in `aabb` at `address`.
     #[must_use]
     pub fn query_aabb(&self, address: WorldAddress, aabb: crate::aabb::Aabb) -> Vec<EntityId> {
-        self.spatial
-            .query_aabb(address, aabb)
+        self.query_aabb_inner(address, aabb, true)
+    }
+
+    /// Like [`Self::query_aabb`] but skips the deterministic sort (replication AOI hot path).
+    #[must_use]
+    pub fn query_aabb_unsorted(
+        &self,
+        address: WorldAddress,
+        aabb: crate::aabb::Aabb,
+    ) -> Vec<EntityId> {
+        self.query_aabb_inner(address, aabb, false)
+    }
+
+    fn query_aabb_inner(
+        &self,
+        address: WorldAddress,
+        aabb: crate::aabb::Aabb,
+        sorted: bool,
+    ) -> Vec<EntityId> {
+        let raw = if sorted {
+            self.spatial.query_aabb(address, aabb)
+        } else {
+            self.spatial.query_aabb_unsorted(address, aabb)
+        };
+        let mut out: Vec<EntityId> = raw
             .into_iter()
             .filter(|&id| {
                 self.lifecycle_of(id) == Some(EntityLifecycle::Active)
@@ -836,7 +1123,11 @@ impl World {
                         .transform_of(id)
                         .is_some_and(|t| point_in_aabb(t.position, aabb))
             })
-            .collect()
+            .collect();
+        if sorted {
+            out.sort_by_key(|id| (id.index(), id.generation()));
+        }
+        out
     }
 
     #[must_use]
@@ -868,6 +1159,16 @@ impl World {
     /// Class-visible entities in the observer **leave** rect. No hysteresis. No ConnectionId.
     #[must_use]
     pub fn spatial_candidates(&self, observer: EntityId) -> Vec<EntityId> {
+        self.spatial_candidates_inner(observer, true)
+    }
+
+    /// Unsorted variant for the replication classify hot path (Enter/Leave lists sort later).
+    #[must_use]
+    pub fn spatial_candidates_unsorted(&self, observer: EntityId) -> Vec<EntityId> {
+        self.spatial_candidates_inner(observer, false)
+    }
+
+    fn spatial_candidates_inner(&self, observer: EntityId, sorted: bool) -> Vec<EntityId> {
         let Some(obs_addr) = self.address_of(observer) else {
             return Vec::new();
         };
@@ -878,7 +1179,12 @@ impl World {
             return self.owner_only_self(observer);
         };
         let mut out = Vec::new();
-        for id in self.query_aabb(obs_addr, rects.leave) {
+        let query = if sorted {
+            self.query_aabb(obs_addr, rects.leave)
+        } else {
+            self.query_aabb_unsorted(obs_addr, rects.leave)
+        };
+        for id in query {
             if !self.class_visible_to(observer, id) {
                 continue;
             }
@@ -887,7 +1193,9 @@ impl World {
         if self.class_visible_to(observer, observer) && !out.contains(&observer) {
             out.push(observer);
         }
-        out.sort_by_key(|id| (id.index(), id.generation()));
+        if sorted {
+            out.sort_by_key(|id| (id.index(), id.generation()));
+        }
         out
     }
 
@@ -992,6 +1300,7 @@ impl World {
     pub(crate) fn set_transform_position(&mut self, id: EntityId, position: [f32; 2]) -> bool {
         let address = self.address_of(id);
         let lifecycle = self.lifecycle_of(id);
+        let prev = self.transform_of(id).map(|t| t.position);
         let mut bumped = false;
         {
             let Some(data) = self.slot_live_mut(id) else {
@@ -1011,6 +1320,12 @@ impl World {
         }
         if bumped {
             self.note_domain_rev();
+            self.mark_replication_dirty(id, ReplicationDirtyMask::transform_only());
+            if let (Some(address), Some(old)) = (address, prev) {
+                self.invalidate_interest_motion(address, old, position, Some(id));
+            } else {
+                self.mark_interest_observer_dirty(id);
+            }
         }
         if lifecycle == Some(EntityLifecycle::Active)
             && let Some(address) = address
@@ -1093,8 +1408,16 @@ impl World {
         let Some(index) = self.live_index(id) else {
             return false;
         };
+        let interest = self
+            .slot_live(id)
+            .map(|d| (d.address, d.transform.map(|t| t.position)));
         self.cleanup_owned_runtime(id);
         self.spatial.remove(id);
+        if let Some((addr, Some(pos))) = interest {
+            self.invalidate_interest_presence(addr, pos, None);
+        }
+        self.interest_dirty_observers.remove(&id);
+        self.replication_dirty.remove(&id);
         self.close_sessions_involving(id, InteractionCloseReason::TargetGone);
         self.portal_reentry
             .retain(|&actor, portal| actor != id && *portal != id);
@@ -1136,11 +1459,16 @@ impl World {
         }
         if bumped {
             self.note_domain_rev();
+            self.mark_replication_dirty(id, ReplicationDirtyMask::transform_only());
+            self.invalidate_interest_motion(address, previous_position, t.position, Some(id));
         }
         if lifecycle == EntityLifecycle::Active {
             self.spatial.relocate(id, address, t.position);
         } else {
             self.spatial.remove(id);
+            if !bumped {
+                self.invalidate_interest_motion(address, previous_position, t.position, Some(id));
+            }
         }
     }
 
@@ -1155,6 +1483,7 @@ impl World {
             data.dirty.transform = true;
         }
         self.note_domain_rev();
+        self.mark_replication_dirty(id, ReplicationDirtyMask::transform_only());
     }
 
     #[must_use]
@@ -1303,6 +1632,7 @@ impl World {
         };
         let address = data.address;
         self.spatial.insert(id, address, transform.position);
+        self.invalidate_interest_presence(address, transform.position, Some(id));
     }
 
     fn live_index(&self, id: EntityId) -> Option<usize> {
@@ -1605,5 +1935,42 @@ mod tests {
         assert!(!world.contains(a));
         assert!(world.contains(b));
         assert_eq!(world.player_id(), Some(b));
+    }
+
+    #[test]
+    fn local_pose_change_dirties_nearby_players_only() {
+        let mut world = World::footnote_test_stage();
+        if let Some(id) = world.player_id() {
+            world.despawn(id);
+        }
+        let floor = world.iter_platforms().next().expect("floor");
+        let top = floor.top_surface();
+        let left_x = world.bounds().min_x + 1.0;
+        let right_x = world.bounds().max_x - 1.0;
+        let mut far = Vec::new();
+        for i in 0..16 {
+            let (t, s) = PlayerState::standing_on_at(floor.id, top, left_x + (i as f32) * 0.05);
+            far.push(world.spawn_player(t, s));
+        }
+        let (t, s) = PlayerState::standing_on_at(floor.id, top, right_x);
+        let mover = world.spawn_player(t, s);
+        // Clear spawn dirty so the measurement is only the move.
+        for id in far.iter().copied().chain(std::iter::once(mover)) {
+            world.clear_interest_observer_dirty(id);
+        }
+        assert_eq!(world.interest_dirty_observer_count(), 0);
+
+        let mut t = world.transform_of(mover).unwrap();
+        t.position[0] -= 0.3;
+        world.set_transform(mover, t);
+
+        let dirty = world.interest_dirty_observers_sorted();
+        assert!(dirty.contains(&mover));
+        for id in &far {
+            assert!(
+                !dirty.contains(id),
+                "unrelated left-side player {id:?} dirtied by right-side move"
+            );
+        }
     }
 }

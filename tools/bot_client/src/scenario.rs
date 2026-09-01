@@ -234,6 +234,14 @@ impl LoadScenario {
         let mut env = Vec::new();
         if let Some(root) = &self.persist_root {
             env.push(("PURGATORY_DATA_DIR".into(), root.clone()));
+            // Capacity artifacts share the run dir parent when persist is
+            // `<run>/persist`. Prefer the run dir itself when known.
+            if let Some(parent) = std::path::Path::new(root).parent() {
+                env.push((
+                    purgatory_common::CAPACITY_ARTIFACT_DIR_ENV.into(),
+                    parent.to_string_lossy().replace('\\', "/"),
+                ));
+            }
         }
         if self.validation.is_active() {
             env.push((
@@ -679,6 +687,13 @@ mod tests {
         assert!(
             env.iter()
                 .any(|(k, v)| k == purgatory_common::LOAD_MODE_ADMISSION_ENV && v == "256")
+        );
+        // Capacity artifacts land next to persist under the run dir (not on UDP).
+        assert!(
+            env.iter().any(|(k, v)| {
+                k == purgatory_common::CAPACITY_ARTIFACT_DIR_ENV && v.ends_with("logs/load/t")
+            }),
+            "{env:?}"
         );
     }
 

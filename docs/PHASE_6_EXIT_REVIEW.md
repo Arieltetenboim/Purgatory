@@ -2,6 +2,8 @@
 
 This review is the Phase 6G stop condition. It does **not** start Phase 7.
 
+**Owner close (2026-09-01):** **6G = GREEN — architecture closed, production policy tuning deferred.** Architectural chain: change-driven → localized AOI → dirty fan-out → observer-specific policy → priority/cadence/budget. Evidence and known deferred tuning: [`docs/PHASE_6G7C_REPORT.md`](PHASE_6G7C_REPORT.md).
+
 ## Hard correctness (FAIL if broken)
 
 Covered by in-process and harness classification, not by invented performance thresholds:

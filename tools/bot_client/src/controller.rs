@@ -410,6 +410,12 @@ impl Controller {
             self.server_agg.health()
         };
 
+        let extras = crate::aggregate::ServerRunAggregator::with_final_counters(
+            self.server_agg
+                .to_summary_extras(self.harness_memory_peak_mb),
+            self.last_input_handoff_dropped,
+        );
+
         let classify_input = ClassifyInput {
             aborted,
             ramp_complete: self.ramp_complete,
@@ -426,6 +432,12 @@ impl Controller {
             metrics_samples_ok: self.server_agg.samples_ok(),
             metrics_samples_missed: self.server_agg.samples_missed(),
             soak: self.soak_classify(),
+            validation: self
+                .spec
+                .validation
+                .is_active()
+                .then(|| self.spec.validation.clone()),
+            execution: Some(extras.validation_execution()),
             ..ClassifyInput::default()
         }
         .with_server_counters(&self.metrics, server_metrics);
@@ -439,12 +451,6 @@ impl Controller {
         };
 
         self.close_all_bots().await;
-
-        let extras = crate::aggregate::ServerRunAggregator::with_final_counters(
-            self.server_agg
-                .to_summary_extras(self.harness_memory_peak_mb),
-            self.last_input_handoff_dropped,
-        );
 
         log.write_summary(WriteSummaryArgs {
             status: classification.status,
@@ -1116,6 +1122,16 @@ impl Controller {
             portal_out_of_range: self.portal_out_of_range,
             portal_rejected: self.portal_rejected,
             portal_transitions: self.portal_transitions,
+            portal_seen_ticks: self
+                .sessions
+                .values()
+                .map(|s| s.replica.portal_seen_ticks)
+                .sum(),
+            portal_in_zone_ticks: self
+                .sessions
+                .values()
+                .map(|s| s.replica.portal_in_zone_ticks)
+                .sum(),
             aoi_enters_start: self.aoi_enters_start,
             aoi_enters_end: self.aoi_enters_end,
             aoi_updates_start: self.aoi_updates_start,
@@ -1151,6 +1167,8 @@ impl Controller {
             ramp_complete: self.ramp_complete,
             portal_transitions: evidence.portal_transitions,
             portal_attempts: evidence.portal_attempts,
+            portal_seen_ticks: evidence.portal_seen_ticks,
+            portal_in_zone_ticks: evidence.portal_in_zone_ticks,
             aoi_updates_delta,
             aoi_enters_delta,
             aoi_observed: evidence.aoi_enters_start.is_some(),

@@ -134,6 +134,10 @@ pub struct ReplicaView {
     pub transitions: u64,
     pub activate_cooldown: u32,
     pub pending_transition: bool,
+    /// Frames where a portal was present in the replica (eligibility signal).
+    pub portal_seen_ticks: u64,
+    /// Frames where local pose was inside the portal activation zone.
+    pub portal_in_zone_ticks: u64,
     last_walk_axis: MoveAxis,
     rejected_in_zone: bool,
 }
@@ -210,11 +214,15 @@ impl ReplicaView {
                 target: None,
             };
         };
+        self.portal_seen_ticks = self.portal_seen_ticks.saturating_add(1);
         let toward = axis_toward(me[0], portal[0]);
         if toward != MoveAxis::Neutral {
             self.last_walk_axis = toward;
         }
         let in_zone = in_portal_activation_zone(me, portal);
+        if in_zone {
+            self.portal_in_zone_ticks = self.portal_in_zone_ticks.saturating_add(1);
+        }
         if !in_zone {
             self.rejected_in_zone = false;
         }

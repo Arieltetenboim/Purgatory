@@ -31,7 +31,7 @@ serde_json = "1.0"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi"] }
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_SystemInformation"] }
 
 [workspace.lints.rust]
 # `deny` (not `forbid`) so Phase 5.7 can `allow` a single Win32 Working-Set sample.

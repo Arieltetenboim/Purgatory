@@ -1,6 +1,12 @@
+pub mod clients;
 pub mod dashboard;
+pub mod dashboard_model;
+pub mod layout;
 pub mod logs;
+pub mod performance;
 pub mod placeholders;
+pub mod run_view;
 pub mod runtime_server;
+pub mod settings;
 pub mod status;
 pub mod validation;

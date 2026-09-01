@@ -107,6 +107,21 @@ pub struct ServerRunAggregator {
     aoi_updates_total: Option<u64>,
     scheduler_critical_ceiling_hits: Option<u64>,
     scheduler_deferred_exhausted: Option<u64>,
+    scheduler_scheduled_total: Option<u64>,
+    scheduler_cancelled_total: Option<u64>,
+    scheduler_critical_executed_total: Option<u64>,
+    scheduler_deferred_executed_total: Option<u64>,
+    actions_started_total: Option<u64>,
+    actions_completed_total: Option<u64>,
+    effects_applied_total: Option<u64>,
+    effects_expired_total: Option<u64>,
+    spawn_requests_total: Option<u64>,
+    spawns_completed_total: Option<u64>,
+    despawns_completed_total: Option<u64>,
+    cadence_executions_total: Option<u64>,
+    entities_spawned_total: Option<u64>,
+    events_produced_total: Option<u64>,
+    events_processed_total: Option<u64>,
 }
 
 impl ServerRunAggregator {
@@ -267,6 +282,21 @@ impl ServerRunAggregator {
         self.aoi_updates_total = Some(s.aoi_updates);
         self.scheduler_critical_ceiling_hits = Some(s.scheduler_critical_ceiling_hits);
         self.scheduler_deferred_exhausted = Some(s.scheduler_deferred_exhausted);
+        self.scheduler_scheduled_total = Some(s.scheduler_scheduled_total);
+        self.scheduler_cancelled_total = Some(s.scheduler_cancelled_total);
+        self.scheduler_critical_executed_total = Some(s.scheduler_critical_executed_total);
+        self.scheduler_deferred_executed_total = Some(s.scheduler_deferred_executed_total);
+        self.actions_started_total = Some(s.actions_started_total);
+        self.actions_completed_total = Some(s.actions_completed_total);
+        self.effects_applied_total = Some(s.effects_applied_total);
+        self.effects_expired_total = Some(s.effects_expired_total);
+        self.spawn_requests_total = Some(s.spawn_requests_total);
+        self.spawns_completed_total = Some(s.spawns_completed_total);
+        self.despawns_completed_total = Some(s.despawns_completed_total);
+        self.cadence_executions_total = Some(s.cadence_executions_total);
+        self.entities_spawned_total = Some(s.entities_spawned_total);
+        self.events_produced_total = Some(s.events_produced);
+        self.events_processed_total = Some(s.events_processed);
     }
 
     #[must_use]
@@ -338,6 +368,21 @@ impl ServerRunAggregator {
             aoi_updates_total: self.aoi_updates_total,
             scheduler_critical_ceiling_hits: self.scheduler_critical_ceiling_hits,
             scheduler_deferred_exhausted: self.scheduler_deferred_exhausted,
+            scheduler_scheduled_total: self.scheduler_scheduled_total,
+            scheduler_cancelled_total: self.scheduler_cancelled_total,
+            scheduler_critical_executed_total: self.scheduler_critical_executed_total,
+            scheduler_deferred_executed_total: self.scheduler_deferred_executed_total,
+            actions_started_total: self.actions_started_total,
+            actions_completed_total: self.actions_completed_total,
+            effects_applied_total: self.effects_applied_total,
+            effects_expired_total: self.effects_expired_total,
+            spawn_requests_total: self.spawn_requests_total,
+            spawns_completed_total: self.spawns_completed_total,
+            despawns_completed_total: self.despawns_completed_total,
+            cadence_executions_total: self.cadence_executions_total,
+            entities_spawned_total: self.entities_spawned_total,
+            events_produced_total: self.events_produced_total,
+            events_processed_total: self.events_processed_total,
         }
     }
 
@@ -529,5 +574,24 @@ mod tests {
     fn percentile_semantics_constant() {
         assert_eq!(TICK_PERCENTILE_SEMANTICS, "peak_of_window_percentiles");
         assert_eq!(TICK_WORK_RING_CAP, 120);
+    }
+
+    #[test]
+    fn execution_totals_are_last_observed_values() {
+        let mut a = ServerRunAggregator::new();
+        let mut first = sample(1.0, 1.0, 1.0, 1.0, 0, 1, 30);
+        first.scheduler_scheduled_total = 10;
+        first.actions_started_total = 2;
+        first.events_produced = 7;
+        a.observe(&first);
+        let mut second = sample(1.0, 1.0, 1.0, 1.0, 0, 2, 60);
+        second.scheduler_scheduled_total = 40;
+        second.actions_started_total = 8;
+        second.events_produced = 90;
+        a.observe(&second);
+        let e = a.to_summary_extras(None);
+        assert_eq!(e.scheduler_scheduled_total, Some(40));
+        assert_eq!(e.actions_started_total, Some(8));
+        assert_eq!(e.events_produced_total, Some(90));
     }
 }

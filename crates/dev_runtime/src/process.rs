@@ -127,6 +127,8 @@ pub enum BuildReason {
     StartServer,
     ProbePrep,
     ValidatePrep,
+    OpenClient,
+    Rebuild,
 }
 
 impl BuildReason {
@@ -136,6 +138,8 @@ impl BuildReason {
             Self::StartServer => "start-server",
             Self::ProbePrep => "probe-prep",
             Self::ValidatePrep => "runtime-val-prep",
+            Self::OpenClient => "open-client",
+            Self::Rebuild => "rebuild",
         }
     }
 }

@@ -66,9 +66,10 @@ async fn build_snapshot(ctx: &MetricsExportCtx) -> LoadMetricsV1 {
         ctx.stats
             .memory_working_set_bytes
             .store(mem.working_set_bytes, Ordering::Relaxed);
-        ctx.stats
-            .memory_working_set_peak_bytes
-            .fetch_max(mem.working_set_bytes, Ordering::Relaxed);
+        ctx.stats.memory_working_set_peak_bytes.fetch_max(
+            mem.peak_working_set_bytes.max(mem.working_set_bytes),
+            Ordering::Relaxed,
+        );
     }
 
     let (active_sessions, peak_sessions) = {
@@ -165,6 +166,23 @@ async fn build_snapshot(ctx: &MetricsExportCtx) -> LoadMetricsV1 {
         observer_pending_updates: s.observer_pending_updates.load(Ordering::Relaxed),
         observer_pending_enters: s.observer_pending_enters.load(Ordering::Relaxed),
         cadence_deferred_updates: s.cadence_deferred_updates.load(Ordering::Relaxed),
+        scheduler_scheduled_total: s.scheduler_scheduled_total.load(Ordering::Relaxed),
+        scheduler_cancelled_total: s.scheduler_cancelled_total.load(Ordering::Relaxed),
+        scheduler_critical_executed_total: s
+            .scheduler_critical_executed_total
+            .load(Ordering::Relaxed),
+        scheduler_deferred_executed_total: s
+            .scheduler_deferred_executed_total
+            .load(Ordering::Relaxed),
+        actions_started_total: s.actions_started_total.load(Ordering::Relaxed),
+        actions_completed_total: s.actions_completed_total.load(Ordering::Relaxed),
+        effects_applied_total: s.effects_applied_total.load(Ordering::Relaxed),
+        effects_expired_total: s.effects_expired_total.load(Ordering::Relaxed),
+        spawn_requests_total: s.spawn_requests_total.load(Ordering::Relaxed),
+        spawns_completed_total: s.spawns_completed_total.load(Ordering::Relaxed),
+        despawns_completed_total: s.despawns_completed_total.load(Ordering::Relaxed),
+        cadence_executions_total: s.cadence_executions_total.load(Ordering::Relaxed),
+        entities_spawned_total: s.entities_spawned_total.load(Ordering::Relaxed),
     }
 }
 

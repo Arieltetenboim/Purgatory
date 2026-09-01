@@ -25,6 +25,7 @@ pub enum JobOp {
     Probe,
     Stop,
     Validate,
+    Load,
 }
 
 impl JobOp {
@@ -36,6 +37,7 @@ impl JobOp {
             Self::Probe => "probe",
             Self::Stop => "stop",
             Self::Validate => "validate",
+            Self::Load => "load",
         }
     }
 }
@@ -61,7 +63,7 @@ impl JobPhase {
         matches!(
             self,
             Self::Running {
-                op: JobOp::Build | JobOp::Start | JobOp::Probe | JobOp::Validate,
+                op: JobOp::Build | JobOp::Start | JobOp::Probe | JobOp::Validate | JobOp::Load,
                 ..
             } | Self::Cancelling { .. }
         )
@@ -91,6 +93,34 @@ pub enum HubCommand {
         spec: crate::validation::ValidationSpec,
     },
     StopValidation,
+    StartLoad {
+        spec: crate::load::LoadSpec,
+    },
+    StopLoad,
+    AnalyzeLastRun,
+    OpenLoadLogs,
+    OpenLastReport,
+    RequestClients {
+        count: u32,
+    },
+    StopClients,
+    QualityGate,
+    Rebuild,
+    KillAll,
+    SetBuildProfile {
+        profile: crate::settings::BuildProfile,
+    },
+    SetLogLevel {
+        level: crate::settings::LogLevel,
+    },
+    /// Clear Hub in-memory activity ring (not disk files).
+    ClearActivityLog,
+    /// Clear server.log file-tail view (file on disk kept).
+    ClearServerLog,
+    /// Clear client.log file-tail view (file on disk kept).
+    ClearClientLog,
+    /// Clear load.log file-tail view (file on disk kept).
+    ClearLoadLog,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

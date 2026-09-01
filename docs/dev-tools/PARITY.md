@@ -13,7 +13,7 @@ See [`README.md`](README.md) (what exists now), [`RUNTIME_LIFECYCLE.md`](RUNTIME
 | **Slice 1** | Server lifecycle, readiness/probe, logs, Hub application shell |
 | **Slice 2** | Runtime Validation (preserve CLI semantics) |
 | **Slice 3** | Load / soak launcher |
-| **Later** | Remaining launcher features; not lost |
+| **Later / launcher parity** | Clients, quality gate, Rebuild, Kill All, settings, file log tails — **now in Hub** |
 | **Out of scope** | Editors, admin protocol, player launcher |
 
 GUI visual match is **not** a slice gate.
@@ -30,6 +30,21 @@ Runtime Validation is orchestration around `purgatory-load`. The harness owns pa
 - Cancel kills the session-owned harness (and ValidatePrep cargo), not the detached server. Server Stop clears pending RV.
 - Workspace Hub lock: `{workspace}/logs/dev-tools/hub.lock` (Windows exclusive `share_mode(0)`). Distinct from PowerShell `Local\PurgatoryDevLauncher`. A second Hub for the same workspace is refused.
 - `live_status.json` is best-effort presentation. Malformed/missing does not fail the run.
+
+## Slice 3 / launcher-parity invariants
+
+Load/soak is orchestration around `purgatory-load` without `--preset`. One **LoadJob** sibling to ValidationJob. Do not add `ServerState::Loading`.
+
+- Dialog fields: count `1|2|10|25|50|100` (default 10), profile `idle|walker|jumper|mixed`, scenario `load|burst|churn`, duration `1m|2m|5m|10m|30m` (default 2m), seed default `1234`.
+- Argv: `--count --profile --scenario --duration --seed --max-bots --allow-high-count --server 127.0.0.1:5001 --metrics 127.0.0.1:5002` (no `--preset`).
+- If metrics probe is load-compatible (`admission_cap >= count` and `max_entities_per_snapshot >= count` and schema ≥ 1): spawn harness immediately. Else: ExtraEnv restart (`PURGATORY_ADMISSION_CAP=256`, `PURGATORY_METRICS_PORT=5002`), wait for `--probe` Ready, then harness. START LOAD that needs a restart is consent (no MessageBox).
+- RV and load refuse each other (same binary). Stop Load / cancel kills harness only, not the server. Server Stop / Kill All clear both pending queues.
+- Harness is Session-owned, `log_name: "load"`, `ui_pump: false` (PowerShell used VisibleConsole — see differences).
+- ANALYZE LAST RUN resolves finished artifacts (`last_runtime_validation.txt` / `last_finished.txt` / `latest.txt` with ignore-in-progress rules) and may open a visible Python console.
+- Clients: queue until Ready, stagger 140 ms, Detached + `client.log`, skip client rebuild if workspace clients live or exe locked, adopt on reopen. Stop All kills tracked + discovered clients.
+- Quality gate: visible `powershell … scripts/check.ps1` console, detached from Hub close.
+- Rebuild skips packages whose workspace exe is running. Kill All kills workspace cargo (command line contains repo root), server, client, load, and **does** stop the dedicated server (unlike Hub close).
+- Settings: debug/release profile and Default/Debug/Trace log level apply to **new** processes only.
 
 ## Slice 1 invariants
 
@@ -68,7 +83,7 @@ Build, start, probe, and stop are explicit jobs with generational ids. A late pr
 
 ### Bounded UI logs
 
-File logs under `logs/dev-tools/` may grow. The UI process must not. Match the launcher caps: incoming pump drop-oldest at 4000, drain ≤ 500 per tick, activity ring 4000, main view shows 180.
+File logs under `logs/dev-tools/` may grow. The UI process must not. Match the launcher caps: incoming pump drop-oldest at 4000, drain ≤ 500 per tick, activity ring 4000, main view shows 180. Server/client handshake lines live in file tails (`server.log` / `client.log`), not the activity ring.
 
 ## CURRENT launcher capabilities
 
@@ -77,29 +92,30 @@ File logs under `logs/dev-tools/` may grow. The UI process must not. Match the l
 | Capability | Slice | Notes |
 |---|---|---|
 | Server state machine (Stopped/Building/Starting/Verifying/Ready/Degraded/Stopping/Failed) | 1 | |
-| Start / Restart / Stop | 1 | F5 in PowerShell GUI; Hub may bind the same later |
-| Closing UI does not stop children | 1 | |
-| Owned cargo rebuild before start | 1 | Skip locked `.exe` is Later (Rebuild button) |
-| Debug/Release profile toggle | Later | Slice 1 Hub is debug-only |
+| Start / Restart / Stop | 1 | F5 in Hub and PowerShell |
+| Closing UI does not stop children | 1 | Clients Detached like server |
+| Owned cargo rebuild before start | 1 | Rebuild button skips locked exe |
+| Debug/Release profile toggle | Hub settings | Applies to **new** cargo/exe lookups |
 | Process exists ≠ Ready | 1 | |
-| Queued clients wait for Ready | Later | Clients not in Slice 1 |
+| Queued clients wait for Ready | Hub Clients | Stagger 140 ms; F6 = +1 |
 | Autostart on first show | — | **Code** currently logs `Auto-start disabled; click START` unless a server was adopted. README still lists autostart. Hub matches **code**. |
-| Startup recovery adopt + verify; stop extra workspace servers | 1 | |
+| Startup recovery adopt + verify; stop extra workspace servers | 1 | Clients adopted on reopen |
 | Recovery scan every 5 s when Stopped/Failed | 1 | |
-| Load-mode env (`PURGATORY_ADMISSION_CAP=256`, metrics `:5002`) | 2 (RV ExtraEnv) / 3 (load dialog) | Slice 2 sets ExtraEnv on a new server for official RV. Slice 3 load dialog may reuse the same launch options. |
+| Load-mode env (`PURGATORY_ADMISSION_CAP=256`, metrics `:5002`) | 2 (RV ExtraEnv) / 3 (load dialog) | |
 
-### Clients — Later
+### Clients — Hub
 
-Open +1/+2/+3, Stop All, F6, stagger 140 ms, skip client rebuild if exe locked.
+Open +1/+2/+3, Stop All, F6, stagger 140 ms, skip client rebuild if exe locked, Detached + `client.log` tail, adopt on reopen.
 
 ### Testing
 
 | Capability | Slice |
 |---|---|
-| Quality gate → visible `scripts/check.ps1` | Later |
-| Rebuild (skip running server/client exe) | Later |
+| Quality gate → visible `scripts/check.ps1` | Hub |
+| Rebuild (skip running server/client exe) | Hub |
 | Load test dialog, Stop Load, analyze last run, last report | 3 |
 | Runtime Validation dialog; CLI pass/fail; isolated persist; refuse concurrent harness | 2 |
+| Kill All | Hub |
 
 ### Diagnostics
 
@@ -107,22 +123,24 @@ Open +1/+2/+3, Stop All, F6, stagger 140 ms, skip client rebuild if exe locked.
 |---|---|
 | Metrics vs Health vs Readiness | 1 |
 | Activity log + file logs; OPEN LOGS | 1 |
-| Expandable activity window (4000 lines) | Later (core keeps 4000; Slice 1 GUI shows 180) |
+| Bounded SERVER LOG / CLIENT LOG file tails | Hub |
+| Expandable activity window (4000 lines) | Later (core keeps 4000; Hub GUI shows 180) |
 | LOAD LOGS | 3 |
-| KILL ALL | Later |
 | Identity: workspace version, `PHASE`, git hash (`*` if dirty) | 1 |
-| Log-level combo for **new** processes | Later |
+| Log-level combo for **new** processes | Hub Settings |
 | Single-instance mutex `Local\PurgatoryDevLauncher` | PowerShell only |
 
 ## Recorded Hub differences (intentional, not silent improvements)
 
-- Hub GUI is provisional eframe, not WinForms. Not a visual clone. Dashboard, Runtime → Server, Validation, and Logs are live; Performance / World / Content / Clients / Settings are placeholders.
+- Hub GUI is provisional eframe, not WinForms. Not a visual clone. Live: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings. World / Content stay placeholders (editors).
 - Hub single-instance lock is workspace `logs/dev-tools/hub.lock`, not `Local\PurgatoryDevLauncher`. PowerShell still uses that mutex. Do not run Hub plus PowerShell against the same workspace.
 - Slice 1 listener diagnostic may report `unknown` (no `IPGlobalProperties` port). Must not affect Ready.
 - Activity timestamps in the Hub may be UTC `HH:MM:SS` rather than local `Get-Date`.
-- Slice 1/2 have no debug/release toggle, log-level combo, client buttons, quality gate, load dialog, OPEN FOLDER/REPORT, or Kill All.
-- START VALIDATION is restart consent (no WinForms MessageBox).
+- Activity and SERVER/CLIENT file-tail lines are stamped `HH:MM:SS` (no date) when shown in the Hub. Hub stamps use UTC wall-clock; PowerShell uses local `Get-Date`.
+- Dedicated server and clients use Detached + file stdio (`server.log` / `client.log`). Hub presents **bounded file tails**, not a live stdout re-pipe. PowerShell load harness used VisibleConsole; Hub load harness is Session with file log (`ui_pump: false`). Hub also tails `load.log` on Validation/Performance and charts bounded samples from `metrics.csv` (does not invent series).
+- Validation/Performance completed UI shows a Result summary + expandable details from `run_summary.json`; Dashboard uses a small shared design system (tokens, HubCard, button variants, status badges) with semantic wide/medium/narrow composition. Recent Activity is real `ActivityLog` only. No host CPU/Mem System Status row.
+- START VALIDATION / START LOAD that need a restart are consent via the button (no WinForms MessageBox).
 - Explicit `JobId` supersession is stricter internally than PowerShell flags; user-visible Start/Stop/Restart rules stay the same.
-- `DEV.BAT` remains PowerShell. Hub: [`DEV_HUB.BAT`](../../DEV_HUB.BAT) (build, then independent `purgatory-dev-hub.exe`). `cargo run -p purgatory-dev-hub` is not the operational launch path.
+- `DEV.BAT` remains PowerShell fallback. Hub: [`DEV_HUB.BAT`](../../DEV_HUB.BAT) (build, then independent `purgatory-dev-hub.exe`). `cargo run -p purgatory-dev-hub` is not the operational launch path.
 
 If a timing, retry, or process-behavior difference is discovered later, add it here. Do not silently tune it.

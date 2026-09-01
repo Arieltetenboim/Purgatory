@@ -8,7 +8,7 @@ use std::time::Instant;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::classify::{RunStatus, StatusReason};
+use crate::classify::{RunStatus, StatusReason, ValidationExecution};
 use crate::cli::Cli;
 use crate::metrics::HarnessMetrics;
 use crate::scenario::LoadScenario;
@@ -38,7 +38,14 @@ pub const METRICS_CSV_HEADER: &str = concat!(
     "server_spawn_queue_depth,server_cadence_due,server_command_rejects_gate,",
     "server_command_rejects_other,server_domain_rev_advances,",
     "server_observer_pending_updates,server_observer_pending_enters,",
-    "server_cadence_deferred_updates"
+    "server_cadence_deferred_updates,",
+    "server_scheduler_scheduled_total,server_scheduler_cancelled_total,",
+    "server_scheduler_critical_executed_total,server_scheduler_deferred_executed_total,",
+    "server_actions_started_total,server_actions_completed_total,",
+    "server_effects_applied_total,server_effects_expired_total,",
+    "server_spawn_requests_total,server_spawns_completed_total,",
+    "server_despawns_completed_total,server_cadence_executions_total,",
+    "server_entities_spawned_total"
 );
 
 pub struct RunLog {
@@ -122,6 +129,36 @@ pub struct RunSummary {
     pub scheduler_critical_ceiling_hits: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduler_deferred_exhausted: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler_scheduled_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler_cancelled_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler_critical_executed_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler_deferred_executed_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actions_started_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actions_completed_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects_applied_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects_expired_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_requests_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawns_completed_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub despawns_completed_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cadence_executions_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entities_spawned_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_produced_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_processed_total: Option<u64>,
     pub requested_duration_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
@@ -148,6 +185,8 @@ pub struct SoakEvidence {
     pub portal_out_of_range: u64,
     pub portal_rejected: u64,
     pub portal_transitions: u64,
+    pub portal_seen_ticks: u64,
+    pub portal_in_zone_ticks: u64,
     pub aoi_enters_start: Option<u64>,
     pub aoi_enters_end: Option<u64>,
     pub aoi_updates_start: Option<u64>,
@@ -221,6 +260,19 @@ pub struct MetricsSample {
     pub server_observer_pending_updates: Option<u64>,
     pub server_observer_pending_enters: Option<u64>,
     pub server_cadence_deferred_updates: Option<u64>,
+    pub server_scheduler_scheduled_total: Option<u64>,
+    pub server_scheduler_cancelled_total: Option<u64>,
+    pub server_scheduler_critical_executed_total: Option<u64>,
+    pub server_scheduler_deferred_executed_total: Option<u64>,
+    pub server_actions_started_total: Option<u64>,
+    pub server_actions_completed_total: Option<u64>,
+    pub server_effects_applied_total: Option<u64>,
+    pub server_effects_expired_total: Option<u64>,
+    pub server_spawn_requests_total: Option<u64>,
+    pub server_spawns_completed_total: Option<u64>,
+    pub server_despawns_completed_total: Option<u64>,
+    pub server_cadence_executions_total: Option<u64>,
+    pub server_entities_spawned_total: Option<u64>,
 }
 
 impl MetricsSample {
@@ -249,6 +301,19 @@ impl MetricsSample {
         self.server_observer_pending_updates = Some(s.observer_pending_updates);
         self.server_observer_pending_enters = Some(s.observer_pending_enters);
         self.server_cadence_deferred_updates = Some(s.cadence_deferred_updates);
+        self.server_scheduler_scheduled_total = Some(s.scheduler_scheduled_total);
+        self.server_scheduler_cancelled_total = Some(s.scheduler_cancelled_total);
+        self.server_scheduler_critical_executed_total = Some(s.scheduler_critical_executed_total);
+        self.server_scheduler_deferred_executed_total = Some(s.scheduler_deferred_executed_total);
+        self.server_actions_started_total = Some(s.actions_started_total);
+        self.server_actions_completed_total = Some(s.actions_completed_total);
+        self.server_effects_applied_total = Some(s.effects_applied_total);
+        self.server_effects_expired_total = Some(s.effects_expired_total);
+        self.server_spawn_requests_total = Some(s.spawn_requests_total);
+        self.server_spawns_completed_total = Some(s.spawns_completed_total);
+        self.server_despawns_completed_total = Some(s.despawns_completed_total);
+        self.server_cadence_executions_total = Some(s.cadence_executions_total);
+        self.server_entities_spawned_total = Some(s.entities_spawned_total);
     }
 }
 
@@ -463,6 +528,19 @@ impl RunLog {
             opt_u64(sample.server_observer_pending_updates),
             opt_u64(sample.server_observer_pending_enters),
             opt_u64(sample.server_cadence_deferred_updates),
+            opt_u64(sample.server_scheduler_scheduled_total),
+            opt_u64(sample.server_scheduler_cancelled_total),
+            opt_u64(sample.server_scheduler_critical_executed_total),
+            opt_u64(sample.server_scheduler_deferred_executed_total),
+            opt_u64(sample.server_actions_started_total),
+            opt_u64(sample.server_actions_completed_total),
+            opt_u64(sample.server_effects_applied_total),
+            opt_u64(sample.server_effects_expired_total),
+            opt_u64(sample.server_spawn_requests_total),
+            opt_u64(sample.server_spawns_completed_total),
+            opt_u64(sample.server_despawns_completed_total),
+            opt_u64(sample.server_cadence_executions_total),
+            opt_u64(sample.server_entities_spawned_total),
         ];
         debug_assert_eq!(cells.len(), METRICS_CSV_HEADER.split(',').count());
         writeln!(self.metrics_writer, "{}", cells.join(","))
@@ -550,6 +628,21 @@ impl RunLog {
             aoi_updates_total: args.extras.aoi_updates_total,
             scheduler_critical_ceiling_hits: args.extras.scheduler_critical_ceiling_hits,
             scheduler_deferred_exhausted: args.extras.scheduler_deferred_exhausted,
+            scheduler_scheduled_total: args.extras.scheduler_scheduled_total,
+            scheduler_cancelled_total: args.extras.scheduler_cancelled_total,
+            scheduler_critical_executed_total: args.extras.scheduler_critical_executed_total,
+            scheduler_deferred_executed_total: args.extras.scheduler_deferred_executed_total,
+            actions_started_total: args.extras.actions_started_total,
+            actions_completed_total: args.extras.actions_completed_total,
+            effects_applied_total: args.extras.effects_applied_total,
+            effects_expired_total: args.extras.effects_expired_total,
+            spawn_requests_total: args.extras.spawn_requests_total,
+            spawns_completed_total: args.extras.spawns_completed_total,
+            despawns_completed_total: args.extras.despawns_completed_total,
+            cadence_executions_total: args.extras.cadence_executions_total,
+            entities_spawned_total: args.extras.entities_spawned_total,
+            events_produced_total: args.extras.events_produced_total,
+            events_processed_total: args.extras.events_processed_total,
             requested_duration_secs: args.requested_duration_secs,
             preset: args.preset.clone(),
             seed: Some(args.seed),
@@ -599,6 +692,44 @@ pub struct SummaryExtras {
     pub aoi_updates_total: Option<u64>,
     pub scheduler_critical_ceiling_hits: Option<u64>,
     pub scheduler_deferred_exhausted: Option<u64>,
+    pub scheduler_scheduled_total: Option<u64>,
+    pub scheduler_cancelled_total: Option<u64>,
+    pub scheduler_critical_executed_total: Option<u64>,
+    pub scheduler_deferred_executed_total: Option<u64>,
+    pub actions_started_total: Option<u64>,
+    pub actions_completed_total: Option<u64>,
+    pub effects_applied_total: Option<u64>,
+    pub effects_expired_total: Option<u64>,
+    pub spawn_requests_total: Option<u64>,
+    pub spawns_completed_total: Option<u64>,
+    pub despawns_completed_total: Option<u64>,
+    pub cadence_executions_total: Option<u64>,
+    pub entities_spawned_total: Option<u64>,
+    pub events_produced_total: Option<u64>,
+    pub events_processed_total: Option<u64>,
+}
+
+impl SummaryExtras {
+    #[must_use]
+    pub fn validation_execution(&self) -> ValidationExecution {
+        ValidationExecution {
+            scheduler_scheduled_total: self.scheduler_scheduled_total,
+            scheduler_cancelled_total: self.scheduler_cancelled_total,
+            scheduler_critical_executed_total: self.scheduler_critical_executed_total,
+            scheduler_deferred_executed_total: self.scheduler_deferred_executed_total,
+            actions_started_total: self.actions_started_total,
+            actions_completed_total: self.actions_completed_total,
+            effects_applied_total: self.effects_applied_total,
+            effects_expired_total: self.effects_expired_total,
+            spawn_requests_total: self.spawn_requests_total,
+            spawns_completed_total: self.spawns_completed_total,
+            despawns_completed_total: self.despawns_completed_total,
+            cadence_executions_total: self.cadence_executions_total,
+            entities_spawned_total: self.entities_spawned_total,
+            events_produced_total: self.events_produced_total,
+            events_processed_total: self.events_processed_total,
+        }
+    }
 }
 
 fn chrono_like_timestamp() -> String {
@@ -667,6 +798,8 @@ mod tests {
         assert!(METRICS_CSV_HEADER.contains("server_scheduler_queued"));
         assert!(METRICS_CSV_HEADER.contains("server_aoi_enters"));
         assert!(METRICS_CSV_HEADER.contains("server_cadence_deferred_updates"));
+        assert!(METRICS_CSV_HEADER.contains("server_scheduler_scheduled_total"));
+        assert!(METRICS_CSV_HEADER.contains("server_entities_spawned_total"));
         assert!(!METRICS_CSV_HEADER.contains(",tick_p99_ms,"));
     }
 

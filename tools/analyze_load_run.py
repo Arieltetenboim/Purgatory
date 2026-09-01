@@ -106,6 +106,9 @@ def workload_line(config: dict, scenario: dict) -> str:
     if isinstance(validation, dict):
         synthetic = validation.get("synthetic_entities", 0)
     return f"- workload: bots={bots} synthetic_entities={synthetic}"
+
+
+def aggregate_from_csv(metrics: list[dict]) -> dict:
     """Per-metric aggregation matching harness ServerRunAggregator semantics."""
     tick_mean_sum = 0.0
     tick_mean_n = 0
@@ -132,6 +135,24 @@ def workload_line(config: dict, scenario: dict) -> str:
     deferred_exh = None
     samples_ok = 0
     samples_missed = 0
+    observed_totals = {}
+    last_totals = {
+        "scheduler_scheduled_total": "server_scheduler_scheduled_total",
+        "scheduler_cancelled_total": "server_scheduler_cancelled_total",
+        "scheduler_critical_executed_total": "server_scheduler_critical_executed_total",
+        "scheduler_deferred_executed_total": "server_scheduler_deferred_executed_total",
+        "actions_started_total": "server_actions_started_total",
+        "actions_completed_total": "server_actions_completed_total",
+        "effects_applied_total": "server_effects_applied_total",
+        "effects_expired_total": "server_effects_expired_total",
+        "spawn_requests_total": "server_spawn_requests_total",
+        "spawns_completed_total": "server_spawns_completed_total",
+        "despawns_completed_total": "server_despawns_completed_total",
+        "cadence_executions_total": "server_cadence_executions_total",
+        "entities_spawned_total": "server_entities_spawned_total",
+        "events_produced_total": "server_events_produced",
+        "events_processed_total": "server_events_processed",
+    }
 
     for row in metrics:
         mean = first_present(row, ["server_tick_work_mean_ms"])
@@ -207,6 +228,10 @@ def workload_line(config: dict, scenario: dict) -> str:
         exh = first_present(row, ["server_scheduler_deferred_exhausted"])
         if exh is not None:
             deferred_exh = int(exh)
+        for out_key, csv_key in last_totals.items():
+            value = first_present(row, [csv_key])
+            if value is not None:
+                observed_totals[out_key] = int(value)
 
     # Bytes: CSV has per-sec rates; reconstruct cumulative only if summary already
     # has them. Leave None here when only rates exist.
@@ -239,6 +264,7 @@ def workload_line(config: dict, scenario: dict) -> str:
         "server_metrics_samples_missed": samples_missed,
         "server_metrics_ok": samples_ok > 0,
     }
+    out.update(observed_totals)
     return out
 
 
@@ -390,6 +416,26 @@ def write_summary(
         f"{summary.get('scheduler_critical_ceiling_hits')}",
         f"- scheduler deferred exhausted: "
         f"{summary.get('scheduler_deferred_exhausted')}",
+        f"- execution totals (scheduled/cancelled/crit/def): "
+        f"{summary.get('scheduler_scheduled_total')} / "
+        f"{summary.get('scheduler_cancelled_total')} / "
+        f"{summary.get('scheduler_critical_executed_total')} / "
+        f"{summary.get('scheduler_deferred_executed_total')}",
+        f"- actions started/completed: "
+        f"{summary.get('actions_started_total')} / "
+        f"{summary.get('actions_completed_total')}",
+        f"- effects applied/expired: "
+        f"{summary.get('effects_applied_total')} / "
+        f"{summary.get('effects_expired_total')}",
+        f"- spawn requests/completed / despawns: "
+        f"{summary.get('spawn_requests_total')} / "
+        f"{summary.get('spawns_completed_total')} / "
+        f"{summary.get('despawns_completed_total')}",
+        f"- cadence executions: {summary.get('cadence_executions_total')}",
+        f"- entities spawned: {summary.get('entities_spawned_total')}",
+        f"- events produced/processed: "
+        f"{summary.get('events_produced_total')} / "
+        f"{summary.get('events_processed_total')}",
         f"- snapshot encode failures: {summary.get('encode_failures')}",
         f"- unexpected disconnects: {summary.get('unexpected_disconnects')}",
         f"- snapshot starvation samples: {summary.get('snapshot_starvation_samples')}",

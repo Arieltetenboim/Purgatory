@@ -117,12 +117,27 @@ Server Ready
 → harness exit 0/1/2/130
 ```
 
-Cancel kills the harness (and ValidatePrep cargo), not the detached server. Load-mode ExtraEnv is generic `ServerLaunchOptions`, not a special spawn path.
+Cancel kills the harness (and ValidatePrep cargo), not the detached server. Load-mode ExtraEnv is generic `ServerLaunchOptions`, not a special spawn path. Runtime Validation and load refuse each other (same `purgatory-load` binary).
 
 ## Load mode
 
-Load tests that need admission above the default restart the owned server with `PURGATORY_ADMISSION_CAP=256` and `PURGATORY_METRICS_PORT=5002`, wait until **Ready** plus metrics `admission_cap` / `max_entities_per_snapshot` compatibility, then start the harness. Same state machine as a normal server.
+Load tests that need admission above the default restart the owned server with `PURGATORY_ADMISSION_CAP=256` and `PURGATORY_METRICS_PORT=5002`, wait until **Ready** plus metrics `admission_cap` / `max_entities_per_snapshot` compatibility, then start the harness. Same state machine as a normal server. One LoadJob sibling to ValidationJob — not `ServerState::Loading`.
+
+```text
+Server Ready
+→ if metrics load-compatible: session-owned purgatory-load (no --preset)
+→ else ExtraEnv restart → --probe Ready → harness
+→ Stop Load kills harness only
+```
+
+## Clients
+
+Queued until Ready; stagger 140 ms between spawns. Detached + `client.log` (Hub close does not kill). Skip client cargo rebuild when workspace clients are live or the exe is locked. Reopen adopts workspace `purgatory-client` processes.
+
+## Kill All vs Hub close
+
+Kill All clears pending clients/load/RV, kills workspace cargo (command line contains this repo root), `purgatory-server`, `purgatory-client`, `purgatory-load`, and sets server **Stopped**. Hub window close does **not** kill detached server/clients.
 
 ## Exit policy
 
-FormClosed / Hub window close releases UI resources. It does **not** stop the dedicated server. Footer / status bar should make server state visible without returning to the Server page.
+FormClosed / Hub window close releases UI resources. It does **not** stop the dedicated server or detached clients. Footer / status bar should make server state visible without returning to the Server page.

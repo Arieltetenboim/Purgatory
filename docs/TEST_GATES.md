@@ -265,6 +265,62 @@ Owner Phase 0 clarifications:
 - Date: 2026-08-31
 - Notes: Protocol stays v10. Metrics schema stays 3. `PURGATORY_LOAD_VALIDATION` is load-mode-only. Isolated persist / failure injection never uses `%LOCALAPPDATA%\Purgatory`. MixedRuntime is the canonical workload: persistent real QUIC baseline + independent churn + in-zone portal transition + AOI/replication over the soak (not timer `PortalActivate`, not “duration after all bots disconnected”). Soak duration is configurable. Gate re-run after the harness tick-path spawn / replica-lag portal walk fix (see [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md)). Reports: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md), [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md), [`docs/PHASE_6G_QUEUE_INVENTORY.md`](PHASE_6G_QUEUE_INVENTORY.md). **Do not begin Phase 7 until 6G is GREEN.** Planned Phase 7 gates: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md). Local-player standing jitter / falling remainder-Y clip were corrected on the presentation path (see 6G report); the ~128-client load stall remains a separate unresolved empirical issue and is **not** marked fixed.
 
+## Gate 6G.2 — Capacity characterization (Pass 1)
+
+- Status: **Pass 1 characterization recorded 2026-09-01 — stop for owner review (no 6G.3 redesign)**
+- Command/test: `./scripts/check.ps1` (PASS); Release ladder via `scripts/capacity_ladder.ps1`; official soak `--preset soak --duration 30m`
+- Date: 2026-09-01
+- Notes: Root `PHASE` = `6G.2`. Live metrics schema **4** (Mixed execution totals); **domain timings stay in run artifacts** (ADR-0053). Freeze + ladder + soak: [`docs/MMO_RUNTIME_BASELINE.md`](MMO_RUNTIME_BASELINE.md). Report: [`docs/PHASE_6G2_REPORT.md`](PHASE_6G2_REPORT.md). Artifacts: `logs/load/capacity_6g2/`. **AOI dominant** (idle@256 tick p99 ≈ 16 ms, AOI ≈ 13 ms ≈ 79%). High-N ramp disconnects observed. 128-load hang **not reproduced**. Official soak **COMPLETE** 1800s (`logs/load/20260901_050045_8bots_soak_seed4242_r10925bfd`; capacity `.../20260901_080043_soak_official`); 1 overrun; summary tick p99 14.4 ms / max 101.9 ms; handoff_dropped=0. Windows Stop-then-replace evidence recorded. **No architectural optimization in this gate.** Do not begin Phase 7.
+
+## Gate 6G.3 — Targeted AOI fan-out optimization
+
+- Status: **recorded 2026-09-01** (idle high-N win; motion AOI remaining limit)
+- Command/test: `./scripts/check.ps1` (PASS); Release idle/hotspot ladder via `scripts/capacity_ladder.ps1`
+- Date: 2026-09-01
+- Notes: Root `PHASE` = `6G.3`. Skip classify while `World::interest_generation` unchanged; one unsorted `spatial_candidates` when classifying. Idle@256: tick p99 16.0→7.95 ms, AOI p99 12.7→5.80 ms. Hotspot/motion: no reliable AOI win (generation churn). Report: [`docs/PHASE_6G3_REPORT.md`](PHASE_6G3_REPORT.md). No pending-cap raise, no replication redesign, no Phase 7.
+
+## Gate 6G.4 — Motion / capacity gate (measure only)
+
+- Status: **recorded 2026-09-01 — classification A: GREEN WITH KNOWN LIMIT**
+- Command/test: Release `scripts/capacity_ladder.ps1` distributed + hotspot @ 64/128/256 (seed 4242, ramp 50)
+- Date: 2026-09-01
+- Notes: Root `PHASE` = `6G.4`. No AOI redesign. 128 motion COMPLETE with tick p99 ≈ 13–18 ms domain (hotspot summary peak p99 ≈ 27 ms). 256 = characterized limit (distributed ramp disconnects; hotspot AOI/tick saturation p99 ≈ 50 ms). Report: [`docs/PHASE_6G4_REPORT.md`](PHASE_6G4_REPORT.md). Artifacts: `logs/load/capacity_6g4/20260901_140001/`. Do not begin Phase 7 from this gate alone.
+
+## Gate 6G.5 — Incremental AOI invalidation
+
+- Status: **recorded 2026-09-01 — implemented + measured — stop for owner review (do not close all of 6G)**
+- Command/test: `./scripts/check.ps1` components PASS; Release motion ladder distributed + hotspot @ 64/128/256; locality unit tests
+- Date: 2026-09-01
+- Notes: Root `PHASE` = `6G.5`. Per-observer dirty + spatial influence (`AOI_INFLUENCE_HALF_EXTENTS`); global `interest_generation` removed. Locality tests prove unrelated observers are not reclassified. vs 6G.4: hotspot@256 AOI/tick improved materially; distributed FOOTNOTE still dense under leave influence. Report: [`docs/PHASE_6G5_REPORT.md`](PHASE_6G5_REPORT.md). Design: [`docs/PHASE_6G5_DESIGN.md`](PHASE_6G5_DESIGN.md). Artifacts: `logs/load/capacity_6g5/20260901_161031/`. No pending-cap raise, no replication redesign, no Phase 7.
+
+## Gate 6G.6 — AOI locality + relevance replication characterization
+
+- Status: **recorded 2026-09-01 — characterization only — recommendation D — stop for owner review (do not close all of 6G)**
+- Command/test: `phase6g6` locality tests; capacity ladder with `aoi_locality.json`; replication/code audit
+- Date: 2026-09-01
+- Notes: Root `PHASE` = `6G.6`. Tiny same-cell move: influence dirties observers while exact leave-XOR set is empty. Replication: DomainRevs change-driven payloads exist, but no entity→interested fan-out or relationship domain policy. Report: [`docs/PHASE_6G6_REPORT.md`](PHASE_6G6_REPORT.md). Artifacts: `logs/load/capacity_6g6/`. No Phase 7, no cap raise, no large redesign.
+
+## Gate 6G.7A — Exact incremental AOI invalidation
+
+- Status: **recorded 2026-09-01 — implemented + validated — accepted; closed for 6G.7A scope (do not close all of 6G)**
+- Command/test: `phase6g7a` proofs; Release motion ladder @64/128/256; replication tests
+- Date: 2026-09-01
+- Notes: Root `PHASE` was `6G.7A`. Enter/leave XOR after influence prefilter; tiny-move ⇒ mover-only dirty. Ladder dirtied/move ≈1.5–1.8 vs ~35–45 influence-set (6G.6). Report: [`docs/PHASE_6G7A_REPORT.md`](PHASE_6G7A_REPORT.md). Design: [`docs/PHASE_6G7A_DESIGN.md`](PHASE_6G7A_DESIGN.md). Artifacts: `logs/load/capacity_6g7a/`. Next: 6G.7B replication relevance (authorized). No Phase 7, no cap raise.
+
+## Gate 6G.7B — Dirty-driven replication fan-out foundation
+
+- Status: **recorded 2026-09-01 — accepted/closed for fan-out scope (do not close all of 6G)**
+- Command/test: replication fan-out unit tests; Release capacity ladder idle/distributed/hotspot @64/128/256; `replication_fanout.json`
+- Date: 2026-09-01
+- Notes: Root `PHASE` was `6G.7B`. Idle Known scan=0; motion scanned/update ≈1.3. Report: [`docs/PHASE_6G7B_REPORT.md`](PHASE_6G7B_REPORT.md).
+
+## Gate 6G.7C — Relationship / density / budget policy foundation
+
+- Status: **recorded 2026-09-01 — accepted; closes 6G architecture (GREEN)**
+- Command/test: replication + policy unit tests; Release hotspot baseline vs selective @64/128/256; `replication_fanout.json` schema 2
+- Date: 2026-09-01
+- Notes: Root `PHASE` = `6G`. Same protocol; selective ≈3× fewer Updates / ≈½ bytes on hotspot (primarily stranger transform cadence coalesce). Owner checklist (correctness / savings attribution / pressure) in report. **6G = GREEN — architecture closed, production policy tuning deferred.** Report: [`docs/PHASE_6G7C_REPORT.md`](PHASE_6G7C_REPORT.md). Design: [`docs/PHASE_6G7C_DESIGN.md`](PHASE_6G7C_DESIGN.md). Artifacts: `logs/load/capacity_6g7c/`. Phase 7 not started. No cap raise.
+
 ## Developer Tools — connection probe (tooling, not a gameplay phase)
 
 - Status: recorded with the Developer Tools foundation (ADR-0050). Not a substitute for Gate 6F.
@@ -279,14 +335,32 @@ Owner Phase 0 clarifications:
 
 ## Developer Tools — Hub Slice 2 Runtime Validation (tooling, not a gameplay phase)
 
-- Status: recorded. Not a 6G gameplay gate and not Phase 7. Slice 3 (load dialog) is not started.
+- Status: recorded. Not a 6G gameplay gate and not Phase 7.
 - Command/test: `cargo test -p purgatory-dev-runtime` (37 passed; 1 ignored real-process lifetime test unchanged). `cargo test -p purgatory-dev-hub` (2 passed). `./scripts/check.ps1` GREEN on 2026-08-31 (including `leave_then_reenter_sends_baseline_again`; replication was not changed).
 - Notes: Official RV rebuilds `purgatory-load`, captures `--print-server-env`, restarts a detached load-mode server, waits for existing `--probe` Ready, then runs a session-owned harness. CLI exit is pass/fail. Workspace lock `logs/dev-tools/hub.lock` refuses a second Hub. Cancel kills the harness, not the server. Manual smoke (`--preset smoke`, 20s) and a second-Hub lock check are still required. Inventory: [`docs/dev-tools/PARITY.md`](dev-tools/PARITY.md).
+
+## Developer Tools — Hub launcher parity (Slice 3 + remaining CURRENT capabilities; tooling, not a gameplay phase)
+
+- Status: recorded. Not a 6G gameplay gate and not Phase 7. Editors / `DEV.BAT` switch not started.
+- Command/test: `cargo test -p purgatory-dev-runtime --lib` (53 passed). `cargo test -p purgatory-dev-hub` (2 passed). `./scripts/check.ps1` GREEN on 2026-08-31 (tooling-only; gameplay/replication not changed in this work).
+- Notes: Bounded `server.log` / `client.log` file tails; LoadJob (compatible Ready vs ExtraEnv restart); clients queue/stagger/Detached/adopt; quality gate visible console; Rebuild skip-locked; Kill All (including workspace cargo by command line); Settings profile + log level for new processes. RV and load refuse each other. Manual acceptance still required (Server log lines, short load, +1 client adopt-after-close, QUALITY GATE console, Kill All, profile/log-level on next Start). Inventory: [`docs/dev-tools/PARITY.md`](dev-tools/PARITY.md).
+
+## Developer Tools — Dashboard redesign (tooling presentation, not a gameplay phase)
+
+- Status: recorded automated gate. Visual/manual resize acceptance still required.
+- Command/test: `cargo test -p purgatory-dev-hub` (6 passed, including breakpoint + presentation helpers). `./scripts/check.ps1` GREEN on 2026-08-31.
+- Notes: Replaced generic card auto-fit with semantic wide/medium/narrow Dashboard composition; StatusBadge / MetricRow / module frames; Dashboard view-models (`dashboard_model`); state-aware Server metrics/actions; Quick Actions strip; subdued header + Overview sidebar grouping. Runtime ownership unchanged. Docs: [`docs/dev-tools/README.md`](dev-tools/README.md), [`docs/dev-tools/PARITY.md`](dev-tools/PARITY.md).
+
+## Developer Tools — Dashboard design-system visual pass (tooling presentation)
+
+- Status: recorded automated gate. Manual resize Visual QA still required (wide / medium / narrow / min).
+- Command/test: `cargo test -p purgatory-dev-hub` (6 passed). `./scripts/check.ps1` GREEN on 2026-09-01.
+- Notes: Mockup-aligned palette/tokens; HubCard + btn_primary/ghost/destructive; sidebar active accent + real CONNECTED/job strip; Phase/profile chips; Project 2-col metrics; Attention healthy check; Recent Activity from real ActivityLog only; no System Status host gauges / Customize / profile block. Docs: [`docs/dev-tools/README.md`](dev-tools/README.md).
 
 ## Later gates
 
 Legacy Gate 7 (client reconciliation / input replay) already shipped as Phase 5.5. Legacy Gates 8–17 follow superseded numbering and are **not** the post-6G sequence.
 
-Gameplay Phase 7 is **planned, not started.** Sub-stage gates (7A–7E) are defined in [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) and will be recorded here when each stage starts. **Do not begin Phase 7 until 6G is GREEN** (automated gate is recorded; manual Mixed/soak/process-ownership and open AOI evidence still required). Standing-jitter / falling remainder-Y were corrected on the local presentation path; quiet-play visual sign-off is still required. The ~128-client load stall remains unresolved. A 30-minute soak is **not** required for every Phase 7 sub-stage.
+Gameplay Phase 7 is **planned, not started.** Sub-stage gates (7A–7E) are defined in [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) and will be recorded here when each stage starts. **Do not begin Phase 7 until 6G is GREEN** (automated gate is recorded; manual Mixed/soak/process-ownership and open AOI evidence still required). Standing jitter is **closed** (presentation-path fix; quiet-play Δx not observed; owner visual confirmation 2026-09-01). Floor-clip / landing is **closed** (falling extra holds tick Y; owner confirmation 2026-08-31 landing no longer sinks; Y lerp is the jump-smooth follow-up already in tree). Duration overlay (`timeout >= duration`) is **closed** in CLI tests. The ~128-client load stall remains unresolved. A 30-minute soak is **not** required for every Phase 7 sub-stage.
 
 Phase 5 is GREEN; Phase 6.0 / 6A / 6B / 6C / 6D / 6E / 6F / 6G (automated) are GREEN. 6G is not marked complete.

@@ -102,6 +102,16 @@ impl SpatialIndex {
 
     #[must_use]
     pub fn query_aabb(&self, address: WorldAddress, aabb: Aabb) -> Vec<EntityId> {
+        self.query_aabb_inner(address, aabb, true)
+    }
+
+    /// Cell-overlap candidates without the deterministic sort (caller may filter/sort).
+    #[must_use]
+    pub fn query_aabb_unsorted(&self, address: WorldAddress, aabb: Aabb) -> Vec<EntityId> {
+        self.query_aabb_inner(address, aabb, false)
+    }
+
+    fn query_aabb_inner(&self, address: WorldAddress, aabb: Aabb, sorted: bool) -> Vec<EntityId> {
         let min = self.cell_of_pos([aabb.min_x(), aabb.min_y()]);
         let max = self.cell_of_pos([aabb.max_x(), aabb.max_y()]);
         let mut seen = HashSet::new();
@@ -119,7 +129,9 @@ impl SpatialIndex {
                 }
             }
         }
-        out.sort_by_key(|id| (id.index(), id.generation()));
+        if sorted {
+            out.sort_by_key(|id| (id.index(), id.generation()));
+        }
         out
     }
 
@@ -145,7 +157,7 @@ impl SpatialIndex {
         let r = radius.max(0.0);
         let aabb = Aabb::new(position, [r, r]);
         let r2 = r * r;
-        self.query_aabb(address, aabb)
+        self.query_aabb_unsorted(address, aabb)
             .into_iter()
             .filter(|&id| {
                 // Distance filter is applied by World, which has Transform.

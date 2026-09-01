@@ -8,7 +8,8 @@ The 30 Hz / ~33.33 ms figures below are **tick spacing**, not permission for sim
 |---|---|---|---|
 | Server simulation tick rate | 30 Hz | 30 Hz configured | Initial engineering value, not a permanent promise. Constant: `TICK_RATE_HZ`. |
 | Wall interval per simulation tick | ≈ 33.33 ms | 33_333_333 ns | `1_000_000_000 / 30` ns. Spacing between ticks, not a CPU allowance. |
-| CPU time per simulation tick | TBD | TBD | Profile p50/p95/p99 before setting. Must stay well below the 33.33 ms wall interval. |
+| CPU time per simulation tick | TBD | schema-4 `tick_work_*` + 6G.2 domain artifacts | Profile p50/p95/p99 before setting. Must stay well below the 33.33 ms wall interval. Domain breakdown is file artifacts, not additional UDP fields. Observation (localhost, idle@256 Release): 6G.2 tick p99 ≈ 16 ms / AOI ≈ 13 ms; after 6G.3 steady-interest skip ≈ 8.0 / 5.8 ms — **not** budgets. |
+| Process CPU utilization | TBD | 6G.2 `process_resources.json` | Logical CPUs + utilization %; distinguishes saturated-core vs idle-machine headroom. Observation: ladder cells often 0–80% of one core on a 20-logical machine. |
 | Max catch-up elapsed time per outer update | 1 s | 1 s | Surplus elapsed time is discarded. See ADR-0011. |
 | Client FPS | TBD | independent of 30 Hz sim | Observed on this machine: render frames >> simulation ticks |
 | Horizontal max ground / air speed | 6 world units / s | `FootnoteConfig::max_ground_speed` / `max_air_speed` | Integrated as accel toward target, not snap-to-speed |
@@ -40,7 +41,7 @@ The 30 Hz / ~33.33 ms figures below are **tick spacing**, not permission for sim
 | Connected players | TBD | ≥2 network sessions; load harness up to admission | Remotes interpolated; local predicted; load mode admission ≤256 |
 | Tick work overrun | server work > 33.333 ms | recorded; not auto-WARN | Phase 5.7: one overrun ≠ classification WARN; sustained server pressure may WARN |
 | Bot scheduler cadence | harness wall clock | `bot_scheduler_*_ms` in metrics.csv | Not server sim cost; not a WARN by itself |
-| Load metrics export | localhost UDP | `127.0.0.1:5002` | Off-protocol `LoadMetricsV1` schema 3; missed poll ≠ zeros; rates from counter deltas. Schema 4 not added in 6G. |
+| Load metrics export | localhost UDP | `127.0.0.1:5002` | Off-protocol `LoadMetricsV1` schema 4; `METRICS_MAX_DATAGRAM_BYTES` 4096; missed poll ≠ zeros; rates from counter deltas. Execution totals prove Mixed workload ran when 1 Hz gauges are zero. |
 | Soak duration | configurable | Mixed preset default 30 min | Evidence run length, not a permanent quality threshold or the only soak definition |
 | Scheduler live slots | 4096 | `SCHEDULER_CAPACITY` | Rejects new work rather than growing unbounded |
 | Critical scheduler drain ceiling | 1024 / tick | `CRITICAL_DRAIN_CEILING` | Pathological-overload safeguard; remainder carries forward; not a gameplay budget |

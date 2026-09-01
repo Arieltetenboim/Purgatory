@@ -79,6 +79,10 @@ impl World {
         let tick = self.tick.get();
         let due = self.cadence.due_this_tick(tick);
         self.runtime_stats.cadence_due = u32::try_from(due.len()).unwrap_or(u32::MAX);
+        self.runtime_stats.cadence_executions_total = self
+            .runtime_stats
+            .cadence_executions_total
+            .saturating_add(u64::try_from(due.len()).unwrap_or(u64::MAX));
         for item in due {
             self.events.push(RuntimeEvent::CadenceFired {
                 key: item.key.0,
@@ -158,6 +162,8 @@ impl World {
         }
         match self.actions.start(owner, kind) {
             Ok(action) => {
+                self.runtime_stats.actions_started_total =
+                    self.runtime_stats.actions_started_total.saturating_add(1);
                 self.events.push(RuntimeEvent::ActionStarted {
                     id: action.id,
                     owner,
@@ -189,6 +195,10 @@ impl World {
         end: ActionEnd,
     ) -> Result<Action, ActionError> {
         let action = self.actions.end(id, end)?;
+        if matches!(end, ActionEnd::Completed) {
+            self.runtime_stats.actions_completed_total =
+                self.runtime_stats.actions_completed_total.saturating_add(1);
+        }
         self.events.push(RuntimeEvent::ActionEnded {
             id: action.id,
             owner: action.owner,
@@ -229,6 +239,8 @@ impl World {
         };
         let _ = self.effects.set_timer(id, timer);
         let effect = self.effects.get(id).expect("inserted effect");
+        self.runtime_stats.effects_applied_total =
+            self.runtime_stats.effects_applied_total.saturating_add(1);
         self.events.push(RuntimeEvent::EffectApplied { id, target });
         Ok(effect)
     }
@@ -271,6 +283,8 @@ impl World {
             return None;
         };
         let _ = self.spawn_schedule.set_timer(id, timer);
+        self.runtime_stats.spawn_requests_total =
+            self.runtime_stats.spawn_requests_total.saturating_add(1);
         Some(id)
     }
 
@@ -339,6 +353,8 @@ impl World {
     }
 
     pub(crate) fn note_entity_spawned(&mut self, id: EntityId) {
+        self.runtime_stats.entities_spawned_total =
+            self.runtime_stats.entities_spawned_total.saturating_add(1);
         self.events.push(RuntimeEvent::EntitySpawned { id });
     }
 
@@ -390,6 +406,8 @@ impl World {
                 let Some(effect) = self.effects.remove(id) else {
                     return;
                 };
+                self.runtime_stats.effects_expired_total =
+                    self.runtime_stats.effects_expired_total.saturating_add(1);
                 if !self.contains(effect.target) {
                     return;
                 }
@@ -405,11 +423,18 @@ impl World {
                 let Some(scheduled) = self.spawn_schedule.take(id) else {
                     return;
                 };
-                let _ = self.spawn(scheduled.request);
+                if self.spawn(scheduled.request).is_some() {
+                    self.runtime_stats.spawns_completed_total =
+                        self.runtime_stats.spawns_completed_total.saturating_add(1);
+                }
             }
             ScheduledKind::DespawnEntity(entity) => {
                 if self.contains(entity) {
                     let _ = self.despawn(entity);
+                    self.runtime_stats.despawns_completed_total = self
+                        .runtime_stats
+                        .despawns_completed_total
+                        .saturating_add(1);
                 }
             }
             ScheduledKind::TestProbe { token } | ScheduledKind::RaiseEvent { token } => {
@@ -445,12 +470,25 @@ impl World {
             scheduler_deferred_fired: self.runtime_stats.scheduler_deferred_fired,
             scheduler_critical_ceiling_hits: self.scheduler.critical_ceiling_hits(),
             scheduler_deferred_exhausted: self.scheduler.deferred_exhausted(),
+            scheduler_scheduled_total: self.scheduler.scheduled_total(),
+            scheduler_cancelled_total: self.scheduler.cancelled_total(),
+            scheduler_critical_executed_total: self.scheduler.critical_executed_total(),
+            scheduler_deferred_executed_total: self.scheduler.deferred_executed_total(),
             actions_active: self.actions.active_count(),
+            actions_started_total: self.runtime_stats.actions_started_total,
+            actions_completed_total: self.runtime_stats.actions_completed_total,
             effects_active: self.effects.active_count(),
+            effects_applied_total: self.runtime_stats.effects_applied_total,
+            effects_expired_total: self.runtime_stats.effects_expired_total,
             events_produced: self.events.produced(),
             events_processed: self.events.processed(),
             spawn_queue_depth: self.spawn_schedule.queued_count(),
+            spawn_requests_total: self.runtime_stats.spawn_requests_total,
+            spawns_completed_total: self.runtime_stats.spawns_completed_total,
+            despawns_completed_total: self.runtime_stats.despawns_completed_total,
             cadence_due: self.runtime_stats.cadence_due,
+            cadence_executions_total: self.runtime_stats.cadence_executions_total,
+            entities_spawned_total: self.runtime_stats.entities_spawned_total,
             command_rejects_gate: self.runtime_stats.command_rejects_gate,
             command_rejects_other: self.runtime_stats.command_rejects_other,
             domain_rev_advances: self.runtime_stats.domain_rev_advances,

@@ -2,6 +2,10 @@
 //!
 //! Networking must not consume a global dirty bit. Each observer compares
 //! [`DomainRevs`] against its own `last_committed_rev`.
+//!
+//! [`ReplicationDirtyMask`] is a server fan-out signal (6G.7B): which domains
+//! changed on an entity since the last drain. It does not replace per-observer
+//! commit cursors.
 
 /// Monotonic per-domain generations. Increment only when the replicated value changes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -10,6 +14,41 @@ pub struct DomainRevs {
     pub health: u64,
     pub membership: u64,
     pub replication: u64,
+}
+
+/// Which wire-relevant domains changed on an entity (6G.7B dirty fan-out).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReplicationDirtyMask {
+    pub transform: bool,
+    pub health: bool,
+}
+
+impl ReplicationDirtyMask {
+    #[must_use]
+    pub const fn transform_only() -> Self {
+        Self {
+            transform: true,
+            health: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn health_only() -> Self {
+        Self {
+            transform: false,
+            health: true,
+        }
+    }
+
+    #[must_use]
+    pub fn any(self) -> bool {
+        self.transform || self.health
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.transform |= other.transform;
+        self.health |= other.health;
+    }
 }
 
 impl DomainRevs {

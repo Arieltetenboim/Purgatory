@@ -1,35 +1,43 @@
 use eframe::egui;
-use purgatory_dev_runtime::HubSnapshot;
+use purgatory_dev_runtime::{HubCommand, HubSnapshot};
 
 use crate::theme;
+use crate::ui::layout::{self, card, kv_row, log_panel};
 
-/// Returns true when OPEN LOGS was clicked.
-pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> bool {
+/// Returns (open_log_dir, optional clear command).
+pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> (bool, Option<HubCommand>) {
     let mut open = false;
-    ui.heading("Logs");
-    ui.label("In-memory activity is bounded. File logs under logs/dev-tools/ may grow on disk.");
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label(format!("Directory  {}", snap.log_dir));
-        if ui.button("OPEN LOGS").clicked() {
-            open = true;
+    let mut clear = None;
+    layout::page_header(
+        ui,
+        "Logs",
+        "In-memory activity is bounded. File logs under logs/dev-tools/ may grow on disk.",
+    );
+
+    card(ui, "Activity", |ui| {
+        kv_row(ui, "Directory", &snap.log_dir);
+        ui.horizontal(|ui| {
+            if ui.button("OPEN LOGS").clicked() {
+                open = true;
+            }
+            ui.colored_label(
+                theme::muted(),
+                format!("Showing last {} of a 4000-line ring", snap.log_lines.len()),
+            );
+        });
+        ui.add_space(4.0);
+        if log_panel(
+            ui,
+            "hub_activity_log",
+            &snap.log_lines,
+            "(empty)",
+            360.0,
+            "scroll ↕↔ for long lines",
+        ) {
+            clear = Some(HubCommand::ClearActivityLog);
         }
     });
-    ui.label(format!(
-        "Showing last {} of a 4000-line in-memory ring.",
-        snap.log_lines.len()
-    ));
-    ui.add_space(6.0);
-    egui::ScrollArea::vertical()
-        .stick_to_bottom(true)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            for line in &snap.log_lines {
-                ui.colored_label(theme::log_color(line), line);
-            }
-        });
-    open
+    (open, clear)
 }
 
 pub fn open_log_dir(dir: &str) {
