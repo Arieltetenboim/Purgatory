@@ -76,10 +76,18 @@ pub enum WorkLane {
 pub enum ScheduledKind {
     ExpireEffect(crate::effect::EffectId),
     CompleteAction(crate::action::ActionId),
+    /// Phase 9A: advance ability Windup → Active → Recovery on the Action slot.
+    AdvanceAction(crate::action::ActionId),
     SpawnDue(crate::spawn_schedule::SpawnRequestId),
     DespawnEntity(EntityId),
-    TestProbe { token: u32 },
-    RaiseEvent { token: u32 },
+    /// Phase 7.2: apply one Pulse damage tick and reschedule or expire.
+    PulseTick(crate::effect::EffectId),
+    TestProbe {
+        token: u32,
+    },
+    RaiseEvent {
+        token: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

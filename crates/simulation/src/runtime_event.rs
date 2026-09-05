@@ -54,6 +54,16 @@ pub enum RuntimeEvent {
         key: u32,
         token: u32,
     },
+    /// Authoritative Attack/Hurt start. Clients overlay via `ServerPresentationOneShot`.
+    PresentationOneShotStarted {
+        entity: EntityId,
+        kind: crate::presentation_oneshot::PresentationOneShotKind,
+        until_tick: u64,
+    },
+    /// Clears transient Attack/Hurt (e.g. on lethal damage). Kind 0 on the wire.
+    PresentationOneShotCleared {
+        entity: EntityId,
+    },
 }
 
 /// Double-buffer queue. `push` during a tick; `commit` drains once.

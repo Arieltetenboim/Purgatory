@@ -1,8 +1,10 @@
 //! Content-backed and transient runtime spawn request.
 
 use crate::body::PlayerState;
+use crate::equipment::EquipmentState;
 use crate::health::Health;
 use crate::interactable::Interactable;
+use crate::npc::NpcState;
 use crate::platform::Platform;
 use crate::replication::ReplicationMeta;
 use crate::transform::Transform;
@@ -20,6 +22,8 @@ pub struct RuntimeSpawnRequest {
     pub platform: Option<Platform>,
     pub health: Option<Health>,
     pub interactable: Option<Interactable>,
+    pub npc: Option<NpcState>,
+    pub equipment: Option<EquipmentState>,
 }
 
 impl RuntimeSpawnRequest {
@@ -35,6 +39,8 @@ impl RuntimeSpawnRequest {
             platform: None,
             health: None,
             interactable: None,
+            npc: None,
+            equipment: None,
         }
     }
 
@@ -65,6 +71,18 @@ impl RuntimeSpawnRequest {
     #[must_use]
     pub fn with_interactable(mut self, interactable: Interactable) -> Self {
         self.interactable = Some(interactable);
+        self
+    }
+
+    #[must_use]
+    pub fn with_npc(mut self, npc: NpcState) -> Self {
+        self.npc = Some(npc);
+        self
+    }
+
+    #[must_use]
+    pub fn with_equipment(mut self, equipment: EquipmentState) -> Self {
+        self.equipment = Some(equipment);
         self
     }
 

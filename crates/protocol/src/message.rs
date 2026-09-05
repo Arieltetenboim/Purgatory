@@ -3,7 +3,20 @@
 //! Unknown discriminants, truncated payloads, and oversized strings fail
 //! with [`CodecError`]. Decoders never panic on untrusted input.
 
+use crate::ability::{
+    ABILITY_ACTIVATE_INDEPENDENT_BYTES, ABILITY_ACTIVATE_SELECTED_BYTES, AbilityActivateRequest,
+    AbilityCommandReject, ServerAbility,
+};
+use crate::equipment::{
+    EquipRequest, EquipmentRejectReason, ServerEquipment, UnequipRequest, slot_valid,
+};
 use crate::interact::{DevSetChannel, InteractClose, InteractOpen, PortalActivate, ServerInteract};
+use crate::presentation_oneshot::{
+    DevPresentationOneShot, ServerPresentationOneShot, TAG_DEV_PRESENTATION_ONESHOT,
+    TAG_SERVER_PRESENTATION_ONESHOT, decode_dev_presentation_oneshot,
+    decode_server_presentation_oneshot, encode_dev_presentation_oneshot,
+    encode_server_presentation_oneshot,
+};
 use crate::snapshot::WireEntityId;
 use crate::{
     ConnectionId, HELLO_DEV_LOGIN_SINCE, MAX_DATAGRAM_BYTES, MAX_LABEL_BYTES, PROTOCOL_VERSION,
@@ -24,6 +37,14 @@ const TAG_INTERACT_UPDATED: u8 = 13;
 const TAG_INTERACT_CLOSED: u8 = 14;
 const TAG_PORTAL_ACTIVATE: u8 = 15;
 const TAG_DEV_SET_CHANNEL: u8 = 17;
+const TAG_EQUIP: u8 = 18;
+const TAG_UNEQUIP: u8 = 19;
+const TAG_EQUIPMENT_ACCEPTED: u8 = 20;
+const TAG_EQUIPMENT_REJECTED: u8 = 21;
+const TAG_DEV_RESET_PLAYER: u8 = 24;
+const TAG_ABILITY_ACTIVATE: u8 = 25;
+const TAG_ABILITY_ACCEPTED: u8 = 26;
+const TAG_ABILITY_REJECTED: u8 = 27;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -237,6 +258,14 @@ pub enum ClientControl {
     PortalActivate(PortalActivate),
     /// DEV overlay Channel request. Server validates and owns WorldAddress.
     DevSetChannel(DevSetChannel),
+    Equip(EquipRequest),
+    Unequip(UnequipRequest),
+    /// DEV presentation Attack/Hurt oneshot request (protocol v13).
+    DevPresentationOneShot(DevPresentationOneShot),
+    /// DEV overlay spawn reset. Server applies `DebugAction::ResetPlayer` to the bound actor.
+    DevResetPlayer,
+    /// Ability activation intent (protocol v15). Ability id + optional selected entity.
+    AbilityActivate(AbilityActivateRequest),
 }
 
 /// Server → client reliable control.
@@ -245,6 +274,11 @@ pub enum ServerControl {
     Welcome(Welcome),
     Disconnect(DisconnectReason),
     Interact(ServerInteract),
+    Equipment(ServerEquipment),
+    /// Authoritative presentation oneshot start/clear (protocol v13).
+    PresentationOneShot(ServerPresentationOneShot),
+    /// Ability request lifecycle only (protocol v15). Not a hit or Health write.
+    Ability(ServerAbility),
 }
 
 /// Server datagram (pong only in Phase 5.0).
@@ -326,6 +360,35 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             out.extend_from_slice(&req.channel.to_le_bytes());
             Ok(out)
         }
+        ClientControl::Equip(req) => {
+            if !slot_valid(req.slot) || req.seq == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            let mut out = Vec::with_capacity(1 + 13);
+            out.push(TAG_EQUIP);
+            out.extend_from_slice(&req.seq.to_le_bytes());
+            out.push(req.slot);
+            out.extend_from_slice(&req.content_id.token().to_le_bytes());
+            Ok(out)
+        }
+        ClientControl::Unequip(req) => {
+            if !slot_valid(req.slot) || req.seq == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            let mut out = Vec::with_capacity(1 + 5);
+            out.push(TAG_UNEQUIP);
+            out.extend_from_slice(&req.seq.to_le_bytes());
+            out.push(req.slot);
+            Ok(out)
+        }
+        ClientControl::DevPresentationOneShot(req) => {
+            if !DevPresentationOneShot::kind_valid(req.kind) {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(encode_dev_presentation_oneshot(req))
+        }
+        ClientControl::DevResetPlayer => Ok(vec![TAG_DEV_RESET_PLAYER]),
+        ClientControl::AbilityActivate(req) => encode_ability_activate(*req),
     }
 }
 
@@ -397,6 +460,56 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
             expect_empty(rest)?;
             Ok(ClientControl::DevSetChannel(DevSetChannel { channel }))
         }
+        TAG_EQUIP => {
+            let (seq, rest) = read_u32(rest)?;
+            if rest.len() != 9 {
+                return Err(if rest.len() < 9 {
+                    CodecError::Truncated
+                } else {
+                    CodecError::InvalidValue
+                });
+            }
+            let slot = rest[0];
+            if !slot_valid(slot) || seq == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            let token =
+                u64::from_le_bytes(rest[1..9].try_into().map_err(|_| CodecError::Truncated)?);
+            Ok(ClientControl::Equip(EquipRequest {
+                seq,
+                slot,
+                content_id: purgatory_common::ContentId::from_token(token),
+            }))
+        }
+        TAG_UNEQUIP => {
+            let (seq, rest) = read_u32(rest)?;
+            if rest.len() != 1 {
+                return Err(if rest.is_empty() {
+                    CodecError::Truncated
+                } else {
+                    CodecError::InvalidValue
+                });
+            }
+            let slot = rest[0];
+            if !slot_valid(slot) || seq == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(ClientControl::Unequip(UnequipRequest { seq, slot }))
+        }
+        TAG_DEV_PRESENTATION_ONESHOT => {
+            let req = decode_dev_presentation_oneshot(rest)?;
+            if !DevPresentationOneShot::kind_valid(req.kind) {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(ClientControl::DevPresentationOneShot(req))
+        }
+        TAG_DEV_RESET_PLAYER => {
+            expect_empty(rest)?;
+            Ok(ClientControl::DevResetPlayer)
+        }
+        TAG_ABILITY_ACTIVATE => Ok(ClientControl::AbilityActivate(decode_ability_activate(
+            rest,
+        )?)),
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
 }
@@ -420,6 +533,9 @@ pub fn encode_server_control(msg: &ServerControl) -> Result<Vec<u8>, CodecError>
             Ok(out)
         }
         ServerControl::Interact(event) => encode_server_interact(event),
+        ServerControl::Equipment(event) => encode_server_equipment(event),
+        ServerControl::PresentationOneShot(event) => Ok(encode_server_presentation_oneshot(event)),
+        ServerControl::Ability(event) => encode_server_ability(event),
     }
 }
 
@@ -453,6 +569,15 @@ pub fn decode_server_control(bytes: &[u8]) -> Result<ServerControl, CodecError> 
         | TAG_INTERACT_REJECTED
         | TAG_INTERACT_UPDATED
         | TAG_INTERACT_CLOSED => Ok(ServerControl::Interact(decode_server_interact(tag, rest)?)),
+        TAG_EQUIPMENT_ACCEPTED | TAG_EQUIPMENT_REJECTED => Ok(ServerControl::Equipment(
+            decode_server_equipment(tag, rest)?,
+        )),
+        TAG_SERVER_PRESENTATION_ONESHOT => Ok(ServerControl::PresentationOneShot(
+            decode_server_presentation_oneshot(rest)?,
+        )),
+        TAG_ABILITY_ACCEPTED | TAG_ABILITY_REJECTED => {
+            Ok(ServerControl::Ability(decode_server_ability(tag, rest)?))
+        }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
 }
@@ -584,6 +709,135 @@ fn decode_server_interact(tag: u8, rest: &[u8]) -> Result<ServerInteract, CodecE
                 .ok_or(CodecError::InvalidValue)?;
             expect_empty(&rest[1..])?;
             Ok(ServerInteract::Closed { session_id, reason })
+        }
+        other => Err(CodecError::UnknownDiscriminant(other)),
+    }
+}
+
+fn encode_server_equipment(event: &ServerEquipment) -> Result<Vec<u8>, CodecError> {
+    match *event {
+        ServerEquipment::Accepted { seq } => {
+            let mut out = Vec::with_capacity(1 + 4);
+            out.push(TAG_EQUIPMENT_ACCEPTED);
+            out.extend_from_slice(&seq.to_le_bytes());
+            Ok(out)
+        }
+        ServerEquipment::Rejected { seq, reason } => {
+            let mut out = Vec::with_capacity(1 + 4 + 1);
+            out.push(TAG_EQUIPMENT_REJECTED);
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.push(reason.as_u8());
+            Ok(out)
+        }
+    }
+}
+
+fn decode_server_equipment(tag: u8, rest: &[u8]) -> Result<ServerEquipment, CodecError> {
+    match tag {
+        TAG_EQUIPMENT_ACCEPTED => {
+            let (seq, rest) = read_u32(rest)?;
+            expect_empty(rest)?;
+            Ok(ServerEquipment::Accepted { seq })
+        }
+        TAG_EQUIPMENT_REJECTED => {
+            let (seq, rest) = read_u32(rest)?;
+            if rest.is_empty() {
+                return Err(CodecError::Truncated);
+            }
+            let reason = EquipmentRejectReason::from_u8(rest[0]).ok_or(CodecError::InvalidValue)?;
+            expect_empty(&rest[1..])?;
+            Ok(ServerEquipment::Rejected { seq, reason })
+        }
+        other => Err(CodecError::UnknownDiscriminant(other)),
+    }
+}
+
+fn encode_ability_activate(req: AbilityActivateRequest) -> Result<Vec<u8>, CodecError> {
+    if req.seq == 0 {
+        return Err(CodecError::InvalidValue);
+    }
+    let cap = if req.selected.is_some() {
+        1 + ABILITY_ACTIVATE_SELECTED_BYTES
+    } else {
+        1 + ABILITY_ACTIVATE_INDEPENDENT_BYTES
+    };
+    let mut out = Vec::with_capacity(cap);
+    out.push(TAG_ABILITY_ACTIVATE);
+    out.extend_from_slice(&req.seq.to_le_bytes());
+    out.extend_from_slice(&req.ability_id.token().to_le_bytes());
+    match req.selected {
+        None => out.push(0),
+        Some(id) => {
+            out.push(1);
+            write_wire_entity(&mut out, id);
+        }
+    }
+    Ok(out)
+}
+
+fn decode_ability_activate(rest: &[u8]) -> Result<AbilityActivateRequest, CodecError> {
+    let (seq, rest) = read_u32(rest)?;
+    if seq == 0 {
+        return Err(CodecError::InvalidValue);
+    }
+    let (token, rest) = read_u64(rest)?;
+    if rest.is_empty() {
+        return Err(CodecError::Truncated);
+    }
+    let flag = rest[0];
+    let rest = &rest[1..];
+    let selected = match flag {
+        0 => {
+            expect_empty(rest)?;
+            None
+        }
+        1 => {
+            let (id, rest) = read_wire_entity(rest)?;
+            expect_empty(rest)?;
+            Some(id)
+        }
+        _ => return Err(CodecError::InvalidValue),
+    };
+    Ok(AbilityActivateRequest {
+        seq,
+        ability_id: purgatory_common::ContentId::from_token(token),
+        selected,
+    })
+}
+
+fn encode_server_ability(event: &ServerAbility) -> Result<Vec<u8>, CodecError> {
+    match *event {
+        ServerAbility::Accepted { seq } => {
+            let mut out = Vec::with_capacity(1 + 4);
+            out.push(TAG_ABILITY_ACCEPTED);
+            out.extend_from_slice(&seq.to_le_bytes());
+            Ok(out)
+        }
+        ServerAbility::Rejected { seq, reason } => {
+            let mut out = Vec::with_capacity(1 + 5);
+            out.push(TAG_ABILITY_REJECTED);
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.push(reason.as_u8());
+            Ok(out)
+        }
+    }
+}
+
+fn decode_server_ability(tag: u8, rest: &[u8]) -> Result<ServerAbility, CodecError> {
+    match tag {
+        TAG_ABILITY_ACCEPTED => {
+            let (seq, rest) = read_u32(rest)?;
+            expect_empty(rest)?;
+            Ok(ServerAbility::Accepted { seq })
+        }
+        TAG_ABILITY_REJECTED => {
+            let (seq, rest) = read_u32(rest)?;
+            if rest.is_empty() {
+                return Err(CodecError::Truncated);
+            }
+            let reason = AbilityCommandReject::from_u8(rest[0]).ok_or(CodecError::InvalidValue)?;
+            expect_empty(&rest[1..])?;
+            Ok(ServerAbility::Rejected { seq, reason })
         }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
@@ -922,6 +1176,16 @@ mod tests {
     }
 
     #[test]
+    fn dev_reset_player_roundtrip() {
+        let encoded = encode_client_control(&ClientControl::DevResetPlayer).unwrap();
+        assert_eq!(encoded, [TAG_DEV_RESET_PLAYER]);
+        assert_eq!(
+            decode_client_control(&encoded).unwrap(),
+            ClientControl::DevResetPlayer
+        );
+    }
+
+    #[test]
     fn interact_rejected_server_roundtrip() {
         let msg = ServerControl::Interact(ServerInteract::Rejected {
             target: WireEntityId {
@@ -1134,6 +1398,98 @@ mod tests {
         assert_eq!(
             decode_client_control(&encoded[..encoded.len() - 1]),
             Err(CodecError::Truncated)
+        );
+    }
+
+    #[test]
+    fn equipment_request_and_result_roundtrip_and_sizes() {
+        let equip = ClientControl::Equip(EquipRequest {
+            seq: 1,
+            slot: 5,
+            content_id: purgatory_common::ContentId::from_token(42),
+        });
+        let encoded = encode_client_control(&equip).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::EQUIP_REQUEST_BYTES);
+        assert_eq!(decode_client_control(&encoded).unwrap(), equip);
+
+        let unequip = ClientControl::Unequip(UnequipRequest { seq: 2, slot: 5 });
+        let encoded = encode_client_control(&unequip).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::UNEQUIP_REQUEST_BYTES);
+        assert_eq!(decode_client_control(&encoded).unwrap(), unequip);
+
+        let accepted = ServerControl::Equipment(ServerEquipment::Accepted { seq: 1 });
+        let encoded = encode_server_control(&accepted).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::EQUIPMENT_ACCEPTED_BYTES);
+        assert_eq!(decode_server_control(&encoded).unwrap(), accepted);
+
+        let rejected = ServerControl::Equipment(ServerEquipment::Rejected {
+            seq: 3,
+            reason: EquipmentRejectReason::SlotMismatch,
+        });
+        let encoded = encode_server_control(&rejected).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::EQUIPMENT_REJECTED_BYTES);
+        assert_eq!(decode_server_control(&encoded).unwrap(), rejected);
+    }
+
+    #[test]
+    fn ability_activate_roundtrip_and_sizes() {
+        let independent = ClientControl::AbilityActivate(AbilityActivateRequest {
+            seq: 1,
+            ability_id: purgatory_common::ContentId::from_token(9),
+            selected: None,
+        });
+        let encoded = encode_client_control(&independent).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::ABILITY_ACTIVATE_INDEPENDENT_BYTES);
+        assert_eq!(decode_client_control(&encoded).unwrap(), independent);
+
+        let selected = ClientControl::AbilityActivate(AbilityActivateRequest {
+            seq: 2,
+            ability_id: purgatory_common::ContentId::from_token(9),
+            selected: Some(WireEntityId {
+                index: 4,
+                generation: 1,
+            }),
+        });
+        let encoded = encode_client_control(&selected).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::ABILITY_ACTIVATE_SELECTED_BYTES);
+        assert_eq!(decode_client_control(&encoded).unwrap(), selected);
+
+        let accepted = ServerControl::Ability(ServerAbility::Accepted { seq: 1 });
+        let encoded = encode_server_control(&accepted).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::ABILITY_ACCEPTED_BYTES);
+        assert_eq!(decode_server_control(&encoded).unwrap(), accepted);
+
+        let rejected = ServerControl::Ability(ServerAbility::Rejected {
+            seq: 3,
+            reason: AbilityCommandReject::NotGranted,
+        });
+        let encoded = encode_server_control(&rejected).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::ABILITY_REJECTED_BYTES);
+        assert_eq!(decode_server_control(&encoded).unwrap(), rejected);
+
+        assert!(
+            encode_client_control(&ClientControl::AbilityActivate(AbilityActivateRequest {
+                seq: 0,
+                ability_id: purgatory_common::ContentId::from_token(1),
+                selected: None,
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn equipment_seq_zero_and_bad_slot_rejected() {
+        assert!(
+            encode_client_control(&ClientControl::Equip(EquipRequest {
+                seq: 0,
+                slot: 5,
+                content_id: purgatory_common::ContentId::from_token(1),
+            }))
+            .is_err()
+        );
+        assert!(
+            encode_client_control(&ClientControl::Unequip(UnequipRequest { seq: 1, slot: 6 }))
+                .is_err()
         );
     }
 }

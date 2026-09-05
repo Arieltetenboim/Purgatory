@@ -8,10 +8,12 @@ pub const METRICS_PORT: u16 = 5002;
 
 pub const SERVER_PACKAGE: &str = "purgatory-server";
 pub const CLIENT_PACKAGE: &str = "purgatory-client";
+pub const ANIMATION_LAB_PACKAGE: &str = "purgatory-animation-lab";
 pub const LOAD_PACKAGE: &str = "purgatory-bot-client";
 pub const LOAD_BIN: &str = "purgatory-load";
 pub const SERVER_STEM: &str = "purgatory-server";
 pub const CLIENT_STEM: &str = "purgatory-client";
+pub const ANIMATION_LAB_STEM: &str = "purgatory-animation-lab";
 pub const LOAD_STEM: &str = "purgatory-load";
 pub const LOAD_ADMISSION_CAP: u16 = 256;
 

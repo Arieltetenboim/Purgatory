@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::config::{CLIENT_STEM, LOAD_STEM, SERVER_STEM};
+use crate::config::{ANIMATION_LAB_STEM, CLIENT_STEM, LOAD_STEM, SERVER_STEM};
 use crate::settings::BuildProfile;
 
 #[derive(Clone, Debug)]
@@ -67,6 +67,10 @@ impl WorkspacePaths {
         self.profile_dir().join(exe_name(CLIENT_STEM))
     }
 
+    pub fn animation_lab_exe(&self) -> PathBuf {
+        self.profile_dir().join(exe_name(ANIMATION_LAB_STEM))
+    }
+
     pub fn load_exe(&self) -> PathBuf {
         self.profile_dir().join(exe_name(LOAD_STEM))
     }
@@ -77,6 +81,10 @@ impl WorkspacePaths {
 
     pub fn check_script(&self) -> PathBuf {
         self.root.join("scripts").join("check.ps1")
+    }
+
+    pub fn phase78_gate_script(&self) -> PathBuf {
+        self.root.join("scripts").join("phase_78_gate.ps1")
     }
 }
 

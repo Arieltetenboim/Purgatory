@@ -12,11 +12,13 @@
 mod abuse;
 mod cert;
 mod config;
+mod connection_lifecycle;
 mod endpoint;
 mod gameplay;
 mod handshake;
 mod load_pressure;
 mod metrics_export;
+mod network_pressure;
 mod persist;
 mod replication;
 mod replication_fanout;
@@ -38,7 +40,7 @@ use tokio::sync::Semaphore;
 use purgatory_simulation::{SimulationClock, TICK_DURATION};
 
 use metrics_export::{MetricsExportCtx, TickSampleRing, spawn_metrics_export};
-use tick_domains::{TickDomainAccounting, TickDomainSample};
+use tick_domains::TickDomainAccounting;
 
 pub(crate) struct IncomingDispatch {
     pub sessions: Arc<Mutex<session::SessionTable>>,
@@ -49,29 +51,24 @@ pub(crate) struct IncomingDispatch {
     pub stats: Arc<stats::ServerNetStats>,
     pub gameplay: Option<gameplay::GameplayTx>,
     pub persist: Option<persist::PersistenceHandle>,
+    pub lifecycle: Arc<connection_lifecycle::ConnectionLifecycleBook>,
+    pub pressure: Arc<network_pressure::NetworkPressureBook>,
 }
 
 pub(crate) fn dispatch_incoming(incoming: quinn::Incoming, ctx: IncomingDispatch) {
-    let Ok(permit) = ctx.limiter.try_acquire_owned() else {
+    let limiter = ctx.limiter.clone();
+    let inflight = ctx.inflight.clone();
+    let Ok(permit) = limiter.try_acquire_owned() else {
         ctx.stats.admission_refused.fetch_add(1, Ordering::Relaxed);
         incoming.refuse();
         return;
     };
-    let prev = ctx.inflight.fetch_add(1, Ordering::Relaxed);
+    let prev = inflight.fetch_add(1, Ordering::Relaxed);
     let current = prev.saturating_add(1);
     ctx.stats.max_inflight.fetch_max(current, Ordering::Relaxed);
     tokio::spawn(async move {
-        handshake::handle_incoming(
-            incoming,
-            ctx.sessions,
-            ctx.ids,
-            ctx.abuse,
-            ctx.stats,
-            ctx.gameplay,
-            ctx.persist,
-        )
-        .await;
-        ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+        handshake::handle_incoming(incoming, ctx).await;
+        inflight.fetch_sub(1, Ordering::Relaxed);
         drop(permit);
     });
 }
@@ -109,6 +106,9 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     let persist = persist::PersistenceHandle::spawn(&data_dir)?;
     let mut owner = gameplay::GameplayOwner::new();
     owner.set_persist(persist.clone());
+    let pressure = Arc::new(network_pressure::NetworkPressureBook::new());
+    let lifecycle = Arc::new(connection_lifecycle::ConnectionLifecycleBook::new());
+    owner.set_pressure(pressure.clone());
     let input_cap = config.input_cap;
 
     spawn_metrics_export(
@@ -125,6 +125,12 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut samples = TickSampleRing::new(120);
     let mut domains = TickDomainAccounting::new();
+    domains.attach_live_sources(
+        bound.stats.clone(),
+        pressure.clone(),
+        lifecycle.clone(),
+        bound.sessions.clone(),
+    );
     if let Some(dir) = domains.artifact_dir() {
         println!("PURGATORY capacity artifacts dir={}", dir.display());
     }
@@ -148,6 +154,8 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                         stats: bound.stats.clone(),
                         gameplay: Some(gameplay_tx.clone()),
                         persist: Some(persist.clone()),
+                        lifecycle: lifecycle.clone(),
+                        pressure: pressure.clone(),
                     },
                 );
             }
@@ -176,7 +184,7 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                 let dt = TICK_DURATION.as_secs_f32();
                 for _ in 0..update.ticks_executed {
                     let tick_start = Instant::now();
-                    let domain = owner.simulate_tick(dt);
+                    let mut domain = owner.simulate_tick(dt);
                     let work = tick_start.elapsed();
                     bound.stats.tick_count.fetch_add(1, Ordering::Relaxed);
                     if work > TICK_DURATION {
@@ -187,12 +195,14 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                         owner.set_tick_overrun_hint(false);
                     }
                     samples.push(work, lateness);
-                    domains.push(TickDomainSample {
-                        total: work,
-                        ..domain
-                    });
+                    domain.total = work;
+                    domain.finalize(purgatory_common::capacity_detail_enabled());
+                    domains.push(domain);
                     domains.note_interest_locality(owner.world_interest_locality());
                     domains.note_replication_fanout(owner.replication_fanout_snapshot());
+                    domains.note_gameplay_workload(gameplay_workload_from_runtime(
+                        owner.runtime_stats(),
+                    ));
                     // Drain between ticks so long snapshot work does not starve
                     // awaiting producers on the input handoff.
                     owner.drain(&mut life_rx, &mut input_rx);
@@ -236,6 +246,30 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn gameplay_workload_from_runtime(
+    rt: purgatory_simulation::RuntimeStats,
+) -> purgatory_common::GameplayWorkloadSnapshot {
+    purgatory_common::GameplayWorkloadSnapshot {
+        schema: purgatory_common::GameplayWorkloadSnapshot::SCHEMA,
+        wall_secs: 0.0,
+        npcs_active: rt.npcs_active,
+        npc_updates_total: rt.npc_updates_total,
+        actions_attempted_total: rt.actions_attempted_total,
+        actions_started_total: rt.actions_started_total,
+        actions_completed_total: rt.actions_completed_total,
+        actions_rejected_total: rt.actions_rejected_total,
+        health_mutations_total: rt.health_mutations_total,
+        deaths_total: rt.deaths_total,
+        respawns_total: rt.respawns_total,
+        pulse_ticks_total: rt.pulse_ticks_total,
+        effects_active: rt.effects_active,
+        effects_applied_total: rt.effects_applied_total,
+        effects_expired_total: rt.effects_expired_total,
+        actions_active: rt.actions_active,
+        scheduler_queued: rt.scheduler_queued,
+    }
 }
 
 fn mirror_owner_stats(stats: &stats::ServerNetStats, owner: &gameplay::GameplayOwner) {

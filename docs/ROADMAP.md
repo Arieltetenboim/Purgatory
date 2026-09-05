@@ -44,7 +44,24 @@ Phases execute in order. A later phase starts only after the current gate is gre
 | 6G.7B | Dirty-driven replication fan-out foundation | **recorded 2026-09-01** — scanned/update ≈1.3; idle scanned=0; accepted/closed for fan-out scope |
 | 6G.7C | Relationship / density / budget policy foundation | **recorded 2026-09-01** — selective ≈3× fewer hotspot updates; **accepted; closes 6G architecture** |
 | 6G.4 | Performance regression gate | deferred follow-up — budgets from measured results (not required to reopen 6G) |
-| 7 | Gameplay vocabulary (attributes, actions, runtime actor) | **planned, not started** — unblocked by 6G GREEN; do not begin until instructed. Plan: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) |
+| 7 | Capacity, parallelism & production scaling | **7.closeout complete — Phase 7 + closeout**. Plan: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md); audit: [`PHASE_7_WEAK_CLIENT_AUTHORITY_AUDIT.md`](PHASE_7_WEAK_CLIENT_AUTHORITY_AUDIT.md) |
+| 8A | Equipment data model | **complete** — authoritative slots + dirty mask; no UI, no skeleton, no protocol bump. Report: [`PHASE_8A_REPORT.md`](PHASE_8A_REPORT.md) |
+| 8B | Equipment content schema + validation | **complete**. Report: [`PHASE_8B_REPORT.md`](PHASE_8B_REPORT.md) |
+| 8C | Authoritative equip / unequip flow | **complete**. Protocol **v12**. Report: [`PHASE_8C_REPORT.md`](PHASE_8C_REPORT.md) |
+| 8D | Character presentation bridge | **complete**. Protocol **v12** unchanged. Report: [`PHASE_8D_REPORT.md`](PHASE_8D_REPORT.md) |
+| 8E | Equipment attachment composition + debug placeholders | **complete**. Protocol **v12** unchanged. Report: [`PHASE_8E_REPORT.md`](PHASE_8E_REPORT.md) |
+| 8F-A | Character presentation draw-order contract | **complete**. Protocol **v13** unchanged. Report: [`PHASE_8F_A_REPORT.md`](PHASE_8F_A_REPORT.md) |
+| 8F-B | Front/Back visibility | **complete**. Protocol **v13** unchanged. Report: [`PHASE_8F_B_REPORT.md`](PHASE_8F_B_REPORT.md) |
+| 8F-C | Activity → PresentationView | **complete**. Protocol **v13** unchanged. Report: [`PHASE_8F_C_REPORT.md`](PHASE_8F_C_REPORT.md) |
+| 8F-D | ClimbBack animation clip wiring | **complete**. Protocol **v13** unchanged. Report: [`PHASE_8F_D_REPORT.md`](PHASE_8F_D_REPORT.md) |
+| 8F-E | Equipment Side/Back visual selection | **complete**. Protocol **v13** unchanged. Report: [`PHASE_8F_E_REPORT.md`](PHASE_8F_E_REPORT.md) |
+| 8F-F | 8F closeout / audit | **complete**. Root `PHASE` was `8F`. Protocol **v14** unchanged. Report: [`PHASE_8F_F_REPORT.md`](PHASE_8F_F_REPORT.md) |
+| 8.closeout | Phase 8 closeout | **complete**. Root `PHASE` was `8.closeout`. Protocol **v14** unchanged. Report: [`PHASE_8_CLOSEOUT_REPORT.md`](PHASE_8_CLOSEOUT_REPORT.md). |
+| 9A | Ability foundation contracts | **complete**. Protocol **v14** unchanged. Report: [`PHASE_9A_REPORT.md`](PHASE_9A_REPORT.md). |
+| 9B | Basic Attack executable path | **complete**. Protocol **v14** unchanged. Report: [`PHASE_9B_REPORT.md`](PHASE_9B_REPORT.md). |
+| 9C | Ability command path | **complete**. Protocol **v15**. Report: [`PHASE_9C_REPORT.md`](PHASE_9C_REPORT.md). |
+| 9D | Ability → Character Presentation | **complete**. Protocol **v15** unchanged. Report: [`PHASE_9D_REPORT.md`](PHASE_9D_REPORT.md). |
+| 9E | Minimal Creature Combat Driver | **complete**. Root `PHASE` = `9E`. Protocol **v15** unchanged. Report: [`PHASE_9E_REPORT.md`](PHASE_9E_REPORT.md). |
 | 8 | Content foundation | legacy numbering (superseded) |
 | 9 | Combat core | legacy numbering (superseded) |
 | 10 | Loot, inventory, and progression | legacy numbering (superseded) |
@@ -56,7 +73,7 @@ Phases execute in order. A later phase starts only after the current gate is gre
 | 16 | Content authoring quality | legacy numbering (superseded) |
 | 17 | Hardening | legacy numbering (superseded) |
 
-Legacy roadmap numbering is **superseded by the post-6G roadmap**. Historical completed work is unchanged: client reconciliation (legacy table Phase 7 / master-plan §14) shipped as Phase 5.5; maps/content, character persistence, AOI/interest, and scale harness shipped inside Phase 6 / 5.7 without consuming legacy rows 8–13. Rows 8–17 remain historical product direction from the master execution plan; they are **not** the next implementation order. **Phase 6G is GREEN** (architecture closed; production replication-policy tuning deferred). Post-6G Phase 7 is defined in [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) and is **not started** until explicitly instructed.
+Legacy roadmap numbering is **superseded by the post-6G roadmap**. Historical completed work is unchanged: client reconciliation (legacy table Phase 7 / master-plan §14) shipped as Phase 5.5; maps/content, character persistence, AOI/interest, and scale harness shipped inside Phase 6 / 5.7 without consuming legacy rows 8–13. Rows 8–17 remain historical product direction from the master execution plan; they are **not** the next implementation order. **Phase 6 is closed** (6G GREEN — architecture closed; production replication-policy **tuning** deferred to Phase 7.4, not an architecture reopen). Post-6G Phase 7 is **capacity, parallelism & production scaling** ([`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md)), **not** a second AOI/replication-architecture phase and **not** the superseded gameplay-vocabulary draft. **7.1–7.8 complete** ([`PHASE_78_REPORT.md`](PHASE_78_REPORT.md); ADR-0056). **Phase 7 closeout complete** ([`PHASE_7_WEAK_CLIENT_AUTHORITY_AUDIT.md`](PHASE_7_WEAK_CLIENT_AUTHORITY_AUDIT.md); Hub Phase 7 Stats). **Post-7 Phase 8 is Character Presentation + Equipment Runtime**, distinct from legacy table row 8. **8A** is the equipment data model. **8B** is the equipment content schema. **8C** is authoritative equip/unequip + replication. **8D** is the client character presentation bridge. **8E** is attachment composition + debug placeholders. **8F-A** is the Character Presentation draw-order contract. **8F-B** is Front/Back visibility. **8F-C** is activity → PresentationView. **8F-D** is ClimbBack → `climb_back.anim`. **8F-E** is equipment Side/Back visual keys. **8F-F** is the 8F closeout/audit. **8F is complete + closed.** **Phase 8 closeout complete** ([`PHASE_8_CLOSEOUT_REPORT.md`](PHASE_8_CLOSEOUT_REPORT.md)). **Phase 9A complete** ([`PHASE_9A_REPORT.md`](PHASE_9A_REPORT.md)). **Phase 9B complete** ([`PHASE_9B_REPORT.md`](PHASE_9B_REPORT.md)). **Phase 9C complete** ([`PHASE_9C_REPORT.md`](PHASE_9C_REPORT.md)). **Phase 9D complete** ([`PHASE_9D_REPORT.md`](PHASE_9D_REPORT.md)). Do not begin **9E** until instructed.
 
 ## Phase 0 notes
 
@@ -289,10 +306,10 @@ Legacy roadmap numbering is **superseded by the post-6G roadmap**. Historical co
 
 ## Phase 6G notes
 
-- Final Phase 6 hardening / integrated validation. Protocol **v10**. Metrics schema **4** (execution totals). Synthetic pressure is `PURGATORY_LOAD_VALIDATION` JSON, applied only in load-mode. MixedRuntime is the canonical workload (persistent real clients + churn + in-zone portal + AOI over `--duration`). Soak duration is configurable; ~30 min Mixed is initial evidence, not a magic threshold.
+- Final Phase 6 hardening / integrated validation. Protocol **v10**. Adopted live `PURGSTAT` contract is **schema 3** (schema 4 execution totals were inventoried/deferred). Synthetic pressure is `PURGATORY_LOAD_VALIDATION` JSON, applied only in load-mode. MixedRuntime is the canonical workload (persistent real clients + churn + in-zone portal + AOI over `--duration`). Soak duration is configurable; ~30 min Mixed is initial evidence, not a magic threshold.
 - AOI interest is a server-derived visible-view envelope (FOOTNOTE viewport + Dead Zone + camera clamp) plus 2 wu prefetch and 2 wu leave hysteresis, not a player-centered `[16, 9]` radius. Client camera coordinates are not trusted.
 - Welcome does not expose `CharacterId`. Queue inventory before new caps: [`docs/PHASE_6G_QUEUE_INVENTORY.md`](PHASE_6G_QUEUE_INVENTORY.md).
-- Report: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md). Exit review: [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md). **6G = GREEN — architecture closed, production policy tuning deferred.** Next: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) (gameplay vocabulary). **Not started** until instructed.
+- Report: [`docs/PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md). Exit review: [`docs/PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md). **6G = GREEN — architecture closed, production policy tuning deferred.** Next: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md) (capacity / production scaling; starts at 7.1 instrumentation). **Not started** until instructed.
 - **6G endpoint reinterpretation (ADR-0053):** 6G.1 correctness → **6G.2** capacity characterization → 6G.3–6G.7C remediation/foundation → GREEN. Freeze doc: [`docs/MMO_RUNTIME_BASELINE.md`](MMO_RUNTIME_BASELINE.md).
 - Local-player standing jitter and floor-clip/landing are **closed** (presentation path + owner confirmation). Duration overlay (`timeout >= duration`) is closed in CLI.
 - The previously observed ~128-client load stall was **investigated with 6G.2 timings** and **not reproduced** as a server-domain hang/blow-up on this machine (see [`PHASE_6G2_REPORT.md`](PHASE_6G2_REPORT.md)). `PREDICTION_PENDING_CAP` stays 128.
@@ -307,10 +324,136 @@ Legacy roadmap numbering is **superseded by the post-6G roadmap**. Historical co
 
 ## Phase 7 notes
 
-- Status: **planned, not started.** Unblocked by 6G GREEN; do not begin until explicitly instructed.
-- Purpose: content-driven attributes/resources/modifiers and executable actions, proven by a server runtime actor, then actor replication/presentation, then a player-issued authored action request. Combat, inventory, production UI, and mouse/pointer foundation are out of scope.
-- Sub-stages: 7A attributes/resources/modifiers → 7B action execution → 7C runtime actor foundation → 7D actor replication/presentation → 7E player action request. Canonical text: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md).
+- Status: **7.closeout complete — Phase 7 complete + closeout**. Root `PHASE` was `7.closeout`. Phase 6 is closed. **7.1–7.8 complete** ([`PHASE_78_REPORT.md`](PHASE_78_REPORT.md); ADR-0056). Closeout: Hub Phase 7 Stats + weak-client authority audit ([`PHASE_7_WEAK_CLIENT_AUTHORITY_AUDIT.md`](PHASE_7_WEAK_CLIENT_AUTHORITY_AUDIT.md)). Next: post-7 Phase 8 (Character Presentation + Equipment Runtime).
+- Purpose: evidence-backed single-process capacity — measure ownership, introduce a small representative gameplay workload, isolate bottlenecks, then optimize or redesign only when justified. Canonical text: [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md).
+- Sub-stages: 7.1–7.6 complete → 7.7 remain single-process → **7.8 production performance gate** (`scripts/phase_78_gate.ps1`; verdict YELLOW).
+- Starts from measurement. 128-client degradation is **not** an established server bottleneck; 6G.7B/C showed cheap replication at 128 and healthy server-side 256 under the validated workload. Higher-load timeouts are unattributed (simulation/tick vs server transport vs harness/client).
+- A previous 7A–7E gameplay-vocabulary outline is **superseded** and deferred after Phase 7. Do not treat Phase 7 as “implement AOI/replication scaling” — that closed in 6G.7A–C.
 - Legacy “Phase 7 = client reconciliation” remains historically true as Phase 5.5; that numbering is superseded for work after 6G.
+
+## Phase 8A notes
+
+- Authoritative optional `EquipmentState` on World entity slots: six fixed slots (`Headwear`…`Weapon`) of `Option<ContentId>`. All-`None` is valid. No sentinel ContentId.
+- Slot-level dirty is a `u8` mask on the existing equipment domain (`DirtyFlags` / `DomainRevs` / `ReplicationDirtyMask`). Transform/health domains are unchanged. Protocol **v11** is unchanged: equipment is not on the wire.
+- Full vs delta codec lives in simulation for size measurement only. Equip request, presentation, skeleton, ART, inventory, and combat are out of scope.
+- Report: [`docs/PHASE_8A_REPORT.md`](PHASE_8A_REPORT.md). **8B** follows (content schema).
+
+## Phase 8B notes
+
+- Equipment Content Schema v1 in `purgatory-content`: gameplay `{ schema_version, id, equipment_slot }` plus client presentation `{ id, attachments[] }` sharing `ContentId`.
+- Presentation vocabulary: `BoneTarget`, `AnchorPoint`, `CoverageMode`, `ViewVariant` (Side required, Back optional). Not on the wire. Protocol **v11** unchanged.
+- Report: [`docs/PHASE_8B_REPORT.md`](PHASE_8B_REPORT.md). **8C** follows (authoritative equip/unequip).
+
+## Phase 8C notes
+
+- Protocol **v12**: Equip/Unequip requests, Accepted/Rejected lifecycle, equipment domain on Enter/Update.
+- Server authorizes from gameplay `EquipmentDefinition` only. Last unequip keeps `Some(empty)`. Observer `CommittedRevs` tracks equipment.
+- Report: [`docs/PHASE_8C_REPORT.md`](PHASE_8C_REPORT.md). **8D** follows (character presentation bridge).
+
+## Phase 8D notes
+
+- Client `CharacterPresentationState` + shared `SkeletonInput` path for local predicted and remote interpolated players.
+- `BoneTarget` → Humanoid v0 `BoneIndex` bound once per presentation set. Equipment is carried, not resolved.
+- Report: [`docs/PHASE_8D_REPORT.md`](PHASE_8D_REPORT.md). **8E** follows (attachment composition).
+
+## Phase 8E notes
+
+- Client resolves equipped ContentIds to `BoundAttachment[]` on equipment change only. Compose is `bone world ∘ anchor local ∘ correction`.
+- Anchors are Humanoid v0 rig constants (`ANCHOR_CROWN` / `CHEST` / `GRIP` / `FOOT`). Debug shapes follow attachment semantics, not visual-key substrings.
+- Placeholders for every visible player come from `CharacterPresentationSet`, not the S2 local-only overlay.
+- Report: [`docs/PHASE_8E_REPORT.md`](PHASE_8E_REPORT.md).
+
+## Phase 8F-A notes
+
+- Character Presentation owns draw order: `ArmBack → LegBack → Core → LegFront → Head → ArmFront`.
+- Attachments emit after their semantic bone layer. Content has no unrestricted z.
+- Report: [`docs/PHASE_8F_A_REPORT.md`](PHASE_8F_A_REPORT.md).
+
+## Phase 8F-B notes
+
+- `PresentationView::Side` shows every authored layer; paint slot equals authored layer.
+- `PresentationView::Back` hides authored `ArmFront` / `LegFront` (and their attachments). Remaining `ArmBack` / `LegBack` occupy the near Front paint slots.
+- Attachments inherit bone-layer visibility. `hidden_base` still omits only matching base pieces.
+- Same `plan_character_draw` path for local and remote. Overlay "Force Back view" is draw-time proof only.
+- Report: [`docs/PHASE_8F_B_REPORT.md`](PHASE_8F_B_REPORT.md).
+
+## Phase 8F-C notes
+
+- `view_for_activity`: Idle/Move/Jump/Fall/Attack/Hurt → `Side`; `ClimbBack` → `Back`.
+- ClimbBack is presentation activity, not inferred from velocity and not a wire oneshot.
+- Overlay "Force ClimbBack activity" injects that activity on the shared local/remote path. "Force Back view" remains draw-only and does not change activity.
+- Report: [`docs/PHASE_8F_C_REPORT.md`](PHASE_8F_C_REPORT.md). ClimbBack clip wiring is 8F-D.
+
+## Phase 8F-D notes
+
+- `ClimbBack` samples authored `content/shared/animations/dev/climb_back.anim` through the existing A6 path (`include_str!` → `parse_animation_asset_v1` → `climb_back_clip()` → `clip_for_playback_activity`).
+- Other activities keep their existing clips. Local and remote share the same activity → clip → `LocalPose` path.
+- Missing file fails compile (`include_str!`). Invalid parse uses bind/no-animation (`bind_rotation_noop_clip`), not silent Idle.
+- `ClimbBack` → `PresentationView::Back`, 8F-A order, 8F-B visibility, attachments, and `hidden_base` are unchanged.
+- Report: [`docs/PHASE_8F_D_REPORT.md`](PHASE_8F_D_REPORT.md). Equipment Side/Back visual keys are 8F-E.
+
+## Phase 8F-E notes
+
+- `PresentationView` selects `visuals.side` or `visuals.back` in Character Presentation. Not `ClimbBack` and not gameplay state.
+- Resolve still caches both keys on equipment change. Plan/draw select per view. Anchors, `hidden_base`, bone layer, and compose transform are unchanged by the key switch.
+- Missing Back: omit that attachment from the Back plan (8B: no Side-as-Back). Side-only pack items stay valid.
+- Debug color hashes the selected key so Side vs Back is visible.
+- Report: [`docs/PHASE_8F_E_REPORT.md`](PHASE_8F_E_REPORT.md). Closeout: [`docs/PHASE_8F_F_REPORT.md`](PHASE_8F_F_REPORT.md).
+
+## Phase 8F-F notes
+
+- Audit-only closeout. No sprites/ART, gameplay climb, equipment UI, protocol state, or new presentation abstractions.
+- Canonical path: `activity → view_for_activity → clip_for_playback_activity → LocalPose → plan_character_draw → visual_key_for_view`.
+- One `PresentationLayer` table; no numeric z; `ClimbBack → Back → climb_back.anim`; local/remote share `CharacterPresentationSet`; missing Back omits the attachment.
+- Removed leftover identity `playback_activity()` remap. Per-entry `playback_activity` remains for transitions.
+- Report: [`docs/PHASE_8F_F_REPORT.md`](PHASE_8F_F_REPORT.md). **8F CLOSE.**
+
+## Phase 8 closeout notes
+
+- ClimbBack clip duration is authored (`climb_back.anim`); no duplicated Rust constant.
+- Final audit of the 8A–8F presentation path, render policy, and DEV-only controls: [`docs/PHASE_8_CLOSEOUT_REPORT.md`](PHASE_8_CLOSEOUT_REPORT.md).
+
+## Phase 9A notes
+
+- Ability lifecycle owner is the existing Action Runtime (Windup / Active / Recovery on `ActionTable`).
+- `AbilityDefinition` is the minimum content-driven shape. Instant `Damage` goes through `AbilityEffect`, not ability-specific Health writes.
+- Health remains optional; Alive/Dead is derived. Cooldown is a World table.
+- Protocol **v14** unchanged. Client will request ability id + optional selected entity, never damage.
+- Report: [`docs/PHASE_9A_REPORT.md`](PHASE_9A_REPORT.md). **9A CLOSE.**
+
+## Phase 9B notes
+
+- First authored ability `skill.basic.strike` (`AbilityDefinition` JSON). Activation is Independent; Active uses a forward AABB query.
+- Activation succeeds with zero nearby entities. Damage is `AbilityEffect` → `execute_ability_effect` → `apply_damage`.
+- 7.2 `Strike` remains workload-only. Protocol **v14** unchanged. No client command.
+- Report: [`docs/PHASE_9B_REPORT.md`](PHASE_9B_REPORT.md). **9B CLOSE.**
+
+## Phase 9C notes
+
+- Client `J` sends `AbilityActivate` intent only (ability id; Independent ⇒ no selected entity).
+- Server authorizes (ownership, pack, grant, activation shape) then delegates to `World::request_ability`.
+- Live players receive Health + `skill.basic.strike` grant. 7.2 Strike isolation: `nearest_health_target` skips players.
+- Protocol **v15**. Report: [`docs/PHASE_9C_REPORT.md`](PHASE_9C_REPORT.md). **9C CLOSE.**
+
+## Phase 9D notes
+
+- Ability execution → Attack oneshot (empty swings included). Authoritative non-lethal damage → Hurt. `Health <= 0` → persistent Dead.
+- Dead overrides Attack/Hurt in Character Presentation. Protocol **v15** unchanged (reuses v13 oneshot envelopes).
+- Report: [`docs/PHASE_9D_REPORT.md`](PHASE_9D_REPORT.md). **9D CLOSE.** Do not begin 9E.
+
+## Character animation track (A0–A7.1)
+
+- Presentation-only. Not a gameplay phase. Root `PHASE` is independent of this track (do not change it here). **8E is complete; do not modify/reopen/extend it.**
+- Docs: [`CHARACTER_ANIMATION_ARCHITECTURE.md`](CHARACTER_ANIMATION_ARCHITECTURE.md), [`CHARACTER_ANIMATION_ROADMAP.md`](CHARACTER_ANIMATION_ROADMAP.md). ADR-0058.
+- **A0–A6 complete.** **A7.0 complete.** **A7.1 complete:** copy/paste, multi-select, snapping, mirror preview, transition preview, `depth_angle` foreshortening on the shared animation runtime. Runtime still `include_str!`s `.anim` files; in-game observation needs a client rebuild.
+- Sequence: A7.2 Curves → Notify Runtime. Do **not** start A7.2 until instructed. Do **not** mark global A7 complete.
+
+## Diagnostics track (D0+)
+
+- Client debug/diagnostics split. Not a gameplay phase. Root `PHASE` is independent of this track (do not change it here). Not the Animation A-track.
+- Docs: [`DIAGNOSTICS_ARCHITECTURE.md`](DIAGNOSTICS_ARCHITECTURE.md), [`DIAGNOSTICS_ROADMAP.md`](DIAGNOSTICS_ROADMAP.md).
+- **D4 complete** (`dev-diagnostics` default; shipping `--no-default-features`, ADR-0060). Do **not** start D5 until instructed.
+- Sequence: D1 domain structs + command split → D2 compact Debug UI → D3 diagnostics page → D4 compile-time strip → D5 local DEV IPC → D6 external observer. No external diagnostics app in D0–D3.
 
 ## Priority when tasks compete
 

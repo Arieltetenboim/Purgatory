@@ -1,10 +1,12 @@
-//! Native window defaults. Not a settings system.
+//! Native window creation. Default size comes from [`crate::display::DisplaySettings`].
 
 use winit::dpi::PhysicalSize;
 use winit::window::{Window, WindowAttributes};
 
-pub const DEV_WINDOW_WIDTH: u32 = 1280;
-pub const DEV_WINDOW_HEIGHT: u32 = 720;
+use crate::display::Resolution;
+
+pub const DEV_WINDOW_WIDTH: u32 = Resolution::DEFAULT.width;
+pub const DEV_WINDOW_HEIGHT: u32 = Resolution::DEFAULT.height;
 pub const WINDOW_TITLE: &str = "PURGATORY — Engine Dev";
 
 #[must_use]

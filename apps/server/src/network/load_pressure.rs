@@ -6,8 +6,9 @@
 
 use purgatory_common::{LoadValidationConfig, WorldAddress};
 use purgatory_simulation::{
-    ActionGateContext, ActionKind, Cadence, EffectKind, EntityId, FOOTNOTE_SPAWN_X,
-    RuntimeSpawnRequest, ScheduleOwner, ScheduledKind, SimulationTick, Transform, WorkLane, World,
+    ActionGateContext, ActionKind, ActionRequest, Cadence, EffectKind, EntityId, FOOTNOTE_SPAWN_X,
+    NPC_HEALTH_MAX, PULSE_DURATION_TICKS, RuntimeSpawnRequest, ScheduleOwner, ScheduledKind,
+    SimulationTick, Transform, WorkLane, World,
 };
 
 /// Safety clamps so a malformed JSON count cannot allocate without bound.
@@ -17,6 +18,7 @@ const MAX_SCHEDULER_BATCH: u32 = 512;
 const MAX_SPAWN_CHURN: u32 = 256;
 const MAX_OWNERS: u32 = 64;
 const MAX_CADENCE: u32 = 256;
+const MAX_NPCS: u32 = 256;
 const DEFAULT_SPAWN_INTERVAL: u64 = 30;
 const REFILL_PERIOD: u64 = 30;
 
@@ -28,6 +30,7 @@ pub struct LoadPressure {
     synthetics: Vec<EntityId>,
     action_owners: Vec<EntityId>,
     effect_targets: Vec<EntityId>,
+    npcs: Vec<EntityId>,
     spawn_queue_seeded: bool,
 }
 
@@ -46,6 +49,7 @@ impl LoadPressure {
             synthetics: Vec::new(),
             action_owners: Vec::new(),
             effect_targets: Vec::new(),
+            npcs: Vec::new(),
             spawn_queue_seeded: false,
         }
     }
@@ -92,10 +96,11 @@ impl LoadPressure {
         self.arm_events(world, tick);
         self.seed_spawn_queue(world, address, tick);
         self.arm_spawn_churn(world, address, tick);
+        self.arm_npcs(world, address, tick);
         if !self.logged {
             self.logged = true;
             println!(
-                "PURGATORY load-validation armed synthetic={} sched_c={} sched_d={} spawn={} actions={} effects={} events={} cadence={}",
+                "PURGATORY load-validation armed synthetic={} sched_c={} sched_d={} spawn={} actions={} effects={} events={} cadence={} npcs={}",
                 self.cfg.synthetic_entities,
                 self.cfg.scheduler.critical,
                 self.cfg.scheduler.deferred,
@@ -103,7 +108,8 @@ impl LoadPressure {
                 self.cfg.actions,
                 self.cfg.effects,
                 self.cfg.events,
-                self.cfg.cadence_consumers
+                self.cfg.cadence_consumers,
+                self.cfg.npc_workload.count
             );
         }
     }
@@ -308,6 +314,107 @@ impl LoadPressure {
             );
         }
     }
+
+    fn arm_npcs(&mut self, world: &mut World, address: WorldAddress, tick: SimulationTick) {
+        let wl = &self.cfg.npc_workload;
+        let n = wl.count.min(MAX_NPCS);
+        if n == 0 {
+            return;
+        }
+        let radius = wl.hotspot_radius.max(1) as f32;
+        let active_pct = wl.active_pct.min(100);
+        let health_max = if wl.health_max == 0 {
+            NPC_HEALTH_MAX
+        } else {
+            wl.health_max as f32
+        };
+        world.set_npc_respawn_delay_ticks(u64::from(wl.respawn_delay_ticks));
+        self.npcs.reserve(n as usize);
+        for i in 0..n {
+            let active = ((i * 100) / n.max(1)) < active_pct;
+            let home = [
+                FOOTNOTE_SPAWN_X + (i % 8) as f32 * 0.25,
+                2.0 + (i / 8) as f32 * 0.1,
+            ];
+            let seed = wl.seed.wrapping_add(i);
+            let req =
+                World::npc_spawn_request(address, home, i, radius, seed, tick, active, health_max);
+            if let Some(id) = world.spawn(req) {
+                self.npcs.push(id);
+            }
+        }
+        let churn = wl.churn_count.min(32);
+        for i in 0..churn {
+            let home = [FOOTNOTE_SPAWN_X + 2.0 + i as f32 * 0.5, 2.0];
+            let req = World::npc_spawn_request(
+                address,
+                home,
+                10_000 + i,
+                radius,
+                wl.seed.wrapping_add(10_000 + i),
+                tick,
+                true,
+                health_max,
+            );
+            let due_despawn = tick.saturating_add_ticks(45);
+            if let Some(id) = world.spawn(req) {
+                let _ = world.schedule_despawn(id, due_despawn, WorkLane::Deferred);
+            }
+        }
+    }
+
+    /// Per-tick NPC Strike / Pulse pressure. Called from simulate_tick after tick_npcs.
+    pub fn drive_npc_workload(&mut self, world: &mut World, tick: SimulationTick) {
+        if !self.cfg.npc_workload.is_active() || !self.armed {
+            return;
+        }
+        self.npcs.retain(|id| world.contains(*id));
+        if self.npcs.is_empty() {
+            return;
+        }
+        let action_period = self.cfg.npc_workload.action_period_ticks;
+        let pulse_period = self.cfg.npc_workload.pulse_period_ticks;
+        let n = tick.get();
+        let len = self.npcs.len();
+        for (i, &id) in self.npcs.iter().enumerate() {
+            let Some(npc) = world.npc_of(id) else {
+                continue;
+            };
+            if !npc.active || npc.dead_pending {
+                continue;
+            }
+            if action_period > 0
+                && n > 0
+                && n.is_multiple_of(u64::from(action_period))
+                && i == (n as usize % len)
+                && let Some(target) =
+                    world.nearest_health_target(id, purgatory_simulation::STRIKE_RANGE)
+            {
+                let _ = world.request_action(
+                    ActionRequest {
+                        actor: id,
+                        target,
+                        kind: ActionKind::Strike,
+                    },
+                    ActionGateContext::in_world(),
+                );
+            }
+            if pulse_period > 0
+                && n > 0
+                && n.is_multiple_of(u64::from(pulse_period))
+                && i == ((n as usize / u64::from(pulse_period) as usize) % len)
+                && let Some(target) =
+                    world.nearest_health_target(id, purgatory_simulation::STRIKE_RANGE)
+            {
+                let _ = world.apply_pulse_effect(
+                    target,
+                    PULSE_DURATION_TICKS,
+                    u64::from(pulse_period.max(1)),
+                    Some(id),
+                );
+            }
+        }
+    }
 }
 
 fn spawn_visible(world: &mut World, address: WorldAddress, x: f32) -> Option<EntityId> {
@@ -361,6 +468,7 @@ mod tests {
             effects: 1,
             events: 3,
             cadence_consumers: 4,
+            ..LoadValidationConfig::default()
         };
         let mut pressure = LoadPressure::from_config(cfg);
         pressure.maintain(&mut world, WorldAddress::DEV, SimulationTick::from_count(1));
@@ -392,6 +500,7 @@ mod tests {
             effects: 8,
             events: 16,
             cadence_consumers: 32,
+            ..LoadValidationConfig::default()
         }
     }
 

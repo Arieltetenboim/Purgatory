@@ -1,9 +1,11 @@
 pub mod clients;
+pub mod content;
 pub mod dashboard;
 pub mod dashboard_model;
 pub mod layout;
 pub mod logs;
 pub mod performance;
+pub mod phase7_stats;
 pub mod placeholders;
 pub mod run_view;
 pub mod runtime_server;

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "equipment.debug.leather_gloves",
+  "attachments": [
+    {
+      "id": "hand_front",
+      "bone": "hand_front",
+      "anchor": "bone_origin",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.leather_gloves.hand_front.side"
+      }
+    },
+    {
+      "id": "hand_back",
+      "bone": "hand_back",
+      "anchor": "bone_origin",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.leather_gloves.hand_back.side"
+      }
+    }
+  ]
+}

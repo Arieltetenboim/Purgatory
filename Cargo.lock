@@ -2257,6 +2257,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "purgatory-animation"
+version = "0.1.0"
+dependencies = [
+ "purgatory-skeleton",
+]
+
+[[package]]
+name = "purgatory-animation-lab"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "image",
+ "purgatory-animation",
+ "purgatory-skeleton",
+]
+
+[[package]]
 name = "purgatory-bot-client"
 version = "0.1.0"
 dependencies = [
@@ -2282,10 +2300,12 @@ dependencies = [
  "egui-winit",
  "image",
  "pollster",
+ "purgatory-animation",
  "purgatory-common",
  "purgatory-content",
  "purgatory-protocol",
  "purgatory-simulation",
+ "purgatory-skeleton",
  "quinn",
  "rcgen",
  "rustls",
@@ -2329,7 +2349,9 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "image",
  "purgatory-dev-runtime",
+ "purgatory-skeleton",
 ]
 
 [[package]]
@@ -2337,6 +2359,7 @@ name = "purgatory-dev-runtime"
 version = "0.1.0"
 dependencies = [
  "purgatory-common",
+ "serde",
  "serde_json",
  "sysinfo",
 ]
@@ -2383,6 +2406,10 @@ version = "0.1.0"
 dependencies = [
  "purgatory-common",
 ]
+
+[[package]]
+name = "purgatory-skeleton"
+version = "0.1.0"
 
 [[package]]
 name = "pxfm"

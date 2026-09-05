@@ -17,9 +17,9 @@ foreach ($mode in $modes) {
     foreach ($n in $counts) {
         Write-Host "==== policy=$mode hotspot@$n ===="
         if ($SkipBuild) {
-            & "$root\scripts\capacity_ladder.ps1" -Scenario hotspot -Count $n -Duration "30s" -Seed 4242 -RampMs 50 -SkipBuild
+            & "$root\scripts\capacity_ladder.ps1" -Scenario hotspot -Count $n -Duration "30s" -Seed 4242 -RampMs 50 -ArtifactRoot capacity_6g7c -SkipBuild
         } else {
-            & "$root\scripts\capacity_ladder.ps1" -Scenario hotspot -Count $n -Duration "30s" -Seed 4242 -RampMs 50
+            & "$root\scripts\capacity_ladder.ps1" -Scenario hotspot -Count $n -Duration "30s" -Seed 4242 -RampMs 50 -ArtifactRoot capacity_6g7c
             $SkipBuild = $true
         }
         if ($LASTEXITCODE -ne 0) {

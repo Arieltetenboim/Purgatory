@@ -1,6 +1,6 @@
 //! Per-tick runtime service stats. Low cardinality only.
 
-/// Snapshot of 6F runtime counters. Not keyed by CharacterId/EntityId.
+/// Snapshot of 6F / 7.2 runtime counters. Not keyed by CharacterId/EntityId.
 ///
 /// Queue-depth / active-count fields are **gauges** sampled after the tick
 /// (or at `begin_tick`). Monotonic `*_total` fields prove work ran even when
@@ -21,6 +21,8 @@ pub struct RuntimeStats {
     pub actions_active: u32,
     pub actions_started_total: u64,
     pub actions_completed_total: u64,
+    pub actions_attempted_total: u64,
+    pub actions_rejected_total: u64,
     pub effects_active: u32,
     pub effects_applied_total: u64,
     pub effects_expired_total: u64,
@@ -36,4 +38,10 @@ pub struct RuntimeStats {
     pub command_rejects_gate: u64,
     pub command_rejects_other: u64,
     pub domain_rev_advances: u64,
+    pub npcs_active: u32,
+    pub npc_updates_total: u64,
+    pub health_mutations_total: u64,
+    pub deaths_total: u64,
+    pub respawns_total: u64,
+    pub pulse_ticks_total: u64,
 }

@@ -838,6 +838,9 @@ mod tests {
             probe: false,
             print_server_env: false,
             persist_root: None,
+            slow_drain_count: 0,
+            post_ramp_thin: false,
+            relax_portal_gate: false,
         };
         let spec = crate::scenario::LoadScenario::from_cli(&cli, None).expect("spec");
         let mut log = RunLog::create_in(&test_dir, &cli, &spec).expect("create");
@@ -892,6 +895,9 @@ mod tests {
                 probe: false,
                 print_server_env: false,
                 persist_root: None,
+                slow_drain_count: 0,
+                post_ramp_thin: false,
+                relax_portal_gate: false,
             };
             let spec = crate::scenario::LoadScenario::from_cli(&cli, None).unwrap();
             RunLog::create_in(&dir, &cli, &spec).unwrap()

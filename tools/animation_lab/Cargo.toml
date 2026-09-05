@@ -1,0 +1,26 @@
+[package]
+name = "purgatory-animation-lab"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Standalone A7.0 Animation Lab (eframe). Authors A6 .anim files; launched from Developer Hub."
+
+[lib]
+name = "purgatory_animation_lab"
+path = "src/lib.rs"
+
+[[bin]]
+name = "purgatory-animation-lab"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.36.1"
+purgatory-animation = { path = "../../crates/animation" }
+purgatory-skeleton = { path = "../../crates/skeleton" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

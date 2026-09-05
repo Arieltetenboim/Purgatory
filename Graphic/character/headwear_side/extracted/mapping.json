@@ -1,0 +1,13 @@
+{
+"schema_version": 1,
+"sheet": "HEADWEAR_SIDE_MASTER_V1.png",
+"crown_local_px": [128, 176],
+"sprite_px": [256, 256],
+"extract": "grid_bounds_only",
+"sprites": [
+    {"cell": "r0c0", "visual_key": "equipment.debug.headwear_proof.a.side", "file": "extracted/equipment.debug.headwear_proof.a.side.png"},
+    {"cell": "r0c1", "visual_key": "equipment.debug.headwear_proof.b.side", "file": "extracted/equipment.debug.headwear_proof.b.side.png"},
+    {"cell": "r1c0", "visual_key": "equipment.debug.headwear_proof.c.side", "file": "extracted/equipment.debug.headwear_proof.c.side.png"},
+    {"cell": "r1c1", "visual_key": "equipment.debug.headwear_proof.d.side", "file": "extracted/equipment.debug.headwear_proof.d.side.png"}
+  ]
+}

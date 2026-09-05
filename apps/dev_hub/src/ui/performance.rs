@@ -17,7 +17,7 @@ pub fn show(
     layout::page_header(
         ui,
         "Performance / Load",
-        "Headless bots via purgatory-load. May restart the server in load-mode.",
+        "Headless bots via purgatory-load. May restart the server in load-mode. Canonical Phase 7.8 regression gate: Settings → PHASE 7.8 GATE. Artifact summary: Testing → Phase 7 Stats.",
     );
 
     card(ui, "Spec", |ui| {

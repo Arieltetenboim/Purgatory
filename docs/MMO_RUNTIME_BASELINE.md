@@ -2,13 +2,15 @@
 
 Reference freeze for capacity characterization. Localhost figures are **not** player-capacity claims.
 
+**After 6G close:** this freeze is a **dated 6G.2 snapshot**. Pass 1 “suspected bottlenecks” (AOI-dominant) and later 6G.4 “256 characterized limit” are **not** the current Phase 7 starting claims. 6G.7A–C closed replication-discovery architecture; 6G.7B/C showed replication remaining cheap at 128 and healthy server-side 256 under the validated workload. Adopted live `PURGSTAT` contract is **schema 3**; schema 4 was inventoried/deferred. Phase 7 starts from measurement ([`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md)). Do not rewrite the freeze tables below.
+
 ## Identity
 
 | Field | Value |
 |---|---|
 | Phase marker | `6G` (GREEN — architecture closed; production policy tuning deferred) |
 | Protocol | v10 |
-| Live metrics schema | 4 (UDP `PURGSTAT`; Mixed execution totals; 1 Hz gauges; datagram cap 4096). Capacity domain timings remain **file artifacts only** — Pass 1 did not enlarge the datagram further for domain breakdown. |
+| Live metrics schema | 3 (UDP `PURGSTAT`; 1 Hz gauges; adopted contract). Schema 4 execution totals were inventoried/deferred and are not this freeze’s adopted contract. Capacity domain timings remain **file artifacts only**. |
 | Capacity artifacts schema | tick_domains / process_resources schema 1 (run files only) |
 | Build mode for ladders | Release |
 | Git | `077fa0c` (+ uncommitted 6G.2 instrumentation) |
@@ -25,7 +27,7 @@ Reference freeze for capacity characterization. Localhost figures are **not** pl
 | Maps | FOOTNOTE Map A + Map B (dev-eager) |
 | AOI | view envelope + 2 wu prefetch / leave hysteresis |
 | Persist | isolated `PURGATORY_DATA_DIR` under run dir / Hub `logs/dev-tools/hub_server_persist` |
-| Capacity artifacts | `PURGATORY_CAPACITY_ARTIFACT_DIR` → `tick_domains.json`, `process_resources.json`, `aoi_locality.json`, `replication_fanout.json`, NDJSON tails |
+| Capacity artifacts | `PURGATORY_CAPACITY_ARTIFACT_DIR` → `tick_domains.json`, `process_resources.json`, `aoi_locality.json`, `replication_fanout.json`, NDJSON tails. **7.1 adds** `capacity_live.json`, `network_pressure.json`, `connection_lifecycle.json`, `harness_resources.json`, `harness_connection.json`, `connection_ramp.json`. **`connection_ramp` schema 2:** issuance funnel is harness-owned; server lifecycle totals are correlators only (do not max-mix — reconnects inflate server accepts). **7.2 adds** `gameplay_workload.json` (+ NDJSON) and `npc_activity` tick leaf (file artifacts; not UDP). |
 | Ladder helper | `scripts/capacity_ladder.ps1` (`--ramp-ms 50`) |
 
 ## Coarse tick domains (Pass 1)

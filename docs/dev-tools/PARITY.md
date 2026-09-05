@@ -43,6 +43,8 @@ Load/soak is orchestration around `purgatory-load` without `--preset`. One **Loa
 - ANALYZE LAST RUN resolves finished artifacts (`last_runtime_validation.txt` / `last_finished.txt` / `latest.txt` with ignore-in-progress rules) and may open a visible Python console.
 - Clients: queue until Ready, stagger 140 ms, Detached + `client.log`, skip client rebuild if workspace clients live or exe locked, adopt on reopen. Stop All kills tracked + discovered clients.
 - Quality gate: visible `powershell … scripts/check.ps1` console, detached from Hub close.
+- Phase 7.8 performance gate: Settings → **PHASE 7.8 GATE** launches `scripts/phase_78_gate.ps1` (visible console; long). Pass/fail semantics in [`docs/PHASE_78_REPORT.md`](../PHASE_78_REPORT.md).
+- Phase 7 Stats: Testing → **Phase 7 Stats** reads latest `logs/load/capacity_78/gate_*/phase78_gate_summary.json` (no recompute). Labels findings as HARNESS vs SERVER; current YELLOW is harness `snapshot_starvation`, not server tick failure.
 - Rebuild skips packages whose workspace exe is running. Kill All kills workspace cargo (command line contains repo root), server, client, load, and **does** stop the dedicated server (unlike Hub close).
 - Settings: debug/release profile and Default/Debug/Trace log level apply to **new** processes only.
 
@@ -112,7 +114,7 @@ Open +1/+2/+3, Stop All, F6, stagger 140 ms, skip client rebuild if exe locked, 
 | Capability | Slice |
 |---|---|
 | Quality gate → visible `scripts/check.ps1` | Hub |
-| Rebuild (skip running server/client exe) | Hub |
+| Rebuild (skip running server/client/Animation Lab exe) | Hub |
 | Load test dialog, Stop Load, analyze last run, last report | 3 |
 | Runtime Validation dialog; CLI pass/fail; isolated persist; refuse concurrent harness | 2 |
 | Kill All | Hub |
@@ -132,13 +134,13 @@ Open +1/+2/+3, Stop All, F6, stagger 140 ms, skip client rebuild if exe locked, 
 
 ## Recorded Hub differences (intentional, not silent improvements)
 
-- Hub GUI is provisional eframe, not WinForms. Not a visual clone. Live: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings. World / Content stay placeholders (editors).
+- Hub GUI is provisional eframe, not WinForms. Not a visual clone. Live: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings, Content (launches Animation Lab; ADR-0058). World stays a placeholder (map editor later).
 - Hub single-instance lock is workspace `logs/dev-tools/hub.lock`, not `Local\PurgatoryDevLauncher`. PowerShell still uses that mutex. Do not run Hub plus PowerShell against the same workspace.
 - Slice 1 listener diagnostic may report `unknown` (no `IPGlobalProperties` port). Must not affect Ready.
 - Activity timestamps in the Hub may be UTC `HH:MM:SS` rather than local `Get-Date`.
 - Activity and SERVER/CLIENT file-tail lines are stamped `HH:MM:SS` (no date) when shown in the Hub. Hub stamps use UTC wall-clock; PowerShell uses local `Get-Date`.
 - Dedicated server and clients use Detached + file stdio (`server.log` / `client.log`). Hub presents **bounded file tails**, not a live stdout re-pipe. PowerShell load harness used VisibleConsole; Hub load harness is Session with file log (`ui_pump: false`). Hub also tails `load.log` on Validation/Performance and charts bounded samples from `metrics.csv` (does not invent series).
-- Validation/Performance completed UI shows a Result summary + expandable details from `run_summary.json`; Dashboard uses a small shared design system (tokens, HubCard, button variants, status badges) with semantic wide/medium/narrow composition. Recent Activity is real `ActivityLog` only. No host CPU/Mem System Status row.
+- Validation/Performance completed UI shows a Result summary + expandable details from `run_summary.json`; live compact strip reads `capacity_live.json` when present (7.1 ownership; not a per-client wall). Dashboard uses a small shared design system (tokens, HubCard, button variants, status badges) with semantic wide/medium/narrow composition. Recent Activity is real `ActivityLog` only. No host CPU/Mem System Status row.
 - START VALIDATION / START LOAD that need a restart are consent via the button (no WinForms MessageBox).
 - Explicit `JobId` supersession is stricter internally than PowerShell flags; user-visible Start/Stop/Restart rules stay the same.
 - `DEV.BAT` remains PowerShell fallback. Hub: [`DEV_HUB.BAT`](../../DEV_HUB.BAT) (build, then independent `purgatory-dev-hub.exe`). `cargo run -p purgatory-dev-hub` is not the operational launch path.

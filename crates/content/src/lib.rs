@@ -1,6 +1,8 @@
 //! Content loading, validation, and registry. JSON stays in this crate.
 
+mod ability;
 mod domain;
+mod equipment;
 mod error;
 mod instantiate;
 mod loader;
@@ -8,7 +10,15 @@ mod registry;
 mod restore;
 mod schema;
 
+pub use ability::ABILITY_CONTENT_SCHEMA_VERSION;
 pub use domain::ContentDomain;
+pub use equipment::{
+    AnchorPoint, BoneTarget, CORRECTION_OFFSET_MAX_PX, CORRECTION_ROTATION_MAX_DEG,
+    CorrectionOffset, CoverageMode, EQUIPMENT_CONTENT_SCHEMA_VERSION, EquipmentAuthError,
+    EquipmentDefinition, EquipmentPresentation, PresentationAttachment, PresentationCompleteness,
+    ViewVariant, ViewVisuals, authorize_equip, bone_allows_anchor, slot_allows_anchor,
+    slot_allows_bone, validate_equipment_definition, validate_equipment_presentation,
+};
 pub use error::{ContentError, ValidationIssue};
 pub use instantiate::{geometry_plan, map_plan, spawn_point_position, world_address_for_map};
 pub use loader::{LoadMode, default_content_root, load_registry};
@@ -60,5 +70,69 @@ mod tests {
             .any(|id| world.content_id_of(id) == Some(switch));
         assert!(found);
         assert!(world.iter().all(|id| world.persistent_id_of(id).is_none()));
+    }
+
+    #[test]
+    fn pack_loads_basic_strike_ability() {
+        use purgatory_simulation::{
+            AbilityActivation, AbilityDelivery, AbilityEffect, AbilityRequest, ActionGateContext,
+            ActionPhase, Health, RuntimeSpawnRequest, SimulationTick, Transform, World,
+            WorldAddress,
+        };
+        let registry = load_registry(&default_content_root(), LoadMode::Shared).expect("pack");
+        let def = registry
+            .ability("skill.basic.strike")
+            .expect("authored basic strike")
+            .clone();
+        assert_eq!(
+            def.id,
+            ContentId::from_authored("skill.basic.strike").unwrap()
+        );
+        assert_eq!(def.activation, AbilityActivation::Independent);
+        assert_eq!(
+            def.delivery,
+            AbilityDelivery::ForwardQuery {
+                range: 1.5,
+                half_height: 0.8,
+                max_targets: 8
+            }
+        );
+        assert_eq!(def.effects, vec![AbilityEffect::Damage { amount: 5.0 }]);
+
+        let mut world = World::new();
+        world.begin_tick(SimulationTick::from_count(1));
+        let actor = world
+            .spawn(
+                RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                    .with_transform(Transform::from_position([0.0, 1.0]))
+                    .with_health(Health::full(10.0))
+                    .visible(),
+            )
+            .unwrap();
+        let foe = world
+            .spawn(
+                RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                    .with_transform(Transform::from_position([1.0, 1.0]))
+                    .with_health(Health::full(10.0))
+                    .visible(),
+            )
+            .unwrap();
+        world
+            .request_ability(
+                AbilityRequest {
+                    actor,
+                    selected: None,
+                    definition: &def,
+                },
+                ActionGateContext::in_world(),
+            )
+            .unwrap();
+        world.begin_tick(SimulationTick::from_count(4));
+        world.drain_critical_scheduler();
+        assert_eq!(
+            world.active_action(actor).unwrap().phase,
+            ActionPhase::Active
+        );
+        assert!((world.health_of(foe).unwrap().current - 5.0).abs() < 1e-5);
     }
 }

@@ -109,6 +109,18 @@ pub enum NetworkEvent {
         attempt_id: ConnectionAttemptId,
         event: purgatory_protocol::ServerInteract,
     },
+    Equipment {
+        attempt_id: ConnectionAttemptId,
+        event: purgatory_protocol::ServerEquipment,
+    },
+    PresentationOneShot {
+        attempt_id: ConnectionAttemptId,
+        event: purgatory_protocol::ServerPresentationOneShot,
+    },
+    Ability {
+        attempt_id: ConnectionAttemptId,
+        event: purgatory_protocol::ServerAbility,
+    },
 }
 
 impl NetworkEvent {
@@ -121,7 +133,10 @@ impl NetworkEvent {
             | Self::Rejected { attempt_id, .. }
             | Self::Disconnected { attempt_id, .. }
             | Self::RttUpdated { attempt_id, .. }
-            | Self::Interact { attempt_id, .. } => attempt_id,
+            | Self::Interact { attempt_id, .. }
+            | Self::Equipment { attempt_id, .. }
+            | Self::PresentationOneShot { attempt_id, .. }
+            | Self::Ability { attempt_id, .. } => attempt_id,
         }
     }
 
@@ -353,6 +368,9 @@ impl NetworkView {
                 self.counters.telemetry_events = self.counters.telemetry_events.saturating_add(1);
             }
             NetworkEvent::Interact { .. } => {}
+            NetworkEvent::Equipment { .. } => {}
+            NetworkEvent::PresentationOneShot { .. } => {}
+            NetworkEvent::Ability { .. } => {}
         }
     }
 

@@ -1,0 +1,163 @@
+{
+  "schema": 1,
+  "phase": "7.8",
+  "policy": {
+    "replication_policy": "selective",
+    "population_class": "high",
+    "frame_budget_bytes": 4096,
+    "stranger_cadence_mult": 1,
+    "health_max": 6,
+    "respawn_delay_ticks": 20,
+    "capacity_detail": "1",
+    "seed": 7808
+  },
+  "rationale": {
+    "tick_headroom": "Measured mixed@64 tick p99≈1.9–5ms util≈3.5–8%; mixed@128 often ≈5–8ms but localhost variance has reached ≈20ms p99. Absolute caps keep headroom vs 33.3ms (high/dense p99 max 24ms) while absorbing instrumentation/noise. Not a player-capacity claim.",
+    "unattributed": "Post-7.5 residual ~15–25% share is timer noise. Warn ≥35%, fail ≥50% (new uninstrumented path).",
+    "network": "7.4: queue depth max=1, push fails=0 across envelope. Fail on any push fail or depth at hard cap with growth. Not a WAN SLA.",
+    "regression": "YELLOW if relative vs baseline exceeds warn band while absolute PASS. RED only on absolute/correctness failures.",
+    "soak": "8m hotspot@32 + representative NPC workload overrides (not MixedRuntime). MixedRuntime long soaks abort on portal-role death / persistent-baseline drops (harness), which is not a server tick saturation signal. Hotspot soak still exercises movement, AOI, replication, NPC lifecycle, memory, and queues."
+  },
+  "global": {
+    "attainment_min_pct": 95.0,
+    "funnel_invariant_required": true,
+    "overruns_max": 0,
+    "consecutive_overrun_streak_max": 0,
+    "writer_queue_push_fail_max": 0,
+    "writer_queue_depth_hard_max": 4,
+    "unattributed_share_warn_pct": 35.0,
+    "unattributed_share_fail_pct": 50.0,
+    "accounting_error_ticks_max": 0,
+    "tick_max_isolated_warn_ms": 16.0,
+    "tick_max_fail_ms": 33.0,
+    "regression": {
+      "tick_p99_rel_warn": 0.40,
+      "tick_p99_rel_fail_if_also_absolute_warn": 1.0,
+      "tick_util_rel_warn": 0.50,
+      "policy_mean_rel_warn": 0.50,
+      "policy_us_per_observer_rel_warn": 0.50,
+      "repl_children_mean_rel_warn": 0.50,
+      "rss_end_rel_warn": 0.35,
+      "rss_delta_mb_warn": 12.0
+    }
+  },
+  "cells": {
+    "functional_mixed8": {
+      "gate": 1,
+      "name": "functional_mixed8",
+      "scenario": "representative-mixed",
+      "count": 8,
+      "duration": "45s",
+      "ramp_ms": 50,
+      "post_ramp_thin": false,
+      "max_bots": 32,
+      "require_lifecycle": true,
+      "absolute": {
+        "tick_p95_ms_max": 3.0,
+        "tick_p99_ms_max": 5.0,
+        "tick_util_pct_max": 15.0,
+        "tick_max_ms_max": 20.0,
+        "replication_policy_p99_ms_max": 2.0,
+        "npc_activity_p99_ms_max": 2.0,
+        "rss_peak_mb_max": 40.0
+      }
+    },
+    "standard_mixed64": {
+      "gate": 2,
+      "name": "standard_mixed64",
+      "scenario": "representative-mixed",
+      "count": 64,
+      "duration": "45s",
+      "ramp_ms": 25,
+      "post_ramp_thin": true,
+      "max_bots": 256,
+      "require_lifecycle": true,
+      "absolute": {
+        "tick_p95_ms_max": 6.0,
+        "tick_p99_ms_max": 10.0,
+        "tick_util_pct_max": 25.0,
+        "tick_max_ms_max": 25.0,
+        "replication_policy_p99_ms_max": 4.0,
+        "npc_activity_p99_ms_max": 3.0,
+        "rss_peak_mb_max": 64.0
+      }
+    },
+    "high_mixed128": {
+      "gate": 3,
+      "name": "high_mixed128",
+      "scenario": "representative-mixed",
+      "count": 128,
+      "duration": "45s",
+      "ramp_ms": 25,
+      "post_ramp_thin": true,
+      "max_bots": 256,
+      "require_lifecycle": true,
+      "absolute": {
+        "tick_p95_ms_max": 16.0,
+        "tick_p99_ms_max": 24.0,
+        "tick_util_pct_max": 55.0,
+        "tick_max_ms_max": 32.0,
+        "replication_policy_p99_ms_max": 12.0,
+        "npc_activity_p99_ms_max": 6.0,
+        "rss_peak_mb_max": 96.0
+      }
+    },
+    "dense_dense64": {
+      "gate": 4,
+      "name": "dense_dense64",
+      "scenario": "representative-dense",
+      "count": 64,
+      "duration": "45s",
+      "ramp_ms": 25,
+      "post_ramp_thin": true,
+      "max_bots": 256,
+      "require_lifecycle": true,
+      "absolute": {
+        "tick_p95_ms_max": 16.0,
+        "tick_p99_ms_max": 24.0,
+        "tick_util_pct_max": 55.0,
+        "tick_max_ms_max": 32.0,
+        "replication_policy_p99_ms_max": 14.0,
+        "npc_activity_p99_ms_max": 8.0,
+        "rss_peak_mb_max": 80.0
+      }
+    },
+    "soak_mixed32": {
+      "gate": 5,
+      "name": "soak_mixed32",
+      "scenario": "hotspot",
+      "count": 32,
+      "duration": "8m",
+      "ramp_ms": 50,
+      "post_ramp_thin": true,
+      "max_bots": 256,
+      "require_lifecycle": true,
+      "npc_count": 24,
+      "active_pct": 75,
+      "action_period_ticks": 20,
+      "pulse_period_ticks": 30,
+      "health_max": 6,
+      "seed": 7505,
+      "soak_retries": 1,
+      "relax_portal_gate": false,
+      "absolute": {
+        "tick_p95_ms_max": 5.0,
+        "tick_p99_ms_max": 8.0,
+        "tick_util_pct_max": 20.0,
+        "tick_max_ms_max": 25.0,
+        "replication_policy_p99_ms_max": 3.0,
+        "npc_activity_p99_ms_max": 3.0,
+        "rss_peak_mb_max": 64.0,
+        "rss_delta_mb_max": 24.0,
+        "rss_growth_ratio_warn": 2.5
+      }
+    }
+  },
+  "unit_budget_tests": [
+    "priority_prefers_self_under_tiny_budget",
+    "progressive_enter_does_not_emit_updates_before_known",
+    "updates_do_not_precede_enter",
+    "leave_then_reenter_sends_baseline_again",
+    "self_always_full_domains"
+  ]
+}

@@ -9,34 +9,50 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::Window;
 
-use purgatory_simulation::DebugAction;
+use super::chrome::{
+    has_persistent_dev_warnings, input_gate_chrome_visible, interaction_chrome_visible,
+    persistent_dev_warnings, portal_chrome_visible, target_chrome_visible,
+    transition_chrome_visible,
+};
+use super::command::DebugCommand;
 
 use super::aoi_view::label_ndc;
 use super::collision_history::CollisionHistory;
 use super::entity_inspector::{
     InspectorAccent, InspectorCategory, InspectorRow, InspectorSource, InspectorView,
 };
-use super::interact_status::{format_portal_line, format_target_line, interact_kind_color};
+use super::frame::DiagnosticsFrame;
+use super::interact_status::{
+    compact_interact_value, format_portal_line, format_target_line, interact_kind_color,
+};
 use super::sections::{debug_section, draw_expand_collapse};
-use super::snapshot::DebugSnapshot;
-use super::ui_state::DebugUiState;
+use super::ui_state::{
+    DEBUG_MOVE_SPEED_DEFAULT, DEBUG_MOVE_SPEED_MAX, DEBUG_MOVE_SPEED_MIN, DebugUiState,
+    RESET_TO_SPAWN_HELP, RESET_TO_SPAWN_LABEL, reset_action_help, reset_action_label,
+    reset_player_uses_replica,
+};
 use crate::renderer::OverlayPass;
 
+const SEC_NOW_POSE: &str = "debug.pose";
+const SEC_NOW_CAMERA: &str = "debug.camera";
+const SEC_NOW_REPLICA: &str = "debug.replica";
+const SEC_NOW_VIEW: &str = "debug.view";
+const SEC_NOW_DISPLAY: &str = "debug.display";
 const SEC_RT_FRAME: &str = "runtime.frame";
-const SEC_RT_GIZMOS: &str = "runtime.gizmos";
+const SEC_SK_VIEW: &str = "skeleton.view";
+const SEC_SK_INSPECT: &str = "skeleton.inspect";
+const SEC_SK_EQUIP: &str = "skeleton.equipment";
+const SEC_SK_PROOF: &str = "skeleton.proof";
 const SEC_PL_POSE: &str = "player.pose";
 const SEC_PL_MOTION: &str = "player.motion";
 const SEC_FN_CONTACT: &str = "footnote.contact";
-const SEC_FN_POSE: &str = "footnote.pose";
-const SEC_FN_INPUT: &str = "footnote.input";
 const SEC_WD_STAGE: &str = "world.stage";
-const SEC_WD_VIEW: &str = "world.view";
 const SEC_WD_ENTITIES: &str = "world.entities";
 const SEC_CM_TRANSFORM: &str = "camera.transform";
-const SEC_CM_FOLLOW: &str = "camera.follow";
 const SEC_CM_JITTER: &str = "camera.jitter";
 const SEC_CM_PARALLAX: &str = "camera.parallax";
 const SEC_DG_DETECTORS: &str = "diagnostics.detectors";
+const SEC_DG_HELP: &str = "diagnostics.help";
 const SEC_DG_LAST: &str = "diagnostics.last";
 const SEC_DG_HISTORY: &str = "diagnostics.history";
 const SEC_NET_CONN: &str = "network.connection";
@@ -68,9 +84,10 @@ pub struct OverlayInit<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DebugTab {
+    Debug,
     Runtime,
     Player,
-    Footnote,
+    Skeleton,
     World,
     Camera,
     Diagnostics,
@@ -107,7 +124,7 @@ impl DebugOverlay {
             ctx,
             winit,
             renderer,
-            tab: DebugTab::Runtime,
+            tab: DebugTab::Debug,
             ui: DebugUiState::from_env(),
             collision_history: CollisionHistory::default(),
         }
@@ -147,14 +164,14 @@ impl DebugOverlay {
     /// Debug overlay widgets only. Not the Connection Frontend.
     fn paint(
         ctx: &Context,
-        snapshot: &DebugSnapshot,
+        frame: &DiagnosticsFrame,
         visible: &mut bool,
         tab: &mut DebugTab,
         ui_state: &mut DebugUiState,
         history: &mut CollisionHistory,
-        actions: &mut Vec<DebugAction>,
+        actions: &mut Vec<DebugCommand>,
     ) {
-        draw_debug_window(ctx, snapshot, visible, tab, ui_state, history, actions);
+        draw_debug_window(ctx, frame, visible, tab, ui_state, history, actions);
     }
 
     /// One egui frame: optional [`ConnectionFrontend::paint`] plus debug overlay.
@@ -162,14 +179,23 @@ impl DebugOverlay {
         &mut self,
         window: &Window,
         pass: OverlayPass<'_>,
-        snapshot: &DebugSnapshot,
+        frame: &DiagnosticsFrame,
         connection: Option<ConnectionPaint<'_>>,
-    ) -> (Vec<wgpu::CommandBuffer>, Vec<DebugAction>, bool) {
-        if connection.is_none() && !self.visible {
+    ) -> (Vec<wgpu::CommandBuffer>, Vec<DebugCommand>, bool) {
+        if connection.is_none()
+            && !self.visible
+            && !has_persistent_dev_warnings(&self.ui)
+            && !self.ui.center_toast_live()
+        {
             return (Vec::new(), Vec::new(), false);
         }
 
         let raw_input = self.winit.take_egui_input(window);
+        let ppp = crate::display::effective_pixels_per_point(
+            window.scale_factor() as f32,
+            crate::display::UiScale::new(frame.runtime.display.ui_scale),
+        );
+        self.ctx.set_pixels_per_point(ppp);
         let mut actions = Vec::new();
         let mut connect_clicked = false;
         let mut visible = self.visible;
@@ -190,7 +216,7 @@ impl DebugOverlay {
             if visible {
                 Self::paint(
                     egui_ctx,
-                    snapshot,
+                    frame,
                     &mut visible,
                     &mut tab,
                     &mut ui_state,
@@ -198,13 +224,23 @@ impl DebugOverlay {
                     &mut actions,
                 );
                 if ui_state.show_entity_labels {
-                    draw_world_entity_labels(egui_ctx, snapshot);
+                    draw_world_entity_labels(egui_ctx, frame);
                 }
+            } else if has_persistent_dev_warnings(&ui_state) {
+                draw_dev_warning_area(egui_ctx, &ui_state);
             }
+            if ui_state.show_rf_ab {
+                draw_rf_ab_captions(egui_ctx, frame.runtime.display.world_msaa_4x_supported);
+            }
+            draw_center_toast(egui_ctx, &ui_state);
         });
         self.visible = visible;
         self.tab = tab;
         self.ui = ui_state;
+        actions.extend(self.ui.drain_commands());
+        if connect_clicked {
+            actions.push(DebugCommand::Connect);
+        }
         self.winit
             .handle_platform_output(window, full_output.platform_output);
 
@@ -275,17 +311,19 @@ pub fn is_debug_toggle_key(physical_key: PhysicalKey, pressed: bool, repeat: boo
 
 fn tab_section_ids(tab: DebugTab) -> &'static [&'static str] {
     match tab {
-        DebugTab::Runtime => &[SEC_RT_FRAME, SEC_RT_GIZMOS],
-        DebugTab::Player => &[SEC_PL_POSE, SEC_PL_MOTION],
-        DebugTab::Footnote => &[SEC_FN_CONTACT, SEC_FN_POSE, SEC_FN_INPUT],
-        DebugTab::World => &[SEC_WD_STAGE, SEC_WD_VIEW, SEC_WD_ENTITIES],
-        DebugTab::Camera => &[
-            SEC_CM_TRANSFORM,
-            SEC_CM_FOLLOW,
-            SEC_CM_JITTER,
-            SEC_CM_PARALLAX,
+        DebugTab::Debug => &[
+            SEC_NOW_POSE,
+            SEC_NOW_CAMERA,
+            SEC_NOW_REPLICA,
+            SEC_NOW_VIEW,
+            SEC_NOW_DISPLAY,
         ],
-        DebugTab::Diagnostics => &[SEC_DG_DETECTORS, SEC_DG_LAST, SEC_DG_HISTORY],
+        DebugTab::Runtime => &[SEC_RT_FRAME],
+        DebugTab::Player => &[SEC_PL_POSE, SEC_PL_MOTION, SEC_FN_CONTACT],
+        DebugTab::Skeleton => &[SEC_SK_VIEW, SEC_SK_INSPECT, SEC_SK_EQUIP, SEC_SK_PROOF],
+        DebugTab::World => &[SEC_WD_STAGE, SEC_WD_ENTITIES],
+        DebugTab::Camera => &[SEC_CM_TRANSFORM, SEC_CM_JITTER, SEC_CM_PARALLAX],
+        DebugTab::Diagnostics => &[SEC_DG_DETECTORS, SEC_DG_HELP, SEC_DG_LAST, SEC_DG_HISTORY],
         DebugTab::Network => &[
             SEC_NET_CONN,
             SEC_NET_AOI,
@@ -314,24 +352,16 @@ fn fmt_opt_u16(value: Option<u16>) -> String {
     value.map(|n| n.to_string()).unwrap_or_else(|| "—".into())
 }
 
-fn network_section_default_open(id: &'static str) -> bool {
-    matches!(
-        id,
-        SEC_NET_AOI
-            | SEC_NET_INTERACT
-            | SEC_NET_INTERP
-            | SEC_NET_PRED
-            | SEC_NET_IMPAIR
-            | SEC_NET_REPLICA
-    )
+fn network_section_default_open(_id: &'static str) -> bool {
+    false
 }
 
 const INTERACT_FLASH_SECS: f32 = 0.55;
 
-fn note_interact_flash(ui_state: &mut DebugUiState, snapshot: &DebugSnapshot) {
-    let kind = snapshot.interact_status.kind;
+fn note_interact_flash(ui_state: &mut DebugUiState, frame: &DiagnosticsFrame) {
+    let kind = frame.network.interact_status.kind;
     if ui_state.last_interact_kind != Some(kind) {
-        if let Some(text) = &snapshot.interact_status.last_transition {
+        if let Some(text) = &frame.network.interact_status.last_transition {
             ui_state.interact_flash_text = text.clone();
             ui_state.interact_flash_until =
                 Some(Instant::now() + Duration::from_secs_f32(INTERACT_FLASH_SECS));
@@ -362,49 +392,92 @@ fn draw_status_chip(ui: &mut egui::Ui, text: &str, rgb: (u8, u8, u8), emphasize:
         });
 }
 
+fn draw_reserved_chrome_line(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &str,
+    rgb: (u8, u8, u8),
+    live: bool,
+) {
+    let row_h = ui.text_style_height(&egui::TextStyle::Small).max(14.0) + 2.0;
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), row_h),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(ui.available_width());
+            let label_color = egui::Color32::from_rgb(150, 154, 162);
+            ui.add_sized(
+                [56.0, row_h],
+                egui::Label::new(egui::RichText::new(label).small().color(label_color)),
+            );
+            let color = if live {
+                egui::Color32::from_rgb(rgb.0, rgb.1, rgb.2)
+            } else {
+                label_color
+            };
+            ui.add(egui::Label::new(egui::RichText::new(value).small().color(color)).truncate())
+                .on_hover_text(value);
+        },
+    );
+}
+
 fn draw_interact_status_strip(
     ui: &mut egui::Ui,
-    snapshot: &DebugSnapshot,
+    frame: &DiagnosticsFrame,
     ui_state: &mut DebugUiState,
 ) {
-    note_interact_flash(ui_state, snapshot);
-    let status = &snapshot.interact_status;
+    note_interact_flash(ui_state, frame);
+    let status = &frame.network.interact_status;
     let rgb = interact_kind_color(status.kind);
     let flash_live = ui_state
         .interact_flash_until
         .is_some_and(|until| Instant::now() < until);
-    ui.horizontal_wrapped(|ui| {
-        ui.strong("INTERACTION");
-        draw_status_chip(ui, &status.interaction_line(), rgb, flash_live);
-        if flash_live && !ui_state.interact_flash_text.is_empty() {
-            draw_status_chip(ui, &ui_state.interact_flash_text, (255, 230, 90), true);
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.strong("TARGET");
-        ui.label(format_target_line(
-            snapshot.interact_nearest.as_deref(),
-            snapshot.interact_nearest_distance,
-        ));
-        ui.separator();
-        ui.strong("PORTAL");
-        ui.label(format_portal_line(
-            snapshot.interact_nearest_portal.as_deref(),
-            snapshot.portal_eligible,
-        ));
-    });
+    let flash = if flash_live && !ui_state.interact_flash_text.is_empty() {
+        Some(ui_state.interact_flash_text.as_str())
+    } else {
+        None
+    };
+    draw_reserved_chrome_line(
+        ui,
+        "Interact",
+        &compact_interact_value(&status.interaction_line(), flash),
+        rgb,
+        interaction_chrome_visible(status.kind, flash_live),
+    );
+    draw_reserved_chrome_line(
+        ui,
+        "Target",
+        &format_target_line(
+            frame.network.interact_nearest.as_deref(),
+            frame.network.interact_nearest_distance,
+        ),
+        (210, 214, 220),
+        target_chrome_visible(
+            frame.network.interact_nearest.as_deref(),
+            frame.network.interact_nearest_distance,
+        ),
+    );
+    draw_reserved_chrome_line(
+        ui,
+        "Portal",
+        &format_portal_line(
+            frame.network.interact_nearest_portal.as_deref(),
+            frame.network.portal_eligible,
+        ),
+        (210, 214, 220),
+        portal_chrome_visible(
+            frame.network.interact_nearest_portal.as_deref(),
+            frame.network.portal_eligible,
+        ),
+    );
 }
 
-fn note_channel_flash(ui_state: &mut DebugUiState, snapshot: &DebugSnapshot) {
-    let current = snapshot.observer_channel;
-    let epoch = snapshot.replica_epoch;
+fn note_channel_flash(ui_state: &mut DebugUiState, frame: &DiagnosticsFrame) {
+    let current = frame.world.observer_channel;
+    let epoch = frame.network.replica_epoch;
     if ui_state.last_observed_channel != Some(current) {
         if let Some(prev) = ui_state.last_observed_channel {
-            ui_state.channel_flash_from = Some(prev);
-            ui_state.channel_flash_to = Some(current);
-            ui_state.channel_flash_epoch_from = ui_state.last_observed_epoch;
-            ui_state.channel_flash_epoch_to = Some(epoch);
-            ui_state.channel_flash_until = Some(Instant::now() + Duration::from_secs(3));
+            ui_state.note_dev_action_flash(&format!("CHANNEL {prev} -> {current}"));
         }
         ui_state.last_observed_channel = Some(current);
     }
@@ -413,95 +486,208 @@ fn note_channel_flash(ui_state: &mut DebugUiState, snapshot: &DebugSnapshot) {
 
 fn draw_world_address_strip(
     ui: &mut egui::Ui,
-    snapshot: &DebugSnapshot,
+    frame: &DiagnosticsFrame,
     ui_state: &mut DebugUiState,
 ) {
-    note_channel_flash(ui_state, snapshot);
+    note_channel_flash(ui_state, frame);
     ui.horizontal_wrapped(|ui| {
-        ui.strong("WORLD");
         ui.label(format!(
-            "Map: {}   Channel: {}   Instance: {}",
-            snapshot.observer_map, snapshot.observer_channel, snapshot.observer_instance
+            "Map {} · Ch {} · Inst {}",
+            frame.world.observer_map, frame.world.observer_channel, frame.world.observer_instance
         ));
+        draw_channel_buttons(ui, frame, ui_state);
     });
-    ui.horizontal_wrapped(|ui| {
-        ui.strong("Channel:");
-        for ch in 0..=purgatory_protocol::DEV_CHANNEL_MAX {
-            let selected = snapshot.observer_channel == ch;
-            if ui
-                .selectable_label(selected, format!("[{ch}]"))
-                .on_hover_text("DEV: request server-authoritative Channel change")
-                .clicked()
-            {
-                ui_state.request_channel = Some(ch);
-            }
-        }
-        ui.separator();
-        ui.label(format!(
-            "map={}  ch={}  inst={}",
-            snapshot.observer_map, snapshot.observer_channel, snapshot.observer_instance
-        ));
-    });
-    if !snapshot.transition_banner.is_empty() {
-        let rgb = if snapshot.transition_stalled {
+    if transition_chrome_visible(&frame.world.transition_banner) {
+        let rgb = if frame.world.transition_stalled {
             (255, 90, 90)
         } else {
             (90, 200, 255)
         };
         draw_status_chip(
             ui,
-            &snapshot.transition_banner,
+            &frame.world.transition_banner,
             rgb,
-            snapshot.transition_stalled,
+            frame.world.transition_stalled,
         );
-        if !snapshot.transition_missing.is_empty() {
-            ui.small(format!("waiting: {}", snapshot.transition_missing));
+        if !frame.world.transition_missing.is_empty() {
+            ui.small(format!("waiting: {}", frame.world.transition_missing));
         }
     }
-    let locked = snapshot.input_movement_neutral;
-    draw_status_chip(
-        ui,
-        &snapshot.input_gate_label,
-        if locked {
-            (255, 180, 80)
-        } else {
-            (140, 200, 140)
-        },
-        locked,
-    );
-    if locked {
+    if input_gate_chrome_visible(frame.world.input_movement_neutral) {
+        draw_status_chip(ui, &frame.world.input_gate_label, (255, 180, 80), true);
         ui.small("authoritative movement neutral: yes");
     }
-    let flash_live = ui_state
-        .channel_flash_until
-        .is_some_and(|until| Instant::now() < until);
-    if flash_live
-        && let (Some(from), Some(to)) = (ui_state.channel_flash_from, ui_state.channel_flash_to)
-    {
-        let epoch = match (
-            ui_state.channel_flash_epoch_from,
-            ui_state.channel_flash_epoch_to,
-        ) {
-            (Some(e0), Some(e1)) => format!(" epoch {e0} → {e1}"),
-            _ => String::new(),
-        };
-        draw_status_chip(
-            ui,
-            &format!("CHANNEL TRANSITION  {from} → {to}{epoch}"),
-            (90, 200, 255),
-            true,
-        );
+}
+
+fn draw_compact_status_line(ui: &mut egui::Ui, frame: &DiagnosticsFrame) {
+    let net = frame.network.lifecycle;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!(
+            "FPS {:.0} · tick {} · {} {}",
+            frame.runtime.fps,
+            frame.runtime.tick,
+            net.state.as_str(),
+            format_rtt_ms(net.rtt)
+        ));
+    });
+}
+
+fn draw_dev_warning_chips(ui: &mut egui::Ui, ui_state: &DebugUiState) {
+    let warnings = persistent_dev_warnings(ui_state);
+    if warnings.is_empty() {
+        return;
     }
+    ui.horizontal_wrapped(|ui| {
+        for warning in &warnings {
+            draw_status_chip(ui, &warning.label, warning.rgb, true);
+        }
+    });
+}
+
+fn draw_dev_warning_area(ctx: &Context, ui_state: &DebugUiState) {
+    egui::Area::new(egui::Id::new("purgatory-dev-warnings"))
+        .fixed_pos([12.0, 12.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            draw_dev_warning_chips(ui, ui_state);
+        });
+}
+
+fn draw_rf_ab_captions(ctx: &Context, msaa_4x: bool) {
+    let ppp = ctx.pixels_per_point().max(0.001);
+    for (i, panel) in crate::renderer::rf_diag::rf_ab_layout(msaa_4x)
+        .into_iter()
+        .enumerate()
+    {
+        let dest = panel.dest;
+        let pos = egui::pos2(
+            dest.x as f32 / ppp,
+            dest.y
+                .saturating_sub(crate::renderer::rf_diag::RF_AB_CAPTION) as f32
+                / ppp,
+        );
+        egui::Area::new(egui::Id::new(("purgatory-rf-ab-cap", i)))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgba_unmultiplied(8, 8, 12, 200))
+                    .inner_margin(egui::Margin::symmetric(4, 1))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(panel.label)
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(230, 230, 230)),
+                        );
+                    });
+            });
+    }
+}
+
+fn draw_center_toast(ctx: &Context, ui_state: &DebugUiState) {
+    if !ui_state.center_toast_live() {
+        return;
+    }
+    let max_width = ctx.content_rect().width() * 0.70;
+    egui::Area::new(egui::Id::new("purgatory-debug-toast"))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, -48.0])
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            ui.set_max_width(max_width);
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(12, 12, 16, 210))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgb(255, 230, 90),
+                ))
+                .inner_margin(egui::Margin::symmetric(14, 8))
+                .corner_radius(6)
+                .show(ui, |ui| {
+                    ui.set_max_width(max_width);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&ui_state.dev_action_flash_text)
+                                .size(16.0)
+                                .color(egui::Color32::from_rgb(255, 230, 90))
+                                .strong(),
+                        )
+                        .wrap(),
+                    );
+                });
+        });
+}
+
+fn draw_channel_buttons(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut DebugUiState) {
+    for ch in 0..=purgatory_protocol::DEV_CHANNEL_MAX {
+        let selected = frame.world.observer_channel == ch;
+        if ui
+            .selectable_label(selected, format!("[{ch}]"))
+            .on_hover_text("DEV: request server-authoritative Channel change (DevSetChannel)")
+            .clicked()
+        {
+            ui_state.request_channel = Some(ch);
+        }
+    }
+}
+
+fn draw_reset_action(ui: &mut egui::Ui, frame: &DiagnosticsFrame, actions: &mut Vec<DebugCommand>) {
+    let replica = reset_player_uses_replica(frame.network.replica_player_pos.is_some());
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button(RESET_TO_SPAWN_LABEL)
+            .on_hover_text(RESET_TO_SPAWN_HELP)
+            .clicked()
+        {
+            actions.push(DebugCommand::ResetToSpawn);
+        }
+        if replica
+            && ui
+                .button(reset_action_label(true))
+                .on_hover_text(reset_action_help(true))
+                .clicked()
+        {
+            actions.push(DebugCommand::ResetPlayer);
+        }
+    });
+}
+
+fn world_gizmo_checkbox(ui: &mut egui::Ui, master: &mut bool, flag: &mut bool, label: &str) {
+    let was = *flag;
+    ui.checkbox(flag, label);
+    super::ui_state::arm_master_on_gizmo_enable(master, was, *flag);
+}
+
+fn draw_time_scale_buttons(ui: &mut egui::Ui, ui_state: &mut DebugUiState) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Speed");
+        for scale in DebugUiState::TIME_SCALES {
+            let label = if (scale - 1.0).abs() < 1e-4 {
+                "1.0×"
+            } else if (scale - 0.5).abs() < 1e-4 {
+                "0.5×"
+            } else {
+                "0.25×"
+            };
+            if ui
+                .selectable_label((ui_state.time_scale - scale).abs() < 1e-4, label)
+                .clicked()
+            {
+                ui_state.time_scale = scale;
+            }
+        }
+    });
 }
 
 fn draw_debug_window(
     ctx: &Context,
-    snapshot: &DebugSnapshot,
+    frame: &DiagnosticsFrame,
     visible: &mut bool,
     tab: &mut DebugTab,
     ui_state: &mut DebugUiState,
     history: &mut CollisionHistory,
-    actions: &mut Vec<DebugAction>,
+    actions: &mut Vec<DebugCommand>,
 ) {
     egui::Window::new("PURGATORY DEBUG")
         .open(visible)
@@ -510,22 +696,17 @@ fn draw_debug_window(
         .default_pos([12.0, 12.0])
         .default_width(360.0)
         .show(ctx, |ui| {
-            if (ui_state.time_scale - 1.0).abs() > 1e-4 {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 180, 60),
-                    format!("DEV TIME SCALE: {}", ui_state.time_scale_label()),
-                );
-                ui.separator();
-            }
+            draw_compact_status_line(ui, frame);
+            draw_dev_warning_chips(ui, ui_state);
+            draw_world_address_strip(ui, frame, ui_state);
+            draw_interact_status_strip(ui, frame, ui_state);
 
-            draw_interact_status_strip(ui, snapshot, ui_state);
-            draw_world_address_strip(ui, snapshot, ui_state);
-
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (label, value) in [
+                    ("Debug", DebugTab::Debug),
                     ("Runtime", DebugTab::Runtime),
                     ("Player", DebugTab::Player),
-                    ("FOOTNOTE", DebugTab::Footnote),
+                    ("Skeleton", DebugTab::Skeleton),
                     ("World", DebugTab::World),
                     ("Camera", DebugTab::Camera),
                     ("Diagnostics", DebugTab::Diagnostics),
@@ -544,22 +725,495 @@ fn draw_debug_window(
                 .show(ui, |ui| {
                     draw_expand_collapse(ui, &mut ui_state.sections, tab_section_ids(*tab));
                     match *tab {
-                        DebugTab::Runtime => draw_runtime_tab(ui, snapshot, ui_state),
-                        DebugTab::Player => draw_player_tab(ui, snapshot, ui_state, actions),
-                        DebugTab::Footnote => draw_footnote_tab(ui, snapshot, ui_state),
-                        DebugTab::World => draw_world_tab(ui, snapshot, ui_state),
-                        DebugTab::Camera => draw_camera_tab(ui, snapshot, ui_state),
-                        DebugTab::Diagnostics => {
-                            draw_diagnostics_tab(ui, snapshot, ui_state, history)
-                        }
-                        DebugTab::Network => draw_network_tab(ui, snapshot, ui_state),
+                        DebugTab::Debug => draw_now_tab(ui, frame, ui_state, actions),
+                        DebugTab::Runtime => draw_runtime_tab(ui, frame, ui_state),
+                        DebugTab::Player => draw_player_tab(ui, frame, ui_state, actions),
+                        DebugTab::Skeleton => draw_skeleton_tab(ui, frame, ui_state),
+                        DebugTab::World => draw_world_tab(ui, frame, ui_state),
+                        DebugTab::Camera => draw_camera_tab(ui, frame, ui_state),
+                        DebugTab::Diagnostics => draw_diagnostics_tab(ui, frame, ui_state, history),
+                        DebugTab::Network => draw_network_tab(ui, frame, ui_state),
                     }
                 });
         });
 }
 
-fn draw_runtime_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut DebugUiState) {
-    let frame_summary = format!("FPS {:.1} | tick {}", snapshot.fps, snapshot.tick);
+fn draw_display_section(
+    ui: &mut egui::Ui,
+    frame: &DiagnosticsFrame,
+    ui_state: &mut DebugUiState,
+    section_id: &'static str,
+    default_open: bool,
+) {
+    use crate::display::{RENDER_SCALE_PRESETS, RESOLUTION_PRESETS};
+
+    let d = frame.runtime.display;
+    let msaa = match d.world_msaa_samples {
+        4 => "4×".to_string(),
+        1 => "Off".to_string(),
+        n => format!("{n}×"),
+    };
+    let summary = match d.internal_render {
+        Some((w, h)) => format!("{}% {msaa} → {w}×{h}", d.render_scale_percent),
+        None => format!("{}% {msaa}", d.render_scale_percent),
+    };
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        section_id,
+        default_open,
+        "Display",
+        Some(&summary),
+    ) {
+        ui.indent(section_id, |ui| {
+            ui.label(format!(
+                "Window logical:  {} × {}",
+                d.window_logical.0, d.window_logical.1
+            ));
+            ui.label(format!(
+                "Framebuffer:     {} × {}",
+                d.framebuffer.0, d.framebuffer.1
+            ));
+            ui.label(format!("Surface:         {} × {}", d.surface.0, d.surface.1));
+            ui.label(format!(
+                "Selected:        {} × {}",
+                d.selected.0, d.selected.1
+            ));
+            ui.label(format!("Aspect ratio:    {}", d.aspect_label()));
+            ui.label(format!("Scale factor:    {:.2}", d.scale_factor));
+            ui.label(format!("UI scale:        {:.2}", d.ui_scale));
+            ui.label(format!("Window mode:     {}", d.window_mode.label()));
+            ui.label(format!(
+                "Gameplay view:   {:.2} × {:.2} wu (locked 16:9)",
+                frame.camera.viewport_width, frame.camera.viewport_height
+            ));
+            match d.gameplay_pixel {
+                Some((x, y, w, h)) => {
+                    ui.label(format!("Gameplay pixels: {w} × {h} @ ({x},{y})"));
+                }
+                None => {
+                    ui.label("Gameplay pixels: —");
+                }
+            }
+            ui.label(format!("Render scale:     {}%", d.render_scale_percent));
+            match d.internal_render {
+                Some((w, h)) if d.internal_render_clamped => {
+                    ui.label(format!("Internal render:  {w} × {h} (clamped to GPU limit)"));
+                }
+                Some((w, h)) => {
+                    ui.label(format!("Internal render:  {w} × {h}"));
+                }
+                None => {
+                    ui.label("Internal render:  —");
+                }
+            }
+            match d.monitor_native {
+                Some((w, h)) => {
+                    ui.label(format!("Monitor native:  {w} × {h}"));
+                }
+                None => {
+                    ui.label("Monitor native:  —");
+                }
+            }
+            ui.small(
+                "Window size, render scale, and camera FOV are independent. World renders to an offscreen target at Render Scale, then linear-filters into the locked 16:9 gameplay rect. UI stays at native output resolution. Nearest-neighbor remains a future pixel-art option.",
+            );
+            ui.separator();
+            ui.label("Resolution:");
+            ui.horizontal_wrapped(|ui| {
+                for preset in RESOLUTION_PRESETS {
+                    let selected =
+                        d.framebuffer == (preset.width, preset.height) || d.surface == (preset.width, preset.height);
+                    if ui
+                        .selectable_label(selected, preset.label())
+                        .clicked()
+                    {
+                        ui_state.requested_resolution = Some(preset);
+                    }
+                }
+            });
+            ui.small("Applies immediately through the client display path. Same path as OS window resize.");
+            ui.separator();
+            ui.label("Render scale:");
+            ui.horizontal_wrapped(|ui| {
+                for preset in RENDER_SCALE_PRESETS {
+                    let selected = d.render_scale_percent == preset.percent();
+                    let label = if preset == crate::display::RenderScale::DEFAULT {
+                        format!("{} default", preset.label())
+                    } else if preset == crate::display::RenderScale::PERFORMANCE_FALLBACK {
+                        format!("{} perf", preset.label())
+                    } else {
+                        preset.label()
+                    };
+                    if ui.selectable_label(selected, label).clicked() {
+                        ui_state.requested_render_scale = Some(preset);
+                    }
+                }
+            });
+            ui.small("Default 200% (integer 2:1 supersample + linear downsample). 100% is the performance fallback. Does not change window size or gameplay view. 150% is not a quality preset. 400% is RF diagnostic only.");
+            ui.separator();
+            ui.label("World MSAA:");
+            ui.horizontal_wrapped(|ui| {
+                for mode in crate::renderer::WorldMsaa::ALL {
+                    let selected = d.world_msaa_samples == mode.sample_count();
+                    let enabled = mode != crate::renderer::WorldMsaa::X4 || d.world_msaa_4x_supported;
+                    let label = if mode == crate::renderer::WorldMsaa::X4 && !d.world_msaa_4x_supported
+                    {
+                        "4× (unsupported)"
+                    } else {
+                        mode.as_str()
+                    };
+                    if ui.selectable_label(selected, label).clicked() && enabled {
+                        ui_state.requested_world_msaa = Some(mode);
+                    }
+                }
+            });
+            ui.small(
+                "Production uses 4×. Off (1×) is compatibility/diagnostic fallback only. Does not change camera FOV.",
+            );
+            ui.separator();
+            ui.checkbox(&mut ui_state.show_rf_scene, "RF0 rotated-geometry scene");
+            ui.checkbox(
+                &mut ui_state.show_rf_ab,
+                "RF1.5–RF3 A/B proof (simultaneous)",
+            );
+            ui.checkbox(
+                &mut ui_state.rf_freeze_camera,
+                "Freeze camera (RF0 / same path as Camera Frozen)",
+            );
+            ui.checkbox(
+                &mut ui_state.rf_log_vertices,
+                "Log RF0 probe screen vertices",
+            );
+            ui.small(
+                "World-fixed quads: static 0°/15°/30°/45°, slow rotate, subpixel translate, both. Independent of animation. Probe is translate+rotate (green).",
+            );
+            if ui_state.show_rf_ab {
+                ui.small(
+                    "A/B compositor ignores gameplay Render Scale. RF3 row is 100/200/400% + 4× with linear downsample and identical dest size. Production blit stays linear. 150% is not in this proof.",
+                );
+                let samples = if d.world_msaa_4x_supported { 4 } else { 1 };
+                let diag: Vec<_> = crate::renderer::rf_diag::RF3_SCALE_PERCENTS
+                    .iter()
+                    .map(|p| {
+                        (
+                            *p,
+                            crate::renderer::rf_diag::rf_ab_panel_source(*p),
+                        )
+                    })
+                    .collect();
+                ui.monospace(format!(
+                    "RF3 diagnostic RT {}",
+                    diag.iter()
+                        .map(|(p, s)| format!("{p}% {}×{}", s.0, s.1))
+                        .collect::<Vec<_>>()
+                        .join("  ")
+                ));
+                ui.monospace(format!(
+                    "diagnostic sample-texels 4×: {}",
+                    diag.iter()
+                        .map(|(p, s)| format!(
+                            "{p}% {}",
+                            crate::renderer::rf_diag::rf_ab_sample_cost(*s, samples)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("  ")
+                ));
+                let (gw, gh) = d
+                    .gameplay_pixel
+                    .map(|(_, _, w, h)| (w, h))
+                    .unwrap_or((1280, 720));
+                let world: Vec<_> = crate::renderer::rf_diag::RF3_SCALE_PERCENTS
+                    .iter()
+                    .map(|p| {
+                        (
+                            *p,
+                            crate::renderer::rf_diag::rf_ab_scaled_extent(gw, gh, *p),
+                        )
+                    })
+                    .collect();
+                ui.monospace(format!(
+                    "if world {gw}×{gh}: {}",
+                    world
+                        .iter()
+                        .map(|(p, s)| format!("{p}% {}×{}", s.0, s.1))
+                        .collect::<Vec<_>>()
+                        .join("  ")
+                ));
+                ui.monospace(format!(
+                    "implied world sample-texels 4×: {}",
+                    world
+                        .iter()
+                        .map(|(p, s)| format!(
+                            "{p}% {}",
+                            crate::renderer::rf_diag::rf_ab_sample_cost(*s, samples)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("  ")
+                ));
+                ui.small(format!(
+                    "Whole-frame FPS {:.1} (vsync-capped; not GPU pass time). Timestamp queries are not wired.",
+                    frame.runtime.fps
+                ));
+                if ui_state.show_rf_scene {
+                    ui.small("A/B is on: RF0 is not injected into the gameplay world pass.");
+                }
+            }
+            if let Some(proof) = frame.rf {
+                ui.label(format!(
+                    "Probe cam ({:.5}, {:.5})  t={:.3}s",
+                    proof.camera[0], proof.camera[1], proof.elapsed
+                ));
+                ui.label(format!(
+                    "d world {:.6}  ndc {:.6}  ipx {:.5}  out {:.5}",
+                    proof.max_d_world,
+                    proof.max_d_ndc,
+                    proof.max_d_internal,
+                    proof.max_d_output
+                ));
+                for (i, (w, ip)) in proof.world.iter().zip(proof.internal_px.iter()).enumerate() {
+                    ui.monospace(format!(
+                        "v{i} world ({:.6},{:.6})  ipx ({:.4},{:.4})  Δipx ({:.5},{:.5})",
+                        w[0],
+                        w[1],
+                        ip[0],
+                        ip[1],
+                        proof.d_internal_px[i][0],
+                        proof.d_internal_px[i][1]
+                    ));
+                }
+                ui.small(if proof.max_d_internal > 0.0 && proof.max_d_internal < 0.35 {
+                    "Vertices moving continuously (subpixel). Remaining shimmer is raster/sampling or blit."
+                } else if proof.max_d_internal == 0.0 {
+                    "Vertices stationary this frame."
+                } else {
+                    "Large vertex jump — inspect camera/transform quantization."
+                });
+            }
+        });
+    }
+}
+
+fn draw_now_tab(
+    ui: &mut egui::Ui,
+    frame: &DiagnosticsFrame,
+    ui_state: &mut DebugUiState,
+    actions: &mut Vec<DebugCommand>,
+) {
+    draw_time_scale_buttons(ui, ui_state);
+    ui.small("Scales wall elapsed into SimulationClock only. Tick rate stays 30 Hz.");
+    draw_reset_action(ui, frame, actions);
+    let pose_summary = frame.physics.player.map(|player| {
+        format!(
+            "({:.2}, {:.2}) {}",
+            player.position[0],
+            player.position[1],
+            if player.grounded { "grounded" } else { "air" }
+        )
+    });
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_NOW_POSE,
+        true,
+        "Local player",
+        pose_summary.as_deref(),
+    ) {
+        ui.indent(SEC_NOW_POSE, |ui| {
+            if let Some(player) = frame.physics.player {
+                ui.label(format!(
+                    "Pos ({:.2}, {:.2})  vel ({:.2}, {:.2})  {}",
+                    player.position[0],
+                    player.position[1],
+                    player.velocity[0],
+                    player.velocity[1],
+                    if player.grounded { "grounded" } else { "air" }
+                ));
+                if let Some(fn_dbg) = frame.physics.footnote {
+                    ui.label(format!(
+                        "Input X {}  down {}",
+                        fn_dbg.move_axis, fn_dbg.down_held
+                    ));
+                }
+            } else {
+                ui.label("No local player.");
+            }
+        });
+    }
+    let cam_summary = format!(
+        "follow {}/{}",
+        if frame.camera.following_x { "X" } else { "—" },
+        if frame.camera.following_y { "Y" } else { "—" }
+    );
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_NOW_CAMERA,
+        true,
+        "Camera",
+        Some(&cam_summary),
+    ) {
+        ui.indent(SEC_NOW_CAMERA, |ui| {
+            ui.label(format!(
+                "Following X: {}  Y: {}",
+                if frame.camera.following_x {
+                    "yes"
+                } else {
+                    "no"
+                },
+                if frame.camera.following_y {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ));
+            ui.label(format!(
+                "Dead zone half X {:.2}  Y {:.2}",
+                frame.camera.deadzone_half_x, frame.camera.deadzone_half_y
+            ));
+            ui.checkbox(&mut ui_state.camera_follow, "Follow Player");
+            if ui.button("Center On Player").clicked() {
+                ui_state.center_on_player = true;
+            }
+        });
+    }
+    let replica_seq = frame
+        .network
+        .replica_seq
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "—".into());
+    let pred_line = frame
+        .network
+        .pred
+        .lead_error
+        .map(|e| format!("{e:.2} wu"))
+        .unwrap_or_else(|| "—".into());
+    let replica_summary = format!(
+        "known {} · seq {replica_seq} · pred {}",
+        frame.network.replica_entities,
+        if frame.network.pred.active {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_NOW_REPLICA,
+        true,
+        "Replica / prediction",
+        Some(&replica_summary),
+    ) {
+        ui.indent(SEC_NOW_REPLICA, |ui| {
+            ui.label(format!(
+                "Known {}  snapshot seq {replica_seq}",
+                frame.network.replica_entities
+            ));
+            ui.label(format!(
+                "Pred {}  lead {}",
+                if frame.network.pred.active {
+                    "active"
+                } else {
+                    "idle"
+                },
+                pred_line
+            ));
+        });
+    }
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_NOW_VIEW,
+        true,
+        "View / gizmos",
+        None,
+    ) {
+        ui.indent(SEC_NOW_VIEW, |ui| {
+            ui.checkbox(
+                &mut ui_state.show_placeholder_character,
+                "Show Placeholder Character",
+            );
+            ui.checkbox(&mut ui_state.show_skeleton, "Show Skeleton");
+            ui.checkbox(
+                &mut ui_state.show_local_player_quad,
+                "Show legacy blue AABB",
+            );
+            ui.separator();
+            ui.checkbox(&mut ui_state.show_overlay_gizmos, "Show overlay gizmos");
+            if !ui_state.show_overlay_gizmos {
+                ui.small("Master off: world gizmos muted. Checking a gizmo below turns the master on.");
+            }
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_colliders,
+                "Show Colliders",
+            );
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_velocity,
+                "Show Velocity Vector",
+            );
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_grounded_highlight,
+                "Highlight Grounded Platform",
+            );
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_world_bounds,
+                "Show World Bounds",
+            );
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_grid,
+                "Show Grid",
+            );
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_parallax_debug,
+                "Show Parallax Debug",
+            );
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_aoi_rects,
+                "Show AOI Policy Rects",
+            );
+            ui.checkbox(&mut ui_state.show_entity_labels, "Show entity labels");
+            ui.small("Entity labels are egui chips; they do not use the gizmo master.");
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_camera_deadzone,
+                "Show Camera Dead Zone",
+            );
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_interpolation_gizmos,
+                "Show Interpolation Gizmos",
+            );
+            world_gizmo_checkbox(
+                ui,
+                &mut ui_state.show_overlay_gizmos,
+                &mut ui_state.show_prediction_gizmos,
+                "Show Prediction Gizmos",
+            );
+            ui.small("Interp/prediction gizmos need an active replica. Velocity draws a rest tick when idle.");
+        });
+    }
+    draw_display_section(ui, frame, ui_state, SEC_NOW_DISPLAY, false);
+}
+
+fn draw_runtime_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut DebugUiState) {
+    let frame_summary = format!("FPS {:.1} | tick {}", frame.runtime.fps, frame.runtime.tick);
     if debug_section(
         ui,
         &mut ui_state.sections,
@@ -569,65 +1223,296 @@ fn draw_runtime_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
         Some(&frame_summary),
     ) {
         ui.indent(SEC_RT_FRAME, |ui| {
-            ui.label(format!("Frames: {}", snapshot.frames));
-            ui.label(format!("Tick: {}", snapshot.tick));
-            ui.label(format!("Sim rate: {} Hz (fixed)", snapshot.tick_rate_hz));
+            ui.label(format!("Frames: {}", frame.runtime.frames));
+            ui.label(format!("Tick: {}", frame.runtime.tick));
+            ui.label(format!(
+                "Sim rate: {} Hz (fixed)",
+                frame.runtime.tick_rate_hz
+            ));
             ui.label(format!(
                 "Window: {}x{}",
-                snapshot.window_width, snapshot.window_height
+                frame.runtime.window_width, frame.runtime.window_height
             ));
-            ui.label(format!("FPS: {:.1}", snapshot.fps));
+            ui.label(format!("FPS: {:.1}", frame.runtime.fps));
             ui.label(format!("Time scale: {:.2}", ui_state.time_scale));
+            ui.small("Speed control: Debug tab. Tick rate stays 30 Hz.");
+        });
+    }
+}
+
+fn draw_skeleton_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut DebugUiState) {
+    if debug_section(ui, &mut ui_state.sections, SEC_SK_VIEW, true, "View", None) {
+        ui.indent(SEC_SK_VIEW, |ui| {
+            ui.checkbox(
+                &mut ui_state.show_placeholder_character,
+                "Show Placeholder Character",
+            );
+            ui.checkbox(
+                &mut ui_state.presentation_view_back,
+                "Force Back view (8F-B visibility)",
+            );
+            ui.checkbox(
+                &mut ui_state.presentation_force_climb_back,
+                "Force ClimbBack activity (8F-C)",
+            );
+            ui.checkbox(&mut ui_state.show_skeleton, "Show Skeleton");
+            ui.checkbox(
+                &mut ui_state.show_local_player_quad,
+                "Show legacy blue AABB",
+            );
+            ui.checkbox(
+                &mut ui_state.skeleton_debug_preview_2x,
+                "2× Debug Preview",
+            );
+            ui.small("Base presentation: 1.15× about planted feet. 2× Debug Preview is diagnostic only; it does not change the 1.15 baseline, bind, evaluate, or simulation AABB.");
+            ui.small("Joints are small opaque circular dots under the placeholders.");
+            ui.small("Uncheck legacy blue AABB to hide the cyan body rectangle.");
+            ui.small("P4.2 placeholders and 8E attachment debug quads come from CharacterPresentationSet (local and remote share one path). Stage D joints remain the local S2 overlay.");
+            ui.small("Force Back / Force ClimbBack apply on this client to every CharacterPresentationSet player (local + remotes this client interpolates). They are not local-only. They do not change the other client's overlay, Stage D joints, or the remote magenta AABB.");
+            ui.small("8F-A draw order (far → near): ArmBack → LegBack → Core → LegFront → Head → ArmFront. Attachments emit after their layer's base pieces. No per-item z.");
+            ui.small("8F-B Back view hides authored ArmFront/LegFront (and their attachments). ArmBack/LegBack paint in the near Front slots. Force Back is draw-only and does not change activity.");
+            ui.small("8F-C ClimbBack sets PresentationView::Back from semantic activity. Force ClimbBack injects that activity on this client's local and remote player entries. Not a network climb.");
+            ui.small("8F-D ClimbBack plays content/shared/animations/dev/climb_back.anim (not Idle). Force ClimbBack activity. Rebuild the client after Lab save.");
+            ui.small("8F-E equipment debug color follows Side vs Back visual keys (PresentationView). Missing Back is omitted, not Side. Equip cloth cap / plate / boots vs gloves.");
+        });
+    }
+    let skel_summary = frame
+        .presentation
+        .skeleton_inspect
+        .as_ref()
+        .map(|s| format!("{} {}", s.index, s.name))
+        .unwrap_or_else(|| "—".into());
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_SK_INSPECT,
+        false,
+        "Inspect",
+        Some(&skel_summary),
+    ) {
+        ui.indent(SEC_SK_INSPECT, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Simulation Speed:");
-                for scale in DebugUiState::TIME_SCALES {
-                    let label = if (scale - 1.0).abs() < 1e-4 {
-                        "1.0x"
-                    } else if (scale - 0.5).abs() < 1e-4 {
-                        "0.5x"
-                    } else {
-                        "0.25x"
-                    };
-                    if ui
-                        .selectable_label((ui_state.time_scale - scale).abs() < 1e-4, label)
-                        .clicked()
-                    {
-                        ui_state.time_scale = scale;
-                    }
+                if ui.button("Prev").clicked() {
+                    ui_state.skeleton_inspect_index =
+                        ui_state.skeleton_inspect_index.saturating_sub(1);
+                }
+                if ui.button("Next").clicked() {
+                    ui_state.skeleton_inspect_index = (ui_state.skeleton_inspect_index + 1).min(15);
                 }
             });
-            ui.small("Scales wall elapsed into SimulationClock only. Tick rate stays 30 Hz.");
+            egui::ComboBox::from_id_salt("skeleton.inspect.bone")
+                .selected_text(format!(
+                    "{} {}",
+                    ui_state.skeleton_inspect_index,
+                    crate::skeleton_debug::HUMANOID_V0_BONE_LABELS
+                        [usize::from(ui_state.skeleton_inspect_index.min(15))]
+                ))
+                .show_ui(ui, |ui| {
+                    for (i, label) in crate::skeleton_debug::HUMANOID_V0_BONE_LABELS
+                        .iter()
+                        .enumerate()
+                    {
+                        let i = u8::try_from(i).unwrap_or(0);
+                        ui.selectable_value(
+                            &mut ui_state.skeleton_inspect_index,
+                            i,
+                            format!("{i} {label}"),
+                        );
+                    }
+                });
+            if let Some(inspect) = &frame.presentation.skeleton_inspect {
+                ui.label(format!(
+                    "Local  T ({:.3}, {:.3})  R {:.3}",
+                    inspect.local_t[0], inspect.local_t[1], inspect.local_r
+                ));
+                ui.label(format!(
+                    "World  T ({:.3}, {:.3})  R {:.3}",
+                    inspect.world_t[0], inspect.world_t[1], inspect.world_r
+                ));
+                match inspect.screen {
+                    Some(px) => {
+                        ui.label(format!("Screen X {:.1}  Y {:.1}", px[0], px[1]));
+                    }
+                    None => {
+                        ui.label("Screen —");
+                    }
+                }
+                ui.small("Local/World are evaluate (1×). Screen follows the preview-scaled joint.");
+            } else {
+                ui.label("No presented pose this frame.");
+            }
         });
     }
     if debug_section(
         ui,
         &mut ui_state.sections,
-        SEC_RT_GIZMOS,
+        SEC_SK_EQUIP,
+        false,
+        "Debug equipment",
+        Some(&format!(
+            "{} chars / {} bound / hide {:#06x}",
+            frame.presentation.characters, frame.presentation.bound, frame.presentation.hidden
+        )),
+    ) {
+        ui.indent(SEC_SK_EQUIP, |ui| {
+            ui.small("Sends server-authoritative Equip/Unequip. Placeholders are CharacterPresentationSet debug quads, not ART.");
+            ui.label(format!(
+                "Visible characters: {}  bound attachments: {}  hidden_base: {:#06x}",
+                frame.presentation.characters,
+                frame.presentation.bound,
+                frame.presentation.hidden
+            ));
+            if frame.presentation.missing.is_empty() {
+                ui.label("Missing presentation: none");
+            } else {
+                for line in &frame.presentation.missing {
+                    ui.label(format!("missing: {line}"));
+                }
+            }
+            const ITEMS: &[(&str, &str)] = &[
+                ("unadorned", "equipment.debug.unadorned"),
+                ("cloth cap", "equipment.debug.cloth_cap"),
+                ("tunic", "equipment.debug.tunic"),
+                ("plate cuirass", "equipment.debug.plate_cuirass"),
+                ("cloth pants", "equipment.debug.cloth_pants"),
+                ("leather gloves", "equipment.debug.leather_gloves"),
+                ("iron boots", "equipment.debug.iron_boots"),
+                ("practice sword", "equipment.debug.practice_sword"),
+            ];
+            for (label, authored) in ITEMS {
+                if ui.button(*label).clicked() {
+                    ui_state.request_debug_equip = Some(*authored);
+                }
+            }
+            ui.horizontal(|ui| {
+                for (i, name) in ["Head", "Body", "Pants"].iter().enumerate() {
+                    if ui.small_button(format!("−{name}")).clicked() {
+                        ui_state.request_debug_unequip_slot = Some(i as u8);
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                for (i, name) in ["Gloves", "Boots", "Weapon"].iter().enumerate() {
+                    if ui.small_button(format!("−{name}")).clicked() {
+                        ui_state.request_debug_unequip_slot = Some((i + 3) as u8);
+                    }
+                }
+            });
+            if ui.small_button("Unequip all").clicked() {
+                ui_state.request_debug_unequip_all = true;
+            }
+        });
+    }
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_SK_PROOF,
         true,
-        "Gizmo toggles",
+        "Proof",
         None,
     ) {
-        ui.indent(SEC_RT_GIZMOS, |ui| {
-            ui.checkbox(&mut ui_state.show_colliders, "Show Colliders");
-            ui.checkbox(&mut ui_state.show_velocity, "Show Velocity Vector");
-            ui.checkbox(
-                &mut ui_state.show_grounded_highlight,
-                "Highlight Grounded Platform",
+        ui.indent(SEC_SK_PROOF, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Front-leg proof:");
+                egui::ComboBox::from_id_salt("skeleton.proof.front_leg")
+                    .selected_text(ui_state.skeleton_front_leg_proof.as_str())
+                    .show_ui(ui, |ui| {
+                        for mode in crate::skeleton_debug::FrontLegProof::ALL {
+                            ui.selectable_value(
+                                &mut ui_state.skeleton_front_leg_proof,
+                                mode,
+                                mode.as_str(),
+                            );
+                        }
+                    });
+            });
+            ui.small("Off by default. Foot independent: rotation about the ankle; shin and upper leg stay (no shin→ankle gap).");
+            ui.small("Shin carries foot: knee planted; shin + foot placeholders follow; upper leg stays.");
+            ui.horizontal(|ui| {
+                ui.label("Front-arm proof:");
+                egui::ComboBox::from_id_salt("skeleton.proof.front_arm")
+                    .selected_text(ui_state.skeleton_front_arm_proof.as_str())
+                    .show_ui(ui, |ui| {
+                        for mode in crate::skeleton_debug::FrontArmProof::ALL {
+                            ui.selectable_value(
+                                &mut ui_state.skeleton_front_arm_proof,
+                                mode,
+                                mode.as_str(),
+                            );
+                        }
+                    });
+            });
+            ui.small("Off by default. Hand independent: rotation about the wrist; forearm and upper arm stay (no forearm→hand gap).");
+            ui.small("Forearm carries hand: elbow planted; forearm + hand placeholders follow; upper arm stays.");
+            ui.separator();
+            ui.label("Animation proof");
+            ui.horizontal(|ui| {
+                ui.label("Mode:");
+                egui::ComboBox::from_id_salt("skeleton.proof.animation_mode")
+                    .selected_text(ui_state.animation_proof_mode.as_str())
+                    .show_ui(ui, |ui| {
+                        for mode in crate::debug::AnimationProofMode::ALL {
+                            ui.selectable_value(
+                                &mut ui_state.animation_proof_mode,
+                                mode,
+                                mode.as_str(),
+                            );
+                        }
+                    });
+            });
+            ui.label("Animation A1 sample time");
+            ui.add_enabled(
+                ui_state.animation_proof_mode == crate::debug::AnimationProofMode::ManualA1,
+                egui::Slider::new(
+                    &mut ui_state.skeleton_a1_sample_t,
+                    0.0..=purgatory_animation::A1_HEAD_CLIP_DURATION,
+                )
+                .text("t"),
             );
-            ui.checkbox(&mut ui_state.show_world_bounds, "Show World Bounds");
-            ui.checkbox(&mut ui_state.show_grid, "Show Grid");
-            ui.checkbox(&mut ui_state.show_parallax_debug, "Show Parallax Debug");
-            ui.checkbox(
-                &mut ui_state.show_interpolation_gizmos,
-                "Show Interpolation Gizmos",
-            );
-            ui.checkbox(
-                &mut ui_state.show_prediction_gizmos,
-                "Show Prediction Gizmos",
-            );
-            ui.checkbox(&mut ui_state.show_aoi_rects, "Show AOI Policy Rects");
-            ui.checkbox(&mut ui_state.show_camera_deadzone, "Show Camera Dead Zone");
-            ui.checkbox(&mut ui_state.show_entity_labels, "Show entity labels");
+            ui.small("Manual A1: explicit sample time on the hard-coded head rotation clip. t=0 is bind-equivalent.");
+            ui.separator();
+            ui.label("A5 presentation oneshot (authoritative DEV)");
+            ui.horizontal(|ui| {
+                if ui.button("Attack").clicked() {
+                    ui_state.request_presentation_attack = true;
+                }
+                if ui.button("Hurt").clicked() {
+                    ui_state.request_presentation_hurt = true;
+                }
+            });
+            ui.small("Server owns duration + Hurt-interrupts-Attack. Clip end does not grant gameplay authority.");
+            if ui_state.animation_proof_mode == crate::debug::AnimationProofMode::PlaybackA2 {
+                ui.horizontal(|ui| {
+                    if ui.button("Play").clicked() {
+                        ui_state.request_animation_play = true;
+                    }
+                    if ui.button("Pause").clicked() {
+                        ui_state.request_animation_pause = true;
+                    }
+                    if ui.button("Reset").clicked() {
+                        ui_state.request_animation_reset = true;
+                    }
+                    ui.label(if ui_state.animation_player_playing {
+                        "playing"
+                    } else {
+                        "paused"
+                    });
+                });
+                ui.add(
+                    egui::Slider::new(&mut ui_state.skeleton_a2_speed, 0.0..=2.0).text("speed"),
+                );
+                ui.small(format!(
+                    "A2 loop player sample t = {:.3} (advanced once/frame; speed applied inside advance)",
+                    ui_state.selected_animation_sample_t
+                ));
+            } else {
+                ui.small(format!(
+                    "Selected sample t = {:.3} (feeds CharacterPresentationSet + Stage D)",
+                    ui_state.selected_animation_sample_t
+                ));
+            }
+            ui.small("A1/A2 diagnostics only (Stage D). They do not drive CharacterPresentationSet A3 Idle/Move playback.");
+            ui.small("One resolved sample t per frame drives Stage D joints. A3 uses per-character players for all visible players.");
         });
     }
 }
@@ -677,21 +1562,31 @@ fn draw_outlined_debug_label(ui: &mut egui::Ui, text: &str, fill: egui::Color32)
     painter.text(origin, egui::Align2::LEFT_TOP, text, font, fill);
 }
 
-fn draw_world_entity_labels(ctx: &Context, snapshot: &DebugSnapshot) {
+fn gameplay_overlay_rect(ctx: &Context, frame: &DiagnosticsFrame) -> egui::Rect {
+    let full = ctx.viewport_rect();
+    let Some((x, y, w, h)) = frame.runtime.display.gameplay_pixel else {
+        return full;
+    };
+    let ppp = ctx.pixels_per_point();
+    let min = egui::pos2(full.min.x + x as f32 / ppp, full.min.y + y as f32 / ppp);
+    egui::Rect::from_min_size(min, egui::vec2(w as f32 / ppp, h as f32 / ppp))
+}
+
+fn draw_world_entity_labels(ctx: &Context, frame: &DiagnosticsFrame) {
     // `replica_label_world` is empty unless maps are aligned and the
     // presentation world is ready (idle or DestinationReady). Do not project
     // leftover replica poses through a mismatched camera.
-    if snapshot.replica_label_world.is_empty() {
+    if frame.world.replica_label_world.is_empty() {
         return;
     }
-    let rect = ctx.viewport_rect();
-    let vw = snapshot.viewport_width;
-    let vh = snapshot.viewport_height;
+    let rect = gameplay_overlay_rect(ctx, frame);
+    let vw = frame.camera.viewport_width;
+    let vh = frame.camera.viewport_height;
     if vw <= 0.0 || vh <= 0.0 {
         return;
     }
-    for (i, (text, world, tag)) in snapshot.replica_label_world.iter().enumerate() {
-        let ndc = label_ndc(*world, snapshot.camera_position, [vw, vh]);
+    for (i, (text, world, tag)) in frame.world.replica_label_world.iter().enumerate() {
+        let ndc = label_ndc(*world, frame.camera.position, [vw, vh]);
         if ndc[0].abs() > 1.25 || ndc[1].abs() > 1.25 {
             continue;
         }
@@ -868,16 +1763,11 @@ fn draw_inspector_category(
 
 fn draw_player_tab(
     ui: &mut egui::Ui,
-    snapshot: &DebugSnapshot,
+    frame: &DiagnosticsFrame,
     ui_state: &mut DebugUiState,
-    actions: &mut Vec<DebugAction>,
+    actions: &mut Vec<DebugCommand>,
 ) {
-    ui.colored_label(
-        egui::Color32::from_rgb(220, 160, 60),
-        "LOCAL DEV / NON-AUTHORITATIVE",
-    );
-    ui.small("Client World FOOTNOTE drives local prediction + Phase 5.5 replay (tick_player). Server owns authority.");
-    let pose_summary = snapshot.player.map(|player| {
+    let pose_summary = frame.physics.player.map(|player| {
         format!(
             "({:.2}, {:.2}) {}",
             player.position[0],
@@ -894,7 +1784,39 @@ fn draw_player_tab(
         pose_summary.as_deref(),
     ) {
         ui.indent(SEC_PL_POSE, |ui| {
-            if let Some(player) = snapshot.player {
+            ui.add(
+                egui::Slider::new(
+                    &mut ui_state.debug_move_speed,
+                    DEBUG_MOVE_SPEED_MIN..=DEBUG_MOVE_SPEED_MAX,
+                )
+                .text("Move speed"),
+            );
+            if ui.small_button("Reset speed").clicked() {
+                ui_state.debug_move_speed = DEBUG_MOVE_SPEED_DEFAULT;
+            }
+            ui.small(
+                "Local FOOTNOTE max ground/air (wu/s). Default 6. Connected: prediction only; server stays at default.",
+            );
+            ui.horizontal(|ui| {
+                ui.label("Headwear");
+                for cell in 0..4u8 {
+                    if ui
+                        .selectable_label(
+                            ui_state.headwear_side_cell == cell,
+                            format!("{}", cell + 1),
+                        )
+                        .clicked()
+                    {
+                        ui_state.headwear_side_cell = cell;
+                    }
+                }
+            });
+            ui.small(format!(
+                "Compile-embedded Side cell {} ({})",
+                ui_state.headwear_side_cell + 1,
+                crate::headwear_proof::VISUAL_KEYS[usize::from(ui_state.headwear_side_cell.min(3))]
+            ));
+            if let Some(player) = frame.physics.player {
                 ui.label(format!("Entity: {}", player.id));
                 ui.label(format!("WorldAddress: {}", player.address));
                 ui.label(format!("Lifecycle: {}", player.lifecycle));
@@ -931,28 +1853,23 @@ fn draw_player_tab(
                     Some(kind) => ui.label(format!("Grounded kind: {kind:?}")),
                     None => ui.label("Grounded kind: —"),
                 };
-                if let Some(fn_dbg) = snapshot.footnote {
+                if let Some(fn_dbg) = frame.physics.footnote {
                     ui.label(format!("Input X: {}", fn_dbg.move_axis));
                     ui.label(format!("Down held: {}", fn_dbg.down_held));
                 }
-                if ui.button("Reset Player").clicked() {
-                    actions.push(DebugAction::ResetPlayer);
-                }
-                ui.small(
-                    "DEV: when connected, snaps local prediction to the authoritative replica (not FOOTNOTE spawn). Offline: local World spawn reset. Never mutates ReplicatedWorld or the server.",
-                );
+                draw_reset_action(ui, frame, actions);
             } else {
                 ui.label("Entity: none");
             }
         });
     }
-    let m = snapshot.motion;
+    let m = frame.physics.motion;
     let motion_summary = format!("disc {} | {:?}", m.discontinuity, m.response_kind);
     if debug_section(
         ui,
         &mut ui_state.sections,
         SEC_PL_MOTION,
-        true,
+        false,
         "Motion (last sim tick)",
         Some(&motion_summary),
     ) {
@@ -979,89 +1896,62 @@ fn draw_player_tab(
             };
         });
     }
+    draw_footnote_contact_section(ui, frame, ui_state);
 }
 
-fn draw_footnote_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut DebugUiState) {
-    if let Some(fn_dbg) = snapshot.footnote {
-        let state = if fn_dbg.grounded {
-            "Grounded"
-        } else {
-            "Airborne"
-        };
-        if debug_section(
-            ui,
-            &mut ui_state.sections,
-            SEC_FN_CONTACT,
-            true,
-            "Contact",
-            Some(state),
-        ) {
-            ui.indent(SEC_FN_CONTACT, |ui| {
-                ui.label(format!("State: {state}"));
-                match fn_dbg.grounded_on {
-                    Some(id) => ui.label(format!("Platform: {id}")),
-                    None => ui.label("Platform: none"),
-                };
-                match fn_dbg.platform_kind {
-                    Some(kind) => ui.label(format!("Platform kind: {kind:?}")),
-                    None => ui.label("Platform kind: —"),
-                };
-                ui.label(format!("Last contact: {:?}", fn_dbg.last_contact));
-            });
-        }
-        let pose_summary = format!(
-            "({:.2}, {:.2}) |vx| {:.2}",
-            fn_dbg.position[0], fn_dbg.position[1], fn_dbg.horizontal_speed
-        );
-        if debug_section(
-            ui,
-            &mut ui_state.sections,
-            SEC_FN_POSE,
-            true,
-            "Pose",
-            Some(&pose_summary),
-        ) {
-            ui.indent(SEC_FN_POSE, |ui| {
-                ui.label(format!(
-                    "Position: X {:.3} | Y {:.3}",
-                    fn_dbg.position[0], fn_dbg.position[1]
-                ));
-                ui.label(format!(
-                    "Velocity: ({:.3}, {:.3})",
-                    fn_dbg.velocity[0], fn_dbg.velocity[1]
-                ));
-                ui.label(format!("|vx|: {:.3}", fn_dbg.horizontal_speed));
-            });
-        }
-        let drop = match fn_dbg.ignored_platform {
-            Some(_) => "drop-through",
-            None => "idle",
-        };
-        let input_summary = format!("axis {} | {}", fn_dbg.move_axis, drop);
-        if debug_section(
-            ui,
-            &mut ui_state.sections,
-            SEC_FN_INPUT,
-            true,
-            "Input",
-            Some(&input_summary),
-        ) {
-            ui.indent(SEC_FN_INPUT, |ui| {
-                ui.label(format!("Input X: {}", fn_dbg.move_axis));
-                ui.label(format!("Down held: {}", fn_dbg.down_held));
-                match fn_dbg.ignored_platform {
-                    Some(id) => ui.label(format!("Drop-through ignore: {id}")),
-                    None => ui.label("Drop-through: inactive"),
-                };
-            });
-        }
+fn draw_footnote_contact_section(
+    ui: &mut egui::Ui,
+    frame: &DiagnosticsFrame,
+    ui_state: &mut DebugUiState,
+) {
+    let Some(fn_dbg) = frame.physics.footnote else {
+        return;
+    };
+    let state = if fn_dbg.grounded {
+        "Grounded"
     } else {
-        ui.label("No player.");
+        "Airborne"
+    };
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_FN_CONTACT,
+        false,
+        "FOOTNOTE contact",
+        Some(state),
+    ) {
+        ui.indent(SEC_FN_CONTACT, |ui| {
+            ui.label(format!("State: {state}"));
+            ui.label(format!(
+                "Position: X {:.3} | Y {:.3}",
+                fn_dbg.position[0], fn_dbg.position[1]
+            ));
+            ui.label(format!(
+                "Velocity: X {:.3} | Y {:.3}  |vx| {:.3}",
+                fn_dbg.velocity[0], fn_dbg.velocity[1], fn_dbg.horizontal_speed
+            ));
+            match fn_dbg.grounded_on {
+                Some(id) => ui.label(format!("Platform: {id}")),
+                None => ui.label("Platform: none"),
+            };
+            match fn_dbg.platform_kind {
+                Some(kind) => ui.label(format!("Platform kind: {kind:?}")),
+                None => ui.label("Platform kind: —"),
+            };
+            ui.label(format!("Last contact: {:?}", fn_dbg.last_contact));
+            match fn_dbg.ignored_platform {
+                Some(id) => ui.label(format!("Drop-through ignore: {id}")),
+                None => ui.label("Drop-through: inactive"),
+            };
+        });
     }
 }
 
-fn draw_world_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut DebugUiState) {
-    let stage_summary = format!("{} | {} ents", snapshot.stage_name, snapshot.entity_count);
+fn draw_world_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut DebugUiState) {
+    let stage_summary = format!(
+        "{} | {} ents",
+        frame.world.stage_name, frame.world.roster.entity_count
+    );
     if debug_section(
         ui,
         &mut ui_state.sections,
@@ -1071,42 +1961,37 @@ fn draw_world_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut De
         Some(&stage_summary),
     ) {
         ui.indent(SEC_WD_STAGE, |ui| {
-            ui.label(format!("Entities: {}", snapshot.entity_count));
-            ui.label(format!("Players: {}", snapshot.player_count));
-            ui.label(format!("Platforms: {}", snapshot.platform_count));
-            ui.label(format!("Stage: {}", snapshot.stage_name));
-            ui.label(format!("MapId: {}", snapshot.map_id));
-            ui.label(format!("Map: {}", snapshot.map_debug_name));
-            ui.label(format!("Channel: {}", snapshot.observer_channel));
-            ui.label(format!("Instance: {}", snapshot.observer_instance));
-            ui.label(format!("WorldAddress: {}", snapshot.observer_address));
+            ui.label(format!("Entities: {}", frame.world.roster.entity_count));
+            ui.label(format!("Players: {}", frame.world.roster.player_count));
+            ui.label(format!("Platforms: {}", frame.world.roster.platform_count));
+            ui.label(format!("Stage: {}", frame.world.stage_name));
+            ui.label(format!("MapId: {}", frame.world.map_id));
+            ui.label(format!("Map: {}", frame.world.map_debug_name));
+            ui.label(format!("Channel: {}", frame.world.observer_channel));
+            ui.label(format!("Instance: {}", frame.world.observer_instance));
+            ui.label(format!("WorldAddress: {}", frame.world.observer_address));
             ui.label(format!(
                 "Content registry: {} defs",
-                snapshot.content_registry_count
+                frame.world.content_registry_count
             ));
-            for label in &snapshot.content_map_labels {
+            for label in &frame.world.content_map_labels {
                 ui.label(format!("  {label}"));
             }
-            let b = snapshot.world_bounds;
+            let b = frame.world.roster.bounds;
             ui.label(format!(
                 "Bounds: X [{:.1}, {:.1}]  Y [{:.1}, {:.1}]",
                 b.min_x, b.max_x, b.min_y, b.max_y
             ));
             ui.label(format!("Size: {:.1} × {:.1}", b.width(), b.height()));
+            ui.small("Gizmo toggles: Debug tab.");
         });
     }
-    if debug_section(ui, &mut ui_state.sections, SEC_WD_VIEW, true, "View", None) {
-        ui.indent(SEC_WD_VIEW, |ui| {
-            ui.checkbox(&mut ui_state.show_world_bounds, "Show World Bounds");
-            ui.checkbox(&mut ui_state.show_grid, "Show Grid");
-        });
-    }
-    let entities_summary = snapshot.inspector.entities_header_summary();
+    let entities_summary = frame.world.inspector.entities_header_summary();
     if debug_section(
         ui,
         &mut ui_state.sections,
         SEC_WD_ENTITIES,
-        true,
+        false,
         "Entities",
         Some(&entities_summary),
     ) {
@@ -1120,17 +2005,17 @@ fn draw_world_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut De
                 InspectorCategory::Platforms,
                 InspectorCategory::Other,
             ] {
-                draw_inspector_category(ui, &mut ui_state.sections, &snapshot.inspector, category);
+                draw_inspector_category(ui, &mut ui_state.sections, &frame.world.inspector, category);
             }
         });
     }
 }
 
-fn draw_camera_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut DebugUiState) {
-    let cm = snapshot.camera_motion;
+fn draw_camera_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut DebugUiState) {
+    let cm = frame.camera.motion;
     let transform_summary = format!(
         "({:.2}, {:.2}) disc {}",
-        snapshot.camera_position[0], snapshot.camera_position[1], cm.discontinuity
+        frame.camera.position[0], frame.camera.position[1], cm.discontinuity
     );
     if debug_section(
         ui,
@@ -1143,13 +2028,13 @@ fn draw_camera_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut D
         ui.indent(SEC_CM_TRANSFORM, |ui| {
             ui.label(format!(
                 "Camera: X {:.3} | Y {:.3}",
-                snapshot.camera_position[0], snapshot.camera_position[1]
+                frame.camera.position[0], frame.camera.position[1]
             ));
             ui.label(format!(
                 "Viewport: {:.2} × {:.2}",
-                snapshot.viewport_width, snapshot.viewport_height
+                frame.camera.viewport_width, frame.camera.viewport_height
             ));
-            let b = snapshot.world_bounds;
+            let b = frame.world.roster.bounds;
             ui.label(format!(
                 "World bounds: [{:.1},{:.1}]×[{:.1},{:.1}]",
                 b.min_x, b.max_x, b.min_y, b.max_y
@@ -1165,37 +2050,68 @@ fn draw_camera_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut D
             ui.label(format!("Clamp: {:?}", cm.clamp_reason));
             ui.label(format!(
                 "Player (presentation): {}",
-                snapshot
+                frame
+                    .camera
                     .presented_player_pos
                     .map(|p| format!("({:.3}, {:.3})", p[0], p[1]))
                     .unwrap_or_else(|| "-".into())
             ));
             ui.label(format!(
                 "Desired target: ({:.3}, {:.3})",
-                snapshot.camera_desired[0], snapshot.camera_desired[1]
+                frame.camera.desired[0], frame.camera.desired[1]
             ));
             ui.label(format!(
                 "Dead Zone half: X {:.2}  Y {:.2}",
-                snapshot.camera_deadzone_half_x, snapshot.camera_deadzone_half_y
+                frame.camera.deadzone_half_x, frame.camera.deadzone_half_y
             ));
             ui.label(format!(
                 "Smooth time: X {:.2}s  Y {:.2}s",
-                snapshot.camera_smooth_time_x, snapshot.camera_smooth_time_y
+                frame.camera.smooth_time_x, frame.camera.smooth_time_y
             ));
             ui.label(format!(
                 "Following X: {}  Y: {}",
-                if snapshot.camera_following_x {
+                if frame.camera.following_x {
                     "yes"
                 } else {
                     "no"
                 },
-                if snapshot.camera_following_y {
+                if frame.camera.following_y {
                     "yes"
                 } else {
                     "no"
                 }
             ));
-            let j = snapshot.jitter;
+            ui.small("Follow / Center On Player: Debug tab. 180-frame jitter: Jitter Isolation.");
+        });
+    }
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_CM_JITTER,
+        false,
+        "Jitter Isolation",
+        Some(ui_state.camera_jitter_mode.as_str()),
+    ) {
+        ui.indent(SEC_CM_JITTER, |ui| {
+            ui.small("DEV diagnosis only. Not product camera behavior.");
+            egui::ComboBox::from_id_salt("camera.jitter.mode")
+                .selected_text(ui_state.camera_jitter_mode.as_str())
+                .show_ui(ui, |ui| {
+                    for mode in crate::jitter_forensics::CameraJitterMode::ALL {
+                        ui.selectable_value(
+                            &mut ui_state.camera_jitter_mode,
+                            mode,
+                            mode.as_str(),
+                        );
+                    }
+                });
+            if ui.button("Dump Camera Jitter Trace").clicked() {
+                ui_state.dump_jitter_trace = true;
+            }
+            if !ui_state.last_jitter_dump.is_empty() {
+                ui.small(&ui_state.last_jitter_dump);
+            }
+            let j = frame.camera.jitter;
             ui.label(format!(
                 "Jitter pred X {:.3}  replica X {:.3}  presented X {:.3}",
                 j.pred_x, j.replica_x, j.presented_x
@@ -1235,81 +2151,35 @@ fn draw_camera_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut D
                 "mean|Δpresented| tick-frames {:.4} ({})  idle-frames {:.4} ({})",
                 j.mean_d_presented_on_tick, j.tick_frames, j.mean_d_presented_idle, j.idle_frames
             ));
-            ui.small(
-                "Forensics: Camera tab → Jitter Isolation. Dump writes logs/camera_jitter/*.csv",
-            );
-        });
-    }
-    if debug_section(
-        ui,
-        &mut ui_state.sections,
-        SEC_CM_FOLLOW,
-        true,
-        "Follow",
-        None,
-    ) {
-        ui.indent(SEC_CM_FOLLOW, |ui| {
-            ui.checkbox(&mut ui_state.camera_follow, "Follow Player");
-            if ui.button("Center On Player").clicked() {
-                ui_state.center_on_player = true;
-            }
-        });
-    }
-    if debug_section(
-        ui,
-        &mut ui_state.sections,
-        SEC_CM_JITTER,
-        true,
-        "Jitter Isolation",
-        Some(ui_state.camera_jitter_mode.as_str()),
-    ) {
-        ui.indent(SEC_CM_JITTER, |ui| {
-            ui.small("DEV diagnosis only. Not product camera behavior.");
-            egui::ComboBox::from_id_salt("camera.jitter.mode")
-                .selected_text(ui_state.camera_jitter_mode.as_str())
-                .show_ui(ui, |ui| {
-                    for mode in crate::jitter_forensics::CameraJitterMode::ALL {
-                        ui.selectable_value(
-                            &mut ui_state.camera_jitter_mode,
-                            mode,
-                            mode.as_str(),
-                        );
-                    }
-                });
-            if ui.button("Dump Camera Jitter Trace").clicked() {
-                ui_state.dump_jitter_trace = true;
-            }
-            if !ui_state.last_jitter_dump.is_empty() {
-                ui.small(&ui_state.last_jitter_dump);
-            }
+            ui.small("Dump writes logs/camera_jitter/*.csv");
             ui.small("Frozen camera + still jitter → presentation. Smooth frozen + jitter when following → camera-relative. Raw vs smoothed: if both jitter, 30 Hz stepping is likely.");
         });
     }
     let parallax_summary = format!(
         "far {:.2} / mid {:.2} / near {:.2}",
-        snapshot.parallax_far, snapshot.parallax_mid, snapshot.parallax_near
+        frame.camera.parallax_far, frame.camera.parallax_mid, frame.camera.parallax_near
     );
     if debug_section(
         ui,
         &mut ui_state.sections,
         SEC_CM_PARALLAX,
-        true,
+        false,
         "Parallax",
         Some(&parallax_summary),
     ) {
         ui.indent(SEC_CM_PARALLAX, |ui| {
             ui.label(format!(
                 "Parallax: far {:.2} / mid {:.2} / near {:.2}",
-                snapshot.parallax_far, snapshot.parallax_mid, snapshot.parallax_near
+                frame.camera.parallax_far, frame.camera.parallax_mid, frame.camera.parallax_near
             ));
-            ui.checkbox(&mut ui_state.show_parallax_debug, "Show Parallax Debug");
+            ui.small("Parallax debug markers: Debug tab gizmos.");
         });
     }
 }
 
 fn draw_diagnostics_tab(
     ui: &mut egui::Ui,
-    snapshot: &DebugSnapshot,
+    frame: &DiagnosticsFrame,
     ui_state: &mut DebugUiState,
     history: &mut CollisionHistory,
 ) {
@@ -1340,13 +2210,25 @@ fn draw_diagnostics_tab(
             }
         });
     }
-    let m = snapshot.motion;
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_DG_HELP,
+        false,
+        "Authority notes",
+        None,
+    ) {
+        ui.indent(SEC_DG_HELP, |ui| {
+            ui.small("Client World FOOTNOTE drives local prediction + replay. Server owns authority. Connected Reset to Spawn Point is DevResetPlayer. Reanchor Prediction is client-only.");
+        });
+    }
+    let m = frame.physics.motion;
     let last_summary = format!("{:?} | disc {}", m.response_kind, m.discontinuity);
     if debug_section(
         ui,
         &mut ui_state.sections,
         SEC_DG_LAST,
-        true,
+        false,
         "Last tick",
         Some(&last_summary),
     ) {
@@ -1375,7 +2257,7 @@ fn draw_diagnostics_tab(
         ui,
         &mut ui_state.sections,
         SEC_DG_HISTORY,
-        true,
+        false,
         "Recent events",
         Some(&hist_summary),
     ) {
@@ -1417,9 +2299,9 @@ fn draw_diagnostics_tab(
     }
 }
 
-fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut DebugUiState) {
-    let net = snapshot.network;
-    let imp = snapshot.impairment;
+fn draw_network_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut DebugUiState) {
+    let net = frame.network.lifecycle;
+    let imp = frame.network.impairment;
     let conn_summary = format!("{} | {}", net.state.as_str(), format_rtt_ms(net.rtt));
     if debug_section(
         ui,
@@ -1454,29 +2336,37 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
             ui.label(format!("EWMA: {}", format_rtt_ms(net.rtt_ewma)));
             ui.small("Measured Ping/Pong RTT. Unimpaired. Not artificial delay.");
             ui.small("DEV ONLY: self-signed cert + skip-verify. Authoritative snapshots; remotes interpolated; local predicted.");
+            ui.small("Channel [0]/[1]: compact chrome beside Map / Channel / Instance. Same DevSetChannel path.");
             ui.horizontal(|ui| {
-                ui.add_enabled_ui(net.can_connect, |ui| {
-                    if ui.button("Connect").clicked() {
-                        ui_state.network_connect = true;
-                    }
-                });
+                if net.client_screen != "Connection" {
+                    ui.add_enabled_ui(net.can_connect, |ui| {
+                        if ui.button("Connect").clicked() {
+                            ui_state.network_connect = true;
+                        }
+                    });
+                }
                 if ui.button("Disconnect").clicked() {
                     ui_state.network_disconnect = true;
                 }
             });
+            if net.client_screen == "Connection" {
+                ui.small("Connect: Connection Frontend.");
+            }
         });
     }
     let aoi_summary = format!(
         "known {} | cand {} | epoch {}",
-        snapshot
+        frame
+            .world
             .aoi_known
             .map(|n| n.to_string())
-            .unwrap_or_else(|| snapshot.replica_entities.to_string()),
-        snapshot
+            .unwrap_or_else(|| frame.network.replica_entities.to_string()),
+        frame
+            .world
             .aoi_candidates
             .map(|n| n.to_string())
             .unwrap_or_else(|| "—".into()),
-        snapshot.replica_epoch
+        frame.network.replica_epoch
     );
     if debug_section(
         ui,
@@ -1489,85 +2379,71 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
         ui.indent(SEC_NET_AOI, |ui| {
             ui.label(format!(
                 "Observer RuntimeEntityId: {}",
-                snapshot.observer_entity.as_deref().unwrap_or("—")
+                frame.world.observer_entity.as_deref().unwrap_or("—")
             ));
-            ui.label(format!("MapId: {}", snapshot.observer_map));
-            ui.label(format!("ChannelId: {}", snapshot.observer_channel));
-            ui.label(format!("InstanceId: {}", snapshot.observer_instance));
-            ui.label(format!("WorldAddress: {}", snapshot.observer_address));
-            ui.horizontal(|ui| {
-                ui.strong("Channel:");
-                for ch in 0..=purgatory_protocol::DEV_CHANNEL_MAX {
-                    let selected = snapshot.observer_channel == ch;
-                    if ui.selectable_label(selected, format!("[{ch}]")).clicked() {
-                        ui_state.request_channel = Some(ch);
-                    }
-                }
-            });
-            ui.label(format!("Enter AOI: {}", snapshot.observer_enter_bounds));
-            ui.label(format!("Leave AOI: {}", snapshot.observer_leave_bounds));
+            ui.label(format!("MapId: {}", frame.world.observer_map));
+            ui.label(format!("ChannelId: {}", frame.world.observer_channel));
+            ui.label(format!("InstanceId: {}", frame.world.observer_instance));
+            ui.label(format!("WorldAddress: {}", frame.world.observer_address));
+            ui.label(format!("Enter AOI: {}", frame.world.observer_enter_bounds));
+            ui.label(format!("Leave AOI: {}", frame.world.observer_leave_bounds));
             ui.label(format!(
                 "Spatial candidates: {}",
-                fmt_opt_u16(snapshot.aoi_candidates)
+                fmt_opt_u16(frame.world.aoi_candidates)
             ));
-            ui.label(format!("Known: {}", fmt_opt_u16(snapshot.aoi_known)));
+            ui.label(format!("Known: {}", fmt_opt_u16(frame.world.aoi_known)));
             ui.label(format!(
                 "WantEnter: {}",
-                fmt_opt_u16(snapshot.aoi_want_enter)
+                fmt_opt_u16(frame.world.aoi_want_enter)
             ));
             ui.label(format!(
                 "WantLeave: {}",
-                fmt_opt_u16(snapshot.aoi_want_leave)
+                fmt_opt_u16(frame.world.aoi_want_leave)
             ));
-            ui.label(format!("Replication epoch: {}", snapshot.replica_epoch));
+            ui.label(format!("Replication epoch: {}", frame.network.replica_epoch));
             ui.label(format!(
                 "Players: {}",
-                snapshot
-                    .inspector
+                frame.world.inspector
                     .category_summary(InspectorCategory::Players)
             ));
             ui.label(format!(
                 "Interactables: {}",
-                snapshot
-                    .inspector
+                frame.world.inspector
                     .category_summary(InspectorCategory::Interactables)
             ));
             ui.label(format!(
                 "Portals: {}",
-                snapshot
-                    .inspector
+                frame.world.inspector
                     .category_summary(InspectorCategory::Portals)
             ));
             ui.label(format!(
                 "Platforms: {}",
-                snapshot
-                    .inspector
+                frame.world.inspector
                     .category_summary(InspectorCategory::Platforms)
             ));
             ui.small("Mailbox counts are server-authored. WantEnter / spatial candidates that are not Known are not in the replica and are not drawn.");
             ui.small("Band labels (Enter AOI / Leave band / outside leave) are the server view-envelope policy around the local pose (viewport + Dead Zone + prefetch), not a client interest decision.");
             ui.small("ContentId is not on the replica (server placement only). Kinds: Player, Interactable, Portal. World vs Replication rows are labeled separately in World → Entities.");
-            ui.checkbox(&mut ui_state.show_aoi_rects, "Show AOI Policy Rects");
-            ui.checkbox(&mut ui_state.show_entity_labels, "Show entity labels");
-            if snapshot.replica_entity_rows.is_empty() {
+            ui.small("AOI rects / entity labels: Debug tab gizmos.");
+            if frame.world.replica_entity_rows.is_empty() {
                 ui.label("Known replica entities: —");
             } else {
                 ui.label("Known replica entities:");
-                for row in &snapshot.replica_entity_rows {
+                for row in &frame.world.replica_entity_rows {
                     ui.label(format!("  {row}"));
                 }
             }
-            if snapshot.replica_recent_left.is_empty() {
+            if frame.world.replica_recent_left.is_empty() {
                 ui.label("Recent Left: —");
             } else {
                 ui.label("Recent Left (no longer in replica):");
-                for row in &snapshot.replica_recent_left {
+                for row in &frame.world.replica_recent_left {
                     ui.label(format!("  {row}"));
                 }
             }
         });
     }
-    let interact_summary = snapshot.interact_status.kind.name();
+    let interact_summary = frame.network.interact_status.kind.name();
     if debug_section(
         ui,
         &mut ui_state.sections,
@@ -1579,99 +2455,74 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
         ui.indent(SEC_NET_INTERACT, |ui| {
             ui.label(format!(
                 "Current: {}",
-                snapshot.interact_status.interaction_line()
+                frame.network.interact_status.interaction_line()
             ));
             ui.label(format!(
                 "Last transition: {}",
-                snapshot.interact_status.details_trail()
+                frame.network.interact_status.details_trail()
             ));
             ui.small("Headline is current session state. Fields below are forensic.");
             ui.label(format!(
                 "Nearest generic interactable: {} / {}",
-                snapshot.interact_nearest.as_deref().unwrap_or("-"),
-                snapshot
-                    .interact_nearest_distance
+                frame.network.interact_nearest.as_deref().unwrap_or("-"),
+                frame.network.interact_nearest_distance
                     .map(|d| format!("{d:.2}"))
                     .unwrap_or_else(|| "-".into())
             ));
             ui.label(format!(
                 "Nearest portal: {} / {}",
-                snapshot.interact_nearest_portal.as_deref().unwrap_or("-"),
-                snapshot
-                    .interact_nearest_portal_distance
+                frame.network.interact_nearest_portal.as_deref().unwrap_or("-"),
+                frame.network.interact_nearest_portal_distance
                     .map(|d| format!("{d:.2}"))
                     .unwrap_or_else(|| "-".into())
             ));
             ui.label(format!(
                 "Portal eligible: {}",
-                snapshot.portal_eligible
+                frame.network.portal_eligible
             ));
             ui.label(format!(
                 "Replica player: {}",
-                snapshot
-                    .replica_player_pos
+                frame.network.replica_player_pos
                     .map(|p| format!("({:.2}, {:.2})", p[0], p[1]))
                     .unwrap_or_else(|| "-".into())
             ));
             ui.label(format!(
                 "Presented player: {}",
-                snapshot
-                    .presented_player_pos
+                frame.camera.presented_player_pos
                     .map(|p| format!("({:.2}, {:.2})", p[0], p[1]))
                     .unwrap_or_else(|| "-".into())
             ));
             ui.label(format!(
                 "Portal position: {}",
-                snapshot
-                    .nearest_portal_pos
+                frame.network.nearest_portal_pos
                     .map(|p| format!("({:.2}, {:.2})", p[0], p[1]))
                     .unwrap_or_else(|| "-".into())
             ));
-            ui.label(format!("Last request (history): {}", snapshot.interact_last_request));
+            ui.label(format!("Last request (history): {}", frame.network.interact_last_request));
             ui.label(format!(
                 "Last server result (history): {}",
-                snapshot.interact_last_result
+                frame.network.interact_last_result
             ));
             ui.label(format!(
                 "Reject reason: {}",
-                snapshot
-                    .interact_status
+                frame.network.interact_status
                     .reject_reason
                     .as_deref()
                     .unwrap_or("—")
             ));
             ui.label(format!(
                 "Close reason: {}",
-                snapshot
-                    .interact_status
+                frame.network.interact_status
                     .close_reason
                     .as_deref()
                     .unwrap_or("—")
             ));
-            ui.label(format!("Session / UI (raw): {}", snapshot.interact_ui));
-            ui.label(format!(
-                "Replica interactables: {}",
-                snapshot.replica_interactables.len()
-            ));
-            if snapshot.replica_interactables.is_empty() {
-                ui.small("No generic E target in replica.");
-            } else {
-                for row in &snapshot.replica_interactables {
-                    ui.label(format!("Generic {row}"));
-                }
-            }
-            ui.label(format!("Replica portals: {}", snapshot.replica_portals.len()));
-            if snapshot.replica_portals.is_empty() {
-                ui.small("No portal in replica. Up Arrow will not send PortalActivate.");
-            } else {
-                for row in &snapshot.replica_portals {
-                    ui.label(format!("Portal {row}"));
-                }
-            }
-            ui.small("E = generic InteractOpen (edge). Portals are excluded. Up Arrow = PortalActivate if eligible. Server validates.");
+            ui.label(format!("Session / UI (raw): {}", frame.network.interact_ui));
+            ui.small("Replica interactable/portal lists: Network → Authoritative Replica.");
+            ui.small("E = generic InteractOpen (edge). Portals are excluded. Up Arrow = PortalActivate if eligible. J = Basic Strike intent (no target). Server validates.");
         });
     }
-    let input_summary = format!("seq {}", snapshot.net_input_seq);
+    let input_summary = format!("seq {}", frame.network.net_input_seq);
     if debug_section(
         ui,
         &mut ui_state.sections,
@@ -1681,25 +2532,32 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
         Some(&input_summary),
     ) {
         ui.indent(SEC_NET_INPUT, |ui| {
-            ui.label(format!("Last sequence sent: {}", snapshot.net_input_seq));
-            ui.label(format!("Input commands sent: {}", snapshot.net_input_sent));
+            ui.label(format!(
+                "Last sequence sent: {}",
+                frame.network.net_input_seq
+            ));
+            ui.label(format!(
+                "Input commands sent: {}",
+                frame.network.net_input_sent
+            ));
             ui.label(format!(
                 "Semantic: axis={} jump={} down={}",
-                snapshot.net_move_axis, snapshot.net_jump, snapshot.net_down
+                frame.network.net_move_axis, frame.network.net_jump, frame.network.net_down
             ));
             ui.small("Intent only. No position/velocity on the wire.");
         });
     }
-    let replica_seq = snapshot
+    let replica_seq = frame
+        .network
         .replica_seq
         .map(|s| s.to_string())
         .unwrap_or_else(|| "—".into());
     let replica_summary = format!(
         "seq {replica_seq} | tick {} | E {} U {} L {}",
-        snapshot.replica_tick,
-        snapshot.replica_total_enters,
-        snapshot.replica_total_updates,
-        snapshot.replica_total_leaves
+        frame.network.replica_tick,
+        frame.network.replica_total_enters,
+        frame.network.replica_total_updates,
+        frame.network.replica_total_leaves
     );
     if debug_section(
         ui,
@@ -1711,24 +2569,23 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
     ) {
         ui.indent(SEC_NET_REPLICA, |ui| {
             ui.label(format!("Snapshot seq: {replica_seq}"));
-            ui.label(format!("Server tick: {}", snapshot.replica_tick));
-            ui.label(format!("Replica epoch: {}", snapshot.replica_epoch));
-            ui.label(format!("Known entities: {}", snapshot.replica_entities));
+            ui.label(format!("Server tick: {}", frame.network.replica_tick));
+            ui.label(format!("Replica epoch: {}", frame.network.replica_epoch));
+            ui.label(format!("Known entities: {}", frame.network.replica_entities));
             ui.label(format!(
                 "Last frame: Enter {} · Update {} · Leave {}",
-                snapshot.replica_frame_enters,
-                snapshot.replica_frame_updates,
-                snapshot.replica_frame_leaves
+                frame.network.replica_frame_enters,
+                frame.network.replica_frame_updates,
+                frame.network.replica_frame_leaves
             ));
             ui.label(format!(
                 "Session: Enter {} · Update {} · Leave {}",
-                snapshot.replica_total_enters,
-                snapshot.replica_total_updates,
-                snapshot.replica_total_leaves
+                frame.network.replica_total_enters,
+                frame.network.replica_total_updates,
+                frame.network.replica_total_leaves
             ));
-            let unchanged = snapshot
-                .replica_entities
-                .saturating_sub(snapshot.replica_frame_updates);
+            let unchanged = frame.network.replica_entities
+                .saturating_sub(frame.network.replica_frame_updates);
             ui.label(format!(
                 "Known without Update this frame: {unchanged}"
             ));
@@ -1737,37 +2594,36 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
             );
             ui.label(format!(
                 "Replica generic interactables: {}",
-                snapshot.replica_interactables.len()
+                frame.network.replica_interactables.len()
             ));
-            if snapshot.replica_interactables.is_empty() {
+            if frame.network.replica_interactables.is_empty() {
                 ui.label("Generic interactables: — (none in replica)");
             } else {
-                for row in &snapshot.replica_interactables {
+                for row in &frame.network.replica_interactables {
                     ui.label(format!("Generic {row}"));
                 }
             }
             ui.label(format!(
                 "Replica portals: {}",
-                snapshot.replica_portals.len()
+                frame.network.replica_portals.len()
             ));
-            if snapshot.replica_portals.is_empty() {
+            if frame.network.replica_portals.is_empty() {
                 ui.label("Portal entities: — (none in replica)");
             } else {
-                for row in &snapshot.replica_portals {
+                for row in &frame.network.replica_portals {
                     ui.label(format!("Portal {row}"));
                 }
             }
             ui.label(format!(
                 "Local EntityId: {}",
-                snapshot.replica_local.as_deref().unwrap_or("—")
+                frame.network.replica_local.as_deref().unwrap_or("—")
             ));
-            ui.label(format!("Stale ignored: {}", snapshot.replica_stale));
-            ui.label(format!("Duplicate ignored: {}", snapshot.replica_duplicate));
-            ui.label(format!("Malformed: {}", snapshot.replica_malformed));
+            ui.label(format!("Stale ignored: {}", frame.network.replica_stale));
+            ui.label(format!("Duplicate ignored: {}", frame.network.replica_duplicate));
+            ui.label(format!("Malformed: {}", frame.network.replica_malformed));
             ui.label(format!(
                 "Snapshot age: {}",
-                snapshot
-                    .replica_age_ms
+                frame.network.replica_age_ms
                     .map(|ms| format!("{ms} ms"))
                     .unwrap_or_else(|| "—".into())
             ));
@@ -1775,8 +2631,8 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
         });
     }
     let interp_summary = format!(
-        "holds {} | snaps {}",
-        snapshot.interp_holds, snapshot.interp_snaps
+        "holds {} | snaps {} | dups {}",
+        frame.network.interp.holds, frame.network.interp.snaps, frame.network.interp.dup_skips
     );
     if debug_section(
         ui,
@@ -1789,38 +2645,215 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
         ui.indent(SEC_NET_INTERP, |ui| {
             ui.label(format!(
                 "Enabled: {}",
-                if snapshot.interp_enabled { "yes" } else { "no" }
+                if frame.network.interp.enabled { "yes" } else { "no" }
             ));
             ui.label(format!(
                 "Delay: {} ticks ({} ms)",
-                snapshot.interp_delay_ticks, snapshot.interp_delay_ms
+                frame.network.interp.delay_ticks, frame.network.interp.delay_ms
             ));
-            ui.label(format!("History depth: {}", snapshot.interp_history_depth));
+            ui.label(format!("History depth: {}", frame.network.interp.history_depth));
             ui.label(format!(
                 "Estimated server tick: {:.2}",
-                snapshot.interp_estimated_tick
+                frame.network.interp.estimated_server_tick
             ));
-            ui.label(format!("Render tick: {:.2}", snapshot.interp_render_tick));
+            ui.label(format!("Render tick: {:.2}", frame.network.interp.render_tick));
             ui.label(format!(
                 "Bracket A/B: {} / {}",
-                snapshot
-                    .interp_bracket_a
+                frame.network.interp.bracket_a_tick
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "—".into()),
-                snapshot
-                    .interp_bracket_b
+                frame.network.interp.bracket_b_tick
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "—".into())
             ));
-            ui.label(format!("Alpha: {:.3}", snapshot.interp_alpha));
-            ui.label(format!("Holds (underrun): {}", snapshot.interp_holds));
-            ui.label(format!("Snaps (teleport): {}", snapshot.interp_snaps));
+            ui.label(format!("Alpha: {:.3}", frame.network.interp.alpha));
+            ui.label(format!("Holds (underrun): {}", frame.network.interp.holds));
+            ui.label(format!("Snaps (teleport): {}", frame.network.interp.snaps));
+            ui.label(format!(
+                "Dup skips (stale remotes): {}",
+                frame.network.interp.dup_skips
+            ));
+            ui.label(format!(
+                "oldest tick: {}",
+                frame.network.interp.oldest_tick
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "—".into())
+            ));
+            ui.label(format!(
+                "newest tick: {}",
+                frame.network.interp.newest_tick
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "—".into())
+            ));
+            ui.label(format!(
+                "clamped newest: {}",
+                if frame.network.interp.clamped_newest {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ));
+            ui.label(format!(
+                "clamped oldest: {}",
+                if frame.network.interp.clamped_oldest {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ));
+            ui.label(format!(
+                "history reset/reseed count: {}",
+                frame.network.interp.reseeds
+            ));
+            ui.separator();
+            ui.label("Remote motion probe (first other player)");
+            let probe = frame.network.remote_motion;
+            match (probe.entity_index, probe.entity_generation) {
+                (Some(index), Some(generation)) => {
+                    ui.label(format!(
+                        "Entity {}/{} | attachments {} | interp used {}",
+                        index,
+                        generation,
+                        probe.attachments,
+                        if probe.used_interp { "yes" } else { "no - replica fallback" }
+                    ));
+                    ui.label(format!(
+                        "Auth: {}",
+                        probe
+                            .auth
+                            .map(|p| format!("({:.3}, {:.3})", p[0], p[1]))
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.label(format!(
+                        "Interp: {}",
+                        probe
+                            .interp
+                            .map(|p| format!("({:.3}, {:.3})", p[0], p[1]))
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.label(format!(
+                        "Presented: {}",
+                        probe
+                            .presented
+                            .map(|p| format!("({:.3}, {:.3})", p[0], p[1]))
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.label(format!(
+                        "Presented root: {}",
+                        probe
+                            .presented_root
+                            .map(|p| format!("({:.3}, {:.3})", p[0], p[1]))
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.label(format!(
+                        "dx auth-interp: {}",
+                        probe
+                            .dx_auth_interp
+                            .map(|d| format!("{d:.4}"))
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.label(format!(
+                        "dx interp-presented: {}",
+                        probe
+                            .dx_interp_presented
+                            .map(|d| format!("{d:.4}"))
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.label(format!(
+                        "AOI band: {}",
+                        probe.aoi_band.unwrap_or("—")
+                    ));
+                    ui.label(format!(
+                        "observer distance: {}",
+                        probe
+                            .observer_distance
+                            .map(|d| format!("{d:.2} wu"))
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.label(format!(
+                        "latest auth transform tick: {}",
+                        probe
+                            .last_auth_transform_tick
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.label(format!(
+                        "effective received gap: {} (max {})",
+                        probe
+                            .effective_received_gap
+                            .map(|g| format!("{g} ticks"))
+                            .unwrap_or_else(|| "—".into()),
+                        probe
+                            .max_received_gap
+                            .map(|g| g.to_string())
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.label(format!(
+                        "unique transform ticks: {} ({} .. {}) [{}]",
+                        probe.unique_count,
+                        probe
+                            .unique_oldest_tick
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                        probe
+                            .unique_newest_tick
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                        if probe.unique_history_len == 0 {
+                            "—".into()
+                        } else {
+                            probe.unique_history_ticks[..probe.unique_history_len as usize]
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    ));
+                    ui.label(format!(
+                        "entity sample A/B: {} / {}  alpha {:.3}  clamped newest {}",
+                        probe
+                            .entity_bracket_a
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                        probe
+                            .entity_bracket_b
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                        probe.entity_alpha,
+                        if probe.entity_clamped_newest {
+                            "yes"
+                        } else {
+                            "no"
+                        }
+                    ));
+                    ui.label(format!(
+                        "history samples with entity: {} (ticks {} .. {})",
+                        probe.history_with_entity,
+                        probe
+                            .entity_oldest_tick
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                        probe
+                            .entity_newest_tick
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "—".into())
+                    ));
+                    ui.small(
+                        "If InEnter + received gap 2 + entity clamped newest=no, hitch is not Selective cadence. If received gap ≥4 or entity clamped newest=yes, delay 3 is exhausted.",
+                    );
+                }
+                _ => {
+                    ui.label("No remote player in replica.");
+                }
+            }
             ui.small("Presentation only. Monotonic clock. No extrapolation. Remotes only — local uses prediction.");
         });
     }
     let pred_summary = format!(
         "pending {} | ack {} | debt {}",
-        snapshot.pred_pending, snapshot.pred_ack, snapshot.pred_debt
+        frame.network.pred.pending_count,
+        frame.network.pred.last_ack,
+        frame.network.pred.continuation_debt
     );
     if debug_section(
         ui,
@@ -1833,88 +2866,77 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
         ui.indent(SEC_NET_PRED, |ui| {
             ui.label(format!(
                 "Enabled / active: {} / {}",
-                if snapshot.pred_enabled { "yes" } else { "no" },
-                if snapshot.pred_active { "yes" } else { "no" }
+                if frame.network.pred.enabled { "yes" } else { "no" },
+                if frame.network.pred.active { "yes" } else { "no" }
             ));
             ui.label(format!(
                 "Auth pos: {}",
-                snapshot
-                    .pred_auth_pos
+                frame.network.pred.auth_position
                     .map(|p| format!("({:.3}, {:.3})", p[0], p[1]))
                     .unwrap_or_else(|| "—".into())
             ));
             ui.label(format!(
                 "Predicted pos: {}",
-                snapshot
-                    .pred_pos
+                frame.network.pred.predicted_position
                     .map(|p| format!("({:.3}, {:.3})", p[0], p[1]))
                     .unwrap_or_else(|| "—".into())
             ));
             ui.label(format!(
                 "Predicted vel: {}",
-                snapshot
-                    .pred_vel
+                frame.network.pred.predicted_velocity
                     .map(|v| format!("({:.3}, {:.3})", v[0], v[1]))
                     .unwrap_or_else(|| "—".into())
             ));
             ui.label(format!(
                 "Lead error (now vs auth): {}",
-                snapshot
-                    .pred_lead_error
-                    .or(snapshot.pred_error)
+                frame.network.pred.lead_error
                     .map(|e| format!("{e:.3} wu"))
                     .unwrap_or_else(|| "—".into())
             ));
             ui.label(format!(
                 "Aligned residual (best offset): {}",
-                snapshot
-                    .pred_aligned_error
+                frame.network.pred.aligned_error
                     .map(|e| format!("{e:.3} wu"))
                     .unwrap_or_else(|| "—".into())
             ));
             ui.label(format!(
                 "Best temporal offset: {}",
-                snapshot
-                    .pred_best_offset
+                frame.network.pred.best_temporal_offset
                     .map(|t| format!("{t} ticks"))
                     .unwrap_or_else(|| "—".into())
             ));
             ui.label(format!(
                 "Aligned dx/dy: {} / {}",
-                snapshot
-                    .pred_aligned_dx
+                frame.network.pred.aligned_dx
                     .map(|e| format!("{e:.3}"))
                     .unwrap_or_else(|| "—".into()),
-                snapshot
-                    .pred_aligned_dy
+                frame.network.pred.aligned_dy
                     .map(|e| format!("{e:.3}"))
                     .unwrap_or_else(|| "—".into())
             ));
             ui.label(format!(
                 "Auth vel: {}",
-                snapshot
-                    .pred_auth_vel
+                frame.network.pred.auth_velocity
                     .map(|v| format!("({:.3}, {:.3})", v[0], v[1]))
                     .unwrap_or_else(|| "—".into())
             ));
-            ui.label(format!("Prediction tick: {}", snapshot.pred_tick));
-            ui.label(format!("Auth snapshot tick: {}", snapshot.pred_auth_tick));
+            ui.label(format!("Prediction tick: {}", frame.network.pred.prediction_tick));
+            ui.label(format!("Auth snapshot tick: {}", frame.network.pred.auth_server_tick));
             ui.label(format!(
                 "Best-match client tick: {}",
-                snapshot
-                    .pred_best_match_tick
+                frame.network.pred.best_match_tick
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "—".into())
             ));
             ui.label(format!(
                 "Hard snaps / pending / ack: {} / {} / {}",
-                snapshot.pred_resets, snapshot.pred_pending, snapshot.pred_ack
+                frame.network.pred.reset_count, frame.network.pred.pending_count, frame.network.pred.last_ack
             ));
             ui.label(format!(
                 "Epoch / continuation_debt / HeldCancel pending: {} / {} / {}",
-                snapshot.pred_epoch,
-                snapshot.pred_debt,
-                if snapshot.pred_cancel_pending {
+                frame.network.pred.input_epoch,
+                frame.network.pred.continuation_debt,
+                if frame.network.pred.cancel_pending {
                     "yes"
                 } else {
                     "no"
@@ -1922,28 +2944,28 @@ fn draw_network_tab(ui: &mut egui::Ui, snapshot: &DebugSnapshot, ui_state: &mut 
             ));
             ui.label(format!(
                 "Residual divergence streak / max: {} / {:.3}",
-                snapshot.pred_aligned_divergence, snapshot.pred_max_aligned
+                frame.network.pred.consecutive_aligned_divergence, frame.network.pred.max_aligned_error
             ));
             ui.label(format!(
                 "Last correction reason: {}",
-                snapshot.pred_last_snap.as_deref().unwrap_or("—")
+                frame.network.pred.last_snap_reason.unwrap_or("—")
             ));
             ui.label(format!(
                 "Reconcile count: {}",
-                snapshot.pred_reconcile_count
+                frame.network.pred.total_reconciliation_count
             ));
             ui.label(format!(
                 "Correction (pre→post restore+replay): last {:.3} / max {:.3} wu",
-                snapshot.pred_last_correction, snapshot.pred_max_correction
+                frame.network.pred.last_correction_wu, frame.network.pred.max_correction_wu
             ));
             ui.small("Correction is predicted-pose change across restore+replay. Expected lead is auth→replayed predicted. Aligned residual is a separate diagnostic.");
             ui.label(format!(
                 "Observed ack delta / jumps / max: {} / {} / {}",
-                snapshot.pred_ack_delta, snapshot.pred_ack_jump_count, snapshot.pred_max_ack_delta
+                frame.network.pred.observed_ack_delta, frame.network.pred.observed_ack_jump_count, frame.network.pred.max_observed_ack_delta
             ));
             ui.label(format!(
                 "Remainder extra vel: ({:.3}, {:.3})  pending-window stalls: {}",
-                snapshot.pred_tick_vel[0], snapshot.pred_tick_vel[1], snapshot.pred_pending_stall
+                frame.network.pred.last_tick_velocity[0], frame.network.pred.last_tick_velocity[1], frame.network.pred.pending_window_stall_ticks
             ));
             ui.small("Ack delta is client-observed advancement between accepted snapshots. It is not late-collapse (delayed/skipped snapshots can jump ack).");
             ui.small(
@@ -2153,11 +3175,11 @@ mod tests {
     }
 
     #[test]
-    fn every_tab_has_expand_collapse_sections() {
+    fn every_multi_section_tab_has_expand_collapse_ids() {
         for tab in [
-            DebugTab::Runtime,
+            DebugTab::Debug,
             DebugTab::Player,
-            DebugTab::Footnote,
+            DebugTab::Skeleton,
             DebugTab::World,
             DebugTab::Camera,
             DebugTab::Diagnostics,
@@ -2168,17 +3190,44 @@ mod tests {
                 "{tab:?} should expose Expand all / Collapse all"
             );
         }
+        assert_eq!(tab_section_ids(DebugTab::Runtime).len(), 1);
+        assert_eq!(
+            tab_section_ids(DebugTab::Debug),
+            &[
+                SEC_NOW_POSE,
+                SEC_NOW_CAMERA,
+                SEC_NOW_REPLICA,
+                SEC_NOW_VIEW,
+                SEC_NOW_DISPLAY,
+            ]
+        );
+        assert_eq!(
+            reset_action_label(true),
+            "Reanchor Prediction",
+            "replica_player_pos (local_entity) → reanchor, not spawn"
+        );
+        assert_eq!(reset_action_label(false), "Reset to Spawn Point");
+        assert!(tab_section_ids(DebugTab::Skeleton).contains(&SEC_SK_EQUIP));
+        assert!(tab_section_ids(DebugTab::Player).contains(&SEC_FN_CONTACT));
+        assert!(tab_section_ids(DebugTab::Diagnostics).contains(&SEC_DG_HELP));
+        assert!(!tab_section_ids(DebugTab::World).contains(&"world.view"));
+        assert!(!tab_section_ids(DebugTab::Camera).contains(&"camera.follow"));
     }
 
     #[test]
-    fn network_phase_56_defaults_open_prediction_impairment_interp() {
-        assert!(network_section_default_open(SEC_NET_AOI));
-        assert!(network_section_default_open(SEC_NET_INTERACT));
-        assert!(network_section_default_open(SEC_NET_PRED));
-        assert!(network_section_default_open(SEC_NET_IMPAIR));
-        assert!(network_section_default_open(SEC_NET_INTERP));
-        assert!(network_section_default_open(SEC_NET_REPLICA));
-        for id in [SEC_NET_CONN, SEC_NET_INPUT, SEC_NET_FAIL, SEC_NET_HIST] {
+    fn network_forensic_sections_start_collapsed() {
+        for id in [
+            SEC_NET_CONN,
+            SEC_NET_AOI,
+            SEC_NET_INTERACT,
+            SEC_NET_INPUT,
+            SEC_NET_REPLICA,
+            SEC_NET_INTERP,
+            SEC_NET_PRED,
+            SEC_NET_IMPAIR,
+            SEC_NET_FAIL,
+            SEC_NET_HIST,
+        ] {
             assert!(
                 !network_section_default_open(id),
                 "{id} should start collapsed"

@@ -95,6 +95,21 @@ fn ground_acceleration_ramps_toward_max() {
 }
 
 #[test]
+fn stored_footnote_config_caps_ground_speed() {
+    let mut world = World::dev_stage();
+    world.set_footnote_config(FootnoteConfig::with_move_speed(2.0));
+    drive(
+        &mut world,
+        40,
+        DT_30,
+        PlayerInput::from_buttons(false, true, false),
+    );
+    assert!((player(&world).velocity[0] - 2.0).abs() < 0.05);
+    assert_eq!(world.footnote_config().max_ground_speed, 2.0);
+    assert_eq!(world.footnote_config().max_air_speed, 2.0);
+}
+
+#[test]
 fn releasing_input_decelerates_without_snap() {
     let mut world = World::dev_stage();
     drive(

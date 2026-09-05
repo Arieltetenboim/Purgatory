@@ -467,6 +467,7 @@ pub struct FakeProcessBackend {
     pub cargo_exit: i32,
     pub hold_cargo: bool,
     pub server_spawn_fail: bool,
+    pub client_spawn_fail: bool,
     pub kill_log: Vec<u32>,
     pub detach_log: Vec<u32>,
     pub harness_exit: Option<i32>,
@@ -529,6 +530,9 @@ impl ProcessBackend for FakeProcessBackend {
         }
         if name.contains("purgatory-server") && self.server_spawn_fail {
             return Err("server executable failed to start".to_string());
+        }
+        if name.contains("purgatory-client") && self.client_spawn_fail {
+            return Err("client executable failed to start".to_string());
         }
         let pid = self.alloc();
         let (kind, pending_exit) = if name.contains("cargo") {
@@ -608,7 +612,15 @@ impl ProcessBackend for FakeProcessBackend {
             spec.args.join(" ")
         ));
         self.lifetimes.push(ProcessLifetime::Detached);
-        Ok(self.alloc())
+        let pid = self.alloc();
+        self.alive.insert(
+            pid,
+            FakeProc {
+                kind: FakeKind::Other,
+                pending_exit: None,
+            },
+        );
+        Ok(pid)
     }
 
     fn kill_workspace_cargo(&mut self, _root: &Path) -> usize {

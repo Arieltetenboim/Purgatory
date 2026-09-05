@@ -105,7 +105,17 @@ pub fn collect_entities(world: &World, visible: &[EntityId]) -> Vec<SnapshotEnti
                     velocity: [0.0, 0.0],
                 });
             }
-            None
+            if world.kind(id) != Some(purgatory_simulation::EntityKind::Generic) {
+                return None;
+            }
+            let transform = world.transform_of(id)?;
+            let velocity = world.npc_of(id).map(|n| n.velocity).unwrap_or([0.0, 0.0]);
+            Some(SnapshotEntity {
+                entity_id: to_wire_id(id),
+                kind: ReplicatedKind::Npc,
+                position: transform.position,
+                velocity,
+            })
         })
         .collect()
 }

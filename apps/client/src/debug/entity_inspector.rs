@@ -258,6 +258,7 @@ pub fn replica_compact_title(row: &ReplicaEntityDebug) -> String {
         ReplicaRole::RemotePlayer => format!("PLAYER {id} · REMOTE"),
         ReplicaRole::Interactable => format!("INTERACTABLE {id}"),
         ReplicaRole::Portal => format!("PORTAL {id}"),
+        ReplicaRole::Npc => format!("NPC {id}"),
     }
 }
 
@@ -320,6 +321,7 @@ fn replica_row(row: &ReplicaEntityDebug) -> InspectorRow {
         ReplicaRole::RemotePlayer => InspectorAccent::RemotePlayer,
         ReplicaRole::Interactable => InspectorAccent::Interactable,
         ReplicaRole::Portal => InspectorAccent::Portal,
+        ReplicaRole::Npc => InspectorAccent::Other,
     };
     let recent = row.recent.map(|s| format!(" · {s}")).unwrap_or_default();
     InspectorRow {
@@ -431,6 +433,7 @@ pub fn build(
             ReplicaRole::RemotePlayer => view.players.push(row),
             ReplicaRole::Interactable => view.interactables.push(row),
             ReplicaRole::Portal => view.portals.push(row),
+            ReplicaRole::Npc => view.other.push(row),
         }
     }
     if world_local.is_some() || replica_local.is_some() {

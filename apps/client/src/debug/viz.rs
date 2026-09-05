@@ -27,6 +27,19 @@ const COLLIDER_TINT: [f32; 4] = [0.8, 0.8, 0.2, 0.25];
 const VEL_SCALE: f32 = 0.12;
 const BAR_THICKNESS: f32 = 0.06;
 
+/// Prefer debug gizmos over earlier scene quads when the GPU quad budget
+/// would otherwise silently drop them (gizmos are appended last).
+pub fn append_debug_gizmos(world_quads: &mut Vec<DrawQuad>, gizmos: Vec<DrawQuad>, max: usize) {
+    let total = world_quads.len().saturating_add(gizmos.len());
+    if total > max {
+        let overflow = total - max;
+        let drop = overflow.min(world_quads.len());
+        world_quads.drain(0..drop);
+    }
+    world_quads.extend(gizmos);
+    world_quads.truncate(max);
+}
+
 /// Build overlay-gated FOOTNOTE gizmos from live world state and UI toggles.
 ///
 /// `local_render_pose` is the same presentation position used to draw the local
@@ -40,24 +53,24 @@ pub fn footnote_debug_quads(
     local_render_pose: Option<[f32; 2]>,
 ) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(16);
-    let Some(player) = world.player_body() else {
-        return quads;
-    };
-    let origin = local_render_pose.unwrap_or(player.position);
+    let player = world.player_body();
+    let origin = local_render_pose
+        .or_else(|| player.map(|body| body.position))
+        .unwrap_or([0.0, 0.0]);
 
     if ui.show_colliders {
         for view in world.iter_platforms() {
             let aabb = view.aabb();
-            quads.push(DrawQuad {
-                center: aabb.center,
-                size: [aabb.size()[0] * 1.02, aabb.size()[1] * 1.02],
-                color: COLLIDER_TINT,
-                triangle: false,
-            });
+            quads.push(DrawQuad::rect(
+                aabb.center,
+                [aabb.size()[0] * 1.02, aabb.size()[1] * 1.02],
+                COLLIDER_TINT,
+            ));
         }
     }
 
     if ui.show_grounded_highlight
+        && let Some(player) = player
         && let Some(id) = player.grounded_on
     {
         push_platform_highlight(world, id, GROUNDED_HIGHLIGHT, 1.04, &mut quads);
@@ -68,43 +81,49 @@ pub fn footnote_debug_quads(
                 .expect("grounded platform");
             let top = view.top_surface();
             let width = platform.half_extents[0] * 2.0;
-            quads.push(DrawQuad {
-                center: [origin[0], top],
-                size: [width.min(player.half_extents[0] * 2.2), 0.05],
-                color: SUPPORT_LINE,
-                triangle: false,
-            });
+            quads.push(DrawQuad::rect(
+                [origin[0], top],
+                [width.min(player.half_extents[0] * 2.2), 0.05],
+                SUPPORT_LINE,
+            ));
         }
-        quads.push(DrawQuad {
-            center: [origin[0], origin[1] - player.half_extents[1]],
-            size: [0.12, 0.12],
-            color: CONTACT_COLOR,
-            triangle: false,
-        });
+        quads.push(DrawQuad::rect(
+            [origin[0], origin[1] - player.half_extents[1]],
+            [0.12, 0.12],
+            CONTACT_COLOR,
+        ));
     }
 
-    if let Some(id) = player.ignored_platform {
+    if let Some(player) = player
+        && let Some(id) = player.ignored_platform
+    {
         push_platform_highlight(world, id, IGNORED_HIGHLIGHT, 1.06, &mut quads);
     }
 
-    if ui.show_velocity {
+    if ui.show_velocity
+        && let Some(player) = player
+    {
         let vx = player.velocity[0] * VEL_SCALE;
         let vy = player.velocity[1] * VEL_SCALE;
+        let mut drew_bar = false;
         if vx.abs() > 0.02 {
-            quads.push(DrawQuad {
-                center: [origin[0] + vx * 0.5, origin[1]],
-                size: [vx.abs(), BAR_THICKNESS],
-                color: VEL_X_COLOR,
-                triangle: false,
-            });
+            quads.push(DrawQuad::rect(
+                [origin[0] + vx * 0.5, origin[1]],
+                [vx.abs(), BAR_THICKNESS],
+                VEL_X_COLOR,
+            ));
+            drew_bar = true;
         }
         if vy.abs() > 0.02 {
-            quads.push(DrawQuad {
-                center: [origin[0], origin[1] + vy * 0.5],
-                size: [BAR_THICKNESS, vy.abs()],
-                color: VEL_Y_COLOR,
-                triangle: false,
-            });
+            quads.push(DrawQuad::rect(
+                [origin[0], origin[1] + vy * 0.5],
+                [BAR_THICKNESS, vy.abs()],
+                VEL_Y_COLOR,
+            ));
+            drew_bar = true;
+        }
+        if !drew_bar {
+            quads.push(DrawQuad::rect(origin, [0.16, 0.16], VEL_X_COLOR));
         }
     }
 
@@ -151,29 +170,29 @@ pub fn aoi_entity_debug_quads(rows: &[ReplicaEntityDebug]) -> Vec<DrawQuad> {
                 ReplicaRole::RemotePlayer => REMOTE_OUTLINE,
                 ReplicaRole::Interactable => INTERACTABLE_OUTLINE,
                 ReplicaRole::Portal => PORTAL_OUTLINE,
+                ReplicaRole::Npc => REMOTE_OUTLINE,
             }
         };
         let size = match row.role {
             ReplicaRole::LocalPlayer | ReplicaRole::RemotePlayer => [1.05, 1.55],
             ReplicaRole::Interactable => [1.0, 1.7],
             ReplicaRole::Portal => [1.1, 1.6],
+            ReplicaRole::Npc => [0.9, 1.3],
         };
         push_aabb_outline(row.position, size, color, &mut quads);
         if row.role == ReplicaRole::RemotePlayer {
-            quads.push(DrawQuad {
-                center: [row.position[0], row.position[1] + 0.95],
-                size: [0.55, 0.45],
-                color: REMOTE_OUTLINE,
-                triangle: true,
-            });
+            quads.push(DrawQuad::triangle(
+                [row.position[0], row.position[1] + 0.95],
+                [0.55, 0.45],
+                REMOTE_OUTLINE,
+            ));
         }
         if row.role == ReplicaRole::LocalPlayer {
-            quads.push(DrawQuad {
-                center: [row.position[0], row.position[1] + 0.95],
-                size: [0.28, 0.28],
-                color: LOCAL_OUTLINE,
-                triangle: false,
-            });
+            quads.push(DrawQuad::rect(
+                [row.position[0], row.position[1] + 0.95],
+                [0.28, 0.28],
+                LOCAL_OUTLINE,
+            ));
         }
     }
     quads
@@ -200,24 +219,13 @@ pub fn camera_deadzone_quads(
         CAMERA_ZONE_COLOR,
         &mut quads,
     );
-    quads.push(DrawQuad {
-        center: camera_center,
-        size: [0.18, 0.18],
-        color: CAMERA_CENTER_COLOR,
-        triangle: false,
-    });
-    quads.push(DrawQuad {
-        center: desired,
-        size: [0.14, 0.14],
-        color: CAMERA_DESIRED_COLOR,
-        triangle: false,
-    });
-    quads.push(DrawQuad {
-        center: player,
-        size: [0.12, 0.12],
-        color: CAMERA_PLAYER_MARK,
-        triangle: false,
-    });
+    quads.push(DrawQuad::rect(
+        camera_center,
+        [0.18, 0.18],
+        CAMERA_CENTER_COLOR,
+    ));
+    quads.push(DrawQuad::rect(desired, [0.14, 0.14], CAMERA_DESIRED_COLOR));
+    quads.push(DrawQuad::rect(player, [0.12, 0.12], CAMERA_PLAYER_MARK));
     quads
 }
 
@@ -231,30 +239,10 @@ fn push_aabb_outline(center: [f32; 2], size: [f32; 2], color: [f32; 4], quads: &
     let max_x = cx + w * 0.5;
     let min_y = cy - h * 0.5;
     let max_y = cy + h * 0.5;
-    quads.push(DrawQuad {
-        center: [cx, max_y],
-        size: [w, t],
-        color,
-        triangle: false,
-    });
-    quads.push(DrawQuad {
-        center: [cx, min_y],
-        size: [w, t],
-        color,
-        triangle: false,
-    });
-    quads.push(DrawQuad {
-        center: [min_x, cy],
-        size: [t, h],
-        color,
-        triangle: false,
-    });
-    quads.push(DrawQuad {
-        center: [max_x, cy],
-        size: [t, h],
-        color,
-        triangle: false,
-    });
+    quads.push(DrawQuad::rect([cx, max_y], [w, t], color));
+    quads.push(DrawQuad::rect([cx, min_y], [w, t], color));
+    quads.push(DrawQuad::rect([min_x, cy], [t, h], color));
+    quads.push(DrawQuad::rect([max_x, cy], [t, h], color));
 }
 
 fn push_bounds_outline(bounds: WorldBounds, quads: &mut Vec<DrawQuad>) {
@@ -263,30 +251,10 @@ fn push_bounds_outline(bounds: WorldBounds, quads: &mut Vec<DrawQuad>) {
     let w = bounds.width();
     let h = bounds.height();
     let t = 0.08;
-    quads.push(DrawQuad {
-        center: [cx, bounds.max_y],
-        size: [w, t],
-        color: BOUNDS_COLOR,
-        triangle: false,
-    });
-    quads.push(DrawQuad {
-        center: [cx, bounds.min_y],
-        size: [w, t],
-        color: BOUNDS_COLOR,
-        triangle: false,
-    });
-    quads.push(DrawQuad {
-        center: [bounds.min_x, cy],
-        size: [t, h],
-        color: BOUNDS_COLOR,
-        triangle: false,
-    });
-    quads.push(DrawQuad {
-        center: [bounds.max_x, cy],
-        size: [t, h],
-        color: BOUNDS_COLOR,
-        triangle: false,
-    });
+    quads.push(DrawQuad::rect([cx, bounds.max_y], [w, t], BOUNDS_COLOR));
+    quads.push(DrawQuad::rect([cx, bounds.min_y], [w, t], BOUNDS_COLOR));
+    quads.push(DrawQuad::rect([bounds.min_x, cy], [t, h], BOUNDS_COLOR));
+    quads.push(DrawQuad::rect([bounds.max_x, cy], [t, h], BOUNDS_COLOR));
 }
 
 fn push_grid(bounds: WorldBounds, quads: &mut Vec<DrawQuad>) {
@@ -294,22 +262,20 @@ fn push_grid(bounds: WorldBounds, quads: &mut Vec<DrawQuad>) {
     let t = 0.03;
     let mut x = (bounds.min_x / step).ceil() * step;
     while x <= bounds.max_x {
-        quads.push(DrawQuad {
-            center: [x, bounds.center()[1]],
-            size: [t, bounds.height()],
-            color: GRID_COLOR,
-            triangle: false,
-        });
+        quads.push(DrawQuad::rect(
+            [x, bounds.center()[1]],
+            [t, bounds.height()],
+            GRID_COLOR,
+        ));
         x += step;
     }
     let mut y = (bounds.min_y / step).ceil() * step;
     while y <= bounds.max_y {
-        quads.push(DrawQuad {
-            center: [bounds.center()[0], y],
-            size: [bounds.width(), t],
-            color: GRID_COLOR,
-            triangle: false,
-        });
+        quads.push(DrawQuad::rect(
+            [bounds.center()[0], y],
+            [bounds.width(), t],
+            GRID_COLOR,
+        ));
         y += step;
     }
 }
@@ -491,5 +457,56 @@ mod tests {
         );
         assert!(quads.iter().any(|q| q.center == [1.0, 0.5]));
         assert!(quads.iter().any(|q| q.center == [0.2, 0.0]));
+    }
+
+    #[test]
+    fn colliders_draw_without_a_player_body() {
+        let mut world = World::dev_stage();
+        let id = world.player_id().expect("player");
+        assert!(world.despawn(id));
+        let ui = DebugUiState {
+            show_colliders: true,
+            show_velocity: false,
+            show_grounded_highlight: false,
+            show_aoi_rects: false,
+            ..DebugUiState::default()
+        };
+        let quads = footnote_debug_quads(&world, &ui, None);
+        assert!(
+            quads.iter().any(|q| q.color == COLLIDER_TINT),
+            "colliders must not early-return when player_body is missing"
+        );
+    }
+
+    #[test]
+    fn idle_velocity_toggle_emits_a_rest_tick() {
+        let world = World::dev_stage();
+        let ui = DebugUiState {
+            show_colliders: false,
+            show_grounded_highlight: false,
+            show_velocity: true,
+            show_aoi_rects: false,
+            ..DebugUiState::default()
+        };
+        let quads = footnote_debug_quads(&world, &ui, Some([3.0, 1.0]));
+        assert!(
+            quads.iter().any(|q| q.color == VEL_X_COLOR
+                && q.center == [3.0, 1.0]
+                && q.size == [0.16, 0.16]),
+            "idle velocity gizmo must still be visible"
+        );
+    }
+
+    #[test]
+    fn append_debug_gizmos_keeps_gizmos_when_over_budget() {
+        let filler = DrawQuad::rect([0.0, 0.0], [1.0, 1.0], [0.0, 0.0, 0.0, 1.0]);
+        let gizmo = DrawQuad::rect([9.0, 9.0], [0.5, 0.5], COLLIDER_TINT);
+        let mut world = vec![filler; 4];
+        append_debug_gizmos(&mut world, vec![gizmo], 4);
+        assert_eq!(world.len(), 4);
+        assert!(
+            world.iter().any(|q| q.color == COLLIDER_TINT),
+            "gizmos must win the last slots"
+        );
     }
 }

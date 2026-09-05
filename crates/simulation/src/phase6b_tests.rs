@@ -114,6 +114,48 @@ fn stale_generation_cannot_open() {
 }
 
 #[test]
+fn portal_activate_rejects_wrong_address_after_actor_moves_maps() {
+    let mut world = World::new();
+    let actor = RuntimeFixtures::test_player(&mut world);
+    let actor_pos = world.transform_of(actor).unwrap().position;
+    let portal = spawn_portal_at(&mut world, actor_pos);
+    world
+        .validate_portal_activate(actor, portal)
+        .expect("same map");
+    world.set_address(
+        actor,
+        WorldAddress::new(
+            purgatory_common::MapId::from_raw(2),
+            purgatory_common::ChannelId::DEFAULT,
+            purgatory_common::InstanceId::DEFAULT,
+        ),
+    );
+    assert_eq!(
+        world.validate_portal_activate(actor, portal),
+        Err(InteractionReject::WrongAddress)
+    );
+}
+
+#[test]
+fn stale_portal_generation_cannot_activate_replacement() {
+    let mut world = World::new();
+    let actor = RuntimeFixtures::test_player(&mut world);
+    let actor_pos = world.transform_of(actor).unwrap().position;
+    let portal = spawn_portal_at(&mut world, actor_pos);
+    assert!(world.despawn(portal));
+    let reused = spawn_portal_at(&mut world, actor_pos);
+    assert_eq!(portal.index(), reused.index());
+    assert_ne!(portal.generation(), reused.generation());
+    assert_eq!(
+        world.validate_portal_activate(actor, portal),
+        Err(InteractionReject::StaleId)
+    );
+    world
+        .validate_portal_activate(actor, reused)
+        .expect("fresh portal id");
+}
+
+#[test]
 fn close_requested_and_invalid_session() {
     let mut world = World::new();
     let (actor, target) = actor_and_near(&mut world);

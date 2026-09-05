@@ -22,6 +22,8 @@ pub struct PlayerState {
     /// Most recent land / leave transition for this tick.
     pub last_contact: ContactEvent,
     pub half_extents: [f32; 2],
+    /// Last non-zero horizontal intent. `1` right, `-1` left. Not on the wire.
+    pub facing_sign: i8,
 }
 
 impl PlayerState {
@@ -42,6 +44,7 @@ impl PlayerState {
                 ignored_platform: None,
                 last_contact: ContactEvent::None,
                 half_extents: half,
+                facing_sign: 1,
             },
         )
     }

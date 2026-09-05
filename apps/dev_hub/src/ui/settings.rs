@@ -66,6 +66,12 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
             if ui.button("QUALITY GATE").clicked() {
                 cmd = Some(HubCommand::QualityGate);
             }
+            if ui.button("PHASE 7.8 GATE").clicked() {
+                cmd = Some(HubCommand::Phase78Gate);
+            }
+            if snap.phase78_gate_active {
+                ui.colored_label(theme::muted(), "(gate running — ladder isolated)");
+            }
             if ui.button("REBUILD").clicked() {
                 cmd = Some(HubCommand::Rebuild);
             }
@@ -78,7 +84,7 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
         });
         ui.colored_label(
             theme::muted(),
-            "KILL ALL stops server, clients, load, and workspace cargo (unlike closing the Hub).",
+            "QUALITY GATE runs scripts/check.ps1. PHASE 7.8 GATE runs scripts/phase_78_gate.ps1 (capacity regression; long). KILL ALL stops server, clients, load, and workspace cargo (unlike closing the Hub).",
         );
     });
     cmd

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "equipment.debug.cloth_pants",
+  "attachments": [
+    {
+      "id": "thigh_front",
+      "bone": "upper_leg_front",
+      "anchor": "bone_origin",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.cloth_pants.thigh_front.side",
+        "back": "equipment.debug.cloth_pants.thigh_front.back"
+      }
+    },
+    {
+      "id": "shin_front",
+      "bone": "lower_leg_front",
+      "anchor": "bone_origin",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.cloth_pants.shin_front.side",
+        "back": "equipment.debug.cloth_pants.shin_front.back"
+      }
+    },
+    {
+      "id": "thigh_back",
+      "bone": "upper_leg_back",
+      "anchor": "bone_origin",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.cloth_pants.thigh_back.side",
+        "back": "equipment.debug.cloth_pants.thigh_back.back"
+      }
+    },
+    {
+      "id": "shin_back",
+      "bone": "lower_leg_back",
+      "anchor": "bone_origin",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.cloth_pants.shin_back.side",
+        "back": "equipment.debug.cloth_pants.shin_back.back"
+      }
+    }
+  ]
+}

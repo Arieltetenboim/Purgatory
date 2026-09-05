@@ -13,6 +13,7 @@ const TAG_WORLD_SNAPSHOT: u8 = 7;
 const KIND_PLAYER: u8 = 1;
 const KIND_INTERACTABLE: u8 = 2;
 const KIND_PORTAL: u8 = 3;
+const KIND_NPC: u8 = 4;
 
 /// Wire entity identity. Generation is part of equality; index reuse is a
 /// different entity.
@@ -58,6 +59,8 @@ pub enum ReplicatedKind {
     Player = 1,
     Interactable = 2,
     Portal = 3,
+    /// Visible non-player actor (sim `EntityKind::Generic` with Transform).
+    Npc = 4,
 }
 
 impl std::fmt::Display for ReplicatedKind {
@@ -66,6 +69,7 @@ impl std::fmt::Display for ReplicatedKind {
             Self::Player => "Player",
             Self::Interactable => "Interactable",
             Self::Portal => "Portal",
+            Self::Npc => "Npc",
         })
     }
 }
@@ -82,6 +86,7 @@ impl ReplicatedKind {
             KIND_PLAYER => Some(Self::Player),
             KIND_INTERACTABLE => Some(Self::Interactable),
             KIND_PORTAL => Some(Self::Portal),
+            KIND_NPC => Some(Self::Npc),
             _ => None,
         }
     }

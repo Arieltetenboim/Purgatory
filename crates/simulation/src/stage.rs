@@ -4,14 +4,20 @@
 //! regions and empty traversal space — not by doubling platform count.
 //! Labels in comments are developer-only. Not a map loader.
 
-use crate::aabb::Aabb;
 use crate::body::PlayerState;
 use crate::bounds::WorldBounds;
-use crate::contact::{CONTACT_EPSILON, overlap_x, overlap_y, penetrates};
-use crate::entity::EntityId;
-use crate::platform::{Platform, PlatformKind};
+use crate::platform::Platform;
 use crate::transform::Transform;
 use crate::world::World;
+
+#[cfg(any(debug_assertions, test))]
+use crate::aabb::Aabb;
+#[cfg(any(debug_assertions, test))]
+use crate::contact::{CONTACT_EPSILON, overlap_x, overlap_y, penetrates};
+#[cfg(any(debug_assertions, test))]
+use crate::entity::EntityId;
+#[cfg(any(debug_assertions, test))]
+use crate::platform::PlatformKind;
 
 /// Main Solid floor (P0) spanning full horizontal world bounds.
 pub const P0: Platform = Platform::solid([24.0, 0.4]);

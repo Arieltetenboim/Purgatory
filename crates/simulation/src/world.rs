@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::aabb::Aabb;
+use crate::ability::{AbilityGrantTable, AbilityRuntimeTable, CooldownTable};
 use crate::action::ActionTable;
 use crate::aoi::{AOI_INFLUENCE_HALF_EXTENTS, AoiRects, aoi_policy_rects, point_in_aabb};
 use crate::body::{PlayerBody, PlayerState};
@@ -16,6 +17,7 @@ use crate::dirty::DirtyFlags;
 use crate::domain::{DomainRevs, ReplicationDirtyMask};
 use crate::effect::EffectTable;
 use crate::entity::{EntityId, EntityKind};
+use crate::equipment::{EquipmentDirtyMask, EquipmentSlot, EquipmentState};
 use crate::health::Health;
 use crate::interactable::{
     INTERACT_RANGE, Interactable, InteractableKind, in_portal_activation_zone,
@@ -28,9 +30,14 @@ use crate::interest_locality::InterestLocalityAccounting;
 use crate::lifecycle::EntityLifecycle;
 use crate::map_runtime::InstantiatedMap;
 use crate::motion_debug::PlayerMotionDebug;
+use crate::npc::NpcState;
 use crate::platform::{
     FLOOR, FLOOR_POSITION, ONEWAY_A, ONEWAY_A_POSITION, ONEWAY_B, ONEWAY_B_POSITION, Platform,
     PlatformView, RAISED_PLATFORM, RAISED_PLATFORM_POSITION,
+};
+use crate::presentation_oneshot::{
+    PresentationOneShot, PresentationOneShotError, PresentationOneShotKind, oneshot_if_active,
+    try_start_oneshot,
 };
 use crate::replication::{ReplicationClass, ReplicationMeta};
 use crate::runtime_event::EventQueue;
@@ -59,6 +66,11 @@ pub(crate) struct EntityData {
     platform: Option<Platform>,
     health: Option<Health>,
     interactable: Option<Interactable>,
+    npc: Option<NpcState>,
+    equipment: Option<EquipmentState>,
+    equipment_dirty: EquipmentDirtyMask,
+    /// Authoritative Attack/Hurt presentation oneshot (A5). Not replicated as bones.
+    presentation_oneshot: Option<PresentationOneShot>,
     dirty: DirtyFlags,
     domain_revs: DomainRevs,
 }
@@ -83,6 +95,7 @@ pub struct World {
     player: Option<EntityId>,
     bounds: WorldBounds,
     last_motion: PlayerMotionDebug,
+    footnote_config: crate::footnote::FootnoteConfig,
     next_support_id: u16,
     interaction_sessions: Vec<InteractionSession>,
     next_interaction_session_id: u32,
@@ -93,16 +106,21 @@ pub struct World {
     interest_dirty_observers: HashSet<EntityId>,
     /// 6G.6 characterization: observers dirtied per invalidation.
     interest_locality: InterestLocalityAccounting,
-    /// Entities with transform/health domain bumps since last drain (6G.7B).
+    /// Entities with transform/health/equipment domain bumps since last drain (6G.7B).
     replication_dirty: HashMap<EntityId, ReplicationDirtyMask>,
     pub(crate) tick: SimulationTick,
     pub(crate) scheduler: Scheduler,
     pub(crate) actions: ActionTable,
+    pub(crate) ability_runtime: AbilityRuntimeTable,
+    pub(crate) cooldowns: CooldownTable,
+    pub(crate) ability_grants: AbilityGrantTable,
     pub(crate) effects: EffectTable,
     pub(crate) events: EventQueue,
     pub(crate) spawn_schedule: SpawnSchedule,
     pub(crate) cadence: CadenceTable,
     pub(crate) runtime_stats: RuntimeStats,
+    /// Load/workload override for NPC death→respawn delay. `0` = simulation default (30).
+    pub(crate) npc_respawn_delay_ticks: u64,
 }
 
 impl Default for World {
@@ -114,6 +132,7 @@ impl Default for World {
             player: None,
             bounds: WorldBounds::DEV_COMPACT,
             last_motion: PlayerMotionDebug::default(),
+            footnote_config: crate::footnote::FootnoteConfig::DEFAULT,
             next_support_id: 1,
             interaction_sessions: Vec::new(),
             next_interaction_session_id: 1,
@@ -126,11 +145,15 @@ impl Default for World {
             tick: SimulationTick::ZERO,
             scheduler: Scheduler::new(),
             actions: ActionTable::new(),
+            ability_runtime: AbilityRuntimeTable::new(),
+            cooldowns: CooldownTable::new(),
+            ability_grants: AbilityGrantTable::new(),
             effects: EffectTable::new(),
             events: EventQueue::new(),
             spawn_schedule: SpawnSchedule::new(),
             cadence: CadenceTable::new(),
             runtime_stats: RuntimeStats::default(),
+            npc_respawn_delay_ticks: 0,
         }
     }
 }
@@ -154,7 +177,7 @@ impl World {
         }
     }
 
-    /// Record a transform/health domain change for replication fan-out (6G.7B).
+    /// Record a transform/health/equipment domain change for replication fan-out (6G.7B).
     pub fn mark_replication_dirty(&mut self, id: EntityId, mask: ReplicationDirtyMask) {
         if !mask.any() || !self.contains(id) {
             return;
@@ -172,9 +195,7 @@ impl World {
     pub fn replication_dirty_iter(
         &self,
     ) -> impl Iterator<Item = (EntityId, ReplicationDirtyMask)> + '_ {
-        self.replication_dirty
-            .iter()
-            .map(|(id, mask)| (*id, *mask))
+        self.replication_dirty.iter().map(|(id, mask)| (*id, *mask))
     }
 
     /// Clear pending replication dirty after fan-out enqueue completes.
@@ -383,6 +404,17 @@ impl World {
 
     pub(crate) fn set_last_motion_debug(&mut self, debug: PlayerMotionDebug) {
         self.last_motion = debug;
+    }
+
+    /// FOOTNOTE locomotion used by [`Self::tick`] / [`Self::tick_predicted_player`].
+    #[must_use]
+    pub fn footnote_config(&self) -> crate::footnote::FootnoteConfig {
+        self.footnote_config
+    }
+
+    /// Replace FOOTNOTE locomotion for subsequent ticks. Tests and DEV overlay only.
+    pub fn set_footnote_config(&mut self, config: crate::footnote::FootnoteConfig) {
+        self.footnote_config = config;
     }
 
     /// Phase-4.5 compact development stage (unit tests / small sandbox).
@@ -671,8 +703,144 @@ impl World {
         if bumped {
             self.note_domain_rev();
             self.mark_replication_dirty(id, ReplicationDirtyMask::health_only());
+            self.runtime_stats.health_mutations_total =
+                self.runtime_stats.health_mutations_total.saturating_add(1);
         }
         true
+    }
+
+    #[must_use]
+    pub fn equipment_of(&self, id: EntityId) -> Option<EquipmentState> {
+        self.slot_live(id)?.equipment
+    }
+
+    #[must_use]
+    pub fn equipment_slot(&self, id: EntityId, slot: EquipmentSlot) -> Option<ContentId> {
+        self.slot_live(id)?.equipment?.get(slot)
+    }
+
+    #[must_use]
+    pub fn equipment_dirty_of(&self, id: EntityId) -> Option<EquipmentDirtyMask> {
+        Some(self.slot_live(id)?.equipment_dirty)
+    }
+
+    /// Consume and reset slot-level equipment dirty bits.
+    pub fn consume_equipment_dirty(&mut self, id: EntityId) -> Option<EquipmentDirtyMask> {
+        Some(self.slot_live_mut(id)?.equipment_dirty.take())
+    }
+
+    /// Write one slot. Idempotent writes do not dirty. [`None`] is empty, not a sentinel id.
+    pub fn set_equipment_slot(
+        &mut self,
+        id: EntityId,
+        slot: EquipmentSlot,
+        value: Option<ContentId>,
+    ) -> bool {
+        let mut changed_mask = EquipmentDirtyMask::empty();
+        {
+            let Some(data) = self.slot_live_mut(id) else {
+                return false;
+            };
+            let current = data.equipment.and_then(|state| state.get(slot));
+            if current == value {
+                return true;
+            }
+            let state = data.equipment.get_or_insert_with(EquipmentState::empty);
+            let _ = state.set(slot, value);
+            data.dirty.equipment = true;
+            data.equipment_dirty.mark(slot);
+            data.domain_revs.bump_equipment();
+            changed_mask.mark(slot);
+        }
+        self.note_domain_rev();
+        self.mark_replication_dirty(id, ReplicationDirtyMask::equipment_only(changed_mask));
+        true
+    }
+
+    pub fn clear_equipment_slot(&mut self, id: EntityId, slot: EquipmentSlot) -> bool {
+        self.set_equipment_slot(id, slot, None)
+    }
+
+    /// Active presentation oneshot at the world's current tick, if any.
+    #[must_use]
+    pub fn presentation_oneshot_of(&self, id: EntityId) -> Option<PresentationOneShot> {
+        let data = self.slot_live(id)?;
+        oneshot_if_active(data.presentation_oneshot, self.tick)
+    }
+
+    /// Start or interrupt a presentation oneshot using A5 policy. Returns the live state.
+    pub fn try_start_presentation_oneshot(
+        &mut self,
+        id: EntityId,
+        kind: PresentationOneShotKind,
+    ) -> Result<PresentationOneShot, PresentationOneShotError> {
+        if !self.contains(id) {
+            return Err(PresentationOneShotError::BlockedByHurt);
+        }
+        let now = self.tick;
+        let current = self.slot_live(id).and_then(|d| d.presentation_oneshot);
+        let next = try_start_oneshot(current, kind, now)?;
+        if let Some(data) = self.slot_live_mut(id) {
+            data.presentation_oneshot = Some(next);
+        }
+        self.events.push(
+            crate::runtime_event::RuntimeEvent::PresentationOneShotStarted {
+                entity: id,
+                kind: next.kind,
+                until_tick: next.until_tick.get(),
+            },
+        );
+        Ok(next)
+    }
+
+    /// Clear any live Attack/Hurt oneshot. Used when lethal damage takes over as Dead.
+    pub fn clear_presentation_oneshot(&mut self, id: EntityId) -> bool {
+        let Some(data) = self.slot_live_mut(id) else {
+            return false;
+        };
+        if data.presentation_oneshot.is_none() {
+            return false;
+        }
+        data.presentation_oneshot = None;
+        self.events
+            .push(crate::runtime_event::RuntimeEvent::PresentationOneShotCleared { entity: id });
+        true
+    }
+
+    /// Expire finished oneshots. Call from the sim tick loop; clip end is irrelevant.
+    pub fn expire_presentation_oneshots(&mut self) {
+        let now = self.tick;
+        for slot in &mut self.slots {
+            let Some(data) = slot.data.as_mut() else {
+                continue;
+            };
+            if oneshot_if_active(data.presentation_oneshot, now).is_none() {
+                data.presentation_oneshot = None;
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn npc_of(&self, id: EntityId) -> Option<NpcState> {
+        self.slot_live(id)?.npc
+    }
+
+    pub fn set_npc(&mut self, id: EntityId, npc: NpcState) -> bool {
+        let Some(data) = self.slot_live_mut(id) else {
+            return false;
+        };
+        data.npc = Some(npc);
+        true
+    }
+
+    /// Load/workload override for NPC death→respawn delay ticks. `0` restores default (30).
+    pub fn set_npc_respawn_delay_ticks(&mut self, delay: u64) {
+        self.npc_respawn_delay_ticks = delay;
+    }
+
+    #[must_use]
+    pub fn npc_respawn_delay_ticks(&self) -> u64 {
+        self.npc_respawn_delay_ticks
     }
 
     #[must_use]
@@ -1275,6 +1443,8 @@ impl World {
             platform: None,
             health: None,
             interactable: None,
+            npc: None,
+            equipment: None,
         })
         .expect("player spawn")
     }
@@ -1701,6 +1871,15 @@ impl World {
 const DEV_INTERACTABLE_HALF_Y: f32 = 0.7;
 
 fn entity_from_request(request: RuntimeSpawnRequest) -> EntityData {
+    let equipment = request.equipment;
+    let equipment_occupied = equipment.is_some_and(|e| !e.is_empty());
+    let equipment_dirty = if equipment_occupied {
+        equipment
+            .map(EquipmentState::occupied_mask)
+            .unwrap_or_default()
+    } else {
+        EquipmentDirtyMask::empty()
+    };
     EntityData {
         transform: request.transform,
         address: request.address,
@@ -1712,17 +1891,23 @@ fn entity_from_request(request: RuntimeSpawnRequest) -> EntityData {
         platform: request.platform,
         health: request.health,
         interactable: request.interactable,
+        npc: request.npc,
+        equipment,
+        equipment_dirty,
+        presentation_oneshot: None,
         dirty: DirtyFlags {
             membership: true,
             replication: true,
             transform: request.transform.is_some(),
             health: request.health.is_some(),
+            equipment: equipment_occupied,
         },
         domain_revs: DomainRevs {
             transform: u64::from(request.transform.is_some()),
             health: u64::from(request.health.is_some()),
             membership: 1,
             replication: 1,
+            equipment: u64::from(equipment_occupied),
         },
     }
 }

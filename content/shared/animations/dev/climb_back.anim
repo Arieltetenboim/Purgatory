@@ -1,0 +1,19 @@
+schema_version 1
+duration 5.00
+loop Loop
+
+track pelvis
+rot 0.00 -0.033267 Linear
+rot 1.39 -3.169389 Linear
+rot 3.27 -0.013847 Linear
+tx 0.00 0.0 Linear
+tx 1.39 0.3 Linear
+tx 3.27 -0.3 Linear
+endtrack
+
+track upper_leg_back
+rot 0.00 0.147526 Linear
+endtrack
+
+markers
+endmarkers

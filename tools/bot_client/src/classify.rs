@@ -932,6 +932,7 @@ mod tests {
             effects: 8,
             events: 16,
             cadence_consumers: 32,
+            ..LoadValidationConfig::default()
         }
     }
 

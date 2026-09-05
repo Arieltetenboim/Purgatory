@@ -19,6 +19,7 @@ Scoped workflows: [`.cursor/skills/`](.cursor/skills/) (`purgatory-implement`, `
 - `docs/TEST_GATES.md` — verification gates
 - `docs/PERFORMANCE_BUDGETS.md` — living performance budgets
 - `docs/CONTENT_PIPELINE.md` — content authoring boundary
+- `docs/DIAGNOSTICS_ARCHITECTURE.md` — client debug/diagnostics split (D-track)
 - root `PHASE` — current phase marker
 
 ## Working expectations

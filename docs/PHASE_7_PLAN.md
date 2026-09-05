@@ -1,555 +1,233 @@
-# Phase 7 plan — Gameplay vocabulary
+# Phase 7 plan — Capacity, parallelism & production scaling
 
-Status: **planned, not started.** Do not implement until Phase 6G is declared GREEN.
+Status: **7.8 complete — Phase 7 complete** (production performance gate YELLOW; ADR-0056 unchanged). Phase 6 is the closed architectural baseline. Phases 7.1–7.8 are **complete**. Phase 7.8 is **complete** ([`PHASE_78_REPORT.md`](PHASE_78_REPORT.md)). Post-7 Phase **8A** (equipment data model) is a separate slice; this document remains the Phase 7 record.
 
-This document is the canonical Phase 7 design after Phases 0–6G. It is not an implementation report and does not authorize starting Phase 7.
+Legacy roadmap numbering (master-plan Phase 7 = client reconciliation; table rows 8–17 as the next sequence) remains **superseded**. Historical completed work is unchanged: client reconciliation shipped as Phase 5.5; maps/content, persistence, AOI/interest, and scale harness shipped inside Phase 6 / 5.7. See [ROADMAP.md](ROADMAP.md).
 
-Legacy roadmap numbering (master-plan Phase 7 = client reconciliation; table rows 8–17 as the next sequence) is **superseded by the post-6G roadmap**. Historical completed work is unchanged: client reconciliation shipped as Phase 5.5; maps/content, persistence, AOI, and scale harness shipped inside Phase 6 / 5.7. See [ROADMAP.md](ROADMAP.md).
+A previous post-6G draft treated Phase 7 as a gameplay-vocabulary phase (attributes / actions / runtime actor / player `ActionRequest`). That intent is **superseded**. Vocabulary work is deferred after Phase 7; it is not the purpose of this phase.
 
 ---
 
 ## Canonical purpose
 
-Phase 7 introduces the first content-driven gameplay vocabulary — generalized attributes/resources/modifiers and executable actions that consume the Phase 6 spine — and proves it with a server-side non-player runtime actor, then network/client presentation of that actor, then a player-issued authored action request.
+Phase 7 answers:
 
-It does not build combat, inventory, classes, production UI, or a mouse/pointer framework.
+**How much real MMORPG workload can one Purgatory server process sustain, what resource becomes the limiting factor first, and what architectural changes are justified by evidence?**
 
----
+Rule:
 
-## Why this phase (and not the alternatives)
+**Measure → identify owner → optimize → measure again → redesign only when justified.**
 
-Phase 6 built **runtime grammar** (composition, scheduler, Action shell, effect lifetime, events, spatial/AOI, replication, restore persistence). Action and Effect kinds are still `Test` only. `Health` is a container, not combat. Generic entities with Transform are not on the wire unless they are Player or Interactable.
+Do not jump to sharding, multithreading, distributed simulation, world splitting, or other large architectural changes before measurement identifies the actual limiting resource.
 
-| Alternative | Why not Phase 7 |
-|---|---|
-| MOB / combat-AI first | Dummy walker; then retrofit stats/actions; still invisible without a replication kind; combat AI is out of scope |
-| Combat core first | Collapses targeting, damage, death, projectiles, threat; invents stats under combat pressure |
-| WindowManager / production UI first | No gameplay windows to host; egui is not production UI (ADR-0016) |
-| Attributes-only | Framework with no consumer |
-| Mouse/pointer first | Client interaction infrastructure; not required to prove vocabulary |
-
-Phase 7 is **vocabulary + proof**, in independently reviewable stages.
+Do **not** describe this phase as a generic “make AOI scalable” or “implement replication scaling” phase. That architecture closed in Phase 6.
 
 ---
 
-## Phase 6 foundations consumed (do not duplicate)
+## Two connected axes
 
-| Foundation | Role in Phase 7 |
-|---|---|
-| Composition `World`, `EntityId`, `WorldAddress`, `EntityKind` | Actor and player sheets attach as capabilities, not new storage families |
-| Scheduler (Critical/Deferred, owner cancel) | Action complete, effect expiry, regen, actor respawn |
-| Action table + `evaluate_action_gate` + command preamble | 7B execution; 7E player request |
-| Staged `RuntimeEvent` | Authoritative facts; not a bus; not a second wire codec |
-| Effect **lifetime** (`EffectId`, owner, expiry, despawn cleanup) | Hosts content-driven modifiers; not a growing gameplay enum |
-| Spatial queries + AOI + `DomainRevs` + `ReplicationFrame` | 7D actor visibility |
-| InteractionSession | Unchanged; not merged into Action (ADR-0046) |
-| Content registry + placements | Actor/attribute/action authoring |
-| Character persist | Restore map/point only; no vitals persistence |
-| Cadence, dirty/delta, tick budgets, load validation | Scale; Test kinds stay load-only (ADR-0051) |
+### A. Capacity and production scaling
 
-ADR-0031: player abilities must **not** ride `InputCommand` late-collapse / `jump_pressed` OR.
+Measure and understand tick CPU ownership, process CPU, memory, network throughput, QUIC send behavior, queue pressure, backpressure, replication emit/encode cost, simulation cost, scheduler/actions/effects cost, connection scaling, hotspot density, per-player and per-entity scaling, and saturation behavior.
 
-ADR-0051: production paths must not depend on `ActionKind::Test`, `EffectKind::Test`, or `ScheduledKind::TestProbe`.
+Objective: an evidence-backed capacity model for a **single server process**.
+
+### B. Representative gameplay workload
+
+Current synthetic/load workloads are useful but cheaper than a real MMORPG. Phase 7 gradually introduces a small set of server-side gameplay systems **because they exercise the runtime**, not because they are content features.
+
+Candidates: basic NPC runtime, simple NPC movement/activity, a minimal combat skeleton, authoritative damage / Health changes, effects / buffs / timed state, scheduler-driven gameplay, spawn / despawn, death / respawn, temporary entities or projectiles, dense player+NPC encounters.
+
+Avoid expanding into quests, crafting, inventory depth, progression, dialogue, large UI, or extensive content production unless a later phase explicitly calls for them.
 
 ---
 
-## Refined decomposition
+## Phase 6 is closed — do not redo
+
+Phase 6 established and validated:
+
+- spatial AOI / relevance filtering
+- Enter / Update / Leave lifecycle
+- dirty-domain replication
+- delta / selective replication
+- cadence tiers and staggering
+- coalescing
+- observer invalidation improvements
+- event-driven update discovery
+- `pending_update_ids`
+- `InterestFanoutIndex`
+- recovery scanning as a fallback rather than normal discovery
+- zero idle replication scanning
+- priority semantics
+- basic byte-budget support
+- selective replication correctness
+- existing prediction / reconciliation protocol semantics
+- scale-ladder validation
+- major replication-discovery scaling from 6G.7A / 6G.7B
+
+Production replication **policy tuning** (thresholds, cadences, budgets, slow-client degradation) may happen in Phase 7 using that architecture. The replication **architecture** itself is closed. Do not rebuild AOI, dirty fan-out, or the packer.
+
+Evidence (preserve; do not treat mid-track snapshots as current bottlenecks):
+
+- [`PHASE_6G_REPORT.md`](PHASE_6G_REPORT.md)
+- [`PHASE_6_EXIT_REVIEW.md`](PHASE_6_EXIT_REVIEW.md)
+- [`MMO_RUNTIME_BASELINE.md`](MMO_RUNTIME_BASELINE.md) (6G.2 freeze)
+- [`PHASE_6G2_REPORT.md`](PHASE_6G2_REPORT.md) … [`PHASE_6G7C_REPORT.md`](PHASE_6G7C_REPORT.md)
+
+---
+
+## Starting evidence (not assumed bottlenecks)
+
+Phase 7 starts from measurement, not from an assumed bottleneck.
+
+- The previously observed ~128-client load stall is **not** an established server bottleneck. 6G.2 did not reproduce it as a server-domain hang. Later 6G.7B/C ladders showed replication remaining cheap at 128 (e.g. hotspot selective @128 repl p99 ≈ 1.4 ms) with 0 tick overruns.
+- Server-side evidence at 256 under the validated workload was also healthy after 6G.7B/C (hotspot selective @256 tick p99 ≈ 4.8 ms / repl p99 ≈ 1.6 ms). 6G.4’s “256 characterized limit” is a **dated mid-track snapshot** (pre-7A–C), not the Phase 7 starting claim.
+- Higher-load saturation / timeouts have **not** been conclusively attributed. The load harness or client side may be involved.
+
+Do **not** invent player-capacity, bandwidth, or tick p95/p99 targets in this plan. Operating envelopes are an output of 7.6 / 7.8, not an input.
+
+When attributing future saturation, distinguish three classes:
+
+1. **Simulation / tick saturation** — authoritative `World` work (movement, scheduler, actions/effects, AOI classify, replication discover/policy/encode) exceeding tick spacing or starving later stages.
+2. **Server transport / backpressure saturation** — QUIC send, writer queues, write pressure, slow clients, accumulated outbound work, byte-budget binding.
+3. **Load-harness / client saturation** — `purgatory-load` ramp, connect/handshake, prediction pending window (`PREDICTION_PENDING_CAP` remains 128), client stalls, harness timeouts that are not server tick blow-ups.
+
+A timeout at N clients is not by itself a server-capacity claim.
+
+---
+
+## Subphase outline (high-level)
+
+Exact boundaries may be refined when each subphase is designed. Do not implement from this outline alone.
 
 ```text
-7A  Attributes, Resources & Modifiers     gameplay data vocabulary
-7B  Content-Driven Action Execution       authoritative actions consuming 7A
-7C  Runtime Actor Foundation              server/runtime actor consuming 7A+7B
-7D  Actor Replication & Presentation      actor enters the network/client world
-7E  Player Action Request                 reliable authored action; generalized costs
+7.1  Capacity Instrumentation & Work Ownership
+7.2  Representative Gameplay Workload
+7.3  Capacity Ladder & Bottleneck Isolation
+7.4  Network Throughput & Backpressure
+7.5  Simulation / CPU Scaling
+7.6  Single-Server Capacity Model
+7.7  Production Scaling Architecture
+7.8  Production Performance Gate
 ```
-
-Mouse/pointer hit-testing is **deferred to Phase 8** (see [Mouse foundation](#mouse-foundation-deferred)).
 
 ```mermaid
 flowchart TB
-  subgraph p6 [Phase 6 grammar]
-    Comp[Composition]
-    Sched[Scheduler]
-    ActShell[Action shell]
-    Evt[RuntimeEvent]
-    FxLife[Effect lifetime]
-    Spat[Spatial AOI]
-    Rep[ReplicationFrame]
-    Gate[Command gate]
-    Content[Content registry]
+  subgraph p6 [Phase 6 closed]
+    AOI[AOI Enter Update Leave]
+    Fanout[Dirty fan-out InterestFanoutIndex]
+    Policy[Selective cadence priority budget]
   end
-  subgraph p7 [Phase 7]
-    A7[7A Attributes Resources Modifiers]
-    B7[7B Action execution]
-    C7[7C Runtime actor]
-    D7[7D Actor replication]
-    E7[7E Player action request]
+  subgraph p7 [Phase 7 planned]
+    S71[7.1 Instrumentation ownership]
+    S72[7.2 Representative workload]
+    S73[7.3 Ladder bottleneck isolation]
+    S74[7.4 Network backpressure]
+    S75[7.5 Optimize measured owners]
+    S76[7.6 Single-server capacity model]
+    S77[7.7 Scaling architecture if justified]
+    S78[7.8 Production performance gate]
   end
-  Comp --> A7
-  Content --> A7
-  FxLife --> A7
-  Sched --> A7
-  ActShell --> B7
-  Gate --> B7
-  Evt --> B7
-  A7 --> B7
-  Sched --> C7
-  B7 --> C7
-  Comp --> C7
-  Content --> C7
-  Spat --> D7
-  Rep --> D7
-  C7 --> D7
-  B7 --> E7
-  Gate --> E7
+  p6 --> S71
+  S71 --> S73
+  S72 --> S73
+  S73 --> S74
+  S73 --> S75
+  S74 --> S76
+  S75 --> S76
+  S76 --> S77
+  S77 --> S78
 ```
 
----
+### 7.1 — Capacity Instrumentation & Work Ownership
 
-## 7A — Attributes, Resources & Modifiers
+Establish trustworthy measurement of where server time and resources are spent. Attribute meaningful portions of runtime cost rather than only total tick duration. Identify the likely owner of future saturation. **No optimization redesign before this evidence exists.**
 
-**Purpose.** Server-authoritative, content-driven vitals. `mana` is an authored resource id, not caster-class energy.
+7.1 **extends existing coarse instrumentation into work ownership / attribution**. It does not build observability from scratch.
 
-### Deliverables
+Reuse:
 
-- **Attribute** — named baseline (e.g. strength). Not a spendable pool.
-- **Resource** — named pool: current, max, regen policy. A bow action may cost the same authored resource as a spell.
-- **Cost** — spend/check API used by 7B; not an action definition in 7A.
-- **ModifierDefinition** (authored) — which attribute/resource/derived slot, operation, magnitude/policy.
-- **EffectInstance** (runtime) — existing effect lifetime: identity, owner, target, expiry. Points at one or more ModifierDefinitions. The Effect system does **not** grow a new Rust `EffectKind` per buff.
-- **Derived values** — not persistent. May be computed or cached (see [Derived values](#derived-values)).
-- Default sheet attached to players at spawn from content (not a class architecture).
-- Keep existing **Health** as the life container and replication domain. Do not merge HP into the resource map in Phase 7.
+- Coarse tick domains already recorded as run artifacts (commands / simulation / gameplay services / spatial-AOI / replication / persist) under `PURGATORY_CAPACITY_ARTIFACT_DIR`
+- `replication_fanout.json`, `aoi_locality.json`, process CPU / working-set artifacts
+- Existing **schema-3** `PURGSTAT` / runtime metrics contract and existing artifacts
 
-Closed engine operations (small Rust enum) are allowed: e.g. `Add`, `Mul`, `Override`. Gameplay vocabulary (which resource, which magnitude) stays in content. No expression/script engine.
+Do **not** bump the metrics schema in documentation or as a silent 7.1 assumption. If 7.1 later requires a schema change, that must be designed explicitly as part of the detailed 7.1 implementation plan.
 
-### Dependencies
+Likely 7.1 design pressure (not a spec):
 
-Effect lifetime, scheduler, content registry, composition spawn.
+- Split the lumped Replication domain (discover vs policy vs encode vs queue vs QUIC send)
+- Attribute failures to the three saturation classes above
+- Byte budgets exist but did not bind on the 6G.7C ladder (`priority_deferred = 0`)
+- Known residual debt that can confuse ownership: CadenceTable not reaped on despawn; `dev.probe` persist; Generic wire visibility shipped in 7.2 as `ReplicatedKind::Npc`
 
-### Production / runtime contracts
+### 7.2 — Representative Gameplay Workload
 
-- `World` APIs: attach sheet, read attribute/resource/derived, try-spend, apply/remove effect that binds modifiers.
-- Spend is atomic with the action start that consumes it (enforced in 7B).
-- Owner despawn cancels owned regen work and effects.
-- Dirty tracking only when a field that 7D/7E later replicate actually changes. **7A adds no wire domain.**
+**Complete** ([`PHASE_72_REPORT.md`](PHASE_72_REPORT.md)). Minimum server-side gameplay runtime for realistic pressure: NPCs, activity, Strike/Health, Pulse timers, lifecycle churn, dense hotspots, wire `ReplicatedKind::Npc` (v11), representative harness presets. Consumed the Phase 6 spine; did not fake actors as `PlayerState` or Interactable; did not reopen AOI architecture.
 
-### Client / server / protocol / content
+### 7.3 — Capacity Ladder & Bottleneck Isolation
 
-- Client: none.
-- Server: default sheet on player spawn; regen per [Regeneration](#resource-regeneration).
-- Protocol: **no bump.**
-- Content: optional packs (e.g. `shared/attributes/`, `shared/resources/`, `shared/modifiers/`). Validator: unique ids, non-empty, regen ≥ 0, modifier targets exist.
+Controlled scaling across clients, entities, active entities, hotspot density, update frequency, and gameplay activity. Determine which resource limits first. Separate server limits from load-generator / harness limits using the three saturation classes.
 
-### Testing / manual / non-goals / gate
+### 7.4 — Network Throughput & Backpressure
 
-- Tests: unit spend/insufficient/clamp; sim regen; modifier apply/expire; despawn cleanup; content-validator.
-- Manual: none.
-- Non-goals: combat damage, death loop, UI bars, persistence, classes, stacking encyclopedia, expression engine, self-vitals protocol.
-- Gate: quality gate + focused sim tests. Production must not call `EffectKind::Test`.
+Investigate and harden send queues, write pressure, QUIC behavior, slow clients, accumulated outbound work, overload behavior, byte budgets, and graceful degradation. Production replication **policy tuning** may happen here on the Phase 6 architecture. Do not rebuild that architecture.
 
-### Scale rejects (use instead)
+### 7.5 — Simulation / CPU Scaling
 
-| Reject | Use |
-|---|---|
-| Every entity EveryTick regen scan | Scheduler-owned regen semantics ([below](#resource-regeneration)) |
-| Full modifier walk on every attribute read | Cached derived / dirty invalidation |
-| Unbounded timer growth as the Phase 7 contract | Scheduler capacity + future grouping |
-| Persist current mana/HP | Restore-only character records |
-| Client-authored magnitudes | Content + server apply |
+**Complete** ([`PHASE_75_REPORT.md`](PHASE_75_REPORT.md)). Accounting Instant gaps closed; `replication_policy` identified as primary growth owner; unattributed residual ~15–25% (timer noise). Absolute headroom remains large (util ≲11% through mixed@128 / dense@64). **No CPU owner optimization accepted** (owners remain cheap vs tick spacing). Parallelism verdict: **No**. Stop before 7.6.
 
-### 6G
+### 7.6 — Single-Server Capacity Model
 
-Implementation blocked until 6G GREEN. **Planning** does not depend on jitter, prediction, or AOI.
+**Complete** ([`PHASE_76_REPORT.md`](PHASE_76_REPORT.md)). Owner OLS from 7.5 post-accounting cells; policy ~ scanned_per_tick; npc ~ updates_per_tick; whole-tick MAPE ~20% calib / ~22% holdout. Sensitivity: players > overlap > NPC/activity. Parallelism/redesign **not** justified in measured envelope; `replication_policy` first projected limiter. Stop before 7.7.
 
----
+### 7.7 — Production Scaling Architecture
 
-## 7B — Content-Driven Action Execution
+**Complete** ([`PHASE_77_REPORT.md`](PHASE_77_REPORT.md); ADR-0056). **Decision: remain single-process / single World owner.** No multithreading, parallel replication, sharding, zone servers, or multi-process handoff implemented. Triggers, evolutionary path, ownership, replication-parallelism feasibility, channels/instances readiness, and deferred backlog recorded. Preferred first future horizontal unit: channels/instances. Stop before 7.8.
 
-**Purpose.** Fill the 6F Action shell with content-driven definitions, costs, and cooldown. Still not combat. Still no player network command.
+### 7.8 — Production Performance Gate
 
-### Deliverables
-
-- `ActionDefinition`: id, exclusive flag (honor one Active per owner), cost list, cooldown ticks, duration ticks.
-- Production kinds resolve from content compact ids. `ActionKind::Test` remains load-validation only.
-- Duration uses existing `ScheduledKind::CompleteAction`. Cooldown is entity-owned scheduled work, not a scanned map every tick.
-- Gate extensions (typed, no `can_act: bool`): insufficient resource, missing definition, busy, transition locked, disconnected, health≤0 when Health is present.
-- Wind-up is duration + complete, not new stored `ActionPhase` names (ADR-0046).
-
-### Dependencies
-
-7A, Action table, gates, `RuntimeEvent`, scheduler.
-
-### Client / server / protocol / content
-
-- Client: none. Server/NPC/test code starts actions.
-- Protocol: **no bump.** Do not extend `InputCommand`.
-- Content: `shared/actions/` (or server-only if costs/effects must stay secret). Validator: resource ids exist; duration/cooldown bounds.
-
-### Testing / manual / non-goals / gate
-
-- Tests: start/busy/cost/cooldown/complete; despawn cancel; Interact is still not the exclusive Action slot.
-- Manual: none.
-- Non-goals: projectiles, hit detection, client prediction, dash/charge late-arrival policy, player `ActionRequest`.
-- Gate: quality gate; no protocol golden churn.
-
-### Scale rejects (use instead)
-
-| Reject | Use |
-|---|---|
-| Per-tick poll of all cooldowns | Scheduler |
-| Abilities on `InputCommand` / jump OR | Discrete 7E command later |
-| Client-sent costs/results | Server spend on successful start |
-| Second action table beside 6F | Existing `ActionTable` |
-
-### 6G
-
-Implementation blocked until 6G GREEN. No logical dependence on camera/AOI/jitter.
-
----
-
-## 7C — Runtime Actor Foundation
-
-**Purpose.** A non-player, non-Character entity consumes 7A+7B, spawn/respawn, and simple runtime state **in simulation**. No client presentation. No protocol unless a later finding makes it unavoidable (none known).
-
-### Deliverables
-
-- `ActorDefinition` / MobDefinition: presentation id (unused until 7D), health max, sheet refs, optional loop action id, respawn delay, half-extents.
-- Composition: Generic (or actor capability) + Transform + Health + attribute/resource sheet. **Not** `PlayerState`. **Not** a fake Character/session.
-- Simple state: `Idle` / `Acting` / `Dead`. Dead → `schedule_spawn` with a **fresh** `EntityId`.
-- Authored placement on an existing map (content placements, not `footnote_test_stage` hardcoding).
-- Optional server-side action-loop proof: scheduler starts the authored loop action in place (telegraph later). No pathfinding, aggro, or FOOTNOTE walking.
-
-Actors in 7C may exist in `World` and remain **unreplicated**. That matches today’s Generic probe gap and is closed in 7D, not papered over by masquerading as Interactable or Player.
-
-### Dependencies
-
-7A, 7B, spawn schedule, content placements, composition.
-
-### Client / server / protocol / content
-
-- Client: none.
-- Server: instantiate on `ensure_map`; sim tests only for visibility.
-- Protocol: **no bump.**
-- Content: actor defs + placements. Validator: sheet/action refs, placement map exists.
-
-### Testing / manual / non-goals / gate
-
-- Tests: sim spawn; sheet + Health attached; action loop; death → respawn fresh id; address isolation; despawn cancels timers/actions/effects.
-- Manual: none (no windowed actor).
-- Non-goals: replication kind, client draw, combat AI, patrol locomotion, loot, dialogue, Character bind, protocol.
-- Gate: quality gate + sim tests.
-
-### Scale rejects (use instead)
-
-| Reject | Use |
-|---|---|
-| `PlayerState` so `snapshot_entity` treats a MOB as a player | Actor capability + 7D kind |
-| Interactable masquerade for visibility | 7D `ReplicatedKind` |
-| Every actor EveryTick AI | Scheduler loop action; idle is quiet |
-| O(N²) “all actors vs all players” | Spatial query when a later phase needs nearby checks |
-| Reuse despawned EntityId | Existing spawn contract |
-| CadenceTable per actor until despawn-reap exists | Scheduler; queue inventory before new caps |
-
-### 6G
-
-Implementation blocked until 6G GREEN. **Planning** does not depend on camera or local-player jitter. AOI is a 7D concern.
-
----
-
-## 7D — Actor Replication & Presentation
-
-**Purpose.** The 7C actor enters the real network/client world as an explicit non-player replicated kind.
-
-### Deliverables
-
-- `ReplicatedKind` variant for non-player actors (name TBD at implementation: `Actor` preferred over overloading `Generic` if the wire needs a distinct class). Unknown kind values stay rejected.
-- `snapshot_entity` encodes Transform (+ existing optional Health domain) for actors that are neither Player nor Interactable.
-- AOI Enter / Update / Leave / re-Enter baseline via existing `ObserverReplicationState` + `DomainRevs`.
-- Client replica support + placeholder quad presentation (no Paper Doll).
-- Remote interpolation uses the existing 5.3 remote path. No actor prediction.
-
-Do **not** AOI-broadcast resource pools. Health may ride the existing health domain when present.
-
-### Dependencies
-
-7C, AOI, `ReplicationFrame`, client replica/renderer. **AOI/view-interest must be GREEN** or actors will falsely vanish.
-
-### Client / server / protocol / content
-
-- Server: include actors in interest set like other visible entities; cadence EventOnly unless transform/health revs change.
-- Client: draw; overlay inspector label; Leave clears replica.
-- Protocol: **bump required** (new kind). Frozen goldens updated deliberately after `PROTOCOL_VERSION`.
-- Content: presentation_id may map to a placeholder color; no new asset pipeline.
-
-### Testing / manual / non-goals / gate
-
-- Tests: protocol goldens; server Enter/Leave; two observers independent commits; idle actor does not spam Updates.
-- Manual: two clients see the actor in view, Leave when walking away, re-Enter on return. No mandatory 30-minute soak.
-- Non-goals: resource bars, combat FX, mouse pick, locomotion, full-world broadcast.
-- Gate: quality gate including wire goldens; short two-client AOI visual check.
-
-### Scale rejects (use instead)
-
-| Reject | Use |
-|---|---|
-| Full-world actor broadcast | AOI + per-observer commits |
-| EveryTick transform Updates while idle | DomainRevs + EventOnly/cadence |
-| Replicate all vitals to every observer | Health domain only; resources stay server-side |
-| Global dirty consume | `DomainRevs` per observer (ADR-0049) |
-
-### 6G
-
-**AOI/view-interest GREEN is an implementation blocker for 7D.** Local jitter/prediction are not required for a stationary actor, but presentation bugs will confuse the visual check — do not start 7D until 6G is declared GREEN anyway.
-
----
-
-## 7E — Player Action Request
-
-**Purpose.** Prove `player request → authoritative gate → resource spend → action lifecycle` with a reliable authored command. Generalized costs: the same resource id may be spent by different actions.
-
-### Deliverables
-
-- Reliable `ClientControl` variant e.g. `ActionRequest { request_id, action compact id, optional target EntityId }`.
-- Server: untrusted parse → preamble + 7B start. Never trust client costs, damage, or “success.”
-- DEV keybind or overlay button (not a production hotbar). Sufficient without mouse.
-- **No self-vitals envelope.** Completion does not require the client to display current/max resources. Prefer sim/server tests, existing debug/metrics, and server-side evidence.
-- Optional `ActionAck` / typed reject correlated by `request_id` only if the DEV proof cannot otherwise distinguish Started vs Busy vs TransitionLocked. That is command hygiene, not a vitals HUD. Default preference: **omit** unless implementation shows silent drop is untestable from the client; automated server tests remain the authority.
-
-### Dependencies
-
-7B (required). 7C/7D optional (target may be unused). ADR-0031: not `InputCommand`.
-
-### Client / server / protocol / content
-
-- Client: DEV keybind; do not predict the action.
-- Server: rate-limit via existing control budgets; transition barrier still denies.
-- Protocol: **separate bump** when this stage lands (do not combine with 7D unless both stages intentionally merge in one review).
-- Content: reuse 7B action ids (one proving action with a resource cost).
-
-### Testing / manual / non-goals / gate
-
-- Tests: protocol goldens after the bump; server spend on success; insufficient resource / Busy / TransitionLocked; invalid id typed reject.
-- Manual: DEV keybind; observe server/debug evidence of start+spend; spam denied on cooldown. No soak required.
-- Non-goals: hotbar, skill book, action prediction, attack resolution, mouse-to-ability, replicated mana bars.
-- Gate: quality gate + server integration tests. Wire goldens only after intentional version bump.
-
-### Scale rejects (use instead)
-
-| Reject | Use |
-|---|---|
-| 30 Hz ability spam on `InputCommand` | Discrete reliable request |
-| Client-authoritative spend | Server 7B start |
-| AOI broadcast of self mana | No vitals wire in 7E |
-| Per-player full-world action scan | Owner entity lookup |
-
-### 6G
-
-Implementation blocked until 6G GREEN. Do not predict actions. Jitter/AOI are not logical dependencies of the request/spend proof.
-
----
-
-## Mouse foundation (deferred)
-
-**Deferred to Phase 8** (or later client-interaction work). Not part of 7A–7E.
-
-Phase 7’s proof is resources, actions, a runtime actor, and a DEV keybind. Mouse hit-testing is client interaction infrastructure. It depends on camera correctness, AOI/view-interest, selection lifecycle, and presentation — including the open 6G local-player jitter and view-interest issues.
-
-A DEV keybind is sufficient for 7E. Keeping mouse in Phase 7 would be convenience, not necessity, and would enlarge the phase without strengthening the vocabulary proof.
-
-When it returns: cursor coordinates, UI vs world ownership (`gameplay_receives_pointer`), screen→world, replica AABB pick, hover/select. Not attack-on-click, not loot, not WindowManager.
-
----
-
-## Protocol boundaries
-
-Do not bump `PROTOCOL_VERSION` merely because Phase 7 begins.
-
-| Stage | Protocol |
-|---|---|
-| 7A | No |
-| 7B | No |
-| 7C | No (runtime only) |
-| 7D | **Bump** — explicit non-player replicated kind |
-| 7E | **Separate bump** — `ActionRequest` (and ack/reject only if required) |
-| Self vitals | **Not in Phase 7** |
-| Mouse | None (deferred) |
-
-If 7D and 7E intentionally ship in one review, a combined bump is acceptable. Do not combine merely to reduce version numbers.
-
-`snapshot_entity` today only emits Player or Interactable/Portal. That is why 7D needs a kind, and why 7C must not fake those kinds.
-
----
-
-## State classification
-
-| Kind | Examples | Persist? |
-|---|---|---|
-| **Authored** | Attribute/resource/modifier/action/actor ids, base values, regen policy, costs, durations, placements | Content pack |
-| **Runtime** | Current resource, Active action, EffectInstance, actor Idle/Acting/Dead, EntityId, timers | No |
-| **Derived** | Values from attributes + modifiers (+ policy) | No |
-| **Persistent character** | Restore map/point, revision | Yes (unchanged in Phase 7) |
-| **Replicated** | Actor transform; optional Health on Enter/Update | Wire, not disk |
-
-Do not persist transient timers, action slots, effect instances, or current mana.
-
----
-
-## Derived values
-
-Derived values are **not persistent**.
-
-They may be computed from attributes, resources, and active modifiers. They may be **cached at runtime**. If performance warrants, invalidate/recompute **only when dependencies change** (attribute base change, modifier apply/expire, resource-max change).
-
-**Not** a permanent contract of “always compute at read time.” **Not** a design where every read iterates all active modifiers.
-
-7A should keep the read path cheap (O(1) or O(small derived count) after invalidation), not O(active effects) per getter.
-
----
-
-## Resource regeneration
-
-**Semantics (the contract):** a resource with authored regen increases on simulation time according to that policy, clamped to max, cancelled on owner despawn, not driven by wall clocks.
-
-**7A implementation:** scheduler-owned regeneration is acceptable (entity owner, reschedule on fire).
-
-**Not a permanent implementation contract:** one independent timer per resource per entity forever.
-
-At larger scale the implementation may migrate to bucketed timers, grouped cadence, shared regeneration scheduling, or event-driven batching **without changing gameplay semantics**.
-
-Do not use unreaped `CadenceTable` for per-entity regen until despawn reap exists. Inventory queues before adding caps ([PHASE_6G_QUEUE_INVENTORY.md](PHASE_6G_QUEUE_INVENTORY.md)).
-
----
-
-## Modifier architecture
-
-```text
-EffectInstance  (runtime lifetime, ownership, expiration)
-    └── authored ModifierDefinition(s)  (what is affected, operation, magnitude/policy)
-```
-
-The 6F Effect table stays the lifetime foundation. Production gameplay must not add `EffectKind::Haste`, `EffectKind::ManaBurn`, etc. as the extension model.
-
-`EffectKind::Test` remains load-only. A content-backed kind (compact definition id) replaces Test on the production path.
-
-No generic expression engine in 7A. Stacking beyond a simple exclusive-per-definition (or last-writer) rule is deferred.
-
----
-
-## MMO-scale invariants (all stages)
-
-Explicitly reject:
-
-- O(N²) entity scans (use World spatial queries, address-scoped)
-- Global broadcasts (use AOI + per-observer `DomainRevs`)
-- Every-entity EveryTick gameplay systems (use scheduler / EventOnly replication)
-- Unbounded per-entity timers as architecture (scheduler capacity; grouping later)
-- Full modifier recomputation on every read (invalidate/cache)
-- Client-authoritative costs, damage, or action results
-- Actors masquerading as `PlayerState` or Interactable for wire convenience
-- Unnecessary replicated vitals (no self-mana envelope in 7E; no AOI resource broadcast)
-
-Respect existing budgets: scheduler 4096 / critical 1024 / deferred 32; replication frame soft 4096. Load: optional Mixed evidence with actor placements after 7D; **not** a 30-minute soak per sub-stage. Runtime Validation remains opt-in evidence.
-
----
-
-## UI boundary
-
-- Generic WindowManager / production HUD / hotbar: **not Phase 7.**
-- Feature UI (skill book, character sheet, targeting chrome): **not Phase 7.**
-- DEV overlay and DEV keybind: allowed for 7D inspector labels and 7E proof.
-- egui remains development overlay only (ADR-0016).
+**Complete** ([`PHASE_78_REPORT.md`](PHASE_78_REPORT.md)). Canonical workloads + absolute/baseline thresholds; `scripts/phase_78_gate.ps1`; frozen baseline under `logs/load/capacity_78/baseline/`. Gate verdict **YELLOW** (harness snapshot-starvation WARN; absolute PASS). Soak 8m hotspot@32+NPC completed. ADR-0056 unchanged. **Phase 7 complete.**
 
 ---
 
 ## Explicit non-goals (whole phase)
 
-Combat resolution, projectiles, threat tables, targeting lock, death-as-gameplay-loop, inventory/loot/XP, classes, NPC dialogue, pathfinding/patrol AI, production WindowManager, mouse hit-test, Paper Doll, persisting vitals, action prediction, accounts, distributed maps.
+- Re-planning or re-implementing Phase 6 AOI / replication architecture
+- Sharding, distributed simulation, or world splitting before 7.7 is justified
+- Multithreading as a default, rather than a measured response
+- Full combat/AI product, quests, crafting, inventory depth, progression, dialogue, large UI, extensive content
+- The superseded gameplay-vocabulary plan (7A attributes/resources/modifiers → 7B action execution → 7C runtime actor → 7D actor replication → 7E player action request / mouse)
+- Invented numeric capacity or budget targets
+- Raising `PREDICTION_PENDING_CAP` or admission as a “fix” for unattributed timeouts
+- Metrics schema bump as part of planning docs
 
 ---
 
-## Phase 6G blockers
+## Deferred after Phase 7
 
-**Hard rule:** no Phase 7 implementation until Phase 6G is declared GREEN (automated gate already recorded; 6G.2 capacity characterization + manual Mixed/soak/process-ownership evidence still required — see ADR-0053). Standing jitter / floor-clip presentation P0s are closed; do not reopen them as Phase 7 blockers.
+Not sequenced here. Recast after 7.8:
 
-Do not use the planning distinctions below to start code early.
+- Content-driven attributes / resources / modifiers and a full action vocabulary
+- Player-issued authored `ActionRequest` (still must not ride `InputCommand` / jump OR — ADR-0031)
+- Mouse / pointer hit-test foundation
+- WindowManager / production game UI (egui remains overlay-only — ADR-0016)
+- Combat as a complete game system beyond the 7.2 skeleton
+- Inventory, loot, progression, persistent vitals
+- Sprite / animation / Paper Doll
+- Horizontal scaling (only if 7.7 cites evidence)
 
-| Stage | Logical planning dependence | Implementation |
-|---|---|---|
-| 7A | None of jitter / prediction / AOI | Blocked on 6G GREEN |
-| 7B | None of jitter / prediction / AOI | Blocked on 6G GREEN |
-| 7C | Not camera; not local jitter | Blocked on 6G GREEN |
-| 7D | **AOI/view-interest correctness** | Blocked on 6G GREEN; AOI is a real stage dependency |
-| 7E | Not jitter; do not predict actions | Blocked on 6G GREEN |
-| Mouse | Camera + AOI + selection (if it were in 7) | Deferred — must not block 7A–7E |
-
-Open 6B–6F two-client manuals should be closed or waived before 7D’s visual AOI check so failures are attributable.
-
-CadenceTable despawn reap is a prerequisite **only if** a stage uses per-entity cadence; 7A/7C should use the scheduler instead.
+A MOB / actor must still consume the generic Phase 6 spine without a fake Character/account/session. That remains an exit-review invariant, not a reason to make vocabulary the Phase 7 purpose.
 
 ---
 
-## Testing strategy
+## Protocol / persistence
 
-| Kind | Where |
-|---|---|
-| Unit | Sheets, spend, derived invalidation, modifier bind, ndc math (when mouse returns) |
-| Simulation | 7A–7C World tests; spawn/respawn; gates |
-| Protocol | 7D kind goldens; 7E ActionRequest goldens after deliberate version bumps |
-| Server integration | 7D observer independence; 7E request→spend |
-| Client / manual visual | 7D two-client Enter/Leave only |
-| Load / Runtime Validation | Optional after 7D; not every sub-stage; not a 30-minute soak definition |
+Do not bump `PROTOCOL_VERSION` merely because a Phase 7 sub-stage begins. 7.2 required and shipped an incompatible bump to **v11** for `ReplicatedKind::Npc` (ADR-0054). Further bumps need their own compatibility review.
 
-Reuse `purgatory-content-validator`, existing `phase6f`/`phase6g` test style, and load-mode Test kinds only behind `PURGATORY_LOAD_VALIDATION`.
+Character persist remains restore map/point only unless a later subphase explicitly changes it.
 
 ---
 
-## Completion gates (summary)
+## First implementation task (once Phase 7 is instructed to start)
 
-- **7A:** quality gate + sim sheet/modifier/regen tests.
-- **7B:** quality gate + sim action/cost/cooldown tests.
-- **7C:** quality gate + sim actor spawn/loop/respawn tests.
-- **7D:** quality gate + protocol goldens + two-client AOI visual.
-- **7E:** quality gate + protocol goldens + server request/spend tests + DEV keybind evidence.
-
-Phase 7 as a whole is complete when 7A–7E gates are green and work stopped before combat, inventory, WindowManager, and mouse foundation.
-
----
-
-## First implementation task (once 6G is GREEN)
-
-**7A only:** attribute/resource/modifier content schema + validator + `World` sheet + scheduler regen (semantics-stable) + EffectInstance→ModifierDefinition + derived cache/invalidation + sim tests.
-
-No protocol, no client, no actor, no `ActionRequest`.
-
----
-
-## Deferred Phase 8+ candidates (not started, not sequenced here)
-
-Legacy table rows 8–17 remain historical product direction; they are **not** the post-6G implementation order. Likely recast themes:
-
-- Mouse/pointer hit-test foundation (deferred from this phase)
-- WindowManager / production game UI (not egui)
-- Combat resolution, targeting, damage, death loop
-- Actor locomotion (not `PlayerState` reuse) / simple AI
-- Inventory, loot, progression
-- Persistent vitals if/when they have durable meaning
-- Sprite/animation/Paper Doll
-- Remaining content-authoring and hardening
-
-Recast those into new phase numbers only after Phase 7 closes.
-
----
-
-## Remaining design ambiguities (resolve before or at 7A start)
-
-These do not block writing this plan. They should be decided at 7A implementation, not silently:
-
-1. **Default player sheet source** — dedicated content id vs “first resource pack default.” Prefer an explicit authored default sheet id.
-2. **Derived cache granularity** — per-entity cached block vs per-derived-slot dirty bits. Either is compatible with the invalidation policy; pick the smaller 7A version.
-3. **Modifier exclusivity** — one active EffectInstance per ModifierDefinition per target vs last-writer. Pick one simple rule; do not invent stacking.
-4. **7D wire name** — `ReplicatedKind::Actor` vs another identifier. Prefer `Actor`. Do not reuse Player/Interactable.
-5. **7E ack** — fire-and-forget `ActionRequest` + server tests vs correlated reject. Prefer tests-first; add ack only if DEV proof is otherwise silent.
-6. **Compact ids on the wire** — 7E should send compact runtime action ids, not author strings (same pattern as other protocol compact ids). Confirm at 7E, not 7A.
-
-Health-as-resource unification is **not** a 7A decision; it stays deferred.
+**7.1–7.8 (complete).** **Phase 7 complete.** Gate: [`PHASE_78_REPORT.md`](PHASE_78_REPORT.md). Post-7 work starts at **8A** (equipment data model), not from this document.

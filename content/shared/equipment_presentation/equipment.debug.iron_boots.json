@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "equipment.debug.iron_boots",
+  "attachments": [
+    {
+      "id": "foot_front",
+      "bone": "foot_front",
+      "anchor": "foot_front",
+      "coverage": "overlay",
+      "correction": { "x": 2.0, "y": -1.0, "rotation": 5.0 },
+      "visuals": {
+        "side": "equipment.debug.iron_boots.foot_front.side",
+        "back": "equipment.debug.iron_boots.foot_front.back"
+      }
+    },
+    {
+      "id": "foot_back",
+      "bone": "foot_back",
+      "anchor": "foot_back",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.iron_boots.foot_back.side",
+        "back": "equipment.debug.iron_boots.foot_back.back"
+      }
+    }
+  ]
+}

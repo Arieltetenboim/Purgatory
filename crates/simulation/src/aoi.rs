@@ -162,6 +162,29 @@ mod tests {
     }
 
     #[test]
+    fn left_camera_clamp_collapses_hysteresis_on_min_x() {
+        let bounds = WorldBounds::FOOTNOTE_TEST;
+        let player = [FOOTNOTE_SPAWN_X, -3.0];
+        let rects = aoi_policy_rects(player, bounds);
+        assert!(
+            (rects.enter.min_x() - bounds.min_x).abs() < 1e-3,
+            "clamped enter min_x={} bounds.min_x={}",
+            rects.enter.min_x(),
+            bounds.min_x
+        );
+        assert!(
+            (rects.leave.min_x() - rects.enter.min_x()).abs() < 1e-3,
+            "hysteresis must collapse on the clamped axis (leave {} enter {})",
+            rects.leave.min_x(),
+            rects.enter.min_x()
+        );
+        assert!(
+            rects.leave.max_x() > rects.enter.max_x() + 1.0,
+            "unclamped axis still has leave hysteresis"
+        );
+    }
+
+    #[test]
     fn left_clamp_enter_covers_visible_right_plus_prefetch() {
         let bounds = WorldBounds::FOOTNOTE_TEST;
         let player = [FOOTNOTE_SPAWN_X, -3.0];

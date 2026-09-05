@@ -125,6 +125,18 @@ pub fn format_portal_line(id: Option<&str>, eligible: bool) -> String {
     }
 }
 
+/// Compact chrome Interact value. Flash stays on this line so a second chip
+/// cannot change row height.
+#[must_use]
+pub fn compact_interact_value(interaction_line: &str, flash: Option<&str>) -> String {
+    match flash {
+        Some(flash) if !flash.is_empty() => {
+            format!("{interaction_line} · {}", flash.replace('→', "->"))
+        }
+        _ => interaction_line.to_string(),
+    }
+}
+
 #[must_use]
 pub fn interact_kind_color(kind: InteractKind) -> (u8, u8, u8) {
     match kind {
@@ -248,6 +260,17 @@ mod tests {
         assert_eq!(
             format_portal_line(Some("28:1"), false),
             "28:1 · OUTSIDE ZONE"
+        );
+    }
+
+    #[test]
+    fn compact_interact_value_stays_one_slot_when_flashing() {
+        let idle = InteractStatusView::default().interaction_line();
+        assert_eq!(compact_interact_value(&idle, None), idle);
+        assert_eq!(compact_interact_value(&idle, Some("")), idle);
+        assert_eq!(
+            compact_interact_value(&idle, Some("OPENING → OPEN")),
+            format!("{idle} · OPENING -> OPEN")
         );
     }
 

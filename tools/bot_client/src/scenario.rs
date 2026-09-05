@@ -12,7 +12,8 @@ use clap::parser::{ArgMatches, ValueSource};
 use serde::{Deserialize, Serialize};
 
 use purgatory_common::{
-    DEV_LOGIN_MAX_LEN, DevLogin, LoadValidationConfig, SchedulerPressure, SpawnPressure,
+    DEV_LOGIN_MAX_LEN, DevLogin, LoadValidationConfig, NpcWorkloadConfig, SchedulerPressure,
+    SpawnPressure,
 };
 
 use crate::behavior::BotProfile;
@@ -62,6 +63,12 @@ pub enum ValidationPreset {
     Mixed,
     Stress,
     Soak,
+    /// Phase 7.2 light representative gameplay workload.
+    RepresentativeLight,
+    /// Phase 7.2 mixed representative (primary 7.3 candidate).
+    RepresentativeMixed,
+    /// Phase 7.2 dense diagnostic pressure (not a pass target).
+    RepresentativeDense,
 }
 
 /// Resolved, serializable scenario. Recorded as `scenario.json`.
@@ -91,6 +98,9 @@ pub struct LoadScenario {
     pub persist_root: Option<String>,
     pub validation: LoadValidationConfig,
     pub protocol_version: u32,
+    /// When true, MixedRuntime portal transition is observational only (7.8 soak).
+    #[serde(default)]
+    pub relax_portal_gate: bool,
 }
 
 impl LoadScenario {
@@ -162,6 +172,11 @@ impl LoadScenario {
             None => default_run_id(cli.seed),
         };
 
+        let mut relax_portal_gate = cli.relax_portal_gate;
+        if !relax_portal_gate && let Ok(v) = std::env::var("PURGATORY_LOAD_RELAX_PORTAL_GATE") {
+            relax_portal_gate = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
+        }
+
         let mut spec = Self {
             kind,
             preset: cli.preset,
@@ -180,6 +195,7 @@ impl LoadScenario {
             persist_root: None,
             validation,
             protocol_version: purgatory_protocol::PROTOCOL_VERSION,
+            relax_portal_gate,
         };
         if let Some(root) = &cli.persist_root {
             spec.isolate_persist = true;
@@ -298,6 +314,7 @@ impl ValidationPreset {
                     effects: 2,
                     events: 4,
                     cadence_consumers: 8,
+                    ..LoadValidationConfig::default()
                 },
             },
             Self::Churn => PresetDefaults {
@@ -381,6 +398,45 @@ impl ValidationPreset {
                 ramp_ms: 50,
                 validation: mixed_validation(64),
             },
+            Self::RepresentativeLight => PresetDefaults {
+                kind: LoadKind::MixedRuntime,
+                connect: Scenario::Load,
+                profile: BotProfile::Mixed,
+                bot_count: 4,
+                duration: Duration::from_secs(30),
+                timeout: Duration::from_secs(60),
+                ramp_ms: 50,
+                validation: LoadValidationConfig {
+                    npc_workload: NpcWorkloadConfig::representative_light(),
+                    ..LoadValidationConfig::default()
+                },
+            },
+            Self::RepresentativeMixed => PresetDefaults {
+                kind: LoadKind::MixedRuntime,
+                connect: Scenario::Load,
+                profile: BotProfile::Mixed,
+                bot_count: 8,
+                duration: Duration::from_secs(30),
+                timeout: Duration::from_secs(60),
+                ramp_ms: 50,
+                validation: LoadValidationConfig {
+                    npc_workload: NpcWorkloadConfig::representative_mixed(),
+                    ..LoadValidationConfig::default()
+                },
+            },
+            Self::RepresentativeDense => PresetDefaults {
+                kind: LoadKind::MixedRuntime,
+                connect: Scenario::Load,
+                profile: BotProfile::Mixed,
+                bot_count: 8,
+                duration: Duration::from_secs(20),
+                timeout: Duration::from_secs(45),
+                ramp_ms: 50,
+                validation: LoadValidationConfig {
+                    npc_workload: NpcWorkloadConfig::representative_dense(),
+                    ..LoadValidationConfig::default()
+                },
+            },
         }
     }
 }
@@ -401,6 +457,7 @@ fn mixed_validation(synthetic: u32) -> LoadValidationConfig {
         effects: 8,
         events: 16,
         cadence_consumers: 32,
+        ..LoadValidationConfig::default()
     }
 }
 
@@ -619,6 +676,7 @@ mod tests {
             persist_root: None,
             validation: LoadValidationConfig::default(),
             protocol_version: 10,
+            relax_portal_gate: false,
         };
         let a = spec.bot_login(1);
         let b = spec.bot_login(2);

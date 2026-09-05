@@ -14,6 +14,8 @@ pub enum CommandClass {
     Portal,
     DevChannel,
     Action,
+    Ability,
+    Equipment,
 }
 
 /// Typed command denial. Not a string.
@@ -107,6 +109,16 @@ mod tests {
             validate_command_preamble(Some(actor()), None, true, CommandClass::Interact),
             Ok(actor()),
             "InteractionSession is not the exclusive Action slot"
+        );
+        assert_eq!(
+            validate_command_preamble(Some(actor()), None, true, CommandClass::Equipment),
+            Ok(actor()),
+            "Equipment is not the exclusive Action slot"
+        );
+        assert_eq!(
+            validate_command_preamble(Some(actor()), None, true, CommandClass::Ability),
+            Ok(actor()),
+            "Ability busy is owned by request_ability"
         );
     }
 }

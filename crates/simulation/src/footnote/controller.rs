@@ -58,7 +58,7 @@ impl World {
     ///
     /// Stale IDs are a no-op. FOOTNOTE rules are unchanged.
     pub fn tick_player(&mut self, id: EntityId, dt_seconds: f32, input: PlayerInput) {
-        self.tick_player_with_config(id, dt_seconds, input, FootnoteConfig::DEFAULT);
+        self.tick_player_with_config(id, dt_seconds, input, self.footnote_config());
     }
 
     pub fn tick_with_config(
@@ -440,6 +440,9 @@ fn apply_horizontal(
     dt: f32,
 ) {
     let axis = f32::from(input.move_axis);
+    if axis != 0.0 {
+        player.facing_sign = input.move_axis;
+    }
     if player.grounded {
         let target = axis * config.max_ground_speed;
         if axis == 0.0 {

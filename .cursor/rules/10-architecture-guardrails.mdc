@@ -31,16 +31,23 @@ common → protocol → client / server / bot_client
 common → content → server / client / content_validator
 common → persistence → server
 common → dev_runtime → dev_hub
+dev_hub → skeleton  (Humanoid v0 authoring-template export only; not a runtime path)
+skeleton  (presentation math; client debug draw in S2; must not enter simulation/server/protocol)
+animation → skeleton  (clip sampling only; client and animation_lab may depend; must not enter simulation/server/protocol)
+animation_lab → animation + skeleton  (eframe authoring; Hub-launched; must not enter simulation/server/protocol/client)
 ```
 
-The client also depends on `purgatory-simulation` for local simulation/presentation where currently required by the repository. That dependency does not make the client authoritative and does not by itself require client prediction.
+The client also depends on `purgatory-simulation` for local simulation/presentation where currently required by the repository. That dependency does not make the client authoritative and does not by itself require client prediction. S2: `client → skeleton` for debug presentation only. A1: `client → animation` for clip sampling only.
 
+- `purgatory-skeleton` must not depend on `winit`, `wgpu`, `egui`, Quinn, Tokio, `purgatory-simulation`, `purgatory-server`, `purgatory-protocol`, or `purgatory-client`. Simulation, server, protocol, common, and `purgatory-dev-runtime` must not depend on `purgatory-skeleton`. `purgatory-dev-hub` may depend on it for the Humanoid v0 authoring-template exporter only.
+- `purgatory-animation` may depend only on `purgatory-skeleton`. It must not depend on `winit`, `wgpu`, `egui`, Quinn, Tokio, simulation, server, protocol, content, common, or client. Simulation, server, protocol, and common must not depend on `purgatory-animation`.
+- `purgatory-animation-lab` may depend on `purgatory-animation`, `purgatory-skeleton`, eframe, and egui. It must not depend on client, server, simulation, protocol, content, common, Quinn, Tokio, or wgpu. Hub/dev_runtime spawn the lab exe; they must not depend on `purgatory-animation`.
 - `purgatory-simulation` must not depend on `winit`, `wgpu`, renderer code, UI, OS window APIs, Quinn, or Tokio.
 - `purgatory-dev-runtime` must not depend on `purgatory-client`, `purgatory-simulation`, Quinn, egui, winit, or wgpu. Ready is spawned `purgatory-load --probe`, not a second protocol stack.
 - `purgatory-server` must not depend on `winit`, `wgpu`, `egui`, or `purgatory-client`.
 - `purgatory-protocol` stays free of Quinn and Tokio. The game protocol is logically separate from transport (ADR-0008, ADR-0021).
 - Quinn/QUIC belongs in network-facing binaries (`apps/server`, `apps/client`, `tools/bot_client`), not in simulation or content.
-- egui crates may be used by `purgatory-client` (in-window overlay; not eframe) and `purgatory-dev-hub` (provisional eframe). They must not enter simulation, server, protocol, content, common, or `purgatory-dev-runtime`.
+- egui crates may be used by `purgatory-client` (in-window overlay; not eframe), `purgatory-dev-hub` (provisional eframe), and `purgatory-animation-lab` (standalone eframe). They must not enter simulation, server, protocol, content, common, `purgatory-skeleton`, `purgatory-animation`, or `purgatory-dev-runtime`.
 - Tokio handles asynchronous network and service I/O. Authoritative simulation uses `SimulationClock` in `crates/simulation`. Gameplay rules must not read wall-clock sources for tick identity. The outer loop supplies elapsed `Duration`.
 - The render loop must not `.block_on` network I/O. Async tasks must not call `World::tick`. Connection tasks must not lock or tick `World`. Packet arrival must not mutate `World`.
 - All client network input is untrusted. Parse and validate before session insert or gameplay handoff. No network parser may panic on arbitrary bytes.

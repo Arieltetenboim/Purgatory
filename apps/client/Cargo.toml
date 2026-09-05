@@ -11,17 +11,26 @@ description = "Native PURGATORY client."
 name = "purgatory-client"
 path = "src/main.rs"
 
+[features]
+default = ["dev-diagnostics"]
+# In-window egui Debug overlay, Connection Frontend, DebugCommand, impairment UI,
+# jitter isolation, DiagnosticsFrame assembly, and privileged proof surfaces.
+# Shipping: `cargo build -p purgatory-client --release --no-default-features`
+dev-diagnostics = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
+
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-egui = "0.36.1"
-egui-wgpu = { version = "0.36.1", features = ["winit"] }
-egui-winit = "0.36.1"
+egui = { version = "0.36.1", optional = true }
+egui-wgpu = { version = "0.36.1", features = ["winit"], optional = true }
+egui-winit = { version = "0.36.1", optional = true }
 pollster = "0.4.0"
 purgatory-common = { path = "../../crates/common" }
 purgatory-content = { path = "../../crates/content" }
 purgatory-protocol = { path = "../../crates/protocol" }
 purgatory-simulation = { path = "../../crates/simulation" }
+purgatory-animation = { path = "../../crates/animation" }
+purgatory-skeleton = { path = "../../crates/skeleton" }
 quinn = { workspace = true }
 rustls = { workspace = true }
 tokio = { workspace = true }

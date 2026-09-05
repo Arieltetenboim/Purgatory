@@ -25,9 +25,9 @@ $results = @()
 foreach ($c in $cells) {
     Write-Host "==== $($c.Scenario)@$($c.Count) ===="
     if ($SkipBuild) {
-        & "$root\scripts\capacity_ladder.ps1" -Scenario $c.Scenario -Count $c.Count -Duration $c.Duration -Seed 4242 -RampMs 50 -SkipBuild
+        & "$root\scripts\capacity_ladder.ps1" -Scenario $c.Scenario -Count $c.Count -Duration $c.Duration -Seed 4242 -RampMs 50 -ArtifactRoot capacity_6g7b -SkipBuild
     } else {
-        & "$root\scripts\capacity_ladder.ps1" -Scenario $c.Scenario -Count $c.Count -Duration $c.Duration -Seed 4242 -RampMs 50
+        & "$root\scripts\capacity_ladder.ps1" -Scenario $c.Scenario -Count $c.Count -Duration $c.Duration -Seed 4242 -RampMs 50 -ArtifactRoot capacity_6g7b
     }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "FAILED $($c.Scenario)@$($c.Count) exit=$LASTEXITCODE"

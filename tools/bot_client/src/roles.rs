@@ -387,6 +387,7 @@ mod tests {
                         velocity: [0.0, 0.0],
                     },
                     health: None,
+                    equipment: None,
                 },
                 ReplicationRecord::Enter {
                     entity: SnapshotEntity {
@@ -396,6 +397,7 @@ mod tests {
                         velocity: [0.0, 0.0],
                     },
                     health: None,
+                    equipment: None,
                 },
             ],
             aoi_debug: None,

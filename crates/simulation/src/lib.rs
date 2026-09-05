@@ -5,6 +5,7 @@
 //! callers supply elapsed [`std::time::Duration`] values to [`SimulationClock`].
 
 mod aabb;
+mod ability;
 mod action;
 mod action_gate;
 mod aoi;
@@ -20,6 +21,7 @@ mod dirty;
 mod domain;
 mod effect;
 mod entity;
+mod equipment;
 #[cfg(test)]
 mod fixtures;
 mod footnote;
@@ -33,6 +35,7 @@ mod lifecycle;
 mod map_runtime;
 mod motion_debug;
 mod movement;
+mod npc;
 #[cfg(test)]
 mod phase47_tests;
 #[cfg(test)]
@@ -53,7 +56,24 @@ mod phase6g6_tests;
 mod phase6g7a_tests;
 #[cfg(test)]
 mod phase6g_tests;
+#[cfg(test)]
+mod phase72_tests;
+#[cfg(test)]
+mod phase8a_tests;
+#[cfg(test)]
+mod phase8c_tests;
+#[cfg(test)]
+mod phase9a_tests;
+#[cfg(test)]
+mod phase9b_tests;
+#[cfg(test)]
+mod phase9c_tests;
+#[cfg(test)]
+mod phase9d_tests;
+#[cfg(test)]
+mod phase9e_tests;
 mod platform;
+mod presentation_oneshot;
 mod query;
 mod replication;
 mod runtime;
@@ -69,6 +89,12 @@ mod transform;
 mod world;
 
 pub use aabb::Aabb;
+pub use ability::{
+    ABILITY_EFFECT_CAP, AbilityActivation, AbilityDefinition, AbilityDefinitionError,
+    AbilityDelivery, AbilityEffect, AbilityGrantTable, AbilityId, AbilityRejectReason,
+    AbilityRequest, AbilityTiming, CooldownTable, GameplayPresentationCue, cue_for_ability_cast,
+    cue_for_damage_outcome, forward_query_aabb, oneshot_kind_for_cue,
+};
 pub use action::{Action, ActionEnd, ActionError, ActionId, ActionKind, ActionPhase};
 pub use action_gate::{ActionDenialReason, ActionGateContext, evaluate_action_gate};
 pub use aoi::{
@@ -93,8 +119,14 @@ pub use dirty::DirtyFlags;
 pub use domain::{DomainRevs, ReplicationDirtyMask};
 pub use effect::{EffectError, EffectId, EffectKind, TempEffect};
 pub use entity::{EntityId, EntityKind, RuntimeEntityId};
+pub use equipment::{
+    EQUIPMENT_DELTA_EQUIP_BYTES, EQUIPMENT_DELTA_UNEQUIP_BYTES, EQUIPMENT_FULL_ALL_OCCUPIED_BYTES,
+    EQUIPMENT_FULL_EMPTY_BYTES, EquipmentCodecError, EquipmentDelta, EquipmentDirtyMask,
+    EquipmentSlot, EquipmentState, decode_equipment_delta, decode_equipment_full,
+    encode_equipment_delta, encode_equipment_full,
+};
 pub use footnote::{BlockQuery, ContactEvent, FootnoteConfig, surface_blocks};
-pub use health::Health;
+pub use health::{Health, PLAYER_HEALTH_MAX};
 pub use input::PlayerInput;
 pub use input_gate::{
     InputGateReason, MAP_TRANSITION_INPUT_LOCK_SECS, MEMBERSHIP_TRANSITION_INPUT_LOCK_SECS,
@@ -112,15 +144,24 @@ pub use lifecycle::EntityLifecycle;
 pub use map_runtime::{InstantiateError, InstantiatedMap, MapRuntimePlan, PlanPlatform};
 pub use motion_debug::{CorrectionAxis, PlayerMotionDebug, ResponseKind};
 pub use movement::{GRAVITY, JUMP_VELOCITY, MOVE_SPEED};
+pub use npc::{
+    ActionRejectReason, ActionRequest, NPC_HEALTH_MAX, NPC_MOVE_SPEED, NpcState, PULSE_DAMAGE,
+    PULSE_DURATION_TICKS, PULSE_PERIOD_TICKS, STRIKE_DAMAGE, STRIKE_DURATION_TICKS, STRIKE_RANGE,
+};
 pub use platform::{
     Approach, FLOOR, FLOOR_POSITION, ONEWAY_A, ONEWAY_A_POSITION, ONEWAY_B, ONEWAY_B_POSITION,
     Platform, PlatformKind, PlatformView, RAISED_PLATFORM, RAISED_PLATFORM_POSITION,
+};
+pub use presentation_oneshot::{
+    ATTACK_DURATION_TICKS, HURT_DURATION_TICKS, PresentationOneShot, PresentationOneShotError,
+    PresentationOneShotKind, duration_ticks, oneshot_if_active, try_start_oneshot,
 };
 pub use purgatory_common::{ChannelId, ContentId, InstanceId, MapId, PersistentId, WorldAddress};
 pub use query::{QueryFilter, QueryLimit};
 pub use replication::{
     ReplicationClass, ReplicationMeta, ReplicationPayloadKind, UpdateFrequencyTier,
 };
+pub use runtime::DrainApplyTiming;
 pub use runtime_event::{EventQueue, RuntimeEvent};
 pub use runtime_stats::RuntimeStats;
 pub use scheduler::{
@@ -176,6 +217,7 @@ mod tests {
             include_str!("domain.rs"),
             include_str!("effect.rs"),
             include_str!("entity.rs"),
+            include_str!("equipment.rs"),
             include_str!("footnote/mod.rs"),
             include_str!("footnote/contact.rs"),
             include_str!("footnote/controller.rs"),
@@ -188,6 +230,7 @@ mod tests {
             include_str!("map_runtime.rs"),
             include_str!("motion_debug.rs"),
             include_str!("movement.rs"),
+            include_str!("npc.rs"),
             include_str!("platform.rs"),
             include_str!("query.rs"),
             include_str!("replication.rs"),

@@ -1,10 +1,18 @@
+#![cfg_attr(not(feature = "dev-diagnostics"), allow(dead_code))]
+
 mod app;
 mod assets;
 mod camera_follow;
+mod character_presentation;
+#[cfg(feature = "dev-diagnostics")]
 mod debug;
+mod display;
+#[cfg(feature = "dev-diagnostics")]
 mod frontend;
+mod headwear_proof;
 mod input;
 mod interp;
+#[cfg(feature = "dev-diagnostics")]
 mod jitter_forensics;
 mod lifecycle;
 mod local_presentation;
@@ -14,6 +22,7 @@ mod platform;
 mod prediction;
 mod renderer;
 mod replica;
+mod skeleton_debug;
 mod ui_runtime;
 
 use tracing_subscriber::EnvFilter;
@@ -27,11 +36,15 @@ fn main() {
         purgatory_simulation::version(),
     );
     println!(
-        "PURGATORY client bootstrap OK {} protocol_version={}",
+        "PURGATORY client bootstrap OK {} protocol_version={} {}",
         purgatory_common::identity(),
-        purgatory_protocol::PROTOCOL_VERSION
+        purgatory_protocol::PROTOCOL_VERSION,
+        if cfg!(feature = "dev-diagnostics") {
+            "dev-diagnostics"
+        } else {
+            "shipping"
+        }
     );
-    crate::debug::agent_log::emit("boot", "main.rs:main", "client_boot", "{\"ok\":true}");
     if let Err(err) = app::run() {
         eprintln!("PURGATORY client error: {err}");
         std::process::exit(1);

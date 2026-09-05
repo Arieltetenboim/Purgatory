@@ -2,6 +2,10 @@
 //!
 //! Historical v1–v7 `WorldSnapshot` bytes stay frozen. v8 is incompatible.
 
+use crate::equipment::{
+    ReplicatedEquipment, ReplicatedEquipmentDelta, decode_equipment_delta, decode_equipment_full,
+    encode_equipment_delta, encode_equipment_full,
+};
 use crate::snapshot::{
     PlatformSupportId, ReplicatedKind, SnapshotEntity, WireEntityId, expect_empty, read_entity_id,
     read_finite_f32, read_u16, read_u32, read_u64, split_tag, write_entity_id, write_f32,
@@ -15,6 +19,7 @@ const REC_LEAVE: u8 = 3;
 
 const MASK_TRANSFORM: u8 = 1 << 0;
 const MASK_HEALTH: u8 = 1 << 1;
+const MASK_EQUIPMENT: u8 = 1 << 2;
 
 /// Optional health payload used to prove multi-domain deltas. Not a combat model.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -28,6 +33,7 @@ pub struct ReplicatedHealth {
 pub struct DomainMask {
     pub transform: bool,
     pub health: bool,
+    pub equipment: bool,
 }
 
 impl DomainMask {
@@ -40,17 +46,21 @@ impl DomainMask {
         if self.health {
             bits |= MASK_HEALTH;
         }
+        if self.equipment {
+            bits |= MASK_EQUIPMENT;
+        }
         bits
     }
 
     #[must_use]
     pub const fn from_u8(bits: u8) -> Option<Self> {
-        if bits & !(MASK_TRANSFORM | MASK_HEALTH) != 0 {
+        if bits & !(MASK_TRANSFORM | MASK_HEALTH | MASK_EQUIPMENT) != 0 {
             return None;
         }
         Some(Self {
             transform: bits & MASK_TRANSFORM != 0,
             health: bits & MASK_HEALTH != 0,
+            equipment: bits & MASK_EQUIPMENT != 0,
         })
     }
 }
@@ -61,6 +71,8 @@ pub enum ReplicationRecord {
     Enter {
         entity: SnapshotEntity,
         health: Option<ReplicatedHealth>,
+        /// `None` = no equipment domain. `Some` (including all-empty) = domain present.
+        equipment: Option<ReplicatedEquipment>,
     },
     Update {
         entity_id: WireEntityId,
@@ -68,6 +80,7 @@ pub enum ReplicationRecord {
         position: Option<[f32; 2]>,
         velocity: Option<[f32; 2]>,
         health: Option<ReplicatedHealth>,
+        equipment: Option<ReplicatedEquipmentDelta>,
     },
     Leave {
         entity_id: WireEntityId,
@@ -117,7 +130,11 @@ impl ReplicationFrame {
 pub fn encode_replication_record(record: &ReplicationRecord) -> Result<Vec<u8>, CodecError> {
     let mut out = Vec::with_capacity(40);
     match record {
-        ReplicationRecord::Enter { entity, health } => {
+        ReplicationRecord::Enter {
+            entity,
+            health,
+            equipment,
+        } => {
             out.push(REC_ENTER);
             write_entity_id(&mut out, entity.entity_id);
             out.push(entity.kind.as_u8());
@@ -126,6 +143,7 @@ pub fn encode_replication_record(record: &ReplicationRecord) -> Result<Vec<u8>, 
             write_f32(&mut out, entity.velocity[0])?;
             write_f32(&mut out, entity.velocity[1])?;
             write_health_opt(&mut out, *health)?;
+            write_equipment_opt(&mut out, *equipment);
         }
         ReplicationRecord::Update {
             entity_id,
@@ -133,6 +151,7 @@ pub fn encode_replication_record(record: &ReplicationRecord) -> Result<Vec<u8>, 
             position,
             velocity,
             health,
+            equipment,
         } => {
             if domains.as_u8() == 0 {
                 return Err(CodecError::InvalidValue);
@@ -141,6 +160,14 @@ pub fn encode_replication_record(record: &ReplicationRecord) -> Result<Vec<u8>, 
                 return Err(CodecError::InvalidValue);
             }
             if domains.health != health.is_some() {
+                return Err(CodecError::InvalidValue);
+            }
+            if domains.equipment != equipment.is_some() {
+                return Err(CodecError::InvalidValue);
+            }
+            if let Some(delta) = equipment
+                && delta.is_empty()
+            {
                 return Err(CodecError::InvalidValue);
             }
             out.push(REC_UPDATE);
@@ -154,6 +181,9 @@ pub fn encode_replication_record(record: &ReplicationRecord) -> Result<Vec<u8>, 
             }
             if let Some(h) = health {
                 write_health(&mut out, *h)?;
+            }
+            if let Some(delta) = equipment {
+                out.extend_from_slice(&encode_equipment_delta(delta));
             }
         }
         ReplicationRecord::Leave { entity_id } => {
@@ -289,6 +319,7 @@ fn decode_record(bytes: &[u8]) -> Result<(ReplicationRecord, &[u8]), CodecError>
             let (vx, rest) = read_finite_f32(rest)?;
             let (vy, rest) = read_finite_f32(rest)?;
             let (health, rest) = read_health_opt(rest)?;
+            let (equipment, rest) = read_equipment_opt(rest)?;
             Ok((
                 ReplicationRecord::Enter {
                     entity: SnapshotEntity {
@@ -298,6 +329,7 @@ fn decode_record(bytes: &[u8]) -> Result<(ReplicationRecord, &[u8]), CodecError>
                         velocity: [vx, vy],
                     },
                     health,
+                    equipment,
                 },
                 rest,
             ))
@@ -327,6 +359,13 @@ fn decode_record(bytes: &[u8]) -> Result<(ReplicationRecord, &[u8]), CodecError>
             } else {
                 None
             };
+            let equipment = if domains.equipment {
+                let (d, next) = decode_equipment_delta(rest)?;
+                rest = next;
+                Some(d)
+            } else {
+                None
+            };
             Ok((
                 ReplicationRecord::Update {
                     entity_id,
@@ -334,6 +373,7 @@ fn decode_record(bytes: &[u8]) -> Result<(ReplicationRecord, &[u8]), CodecError>
                     position,
                     velocity,
                     health,
+                    equipment,
                 },
                 rest,
             ))
@@ -362,6 +402,30 @@ fn write_health_opt(out: &mut Vec<u8>, health: Option<ReplicatedHealth>) -> Resu
 fn write_health(out: &mut Vec<u8>, health: ReplicatedHealth) -> Result<(), CodecError> {
     write_f32(out, health.current)?;
     write_f32(out, health.max)
+}
+
+fn write_equipment_opt(out: &mut Vec<u8>, equipment: Option<ReplicatedEquipment>) {
+    match equipment {
+        None => out.push(0),
+        Some(state) => {
+            out.push(1);
+            out.extend_from_slice(&encode_equipment_full(&state));
+        }
+    }
+}
+
+fn read_equipment_opt(bytes: &[u8]) -> Result<(Option<ReplicatedEquipment>, &[u8]), CodecError> {
+    if bytes.is_empty() {
+        return Err(CodecError::Truncated);
+    }
+    match bytes[0] {
+        0 => Ok((None, &bytes[1..])),
+        1 => {
+            let (state, rest) = decode_equipment_full(&bytes[1..])?;
+            Ok((Some(state), rest))
+        }
+        _ => Err(CodecError::InvalidValue),
+    }
 }
 
 fn read_health_opt(bytes: &[u8]) -> Result<(Option<ReplicatedHealth>, &[u8]), CodecError> {
@@ -432,16 +496,19 @@ mod tests {
                     current: 8.0,
                     max: 10.0,
                 }),
+                equipment: None,
             },
             ReplicationRecord::Update {
                 entity_id: sample_entity().entity_id,
                 domains: DomainMask {
                     transform: true,
                     health: false,
+                    equipment: false,
                 },
                 position: Some([2.0, 2.0]),
                 velocity: Some([1.0, 0.0]),
                 health: None,
+                equipment: None,
             },
             ReplicationRecord::Leave {
                 entity_id: WireEntityId {

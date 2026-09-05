@@ -1,6 +1,6 @@
 //! Hello / Welcome handshake. All client bytes are untrusted.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use quinn::{Connection, RecvStream, SendStream};
@@ -18,11 +18,16 @@ use tokio::time::timeout;
 use super::abuse::{
     ConnectionAbuse, ControlRateLimit, NetworkAbuseConfig, RateDecision, sanitize_log_text,
 };
+use super::connection_lifecycle::ConnectionLifecycleBook;
 use super::gameplay::{EnterError, GameplayTx};
-use super::persist::PersistenceHandle;
+use super::network_pressure::NetworkPressureBook;
 use super::replication::ReplicationPipe;
-use super::session::{ConnectionIdAllocator, ConnectionSession, SessionLease, SessionTable};
+use super::session::{ConnectionSession, SessionLease};
 use super::stats::ServerNetStats;
+
+fn us(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
 
 const SERVER_LABEL: &str = "purgatory-server-dev";
 
@@ -33,23 +38,29 @@ enum ControlReadError {
     Decode,
 }
 
-pub(crate) async fn handle_incoming(
-    incoming: quinn::Incoming,
-    sessions: Arc<Mutex<SessionTable>>,
-    ids: Arc<ConnectionIdAllocator>,
-    abuse: NetworkAbuseConfig,
-    stats: Arc<ServerNetStats>,
-    gameplay: Option<GameplayTx>,
-    persist: Option<PersistenceHandle>,
-) {
+pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::IncomingDispatch) {
+    let super::IncomingDispatch {
+        sessions,
+        ids,
+        abuse,
+        stats,
+        gameplay,
+        persist,
+        lifecycle,
+        pressure,
+        ..
+    } = ctx;
     stats.enter_handshake();
     let connection = match incoming.await {
         Ok(conn) => conn,
         Err(_) => {
+            lifecycle.note_transport_accept_fail();
             stats.leave_handshake();
             return;
         }
     };
+    let accept_at = Instant::now();
+    lifecycle.note_transport_accept_ok();
     let remote = connection.remote_address();
 
     let handshake = timeout(
@@ -60,6 +71,7 @@ pub(crate) async fn handle_incoming(
     let (mut send, recv, hello) = match handshake {
         Ok(Ok(parts)) => parts,
         Ok(Err(reason)) => {
+            lifecycle.note_hello_fail();
             stats.leave_handshake();
             if reason.code == DisconnectReasonCode::Malformed && reason.detail == "oversize" {
                 stats
@@ -77,6 +89,7 @@ pub(crate) async fn handle_incoming(
             return;
         }
         Err(_) => {
+            lifecycle.note_hello_fail();
             stats.leave_handshake();
             stats.note_reject(DisconnectReasonCode::HandshakeTimeout);
             println!(
@@ -93,7 +106,11 @@ pub(crate) async fn handle_incoming(
         }
     };
 
+    let hello_at = Instant::now();
+    lifecycle.note_hello_ok(us(accept_at.elapsed()));
+
     if let Err(reason) = validate_hello(&hello) {
+        lifecycle.note_hello_fail();
         stats.leave_handshake();
         stats.note_reject(reason.code);
         println!(
@@ -110,6 +127,7 @@ pub(crate) async fn handle_incoming(
     let login = match DevLogin::parse(&hello.dev_login) {
         Ok(login) => login,
         Err(_) => {
+            lifecycle.note_hello_fail();
             stats.leave_handshake();
             let reason = DisconnectReason::new(DisconnectReasonCode::Malformed, "dev_login");
             stats.note_reject(reason.code);
@@ -128,6 +146,7 @@ pub(crate) async fn handle_incoming(
                 Ok(character) => character,
                 Err(err) => {
                     eprintln!("PURGATORY persist resolve failed: {err}");
+                    lifecycle.note_enter_fail();
                     stats.leave_handshake();
                     let reason = DisconnectReason::new(DisconnectReasonCode::Malformed, "identity");
                     stats.note_reject(reason.code);
@@ -154,6 +173,7 @@ pub(crate) async fn handle_incoming(
                     snap_rx = Some((pipe, wake_rx, interact_rx));
                 }
                 Ok(Err(EnterError::Occupied)) => {
+                    lifecycle.note_enter_fail();
                     stats.leave_handshake();
                     let reason =
                         DisconnectReason::new(DisconnectReasonCode::AlreadyConnected, "character");
@@ -165,6 +185,7 @@ pub(crate) async fn handle_incoming(
                     return;
                 }
                 Ok(Err(_)) | Err(()) => {
+                    lifecycle.note_enter_fail();
                     stats.leave_handshake();
                     let reason = DisconnectReason::new(DisconnectReasonCode::Malformed, "enter");
                     stats.note_reject(reason.code);
@@ -201,6 +222,7 @@ pub(crate) async fn handle_incoming(
         .await
         .is_err()
     {
+        lifecycle.note_welcome_fail();
         stats.leave_handshake();
         stats
             .total_rejected
@@ -215,6 +237,8 @@ pub(crate) async fn handle_incoming(
         }
         return;
     }
+    let welcome_at = Instant::now();
+    lifecycle.note_welcome_ok(us(hello_at.elapsed()));
 
     stats.leave_handshake();
     stats
@@ -228,6 +252,7 @@ pub(crate) async fn handle_incoming(
         remote,
     };
     let lease = SessionLease::insert(sessions, session.clone());
+    lifecycle.note_session_accepted(us(welcome_at.elapsed()));
     stats
         .session_created
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -253,6 +278,8 @@ pub(crate) async fn handle_incoming(
         replication,
         interact_rx,
         occupancy,
+        lifecycle,
+        pressure,
     })
     .await;
 }
@@ -297,6 +324,8 @@ struct LiveSession {
     replication: Option<(ReplicationPipe, tokio::sync::watch::Receiver<u64>)>,
     interact_rx: Option<tokio::sync::mpsc::Receiver<ServerControl>>,
     occupancy: Option<OccupancyLease>,
+    lifecycle: Arc<ConnectionLifecycleBook>,
+    pressure: Arc<NetworkPressureBook>,
 }
 
 async fn handshake_streams(
@@ -344,6 +373,8 @@ async fn serve_connection(live: LiveSession) {
         mut replication,
         mut interact_rx,
         occupancy,
+        lifecycle,
+        pressure,
     } = live;
     let id = session.connection_id;
     let remote = session.remote;
@@ -592,6 +623,136 @@ async fn serve_connection(live: LiveSession) {
                             }
                         }
                     }
+                    Ok(ClientControl::Equip(req)) => {
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_equip(id, req).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ClientControl::Unequip(req)) => {
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_unequip(id, req).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ClientControl::DevPresentationOneShot(req)) => {
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_dev_presentation_oneshot(id, req.kind).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ClientControl::DevResetPlayer) => {
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_dev_reset_player(id).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ClientControl::AbilityActivate(req)) => {
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_ability_activate(id, req).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Ok(msg) => match rate.note(Instant::now(), abuse_cfg) {
                         RateDecision::Disconnect => {
                             stats
@@ -716,7 +877,17 @@ async fn serve_connection(live: LiveSession) {
                 };
                 let mut write_failed = false;
                 while let Some(frame) = pipe.pop() {
-                    if write_replication_payload(send, &frame.payload, &stats).await {
+                    let age = us(frame.enqueued_at.elapsed());
+                    if write_replication_payload(
+                        send,
+                        &frame.payload,
+                        &stats,
+                        &pressure,
+                        id.get(),
+                        age,
+                    )
+                    .await
+                    {
                         stats
                             .snapshots_sent
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -775,6 +946,8 @@ async fn serve_connection(live: LiveSession) {
         sanitize_log_text(&remote.to_string()),
         session.connected_since.elapsed().as_millis()
     );
+    lifecycle.note_disconnect(us(session.connected_since.elapsed()));
+    pressure.remove_client(id.get());
     drop(occupancy);
 }
 
@@ -825,23 +998,29 @@ async fn write_replication_payload(
     send: &mut SendStream,
     payload: &[u8],
     stats: &ServerNetStats,
+    pressure: &NetworkPressureBook,
+    connection_id: u64,
+    queue_age_us: u64,
 ) -> bool {
-    let encode_start = std::time::Instant::now();
-    let encode_us = u64::try_from(encode_start.elapsed().as_micros()).unwrap_or(u64::MAX);
-    stats
-        .snapshot_encode_time_max_micros
-        .fetch_max(encode_us, std::sync::atomic::Ordering::Relaxed);
     stats
         .snapshot_size_max_bytes
         .fetch_max(payload.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    let encode_start = Instant::now();
     let Ok(frame) = encode_gameplay_frame(payload) else {
         stats
             .snapshot_encode_failed
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return false;
     };
+    let encode_us = us(encode_start.elapsed());
+    stats
+        .snapshot_encode_time_max_micros
+        .fetch_max(encode_us, std::sync::atomic::Ordering::Relaxed);
     let n = frame.len() as u64;
+    let drain_start = Instant::now();
     if send.write_all(&frame).await.is_ok() {
+        let drain_us = us(drain_start.elapsed());
+        pressure.note_write_drain(connection_id, drain_us, n, queue_age_us);
         stats
             .bytes_out
             .fetch_add(n, std::sync::atomic::Ordering::Relaxed);

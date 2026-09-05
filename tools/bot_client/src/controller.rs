@@ -9,7 +9,13 @@ use serde_json::json;
 use tokio::task::JoinSet;
 use tokio::time::interval;
 
-use purgatory_common::{LoadMetricsV1, current_process_memory};
+use purgatory_common::{
+    CapacityLiveSnapshot, ConnectionLifecycleSnapshot, ConnectionRampSnapshot,
+    HarnessConnectionSnapshot, LoadMetricsV1, NetworkPressureSnapshot, ProcessResourceSnapshot,
+    RampFunnel, check_ramp_funnel_invariant, compose_ramp_ownership, current_process_memory,
+    current_process_resources, int_distribution_from_micros, logical_cpu_count,
+    ramp_attainment_pct,
+};
 use purgatory_simulation::{SimulationClock, TICK_DURATION};
 
 use crate::aggregate::ServerRunAggregator;
@@ -89,6 +95,32 @@ pub struct Controller {
     ramp_completed_at: Option<Instant>,
     last_soak_observe: Option<Instant>,
     pending_spawns: JoinSet<SpawnOutcome>,
+    last_cpu_time_secs: f64,
+    last_cpu_wall: Instant,
+    cpu_util_pct: f64,
+    cpu_util_peak_pct: f64,
+    mem_start_bytes: u64,
+    mem_peak_bytes: u64,
+    conn_attempts: u64,
+    conn_ok: u64,
+    conn_fail: u64,
+    attempt_to_quic_us: Vec<u64>,
+    quic_to_welcome_us: Vec<u64>,
+    attempt_to_welcome_us: Vec<u64>,
+    harness_timeouts: u64,
+    spawn_issued: u64,
+    spawns_finished: u64,
+    peak_in_flight: u64,
+    quic_ready_ok: u64,
+    peak_transport: u64,
+    peak_world_entered: u64,
+    controller_ticks: u64,
+    last_server_metrics: Option<LoadMetricsV1>,
+    spawn_catchup_issued_total: u64,
+    spawn_due_peak: u64,
+    tick_all_bots_ms: Vec<f64>,
+    controller_tick_ms: Vec<f64>,
+    ramp_poll_cursor: usize,
 }
 
 struct SpawnOutcome {
@@ -163,6 +195,38 @@ impl Controller {
             ramp_completed_at: None,
             last_soak_observe: None,
             pending_spawns: JoinSet::new(),
+            last_cpu_time_secs: current_process_resources()
+                .map(|r| r.cpu.cpu_time_secs)
+                .unwrap_or(0.0),
+            last_cpu_wall: Instant::now(),
+            cpu_util_pct: 0.0,
+            cpu_util_peak_pct: 0.0,
+            mem_start_bytes: current_process_resources()
+                .map(|r| r.memory.working_set_bytes)
+                .unwrap_or(0),
+            mem_peak_bytes: current_process_resources()
+                .map(|r| r.memory.working_set_bytes)
+                .unwrap_or(0),
+            conn_attempts: 0,
+            conn_ok: 0,
+            conn_fail: 0,
+            attempt_to_quic_us: Vec::new(),
+            quic_to_welcome_us: Vec::new(),
+            attempt_to_welcome_us: Vec::new(),
+            harness_timeouts: 0,
+            spawn_issued: 0,
+            spawns_finished: 0,
+            peak_in_flight: 0,
+            quic_ready_ok: 0,
+            peak_transport: 0,
+            peak_world_entered: 0,
+            controller_ticks: 0,
+            last_server_metrics: None,
+            spawn_catchup_issued_total: 0,
+            spawn_due_peak: 0,
+            tick_all_bots_ms: Vec::with_capacity(128),
+            controller_tick_ms: Vec::with_capacity(128),
+            ramp_poll_cursor: 0,
         })
     }
 
@@ -196,7 +260,7 @@ impl Controller {
         self.input_active = !steady;
         let mut quiet_since: Option<Instant> = None;
         let mut active_since: Option<Instant> = None;
-        let mut last_spawn_at: Option<Instant> = None;
+        let mut next_spawn_due: Option<Instant> = None;
         let mut last_metrics_at = Instant::now();
         let mut timed_out = false;
 
@@ -239,6 +303,7 @@ impl Controller {
             };
             if start_time.elapsed() >= self.spec.timeout() && !duration_elapsed {
                 timed_out = true;
+                self.harness_timeouts = self.harness_timeouts.saturating_add(1);
                 break;
             }
             if duration_elapsed {
@@ -254,30 +319,38 @@ impl Controller {
                     let elapsed = now.duration_since(last_tick_time);
                     last_tick_time = now;
                     let update = clock.advance(elapsed);
+                    self.controller_ticks = self.controller_ticks.saturating_add(1);
 
                     self.drain_pending_spawns(&mut log).await?;
 
-                    // One I/O pass per interval. Catch-up ticks after a hitch
-                    // (handshake on this loop, etc.) used to run 60–90 snapshot
-                    // polls with 1 ms timeouts and stall the soak clock.
+                    // Issue due connects before O(N) bot I/O so ramp cannot starve.
+                    if bots_to_spawn > 0 && !self.ramp_complete {
+                        let issued = self.issue_due_spawns(&mut bots_to_spawn, &mut next_spawn_due, now);
+                        if issued > 0 {
+                            log.emit_event(
+                                "spawn_issue_burst",
+                                json!({
+                                    "issued": issued,
+                                    "remaining": bots_to_spawn,
+                                    "catchup_total": self.spawn_catchup_issued_total,
+                                }),
+                            )?;
+                        }
+                    }
+
+                    // One I/O pass per interval. During ramp, thin-poll so
+                    // STREAM_POLL_TIMEOUT × N cannot collapse issuance cadence.
                     let bot_ticks = update.ticks_executed.min(1);
                     for _ in 0..bot_ticks {
+                        let t0 = Instant::now();
                         self.tick_all_bots(&mut log).await?;
+                        self.tick_all_bots_ms
+                            .push(t0.elapsed().as_secs_f64() * 1000.0);
                     }
 
                     let tick_ms = elapsed.as_secs_f64() * 1000.0;
                     self.metrics.record_tick_time(tick_ms);
-
-                    if bots_to_spawn > 0 && !self.ramp_complete {
-                        let due = last_spawn_at.is_none_or(|t| {
-                            t.elapsed() >= Duration::from_millis(self.spec.ramp_ms.max(1))
-                        });
-                        if due {
-                            self.queue_bot_connect();
-                            last_spawn_at = Some(Instant::now());
-                            bots_to_spawn -= 1;
-                        }
-                    }
+                    self.controller_tick_ms.push(tick_ms);
 
                     if !self.ramp_complete
                         && bots_to_spawn == 0
@@ -288,7 +361,11 @@ impl Controller {
                         self.ramp_completed_at = Some(Instant::now());
                         log.emit_event(
                             "ramp_target_reached",
-                            json!({ "target": self.spec.bot_count }),
+                            json!({
+                                "target": self.spec.bot_count,
+                                "spawn_issued": self.spawn_issued,
+                                "catchup_issued": self.spawn_catchup_issued_total,
+                            }),
                         )?;
                         if steady {
                             quiet_since = Some(Instant::now());
@@ -485,6 +562,9 @@ impl Controller {
     ) -> Result<(), String> {
         self.update_bot_metrics();
         self.peak_connected = self.peak_connected.max(self.metrics.bots.connected);
+        self.peak_transport = self
+            .peak_transport
+            .max(u64::from(self.metrics.bots.connected));
 
         let harness_mb =
             current_process_memory().map(|m| m.working_set_bytes as f64 / (1024.0 * 1024.0));
@@ -621,6 +701,12 @@ impl Controller {
 
             self.metrics.encode_failures = s.snapshot_encode_failed;
             self.metrics.admission_refusals = s.admission_refused;
+            self.last_server_metrics = Some(s.clone());
+            self.peak_transport = self
+                .peak_transport
+                .max(s.peak_sessions)
+                .max(s.active_sessions);
+            self.peak_world_entered = self.peak_world_entered.max(u64::from(self.peak_connected));
         }
 
         let rates = self.compute_rates(server_metrics.as_ref());
@@ -689,6 +775,7 @@ impl Controller {
             sample.fill_schema3(s);
         }
         log.write_metrics_sample(&sample)?;
+        self.write_harness_capacity_artifacts(log)?;
 
         Dashboard::print(
             &self.metrics,
@@ -745,6 +832,7 @@ impl Controller {
         let profile = self.spec.profile;
         let seed = self.spec.seed;
         let role = role_for(self.spec.kind, self.spec.bot_count, bot_id);
+        self.note_spawn_issued();
         self.pending_spawns.spawn(async move {
             let mut session = BotSession::new(bot_id, profile, seed);
             session.role = role;
@@ -763,8 +851,38 @@ impl Controller {
         });
     }
 
+    /// Enqueue every connection whose ramp schedule is already due.
+    /// Advances the schedule by `ramp_ms` per issue (not wall `now`).
+    fn issue_due_spawns(
+        &mut self,
+        bots_to_spawn: &mut u32,
+        next_spawn_due: &mut Option<Instant>,
+        now: Instant,
+    ) -> u32 {
+        let ramp = Duration::from_millis(self.spec.ramp_ms.max(1));
+        let due = count_due_spawns(*bots_to_spawn, *next_spawn_due, now, ramp);
+        if due == 0 {
+            return 0;
+        }
+        self.spawn_due_peak = self.spawn_due_peak.max(u64::from(due));
+        if due > 1 {
+            self.spawn_catchup_issued_total = self
+                .spawn_catchup_issued_total
+                .saturating_add(u64::from(due.saturating_sub(1)));
+        }
+        let mut schedule = next_spawn_due.unwrap_or(now);
+        for _ in 0..due {
+            self.queue_bot_connect();
+            *bots_to_spawn = bots_to_spawn.saturating_sub(1);
+            schedule += ramp;
+        }
+        *next_spawn_due = Some(schedule);
+        due
+    }
+
     async fn drain_pending_spawns(&mut self, log: &mut RunLog) -> Result<(), String> {
         while let Some(joined) = self.pending_spawns.try_join_next() {
+            self.spawns_finished = self.spawns_finished.saturating_add(1);
             match joined {
                 Ok(outcome) => {
                     let SpawnOutcome {
@@ -773,6 +891,7 @@ impl Controller {
                         error,
                     } = outcome;
                     if let Some(e) = error {
+                        self.note_connect_attempt(&session, false);
                         session.state = SessionState::Failed;
                         self.sessions.insert(bot_id, session);
                         log.emit_event(
@@ -780,6 +899,7 @@ impl Controller {
                             json!({ "bot_id": bot_id, "error": e }),
                         )?;
                     } else {
+                        self.note_connect_attempt(&session, true);
                         let _ = session.poll_accept_snapshot().await;
                         self.sessions.insert(bot_id, session);
                     }
@@ -795,9 +915,299 @@ impl Controller {
         Ok(())
     }
 
+    fn note_spawn_issued(&mut self) {
+        self.spawn_issued = self.spawn_issued.saturating_add(1);
+        let inflight = self.spawn_issued.saturating_sub(self.spawns_finished);
+        self.peak_in_flight = self.peak_in_flight.max(inflight);
+    }
+
+    fn note_connect_attempt(&mut self, session: &BotSession, ok: bool) {
+        const RING: usize = 512;
+        self.conn_attempts = self.conn_attempts.saturating_add(1);
+        if ok {
+            self.conn_ok = self.conn_ok.saturating_add(1);
+        } else {
+            self.conn_fail = self.conn_fail.saturating_add(1);
+        }
+        if let Some(v) = session.attempt_to_quic_ready_us {
+            self.quic_ready_ok = self.quic_ready_ok.saturating_add(1);
+            push_us(&mut self.attempt_to_quic_us, v, RING);
+        }
+        if let Some(v) = session.quic_ready_to_welcome_us {
+            push_us(&mut self.quic_to_welcome_us, v, RING);
+        }
+        if let Some(v) = session.attempt_to_welcome_us {
+            push_us(&mut self.attempt_to_welcome_us, v, RING);
+        }
+    }
+
+    fn write_harness_capacity_artifacts(&mut self, log: &RunLog) -> Result<(), String> {
+        self.refresh_harness_cpu();
+        let res = current_process_resources();
+        let ws = res.map(|r| r.memory.working_set_bytes).unwrap_or(0);
+        self.mem_peak_bytes = self.mem_peak_bytes.max(ws);
+        let cpus = res
+            .map(|r| r.cpu.logical_cpus)
+            .unwrap_or_else(logical_cpu_count)
+            .max(1);
+        let resources = ProcessResourceSnapshot {
+            schema: ProcessResourceSnapshot::SCHEMA,
+            wall_secs: log.elapsed_secs(),
+            logical_cpus: cpus,
+            working_set_bytes: ws,
+            working_set_peak_bytes: self.mem_peak_bytes.max(ws),
+            working_set_start_bytes: self.mem_start_bytes,
+            cpu_time_secs: res
+                .map(|r| r.cpu.cpu_time_secs)
+                .unwrap_or(self.last_cpu_time_secs),
+            cpu_utilization_pct: self.cpu_util_pct,
+            cpu_normalized_per_logical_pct: self.cpu_util_pct / f64::from(cpus),
+            cpu_utilization_peak_pct: self.cpu_util_peak_pct,
+            cpu_time_delta_secs: 0.0,
+            sample_interval_secs: 1.0,
+            working_set_delta_bytes: ws as i64 - self.mem_start_bytes as i64,
+            thread_count: res.and_then(|r| r.thread_count),
+            handle_count: res.and_then(|r| r.handle_count),
+        };
+        let conn = HarnessConnectionSnapshot {
+            schema: HarnessConnectionSnapshot::SCHEMA,
+            wall_secs: log.elapsed_secs(),
+            note: HarnessConnectionSnapshot::NOTE.to_string(),
+            connect_attempts: self.conn_attempts,
+            connect_ok: self.conn_ok,
+            connect_fail: self.conn_fail,
+            harness_timeouts: self.harness_timeouts,
+            attempt_to_quic_ready_us: int_distribution_from_micros(&self.attempt_to_quic_us),
+            quic_ready_to_welcome_us: int_distribution_from_micros(&self.quic_to_welcome_us),
+            attempt_to_welcome_us: int_distribution_from_micros(&self.attempt_to_welcome_us),
+        };
+        let res_json = serde_json::to_vec_pretty(&resources)
+            .map_err(|e| format!("serialize harness_resources: {e}"))?;
+        let conn_json = serde_json::to_vec_pretty(&conn)
+            .map_err(|e| format!("serialize harness_connection: {e}"))?;
+        std::fs::write(log.dir().join("harness_resources.json"), &res_json)
+            .map_err(|e| format!("write harness_resources: {e}"))?;
+        std::fs::write(log.dir().join("harness_connection.json"), &conn_json)
+            .map_err(|e| format!("write harness_connection: {e}"))?;
+        if let Some(root) = &self.spec.persist_root {
+            let persist = std::path::Path::new(root);
+            if let Some(shared) = persist.parent() {
+                let shared_res = shared.join("harness_resources.json");
+                let shared_conn = shared.join("harness_connection.json");
+                if shared_res != log.dir().join("harness_resources.json") {
+                    let _ = std::fs::write(shared_res, &res_json);
+                    let _ = std::fs::write(shared_conn, &conn_json);
+                }
+            }
+        }
+        self.write_connection_ramp_artifact(log, &resources)?;
+        Ok(())
+    }
+
+    fn write_connection_ramp_artifact(
+        &self,
+        log: &RunLog,
+        harness_res: &ProcessResourceSnapshot,
+    ) -> Result<(), String> {
+        let shared = self.spec.persist_root.as_ref().and_then(|root| {
+            std::path::Path::new(root)
+                .parent()
+                .map(std::path::Path::to_path_buf)
+        });
+        let live = shared
+            .as_ref()
+            .and_then(|p| read_json::<CapacityLiveSnapshot>(&p.join("capacity_live.json")));
+        let life = shared.as_ref().and_then(|p| {
+            read_json::<ConnectionLifecycleSnapshot>(&p.join("connection_lifecycle.json"))
+        });
+        let net = shared
+            .as_ref()
+            .and_then(|p| read_json::<NetworkPressureSnapshot>(&p.join("network_pressure.json")));
+        let server = self.last_server_metrics.as_ref();
+        let server_transport = life.as_ref().map(|l| l.transport_accept_ok).unwrap_or(0);
+        let server_welcome = life.as_ref().map(|l| l.welcome_ok).unwrap_or(0);
+        let server_session = life
+            .as_ref()
+            .map(|l| l.session_accepted)
+            .or_else(|| server.map(|s| s.session_created))
+            .unwrap_or(0);
+        // Issuance funnel is harness-owned only. Never `.max()` with server lifecycle
+        // totals — reconnect churn / probes inflate server accepts above spawn_issued.
+        let transport_total = self.quic_ready_ok;
+        let welcome_total = self.conn_ok;
+        let world_entered = self.conn_ok;
+        let disconnects = life
+            .as_ref()
+            .map(|l| l.disconnects)
+            .or_else(|| server.map(|s| s.session_destroyed))
+            .unwrap_or(0);
+        let admission_cap = server.map(|s| s.admission_cap).unwrap_or(0);
+        let admission_refused = server
+            .map(|s| s.admission_refused)
+            .unwrap_or(self.metrics.admission_refusals);
+        let peak_active =
+            u64::from(self.peak_connected).max(server.map(|s| s.peak_sessions).unwrap_or(0));
+        let pending_in_flight = self.spawn_issued.saturating_sub(self.spawns_finished);
+        let funnel = RampFunnel {
+            requested_clients: u64::from(self.spec.bot_count),
+            spawn_issued_total: self.spawn_issued,
+            connect_attempts_completed: self.conn_attempts,
+            transport_established_total: transport_total,
+            welcome_total,
+            world_entered_total: world_entered,
+            peak_active_clients: peak_active,
+            connect_fail_total: self.conn_fail,
+            harness_timeouts: self.harness_timeouts,
+            admission_refused,
+            admission_cap,
+            disconnects,
+            reconnect_ok_total: self.churn_connects,
+            server_transport_accept_ok: server_transport,
+            server_welcome_ok: server_welcome,
+            server_session_accepted: server_session,
+        };
+        let invariant = check_ramp_funnel_invariant(&funnel, pending_in_flight);
+        let cpus = harness_res.logical_cpus.max(1);
+        let snap = ConnectionRampSnapshot {
+            schema: ConnectionRampSnapshot::SCHEMA,
+            wall_secs: log.elapsed_secs(),
+            note: ConnectionRampSnapshot::NOTE.to_string(),
+            harness_exit_is_not_attainment: true,
+            requested_clients: funnel.requested_clients,
+            spawn_issued_total: funnel.spawn_issued_total,
+            connect_attempts_completed: funnel.connect_attempts_completed,
+            peak_connection_attempts: self.peak_in_flight,
+            transport_established_total: funnel.transport_established_total,
+            peak_transport_established: self.peak_transport.max(transport_total),
+            welcome_total: funnel.welcome_total,
+            world_entered_total: funnel.world_entered_total,
+            peak_world_entered: u64::from(self.peak_connected).max(world_entered),
+            peak_active_clients: funnel.peak_active_clients,
+            attainment_pct: ramp_attainment_pct(
+                funnel.peak_active_clients,
+                funnel.requested_clients,
+            ),
+            connect_fail_total: funnel.connect_fail_total,
+            harness_timeouts: funnel.harness_timeouts,
+            admission_refused: funnel.admission_refused,
+            admission_cap: funnel.admission_cap,
+            disconnects: funnel.disconnects,
+            controller_ticks: self.controller_ticks,
+            pending_in_flight,
+            reconnect_ok_total: funnel.reconnect_ok_total,
+            server_transport_accept_ok: funnel.server_transport_accept_ok,
+            server_welcome_ok: funnel.server_welcome_ok,
+            server_session_accepted: funnel.server_session_accepted,
+            funnel_invariant_ok: invariant.ok,
+            funnel_invariant_note: invariant.note.clone(),
+            controller_tick_p50_ms: crate::metrics::percentile(&self.controller_tick_ms, 50.0),
+            controller_tick_p99_ms: crate::metrics::percentile(&self.controller_tick_ms, 99.0),
+            tick_all_bots_p50_ms: crate::metrics::percentile(&self.tick_all_bots_ms, 50.0),
+            tick_all_bots_p99_ms: crate::metrics::percentile(&self.tick_all_bots_ms, 99.0),
+            spawn_catchup_issued_total: self.spawn_catchup_issued_total,
+            spawn_due_peak: self.spawn_due_peak,
+            attempt_to_quic_ready_us: int_distribution_from_micros(&self.attempt_to_quic_us),
+            quic_ready_to_welcome_us: int_distribution_from_micros(&self.quic_to_welcome_us),
+            attempt_to_welcome_us: int_distribution_from_micros(&self.attempt_to_welcome_us),
+            accept_to_hello_us: life
+                .as_ref()
+                .map(|l| l.accept_to_hello_us)
+                .unwrap_or_default(),
+            hello_to_welcome_us: life
+                .as_ref()
+                .map(|l| l.hello_to_welcome_us)
+                .unwrap_or_default(),
+            server_cpu_utilization_pct: live.as_ref().map(|l| l.cpu_utilization_pct).unwrap_or(0.0),
+            server_cpu_normalized_per_logical_pct: live
+                .as_ref()
+                .map(|l| l.cpu_normalized_per_logical_pct)
+                .unwrap_or(0.0),
+            harness_cpu_utilization_pct: harness_res.cpu_utilization_pct,
+            harness_cpu_normalized_per_logical_pct: harness_res.cpu_utilization_pct
+                / f64::from(cpus),
+            server_tick_p99_ms: live
+                .as_ref()
+                .map(|l| l.tick_p99_ms)
+                .or_else(|| server.map(|s| s.tick_work_p99_ms))
+                .unwrap_or(0.0),
+            server_tick_utilization_pct: live
+                .as_ref()
+                .map(|l| l.tick_utilization_pct)
+                .unwrap_or(0.0),
+            writer_queue_depth_max: net
+                .as_ref()
+                .map(|n| n.writer_queue_depth_max)
+                .or_else(|| live.as_ref().map(|l| l.writer_queue_depth_max))
+                .unwrap_or(0),
+            writer_queue_push_fail_total: net
+                .as_ref()
+                .map(|n| n.writer_queue_push_fail_total)
+                .or_else(|| live.as_ref().map(|l| l.writer_queue_push_fail_total))
+                .unwrap_or(0),
+            write_drain_p99_ms: net
+                .as_ref()
+                .map(|n| n.write_drain.p99 / 1000.0)
+                .or_else(|| live.as_ref().map(|l| l.write_drain_p99_ms))
+                .unwrap_or(0.0),
+            saturation_class: live
+                .as_ref()
+                .map(|l| l.saturation_class)
+                .unwrap_or_default(),
+            ownership_statement: compose_ramp_ownership(&funnel),
+        };
+        let json = serde_json::to_vec_pretty(&snap)
+            .map_err(|e| format!("serialize connection_ramp: {e}"))?;
+        std::fs::write(log.dir().join("connection_ramp.json"), &json)
+            .map_err(|e| format!("write connection_ramp: {e}"))?;
+        let nd = serde_json::to_string(&snap).unwrap_or_default();
+        if !nd.is_empty() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log.dir().join("connection_ramp.ndjson"))
+            {
+                let _ = writeln!(f, "{nd}");
+            }
+        }
+        if let Some(shared) = shared {
+            let dest = shared.join("connection_ramp.json");
+            if dest != log.dir().join("connection_ramp.json") {
+                let _ = std::fs::write(&dest, &json);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(shared.join("connection_ramp.ndjson"))
+                {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{nd}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh_harness_cpu(&mut self) {
+        let Some(res) = current_process_resources() else {
+            return;
+        };
+        let now = Instant::now();
+        let wall = now
+            .saturating_duration_since(self.last_cpu_wall)
+            .as_secs_f64();
+        let delta = (res.cpu.cpu_time_secs - self.last_cpu_time_secs).max(0.0);
+        if wall > 0.0 {
+            self.cpu_util_pct = (delta / wall) * 100.0;
+            self.cpu_util_peak_pct = self.cpu_util_peak_pct.max(self.cpu_util_pct);
+        }
+        self.last_cpu_time_secs = res.cpu.cpu_time_secs;
+        self.last_cpu_wall = now;
+    }
+
     async fn spawn_bot(&mut self, log: &mut RunLog) -> Result<(), String> {
         let bot_id = self.next_bot_id;
         self.next_bot_id += 1;
+        self.note_spawn_issued();
 
         let mut session = BotSession::new(bot_id, self.spec.profile, self.spec.seed);
         session.role = role_for(self.spec.kind, self.spec.bot_count, bot_id);
@@ -808,10 +1218,12 @@ impl Controller {
             .await
         {
             Ok(()) => {
+                self.note_connect_attempt(&session, true);
                 let _ = session.poll_accept_snapshot().await;
                 self.sessions.insert(bot_id, session);
             }
             Err(e) => {
+                self.note_connect_attempt(&session, false);
                 session.state = SessionState::Failed;
                 self.sessions.insert(bot_id, session);
                 log.emit_event(
@@ -820,12 +1232,67 @@ impl Controller {
                 )?;
             }
         }
+        self.spawns_finished = self.spawns_finished.saturating_add(1);
         Ok(())
     }
 
     async fn tick_all_bots(&mut self, log: &mut RunLog) -> Result<(), String> {
+        let connected: Vec<u32> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.state == SessionState::Connected)
+            .map(|(id, _)| *id)
+            .collect();
+        if connected.is_empty() {
+            return Ok(());
+        }
+
+        // During ramp, rotate a small subset so 1 ms stream polls × N cannot
+        // starve catch-up issuance. After ramp: full poll by default, or thin
+        // rotate when `--post-ramp-thin` / PURGATORY_LOAD_POST_RAMP_THIN=1
+        // (7.4 harness hygiene for high-N network measurements).
+        let post_ramp_thin = self.cli.post_ramp_thin
+            || std::env::var("PURGATORY_LOAD_POST_RAMP_THIN")
+                .ok()
+                .is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes"));
+        let slow_drain = {
+            let from_env = std::env::var("PURGATORY_LOAD_SLOW_DRAIN_COUNT")
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .unwrap_or(0);
+            self.cli.slow_drain_count.max(from_env)
+        };
+        let (poll_ids, default_drain_cap): (Vec<u32>, u32) = if !self.ramp_complete {
+            const RAMP_BOT_POLL_CAP: usize = 8;
+            let n = connected.len();
+            let take = n.min(RAMP_BOT_POLL_CAP);
+            let start = self.ramp_poll_cursor % n.max(1);
+            let mut ids = Vec::with_capacity(take);
+            for i in 0..take {
+                ids.push(connected[(start + i) % n]);
+            }
+            self.ramp_poll_cursor = start.saturating_add(take);
+            (ids, 1)
+        } else if post_ramp_thin {
+            const THIN_BOT_POLL_CAP: usize = 16;
+            let n = connected.len();
+            let take = n.min(THIN_BOT_POLL_CAP);
+            let start = self.ramp_poll_cursor % n.max(1);
+            let mut ids = Vec::with_capacity(take);
+            for i in 0..take {
+                ids.push(connected[(start + i) % n]);
+            }
+            self.ramp_poll_cursor = start.saturating_add(take);
+            (ids, 4)
+        } else {
+            (connected.clone(), 8)
+        };
+
         let mut failed_ids = Vec::new();
-        for (id, session) in self.sessions.iter_mut() {
+        for id in poll_ids {
+            let Some(session) = self.sessions.get_mut(&id) else {
+                continue;
+            };
             if session.state != SessionState::Connected {
                 continue;
             }
@@ -837,28 +1304,34 @@ impl Controller {
                     self.persistent_unexpected_disconnects =
                         self.persistent_unexpected_disconnects.saturating_add(1);
                 }
-                failed_ids.push((*id, e));
+                failed_ids.push((id, e));
                 continue;
             }
+            // Slow receivers: refuse uni drain so Quinn back-pressures server writes.
+            // Lowest bot_ids are preferred so the set is stable across ticks.
+            let is_slow = slow_drain > 0 && session.bot_id < slow_drain;
+            let snapshot_drain_cap = if is_slow { 0 } else { default_drain_cap };
             let mut drained = 0u32;
-            loop {
-                match session.poll_snapshot().await {
-                    Ok(Some(_)) => {
-                        drained += 1;
-                        if drained >= 8 {
+            if snapshot_drain_cap > 0 {
+                loop {
+                    match session.poll_snapshot().await {
+                        Ok(Some(_)) => {
+                            drained += 1;
+                            if drained >= snapshot_drain_cap {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            session.state = SessionState::Failed;
+                            if session.role != BotRole::Churn {
+                                self.metrics.unexpected_disconnects += 1;
+                                self.persistent_unexpected_disconnects =
+                                    self.persistent_unexpected_disconnects.saturating_add(1);
+                            }
+                            failed_ids.push((id, e));
                             break;
                         }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        session.state = SessionState::Failed;
-                        if session.role != BotRole::Churn {
-                            self.metrics.unexpected_disconnects += 1;
-                            self.persistent_unexpected_disconnects =
-                                self.persistent_unexpected_disconnects.saturating_add(1);
-                        }
-                        failed_ids.push((*id, e));
-                        break;
                     }
                 }
             }
@@ -880,7 +1353,7 @@ impl Controller {
                             self.persistent_unexpected_disconnects =
                                 self.persistent_unexpected_disconnects.saturating_add(1);
                         }
-                        failed_ids.push((*id, "server disconnect".into()));
+                        failed_ids.push((id, "server disconnect".into()));
                         continue;
                     }
                 }
@@ -891,7 +1364,7 @@ impl Controller {
                         self.persistent_unexpected_disconnects =
                             self.persistent_unexpected_disconnects.saturating_add(1);
                     }
-                    failed_ids.push((*id, e));
+                    failed_ids.push((id, e));
                     continue;
                 }
             }
@@ -923,7 +1396,7 @@ impl Controller {
                     self.persistent_unexpected_disconnects =
                         self.persistent_unexpected_disconnects.saturating_add(1);
                 }
-                failed_ids.push((*id, e));
+                failed_ids.push((id, e));
             }
         }
         self.portal_transitions = self.sessions.values().map(|s| s.replica.transitions).sum();
@@ -1047,6 +1520,7 @@ impl Controller {
                 s.role == BotRole::PersistentPortal && s.state == SessionState::Failed
             });
             if requires_portal_gate(self.spec.kind)
+                && !self.spec.relax_portal_gate
                 && portal_dead
                 && self.portal_transitions == 0
                 && start_time.elapsed() >= Duration::from_secs(12)
@@ -1155,7 +1629,7 @@ impl Controller {
         };
         Some(SoakClassify {
             require_persistent_baseline: requires_persistent_baseline(kind),
-            require_portal_transition: requires_portal_gate(kind),
+            require_portal_transition: requires_portal_gate(kind) && !self.spec.relax_portal_gate,
             require_churn: requires_mixed_churn(kind) && self.role_plan.churn > 0,
             persistent_target: evidence.persistent_target,
             min_persistent_connected: evidence.min_persistent_connected,
@@ -1194,6 +1668,7 @@ impl Controller {
                     .await
                 {
                     Ok(()) => {
+                        self.churn_connects = self.churn_connects.saturating_add(1);
                         if session.entity_changed_on_reconnect() == Some(false) {
                             self.metrics.reconnect_entity_unchanged =
                                 self.metrics.reconnect_entity_unchanged.saturating_add(1);
@@ -1331,4 +1806,86 @@ fn print_status_line(status: RunStatus, reasons: &[crate::classify::StatusReason
 fn format_mmss(secs: f64) -> String {
     let total = secs.max(0.0) as u64;
     format!("{:02}:{:02}", total / 60, total % 60)
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn push_us(buf: &mut Vec<u64>, v: u64, cap: usize) {
+    if buf.len() >= cap {
+        buf.remove(0);
+    }
+    buf.push(v);
+}
+
+/// How many ramp connects are due now, without mutating the schedule.
+/// `next_due = None` means the first issue is due immediately.
+#[must_use]
+fn count_due_spawns(
+    remaining: u32,
+    next_due: Option<Instant>,
+    now: Instant,
+    ramp: Duration,
+) -> u32 {
+    if remaining == 0 {
+        return 0;
+    }
+    let Some(mut due_at) = next_due else {
+        return 1;
+    };
+    // First call with Some: count how many ramp slots have elapsed.
+    // If next_due is in the future, nothing is due.
+    if now < due_at {
+        return 0;
+    }
+    let mut due = 0u32;
+    while due < remaining && now >= due_at {
+        due = due.saturating_add(1);
+        due_at += ramp;
+    }
+    due
+}
+
+#[cfg(test)]
+mod issuance_tests {
+    use super::*;
+
+    #[test]
+    fn first_spawn_is_immediately_due() {
+        let now = Instant::now();
+        assert_eq!(
+            count_due_spawns(10, None, now, Duration::from_millis(10)),
+            1
+        );
+    }
+
+    #[test]
+    fn catchup_counts_all_elapsed_slots() {
+        let start = Instant::now();
+        let ramp = Duration::from_millis(10);
+        // Schedule started 55ms ago → slots at 0,10,20,30,40,50 → 6 due.
+        let next = Some(start);
+        let now = start + Duration::from_millis(55);
+        assert_eq!(count_due_spawns(384, next, now, ramp), 6);
+    }
+
+    #[test]
+    fn catchup_respects_remaining_cap() {
+        let start = Instant::now();
+        let ramp = Duration::from_millis(10);
+        let now = start + Duration::from_millis(1000);
+        assert_eq!(count_due_spawns(3, Some(start), now, ramp), 3);
+    }
+
+    #[test]
+    fn future_schedule_issues_nothing() {
+        let now = Instant::now();
+        let next = Some(now + Duration::from_millis(50));
+        assert_eq!(
+            count_due_spawns(10, next, now, Duration::from_millis(10)),
+            0
+        );
+    }
 }

@@ -38,10 +38,16 @@ impl fmt::Display for EffectId {
     }
 }
 
-/// Synthetic 6F effect. No gameplay modifiers.
+/// Synthetic 6F effect plus Phase 7.2 Pulse. No buff/stat framework.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EffectKind {
-    Test { token: u32 },
+    Test {
+        token: u32,
+    },
+    /// Periodic flat damage (`PULSE_DAMAGE`) until expiry.
+    Pulse {
+        period_ticks: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "skill.basic.strike",
+  "timing": {
+    "windup_ticks": 3,
+    "active_ticks": 2,
+    "recovery_ticks": 4,
+    "cooldown_ticks": 12
+  },
+  "activation": "independent",
+  "delivery": {
+    "kind": "forward_query",
+    "range": 1.5,
+    "half_height": 0.8,
+    "max_targets": 8
+  },
+  "effects": [
+    { "type": "damage", "amount": 5.0 }
+  ]
+}

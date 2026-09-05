@@ -9,29 +9,52 @@ use purgatory_content::{
 use purgatory_protocol::{ReplicatedKind, ReplicationFrame, ServerInteract, move_axis_from_i8};
 use purgatory_simulation::{
     Aabb, ChannelId, INTERACT_RANGE, InstanceId, MapId, PLAYER_HALF_EXTENTS, PlatformKind,
-    PlayerInput, PlayerState, SimulationClock, TICK_DURATION, World, WorldAddress,
-    aoi_policy_rects, in_portal_activation_zone, point_in_aabb,
+    PlayerInput, PlayerState, SimulationClock, World, WorldAddress, in_portal_activation_zone,
 };
+#[cfg(feature = "dev-diagnostics")]
+use purgatory_simulation::{FootnoteConfig, TICK_DURATION, aoi_policy_rects};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+#[cfg(feature = "dev-diagnostics")]
+use winit::event::ElementState;
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::camera_follow::{CameraCommit, CameraFollow, DEAD_ZONE_HALF_X, DEAD_ZONE_HALF_Y};
+use crate::camera_follow::{CameraCommit, CameraFollow};
+use crate::character_presentation::{
+    CharacterPresentationSet, LocalMotion, PresentationEntityKey, PresentationOneShotTable,
+    PresentationView, RemoteMotion, apply_climb_back_overlay, equipment_view_from_replica,
+    from_local_with_presentation, from_remote_with_presentation,
+    presentation_debug_quads_with_headwear,
+};
+#[cfg(feature = "dev-diagnostics")]
 use crate::debug::aoi_view::{
-    bind_local_player_label_pose, compact_world_space_label, replica_entity_debug_rows,
-    semantic_label, world_space_label_entries, world_space_labels_eligible,
+    band_label, bind_local_player_label_pose, classify_band, compact_world_space_label,
+    replica_entity_debug_rows, semantic_label, world_space_label_entries,
+    world_space_labels_eligible,
 };
+#[cfg(feature = "dev-diagnostics")]
 use crate::debug::entity_inspector::{self, WorldEntityInput};
+#[cfg(feature = "dev-diagnostics")]
 use crate::debug::interact_status::{InteractStatusView, note_kind_change, trail_display};
+#[cfg(feature = "dev-diagnostics")]
 use crate::debug::{
-    CameraMotionDebug, CollisionHistoryEvent, ConnectionPaint, DebugOverlay, DebugSnapshot,
-    DiscSubject, OverlayInit, SnapshotExtras, aoi_entity_debug_quads, camera_deadzone_quads,
-    footnote_debug_quads, gameplay_receives_keyboard, gameplay_receives_pointer, is_debug_toggle,
+    CameraDiagnostics, CameraMotionDebug, CollisionHistoryEvent, ConnectionPaint, DebugCommand,
+    DebugOverlay, DiagnosticsDemand, DiagnosticsFrame, DiscSubject, NetworkDiagnostics,
+    OverlayInit, PresentationDiagnostics, RESET_TO_SPAWN_FLASH, RemoteMotionProbe,
+    RuntimeDiagnostics, WorldDiagnostics, WorldRosterDiagnostics, aoi_entity_debug_quads,
+    append_debug_gizmos, camera_deadzone_quads, footnote_debug_quads, gameplay_receives_keyboard,
+    gameplay_receives_pointer, has_persistent_dev_warnings, is_debug_toggle, reset_action_flash,
+    reset_player_uses_replica,
 };
+#[cfg(feature = "dev-diagnostics")]
+use crate::display::collect_display_debug;
+use crate::display::{DisplayController, SurfaceResizeAction, WindowFlush};
+#[cfg(feature = "dev-diagnostics")]
 use crate::frontend::ConnectionFrontend;
 use crate::input::{ActionState, IntentNet};
-use crate::interp::{InterpolationBuffer, PresentationPose};
+use crate::interp::{InterpolationBuffer, PresentationPose, interpolated_or_replica_pose};
+#[cfg(feature = "dev-diagnostics")]
 use crate::jitter_forensics::{CameraJitterMode, ForensicPush, ForensicTrace};
 use crate::lifecycle::{ClientLifecycle, ClientScreen};
 use crate::local_presentation::{
@@ -42,16 +65,23 @@ use crate::map_fade::{
     DestinationReady, MapFade, MembershipReady, ReadinessFlags, TransitionKind, pose_stable,
     world_interaction_cleared_for_membership,
 };
-use crate::network::{
-    ClientEndpointConfig, NetworkCommand, NetworkHandle, NetworkImpairmentConfig,
-};
+#[cfg(feature = "dev-diagnostics")]
+use crate::network::NetworkImpairmentConfig;
+use crate::network::{ClientEndpointConfig, NetworkCommand, NetworkHandle};
 use crate::platform::{diagnostic_title, window_attributes};
 use crate::prediction::{LocalPrediction, local_presentation_pose};
+#[cfg(feature = "dev-diagnostics")]
+use crate::renderer::rf_diag::{RfVertexProof, rf_probe_proof, rf_scene_quads};
 use crate::renderer::{
-    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, PARALLAX_FAR, PARALLAX_MID,
-    PARALLAX_NEAR, Renderer, is_usable_surface, parallax_debug_quads, parallax_quads,
+    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, Renderer, parallax_quads,
 };
-use crate::replica::{FrameDecision, ReplicaLifecycleEvent, ReplicatedWorld};
+#[cfg(feature = "dev-diagnostics")]
+use crate::renderer::{
+    PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, PixelViewport, parallax_debug_quads,
+};
+#[cfg(feature = "dev-diagnostics")]
+use crate::replica::ReplicaLifecycleEvent;
+use crate::replica::{FrameDecision, ReplicatedWorld};
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -60,9 +90,17 @@ const REMOTE_PLAYER_COLOR: [f32; 4] = [0.72, 0.32, 0.38, 1.0];
 const INTERACTABLE_BODY_COLOR: [f32; 4] = [0.92, 0.18, 0.72, 1.0];
 const INTERACTABLE_CAP_COLOR: [f32; 4] = [1.0, 0.86, 0.12, 1.0];
 const PORTAL_COLOR: [f32; 4] = [0.32, 0.92, 0.78, 1.0];
+/// Distinct purple for Phase 7.2 NPCs (not Interactable / Portal).
+const NPC_COLOR: [f32; 4] = [0.55, 0.35, 0.85, 1.0];
+/// D5 may pass a live IPC subscriber here. D1 has no IPC consumer.
+#[cfg(feature = "dev-diagnostics")]
+const DIAGNOSTICS_IPC_SUBSCRIBED: bool = false;
 const INTERACTABLE_HALF: [f32; 2] = [0.4, 0.7];
+#[cfg(feature = "dev-diagnostics")]
 const INTERP_AUTH_GIZMO_COLOR: [f32; 4] = [1.0, 0.85, 0.2, 0.55];
+#[cfg(feature = "dev-diagnostics")]
 const PREDICT_AUTH_GIZMO_COLOR: [f32; 4] = [0.95, 0.45, 0.15, 0.55];
+#[cfg(feature = "dev-diagnostics")]
 const PREDICT_POSE_GIZMO_COLOR: [f32; 4] = [0.25, 0.85, 0.55, 0.55];
 const SOLID_FLOOR_COLOR: [f32; 4] = [0.22, 0.28, 0.24, 1.0];
 const SOLID_PLATFORM_COLOR: [f32; 4] = [0.45, 0.32, 0.18, 1.0];
@@ -96,7 +134,9 @@ pub fn run() -> Result<(), String> {
 struct ClientApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    #[cfg(feature = "dev-diagnostics")]
     debug: Option<DebugOverlay>,
+    #[cfg(feature = "dev-diagnostics")]
     frontend: Option<ConnectionFrontend>,
     lifecycle: ClientLifecycle,
     clock: SimulationClock,
@@ -108,12 +148,14 @@ struct ClientApp {
     last_title_tick: u64,
     fps: f32,
     fatal: Option<String>,
+    #[cfg(feature = "dev-diagnostics")]
     last_camera_motion: CameraMotionDebug,
     network: Option<NetworkHandle>,
     replica: ReplicatedWorld,
     interp: InterpolationBuffer,
     prediction: LocalPrediction,
     snapshot_malformed: u64,
+    #[cfg(feature = "dev-diagnostics")]
     impairment_seed: u64,
     ui_runtime: UIRuntimeState,
     trace_replica_apply: bool,
@@ -122,8 +164,11 @@ struct ClientApp {
     last_replica_interactables: usize,
     last_interact_request: String,
     last_interact_result: String,
+    #[cfg(feature = "dev-diagnostics")]
     last_interact_kind: Option<crate::ui_runtime::InteractKind>,
+    #[cfg(feature = "dev-diagnostics")]
     interact_last_transition: Option<String>,
+    #[cfg(feature = "dev-diagnostics")]
     interact_trail: Vec<&'static str>,
     registry: ContentRegistry,
     last_observer: Option<(u32, u32, u32)>,
@@ -131,16 +176,39 @@ struct ClientApp {
     frozen_presentation: Option<FrozenPresentation>,
     camera_follow: CameraFollow,
     pending_camera_commit: Option<CameraCommit>,
+    pending_center_on_player: bool,
     local_presentation: LocalPresentation,
     frame_local: FrameLocalPose,
+    #[cfg(feature = "dev-diagnostics")]
     jitter_trace: ForensicTrace,
     reconciled_this_frame: bool,
     last_ticks_executed: u32,
     network_frames_this_frame: u32,
+    #[cfg(feature = "dev-diagnostics")]
     last_jitter_mode: CameraJitterMode,
+    skeleton: crate::skeleton_debug::HumanoidDebug,
+    characters: CharacterPresentationSet,
+    presentation_oneshots: PresentationOneShotTable,
+    /// A2 proof playback clock (not Clone; lives on App, not DebugUiState).
+    #[cfg(feature = "dev-diagnostics")]
+    animation_player: purgatory_animation::AnimationPlayer,
+    /// One resolved animation sample `t` for the current frame.
+    #[cfg(feature = "dev-diagnostics")]
+    selected_animation_sample_t: f32,
+    #[cfg(feature = "dev-diagnostics")]
+    equipment_seq: u32,
+    ability_seq: u32,
+    display: DisplayController,
     dev_login: String,
-    /// Last committed camera center + viewport size for AOI vs view logs.
-    agent_cam: Option<([f32; 2], f32, f32)>,
+    /// Shipping: auto-connect once when the window is ready on Connection.
+    #[cfg(not(feature = "dev-diagnostics"))]
+    shipping_connect_requested: bool,
+    #[cfg(feature = "dev-diagnostics")]
+    rf_elapsed: f32,
+    #[cfg(feature = "dev-diagnostics")]
+    rf_ab_elapsed: f32,
+    #[cfg(feature = "dev-diagnostics")]
+    rf_proof: Option<RfVertexProof>,
 }
 
 impl ClientApp {
@@ -148,6 +216,7 @@ impl ClientApp {
         Self {
             window: None,
             renderer: None,
+            #[cfg(feature = "dev-diagnostics")]
             debug: None,
             clock: SimulationClock::new(),
             world: World::new(),
@@ -158,8 +227,10 @@ impl ClientApp {
             last_title_tick: 0,
             fps: 0.0,
             fatal: None,
+            #[cfg(feature = "dev-diagnostics")]
             last_camera_motion: CameraMotionDebug::default(),
             lifecycle: ClientLifecycle::new(ClientEndpointConfig::dev().server),
+            #[cfg(feature = "dev-diagnostics")]
             frontend: None,
             network: match NetworkHandle::start(ClientEndpointConfig::dev()) {
                 Ok(handle) => Some(handle),
@@ -172,6 +243,7 @@ impl ClientApp {
             interp: InterpolationBuffer::new(),
             prediction: LocalPrediction::new(),
             snapshot_malformed: 0,
+            #[cfg(feature = "dev-diagnostics")]
             impairment_seed: NetworkImpairmentConfig::from_env().seed,
             ui_runtime: UIRuntimeState::Idle,
             trace_replica_apply: false,
@@ -180,8 +252,11 @@ impl ClientApp {
             last_replica_interactables: 0,
             last_interact_request: String::new(),
             last_interact_result: String::new(),
+            #[cfg(feature = "dev-diagnostics")]
             last_interact_kind: None,
+            #[cfg(feature = "dev-diagnostics")]
             interact_last_transition: None,
+            #[cfg(feature = "dev-diagnostics")]
             interact_trail: Vec::new(),
             registry,
             last_observer: None,
@@ -189,22 +264,51 @@ impl ClientApp {
             frozen_presentation: None,
             camera_follow: CameraFollow::default(),
             pending_camera_commit: None,
+            pending_center_on_player: false,
             local_presentation: LocalPresentation::default(),
             frame_local: FrameLocalPose::default(),
+            #[cfg(feature = "dev-diagnostics")]
             jitter_trace: ForensicTrace::default(),
             reconciled_this_frame: false,
             last_ticks_executed: 0,
             network_frames_this_frame: 0,
+            #[cfg(feature = "dev-diagnostics")]
             last_jitter_mode: CameraJitterMode::Normal,
+            skeleton: crate::skeleton_debug::HumanoidDebug::new(),
+            characters: CharacterPresentationSet::new(),
+            presentation_oneshots: PresentationOneShotTable::new(),
+            #[cfg(feature = "dev-diagnostics")]
+            animation_player: purgatory_animation::AnimationPlayer::new(),
+            #[cfg(feature = "dev-diagnostics")]
+            selected_animation_sample_t: 0.0,
+            #[cfg(feature = "dev-diagnostics")]
+            equipment_seq: 0,
+            ability_seq: 0,
+            display: DisplayController::new(),
             dev_login: purgatory_common::DEFAULT_DEV_LOGIN.to_string(),
-            agent_cam: None,
+            #[cfg(not(feature = "dev-diagnostics"))]
+            shipping_connect_requested: false,
+            #[cfg(feature = "dev-diagnostics")]
+            rf_elapsed: 0.0,
+            #[cfg(feature = "dev-diagnostics")]
+            rf_ab_elapsed: 0.0,
+            #[cfg(feature = "dev-diagnostics")]
+            rf_proof: None,
         }
     }
 
+    #[cfg(feature = "dev-diagnostics")]
     fn debug_overlay_visible(&self) -> bool {
         self.debug.as_ref().is_some_and(DebugOverlay::is_visible)
     }
 
+    #[cfg(feature = "dev-diagnostics")]
+    #[must_use]
+    fn diagnostics_demand(&self) -> DiagnosticsDemand {
+        DiagnosticsDemand::compose(self.debug_overlay_visible(), DIAGNOSTICS_IPC_SUBSCRIBED)
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
     fn time_scale(&self) -> f32 {
         self.debug
             .as_ref()
@@ -213,6 +317,21 @@ impl ClientApp {
             .clamp(0.01, 1.0)
     }
 
+    #[cfg(feature = "dev-diagnostics")]
+    fn apply_debug_move_speed(&mut self) {
+        let speed = self
+            .debug
+            .as_ref()
+            .map(|d| d.ui.debug_move_speed)
+            .unwrap_or(FootnoteConfig::DEFAULT.max_ground_speed);
+        let speed = crate::debug::sanitize_debug_move_speed(speed);
+        let cfg = FootnoteConfig::with_move_speed(speed);
+        if self.world.footnote_config() != cfg {
+            self.world.set_footnote_config(cfg);
+        }
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
     fn toggle_debug_overlay(&mut self) {
         if let Some(overlay) = &mut self.debug {
             overlay.toggle();
@@ -220,15 +339,12 @@ impl ClientApp {
     }
 
     fn poll_network(&mut self) {
+        #[cfg(feature = "dev-diagnostics")]
         if let Some(debug) = &mut self.debug {
             self.lifecycle.set_log_flags(
                 debug.ui.log_network_lifecycle,
                 debug.ui.verbose_network_trace,
             );
-            if debug.ui.clear_network_history {
-                self.lifecycle.clear_history();
-                debug.ui.clear_network_history = false;
-            }
             if let Some(network) = &self.network {
                 network.set_log_flags(
                     debug.ui.log_network_lifecycle,
@@ -238,13 +354,6 @@ impl ClientApp {
                     debug.ui.impairment_profile,
                     self.impairment_seed,
                 ));
-                if let Some(ms) = debug.ui.impairment_stall_ms.take() {
-                    let _ = network.try_trigger_input_stall(Duration::from_millis(u64::from(ms)));
-                }
-                if debug.ui.reset_impairment_metrics {
-                    let _ = network.try_reset_impairment_metrics();
-                    debug.ui.reset_impairment_metrics = false;
-                }
             }
         }
         let before = self.lifecycle.screen();
@@ -294,7 +403,6 @@ impl ClientApp {
                                 self.network_frames_this_frame.saturating_add(1);
                             self.trace_replica_apply_once();
                             self.note_replica_interactable_lifetime();
-                            self.agent_log_aoi_leaves();
                         }
                     }
                 }
@@ -317,6 +425,10 @@ impl ClientApp {
                 self.last_interact_result = interact_result_label(*event);
                 println!("6B_INTERACT ui_state {before} -> {}", self.ui_runtime);
             }
+            if let crate::network::state::NetworkEvent::PresentationOneShot { event, .. } = &event {
+                println!("A5_ONESHOT client_recv {event:?}");
+                self.presentation_oneshots.apply_server_event(*event);
+            }
             self.lifecycle.apply(event);
         }
         if self.lifecycle.screen() != before {
@@ -329,9 +441,12 @@ impl ClientApp {
         self.last_input = PlayerInput::idle();
         self.intent.reset();
         self.ui_runtime = UIRuntimeState::Idle;
-        self.last_interact_kind = None;
-        self.interact_last_transition = None;
-        self.interact_trail.clear();
+        #[cfg(feature = "dev-diagnostics")]
+        {
+            self.last_interact_kind = None;
+            self.interact_last_transition = None;
+            self.interact_trail.clear();
+        }
         self.last_interact_request.clear();
         self.last_interact_result.clear();
         if self.lifecycle.screen() != ClientScreen::Game {
@@ -343,6 +458,13 @@ impl ClientApp {
             self.interp.clear();
             self.prediction.clear();
             self.local_presentation.clear();
+            self.characters.clear();
+            self.presentation_oneshots.clear();
+            #[cfg(feature = "dev-diagnostics")]
+            {
+                self.equipment_seq = 0;
+            }
+            self.ability_seq = 0;
             self.frame_local = FrameLocalPose::default();
             self.last_observer = None;
             self.frozen_presentation = None;
@@ -396,6 +518,163 @@ impl ClientApp {
         )
     }
 
+    fn refresh_character_presentation(&mut self, frame_dt: f32) {
+        let local_id = self.replica.local_player();
+        let server_tick = self.replica.last_server_tick();
+        self.presentation_oneshots.expire(server_tick);
+        let players: Vec<_> = self
+            .replica
+            .iter()
+            .filter(|entity| entity.kind == ReplicatedKind::Player)
+            .collect();
+        let interp_poses: Vec<_> = self.interp.poses().to_vec();
+        let mut items = Vec::new();
+        for entity in players {
+            let key =
+                PresentationEntityKey::new(entity.entity_id.index, entity.entity_id.generation);
+            let held = self.characters.facing_of(key);
+            let equipment = equipment_view_from_replica(entity.equipment);
+            let oneshot = self.presentation_oneshots.activity_of(key, server_tick);
+            let dead = entity.health.is_some_and(|h| h.current <= 0.0);
+            let climb_back = {
+                #[cfg(feature = "dev-diagnostics")]
+                {
+                    self.debug
+                        .as_ref()
+                        .map(|d| d.ui.presentation_force_climb_back)
+                        .unwrap_or(false)
+                }
+                #[cfg(not(feature = "dev-diagnostics"))]
+                {
+                    false
+                }
+            };
+            let mut state = if Some(entity.entity_id) == local_id {
+                // Velocity and grounded must come from the same source. Pairing
+                // predicted velocity with lagged replica.local_grounded kept
+                // airborne locals on Idle/Move (A4 manual-proof failure).
+                let (velocity, grounded) = if self.prediction.active() {
+                    self.world
+                        .player_body()
+                        .map(|b| (b.velocity, b.grounded))
+                        .unwrap_or((self.frame_local.velocity, self.replica.local_grounded()))
+                } else {
+                    (entity.velocity, self.replica.local_grounded())
+                };
+                from_local_with_presentation(
+                    LocalMotion {
+                        pose: self.frame_local.presented.unwrap_or(entity.position),
+                        velocity,
+                        grounded,
+                        equipment,
+                    },
+                    held,
+                    oneshot,
+                    dead,
+                )
+            } else {
+                let (pose, _) =
+                    interpolated_or_replica_pose(&interp_poses, entity.entity_id, entity.position);
+                from_remote_with_presentation(
+                    RemoteMotion {
+                        pose,
+                        velocity: entity.velocity,
+                        equipment,
+                    },
+                    held,
+                    oneshot,
+                    dead,
+                )
+            };
+            if climb_back && oneshot.is_none() && !dead {
+                state = apply_climb_back_overlay(state, true);
+            }
+            items.push((key, state));
+        }
+        self.characters.sync(items, &self.registry, frame_dt);
+    }
+
+    /// Apply Proof UI playback requests, advance A2 player at most once, resolve one sample `t`.
+    /// A1/A2 diagnostics only — does not drive CharacterPresentationSet A3 runtime.
+    #[cfg(feature = "dev-diagnostics")]
+    fn resolve_selected_animation_sample_t(&mut self, frame_dt: f32) {
+        if let Some(debug) = self.debug.as_mut() {
+            let speed = debug.ui.skeleton_a2_speed;
+            let _ = self.animation_player.set_speed(speed);
+        }
+
+        let mode = self
+            .debug
+            .as_ref()
+            .map(|d| d.ui.animation_proof_mode)
+            .unwrap_or(crate::debug::AnimationProofMode::ManualA1);
+
+        self.selected_animation_sample_t = match mode {
+            crate::debug::AnimationProofMode::ManualA1 => self
+                .debug
+                .as_ref()
+                .map(|d| d.ui.skeleton_a1_sample_t)
+                .unwrap_or(0.0),
+            crate::debug::AnimationProofMode::PlaybackA2 => {
+                let clip = purgatory_animation::a1_head_loop_clip();
+                let _ = self.animation_player.advance(frame_dt, clip);
+                self.animation_player.sample_time(clip)
+            }
+        };
+
+        if let Some(debug) = self.debug.as_mut() {
+            debug.ui.selected_animation_sample_t = self.selected_animation_sample_t;
+            debug.ui.animation_player_playing = self.animation_player.playing();
+        }
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn next_equipment_seq(&mut self) -> u32 {
+        self.equipment_seq = self.equipment_seq.saturating_add(1);
+        self.equipment_seq
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn send_debug_equip(&mut self, authored: &str) {
+        let Some(def) = self.registry.equipment(authored) else {
+            eprintln!("8E_EQUIP unknown authored id {authored}");
+            return;
+        };
+        if self.network.is_none() {
+            return;
+        }
+        let slot = def.slot as u8;
+        let content_id = def.content_id;
+        let seq = self.next_equipment_seq();
+        let sent = self.network.as_ref().is_some_and(|network| {
+            network.try_send_equip(purgatory_protocol::EquipRequest {
+                seq,
+                slot,
+                content_id,
+            })
+        });
+        if !sent {
+            eprintln!("8E_EQUIP send failed seq={seq} id={authored}");
+        }
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn send_debug_unequip(&mut self, slot: u8) {
+        if purgatory_simulation::EquipmentSlot::from_u8(slot).is_none() {
+            return;
+        }
+        if self.network.is_none() {
+            return;
+        }
+        let seq = self.next_equipment_seq();
+        let sent = self.network.as_ref().is_some_and(|network| {
+            network.try_send_unequip(purgatory_protocol::UnequipRequest { seq, slot })
+        });
+        if !sent {
+            eprintln!("8E_UNEQUIP send failed seq={seq} slot={slot}");
+        }
+    }
+
     /// Predicted/replica source pose. Not the drawn pose.
     fn predicted_local_pose(&self) -> Option<[f32; 2]> {
         self.presented_local_pose()
@@ -418,16 +697,22 @@ impl ClientApp {
 
     fn finalize_local_presentation(&mut self, dt: f32) {
         let predicted = self.predicted_local_pose();
+        #[cfg(feature = "dev-diagnostics")]
         let mode = self
             .debug
             .as_ref()
             .map(|d| d.ui.camera_jitter_mode)
             .unwrap_or(CameraJitterMode::Normal);
+        #[cfg(feature = "dev-diagnostics")]
         if mode != self.last_jitter_mode {
             self.local_presentation.request_snap();
             self.last_jitter_mode = mode;
         }
-        let render_target = if mode.use_raw_presentation() {
+        #[cfg(feature = "dev-diagnostics")]
+        let use_raw = mode.use_raw_presentation();
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let use_raw = false;
+        let render_target = if use_raw {
             predicted
         } else if let Some(pose) = predicted {
             let vel = self.prediction.last_tick_velocity();
@@ -442,7 +727,7 @@ impl ClientApp {
         } else {
             None
         };
-        let presented = if mode.use_raw_presentation() {
+        let presented = if use_raw {
             render_target
         } else {
             let p = self.local_presentation.step(render_target, dt);
@@ -483,7 +768,6 @@ impl ClientApp {
             correction_delta: delta,
             reconciled: self.reconciled_this_frame,
         };
-        self.agent_log_jitter();
     }
 
     fn apply_observer_baseline_if_due(&mut self) -> Result<(), String> {
@@ -848,6 +1132,7 @@ impl ClientApp {
         }
     }
 
+    #[cfg(feature = "dev-diagnostics")]
     fn request_disconnect(&mut self) {
         let before = self.lifecycle.screen();
         let should_send = self.lifecycle.request_disconnect();
@@ -981,13 +1266,54 @@ impl ClientApp {
     }
 
     fn note_interact_runtime(&mut self) {
-        let next = self.ui_runtime.kind();
-        if let Some(transition) =
-            note_kind_change(self.last_interact_kind, next, &mut self.interact_trail)
+        #[cfg(feature = "dev-diagnostics")]
         {
-            self.interact_last_transition = Some(transition);
+            let next = self.ui_runtime.kind();
+            if let Some(transition) =
+                note_kind_change(self.last_interact_kind, next, &mut self.interact_trail)
+            {
+                self.interact_last_transition = Some(transition);
+            }
+            self.last_interact_kind = Some(next);
         }
-        self.last_interact_kind = Some(next);
+    }
+
+    fn next_ability_seq(&mut self) -> u32 {
+        self.ability_seq = self.ability_seq.saturating_add(1);
+        self.ability_seq
+    }
+
+    fn poll_ability_request(&mut self) {
+        if !self.actions.consume_ability_edge() {
+            return;
+        }
+        if !self.lifecycle.gameplay_actions_allowed() {
+            return;
+        }
+        if self.gameplay_input_locked() {
+            return;
+        }
+        if self.network.is_none() {
+            return;
+        }
+        let Some(def) = self.registry.ability("skill.basic.strike") else {
+            eprintln!("9C_ABILITY missing skill.basic.strike in pack");
+            return;
+        };
+        let ability_id = def.id;
+        let seq = self.next_ability_seq();
+        let sent = self
+            .network
+            .as_ref()
+            .expect("checked")
+            .try_send_ability_activate(purgatory_protocol::AbilityActivateRequest {
+                seq,
+                ability_id,
+                selected: None,
+            });
+        if !sent {
+            eprintln!("9C_ABILITY send failed seq={seq}");
+        }
     }
 
     fn poll_portal_request(&mut self) {
@@ -1085,9 +1411,15 @@ impl ClientApp {
         let seconds = elapsed.as_secs_f32();
         self.fps = if seconds > 0.0 { 1.0 / seconds } else { 0.0 };
 
+        #[cfg(feature = "dev-diagnostics")]
+        self.apply_debug_move_speed();
+
         // Development time scale: scale wall elapsed into the clock only.
         // TICK_RATE_HZ / TICK_DURATION are unchanged.
+        #[cfg(feature = "dev-diagnostics")]
         let scale = self.time_scale();
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let scale = 1.0_f32;
         let scaled = if scale >= 0.999 {
             elapsed
         } else {
@@ -1098,21 +1430,23 @@ impl ClientApp {
         self.last_ticks_executed = update.ticks_executed;
         let tick_after = self.clock.tick().get();
         let tick_base = tick_after.saturating_sub(u64::from(update.ticks_executed));
-        let detector = self
-            .debug
-            .as_ref()
-            .map(|d| d.ui.position_discontinuity_detector)
-            .unwrap_or(false);
+        #[cfg(feature = "dev-diagnostics")]
+        let detector = self.debug.as_ref().is_some_and(|d| {
+            d.ui.position_discontinuity_detector && self.diagnostics_demand().is_active()
+        });
+        #[cfg(feature = "dev-diagnostics")]
         let log_disc = self
             .debug
             .as_ref()
             .map(|d| d.ui.log_discontinuities)
             .unwrap_or(false);
+        #[cfg(feature = "dev-diagnostics")]
         let verbose = self
             .debug
             .as_ref()
-            .map(|d| d.ui.verbose_collision_trace)
-            .unwrap_or(false);
+            .is_some_and(|d| d.ui.verbose_collision_trace && self.diagnostics_demand().is_active());
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let verbose = false;
         if update.ticks_executed > 1 {
             self.prediction
                 .on_hitch_discontinuity(&self.replica, &mut self.world, tick_after);
@@ -1154,6 +1488,7 @@ impl ClientApp {
                     motion.position
                 );
             }
+            #[cfg(feature = "dev-diagnostics")]
             if detector && motion.discontinuity {
                 let ev = CollisionHistoryEvent {
                     tick,
@@ -1179,65 +1514,95 @@ impl ClientApp {
                     );
                 }
             }
+            #[cfg(not(feature = "dev-diagnostics"))]
+            let _ = (tick, motion);
         }
     }
 
     fn update_camera(&mut self, dt: f32) {
         let bounds = self.world.bounds();
+        #[cfg(feature = "dev-diagnostics")]
         let mode = self
             .debug
             .as_ref()
             .map(|d| d.ui.camera_jitter_mode)
             .unwrap_or(CameraJitterMode::Normal);
+        #[cfg(feature = "dev-diagnostics")]
         let player_pos = if mode.follow_raw_prediction() {
             self.frame_local.predicted.unwrap_or([0.0, 0.0])
         } else {
             self.frame_local.presented.unwrap_or([0.0, 0.0])
         };
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let player_pos = self.frame_local.presented.unwrap_or([0.0, 0.0]);
+        #[cfg(feature = "dev-diagnostics")]
         let follow = self
             .debug
             .as_ref()
             .map(|d| d.ui.camera_follow)
             .unwrap_or(true);
-        let center_request = self.debug.as_ref().is_some_and(|d| d.ui.center_on_player);
-        if let Some(debug) = &mut self.debug {
-            debug.ui.center_on_player = false;
-        }
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
-        let commit = self.pending_camera_commit.take();
-        let mut camera = renderer.camera();
-        let previous = camera.position;
-        let follow_now = follow || center_request;
-        let snap = center_request || matches!(commit, Some(CameraCommit::SnapToPlayer));
-        if matches!(commit, Some(CameraCommit::PreservePose)) {
-            self.camera_follow.seed_from(camera.position);
-        }
-        let freeze = mode.freeze_camera() && !snap;
-        let raw_follow = if freeze {
-            self.camera_follow.seed_from(camera.position);
-            Some(self.camera_follow.desired)
-        } else if follow_now {
-            if snap {
-                self.camera_follow.snap(&mut camera, player_pos, bounds);
-            } else {
-                self.camera_follow.step(&mut camera, player_pos, bounds, dt);
-            }
-            Some(self.camera_follow.desired)
-        } else {
-            camera.clamp_to_bounds(bounds);
-            self.camera_follow.seed_from(camera.position);
-            None
-        };
-        self.last_camera_motion =
-            CameraMotionDebug::record(previous, camera.position, raw_follow, follow_now);
-        if self
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let follow = true;
+        #[cfg(feature = "dev-diagnostics")]
+        let log_camera_disc = self
+            .debug
+            .as_ref()
+            .is_some_and(|d| d.ui.log_discontinuities);
+        #[cfg(feature = "dev-diagnostics")]
+        let record_camera_disc = self
             .debug
             .as_ref()
             .is_some_and(|d| d.ui.position_discontinuity_detector)
-            && self.last_camera_motion.discontinuity
-        {
+            && self.diagnostics_demand().is_active();
+        let center_request = self.pending_center_on_player;
+        self.pending_center_on_player = false;
+        let camera_position = {
+            let Some(renderer) = self.renderer.as_mut() else {
+                return;
+            };
+            let commit = self.pending_camera_commit.take();
+            let mut camera = renderer.camera();
+            #[cfg(feature = "dev-diagnostics")]
+            let previous = camera.position;
+            let follow_now = follow || center_request;
+            let snap = center_request || matches!(commit, Some(CameraCommit::SnapToPlayer));
+            if matches!(commit, Some(CameraCommit::PreservePose)) {
+                self.camera_follow.seed_from(camera.position);
+            }
+            #[cfg(feature = "dev-diagnostics")]
+            let freeze = (mode.freeze_camera()
+                || self.debug.as_ref().is_some_and(|d| d.ui.rf_freeze_camera))
+                && !snap;
+            #[cfg(not(feature = "dev-diagnostics"))]
+            let freeze = false;
+            let raw_follow = if freeze {
+                self.camera_follow.seed_from(camera.position);
+                Some(self.camera_follow.desired)
+            } else if follow_now {
+                if snap {
+                    self.camera_follow.snap(&mut camera, player_pos, bounds);
+                } else {
+                    self.camera_follow.step(&mut camera, player_pos, bounds, dt);
+                }
+                Some(self.camera_follow.desired)
+            } else {
+                camera.clamp_to_bounds(bounds);
+                self.camera_follow.seed_from(camera.position);
+                None
+            };
+            #[cfg(feature = "dev-diagnostics")]
+            {
+                self.last_camera_motion =
+                    CameraMotionDebug::record(previous, camera.position, raw_follow, follow_now);
+            }
+            #[cfg(not(feature = "dev-diagnostics"))]
+            let _ = raw_follow;
+            let camera_position = camera.position;
+            renderer.set_camera(camera);
+            camera_position
+        };
+        #[cfg(feature = "dev-diagnostics")]
+        if record_camera_disc && self.last_camera_motion.discontinuity {
             let tick = self.clock.tick().get();
             let cm = self.last_camera_motion;
             let ev = CollisionHistoryEvent {
@@ -1247,7 +1612,7 @@ impl ClientApp {
                 delta: cm.delta,
                 correction: [0.0, 0.0],
                 previous_position: cm.previous_position,
-                position: camera.position,
+                position: camera_position,
                 velocity: [0.0, 0.0],
                 candidate: None,
                 grounded_on: None,
@@ -1256,239 +1621,23 @@ impl ClientApp {
             };
             if let Some(debug) = &mut self.debug {
                 debug.collision_history.push(ev);
-                if debug.ui.log_discontinuities {
-                    eprintln!(
-                        "PURGATORY camera discontinuity tick={tick} prev={:?} delta={:?}",
-                        cm.previous_position, cm.delta
-                    );
-                }
+            }
+            if log_camera_disc {
+                eprintln!(
+                    "PURGATORY camera discontinuity tick={tick} prev={:?} delta={:?}",
+                    cm.previous_position, cm.delta
+                );
             }
         }
-        renderer.set_camera(camera);
-        self.agent_log_aoi_view(camera, player_pos, bounds);
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let _ = camera_position;
     }
 
-    fn agent_log_aoi_leaves(&self) {
-        let leaves = self.replica.last_leave_poses();
-        if leaves.is_empty() {
-            return;
-        }
-        let observer = self
-            .replica
-            .local_entity()
-            .map(|e| e.position)
-            .unwrap_or([0.0, 0.0]);
-        let rects = aoi_policy_rects(observer, self.world.bounds());
-        let view = self
-            .agent_cam
-            .map(|(cam, vw, vh)| Aabb::new(cam, [vw * 0.5, vh * 0.5]));
-        for leave in leaves {
-            let in_view = view.is_some_and(|v| point_in_aabb(leave.position, v));
-            let in_enter = point_in_aabb(leave.position, rects.enter);
-            let in_leave = point_in_aabb(leave.position, rects.leave);
-            let hid = if in_view { "A" } else { "D" };
-            let cam_x = self.agent_cam.map(|c| c.0[0]).unwrap_or(0.0);
-            // #region agent log
-            crate::debug::agent_log::emit(
-                hid,
-                "app.rs:agent_log_aoi_leaves",
-                "replica_leave",
-                &format!(
-                    "{{\"idx\":{},\"gen\":{},\"kind\":\"{:?}\",\"px\":{:.4},\"py\":{:.4},\"in_view\":{},\"in_enter\":{},\"in_leave\":{},\"obs_x\":{:.4},\"obs_y\":{:.4},\"cam_x\":{:.4}}}",
-                    leave.entity_id.index,
-                    leave.entity_id.generation,
-                    leave.kind,
-                    leave.position[0],
-                    leave.position[1],
-                    in_view,
-                    in_enter,
-                    in_leave,
-                    observer[0],
-                    observer[1],
-                    cam_x
-                ),
-            );
-            // #endregion
-        }
-    }
-
-    fn agent_log_aoi_view(
-        &mut self,
-        camera: Camera,
-        player: [f32; 2],
-        bounds: purgatory_simulation::WorldBounds,
-    ) {
-        self.agent_cam = Some((
-            camera.position,
-            camera.viewport_width,
-            camera.viewport_height,
-        ));
-        let half_w = camera.viewport_width * 0.5;
-        let half_h = camera.viewport_height * 0.5;
-        let view = Aabb::new(camera.position, [half_w, half_h]);
-        let rects = aoi_policy_rects(player, bounds);
-        let uncovered_l = view.min_x() < rects.enter.min_x() - 0.05;
-        let uncovered_r = view.max_x() > rects.enter.max_x() + 0.05;
-        let uncovered_b = view.min_y() < rects.enter.min_y() - 0.05;
-        let uncovered_t = view.max_y() > rects.enter.max_y() + 0.05;
-        let clamp_eps = 0.08;
-        let clamped_l = (camera.position[0] - (bounds.min_x + half_w)).abs() < clamp_eps;
-        let clamped_r = (camera.position[0] - (bounds.max_x - half_w)).abs() < clamp_eps;
-        let local = self.replica.local_player();
-        let mut in_view = 0u32;
-        let mut in_view_out_enter = 0u32;
-        for entity in self.replica.iter() {
-            if Some(entity.entity_id) == local {
-                continue;
-            }
-            if !point_in_aabb(entity.position, view) {
-                continue;
-            }
-            in_view = in_view.saturating_add(1);
-            if !point_in_aabb(entity.position, rects.enter) {
-                in_view_out_enter = in_view_out_enter.saturating_add(1);
-            }
-        }
-        let mismatch =
-            uncovered_l || uncovered_r || uncovered_b || uncovered_t || in_view_out_enter > 0;
-        if !mismatch && !crate::debug::agent_log::should_emit(0, 400) {
-            return;
-        }
-        let hid = if clamped_l || clamped_r {
-            "B"
-        } else if mismatch {
-            "A"
-        } else {
-            "C"
-        };
-        let aoi_dbg = self.replica.aoi_debug();
-        // #region agent log
-        crate::debug::agent_log::emit(
-            hid,
-            "app.rs:agent_log_aoi_view",
-            "aoi_vs_viewport",
-            &format!(
-                "{{\"px\":{:.4},\"py\":{:.4},\"cx\":{:.4},\"cy\":{:.4},\"vw\":{:.4},\"vh\":{:.4},\"view_l\":{:.4},\"view_r\":{:.4},\"aoi_l\":{:.4},\"aoi_r\":{:.4},\"aoi_hx\":{:.4},\"aoi_hy\":{:.4},\"dz_x\":{:.3},\"dz_y\":{:.3},\"pcx\":{:.4},\"un_l\":{},\"un_r\":{},\"un_b\":{},\"un_t\":{},\"cl_l\":{},\"cl_r\":{},\"in_view\":{},\"in_view_out_aoi\":{},\"want_leave\":{},\"known\":{}}}",
-                player[0],
-                player[1],
-                camera.position[0],
-                camera.position[1],
-                camera.viewport_width,
-                camera.viewport_height,
-                view.min_x(),
-                view.max_x(),
-                rects.enter.min_x(),
-                rects.enter.max_x(),
-                rects.enter.half_extents[0],
-                rects.enter.half_extents[1],
-                DEAD_ZONE_HALF_X,
-                DEAD_ZONE_HALF_Y,
-                player[0] - camera.position[0],
-                uncovered_l,
-                uncovered_r,
-                uncovered_b,
-                uncovered_t,
-                clamped_l,
-                clamped_r,
-                in_view,
-                in_view_out_enter,
-                aoi_dbg.map(|d| d.want_leave).unwrap_or(0),
-                aoi_dbg.map(|d| d.known).unwrap_or(0)
-            ),
-        );
-        // #endregion
-    }
-
-    fn agent_log_jitter(&self) {
-        let pred = self.prediction.diagnostics(&self.world, &self.replica);
-        let offset = self.local_presentation.offset();
-        let off = (offset[0] * offset[0] + offset[1] * offset[1]).sqrt();
-        let idle = self.last_input.move_axis == 0 && !self.last_input.jump_pressed;
-        let (p0, p1) = self.prediction.pending_seq_range().unwrap_or((0, 0));
-        let grounded = self.world.player_body().is_some_and(|b| b.grounded);
-        let interesting = (idle
-            && (off > 0.015
-                || pred.pending_count > 0
-                || pred.last_correction_wu > 0.02
-                || pred.continuation_debt > 0
-                || pred.cancel_pending))
-            || pred.last_correction_wu > 0.08
-            || !grounded;
-        if !interesting && !crate::debug::agent_log::should_emit(1, 300) {
-            return;
-        }
-        let source = if pred.active { "predicted" } else { "replica" };
-        let local_in_interp = self
-            .replica
-            .local_player()
-            .is_some_and(|id| self.interp.poses().iter().any(|p| p.entity_id == id));
-        let presented = self.frame_local.presented.unwrap_or([0.0, 0.0]);
-        let predicted = self.frame_local.predicted.unwrap_or([0.0, 0.0]);
-        let replica = self.frame_local.replica.unwrap_or([0.0, 0.0]);
-        let vel = pred.predicted_velocity.unwrap_or([0.0, 0.0]);
-        let interp = self.interp.diagnostics();
-        let hid = if idle && (off > 0.015 || pred.pending_count > 0) {
-            "F"
-        } else if !pred.active {
-            "G"
-        } else if off > 0.015 {
-            "H"
-        } else if pred.continuation_debt > 0 || pred.cancel_pending {
-            "I"
-        } else if local_in_interp {
-            "J"
-        } else {
-            "G"
-        };
-        // #region agent log
-        crate::debug::agent_log::emit(
-            hid,
-            "app.rs:agent_log_jitter",
-            "local_pipeline",
-            &format!(
-                "{{\"idle\":{},\"axis\":{},\"src\":\"{source}\",\"active\":{},\"auth_x\":{:.4},\"auth_y\":{:.4},\"pred_x\":{:.4},\"pred_y\":{:.4},\"pres_x\":{:.4},\"pres_y\":{:.4},\"off\":{:.4},\"corr\":{:.4},\"pending\":{},\"p0\":{},\"p1\":{},\"ack\":{},\"sent\":{},\"debt\":{},\"cancel\":{},\"recon\":{},\"tick\":{},\"auth_tick\":{},\"rtick\":{},\"ialpha\":{:.3},\"yalpha\":{:.3},\"y_prev\":{:.4},\"y_tick\":{:.4},\"local_interp\":{},\"vx\":{:.4},\"vy\":{:.4},\"tick_vx\":{:.4},\"tick_vy\":{:.4},\"extra_dx\":{:.4},\"stall\":{},\"maps\":{},\"gnd\":{},\"py_ex\":{:.4}}}",
-                idle,
-                self.last_input.move_axis,
-                pred.active,
-                replica[0],
-                replica[1],
-                predicted[0],
-                predicted[1],
-                presented[0],
-                presented[1],
-                off,
-                pred.last_correction_wu,
-                pred.pending_count,
-                p0,
-                p1,
-                pred.last_ack,
-                self.prediction.last_sent_seq(),
-                pred.continuation_debt,
-                pred.cancel_pending,
-                pred.total_reconciliation_count,
-                pred.prediction_tick,
-                pred.auth_server_tick,
-                interp.render_tick,
-                interp.alpha,
-                self.frame_local.interp_alpha,
-                self.frame_local.prev_y,
-                self.frame_local.tick_y,
-                local_in_interp,
-                vel[0],
-                vel[1],
-                pred.last_tick_velocity[0],
-                pred.last_tick_velocity[1],
-                self.frame_local.extra_dx,
-                pred.pending_window_stall_ticks,
-                self.replica_matches_local_map(),
-                grounded,
-                presented[1] - predicted[1]
-            ),
-        );
-        // #endregion
-    }
-
+    #[cfg(feature = "dev-diagnostics")]
     fn record_jitter_sample(&mut self, dt: f32) {
+        if !self.diagnostics_demand().is_active() {
+            return;
+        }
         let renderer = self.renderer.as_ref();
         let camera = renderer.map(Renderer::camera).unwrap_or(Camera {
             position: [0.0, 0.0],
@@ -1520,13 +1669,8 @@ impl ClientApp {
         );
     }
 
-    fn maybe_dump_jitter_trace(&mut self) {
-        if !self.debug.as_ref().is_some_and(|d| d.ui.dump_jitter_trace) {
-            return;
-        }
-        if let Some(debug) = self.debug.as_mut() {
-            debug.ui.dump_jitter_trace = false;
-        }
+    #[cfg(feature = "dev-diagnostics")]
+    fn dump_jitter_trace(&mut self) {
         match self.jitter_trace.dump_csv() {
             Ok(path) => {
                 let summary = self.jitter_trace.summary(self.local_presentation.offset());
@@ -1545,6 +1689,37 @@ impl ClientApp {
                 if let Some(debug) = self.debug.as_mut() {
                     debug.ui.last_jitter_dump = format!("dump failed: {err}");
                 }
+            }
+        }
+    }
+
+    fn apply_framebuffer_size(&mut self, width: u32, height: u32) {
+        match self.display.observe_framebuffer(width, height) {
+            SurfaceResizeAction::SkipInvalid | SurfaceResizeAction::Unchanged => {}
+            SurfaceResizeAction::Reconfigure { width, height } => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.resize(width, height);
+                    let bounds = self.world.bounds();
+                    let mut cam = renderer.camera();
+                    cam.clamp_to_bounds(bounds);
+                    renderer.set_camera(cam);
+                }
+            }
+        }
+    }
+
+    fn flush_display_requests(&mut self) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        match self.display.flush_window(&window) {
+            WindowFlush::Idle => {}
+            WindowFlush::Applied(size) => {
+                self.apply_framebuffer_size(size.width, size.height);
+                window.request_redraw();
+            }
+            WindowFlush::PendingEvent => {
+                window.request_redraw();
             }
         }
     }
@@ -1572,9 +1747,14 @@ impl ClientApp {
         self.network_frames_this_frame = 0;
         self.last_ticks_executed = 0;
         self.poll_network();
-        let fade_dt = Instant::now()
+        // Canonical client frame wall delta (same span historically used as fade_dt).
+        // Prefer this over fade-named values for animation; do not pre-multiply speed.
+        let frame_dt = Instant::now()
             .saturating_duration_since(self.last_instant)
             .as_secs_f32();
+        let fade_dt = frame_dt;
+        #[cfg(feature = "dev-diagnostics")]
+        self.resolve_selected_animation_sample_t(frame_dt);
         if simulation_should_advance(self.lifecycle.screen()) {
             self.advance_simulation();
         } else {
@@ -1597,8 +1777,8 @@ impl ClientApp {
         if simulation_should_advance(self.lifecycle.screen()) {
             self.finalize_local_presentation(fade_dt);
             self.update_camera(fade_dt);
+            #[cfg(feature = "dev-diagnostics")]
             self.record_jitter_sample(fade_dt);
-            self.maybe_dump_jitter_trace();
         }
         self.maybe_notify_transition_ready();
         if fade_before != "FadeIn" && self.map_fade.debug_phase() == "FadeIn" {
@@ -1617,9 +1797,19 @@ impl ClientApp {
         }
         self.poll_interact_request();
         self.poll_portal_request();
+        self.poll_ability_request();
 
+        #[cfg(not(feature = "dev-diagnostics"))]
+        self.maybe_shipping_auto_connect();
+
+        #[cfg(feature = "dev-diagnostics")]
         let overlay_open = self.debug_overlay_visible();
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let overlay_open = false;
         let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
+        if on_connection {
+            self.characters.clear();
+        }
         let camera = self.renderer.as_ref().map(Renderer::camera);
         let Some(camera) = camera else {
             return;
@@ -1628,18 +1818,188 @@ impl ClientApp {
         let mut quads = Vec::new();
         if !on_connection {
             self.interp.sample(Instant::now());
+            self.refresh_character_presentation(frame_dt);
             let local_pose = self.frame_local.presented;
             let predicted_pose = self.frame_local.predicted;
             quads = parallax_quads(&camera, self.world.bounds());
             let hold_source = self.map_fade.holds_source_presentation();
             let replica_live = self.replica_matches_local_map() && !hold_source;
-            let remotes: &[crate::interp::PresentationPose] = visible_remote_poses(
-                hold_source,
-                self.frozen_presentation.as_ref(),
-                replica_live,
-                &self.interp,
-            );
-            quads.extend(scene_quads(&self.world, local_pose, remotes));
+            let remote_buf: Vec<PresentationPose> = if hold_source {
+                self.frozen_presentation
+                    .as_ref()
+                    .map(|f| f.remotes.clone())
+                    .unwrap_or_default()
+            } else if replica_live {
+                self.interp
+                    .poses()
+                    .iter()
+                    .copied()
+                    .filter(|pose| {
+                        self.replica.iter().any(|e| {
+                            e.entity_id == pose.entity_id && e.kind == ReplicatedKind::Player
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let remotes: &[PresentationPose] = &remote_buf;
+            quads.extend(scene_quads(
+                &self.world,
+                local_pose,
+                remotes,
+                crate::skeleton_debug::CHARACTER_VISUAL_SCALE_1,
+                {
+                    #[cfg(feature = "dev-diagnostics")]
+                    {
+                        self.debug
+                            .as_ref()
+                            .map(|d| d.ui.show_local_player_quad)
+                            .unwrap_or(true)
+                    }
+                    #[cfg(not(feature = "dev-diagnostics"))]
+                    {
+                        true
+                    }
+                },
+            ));
+            if let Some(center) = local_pose {
+                #[cfg(feature = "dev-diagnostics")]
+                let leg_proof = self
+                    .debug
+                    .as_ref()
+                    .map(|d| d.ui.skeleton_front_leg_proof)
+                    .unwrap_or_default();
+                #[cfg(not(feature = "dev-diagnostics"))]
+                let leg_proof = crate::skeleton_debug::FrontLegProof::Off;
+                #[cfg(feature = "dev-diagnostics")]
+                let arm_proof = self
+                    .debug
+                    .as_ref()
+                    .map(|d| d.ui.skeleton_front_arm_proof)
+                    .unwrap_or_default();
+                #[cfg(not(feature = "dev-diagnostics"))]
+                let arm_proof = crate::skeleton_debug::FrontArmProof::Off;
+                #[cfg(feature = "dev-diagnostics")]
+                let sample_t = self.selected_animation_sample_t;
+                #[cfg(not(feature = "dev-diagnostics"))]
+                let sample_t = 0.0_f32;
+                self.skeleton
+                    .evaluate_at(center, leg_proof, arm_proof, sample_t);
+                let draw_skeleton = {
+                    #[cfg(feature = "dev-diagnostics")]
+                    {
+                        self.debug
+                            .as_ref()
+                            .map(|d| d.ui.show_skeleton)
+                            .unwrap_or(true)
+                    }
+                    #[cfg(not(feature = "dev-diagnostics"))]
+                    {
+                        true
+                    }
+                };
+                if draw_skeleton {
+                    let preview_scale = {
+                        #[cfg(feature = "dev-diagnostics")]
+                        {
+                            self.debug
+                                .as_ref()
+                                .map(|d| {
+                                    crate::skeleton_debug::character_visual_scale(
+                                        d.ui.skeleton_debug_preview_2x,
+                                    )
+                                })
+                                .unwrap_or(crate::skeleton_debug::CHARACTER_VISUAL_SCALE_115)
+                        }
+                        #[cfg(not(feature = "dev-diagnostics"))]
+                        {
+                            crate::skeleton_debug::CHARACTER_VISUAL_SCALE_115
+                        }
+                    };
+                    quads.extend(crate::skeleton_debug::skeleton_overlay_quads(
+                        purgatory_skeleton::humanoid_v0(),
+                        self.skeleton.world(),
+                        preview_scale,
+                        true,
+                        false,
+                    ));
+                }
+            }
+            let draw_placeholders = {
+                #[cfg(feature = "dev-diagnostics")]
+                {
+                    self.debug
+                        .as_ref()
+                        .map(|d| d.ui.show_placeholder_character)
+                        .unwrap_or(true)
+                }
+                #[cfg(not(feature = "dev-diagnostics"))]
+                {
+                    true
+                }
+            };
+            if draw_placeholders {
+                let preview_scale = {
+                    #[cfg(feature = "dev-diagnostics")]
+                    {
+                        self.debug
+                            .as_ref()
+                            .map(|d| {
+                                crate::skeleton_debug::character_visual_scale(
+                                    d.ui.skeleton_debug_preview_2x,
+                                )
+                            })
+                            .unwrap_or(crate::skeleton_debug::CHARACTER_VISUAL_SCALE_115)
+                    }
+                    #[cfg(not(feature = "dev-diagnostics"))]
+                    {
+                        crate::skeleton_debug::CHARACTER_VISUAL_SCALE_115
+                    }
+                };
+                let force_back = {
+                    #[cfg(feature = "dev-diagnostics")]
+                    {
+                        self.debug
+                            .as_ref()
+                            .map(|d| d.ui.presentation_view_back)
+                            .unwrap_or(false)
+                    }
+                    #[cfg(not(feature = "dev-diagnostics"))]
+                    {
+                        false
+                    }
+                };
+                let headwear_cell = {
+                    #[cfg(feature = "dev-diagnostics")]
+                    {
+                        self.debug
+                            .as_ref()
+                            .map(|d| d.ui.headwear_side_cell)
+                            .unwrap_or(0)
+                    }
+                    #[cfg(not(feature = "dev-diagnostics"))]
+                    {
+                        0_u8
+                    }
+                };
+                let bone_map = self.characters.bone_map();
+                for (_, entry) in self.characters.iter_draw_order() {
+                    let view = if force_back {
+                        PresentationView::Back
+                    } else {
+                        entry.state().view
+                    };
+                    quads.extend(presentation_debug_quads_with_headwear(
+                        bone_map,
+                        entry,
+                        preview_scale,
+                        true,
+                        view,
+                        headwear_cell,
+                    ));
+                }
+            }
             let replica_interactable_quads = visible_interactable_quads(
                 hold_source,
                 self.frozen_presentation.as_ref(),
@@ -1652,59 +2012,73 @@ impl ClientApp {
                 replica_live,
                 &self.replica,
             );
+            let replica_npc_quads = if hold_source || !replica_live {
+                Vec::new()
+            } else {
+                npc_quads(&self.replica, &self.interp)
+            };
             let interactable_n = replica_interactable_quads.len() + replica_portal_quads.len();
             quads.extend(replica_interactable_quads);
             quads.extend(replica_portal_quads);
+            quads.extend(replica_npc_quads);
             self.trace_scene_once(&camera, local_pose, interactable_n, quads.len());
+            #[cfg(feature = "dev-diagnostics")]
             if overlay_open {
                 let ui = self
                     .debug
                     .as_ref()
                     .map(|d| d.ui.clone())
                     .unwrap_or_default();
-                quads.extend(footnote_debug_quads(&self.world, &ui, local_pose));
-                if replica_live {
-                    let origin = local_pose.unwrap_or([0.0, 0.0]);
-                    let rects = aoi_policy_rects(origin, self.world.bounds());
-                    let interp_poses = self.interp.poses();
-                    let rows = replica_entity_debug_rows(&self.replica, rects, |id| {
-                        interp_poses
-                            .iter()
-                            .find(|p| p.entity_id == id)
-                            .map(|p| p.position)
-                            .or_else(|| {
-                                if self.replica.local_player() == Some(id) {
-                                    local_pose
-                                } else {
-                                    None
-                                }
-                            })
-                    });
-                    quads.extend(aoi_entity_debug_quads(&rows));
-                }
-                if ui.show_parallax_debug {
-                    quads.extend(parallax_debug_quads(&camera));
-                }
-                if ui.show_interpolation_gizmos && replica_live {
-                    quads.extend(interpolation_gizmos(&self.replica, self.interp.poses()));
-                }
-                if ui.show_prediction_gizmos && replica_live {
-                    quads.extend(prediction_gizmos(
-                        &self.replica,
-                        predicted_pose,
-                        self.prediction.active(),
-                    ));
-                }
-                if ui.show_camera_deadzone {
-                    quads.extend(camera_deadzone_quads(
-                        camera.position,
-                        local_pose.unwrap_or([0.0, 0.0]),
-                        self.camera_follow.desired,
-                        self.camera_follow.config.half_x,
-                        self.camera_follow.config.half_y,
-                    ));
+                if ui.show_overlay_gizmos {
+                    let mut gizmos = footnote_debug_quads(&self.world, &ui, local_pose);
+                    if replica_live {
+                        let origin = local_pose.unwrap_or([0.0, 0.0]);
+                        let rects = aoi_policy_rects(origin, self.world.bounds());
+                        let interp_poses = self.interp.poses();
+                        let rows = replica_entity_debug_rows(&self.replica, rects, |id| {
+                            interp_poses
+                                .iter()
+                                .find(|p| p.entity_id == id)
+                                .map(|p| p.position)
+                                .or_else(|| {
+                                    if self.replica.local_player() == Some(id) {
+                                        local_pose
+                                    } else {
+                                        None
+                                    }
+                                })
+                        });
+                        gizmos.extend(aoi_entity_debug_quads(&rows));
+                    }
+                    if ui.show_parallax_debug {
+                        gizmos.extend(parallax_debug_quads(&camera));
+                    }
+                    if ui.show_interpolation_gizmos && replica_live {
+                        gizmos.extend(interpolation_gizmos(&self.replica, self.interp.poses()));
+                    }
+                    if ui.show_prediction_gizmos && replica_live {
+                        gizmos.extend(prediction_gizmos(
+                            &self.replica,
+                            predicted_pose,
+                            self.prediction.active(),
+                        ));
+                    }
+                    if ui.show_camera_deadzone {
+                        gizmos.extend(camera_deadzone_quads(
+                            camera.position,
+                            local_pose.unwrap_or([0.0, 0.0]),
+                            self.camera_follow.desired,
+                            self.camera_follow.config.half_x,
+                            self.camera_follow.config.half_y,
+                        ));
+                    }
+                    append_debug_gizmos(&mut quads, gizmos, MAX_QUADS);
                 }
             }
+            #[cfg(not(feature = "dev-diagnostics"))]
+            let _ = (overlay_open, predicted_pose);
+            #[cfg(feature = "dev-diagnostics")]
+            self.append_rf_scene(&mut quads, &camera, frame_dt);
         }
         if let Some(fade) = self.map_fade.overlay_quad(&camera) {
             quads.push(fade);
@@ -1713,348 +2087,81 @@ impl ClientApp {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let fps = self.fps;
-        let tick = self.clock.tick().get();
-        let last_input = self.last_input;
-        let mut snapshot = {
-            let Some(renderer) = self.renderer.as_ref() else {
-                return;
-            };
-            let cam = renderer.camera();
-            DebugSnapshot::capture(
-                &self.world,
-                tick,
-                renderer.frames_drawn(),
-                renderer.surface_size(),
-                fps,
-                last_input,
-                SnapshotExtras {
-                    stage_name: "content",
-                    camera_position: cam.position,
-                    viewport_width: cam.viewport_width,
-                    viewport_height: cam.viewport_height,
-                    parallax_far: PARALLAX_FAR,
-                    parallax_mid: PARALLAX_MID,
-                    parallax_near: PARALLAX_NEAR,
-                    camera_motion: self.last_camera_motion,
-                },
-            )
-        };
-        snapshot.map_id = self.last_observer.map(|(m, _, _)| m).unwrap_or(0);
-        snapshot.map_debug_name = self
-            .registry
-            .map_by_map_id(MapId::from_raw(snapshot.map_id))
-            .map(|m| m.debug_name.clone())
-            .unwrap_or_else(|| "-".into());
-        let replica_addr = self.replica.observer_address();
-        snapshot.observer_map = replica_addr.0;
-        snapshot.observer_channel = replica_addr.1;
-        snapshot.observer_instance = replica_addr.2;
-        snapshot.transition_banner = self.map_fade.debug_banner().unwrap_or_default();
-        snapshot.transition_missing = if self.map_fade.is_idle() {
-            String::new()
+        #[cfg(feature = "dev-diagnostics")]
+        let demand = self.diagnostics_demand();
+        #[cfg(feature = "dev-diagnostics")]
+        let persistent = self
+            .debug
+            .as_ref()
+            .is_some_and(|d| has_persistent_dev_warnings(&d.ui));
+        #[cfg(feature = "dev-diagnostics")]
+        let frame = if demand.is_active() {
+            self.assemble_diagnostics_frame(on_connection)
+        } else if on_connection || persistent {
+            self.display_only_frame(&window)
         } else {
-            self.map_fade.flags().missing_csv(self.map_fade.kind())
+            DiagnosticsFrame::default()
         };
-        snapshot.transition_stalled = self.map_fade.stalled();
-        let input_locked = self.gameplay_input_locked();
-        snapshot.input_gate_label = input_gate_debug_label(
-            input_locked,
-            self.map_fade.is_idle(),
-            matches!(self.map_fade.kind(), TransitionKind::Map),
-            self.last_observer,
-            replica_addr,
-        )
-        .into();
-        snapshot.input_movement_neutral = input_locked;
-        snapshot.observer_address = if self.replica.last_sequence().is_some() {
-            format!(
-                "map={} ch={} inst={}",
-                replica_addr.0, replica_addr.1, replica_addr.2
-            )
-        } else {
-            self.last_observer
-                .map(|(m, c, i)| format!("map={m} ch={c} inst={i}"))
-                .unwrap_or_else(|| "-".into())
-        };
-        snapshot.content_registry_count = self.registry.definition_count() as u32;
-        snapshot.content_map_labels = self
-            .registry
-            .iter_maps()
-            .map(|m| {
-                format!(
-                    "{} => MapId {}",
-                    m.authored_id,
-                    self.registry
-                        .map_id(m.content_id)
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "-".into())
-                )
-            })
-            .collect();
-        snapshot.network = self.lifecycle.snapshot();
-        snapshot.net_input_seq = self.intent.sequence;
-        snapshot.net_input_sent = self.intent.commands_sent;
-        snapshot.net_move_axis = self.intent.move_axis.to_i8();
-        snapshot.net_jump = self.intent.jump_pressed;
-        snapshot.net_down = self.intent.down_held;
-        snapshot.replica_seq = self.replica.last_sequence();
-        snapshot.replica_tick = self.replica.last_server_tick();
-        snapshot.replica_entities = self.replica.len() as u32;
-        snapshot.replica_epoch = self.replica.observer_epoch();
-        snapshot.replica_frame_enters = self.replica.last_frame_enters();
-        snapshot.replica_frame_updates = self.replica.last_frame_updates();
-        snapshot.replica_frame_leaves = self.replica.last_frame_leaves();
-        snapshot.replica_total_enters = self.replica.total_enters();
-        snapshot.replica_total_updates = self.replica.total_updates();
-        snapshot.replica_total_leaves = self.replica.total_leaves();
-        snapshot.replica_local = self.replica.local_player().map(|id| id.to_string());
-        snapshot.observer_entity = self.replica.local_player().map(|id| id.to_string());
-        let sim_local_pose = self.presented_local_pose();
-        let origin = sim_local_pose.unwrap_or([0.0, 0.0]);
-        let rects = aoi_policy_rects(origin, self.world.bounds());
-        snapshot.observer_enter_bounds = format!(
-            "[{:.1},{:.1}] x [{:.1},{:.1}]",
-            rects.enter.min_x(),
-            rects.enter.max_x(),
-            rects.enter.min_y(),
-            rects.enter.max_y()
-        );
-        snapshot.observer_leave_bounds = format!(
-            "[{:.1},{:.1}] x [{:.1},{:.1}]",
-            rects.leave.min_x(),
-            rects.leave.max_x(),
-            rects.leave.min_y(),
-            rects.leave.max_y()
-        );
-        if let Some(dbg) = self.replica.aoi_debug() {
-            snapshot.aoi_candidates = Some(dbg.candidates);
-            snapshot.aoi_known = Some(dbg.known);
-            snapshot.aoi_want_enter = Some(dbg.want_enter);
-            snapshot.aoi_want_leave = Some(dbg.want_leave);
-        }
-        let interp_poses = self.interp.poses();
-        let rows = replica_entity_debug_rows(&self.replica, rects, |id| {
-            if self.replica.local_player() == Some(id) {
-                self.frame_local.presented.or(sim_local_pose)
-            } else {
-                interp_poses
-                    .iter()
-                    .find(|p| p.entity_id == id)
-                    .map(|p| p.position)
-            }
-        });
-        snapshot.inspector = entity_inspector::build(
-            snapshot.entities.iter().map(WorldEntityInput::from),
-            snapshot.player.map(|p| p.id),
-            &rows,
-        );
-        snapshot.replica_entity_rows = rows
-            .iter()
-            .map(|r| {
-                let recent = r.recent.map(|s| format!(" · {s}")).unwrap_or_default();
-                format!("{} | {}{recent}", r.label, r.band_label)
-            })
-            .collect();
-        let labels_eligible = world_space_labels_eligible(
-            self.replica_matches_local_map(),
-            self.map_fade.is_idle(),
-            self.map_fade.presentation_ready(),
-        );
-        snapshot.replica_label_world = world_space_label_entries(labels_eligible, &rows, |r| {
-            compact_world_space_label(r.role).to_string()
-        });
-        bind_local_player_label_pose(
-            &mut snapshot.replica_label_world,
-            self.frame_local.presented,
-        );
-        snapshot.replica_recent_left = self
-            .replica
-            .recent_lifecycle()
-            .filter(|n| n.event == ReplicaLifecycleEvent::Left)
-            .map(|n| {
-                format!(
-                    "{} Left @ tick {}",
-                    semantic_label(n.kind, n.entity_id, false),
-                    n.tick
-                )
-            })
-            .collect();
-        snapshot.replica_stale = self.replica.stale_ignored;
-        snapshot.replica_duplicate = self.replica.duplicate_ignored;
-        snapshot.replica_malformed = self.snapshot_malformed;
-        snapshot.interact_ui = self.ui_runtime.to_string();
-        snapshot.interact_status = InteractStatusView::from_runtime(
-            &self.ui_runtime,
-            self.interact_last_transition.clone(),
-            &trail_display(&self.interact_trail),
-        );
-        snapshot.interact_last_request = if self.last_interact_request.is_empty() {
-            "-".into()
-        } else {
-            self.last_interact_request.clone()
-        };
-        snapshot.interact_last_result = if self.last_interact_result.is_empty() {
-            "-".into()
-        } else {
-            self.last_interact_result.clone()
-        };
-        let routing = replica_interact_routing(&self.replica);
-        snapshot.interact_nearest = routing.nearest_generic.map(|(id, _)| id.to_string());
-        snapshot.interact_nearest_distance = routing.nearest_generic.map(|(_, dist)| dist);
-        snapshot.interact_nearest_portal = routing.nearest_portal.map(|(id, _)| id.to_string());
-        snapshot.interact_nearest_portal_distance = routing.nearest_portal.map(|(_, dist)| dist);
-        snapshot.portal_eligible = routing.portal_eligible;
-        snapshot.replica_interactables =
-            replica_kind_labels(&self.replica, ReplicatedKind::Interactable);
-        snapshot.replica_portals = replica_kind_labels(&self.replica, ReplicatedKind::Portal);
-        snapshot.replica_player_pos = self.replica.local_entity().map(|e| e.position);
-        snapshot.presented_player_pos = self.frame_local.presented;
-        snapshot.camera_desired = self.camera_follow.desired;
-        snapshot.camera_deadzone_half_x = self.camera_follow.config.half_x;
-        snapshot.camera_deadzone_half_y = self.camera_follow.config.half_y;
-        snapshot.camera_smooth_time_x = self.camera_follow.config.smooth_time_x;
-        snapshot.camera_smooth_time_y = self.camera_follow.config.smooth_time_y;
-        snapshot.camera_following_x = self.camera_follow.following_x;
-        snapshot.camera_following_y = self.camera_follow.following_y;
-        snapshot.jitter = self.jitter_trace.summary(self.local_presentation.offset());
-        snapshot.nearest_portal_pos = routing.nearest_portal_pos;
-        snapshot.replica_age_ms = self
-            .replica
-            .snapshot_age(Instant::now())
-            .map(|d| d.as_millis() as u64);
-        let interp = self.interp.diagnostics();
-        snapshot.interp_enabled = interp.enabled;
-        snapshot.interp_delay_ticks = interp.delay_ticks;
-        snapshot.interp_delay_ms = interp.delay_ms;
-        snapshot.interp_history_depth = interp.history_depth;
-        snapshot.interp_estimated_tick = interp.estimated_server_tick;
-        snapshot.interp_render_tick = interp.render_tick;
-        snapshot.interp_bracket_a = interp.bracket_a_tick;
-        snapshot.interp_bracket_b = interp.bracket_b_tick;
-        snapshot.interp_alpha = interp.alpha;
-        snapshot.interp_holds = interp.holds;
-        snapshot.interp_snaps = interp.snaps;
-        let pred = self.prediction.diagnostics(&self.world, &self.replica);
-        snapshot.pred_enabled = pred.enabled;
-        snapshot.pred_active = pred.active;
-        snapshot.pred_auth_pos = pred.auth_position;
-        snapshot.pred_pos = pred.predicted_position;
-        snapshot.pred_vel = pred.predicted_velocity;
-        snapshot.pred_error = pred.lead_error;
-        snapshot.pred_lead_error = pred.lead_error;
-        snapshot.pred_aligned_error = pred.aligned_error;
-        snapshot.pred_aligned_dx = pred.aligned_dx;
-        snapshot.pred_aligned_dy = pred.aligned_dy;
-        snapshot.pred_best_offset = pred.best_temporal_offset;
-        snapshot.pred_tick = pred.prediction_tick;
-        snapshot.pred_auth_tick = pred.auth_server_tick;
-        snapshot.pred_best_match_tick = pred.best_match_tick;
-        snapshot.pred_resets = pred.reset_count;
-        snapshot.pred_drift_corrections = pred.drift_correction_count;
-        snapshot.pred_aligned_divergence = pred.consecutive_aligned_divergence;
-        snapshot.pred_max_aligned = pred.max_aligned_error;
-        snapshot.pred_last_snap = pred.last_snap_reason.map(str::to_string);
-        snapshot.pred_auth_vel = pred.auth_velocity;
-        snapshot.pred_pending = pred.pending_count;
-        snapshot.pred_ack = pred.last_ack;
-        snapshot.pred_epoch = pred.input_epoch;
-        snapshot.pred_debt = pred.continuation_debt;
-        snapshot.pred_cancel_pending = pred.cancel_pending;
-        snapshot.pred_reconcile_count = pred.total_reconciliation_count;
-        snapshot.pred_last_correction = pred.last_correction_wu;
-        snapshot.pred_max_correction = pred.max_correction_wu;
-        snapshot.pred_ack_delta = pred.observed_ack_delta;
-        snapshot.pred_ack_jump_count = pred.observed_ack_jump_count;
-        snapshot.pred_max_ack_delta = pred.max_observed_ack_delta;
-        snapshot.pred_tick_vel = pred.last_tick_velocity;
-        snapshot.pred_pending_stall = pred.pending_window_stall_ticks;
-        if let Some(network) = &mut self.network {
-            snapshot.impairment = network.poll_impairment_metrics();
-        }
 
+        #[cfg(feature = "dev-diagnostics")]
         let mut actions = Vec::new();
-        let mut connect_clicked = false;
         let status = {
             let Some(renderer) = self.renderer.as_mut() else {
                 return;
             };
-            let overlay = self.debug.as_mut();
-            let frontend = self.frontend.as_ref();
-            let server = format!("{}", self.lifecycle.view().server);
-            let line = self.lifecycle.view().frontend_status();
-            let can_connect = self.lifecycle.can_connect();
-            let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
-            let login = &mut self.dev_login;
-            renderer.render(&quads, |pass| {
-                let Some(overlay) = overlay else {
-                    return Vec::new();
-                };
-                let (extras, emitted, connect) = overlay.submit_frame(
-                    &window,
-                    pass,
-                    &snapshot,
-                    if on_connection {
-                        frontend.map(|frontend| ConnectionPaint {
-                            frontend,
-                            server: &server,
-                            login,
-                            status: line,
-                            can_connect,
-                        })
-                    } else {
-                        None
-                    },
-                );
-                actions = emitted;
-                connect_clicked = connect;
-                extras
-            })
+            #[cfg(feature = "dev-diagnostics")]
+            {
+                let show_ab = self.debug.as_ref().is_some_and(|d| d.ui.show_rf_ab);
+                if show_ab {
+                    if frame_dt.is_finite() && frame_dt > 0.0 && frame_dt < 1.0 {
+                        self.rf_ab_elapsed += frame_dt;
+                    }
+                } else {
+                    self.rf_ab_elapsed = 0.0;
+                }
+                renderer.set_rf_ab_proof(show_ab.then_some(self.rf_ab_elapsed));
+                let overlay = self.debug.as_mut();
+                let frontend = self.frontend.as_ref();
+                let server = format!("{}", self.lifecycle.view().server);
+                let line = self.lifecycle.view().frontend_status();
+                let can_connect = self.lifecycle.can_connect();
+                let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
+                let login = &mut self.dev_login;
+                renderer.render(&quads, |pass| {
+                    let Some(overlay) = overlay else {
+                        return Vec::new();
+                    };
+                    let (extras, commands, _) = overlay.submit_frame(
+                        &window,
+                        pass,
+                        &frame,
+                        if on_connection {
+                            frontend.map(|frontend| ConnectionPaint {
+                                frontend,
+                                server: &server,
+                                login,
+                                status: line,
+                                can_connect,
+                            })
+                        } else {
+                            None
+                        },
+                    );
+                    actions = commands;
+                    extras
+                })
+            }
+            #[cfg(not(feature = "dev-diagnostics"))]
+            {
+                let _ = (&window, on_connection);
+                renderer.render(&quads, |_| Vec::new())
+            }
         };
 
-        for action in actions {
-            if matches!(action, purgatory_simulation::DebugAction::ResetPlayer)
-                && self.prediction.active()
-                && self.replica.local_entity().is_some()
-            {
-                // Networked: snap prediction to authority — do not FOOTNOTE-spawn
-                // while the orange replica gizmo stays elsewhere.
-                self.prediction.force_reanchor_from_replica(
-                    &self.replica,
-                    &mut self.world,
-                    self.clock.tick().get(),
-                );
-                self.local_presentation.request_snap();
-            } else {
-                self.world.apply_debug_action(action);
-            }
-        }
+        #[cfg(feature = "dev-diagnostics")]
+        self.apply_debug_commands(actions);
 
-        if connect_clicked {
-            self.request_connect();
-        }
-
-        if let Some(debug) = &mut self.debug {
-            let connect = debug.ui.network_connect;
-            let disconnect = debug.ui.network_disconnect;
-            debug.ui.network_connect = false;
-            debug.ui.network_disconnect = false;
-            let requested_channel = debug.ui.request_channel.take();
-            if connect {
-                self.request_connect();
-            }
-            if disconnect {
-                self.request_disconnect();
-            }
-            if let Some(channel) = requested_channel
-                && let Some(network) = &self.network
-            {
-                println!("6D_CHANNEL send DevSetChannel channel={channel}");
-                if !network.try_send_dev_set_channel(channel) {
-                    eprintln!("6D_CHANNEL send failed (input channel full or closed)");
-                }
-            }
-        }
+        self.flush_display_requests();
 
         match status {
             FrameStatus::Drawn | FrameStatus::Skipped => {}
@@ -2071,13 +2178,702 @@ impl ClientApp {
         }
         self.update_title();
     }
+
+    #[cfg(not(feature = "dev-diagnostics"))]
+    fn maybe_shipping_auto_connect(&mut self) {
+        if self.shipping_connect_requested {
+            return;
+        }
+        if self.window.is_none() {
+            return;
+        }
+        if self.lifecycle.screen() != ClientScreen::Connection {
+            return;
+        }
+        if !self.lifecycle.can_connect() {
+            return;
+        }
+        self.shipping_connect_requested = true;
+        println!(
+            "PURGATORY shipping build: auto-connecting with login={} (no Connection Frontend)",
+            self.dev_login
+        );
+        self.request_connect();
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn display_only_frame(&self, window: &winit::window::Window) -> DiagnosticsFrame {
+        let surface = self
+            .renderer
+            .as_ref()
+            .map(|r| r.surface_size())
+            .unwrap_or((0, 0));
+        let mut display = collect_display_debug(window, surface, &self.display.settings());
+        display.gameplay_pixel = self.renderer.as_ref().and_then(|renderer| {
+            renderer
+                .gameplay_pixel_viewport()
+                .map(|vp| (vp.x, vp.y, vp.width, vp.height))
+        });
+        if let Some(renderer) = self.renderer.as_ref() {
+            display.internal_render = renderer.internal_render_extent();
+            display.internal_render_clamped = renderer.internal_render_clamped();
+            display.render_scale_percent = renderer.render_scale().percent();
+            display.world_msaa_samples = renderer.world_msaa_sample_count();
+            display.world_msaa_4x_supported = renderer.msaa_4x_supported();
+        }
+        DiagnosticsFrame::display_only(display)
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn assemble_diagnostics_frame(&mut self, on_connection: bool) -> DiagnosticsFrame {
+        use purgatory_simulation::TICK_RATE_HZ;
+
+        let impairment = self
+            .network
+            .as_mut()
+            .map(|n| n.poll_impairment_metrics())
+            .unwrap_or_default();
+
+        let Some(window) = self.window.as_ref() else {
+            return self.empty_diagnostics_frame();
+        };
+        let Some(renderer) = self.renderer.as_ref() else {
+            return self.empty_diagnostics_frame();
+        };
+        let cam = renderer.camera();
+        let (physics, roster) = WorldRosterDiagnostics::from_world(&self.world, self.last_input);
+        let mut display =
+            collect_display_debug(window, renderer.surface_size(), &self.display.settings());
+        display.gameplay_pixel = renderer
+            .gameplay_pixel_viewport()
+            .map(|vp| (vp.x, vp.y, vp.width, vp.height));
+        display.internal_render = renderer.internal_render_extent();
+        display.internal_render_clamped = renderer.internal_render_clamped();
+        display.render_scale_percent = renderer.render_scale().percent();
+        display.world_msaa_samples = renderer.world_msaa_sample_count();
+        display.world_msaa_4x_supported = renderer.msaa_4x_supported();
+        let runtime = RuntimeDiagnostics {
+            frames: renderer.frames_drawn(),
+            tick: self.clock.tick().get(),
+            tick_rate_hz: TICK_RATE_HZ,
+            window_width: renderer.surface_size().0,
+            window_height: renderer.surface_size().1,
+            display,
+            fps: self.fps,
+        };
+        let map_id = self.last_observer.map(|(m, _, _)| m).unwrap_or(0);
+        let replica_addr = self.replica.observer_address();
+        let input_locked = self.gameplay_input_locked();
+        let sim_local_pose = self.presented_local_pose();
+        let origin = sim_local_pose.unwrap_or([0.0, 0.0]);
+        let rects = aoi_policy_rects(origin, self.world.bounds());
+        let interp_poses = self.interp.poses();
+        let rows = replica_entity_debug_rows(&self.replica, rects, |id| {
+            if self.replica.local_player() == Some(id) {
+                self.frame_local.presented.or(sim_local_pose)
+            } else {
+                interp_poses
+                    .iter()
+                    .find(|p| p.entity_id == id)
+                    .map(|p| p.position)
+            }
+        });
+        let inspector = entity_inspector::build(
+            roster.entities.iter().map(WorldEntityInput::from),
+            physics.player.map(|p| p.id),
+            &rows,
+        );
+        let mut replica_label_world = world_space_label_entries(
+            world_space_labels_eligible(
+                self.replica_matches_local_map(),
+                self.map_fade.is_idle(),
+                self.map_fade.presentation_ready(),
+            ),
+            &rows,
+            |r| compact_world_space_label(r.role).to_string(),
+        );
+        bind_local_player_label_pose(&mut replica_label_world, self.frame_local.presented);
+        let aoi = self.replica.aoi_debug();
+        let world = WorldDiagnostics {
+            roster,
+            stage_name: "content",
+            map_id,
+            map_debug_name: self
+                .registry
+                .map_by_map_id(MapId::from_raw(map_id))
+                .map(|m| m.debug_name.clone())
+                .unwrap_or_else(|| "-".into()),
+            observer_address: if self.replica.last_sequence().is_some() {
+                format!(
+                    "map={} ch={} inst={}",
+                    replica_addr.0, replica_addr.1, replica_addr.2
+                )
+            } else {
+                self.last_observer
+                    .map(|(m, c, i)| format!("map={m} ch={c} inst={i}"))
+                    .unwrap_or_else(|| "-".into())
+            },
+            observer_map: replica_addr.0,
+            observer_channel: replica_addr.1,
+            observer_instance: replica_addr.2,
+            transition_banner: self.map_fade.debug_banner().unwrap_or_default(),
+            transition_missing: if self.map_fade.is_idle() {
+                String::new()
+            } else {
+                self.map_fade.flags().missing_csv(self.map_fade.kind())
+            },
+            transition_stalled: self.map_fade.stalled(),
+            input_gate_label: input_gate_debug_label(
+                input_locked,
+                self.map_fade.is_idle(),
+                matches!(self.map_fade.kind(), TransitionKind::Map),
+                self.last_observer,
+                replica_addr,
+            )
+            .into(),
+            input_movement_neutral: input_locked,
+            content_registry_count: self.registry.definition_count() as u32,
+            content_map_labels: self
+                .registry
+                .iter_maps()
+                .map(|m| {
+                    format!(
+                        "{} => MapId {}",
+                        m.authored_id,
+                        self.registry
+                            .map_id(m.content_id)
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "-".into())
+                    )
+                })
+                .collect(),
+            observer_entity: self.replica.local_player().map(|id| id.to_string()),
+            observer_enter_bounds: format!(
+                "[{:.1},{:.1}] x [{:.1},{:.1}]",
+                rects.enter.min_x(),
+                rects.enter.max_x(),
+                rects.enter.min_y(),
+                rects.enter.max_y()
+            ),
+            observer_leave_bounds: format!(
+                "[{:.1},{:.1}] x [{:.1},{:.1}]",
+                rects.leave.min_x(),
+                rects.leave.max_x(),
+                rects.leave.min_y(),
+                rects.leave.max_y()
+            ),
+            aoi_candidates: aoi.map(|d| d.candidates),
+            aoi_known: aoi.map(|d| d.known),
+            aoi_want_enter: aoi.map(|d| d.want_enter),
+            aoi_want_leave: aoi.map(|d| d.want_leave),
+            replica_entity_rows: rows
+                .iter()
+                .map(|r| {
+                    let recent = r.recent.map(|s| format!(" · {s}")).unwrap_or_default();
+                    format!("{} | {}{recent}", r.label, r.band_label)
+                })
+                .collect(),
+            replica_recent_left: self
+                .replica
+                .recent_lifecycle()
+                .filter(|n| n.event == ReplicaLifecycleEvent::Left)
+                .map(|n| {
+                    format!(
+                        "{} Left @ tick {}",
+                        semantic_label(n.kind, n.entity_id, false),
+                        n.tick
+                    )
+                })
+                .collect(),
+            replica_label_world,
+            inspector,
+        };
+        let routing = replica_interact_routing(&self.replica);
+        let interp = self.interp.diagnostics();
+        let pred = self.prediction.diagnostics(&self.world, &self.replica);
+        let network = NetworkDiagnostics {
+            lifecycle: self.lifecycle.snapshot(),
+            net_input_seq: self.intent.sequence,
+            net_input_sent: self.intent.commands_sent,
+            net_move_axis: self.intent.move_axis.to_i8(),
+            net_jump: self.intent.jump_pressed,
+            net_down: self.intent.down_held,
+            replica_seq: self.replica.last_sequence(),
+            replica_tick: self.replica.last_server_tick(),
+            replica_entities: self.replica.len() as u32,
+            replica_epoch: self.replica.observer_epoch(),
+            replica_frame_enters: self.replica.last_frame_enters(),
+            replica_frame_updates: self.replica.last_frame_updates(),
+            replica_frame_leaves: self.replica.last_frame_leaves(),
+            replica_total_enters: self.replica.total_enters(),
+            replica_total_updates: self.replica.total_updates(),
+            replica_total_leaves: self.replica.total_leaves(),
+            replica_local: self.replica.local_player().map(|id| id.to_string()),
+            replica_stale: self.replica.stale_ignored,
+            replica_duplicate: self.replica.duplicate_ignored,
+            replica_malformed: self.snapshot_malformed,
+            replica_age_ms: self
+                .replica
+                .snapshot_age(Instant::now())
+                .map(|d| d.as_millis() as u64),
+            interact_ui: self.ui_runtime.to_string(),
+            interact_status: InteractStatusView::from_runtime(
+                &self.ui_runtime,
+                self.interact_last_transition.clone(),
+                &trail_display(&self.interact_trail),
+            ),
+            interact_nearest: routing.nearest_generic.map(|(id, _)| id.to_string()),
+            interact_nearest_distance: routing.nearest_generic.map(|(_, dist)| dist),
+            interact_nearest_portal: routing.nearest_portal.map(|(id, _)| id.to_string()),
+            interact_nearest_portal_distance: routing.nearest_portal.map(|(_, dist)| dist),
+            portal_eligible: routing.portal_eligible,
+            interact_last_request: if self.last_interact_request.is_empty() {
+                "-".into()
+            } else {
+                self.last_interact_request.clone()
+            },
+            interact_last_result: if self.last_interact_result.is_empty() {
+                "-".into()
+            } else {
+                self.last_interact_result.clone()
+            },
+            replica_interactables: replica_kind_labels(&self.replica, ReplicatedKind::Interactable),
+            replica_portals: replica_kind_labels(&self.replica, ReplicatedKind::Portal),
+            replica_player_pos: self.replica.local_entity().map(|e| e.position),
+            nearest_portal_pos: routing.nearest_portal_pos,
+            interp,
+            remote_motion: remote_motion_probe(
+                &self.replica,
+                &self.interp,
+                &self.characters,
+                self.replica
+                    .local_entity()
+                    .map(|e| aoi_policy_rects(e.position, self.world.bounds())),
+            ),
+            pred,
+            impairment,
+        };
+        let camera = CameraDiagnostics {
+            position: cam.position,
+            viewport_width: cam.viewport_width,
+            viewport_height: cam.viewport_height,
+            parallax_far: PARALLAX_FAR,
+            parallax_mid: PARALLAX_MID,
+            parallax_near: PARALLAX_NEAR,
+            motion: self.last_camera_motion,
+            presented_player_pos: self.frame_local.presented,
+            desired: self.camera_follow.desired,
+            deadzone_half_x: self.camera_follow.config.half_x,
+            deadzone_half_y: self.camera_follow.config.half_y,
+            smooth_time_x: self.camera_follow.config.smooth_time_x,
+            smooth_time_y: self.camera_follow.config.smooth_time_y,
+            following_x: self.camera_follow.following_x,
+            following_y: self.camera_follow.following_y,
+            jitter: self.jitter_trace.summary(self.local_presentation.offset()),
+        };
+        let mut presentation = PresentationDiagnostics {
+            skeleton_inspect: None,
+            characters: self.characters.len(),
+            bound: 0,
+            hidden: 0,
+            missing: Vec::new(),
+        };
+        if !on_connection
+            && self.frame_local.presented.is_some()
+            && let Some(renderer) = self.renderer.as_ref()
+        {
+            let idx = self
+                .debug
+                .as_ref()
+                .map(|d| d.ui.skeleton_inspect_index.min(15))
+                .unwrap_or(0);
+            let bone = purgatory_skeleton::BoneIndex::from_u8(idx);
+            if let (Some(local), Some(world_xf)) = (
+                self.skeleton.local().get(bone),
+                self.skeleton.world().get(bone),
+            ) {
+                let preview_scale = self
+                    .debug
+                    .as_ref()
+                    .map(|d| {
+                        crate::skeleton_debug::character_visual_scale(
+                            d.ui.skeleton_debug_preview_2x,
+                        )
+                    })
+                    .unwrap_or(crate::skeleton_debug::CHARACTER_VISUAL_SCALE_115);
+                let root = self
+                    .skeleton
+                    .world()
+                    .get(purgatory_skeleton::ROOT)
+                    .map(|t| t.translation)
+                    .unwrap_or(world_xf.translation);
+                let preview_t = crate::skeleton_debug::scale_about_root(
+                    world_xf.translation,
+                    root,
+                    preview_scale,
+                );
+                let ndc = renderer.camera().world_to_ndc(preview_t);
+                let screen = renderer
+                    .gameplay_pixel_viewport()
+                    .map(|vp| vp.ndc_to_px(ndc));
+                presentation.skeleton_inspect = Some(crate::debug::SkeletonInspectDebug {
+                    index: idx,
+                    name: crate::skeleton_debug::HUMANOID_V0_BONE_LABELS[usize::from(idx)].into(),
+                    local_t: local.translation,
+                    local_r: local.rotation,
+                    world_t: world_xf.translation,
+                    world_r: world_xf.rotation,
+                    screen,
+                });
+            }
+        }
+        if let Some(id) = self.replica.local_player() {
+            let key = PresentationEntityKey::new(id.index, id.generation);
+            if let Some(entry) = self.characters.get(key) {
+                presentation.bound = entry.bound().len();
+                presentation.hidden = entry.hidden_base();
+                presentation.missing = entry
+                    .missing()
+                    .iter()
+                    .map(|m| {
+                        let label = self.registry.label(m.content_id).unwrap_or("unknown");
+                        format!("{:?} {label} {:?}", m.slot, m.reason)
+                    })
+                    .collect();
+            }
+        }
+        DiagnosticsFrame {
+            runtime,
+            physics,
+            world,
+            network,
+            camera,
+            presentation,
+            rf: self.rf_proof,
+        }
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn empty_diagnostics_frame(&self) -> DiagnosticsFrame {
+        let (physics, roster) = WorldRosterDiagnostics::from_world(&self.world, self.last_input);
+        DiagnosticsFrame {
+            runtime: RuntimeDiagnostics {
+                tick: self.clock.tick().get(),
+                tick_rate_hz: purgatory_simulation::TICK_RATE_HZ,
+                fps: self.fps,
+                ..Default::default()
+            },
+            physics,
+            world: WorldDiagnostics {
+                roster,
+                stage_name: "content",
+                map_debug_name: "-".into(),
+                observer_address: "-".into(),
+                input_gate_label: "INPUT: ACTIVE".into(),
+                observer_enter_bounds: "—".into(),
+                observer_leave_bounds: "—".into(),
+                ..Default::default()
+            },
+            network: NetworkDiagnostics {
+                lifecycle: self.lifecycle.snapshot(),
+                interact_ui: "Idle".into(),
+                interact_last_request: "-".into(),
+                interact_last_result: "-".into(),
+                interp: self.interp.diagnostics(),
+                pred: self.prediction.diagnostics(&self.world, &self.replica),
+                ..Default::default()
+            },
+            camera: CameraDiagnostics {
+                parallax_far: PARALLAX_FAR,
+                parallax_mid: PARALLAX_MID,
+                parallax_near: PARALLAX_NEAR,
+                motion: self.last_camera_motion,
+                ..Default::default()
+            },
+            presentation: PresentationDiagnostics::default(),
+            rf: self.rf_proof,
+        }
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn append_rf_scene(&mut self, quads: &mut Vec<DrawQuad>, camera: &Camera, dt: f32) {
+        let show_ab = self.debug.as_ref().is_some_and(|d| d.ui.show_rf_ab);
+        let show = self.debug.as_ref().is_some_and(|d| d.ui.show_rf_scene) && !show_ab;
+        if !show {
+            self.rf_elapsed = 0.0;
+            self.rf_proof = None;
+            return;
+        }
+        if dt.is_finite() && dt > 0.0 && dt < 1.0 {
+            self.rf_elapsed += dt;
+        }
+        let remaining = MAX_QUADS.saturating_sub(quads.len());
+        quads.extend(rf_scene_quads(self.rf_elapsed).into_iter().take(remaining));
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let Some((iw, ih)) = renderer.internal_render_extent() else {
+            return;
+        };
+        let Some(output) = renderer.gameplay_pixel_viewport() else {
+            return;
+        };
+        let internal = PixelViewport {
+            x: 0,
+            y: 0,
+            width: iw,
+            height: ih,
+        };
+        let proof = rf_probe_proof(
+            self.rf_elapsed,
+            camera,
+            internal,
+            output,
+            self.rf_proof.as_ref(),
+        );
+        if self.debug.as_ref().is_some_and(|d| d.ui.rf_log_vertices) {
+            eprintln!("{}", proof.compact_line());
+        }
+        self.rf_proof = Some(proof);
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn apply_debug_commands(&mut self, commands: Vec<DebugCommand>) {
+        for command in commands {
+            match command {
+                DebugCommand::ResetPlayer => {
+                    let replica = reset_player_uses_replica(self.replica.local_entity().is_some());
+                    if replica {
+                        self.prediction.force_reanchor_from_replica(
+                            &self.replica,
+                            &mut self.world,
+                            self.clock.tick().get(),
+                        );
+                        self.local_presentation.request_snap();
+                        println!(
+                            "PURGATORY debug: Reanchor Prediction → snap to replica (no server teleport; pose may not move)"
+                        );
+                    } else {
+                        self.world
+                            .apply_debug_action(purgatory_simulation::DebugAction::ResetPlayer);
+                        self.local_presentation.request_snap();
+                        self.pending_center_on_player = true;
+                        println!("PURGATORY debug: Reset to Spawn → local spawn reset");
+                    }
+                    if let Some(debug) = self.debug.as_mut() {
+                        debug.ui.note_dev_action_flash(reset_action_flash(replica));
+                    }
+                }
+                DebugCommand::ResetToSpawn => {
+                    if self.lifecycle.screen() == ClientScreen::Game {
+                        if let Some(network) = &self.network {
+                            println!("DEV_RESET send DevResetPlayer");
+                            if network.try_send_dev_reset_player() {
+                                if let Some(debug) = self.debug.as_mut() {
+                                    debug.ui.note_dev_action_flash(RESET_TO_SPAWN_FLASH);
+                                }
+                            } else {
+                                eprintln!("DEV_RESET send failed (input channel full or closed)");
+                            }
+                        }
+                    } else {
+                        self.world
+                            .apply_debug_action(purgatory_simulation::DebugAction::ResetPlayer);
+                        self.local_presentation.request_snap();
+                        self.pending_center_on_player = true;
+                        println!("PURGATORY debug: Reset to Spawn Point -> local spawn reset");
+                        if let Some(debug) = self.debug.as_mut() {
+                            debug.ui.note_dev_action_flash(RESET_TO_SPAWN_FLASH);
+                        }
+                    }
+                }
+                DebugCommand::Connect => self.request_connect(),
+                DebugCommand::Disconnect => self.request_disconnect(),
+                DebugCommand::SetChannel(channel) => {
+                    if let Some(network) = &self.network {
+                        println!("6D_CHANNEL send DevSetChannel channel={channel}");
+                        if !network.try_send_dev_set_channel(channel) {
+                            eprintln!("6D_CHANNEL send failed (input channel full or closed)");
+                        }
+                    }
+                }
+                DebugCommand::SetResolution(resolution) => {
+                    if self.display.set_resolution(resolution).is_err() {
+                        eprintln!(
+                            "PURGATORY display: rejected invalid resolution {}x{}",
+                            resolution.width, resolution.height
+                        );
+                    }
+                }
+                DebugCommand::SetRenderScale(scale) => {
+                    if self.display.set_render_scale(scale) {
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            renderer.set_render_scale(scale);
+                            let gameplay = renderer.gameplay_pixel_viewport();
+                            let internal = renderer.internal_render_extent();
+                            println!(
+                                "PURGATORY display: render_scale {}% framebuffer {}x{} gameplay {} internal {} fov_unchanged",
+                                scale.percent(),
+                                renderer.surface_size().0,
+                                renderer.surface_size().1,
+                                gameplay
+                                    .map(|vp| format!("{}x{}", vp.width, vp.height))
+                                    .unwrap_or_else(|| "—".into()),
+                                internal
+                                    .map(|(w, h)| format!("{w}x{h}"))
+                                    .unwrap_or_else(|| "—".into()),
+                            );
+                        }
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                }
+                DebugCommand::SetWorldMsaa(mode) => {
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        let before = renderer.camera().view_proj_column_major();
+                        if renderer.set_world_msaa(mode) {
+                            let after = renderer.camera().view_proj_column_major();
+                            println!(
+                                "PURGATORY display: world_msaa {} samples={} 4x_supported={} fov_unchanged={}",
+                                renderer.world_msaa().as_str(),
+                                renderer.world_msaa_sample_count(),
+                                renderer.msaa_4x_supported(),
+                                before == after
+                            );
+                        }
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                }
+                DebugCommand::PresentationAttack => {
+                    if let Some(network) = &self.network {
+                        println!("A5_ONESHOT send Attack");
+                        if !network.try_send_dev_presentation_oneshot(1) {
+                            eprintln!(
+                                "A5_ONESHOT send Attack failed (input channel full or closed)"
+                            );
+                        }
+                    }
+                }
+                DebugCommand::PresentationHurt => {
+                    if let Some(network) = &self.network {
+                        println!("A5_ONESHOT send Hurt");
+                        if !network.try_send_dev_presentation_oneshot(2) {
+                            eprintln!("A5_ONESHOT send Hurt failed (input channel full or closed)");
+                        }
+                    }
+                }
+                DebugCommand::Equip(authored) => self.send_debug_equip(authored),
+                DebugCommand::UnequipSlot(slot) => self.send_debug_unequip(slot),
+                DebugCommand::UnequipAll => {
+                    for slot in 0..purgatory_simulation::EquipmentSlot::COUNT as u8 {
+                        self.send_debug_unequip(slot);
+                    }
+                }
+                DebugCommand::AnimationPlay => self.animation_player.set_playing(true),
+                DebugCommand::AnimationPause => self.animation_player.set_playing(false),
+                DebugCommand::AnimationReset => self.animation_player.reset(),
+                DebugCommand::DumpJitterTrace => self.dump_jitter_trace(),
+                DebugCommand::ImpairmentStall { ms } => {
+                    if let Some(network) = &self.network {
+                        let _ =
+                            network.try_trigger_input_stall(Duration::from_millis(u64::from(ms)));
+                    }
+                }
+                DebugCommand::ResetImpairmentMetrics => {
+                    if let Some(network) = &self.network {
+                        let _ = network.try_reset_impairment_metrics();
+                    }
+                }
+                DebugCommand::ClearNetworkHistory => self.lifecycle.clear_history(),
+                DebugCommand::CenterOnPlayer => self.pending_center_on_player = true,
+            }
+        }
+    }
+}
+
+#[cfg(feature = "dev-diagnostics")]
+fn remote_motion_probe(
+    replica: &crate::replica::ReplicatedWorld,
+    interp: &crate::interp::InterpolationBuffer,
+    characters: &CharacterPresentationSet,
+    rects: Option<purgatory_simulation::AoiRects>,
+) -> RemoteMotionProbe {
+    let local = replica.local_player();
+    let Some(entity) = replica
+        .iter()
+        .find(|entity| entity.kind == ReplicatedKind::Player && Some(entity.entity_id) != local)
+    else {
+        return RemoteMotionProbe::default();
+    };
+    let (interp_pos, used_interp) =
+        interpolated_or_replica_pose(interp.poses(), entity.entity_id, entity.position);
+    let key = PresentationEntityKey::new(entity.entity_id.index, entity.entity_id.generation);
+    let entry = characters.get(key);
+    let presented = entry.map(|e| e.state().pose);
+    let presented_root = entry.map(|e| e.prepared().input.root_position);
+    let (history_with_entity, entity_oldest_tick, entity_newest_tick) =
+        interp.remote_history_span(entity.entity_id);
+    let unique = interp.remote_unique_transform_span(entity.entity_id);
+    let bracket = interp.remote_entity_bracket(entity.entity_id);
+    let aoi_band = rects.map(|r| band_label(classify_band(entity.position, r)));
+    let observer_distance = local.and_then(|id| replica.get(id)).map(|local_e| {
+        let dx = entity.position[0] - local_e.position[0];
+        let dy = entity.position[1] - local_e.position[1];
+        (dx * dx + dy * dy).sqrt()
+    });
+    RemoteMotionProbe {
+        entity_index: Some(entity.entity_id.index),
+        entity_generation: Some(entity.entity_id.generation),
+        attachments: entry.map(|e| e.bound().len() as u32).unwrap_or(0),
+        used_interp,
+        auth: Some(entity.position),
+        interp: Some(interp_pos),
+        presented,
+        presented_root,
+        dx_auth_interp: Some(entity.position[0] - interp_pos[0]),
+        dx_interp_presented: presented.map(|p| interp_pos[0] - p[0]),
+        aoi_band,
+        observer_distance,
+        last_auth_transform_tick: (entity.last_transform_tick > 0)
+            .then_some(entity.last_transform_tick),
+        effective_received_gap: if entity.last_transform_gap > 0 {
+            Some(entity.last_transform_gap)
+        } else {
+            unique.last_gap
+        },
+        max_received_gap: (entity.max_transform_gap > 0).then_some(entity.max_transform_gap),
+        unique_history_ticks: unique.ticks,
+        unique_history_len: unique.ticks_len,
+        unique_count: unique.unique_count,
+        unique_oldest_tick: unique.oldest_tick,
+        unique_newest_tick: unique.newest_tick,
+        entity_bracket_a: bracket.sample_a,
+        entity_bracket_b: bracket.sample_b,
+        entity_alpha: bracket.alpha,
+        entity_clamped_newest: bracket.clamped_newest,
+        history_with_entity,
+        entity_oldest_tick,
+        entity_newest_tick,
+    }
 }
 
 fn capture_source_presentation(
     interp: &crate::interp::InterpolationBuffer,
     replica: &crate::replica::ReplicatedWorld,
 ) -> FrozenPresentation {
-    let mut remotes = interp.poses().to_vec();
+    let mut remotes = interp
+        .poses()
+        .iter()
+        .copied()
+        .filter(|pose| {
+            replica
+                .get(pose.entity_id)
+                .is_some_and(|e| e.kind == ReplicatedKind::Player)
+        })
+        .collect::<Vec<_>>();
     if remotes.is_empty() {
         remotes = replica
             .iter()
@@ -2099,6 +2895,7 @@ fn capture_source_presentation(
 }
 
 #[must_use]
+#[allow(dead_code)] // used by unit tests below
 fn visible_remote_poses<'a>(
     hold_source: bool,
     frozen: Option<&'a FrozenPresentation>,
@@ -2150,6 +2947,8 @@ fn scene_quads(
     world: &World,
     local_pose: Option<[f32; 2]>,
     remote_poses: &[PresentationPose],
+    _local_preview_scale: f32,
+    show_local_player: bool,
 ) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(8);
     for view in world.iter_platforms() {
@@ -2166,11 +2965,18 @@ fn scene_quads(
         };
         quads.push(aabb_quad(view.aabb(), color));
     }
-    if let Some(position) = local_pose {
-        let aabb = Aabb::new(position, PLAYER_HALF_EXTENTS);
-        quads.push(aabb_quad(aabb, PLAYER_COLOR));
+    if show_local_player && let Some(position) = local_pose {
+        let center = crate::skeleton_debug::preview_local_player_center(
+            position,
+            crate::skeleton_debug::CHARACTER_VISUAL_SCALE_1,
+        );
+        let size = crate::skeleton_debug::preview_local_player_size(
+            crate::skeleton_debug::CHARACTER_VISUAL_SCALE_1,
+        );
+        quads.push(DrawQuad::rect(center, size, PLAYER_COLOR));
     }
     for pose in remote_poses {
+        // NPC poses are drawn via npc_quads; remotes here are remote players only.
         let aabb = Aabb::new(pose.position, PLAYER_HALF_EXTENTS);
         quads.push(aabb_quad(aabb, REMOTE_PLAYER_COLOR));
     }
@@ -2181,6 +2987,26 @@ fn scene_quads(
         MARKER_COLOR,
     ));
     quads
+}
+
+fn npc_quads(
+    replica: &crate::replica::ReplicatedWorld,
+    interp: &crate::interp::InterpolationBuffer,
+) -> Vec<DrawQuad> {
+    let poses = interp.poses();
+    replica
+        .iter()
+        .filter(|entity| entity.kind == ReplicatedKind::Npc)
+        .map(|entity| {
+            let position = poses
+                .iter()
+                .find(|p| p.entity_id == entity.entity_id)
+                .map(|p| p.position)
+                .unwrap_or(entity.position);
+            let aabb = Aabb::new(position, [0.35, 0.55]);
+            aabb_quad(aabb, NPC_COLOR)
+        })
+        .collect()
 }
 
 fn interactable_marker_at(position: [f32; 2]) -> [DrawQuad; 2] {
@@ -2283,6 +3109,7 @@ fn transition_gameplay_input_locked(
     replica_has_sequence && last_observer.is_some_and(|last| last != replica_observer)
 }
 
+#[cfg(feature = "dev-diagnostics")]
 #[must_use]
 fn input_gate_debug_label(
     locked: bool,
@@ -2362,6 +3189,7 @@ fn replica_kind_labels(replica: &ReplicatedWorld, kind: ReplicatedKind) -> Vec<S
 struct ReplicaInteractRouting {
     nearest_generic: Option<(purgatory_protocol::WireEntityId, f32)>,
     nearest_portal: Option<(purgatory_protocol::WireEntityId, f32)>,
+    #[cfg_attr(not(feature = "dev-diagnostics"), allow(dead_code))]
     nearest_portal_pos: Option<[f32; 2]>,
     portal_eligible: bool,
     activate_portal: Option<purgatory_protocol::WireEntityId>,
@@ -2488,6 +3316,7 @@ fn interact_result_label(event: ServerInteract) -> String {
 }
 
 /// Authoritative remote positions as small markers (presentation gizmos only).
+#[cfg(feature = "dev-diagnostics")]
 fn interpolation_gizmos(
     replica: &ReplicatedWorld,
     remote_poses: &[PresentationPose],
@@ -2509,6 +3338,7 @@ fn interpolation_gizmos(
 }
 
 /// Authoritative vs predicted local markers (presentation gizmos only; default OFF).
+#[cfg(feature = "dev-diagnostics")]
 fn prediction_gizmos(
     replica: &ReplicatedWorld,
     local_pose: Option<[f32; 2]>,
@@ -2546,7 +3376,8 @@ impl ApplicationHandler for ClientApp {
         };
 
         match Renderer::new(window.clone()) {
-            Ok(renderer) => {
+            Ok(mut renderer) => {
+                renderer.set_render_scale(self.display.settings().render_scale);
                 let camera: Camera = renderer.camera();
                 let origin_ndc = camera.world_to_ndc([0.0, 0.0]);
                 println!(
@@ -2562,28 +3393,42 @@ impl ApplicationHandler for ClientApp {
                     origin_ndc[0],
                     origin_ndc[1],
                 );
-                println!(
-                    "PURGATORY connection frontend: CONNECT to 127.0.0.1:5001. No auto-connect."
-                );
-                println!(
-                    "PURGATORY controls (in Game): A/Left=MoveLeft D/Right=MoveRight S/Down=Down Space=Jump | Down+Jump=drop through OneWay | camera follows player"
-                );
-                println!(
-                    "PURGATORY debug overlay: Backquote/~ toggles tabs, gizmos, camera follow, slow-mo"
-                );
-                let overlay = DebugOverlay::new(
-                    &window,
-                    OverlayInit {
-                        device: renderer.device(),
-                        surface_format: renderer.surface_format(),
-                        max_texture_side: renderer.max_texture_dimension_2d() as usize,
-                    },
-                );
-                let frontend = ConnectionFrontend::load(overlay.context());
-                self.debug = Some(overlay);
-                self.frontend = Some(frontend);
+                #[cfg(feature = "dev-diagnostics")]
+                {
+                    println!(
+                        "PURGATORY connection frontend: CONNECT to 127.0.0.1:5001. No auto-connect."
+                    );
+                    println!(
+                        "PURGATORY controls (in Game): A/Left=MoveLeft D/Right=MoveRight S/Down=Down Space=Jump | Down+Jump=drop through OneWay | camera follows player"
+                    );
+                    println!(
+                        "PURGATORY debug overlay: Backquote/~ toggles tabs, gizmos, camera follow, slow-mo"
+                    );
+                    let overlay = DebugOverlay::new(
+                        &window,
+                        OverlayInit {
+                            device: renderer.device(),
+                            surface_format: renderer.surface_format(),
+                            max_texture_side: renderer.max_texture_dimension_2d() as usize,
+                        },
+                    );
+                    let frontend = ConnectionFrontend::load(overlay.context());
+                    self.debug = Some(overlay);
+                    self.frontend = Some(frontend);
+                }
+                #[cfg(not(feature = "dev-diagnostics"))]
+                {
+                    println!(
+                        "PURGATORY shipping client: no Connection Frontend / Debug overlay; will auto-connect once."
+                    );
+                    println!(
+                        "PURGATORY controls (in Game): A/Left=MoveLeft D/Right=MoveRight S/Down=Down Space=Jump | Down+Jump=drop through OneWay | camera follows player"
+                    );
+                }
+                let surface = renderer.surface_size();
                 self.renderer = Some(renderer);
                 self.window = Some(window);
+                self.display.note_surface_configured(surface);
                 self.last_instant = Instant::now();
                 println!("PURGATORY client frontend ready");
             }
@@ -2608,19 +3453,39 @@ impl ApplicationHandler for ClientApp {
         }
 
         if let WindowEvent::KeyboardInput { event: key, .. } = &event
-            && is_debug_toggle(key)
+            && {
+                #[cfg(feature = "dev-diagnostics")]
+                {
+                    is_debug_toggle(key)
+                }
+                #[cfg(not(feature = "dev-diagnostics"))]
+                {
+                    let _ = key;
+                    false
+                }
+            }
         {
-            self.toggle_debug_overlay();
-            window.request_redraw();
+            #[cfg(feature = "dev-diagnostics")]
+            {
+                self.toggle_debug_overlay();
+                window.request_redraw();
+            }
             return;
         }
 
-        let overlay_open = self.debug_overlay_visible();
-        let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
-        if (overlay_open || on_connection)
-            && let Some(overlay) = &mut self.debug
+        #[cfg(feature = "dev-diagnostics")]
         {
-            overlay.on_window_event(&window, &event);
+            let overlay_open = self.debug_overlay_visible();
+            let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
+            let feed_overlay = overlay_open
+                || on_connection
+                || matches!(
+                    event,
+                    WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
+                );
+            if feed_overlay && let Some(overlay) = &mut self.debug {
+                overlay.on_window_event(&window, &event);
+            }
         }
 
         match event {
@@ -2633,27 +3498,29 @@ impl ApplicationHandler for ClientApp {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                if is_usable_surface(size.width, size.height)
-                    && let Some(renderer) = self.renderer.as_mut()
-                {
-                    renderer.resize(size.width, size.height);
-                    // Keep camera clamped after aspect change.
-                    let bounds = self.world.bounds();
-                    let mut cam = renderer.camera();
-                    cam.clamp_to_bounds(bounds);
-                    renderer.set_camera(cam);
-                }
+                self.apply_framebuffer_size(size.width, size.height);
+                window.request_redraw();
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                let size = window.inner_size();
+                self.apply_framebuffer_size(size.width, size.height);
                 window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                #[cfg(feature = "dev-diagnostics")]
                 let text_like = self
                     .debug
                     .as_ref()
                     .is_some_and(DebugOverlay::wants_keyboard_for_text);
+                #[cfg(feature = "dev-diagnostics")]
+                let overlay_open = self.debug_overlay_visible();
+                #[cfg(feature = "dev-diagnostics")]
                 let pressed = event.state == ElementState::Pressed;
-                if self.lifecycle.gameplay_actions_allowed()
-                    && gameplay_receives_keyboard(overlay_open, text_like, pressed)
-                {
+                #[cfg(feature = "dev-diagnostics")]
+                let receives = gameplay_receives_keyboard(overlay_open, text_like, pressed);
+                #[cfg(not(feature = "dev-diagnostics"))]
+                let receives = true;
+                if self.lifecycle.gameplay_actions_allowed() && receives {
                     // Latch ActionState only. Intent is emitted on the sim tick
                     // that consumes the same PlayerInput as prediction.
                     self.actions.apply_key_event(&event);
@@ -2670,8 +3537,9 @@ impl ApplicationHandler for ClientApp {
             WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. } => {
+                #[cfg(feature = "dev-diagnostics")]
                 let _gameplay_mouse = gameplay_receives_pointer(
-                    overlay_open,
+                    self.debug_overlay_visible(),
                     self.debug.as_ref().is_some_and(DebugOverlay::wants_pointer),
                 );
             }
@@ -2781,7 +3649,7 @@ mod tests {
     }
 
     #[test]
-    fn development_viewport_matches_window_aspect() {
+    fn development_default_window_uses_locked_16_by_9_view() {
         let camera = Camera::from_physical_pixels(DEV_WINDOW_WIDTH, DEV_WINDOW_HEIGHT)
             .expect("dev size is usable");
         assert!((camera.viewport_width - 16.0).abs() < f32::EPSILON);
@@ -2796,7 +3664,7 @@ mod tests {
 
         let world = World::dev_stage();
         let local_pose = Some([1.5, 2.5]);
-        let quads = super::scene_quads(&world, local_pose, &[]);
+        let quads = super::scene_quads(&world, local_pose, &[], 1.0, true);
         assert!(quads.len() >= 5);
         let player_quad = quads
             .iter()
@@ -2809,9 +3677,37 @@ mod tests {
     }
 
     #[test]
+    fn scene_quads_local_aabb_stays_simulation_size() {
+        use purgatory_simulation::PLAYER_HALF_EXTENTS;
+
+        let world = World::dev_stage();
+        let local_pose = [1.5, 2.5];
+        let shown_1 = super::scene_quads(&world, Some(local_pose), &[], 1.0, true);
+        let shown_110 = super::scene_quads(
+            &world,
+            Some(local_pose),
+            &[],
+            crate::skeleton_debug::CHARACTER_VISUAL_SCALE_115,
+            true,
+        );
+        let expect_size = [PLAYER_HALF_EXTENTS[0] * 2.0, PLAYER_HALF_EXTENTS[1] * 2.0];
+        let q1 = shown_1
+            .iter()
+            .find(|quad| quad.center == local_pose)
+            .expect("local player quad");
+        let q110 = shown_110
+            .iter()
+            .find(|quad| quad.center == local_pose)
+            .expect("local player quad at 1.15 argument");
+        assert_eq!(q1.size, expect_size);
+        assert_eq!(q110.size, expect_size);
+        assert_eq!(q1.center, q110.center);
+    }
+
+    #[test]
     fn scene_quads_omit_local_when_pose_absent() {
         let world = World::dev_stage();
-        let quads = super::scene_quads(&world, None, &[]);
+        let quads = super::scene_quads(&world, None, &[], 1.0, true);
         let world_player = world.player_body().expect("local world player");
         assert!(
             quads
@@ -2819,6 +3715,17 @@ mod tests {
                 .all(|quad| quad.center != world_player.position),
             "no local pose means no local player quad"
         );
+    }
+
+    #[test]
+    fn scene_quads_can_hide_local_player_body_quad() {
+        let world = World::dev_stage();
+        let local_pose = Some([1.5, 2.5]);
+        let shown = super::scene_quads(&world, local_pose, &[], 1.0, true);
+        let hidden = super::scene_quads(&world, local_pose, &[], 1.0, false);
+        assert!(shown.iter().any(|quad| quad.center == [1.5, 2.5]));
+        assert!(hidden.iter().all(|quad| quad.center != [1.5, 2.5]));
+        assert_eq!(shown.len(), hidden.len() + 1);
     }
 
     #[test]
@@ -3393,6 +4300,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "dev-diagnostics")]
     #[test]
     fn input_gate_debug_label_matches_kind() {
         assert_eq!(
@@ -3504,8 +4412,8 @@ mod tests {
             },
             position: [4.0, -2.9],
         }];
-        let with_remotes = super::scene_quads(&world, Some([-8.0, -3.0]), &remotes);
-        let without = super::scene_quads(&world, Some([-8.0, -3.0]), &[]);
+        let with_remotes = super::scene_quads(&world, Some([-8.0, -3.0]), &remotes, 1.0, true);
+        let without = super::scene_quads(&world, Some([-8.0, -3.0]), &[], 1.0, true);
         assert!(with_remotes.len() > without.len());
     }
 

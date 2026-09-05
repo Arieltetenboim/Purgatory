@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "equipment.debug.plate_cuirass",
+  "attachments": [
+    {
+      "id": "shell",
+      "bone": "torso",
+      "anchor": "chest",
+      "coverage": "replace_base",
+      "hide_base": ["torso", "upper_arm_front", "upper_arm_back"],
+      "visuals": {
+        "side": "equipment.debug.plate_cuirass.side",
+        "back": "equipment.debug.plate_cuirass.back"
+      }
+    }
+  ]
+}

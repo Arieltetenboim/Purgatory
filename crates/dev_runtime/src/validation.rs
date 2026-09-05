@@ -394,6 +394,16 @@ pub fn read_live_status(run_dir: &Path) -> ValidationLiveStatus {
     }
 }
 
+/// Best-effort parse of server `capacity_live.json` from the shared run dir.
+#[must_use]
+pub fn read_capacity_live(run_dir: &Path) -> purgatory_common::CapacityLiveSnapshot {
+    let path = run_dir.join("capacity_live.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return purgatory_common::CapacityLiveSnapshot::default();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
 /// Best-effort parse of `run_summary.json`. Missing/malformed → unavailable (not failure).
 #[must_use]
 pub fn read_run_summary(run_dir: &Path) -> RunSummaryBrief {
@@ -559,5 +569,34 @@ mod tests {
         assert_eq!(s.peak_connected, 8);
         assert_eq!(s.reasons.len(), 1);
         assert_eq!(s.tick_work_p95_ms, Some(4.2));
+    }
+
+    #[test]
+    fn capacity_live_missing_is_unavailable() {
+        let dir = std::env::temp_dir().join(format!("purgatory-cap-miss-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let live = read_capacity_live(&dir);
+        assert!(!live.available);
+    }
+
+    #[test]
+    fn capacity_live_parses_heuristic_class() {
+        let dir = std::env::temp_dir().join(format!("purgatory-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("capacity_live.json"),
+            r#"{"schema":1,"available":true,"wall_secs":2.0,"classification_is_heuristic":true,"saturation_class":"unknown_unattributed","tick_p95_ms":1.0,"tick_p99_ms":2.0,"tick_max_ms":3.0,"tick_utilization_pct":10.0,"tick_overrun_count":0,"consecutive_overrun_streak":0,"cpu_utilization_pct":50.0,"cpu_normalized_per_logical_pct":3.0,"working_set_bytes":1,"bytes_in_per_sec":0.0,"bytes_out_per_sec":0.0,"connected_sessions":8,"entities":8,"writer_queue_depth_max":0,"writer_queue_push_fail_total":0,"write_drain_p99_ms":0.1,"unattributed_mean_ms":0.2,"accounting_error_ticks":0,"owners":[]}"#,
+        )
+        .unwrap();
+        let live = read_capacity_live(&dir);
+        assert!(live.available);
+        assert!(live.classification_is_heuristic);
+        assert_eq!(
+            live.saturation_class,
+            purgatory_common::SaturationClass::UnknownUnattributed
+        );
+        assert_eq!(live.tick_p99_ms, 2.0);
     }
 }

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "equipment.debug.practice_sword",
+  "attachments": [
+    {
+      "id": "blade",
+      "bone": "hand_front",
+      "anchor": "grip_front",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.practice_sword.side"
+      }
+    }
+  ]
+}

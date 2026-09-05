@@ -19,6 +19,7 @@ pub enum Action {
     Jump,
     Interact,
     ActivatePortal,
+    BasicStrike,
 }
 
 /// Held buttons plus a jump edge queued for the next simulation tick.
@@ -32,6 +33,7 @@ pub struct ActionState {
     interact_edge: bool,
     portal_edge: bool,
     portal_held: bool,
+    ability_edge: bool,
 }
 
 impl ActionState {
@@ -97,6 +99,14 @@ impl ActionState {
                     self.portal_held = false;
                 }
             }
+            Action::BasicStrike => {
+                if repeat {
+                    return;
+                }
+                if pressed {
+                    self.ability_edge = true;
+                }
+            }
         }
     }
 
@@ -145,6 +155,7 @@ impl ActionState {
         self.interact_edge = false;
         self.portal_edge = false;
         self.portal_held = false;
+        self.ability_edge = false;
     }
 
     /// Drop jump/interact/portal edges without releasing held movement.
@@ -154,6 +165,7 @@ impl ActionState {
         self.jump_edge = false;
         self.interact_edge = false;
         self.portal_edge = false;
+        self.ability_edge = false;
     }
 
     /// Edge-triggered interact. Not movement. Not authoritative eligibility.
@@ -161,6 +173,14 @@ impl ActionState {
     pub fn consume_interact_edge(&mut self) -> bool {
         let edge = self.interact_edge;
         self.interact_edge = false;
+        edge
+    }
+
+    /// Edge-triggered Basic Strike. Intent only; server owns hit/query.
+    #[must_use]
+    pub fn consume_ability_edge(&mut self) -> bool {
+        let edge = self.ability_edge;
+        self.ability_edge = false;
         edge
     }
 
@@ -216,6 +236,7 @@ pub fn map_key(code: KeyCode) -> Option<Action> {
         KeyCode::KeyS | KeyCode::ArrowDown => Some(Action::MoveDown),
         KeyCode::Space => Some(Action::Jump),
         KeyCode::KeyE => Some(Action::Interact),
+        KeyCode::KeyJ => Some(Action::BasicStrike),
         KeyCode::ArrowUp => Some(Action::ActivatePortal),
         _ => None,
     }
@@ -235,6 +256,7 @@ mod tests {
         assert_eq!(map_key(KeyCode::ArrowDown), Some(Action::MoveDown));
         assert_eq!(map_key(KeyCode::Space), Some(Action::Jump));
         assert_eq!(map_key(KeyCode::KeyE), Some(Action::Interact));
+        assert_eq!(map_key(KeyCode::KeyJ), Some(Action::BasicStrike));
         assert_eq!(map_key(KeyCode::ArrowUp), Some(Action::ActivatePortal));
         assert_eq!(map_key(KeyCode::KeyW), None);
         assert_eq!(map_key(KeyCode::Backquote), None);
@@ -251,6 +273,19 @@ mod tests {
         assert!(!state.consume_interact_edge());
         state.set_action(Action::Interact, true, false);
         assert!(state.consume_interact_edge());
+    }
+
+    #[test]
+    fn ability_edge_fires_once_until_consumed() {
+        let mut state = ActionState::default();
+        state.set_action(Action::BasicStrike, true, false);
+        state.set_action(Action::BasicStrike, true, true);
+        assert!(state.consume_ability_edge());
+        assert!(!state.consume_ability_edge());
+        state.set_action(Action::BasicStrike, false, false);
+        assert!(!state.consume_ability_edge());
+        state.set_action(Action::BasicStrike, true, false);
+        assert!(state.consume_ability_edge());
     }
 
     #[test]
@@ -455,6 +490,7 @@ mod tests {
         assert_eq!(again.move_axis, MoveAxis::Right);
     }
 
+    #[cfg(feature = "dev-diagnostics")]
     #[test]
     fn overlay_open_policy_keeps_held_movement() {
         let mut state = ActionState::default();
@@ -463,6 +499,7 @@ mod tests {
         assert_eq!(state.consume_tick_input().move_axis, 1);
     }
 
+    #[cfg(feature = "dev-diagnostics")]
     #[test]
     fn text_like_focus_does_not_start_new_gameplay_presses() {
         let mut state = ActionState::default();

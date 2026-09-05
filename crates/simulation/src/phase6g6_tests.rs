@@ -130,7 +130,10 @@ fn separated_clusters_zero_cross_talk() {
 }
 
 #[test]
-fn dense_mutual_visibility_dirties_most_of_cluster() {
+fn dense_cluster_tiny_move_dirties_only_mover_when_xor_empty() {
+    // 6G.7A closed XOR locality: a tiny same-cell move in a dense cluster does
+    // not dirty mutually visible observers. (Non-empty XOR is covered in
+    // phase6g7a_tests::dense_cluster_can_dirty_many_when_xor_nonempty.)
     let mut world = World::footnote_test_stage();
     if let Some(id) = world.player_id() {
         world.despawn(id);
@@ -148,9 +151,10 @@ fn dense_mutual_visibility_dirties_most_of_cluster() {
     t.position[0] += 0.1;
     world.set_transform(mover, t);
     let dirtied = world.interest_dirty_observer_count();
-    assert!(
-        dirtied >= ids.len() / 2,
-        "dense cluster should dirty many observers, got {dirtied}/{}",
+    assert_eq!(
+        dirtied,
+        1,
+        "tiny dense-cluster move with empty membership XOR dirties only the mover, got {dirtied}/{}",
         ids.len()
     );
 }

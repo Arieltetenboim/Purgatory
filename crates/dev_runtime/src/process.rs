@@ -128,6 +128,7 @@ pub enum BuildReason {
     ProbePrep,
     ValidatePrep,
     OpenClient,
+    OpenAnimationLab,
     Rebuild,
 }
 
@@ -139,6 +140,7 @@ impl BuildReason {
             Self::ProbePrep => "probe-prep",
             Self::ValidatePrep => "runtime-val-prep",
             Self::OpenClient => "open-client",
+            Self::OpenAnimationLab => "open-animation-lab",
             Self::Rebuild => "rebuild",
         }
     }

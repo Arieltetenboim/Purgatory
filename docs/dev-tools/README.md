@@ -17,7 +17,7 @@ Developer Tools owns local development runtime control:
 - run the quality gate and load harness
 - surface logs, metrics, and failure detail
 
-It is not a production admin console. It is not a Map/NPC/content editor.
+It is not a production admin console. It is not a Map/NPC editor. Animation Lab is a Hub-launched standalone window (A7.0, ADR-0058), not an in-Hub editor.
 
 ## CURRENT
 
@@ -27,9 +27,10 @@ Implemented in this pass:
 |---|---|
 | Server lifecycle | Start / Restart / Stop with an explicit state machine. Closing Developer Tools does **not** stop the server. |
 | Client lifecycle | Open 1 / 2 / 3 clients; Stop All. Clients wait for **Ready**, not merely a live process. Open Client skips cargo rebuild when any workspace `purgatory-client` is running or the exe is locked (avoids Access Denied); Stop clients first to pick up a new build. |
-| Build | Debug/Release. Owned `cargo` process. START rebuilds the server, then launches. Rebuild skips a package while its `.exe` is running (`purgatory-server` / `purgatory-client`) so cargo does not hit Access Denied. |
+| Build | Debug/Release. Owned `cargo` process. START rebuilds the server, then launches. Rebuild skips a package while its `.exe` is running (`purgatory-server` / `purgatory-client` / `purgatory-animation-lab`) so cargo does not hit Access Denied. Close Animation Lab first to pick up lab changes. |
 | Quality Gate | Visible console running [`scripts/check.ps1`](../../scripts/check.ps1). |
 | Load testing | Dialog (count, profile, scenario, duration, seed), load-mode server (`PURGATORY_ADMISSION_CAP=256`, metrics `:5002`), owned `purgatory-load` harness with a visible dashboard, Stop Load, analyze last run, open logs/report. |
+| Phase 7 Stats | Testing → Phase 7 Stats: read-only Phase 7.8 gate summary from `logs/load/capacity_78/gate_*/phase78_gate_summary.json`. Verdict GREEN/YELLOW/RED/INVALID; HARNESS WARN ≠ SERVER WARN. |
 | Runtime Validation | Dialog (`--preset` smoke/mixed/stress/soak/…, optional `--duration` overlay, seed). Forwards the same CLI a headless run uses. Requires Server **Ready**. Always rebuilds `purgatory-load` first, then restarts a clean load-mode server with isolated `PURGATORY_DATA_DIR`. Refuses a second concurrent harness. Live status shows elapsed/duration, real-client count, and portal progress from `live_status.json` (no extra console window; 1 Hz dashboard writeln would ding). Pass/fail is Rust, not PowerShell. Mixed soak keeps a persistent real-QUIC baseline; churn is a separate role; portal bots walk into the activation zone. `--duration` without `--timeout` raises the wall-clock timeout in Rust (not in the GUI). ANALYZE LAST RUN uses a completed artifact (`last_finished.txt`), not an in-progress `current_run` or a future-dated folder. Exit 2 with `unexpected argument` rebuilds `-p purgatory-bot-client --bin purgatory-load`. Other CLI errors are shown as-is (not treated as a stale binary). |
 | Metrics | UDP `PURGSTAT` on `127.0.0.1:5002` (operational measurements + Health). |
 | Connection probe | `purgatory-load --probe` (Quinn Hello/Welcome, protocol v10, login `dev.probe`). |
@@ -40,6 +41,7 @@ Implemented in this pass:
 | Environment | Log level combo applies to **new** processes: `RUST_BACKTRACE=1`, optional `RUST_LOG`, `PURGATORY_NET_LOG`, `PURGATORY_NET_VERBOSE`. |
 | Autostart | Starts the server on first show unless a server is already present or `PURGATORY_LAUNCHER_NO_AUTOSTART` is set. |
 | Kill All | Workspace-scoped cargo (command line contains this repo root) plus owned server/client/load. |
+| Authoring template | Content → **Export authoring template** writes [`Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg`](../../Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg) from live Humanoid v0 contracts. **Export AI modular reference** writes [`HUMANOID_V0_AI_MODULAR_REFERENCE_V1.svg`](../../Graphic/character/HUMANOID_V0_AI_MODULAR_REFERENCE_V1.svg). **Export Headwear Side master** writes [`Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg`](../../Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg) (empty 2×2 grid + Crown `+`). **Extract Headwear Side cells** crops `HEADWEAR_SIDE_MASTER_V1.png` by grid only. Animation Lab can DEV-load one extracted Headwear Side PNG (`equipment.debug.headwear_proof.a.side`). The game client compile-embeds the four extracted Side cells (`a`–`d`); Player debug overlay selects HEADWEAR 1–4. Photoshop / AI reference files are not filesystem-loaded by the client. |
 
 ### Metrics vs Health vs Readiness
 
@@ -62,13 +64,13 @@ Developer Tools
 ├── Runtime        CURRENT
 ├── Testing        CURRENT
 ├── Diagnostics    CURRENT
-├── Content        PLANNED
+├── Content        CURRENT (launches Animation Lab; Humanoid v0 authoring SVG export; Headwear Side master-sheet proof; not an in-Hub editor)
 ├── Maps           PLANNED (visual editor may be a native tool)
 ├── NPCs           PLANNED
 └── Settings       CURRENT (profile / log level / quality gate / rebuild / Kill All)
 ```
 
-Maps, NPC, dialogue, item, and gameplay-admin editors are out of scope until a later Developer Tools step.
+Maps, NPC, dialogue, item, and gameplay-admin editors remain out of scope. Animation Lab is A7.0 (launched binary). Do not start A7.1 from Developer Tools work.
 
 ## How to run
 
@@ -82,13 +84,13 @@ PowerShell fallback. Requires: Windows, PowerShell (STA), Rust/`cargo` on PATH f
 DEV_HUB.BAT
 ```
 
-Builds if needed, launches `purgatory-dev-hub.exe`, then the bootstrap exits. Live pages: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings. World / Content remain placeholders (editors). The Hub window is **fixed size** (1280×800, non-resizable) until a full responsive layout pass exists. Closing the Hub does **not** stop the dedicated server or detached clients; reopen adopts workspace processes and re-verifies the server with `--probe` before Ready. Kill All **does** stop server/clients/load. A second Hub for this workspace is refused (`logs/dev-tools/hub.lock`). Do not drive the same workspace from both shells at once.
+Builds if needed, launches `purgatory-dev-hub.exe`, then the bootstrap exits. Live pages: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings, Content (Animation Lab launch, Humanoid v0 authoring-template export, Headwear Side master proof). World remains a placeholder. Closing the Hub / Kill All does **not** stop Animation Lab. The Hub window is **fixed size** (1280×800, non-resizable) until a full responsive layout pass exists.
 
 ### Hub UI presentation (current)
 
 - **Dashboard** — shared design-system modules (StatusCard / Project / Attention / Quick Actions + real ActivityLog strip). Semantic wide/medium/narrow composition; primary/ghost/destructive buttons; no invented host System Status gauges.
-- **Validation & Performance** — live run header + structured `live_status.json` fields, bounded `load.log` tail, `metrics.csv` chart (connected bots / tick mean), completed **Result summary** with **Show full details** expander over `run_summary.json`. Pass/fail remains harness CLI authority. Cancelled is distinct from Failed / OrchestrationFailed.
-- **Visual system** — shared cards, status pills, metric tiles, page headers in `apps/dev_hub` (`theme` + `ui/layout`). Minimum practical window ~720×520.
+- **Validation & Performance** — live run header + structured `live_status.json` fields, compact `capacity_live.json` strip (tick p99, utilization, dominant owner, saturation class, CPU raw vs normalized-per-logical; owner table behind Show full details), bounded `load.log` tail, `metrics.csv` chart (connected bots / tick mean), completed **Result summary** with **Show full details** expander over `run_summary.json`. Pass/fail remains harness CLI authority. Cancelled is distinct from Failed / OrchestrationFailed.
+- **Visual system** — shared cards, status pills, metric tiles, page headers in `apps/dev_hub` (`theme` + `ui/layout`). Brand logo from `Graphic/LOGO.png` (sidebar; same development path pattern as the client connection screen). Fixed window 1280×800.
 - Runtime snapshot owns presentation data (`ValidationLiveStatus`, `RunSummaryBrief`, `MetricsSeries`, `load_log_lines`). GUI does not spawn harnesses or decide PASS/FAIL.
 
 Do not use `cargo run -p purgatory-dev-hub` as the operational launch path.

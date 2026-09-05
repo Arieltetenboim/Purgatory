@@ -172,6 +172,15 @@ impl ClientLifecycle {
             NetworkEvent::Interact { event, .. } => {
                 self.emit_log(&format!("Interact {event:?}"));
             }
+            NetworkEvent::Equipment { event, .. } => {
+                self.emit_log(&format!("Equipment {event:?}"));
+            }
+            NetworkEvent::PresentationOneShot { event, .. } => {
+                self.emit_log(&format!("PresentationOneShot {event:?}"));
+            }
+            NetworkEvent::Ability { event, .. } => {
+                self.emit_log(&format!("Ability {event:?}"));
+            }
         }
     }
 
@@ -206,6 +215,11 @@ impl ClientLifecycle {
                 matches!(state, ConnectionState::Connected)
             }
             NetworkEvent::Interact { .. } => {
+                matches!(state, ConnectionState::Connected)
+            }
+            NetworkEvent::Equipment { .. }
+            | NetworkEvent::PresentationOneShot { .. }
+            | NetworkEvent::Ability { .. } => {
                 matches!(state, ConnectionState::Connected)
             }
         }

@@ -1,5 +1,8 @@
 //! Minimal life container. Not combat resolution.
 
+/// Default max Health when a player is attached as a combatant.
+pub const PLAYER_HEALTH_MAX: f32 = 20.0;
+
 /// Current / max health. Optional capability.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Health {
@@ -12,6 +15,17 @@ impl Health {
     pub const fn full(max: f32) -> Self {
         Self { current: max, max }
     }
+
+    /// Combat-alive. Entities without Health are non-participants, not dead.
+    #[must_use]
+    pub fn is_alive(self) -> bool {
+        self.current > 0.0
+    }
+
+    #[must_use]
+    pub fn is_dead(self) -> bool {
+        !self.is_alive()
+    }
 }
 
 #[cfg(test)]
@@ -23,5 +37,12 @@ mod tests {
         let h = Health::full(10.0);
         assert_eq!(h.current, 10.0);
         assert_eq!(h.max, 10.0);
+        assert!(h.is_alive());
+        assert!(!h.is_dead());
+        let dead = Health {
+            current: 0.0,
+            max: 10.0,
+        };
+        assert!(dead.is_dead());
     }
 }

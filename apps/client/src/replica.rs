@@ -8,8 +8,8 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use purgatory_protocol::{
-    ObserverAoiDebug, PlatformSupportId, ReplicatedHealth, ReplicatedKind, ReplicationFrame,
-    ReplicationRecord, SnapshotEntity, WireEntityId, WorldSnapshot,
+    ObserverAoiDebug, PlatformSupportId, ReplicatedEquipment, ReplicatedHealth, ReplicatedKind,
+    ReplicationFrame, ReplicationRecord, SnapshotEntity, WireEntityId, WorldSnapshot,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,6 +35,13 @@ pub struct ReplicatedEntity {
     #[allow(dead_code)]
     pub velocity: [f32; 2],
     pub health: Option<ReplicatedHealth>,
+    /// `None` = no equipment domain. `Some` (including all-empty) = domain present.
+    pub equipment: Option<ReplicatedEquipment>,
+    /// Server tick of the last applied transform Update/Enter.
+    pub last_transform_tick: u64,
+    /// Gap from the previous transform Update (0 = none yet).
+    pub last_transform_gap: u64,
+    pub max_transform_gap: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,14 +59,6 @@ pub struct ReplicaLifecycleNote {
 }
 
 const RECENT_LIFECYCLE_CAP: usize = 24;
-
-/// Last-known pose of entities removed by a Leave on the most recent applied frame.
-#[derive(Clone, Copy, Debug)]
-pub struct ReplicaLeavePose {
-    pub entity_id: WireEntityId,
-    pub kind: ReplicatedKind,
-    pub position: [f32; 2],
-}
 
 #[derive(Debug)]
 pub struct ReplicatedWorld {
@@ -89,7 +88,6 @@ pub struct ReplicatedWorld {
     total_enters: u64,
     total_updates: u64,
     total_leaves: u64,
-    last_leave_poses: Vec<ReplicaLeavePose>,
     /// True when the last applied snapshot/frame refreshed local pose+velocity.
     local_durable_updated: bool,
 }
@@ -130,7 +128,6 @@ impl ReplicatedWorld {
             total_enters: 0,
             total_updates: 0,
             total_leaves: 0,
-            last_leave_poses: Vec::new(),
             local_durable_updated: false,
         }
     }
@@ -174,6 +171,10 @@ impl ReplicatedWorld {
                     position: entity.position,
                     velocity: entity.velocity,
                     health: None,
+                    equipment: None,
+                    last_transform_tick: snap.server_tick,
+                    last_transform_gap: 0,
+                    max_transform_gap: 0,
                 },
             );
         }
@@ -212,7 +213,6 @@ impl ReplicatedWorld {
         }
         self.apply_frame_header(&frame);
         self.aoi_debug = frame.aoi_debug;
-        self.last_leave_poses.clear();
         self.local_durable_updated = false;
         let local_id = frame.local_player_entity;
         let mut enters = 0u32;
@@ -220,7 +220,11 @@ impl ReplicatedWorld {
         let mut leaves = 0u32;
         for rec in frame.records {
             match rec {
-                ReplicationRecord::Enter { entity, health } => {
+                ReplicationRecord::Enter {
+                    entity,
+                    health,
+                    equipment,
+                } => {
                     enters = enters.saturating_add(1);
                     if entity.entity_id == local_id {
                         self.local_durable_updated = true;
@@ -239,6 +243,10 @@ impl ReplicatedWorld {
                             position: entity.position,
                             velocity: entity.velocity,
                             health,
+                            equipment,
+                            last_transform_tick: frame.server_tick,
+                            last_transform_gap: 0,
+                            max_transform_gap: 0,
                         },
                     );
                 }
@@ -247,6 +255,7 @@ impl ReplicatedWorld {
                     position,
                     velocity,
                     health,
+                    equipment,
                     ..
                 } => {
                     updates = updates.saturating_add(1);
@@ -255,6 +264,13 @@ impl ReplicatedWorld {
                     }
                     if let Some(existing) = self.entities.get_mut(&entity_id) {
                         if let Some(p) = position {
+                            let prev = existing.last_transform_tick;
+                            if prev > 0 {
+                                let gap = frame.server_tick.saturating_sub(prev);
+                                existing.last_transform_gap = gap;
+                                existing.max_transform_gap = existing.max_transform_gap.max(gap);
+                            }
+                            existing.last_transform_tick = frame.server_tick;
                             existing.position = p;
                         }
                         if let Some(v) = velocity {
@@ -263,20 +279,21 @@ impl ReplicatedWorld {
                         if health.is_some() {
                             existing.health = health;
                         }
+                        if let Some(delta) = equipment {
+                            existing
+                                .equipment
+                                .get_or_insert_with(ReplicatedEquipment::empty)
+                                .apply_delta(&delta);
+                        }
                     }
                 }
                 ReplicationRecord::Leave { entity_id } => {
                     leaves = leaves.saturating_add(1);
-                    let (kind, position) = self
+                    let kind = self
                         .entities
                         .get(&entity_id)
-                        .map(|e| (e.kind, e.position))
-                        .unwrap_or((ReplicatedKind::Player, [0.0, 0.0]));
-                    self.last_leave_poses.push(ReplicaLeavePose {
-                        entity_id,
-                        kind,
-                        position,
-                    });
+                        .map(|e| e.kind)
+                        .unwrap_or(ReplicatedKind::Player);
                     self.push_lifecycle(ReplicaLifecycleNote {
                         entity_id,
                         kind,
@@ -372,7 +389,6 @@ impl ReplicatedWorld {
         self.total_enters = 0;
         self.total_updates = 0;
         self.total_leaves = 0;
-        self.last_leave_poses.clear();
         self.local_durable_updated = false;
     }
 
@@ -451,11 +467,6 @@ impl ReplicatedWorld {
         self.last_frame_leaves
     }
 
-    #[must_use]
-    pub fn last_leave_poses(&self) -> &[ReplicaLeavePose] {
-        &self.last_leave_poses
-    }
-
     /// Last applied frame/snapshot included a local-player pose or velocity.
     #[must_use]
     pub fn local_durable_updated(&self) -> bool {
@@ -523,6 +534,10 @@ impl From<SnapshotEntity> for ReplicatedEntity {
             position: entity.position,
             velocity: entity.velocity,
             health: None,
+            equipment: None,
+            last_transform_tick: 0,
+            last_transform_gap: 0,
+            max_transform_gap: 0,
         }
     }
 }
@@ -731,10 +746,12 @@ mod tests {
                 ReplicationRecord::Enter {
                     entity: entity(1, 1, 1.0),
                     health: None,
+                    equipment: None,
                 },
                 ReplicationRecord::Enter {
                     entity: entity(2, 1, 2.0),
                     health: None,
+                    equipment: None,
                 },
             ],
         );
@@ -747,10 +764,12 @@ mod tests {
                 domains: purgatory_protocol::DomainMask {
                     transform: true,
                     health: false,
+                    equipment: false,
                 },
                 position: Some([9.0, 0.0]),
                 velocity: Some([0.0, 0.0]),
                 health: None,
+                equipment: None,
             }],
         );
         assert!(matches!(
@@ -783,6 +802,7 @@ mod tests {
             vec![ReplicationRecord::Enter {
                 entity: entity(1, 1, 1.0),
                 health: None,
+                equipment: None,
             }],
         );
         world.apply_frame(enter);
@@ -810,10 +830,12 @@ mod tests {
                 ReplicationRecord::Enter {
                     entity: entity(1, 1, 0.0),
                     health: None,
+                    equipment: None,
                 },
                 ReplicationRecord::Enter {
                     entity: entity(2, 1, 2.0),
                     health: None,
+                    equipment: None,
                 },
             ],
         );
@@ -870,6 +892,7 @@ mod tests {
             vec![ReplicationRecord::Enter {
                 entity: entity(1, 1, 1.0),
                 health: None,
+                equipment: None,
             }],
         ));
         world.apply_frame(frame(
@@ -884,10 +907,12 @@ mod tests {
                 domains: purgatory_protocol::DomainMask {
                     transform: true,
                     health: false,
+                    equipment: false,
                 },
                 position: Some([5.0, 0.0]),
                 velocity: Some([0.0, 0.0]),
                 health: None,
+                equipment: None,
             }],
         ));
         assert_eq!(world.len(), 1);
@@ -913,10 +938,12 @@ mod tests {
                 ReplicationRecord::Enter {
                     entity: entity(1, 1, 1.0),
                     health: None,
+                    equipment: None,
                 },
                 ReplicationRecord::Enter {
                     entity: entity(8, 1, 80.0),
                     health: None,
+                    equipment: None,
                 },
             ],
         ));
@@ -928,6 +955,7 @@ mod tests {
             vec![ReplicationRecord::Enter {
                 entity: entity(1, 1, 3.0),
                 health: None,
+                equipment: None,
             }],
         ));
         assert_eq!(decision, FrameDecision::Applied { epoch_reset: true });
@@ -940,5 +968,62 @@ mod tests {
             FrameDecision::IgnoredOlderEpoch
         );
         assert_eq!(world.len(), 1);
+    }
+
+    #[test]
+    fn apply_frame_stores_and_deltas_equipment() {
+        use purgatory_common::ContentId;
+        use purgatory_protocol::{ReplicatedEquipment, ReplicatedEquipmentDelta};
+        let mut world = ReplicatedWorld::new();
+        let a = WireEntityId {
+            index: 1,
+            generation: 1,
+        };
+        let sword = ContentId::from_token(7);
+        world.apply_frame(frame(
+            0,
+            1,
+            a,
+            vec![ReplicationRecord::Enter {
+                entity: entity(1, 1, 1.0),
+                health: None,
+                equipment: None,
+            }],
+        ));
+        assert!(world.get(a).unwrap().equipment.is_none());
+        let mut delta = ReplicatedEquipmentDelta::empty();
+        delta.set(5, Some(sword));
+        world.apply_frame(frame(
+            0,
+            2,
+            a,
+            vec![ReplicationRecord::Update {
+                entity_id: a,
+                domains: purgatory_protocol::DomainMask {
+                    transform: false,
+                    health: false,
+                    equipment: true,
+                },
+                position: None,
+                velocity: None,
+                health: None,
+                equipment: Some(delta),
+            }],
+        ));
+        let eq = world.get(a).unwrap().equipment.expect("domain created");
+        assert_eq!(eq.get(5), Some(sword));
+        let mut empty = ReplicatedEquipment::empty();
+        empty.set(5, Some(sword));
+        world.apply_frame(frame(
+            0,
+            3,
+            a,
+            vec![ReplicationRecord::Enter {
+                entity: entity(1, 1, 1.0),
+                health: None,
+                equipment: Some(empty),
+            }],
+        ));
+        assert_eq!(world.get(a).unwrap().equipment.unwrap().get(5), Some(sword));
     }
 }

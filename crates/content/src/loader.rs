@@ -5,7 +5,13 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::ability::ABILITY_CONTENT_SCHEMA_VERSION;
 use crate::domain::ContentDomain;
+use crate::equipment::{
+    AnchorPoint, BoneTarget, CorrectionOffset, CoverageMode, EQUIPMENT_CONTENT_SCHEMA_VERSION,
+    EquipmentDefinition, EquipmentPresentation, PresentationAttachment, ViewVisuals,
+    validate_equipment_definition,
+};
 use crate::error::{ContentError, ValidationIssue};
 use crate::registry::ContentRegistry;
 use crate::schema::{
@@ -13,11 +19,14 @@ use crate::schema::{
     SpawnPoint, TransitionRef,
 };
 use purgatory_common::{ContentId, validate_authored_id};
-use purgatory_simulation::{InteractableKind, PlatformKind, WorldBounds};
+use purgatory_simulation::{
+    AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityTiming,
+    EquipmentSlot, InteractableKind, PlatformKind, WorldBounds,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoadMode {
-    /// Client-safe: maps + shared entities only.
+    /// Client-safe: maps + shared entities + shared equipment + shared abilities.
     Shared,
     /// Server: shared + server-only entities and placements.
     Full,
@@ -47,6 +56,27 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         ContentDomain::Shared,
         Kind::Map,
     );
+    load_dir(
+        &mut registry,
+        &mut issues,
+        &root.join("shared").join("equipment"),
+        ContentDomain::Shared,
+        Kind::Equipment,
+    );
+    load_dir(
+        &mut registry,
+        &mut issues,
+        &root.join("shared").join("equipment_presentation"),
+        ContentDomain::Shared,
+        Kind::EquipmentPresentation,
+    );
+    load_dir(
+        &mut registry,
+        &mut issues,
+        &root.join("shared").join("abilities"),
+        ContentDomain::Shared,
+        Kind::Ability,
+    );
     if mode == LoadMode::Full {
         load_dir(
             &mut registry,
@@ -75,6 +105,9 @@ enum Kind {
     Entity,
     Map,
     Placements,
+    Equipment,
+    EquipmentPresentation,
+    Ability,
 }
 
 fn load_dir(
@@ -142,6 +175,22 @@ fn load_file(
             }
             registry.insert_placements(raw.map, placements)
         }
+        Kind::Equipment => {
+            let raw: RawEquipment = parse(path, &text)?;
+            let def = raw.into_def(path, domain)?;
+            registry.insert_equipment(def)
+        }
+        Kind::EquipmentPresentation => {
+            let raw: RawEquipmentPresentation = parse(path, &text)?;
+            let def = raw.into_def(path)?;
+            registry.insert_equipment_presentation(def)
+        }
+        Kind::Ability => {
+            let raw: RawAbility = parse(path, &text)?;
+            let authored = raw.id.clone();
+            let def = raw.into_def(path)?;
+            registry.insert_ability(authored, def)
+        }
     }
 }
 
@@ -157,6 +206,34 @@ fn check_schema(path: &Path, version: u32, def: &str) -> Result<(), ContentError
             def,
             "schema_version",
             format!("unsupported schema version {version} (want {CONTENT_SCHEMA_VERSION})"),
+        ));
+    }
+    Ok(())
+}
+
+fn check_equipment_schema(path: &Path, version: u32, def: &str) -> Result<(), ContentError> {
+    if version != EQUIPMENT_CONTENT_SCHEMA_VERSION {
+        return Err(ContentError::from_path(
+            path.to_path_buf(),
+            def,
+            "schema_version",
+            format!(
+                "unsupported equipment schema version {version} (want {EQUIPMENT_CONTENT_SCHEMA_VERSION})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn check_ability_schema(path: &Path, version: u32, def: &str) -> Result<(), ContentError> {
+    if version != ABILITY_CONTENT_SCHEMA_VERSION {
+        return Err(ContentError::from_path(
+            path.to_path_buf(),
+            def,
+            "schema_version",
+            format!(
+                "unsupported ability schema version {version} (want {ABILITY_CONTENT_SCHEMA_VERSION})"
+            ),
         ));
     }
     Ok(())
@@ -252,6 +329,300 @@ struct RawPlacements {
 struct RawPlacement {
     entity: String,
     position: [f32; 2],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEquipment {
+    schema_version: u32,
+    id: String,
+    equipment_slot: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEquipmentPresentation {
+    schema_version: u32,
+    id: String,
+    #[serde(default)]
+    attachments: Vec<RawAttachment>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAttachment {
+    id: String,
+    bone: String,
+    anchor: String,
+    coverage: String,
+    #[serde(default)]
+    hide_base: Vec<String>,
+    #[serde(default)]
+    correction: RawCorrection,
+    visuals: RawVisuals,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawCorrection {
+    #[serde(default)]
+    x: f32,
+    #[serde(default)]
+    y: f32,
+    #[serde(default)]
+    rotation: f32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawVisuals {
+    side: String,
+    #[serde(default)]
+    back: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAbility {
+    schema_version: u32,
+    id: String,
+    timing: RawAbilityTiming,
+    activation: String,
+    delivery: RawAbilityDelivery,
+    effects: Vec<RawAbilityEffect>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAbilityTiming {
+    windup_ticks: u64,
+    active_ticks: u64,
+    recovery_ticks: u64,
+    cooldown_ticks: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAbilityDelivery {
+    kind: String,
+    #[serde(default)]
+    range: Option<f32>,
+    #[serde(default)]
+    half_height: Option<f32>,
+    #[serde(default)]
+    max_targets: Option<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAbilityEffect {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    amount: Option<f32>,
+}
+
+impl RawAbility {
+    fn into_def(self, path: &Path) -> Result<AbilityDefinition, ContentError> {
+        check_ability_schema(path, self.schema_version, &self.id)?;
+        check_authored(path, &self.id)?;
+        let activation = match self.activation.as_str() {
+            "independent" => AbilityActivation::Independent,
+            "selected_entity" => AbilityActivation::SelectedEntity,
+            other => {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    &self.id,
+                    "activation",
+                    format!("unknown activation '{other}'"),
+                ));
+            }
+        };
+        let delivery = match self.delivery.kind.as_str() {
+            "forward_query" => AbilityDelivery::ForwardQuery {
+                range: self.delivery.range.ok_or_else(|| {
+                    ContentError::from_path(
+                        path.to_path_buf(),
+                        &self.id,
+                        "delivery.range",
+                        "required for forward_query",
+                    )
+                })?,
+                half_height: self.delivery.half_height.ok_or_else(|| {
+                    ContentError::from_path(
+                        path.to_path_buf(),
+                        &self.id,
+                        "delivery.half_height",
+                        "required for forward_query",
+                    )
+                })?,
+                max_targets: self.delivery.max_targets.ok_or_else(|| {
+                    ContentError::from_path(
+                        path.to_path_buf(),
+                        &self.id,
+                        "delivery.max_targets",
+                        "required for forward_query",
+                    )
+                })?,
+            },
+            "selected_entity" => AbilityDelivery::SelectedEntity,
+            other => {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    &self.id,
+                    "delivery.kind",
+                    format!("unknown delivery '{other}'"),
+                ));
+            }
+        };
+        let mut effects = Vec::new();
+        for raw in self.effects {
+            match raw.kind.as_str() {
+                "damage" => {
+                    let amount = raw.amount.ok_or_else(|| {
+                        ContentError::from_path(
+                            path.to_path_buf(),
+                            &self.id,
+                            "effects.amount",
+                            "required for damage",
+                        )
+                    })?;
+                    effects.push(AbilityEffect::Damage { amount });
+                }
+                other => {
+                    return Err(ContentError::from_path(
+                        path.to_path_buf(),
+                        &self.id,
+                        "effects.type",
+                        format!("unknown effect '{other}'"),
+                    ));
+                }
+            }
+        }
+        let def = AbilityDefinition {
+            id: ContentId::from_authored(&self.id).expect("validated"),
+            timing: AbilityTiming {
+                windup_ticks: self.timing.windup_ticks,
+                active_ticks: self.timing.active_ticks,
+                recovery_ticks: self.timing.recovery_ticks,
+                cooldown_ticks: self.timing.cooldown_ticks,
+            },
+            activation,
+            delivery,
+            effects,
+        };
+        def.validate().map_err(|e| {
+            ContentError::from_path(path.to_path_buf(), &self.id, "ability", format!("{e:?}"))
+        })?;
+        Ok(def)
+    }
+}
+
+impl RawEquipment {
+    fn into_def(
+        self,
+        path: &Path,
+        domain: ContentDomain,
+    ) -> Result<EquipmentDefinition, ContentError> {
+        check_equipment_schema(path, self.schema_version, &self.id)?;
+        check_authored(path, &self.id)?;
+        let slot = EquipmentSlot::parse(&self.equipment_slot).ok_or_else(|| {
+            ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "equipment_slot",
+                format!(
+                    "rule=schema: unknown equipment slot '{}'",
+                    self.equipment_slot
+                ),
+            )
+        })?;
+        let def = EquipmentDefinition {
+            content_id: ContentId::from_authored(&self.id).expect("validated"),
+            authored_id: self.id,
+            slot,
+            domain,
+        };
+        validate_equipment_definition(&def)?;
+        Ok(def)
+    }
+}
+
+impl RawEquipmentPresentation {
+    fn into_def(self, path: &Path) -> Result<EquipmentPresentation, ContentError> {
+        check_equipment_schema(path, self.schema_version, &self.id)?;
+        check_authored(path, &self.id)?;
+        let mut attachments = Vec::new();
+        for (i, raw) in self.attachments.into_iter().enumerate() {
+            attachments.push(parse_attachment(path, &self.id, i, raw)?);
+        }
+        Ok(EquipmentPresentation {
+            content_id: ContentId::from_authored(&self.id).expect("validated"),
+            authored_id: self.id,
+            attachments,
+        })
+    }
+}
+
+fn parse_attachment(
+    path: &Path,
+    def: &str,
+    index: usize,
+    raw: RawAttachment,
+) -> Result<PresentationAttachment, ContentError> {
+    let field = |name: &str| format!("attachments[{index}].{name}");
+    let bone = BoneTarget::parse(&raw.bone).ok_or_else(|| {
+        ContentError::from_path(
+            path.to_path_buf(),
+            def,
+            &field("bone"),
+            format!("rule=schema: unknown BoneTarget '{}'", raw.bone),
+        )
+    })?;
+    let anchor = AnchorPoint::parse(&raw.anchor).ok_or_else(|| {
+        ContentError::from_path(
+            path.to_path_buf(),
+            def,
+            &field("anchor"),
+            format!("rule=schema: unknown AnchorPoint '{}'", raw.anchor),
+        )
+    })?;
+    let coverage = CoverageMode::parse(&raw.coverage).ok_or_else(|| {
+        ContentError::from_path(
+            path.to_path_buf(),
+            def,
+            &field("coverage"),
+            format!("rule=schema: unknown CoverageMode '{}'", raw.coverage),
+        )
+    })?;
+    let mut hide_base = Vec::new();
+    for (h, name) in raw.hide_base.iter().enumerate() {
+        let bone = BoneTarget::parse(name).ok_or_else(|| {
+            ContentError::from_path(
+                path.to_path_buf(),
+                def,
+                &format!("attachments[{index}].hide_base[{h}]"),
+                format!("rule=schema: unknown base visual '{name}'"),
+            )
+        })?;
+        hide_base.push(bone);
+    }
+    Ok(PresentationAttachment {
+        id: raw.id,
+        bone,
+        anchor,
+        coverage,
+        hide_base,
+        correction: CorrectionOffset {
+            x: raw.correction.x,
+            y: raw.correction.y,
+            rotation: raw.correction.rotation,
+        },
+        visuals: ViewVisuals {
+            side: raw.visuals.side,
+            back: raw.visuals.back,
+        },
+    })
 }
 
 impl RawEntity {
@@ -537,7 +908,9 @@ mod tests {
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
         assert_eq!(shared.map_count(), 2);
         assert_eq!(shared.entity_count(), 0);
-        assert!(shared.entity("entity.portal.to_second").is_none());
+        assert!(shared.equipment_count() >= 8);
+        assert!(shared.ability_count() >= 1);
+        assert!(shared.ability("skill.basic.strike").is_some());
         assert!(
             registry
                 .entity("entity.portal.to_second")
@@ -546,5 +919,245 @@ mod tests {
                 .as_ref()
                 .is_some_and(|tr| tr.portal_authored == "entity.portal.to_footnote")
         );
+        let cap = registry
+            .equipment("equipment.debug.cloth_cap")
+            .expect("headwear gameplay");
+        assert_eq!(cap.slot, purgatory_simulation::EquipmentSlot::Headwear);
+        let cap_p = registry
+            .equipment_presentation("equipment.debug.cloth_cap")
+            .expect("headwear presentation");
+        assert_eq!(cap_p.attachments.len(), 1);
+        assert!(cap_p.attachments[0].completeness().has_back);
+        let gloves = registry
+            .equipment_presentation("equipment.debug.leather_gloves")
+            .expect("gloves");
+        assert_eq!(gloves.attachments.len(), 2);
+        assert!(!gloves.attachments[0].completeness().has_back);
+        let unadorned = registry
+            .equipment_presentation("equipment.debug.unadorned")
+            .expect("empty attachments");
+        assert!(unadorned.attachments.is_empty());
+    }
+
+    #[test]
+    fn equipment_unknown_target_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.bad_target.json",
+            r#"{"schema_version":1,"id":"equipment.debug.bad_target","equipment_slot":"headwear"}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.bad_target.json",
+            r#"{"schema_version":1,"id":"equipment.debug.bad_target","attachments":[{"id":"x","bone":"root","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.bad_target.side"}}]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("unknown bone");
+        assert!(err.to_string().contains("unknown BoneTarget"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_presentation_without_gameplay_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-orphan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.orphan.json",
+            r#"{"schema_version":1,"id":"equipment.debug.orphan","attachments":[]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("orphan");
+        assert!(err.to_string().contains("no matching equipment gameplay"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_load_order_is_path_sorted() {
+        let registry = load_registry(&default_content_root(), LoadMode::Shared).expect("pack");
+        let ids: Vec<&str> = registry
+            .iter_equipment()
+            .map(|e| e.authored_id.as_str())
+            .collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+        let cap = registry
+            .equipment("equipment.debug.cloth_cap")
+            .expect("cloth_cap gameplay");
+        let pres = registry
+            .equipment_presentation_by_id(cap.content_id)
+            .expect("cloth_cap presentation");
+        assert_eq!(pres.authored_id, cap.authored_id);
+        assert_eq!(pres.attachments.len(), 1);
+    }
+
+    #[test]
+    fn equipment_overlay_hide_base_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-ov-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.ov.json",
+            r#"{"schema_version":1,"id":"equipment.debug.ov","equipment_slot":"headwear"}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.ov.json",
+            r#"{"schema_version":1,"id":"equipment.debug.ov","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","hide_base":["head"],"visuals":{"side":"equipment.debug.ov.side"}}]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("overlay hide");
+        assert!(err.to_string().contains("Overlay requires hide_base"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_missing_side_json_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-side-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.noside.json",
+            r#"{"schema_version":1,"id":"equipment.debug.noside","equipment_slot":"headwear"}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.noside.json",
+            r#"{"schema_version":1,"id":"equipment.debug.noside","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","visuals":{"back":"equipment.debug.noside.back"}}]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("missing side");
+        let text = err.to_string();
+        assert!(text.contains("missing field") || text.contains("Side visual"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_illegal_hide_unknown_base_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-hide-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.hide.json",
+            r#"{"schema_version":1,"id":"equipment.debug.hide","equipment_slot":"bodywear"}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.hide.json",
+            r#"{"schema_version":1,"id":"equipment.debug.hide","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"replace_base","hide_base":["weapon"],"visuals":{"side":"equipment.debug.hide.side"}}]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("illegal hide");
+        assert!(err.to_string().contains("unknown base visual"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_incompatible_anchor_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-anchor-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.bad_anchor.json",
+            r#"{"schema_version":1,"id":"equipment.debug.bad_anchor","equipment_slot":"weapon"}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.bad_anchor.json",
+            r#"{"schema_version":1,"id":"equipment.debug.bad_anchor","attachments":[{"id":"blade","bone":"foot_front","anchor":"grip_front","coverage":"overlay","visuals":{"side":"equipment.debug.bad_anchor.side"}}]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("bad anchor");
+        let text = err.to_string();
+        assert!(text.contains("bone_anchor") || text.contains("slot_target"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_excessive_correction_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-corr-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.bad_corr.json",
+            r#"{"schema_version":1,"id":"equipment.debug.bad_corr","equipment_slot":"headwear"}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.bad_corr.json",
+            r#"{"schema_version":1,"id":"equipment.debug.bad_corr","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","correction":{"x":9.0},"visuals":{"side":"equipment.debug.bad_corr.side"}}]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("correction");
+        assert!(err.to_string().contains("correction"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_duplicate_attachment_id_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-dup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.dup.json",
+            r#"{"schema_version":1,"id":"equipment.debug.dup","equipment_slot":"gloves"}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.dup.json",
+            r#"{"schema_version":1,"id":"equipment.debug.dup","attachments":[{"id":"hand","bone":"hand_front","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.dup.a"}},{"id":"hand","bone":"hand_back","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.dup.b"}}]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("dup id");
+        assert!(err.to_string().contains("duplicate attachment id"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_slot_mismatch_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-slot-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.slot.json",
+            r#"{"schema_version":1,"id":"equipment.debug.slot","equipment_slot":"headwear"}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.slot.json",
+            r#"{"schema_version":1,"id":"equipment.debug.slot","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"overlay","visuals":{"side":"equipment.debug.slot.side"}}]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("slot mismatch");
+        assert!(err.to_string().contains("slot_target"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_unknown_json_field_fails() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-unk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.unk.json",
+            r#"{"schema_version":1,"id":"equipment.debug.unk","equipment_slot":"headwear","png":"cap.png"}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("unknown field");
+        let text = err.to_string();
+        assert!(text.contains("unknown field") || text.contains("json"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_gameplay_rejects_scale_correction() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-eq-scale-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.scale.json",
+            r#"{"schema_version":1,"id":"equipment.debug.scale","equipment_slot":"boots"}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment_presentation"),
+            "equipment.debug.scale.json",
+            r#"{"schema_version":1,"id":"equipment.debug.scale","attachments":[{"id":"foot_front","bone":"foot_front","anchor":"foot_front","coverage":"overlay","correction":{"x":0,"y":0,"rotation":0,"scale":2},"visuals":{"side":"equipment.debug.scale.side"}}]}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("scale");
+        assert!(err.to_string().contains("unknown field") || err.to_string().contains("json"));
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

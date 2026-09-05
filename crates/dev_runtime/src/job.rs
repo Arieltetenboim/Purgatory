@@ -105,6 +105,9 @@ pub enum HubCommand {
     },
     StopClients,
     QualityGate,
+    LaunchAnimationLab,
+    /// Visible console: `scripts/phase_78_gate.ps1` (Phase 7.8 production performance gate).
+    Phase78Gate,
     Rebuild,
     KillAll,
     SetBuildProfile {

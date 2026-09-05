@@ -4,15 +4,17 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use purgatory_protocol::{
-    DomainMask, MAX_GAMEPLAY_SNAPSHOT_BYTES, ObserverAoiDebug, PlatformSupportId, ReplicatedHealth,
-    ReplicatedKind, ReplicationFrame, ReplicationRecord, SnapshotEntity, encode_gameplay_frame,
+    DomainMask, MAX_GAMEPLAY_SNAPSHOT_BYTES, ObserverAoiDebug, PlatformSupportId,
+    ReplicatedEquipment, ReplicatedEquipmentDelta, ReplicatedHealth, ReplicatedKind,
+    ReplicationFrame, ReplicationRecord, SnapshotEntity, encode_gameplay_frame,
     encode_replication_frame, encode_replication_record,
 };
 use purgatory_simulation::{
-    DomainRevs, EntityId, ReplicationDirtyMask, UpdateFrequencyTier, World, aoi_policy_rects,
-    point_in_aabb, staggered_interval_due,
+    EntityId, EquipmentDirtyMask, EquipmentSlot, EquipmentState, ReplicationDirtyMask,
+    UpdateFrequencyTier, World, aoi_policy_rects, point_in_aabb, staggered_interval_due,
 };
 use tokio::sync::watch;
 
@@ -28,10 +30,20 @@ use super::snapshot::to_wire_id;
 pub const WRITER_QUEUE_CAP: usize = 4;
 
 /// Soft per-frame budget. Must not exceed [`MAX_GAMEPLAY_SNAPSHOT_BYTES`].
+/// Override with `PURGATORY_REPLICATION_FRAME_BUDGET_BYTES` (clamped to [512, hard max]).
 pub const REPLICATION_FRAME_BUDGET_BYTES: usize = 4096;
+pub const REPLICATION_FRAME_BUDGET_ENV: &str = "PURGATORY_REPLICATION_FRAME_BUDGET_BYTES";
 
-const NEARBY_DISTANCE: f32 = 10.0;
-const NORMAL_INTERVAL: u64 = 2;
+/// Soft byte budget base for this process (env override or default).
+#[must_use]
+pub fn replication_frame_budget_base() -> usize {
+    std::env::var(REPLICATION_FRAME_BUDGET_ENV)
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(REPLICATION_FRAME_BUDGET_BYTES)
+        .clamp(512, MAX_GAMEPLAY_SNAPSHOT_BYTES as usize)
+}
+
 const LOW_INTERVAL: u64 = 4;
 const CHURN_WINDOW_TICKS: u64 = 30;
 /// Staggered full Known rev-reconcile interval (≈2s at 30 Hz). Safety net only.
@@ -175,18 +187,15 @@ pub fn distribute_replication_dirty(
             enqueue(observer, subject, mask);
         }
     }
-    (
-        dirty_entities,
-        dirty_transform,
-        dirty_health,
-        interested,
-    )
+    (dirty_entities, dirty_transform, dirty_health, interested)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CommittedRevs {
     pub transform: u64,
     pub health: u64,
+    pub equipment: u64,
+    pub equipment_state: Option<EquipmentState>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,6 +233,8 @@ pub struct QueuedFrame {
     #[allow(dead_code)]
     pub sequence: u32,
     pub payload: Vec<u8>,
+    /// Sim enqueue Instant. Age at pop is queue wait, not send CPU.
+    pub enqueued_at: Instant,
 }
 
 struct ReplicationSlot {
@@ -318,6 +329,12 @@ pub struct ReplicationTickStats {
     pub aoi_us: u64,
     /// Micros spent encoding/pushing the frame after classify.
     pub replicate_us: u64,
+    /// Policy / cadence / rank (non-overlapping with encode/enqueue).
+    pub policy_us: u64,
+    /// Record + frame serialization.
+    pub encode_us: u64,
+    /// `try_push` handoff. Not QUIC send.
+    pub enqueue_us: u64,
     /// 1 when this observer ran spatial query + classify this tick (6G.5).
     pub classified: u32,
     /// Known→WantLeave or new WantEnter transitions during classify (6G.6).
@@ -342,6 +359,10 @@ pub struct ReplicationTickStats {
     pub priority_deferred: u32,
     /// State updates held for coalescing/cadence (same as cadence_deferred; explicit).
     pub state_coalesced: u32,
+    /// 1 when a gameplay payload was encoded this publish.
+    pub frame_encoded: u32,
+    /// 1 when `try_push` accepted the frame.
+    pub frame_enqueued: u32,
 }
 
 impl ObserverReplicationState {
@@ -547,36 +568,14 @@ impl ObserverReplicationState {
 
 #[derive(Clone, Copy)]
 enum Cadence {
-    High,
-    Normal,
-    Low,
     EventOnly,
+    Low,
 }
 
-fn cadence_for(world: &World, observer: EntityId, id: EntityId) -> Cadence {
-    if id == observer {
-        return Cadence::High;
-    }
-    if world.player_body_of(id).is_some() {
-        let Some(a) = world.transform_of(observer) else {
-            return Cadence::Normal;
-        };
-        let Some(b) = world.transform_of(id) else {
-            return Cadence::Normal;
-        };
-        let dx = a.position[0] - b.position[0];
-        let dy = a.position[1] - b.position[1];
-        if dx * dx + dy * dy <= NEARBY_DISTANCE * NEARBY_DISTANCE {
-            Cadence::High
-        } else {
-            Cadence::Normal
-        }
-    } else {
-        match world.replication_of(id).map(|m| m.frequency) {
-            Some(UpdateFrequencyTier::Event) => Cadence::EventOnly,
-            Some(UpdateFrequencyTier::Low) => Cadence::Low,
-            _ => Cadence::EventOnly,
-        }
+fn cadence_for(world: &World, id: EntityId) -> Cadence {
+    match world.replication_of(id).map(|m| m.frequency) {
+        Some(UpdateFrequencyTier::Low) => Cadence::Low,
+        _ => Cadence::EventOnly,
     }
 }
 
@@ -585,8 +584,7 @@ fn cadence_allows(cadence: Cadence, tick: u64, id: EntityId, rev_pending: bool) 
         return false;
     }
     match cadence {
-        Cadence::High | Cadence::EventOnly => true,
-        Cadence::Normal => staggered_interval_due(tick, NORMAL_INTERVAL, id.index()),
+        Cadence::EventOnly => true,
         Cadence::Low => staggered_interval_due(tick, LOW_INTERVAL, id.index()),
     }
 }
@@ -600,17 +598,30 @@ fn snapshot_entity(world: &World, id: EntityId) -> Option<SnapshotEntity> {
             velocity: body.velocity,
         });
     }
-    let interactable = world.interactable_of(id)?;
+    if let Some(interactable) = world.interactable_of(id) {
+        let transform = world.transform_of(id)?;
+        let kind = match interactable.kind {
+            purgatory_simulation::InteractableKind::Portal => ReplicatedKind::Portal,
+            _ => ReplicatedKind::Interactable,
+        };
+        return Some(SnapshotEntity {
+            entity_id: to_wire_id(id),
+            kind,
+            position: transform.position,
+            velocity: [0.0, 0.0],
+        });
+    }
+    // Visible Generic / NPC: Transform required. Never emit Platform as Npc.
+    if world.kind(id) != Some(purgatory_simulation::EntityKind::Generic) {
+        return None;
+    }
     let transform = world.transform_of(id)?;
-    let kind = match interactable.kind {
-        purgatory_simulation::InteractableKind::Portal => ReplicatedKind::Portal,
-        _ => ReplicatedKind::Interactable,
-    };
+    let velocity = world.npc_of(id).map(|n| n.velocity).unwrap_or([0.0, 0.0]);
     Some(SnapshotEntity {
         entity_id: to_wire_id(id),
-        kind,
+        kind: ReplicatedKind::Npc,
         position: transform.position,
-        velocity: [0.0, 0.0],
+        velocity,
     })
 }
 
@@ -621,10 +632,44 @@ fn wire_health(world: &World, id: EntityId) -> Option<ReplicatedHealth> {
     })
 }
 
+fn wire_equipment_state(state: EquipmentState) -> ReplicatedEquipment {
+    let mut out = ReplicatedEquipment::empty();
+    for slot in EquipmentSlot::ALL {
+        let _ = out.set(slot.index() as u8, state.get(slot));
+    }
+    out
+}
+
+fn equipment_slot_delta(
+    from: Option<EquipmentState>,
+    to: Option<EquipmentState>,
+) -> Option<ReplicatedEquipmentDelta> {
+    let from = from.unwrap_or_else(EquipmentState::empty);
+    let to = to.unwrap_or_else(EquipmentState::empty);
+    let mut delta = ReplicatedEquipmentDelta::empty();
+    for slot in EquipmentSlot::ALL {
+        if from.get(slot) != to.get(slot) {
+            delta.set(slot.index() as u8, to.get(slot));
+        }
+    }
+    (!delta.is_empty()).then_some(delta)
+}
+
+fn committed_from_world(world: &World, id: EntityId) -> Option<CommittedRevs> {
+    let revs = world.domain_revs_of(id)?;
+    Some(CommittedRevs {
+        transform: revs.transform,
+        health: revs.health,
+        equipment: revs.equipment,
+        equipment_state: world.equipment_of(id),
+    })
+}
+
 fn enter_record(world: &World, id: EntityId) -> Option<ReplicationRecord> {
     Some(ReplicationRecord::Enter {
         entity: snapshot_entity(world, id)?,
         health: wire_health(world, id),
+        equipment: world.equipment_of(id).map(wire_equipment_state),
     })
 }
 
@@ -641,11 +686,26 @@ fn reconcile_update(
     allow: DomainEligibility,
 ) -> Option<UpdateReconcile> {
     let revs = world.domain_revs_of(id)?;
+    let current_equipment = world.equipment_of(id);
     let transform = revs.transform > last.transform && allow.transform;
     let health = revs.health > last.health && allow.health;
+    let equipment_lag = revs.equipment > last.equipment;
+    let equipment_delta = if equipment_lag && allow.equipment {
+        equipment_slot_delta(last.equipment_state, current_equipment)
+    } else {
+        None
+    };
+    let equipment = equipment_delta.is_some();
     let silent_transform = revs.transform > last.transform && !allow.transform;
     let silent_health = revs.health > last.health && !allow.health;
-    if !transform && !health && !silent_transform && !silent_health {
+    let silent_equipment = equipment_lag && !equipment;
+    if !transform
+        && !health
+        && !equipment
+        && !silent_transform
+        && !silent_health
+        && !silent_equipment
+    {
         return None;
     }
     let next = CommittedRevs {
@@ -659,21 +719,33 @@ fn reconcile_update(
         } else {
             last.health
         },
+        equipment: if equipment_lag {
+            revs.equipment
+        } else {
+            last.equipment
+        },
+        equipment_state: if equipment_lag {
+            current_equipment
+        } else {
+            last.equipment_state
+        },
     };
-    if !transform && !health {
-        return Some(UpdateReconcile {
-            record: None,
-            next,
-        });
+    if !transform && !health && !equipment {
+        return Some(UpdateReconcile { record: None, next });
     }
     let entity = snapshot_entity(world, id)?;
     Some(UpdateReconcile {
         record: Some(ReplicationRecord::Update {
             entity_id: to_wire_id(id),
-            domains: DomainMask { transform, health },
+            domains: DomainMask {
+                transform,
+                health,
+                equipment,
+            },
             position: transform.then_some(entity.position),
             velocity: transform.then_some(entity.velocity),
             health: health.then_some(wire_health(world, id)).flatten(),
+            equipment: equipment_delta,
         }),
         next,
     })
@@ -754,7 +826,7 @@ pub fn publish_observer_frame(
         policy.recent_observer_bytes,
         policy.tick_overrun_hint,
     );
-    let budget = observer_frame_budget_bytes(REPLICATION_FRAME_BUDGET_BYTES, pressure);
+    let budget = observer_frame_budget_bytes(replication_frame_budget_base(), pressure);
     publish_observer_frame_with_budget(
         state,
         pipe,
@@ -821,6 +893,7 @@ pub fn publish_observer_frame_with_budget(
     stats.known_relationships_present = stats.known;
     stats.aoi_us = u64::try_from(aoi_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
     let repl_t0 = std::time::Instant::now();
+    let mut encode_t0 = repl_t0;
 
     let budget = budget_bytes.min(MAX_GAMEPLAY_SNAPSHOT_BYTES as usize);
     let empty = header_frame(
@@ -841,7 +914,7 @@ pub fn publish_observer_frame_with_budget(
 
     let mut records: Vec<ReplicationRecord> = Vec::new();
     let mut commit_leaves: Vec<EntityId> = Vec::new();
-    let mut commit_enters: Vec<(EntityId, DomainRevs)> = Vec::new();
+    let mut commit_enters: Vec<(EntityId, CommittedRevs)> = Vec::new();
     let mut commit_updates: Vec<(EntityId, CommittedRevs)> = Vec::new();
     let mut clear_pending: Vec<EntityId> = Vec::new();
     let mut keep_pending: Vec<EntityId> = Vec::new();
@@ -897,13 +970,15 @@ pub fn publish_observer_frame_with_budget(
             }
             total += bytes.len();
             records.push(rec);
-            if let Some(revs) = world.domain_revs_of(id) {
+            if let Some(revs) = committed_from_world(world, id) {
                 commit_enters.push((id, revs));
             }
             stats.enters = stats.enters.saturating_add(1);
         }
         state.enter_cursor = state.enter_cursor.wrapping_add(advanced.max(1));
     }
+    stats.encode_us = u64::try_from(encode_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let policy_t0 = std::time::Instant::now();
 
     // Staggered recovery: full Known rev reconcile (not the hot path).
     if staggered_interval_due(tick, RECOVERY_SCAN_INTERVAL, observer.index()) {
@@ -915,7 +990,9 @@ pub fn publish_observer_frame_with_budget(
             let Some(revs) = world.domain_revs_of(*id) else {
                 continue;
             };
-            if (revs.transform > last.transform || revs.health > last.health)
+            if (revs.transform > last.transform
+                || revs.health > last.health
+                || revs.equipment > last.equipment)
                 && state.pending_update_ids.insert(*id)
             {
                 stats.recovery_rescues = stats.recovery_rescues.saturating_add(1);
@@ -936,7 +1013,9 @@ pub fn publish_observer_frame_with_budget(
             clear_pending.push(id);
             continue;
         };
-        let pending = revs.transform > last.transform || revs.health > last.health;
+        let pending = revs.transform > last.transform
+            || revs.health > last.health
+            || revs.equipment > last.equipment;
         if !pending {
             clear_pending.push(id);
             continue;
@@ -961,6 +1040,12 @@ pub fn publish_observer_frame_with_budget(
         let dirty = ReplicationDirtyMask {
             transform: revs.transform > last.transform,
             health: revs.health > last.health,
+            equipment: if revs.equipment > last.equipment {
+                EquipmentDirtyMask::from_bits((1 << EquipmentSlot::COUNT) - 1)
+                    .unwrap_or_else(EquipmentDirtyMask::empty)
+            } else {
+                EquipmentDirtyMask::empty()
+            },
         };
         let decision = decide_update_policy(ctx, relation, dirty);
         if decision.suppress_emit || !decision.eligibility.any() {
@@ -977,14 +1062,17 @@ pub fn publish_observer_frame_with_budget(
         }
         stats.policy_eligible = stats.policy_eligible.saturating_add(1);
         let interval = decision.cadence_interval.max(1);
-        let due = if interval <= 1 {
+        let force_equipment = dirty.equipment.any();
+        let due = if force_equipment || interval <= 1 {
             true
         } else {
             staggered_interval_due(tick, interval, id.index())
         };
-        // Non-player entities keep legacy frequency tiers as a floor.
-        let legacy = cadence_for(world, observer, id);
-        let legacy_ok = cadence_allows(legacy, tick, id, true);
+        // Non-player entities keep authored frequency tiers as a floor.
+        // Player cadence is `decide_update_policy` only (Nearby = enter AABB).
+        let legacy_ok = force_equipment
+            || world.player_body_of(id).is_some()
+            || cadence_allows(cadence_for(world, id), tick, id, true);
         if due && legacy_ok {
             if dirty.health && !decision.eligibility.health {
                 stats.policy_domain_suppressed = stats.policy_domain_suppressed.saturating_add(1);
@@ -996,7 +1084,16 @@ pub fn publish_observer_frame_with_budget(
             keep_pending.push(id);
         }
     }
-    ranked.sort_by_key(|(prio, id, _)| (*prio, u8::from(*id != observer), id.index(), id.generation()));
+    ranked.sort_by_key(|(prio, id, _)| {
+        (
+            *prio,
+            u8::from(*id != observer),
+            id.index(),
+            id.generation(),
+        )
+    });
+    stats.policy_us = u64::try_from(policy_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+    encode_t0 = std::time::Instant::now();
     for (_prio, id, allow) in ranked {
         let Some(Life::Known { revs: last, .. }) = state.entities.get(&id).copied() else {
             clear_pending.push(id);
@@ -1048,24 +1145,40 @@ pub fn publish_observer_frame_with_budget(
         want_leave: u16::try_from(state.want_leave_count()).unwrap_or(u16::MAX),
     });
     let Ok(payload) = encode_replication_frame(&frame) else {
+        stats.encode_us = stats
+            .encode_us
+            .saturating_add(u64::try_from(encode_t0.elapsed().as_micros()).unwrap_or(u64::MAX));
         stats.replicate_us = u64::try_from(repl_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         return stats;
     };
     if encode_gameplay_frame(&payload).is_err() {
+        stats.encode_us = stats
+            .encode_us
+            .saturating_add(u64::try_from(encode_t0.elapsed().as_micros()).unwrap_or(u64::MAX));
         stats.replicate_us = u64::try_from(repl_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         return stats;
     }
+    stats.encode_us = stats
+        .encode_us
+        .saturating_add(u64::try_from(encode_t0.elapsed().as_micros()).unwrap_or(u64::MAX));
     stats.bytes = payload.len() as u32;
+    stats.frame_encoded = 1;
     let queued = QueuedFrame {
         epoch: state.epoch,
         sequence,
         payload,
+        enqueued_at: Instant::now(),
     };
+    let enqueue_t0 = std::time::Instant::now();
     if !pipe.try_push(queued) {
         stats.mailbox_merge = 1;
+        stats.enqueue_us = u64::try_from(enqueue_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         stats.replicate_us = u64::try_from(repl_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
         return stats;
     }
+    stats.frame_enqueued = 1;
+    // Phase 7.5A: keep enqueue Instant open through post-push Known/Leave/pending
+    // commit so detail-mode remainder does not absorb that handoff work.
 
     for id in commit_leaves {
         fanout.remove_known(observer, id);
@@ -1084,10 +1197,7 @@ pub fn publish_observer_frame_with_budget(
         state.entities.insert(
             id,
             Life::Known {
-                revs: CommittedRevs {
-                    transform: revs.transform,
-                    health: revs.health,
-                },
+                revs,
                 since_tick: tick,
             },
         );
@@ -1118,6 +1228,7 @@ pub fn publish_observer_frame_with_budget(
     stats.known = state.known_count() as u32;
     stats.queue_depth = pipe.len() as u32;
     stats.oldest_pending_ticks = state.oldest_pending_age(tick);
+    stats.enqueue_us = u64::try_from(enqueue_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
     stats.replicate_us = u64::try_from(repl_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
     stats
 }
@@ -1126,8 +1237,10 @@ pub fn publish_observer_frame_with_budget(
 mod tests {
     use super::super::snapshot::from_wire_id;
     use super::*;
-    use purgatory_protocol::decode_replication_frame;
-    use purgatory_simulation::{PlayerState, Transform, World};
+    use purgatory_protocol::{ReplicatedKind, decode_replication_frame};
+    use purgatory_simulation::{
+        ContentId, EquipmentSlot, PlayerState, SimulationTick, Transform, World,
+    };
 
     fn two_players() -> (World, EntityId, EntityId) {
         let mut world = World::footnote_test_stage();
@@ -1213,6 +1326,219 @@ mod tests {
             budget,
             PublishPolicyInput::baseline(&overrides),
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_mode(
+        state: &mut ObserverReplicationState,
+        pipe: &ReplicationPipe,
+        world: &mut World,
+        fanout: &mut InterestFanoutIndex,
+        observer: EntityId,
+        sequence: u32,
+        tick: u64,
+        mode: PolicyMode,
+    ) -> ReplicationTickStats {
+        let overrides = RelationOverrides::default();
+        let _ = distribute_replication_dirty(world, fanout, |obs, subject, _mask| {
+            if obs == observer {
+                state.queue_pending_update(subject);
+            }
+        });
+        world.clear_replication_dirty();
+        publish_observer_frame(
+            state,
+            pipe,
+            world,
+            fanout,
+            observer,
+            sequence,
+            tick,
+            0,
+            0,
+            0,
+            PublishPolicyInput {
+                mode,
+                population: PopulationClass::Low,
+                overrides: &overrides,
+                recent_observer_bytes: 0,
+                tick_overrun_hint: false,
+            },
+        )
+    }
+
+    fn drain_pipe(pipe: &ReplicationPipe) {
+        while pipe.pop().is_some() {}
+    }
+
+    struct EmitGapRun {
+        relation: ObserverRelationKind,
+        configured_interval: u64,
+        legacy_high: bool,
+        in_enter: bool,
+        mean_dist: f32,
+        emit_ticks: Vec<u64>,
+        gaps: Vec<u64>,
+        cadence_deferred: u32,
+        budget_deferred: u32,
+        coalesced: u32,
+        priority_deferred: u32,
+    }
+
+    impl EmitGapRun {
+        fn median_gap(&self) -> u64 {
+            if self.gaps.is_empty() {
+                return 0;
+            }
+            let mut sorted = self.gaps.clone();
+            sorted.sort_unstable();
+            sorted[sorted.len() / 2]
+        }
+
+        fn max_gap(&self) -> u64 {
+            self.gaps.iter().copied().max().unwrap_or(0)
+        }
+    }
+
+    /// Continuously-moving Known remote at a fixed observer offset. Measures
+    /// actual transform-emit ticks, not configured cadence alone.
+    fn measure_transform_emit_gaps(dx: f32, mode: PolicyMode, motion_ticks: u64) -> EmitGapRun {
+        let (mut world, observer, remote) = two_players();
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let mut seq = 1u32;
+        let mut tick = 1u64;
+        for _ in 0..4 {
+            let _ = publish_mode(
+                &mut state,
+                &pipe,
+                &mut world,
+                &mut fanout,
+                observer,
+                seq,
+                tick,
+                mode,
+            );
+            seq = seq.saturating_add(1);
+            tick = tick.saturating_add(1);
+        }
+        drain_pipe(&pipe);
+        assert!(
+            matches!(state.entities.get(&remote), Some(Life::Known { .. })),
+            "remote must be Known before the distance walk"
+        );
+
+        let observer_pos = world.transform_of(observer).unwrap().position;
+        let floor = world.iter_platforms().next().unwrap();
+        let target_x = observer_pos[0] + dx;
+        let (placed, _) = PlayerState::standing_on_at(floor.id, floor.top_surface(), target_x);
+        world.set_transform(remote, placed);
+        let _ = publish_mode(
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            seq,
+            tick,
+            mode,
+        );
+        seq = seq.saturating_add(1);
+        tick = tick.saturating_add(1);
+        drain_pipe(&pipe);
+
+        let rects = world.aoi_rects_for(observer).unwrap();
+        let remote_pos = world.transform_of(remote).unwrap().position;
+        let in_enter = point_in_aabb(remote_pos, rects.enter);
+        let relation = classify_relation(&world, observer, remote, &RelationOverrides::default());
+        let configured_interval = decide_update_policy(
+            PolicyContext {
+                mode,
+                population: PopulationClass::Low,
+                pressure: PressureLevel::Calm,
+                observer_known: 2,
+                subject_interested: 1,
+            },
+            relation,
+            ReplicationDirtyMask {
+                transform: true,
+                ..ReplicationDirtyMask::default()
+            },
+        )
+        .cadence_interval;
+        let dist0 = {
+            let d0 = remote_pos[0] - observer_pos[0];
+            let d1 = remote_pos[1] - observer_pos[1];
+            (d0 * d0 + d1 * d1).sqrt()
+        };
+        let legacy_high = dist0 <= 10.0;
+
+        let mut emit_ticks = Vec::new();
+        let mut cadence_deferred = 0u32;
+        let mut budget_deferred = 0u32;
+        let mut coalesced = 0u32;
+        let mut priority_deferred = 0u32;
+        let mut dist_sum = 0.0f32;
+        let mut dir = 1.0f32;
+        for _ in 0..motion_ticks {
+            let mut t = world.transform_of(remote).unwrap();
+            t.position[0] += 0.12 * dir;
+            if (t.position[0] - target_x).abs() > 0.35 {
+                dir *= -1.0;
+            }
+            world.set_transform(remote, t);
+            let rp = world.transform_of(remote).unwrap().position;
+            let d0 = rp[0] - observer_pos[0];
+            let d1 = rp[1] - observer_pos[1];
+            dist_sum += (d0 * d0 + d1 * d1).sqrt();
+            let stats = publish_mode(
+                &mut state,
+                &pipe,
+                &mut world,
+                &mut fanout,
+                observer,
+                seq,
+                tick,
+                mode,
+            );
+            cadence_deferred = cadence_deferred.saturating_add(stats.cadence_deferred);
+            budget_deferred = budget_deferred.saturating_add(stats.budget_deferred_updates);
+            coalesced = coalesced.saturating_add(stats.state_coalesced);
+            priority_deferred = priority_deferred.saturating_add(stats.priority_deferred);
+            if let Some(frame) = pipe.pop() {
+                let decoded = decode_replication_frame(&frame.payload).unwrap();
+                let emitted = decoded.records.iter().any(|r| {
+                    matches!(
+                        r,
+                        ReplicationRecord::Update {
+                            entity_id,
+                            position: Some(_),
+                            ..
+                        } if *entity_id == to_wire_id(remote)
+                    )
+                });
+                if emitted {
+                    emit_ticks.push(tick);
+                }
+            }
+            seq = seq.saturating_add(1);
+            tick = tick.saturating_add(1);
+        }
+        let gaps: Vec<u64> = emit_ticks.windows(2).map(|w| w[1] - w[0]).collect();
+        EmitGapRun {
+            relation,
+            configured_interval,
+            legacy_high,
+            in_enter,
+            mean_dist: dist_sum / motion_ticks as f32,
+            emit_ticks,
+            gaps,
+            cadence_deferred,
+            budget_deferred,
+            coalesced,
+            priority_deferred,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1391,6 +1717,210 @@ mod tests {
     }
 
     #[test]
+    fn enter_rect_stranger_is_nearby_beyond_ten_wu() {
+        let (mut world, observer, remote) = two_players();
+        let observer_x = world.transform_of(observer).unwrap().position[0];
+        let floor = world.iter_platforms().next().unwrap();
+        let far_x = observer_x + 12.0;
+        let (t, s) = PlayerState::standing_on_at(floor.id, floor.top_surface(), far_x);
+        world.set_transform(remote, t);
+        let _ = s;
+        let dx = far_x - observer_x;
+        assert!(dx > 10.0, "must be outside the old 10 wu radius");
+        let rects = world.aoi_rects_for(observer).unwrap();
+        assert!(
+            point_in_aabb([far_x, t.position[1]], rects.enter),
+            "fixture must remain inside enter"
+        );
+        let kind = classify_relation(&world, observer, remote, &RelationOverrides::default());
+        assert_eq!(kind, ObserverRelationKind::NearbyStranger);
+        let d = decide_update_policy(
+            PolicyContext {
+                mode: PolicyMode::Selective,
+                population: PopulationClass::Low,
+                pressure: PressureLevel::Calm,
+                observer_known: 2,
+                subject_interested: 1,
+            },
+            kind,
+            ReplicationDirtyMask {
+                transform: true,
+                ..ReplicationDirtyMask::default()
+            },
+        );
+        assert_eq!(d.cadence_interval, 2);
+    }
+
+    #[test]
+    fn leave_band_stranger_is_distant() {
+        let (mut world, observer, remote) = two_players();
+        let rects = world.aoi_rects_for(observer).unwrap();
+        let band_x = rects.enter.max_x() + 0.5;
+        assert!(point_in_aabb(
+            [band_x, world.transform_of(remote).unwrap().position[1]],
+            rects.leave
+        ));
+        let floor = world.iter_platforms().next().unwrap();
+        let (t, s) = PlayerState::standing_on_at(floor.id, floor.top_surface(), band_x);
+        world.set_transform(remote, t);
+        let _ = s;
+        let kind = classify_relation(&world, observer, remote, &RelationOverrides::default());
+        assert_eq!(kind, ObserverRelationKind::DistantStranger);
+        let d = decide_update_policy(
+            PolicyContext {
+                mode: PolicyMode::Selective,
+                population: PopulationClass::Low,
+                pressure: PressureLevel::Calm,
+                observer_known: 2,
+                subject_interested: 1,
+            },
+            kind,
+            ReplicationDirtyMask {
+                transform: true,
+                ..ReplicationDirtyMask::default()
+            },
+        );
+        assert_eq!(d.cadence_interval, 4);
+    }
+
+    #[test]
+    fn selective_nearby_transform_emit_gap_does_not_grow_with_distance_inside_enter() {
+        let close = measure_transform_emit_gaps(2.0, PolicyMode::Selective, 24);
+        let medium = measure_transform_emit_gaps(8.0, PolicyMode::Selective, 24);
+        let far = measure_transform_emit_gaps(12.0, PolicyMode::Selective, 24);
+        assert!(close.in_enter && medium.in_enter && far.in_enter);
+        assert_eq!(close.relation, ObserverRelationKind::NearbyStranger);
+        assert_eq!(medium.relation, ObserverRelationKind::NearbyStranger);
+        assert_eq!(far.relation, ObserverRelationKind::NearbyStranger);
+        assert_eq!(close.configured_interval, 2);
+        assert_eq!(medium.configured_interval, 2);
+        assert_eq!(far.configured_interval, 2);
+        assert!(close.legacy_high && medium.legacy_high && !far.legacy_high);
+        assert!(far.mean_dist > 10.0);
+        assert!(close.mean_dist < 10.0);
+        assert!(
+            close.budget_deferred == 0 && far.budget_deferred == 0,
+            "two-entity walk must not be byte-budget deferred"
+        );
+        assert!(
+            close.priority_deferred == 0 && far.priority_deferred == 0,
+            "two-entity walk must not lose the priority packer"
+        );
+        assert!(
+            close.gaps.len() >= 6 && far.gaps.len() >= 6,
+            "close emits={:?} far emits={:?}",
+            close.emit_ticks,
+            far.emit_ticks
+        );
+        assert_eq!(
+            close.median_gap(),
+            far.median_gap(),
+            "Selective Nearby configured interval 2: actual gap must not grow with distance. close median={} max={} ticks={:?} deferred={} coalesced={}; far median={} max={} ticks={:?} deferred={} coalesced={}",
+            close.median_gap(),
+            close.max_gap(),
+            close.emit_ticks,
+            close.cadence_deferred,
+            close.coalesced,
+            far.median_gap(),
+            far.max_gap(),
+            far.emit_ticks,
+            far.cadence_deferred,
+            far.coalesced
+        );
+        assert_eq!(close.median_gap(), 2);
+        assert_eq!(far.median_gap(), 2);
+        assert!(
+            close.max_gap() <= 2 && far.max_gap() <= 2,
+            "no missed cadence slot inside enter: close max={} far max={}",
+            close.max_gap(),
+            far.max_gap()
+        );
+        let _ = medium;
+    }
+
+    #[test]
+    fn selective_leave_band_transform_emit_gap_is_configured_four() {
+        let (world, observer, _) = two_players();
+        let rects = world.aoi_rects_for(observer).unwrap();
+        let dx = rects.enter.max_x() - world.transform_of(observer).unwrap().position[0] + 0.5;
+        drop(world);
+        let run = measure_transform_emit_gaps(dx, PolicyMode::Selective, 24);
+        assert!(
+            !run.in_enter,
+            "fixture must sit in leave hysteresis, not enter"
+        );
+        assert_eq!(run.relation, ObserverRelationKind::DistantStranger);
+        assert_eq!(run.configured_interval, 4);
+        assert!(run.gaps.len() >= 3, "leave-band emits={:?}", run.emit_ticks);
+        assert_eq!(
+            run.median_gap(),
+            4,
+            "Distant configured 4: actual median={} max={} ticks={:?} deferred={}",
+            run.median_gap(),
+            run.max_gap(),
+            run.emit_ticks,
+            run.cadence_deferred
+        );
+    }
+
+    #[test]
+    fn baseline_nearby_in_enter_emits_every_tick_inside_and_beyond_ten_wu() {
+        let close = measure_transform_emit_gaps(2.0, PolicyMode::Baseline, 24);
+        let far = measure_transform_emit_gaps(12.0, PolicyMode::Baseline, 24);
+        assert_eq!(close.configured_interval, 1);
+        assert_eq!(far.configured_interval, 1);
+        assert!(close.in_enter && far.in_enter);
+        assert_eq!(close.relation, ObserverRelationKind::NearbyStranger);
+        assert_eq!(far.relation, ObserverRelationKind::NearbyStranger);
+        assert!(close.legacy_high && !far.legacy_high);
+        assert_eq!(
+            close.median_gap(),
+            1,
+            "Baseline Nearby must emit every tick close: ticks={:?}",
+            close.emit_ticks
+        );
+        assert_eq!(
+            far.median_gap(),
+            1,
+            "Baseline Nearby must emit every tick far-in-enter: ticks={:?}",
+            far.emit_ticks
+        );
+    }
+
+    #[test]
+    fn want_leave_is_not_cancelled_by_reenter_before_commit() {
+        let (mut world, observer, remote) = two_players();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let candidates = world.spatial_candidates_unsorted(observer);
+        state.classify_with_candidates(&mut world, observer, 1, &candidates, &mut fanout);
+        let (pipe, _rx) = ReplicationPipe::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+        assert!(matches!(
+            state.entities.get(&remote),
+            Some(Life::Known { .. })
+        ));
+        let start = world.transform_of(observer).unwrap().position;
+        let mut ot = world.transform_of(observer).unwrap();
+        ot.position[0] = start[0] + 80.0;
+        world.set_transform(observer, ot);
+        let candidates = world.spatial_candidates_unsorted(observer);
+        state.classify_with_candidates(&mut world, observer, 2, &candidates, &mut fanout);
+        assert!(
+            matches!(state.entities.get(&remote), Some(Life::WantLeave { .. })),
+            "outside leave must WantLeave"
+        );
+        world.set_transform(observer, Transform::from_position(start));
+        let candidates = world.spatial_candidates_unsorted(observer);
+        state.classify_with_candidates(&mut world, observer, 3, &candidates, &mut fanout);
+        assert!(
+            matches!(state.entities.get(&remote), Some(Life::WantLeave { .. })),
+            "re-enter must not cancel uncommitted WantLeave"
+        );
+    }
+
+    #[test]
     fn progressive_enter_does_not_emit_updates_before_known() {
         let mut world = World::footnote_test_stage();
         if let Some(id) = world.player_id() {
@@ -1417,7 +1947,16 @@ mod tests {
         let mut saw_update = false;
         for seq in 1..=12 {
             let _ = pipe.pop();
-            publish_budget(&mut state, &pipe, &mut world, &mut fanout, observer, seq, u64::from(seq), budget);
+            publish_budget(
+                &mut state,
+                &pipe,
+                &mut world,
+                &mut fanout,
+                observer,
+                seq,
+                u64::from(seq),
+                budget,
+            );
             let Some(queued) = pipe.pop() else {
                 continue;
             };
@@ -1468,6 +2007,42 @@ mod tests {
             r,
             ReplicationRecord::Update { entity_id, .. } if *entity_id == to_wire_id(remote)
         )));
+    }
+
+    #[test]
+    fn npc_generic_enters_as_replicated_kind_npc() {
+        let (mut world, observer, _remote) = two_players();
+        let npc = world
+            .spawn(World::npc_spawn_request(
+                world.address_of(observer).unwrap(),
+                world.transform_of(observer).unwrap().position,
+                1,
+                3.0,
+                42,
+                SimulationTick::from_count(1),
+                true,
+                20.0,
+            ))
+            .expect("npc");
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        assert!(stats.enters >= 1);
+        let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
+        assert!(frame.records.iter().any(|r| matches!(
+            r,
+            ReplicationRecord::Enter { entity, health: Some(_), .. }
+                if entity.entity_id == to_wire_id(npc)
+                    && entity.kind == ReplicatedKind::Npc
+        )));
+        // Leave path: move observer far away so NPC leaves relevance.
+        let mut t = world.transform_of(observer).unwrap();
+        t.position[0] += 200.0;
+        world.set_transform(observer, t);
+        let _ = pipe.pop();
+        let leave_stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
+        assert!(leave_stats.leaves >= 1 || leave_stats.enters == 0);
     }
 
     #[test]
@@ -1531,12 +2106,32 @@ mod tests {
         let overrides = RelationOverrides::default();
         let policy = PublishPolicyInput::baseline(&overrides);
         let stats_a = publish_observer_frame(
-            &mut state_a, &pipe_a, &mut world, &mut fanout, a, 2, 2, 0, 0, 0, policy,
+            &mut state_a,
+            &pipe_a,
+            &mut world,
+            &mut fanout,
+            a,
+            2,
+            2,
+            0,
+            0,
+            0,
+            policy,
         );
         let _ = pipe_a.pop();
         assert!(stats_a.updates >= 1 || stats_a.pending_updates >= 1);
         let stats_b = publish_observer_frame(
-            &mut state_b, &pipe_b, &mut world, &mut fanout, b, 2, 2, 0, 0, 0, policy,
+            &mut state_b,
+            &pipe_b,
+            &mut world,
+            &mut fanout,
+            b,
+            2,
+            2,
+            0,
+            0,
+            0,
+            policy,
         );
         assert!(
             stats_b.pending_updates >= 1 || stats_b.updates >= 1,
@@ -1777,6 +2372,7 @@ mod tests {
             ReplicationDirtyMask {
                 transform: true,
                 health: true,
+                ..ReplicationDirtyMask::default()
             },
         );
         assert!(allow.transform);
@@ -1816,7 +2412,17 @@ mod tests {
             tick_overrun_hint: false,
         };
         let stats = publish_observer_frame(
-            &mut state, &pipe, &mut world, &mut fanout, observer, 2, 2, 0, 0, 0, policy,
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            2,
+            2,
+            0,
+            0,
+            0,
+            policy,
         );
         assert!(stats.policy_domain_suppressed >= 1 || stats.updates == 0);
         if let Some(frame) = pipe.pop() {
@@ -1889,5 +2495,132 @@ mod tests {
             Some(to_wire_id(observer)),
             "self should win priority under budget pressure"
         );
+    }
+
+    #[test]
+    fn enter_carries_current_full_equipment() {
+        let (mut world, observer, remote) = two_players();
+        let sword = ContentId::from_token(42);
+        assert!(world.set_equipment_slot(remote, EquipmentSlot::Weapon, Some(sword)));
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
+        let rec = frame.records.iter().find(|r| {
+            matches!(
+                r,
+                ReplicationRecord::Enter { entity, .. } if entity.entity_id == to_wire_id(remote)
+            )
+        });
+        let Some(ReplicationRecord::Enter {
+            equipment: Some(eq),
+            ..
+        }) = rec
+        else {
+            panic!("expected Enter with equipment domain, got {rec:?}");
+        };
+        assert_eq!(eq.get(EquipmentSlot::Weapon as u8), Some(sword));
+        assert!(eq.get(EquipmentSlot::Headwear as u8).is_none());
+    }
+
+    #[test]
+    fn equipment_mutation_emits_slot_delta_not_full_resend() {
+        let (mut world, observer, remote) = two_players();
+        let sword = ContentId::from_token(42);
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+        assert!(world.set_equipment_slot(remote, EquipmentSlot::Weapon, Some(sword)));
+        let stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
+        assert!(stats.updates >= 1);
+        let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
+        let update = frame.records.iter().find(|r| {
+            matches!(
+                r,
+                ReplicationRecord::Update { entity_id, .. } if *entity_id == to_wire_id(remote)
+            )
+        });
+        let Some(ReplicationRecord::Update {
+            domains,
+            equipment: Some(delta),
+            position,
+            health,
+            ..
+        }) = update
+        else {
+            panic!("expected equipment Update, got {update:?}");
+        };
+        assert!(domains.equipment);
+        assert!(!domains.health);
+        assert!(health.is_none());
+        assert!(position.is_none() || !domains.transform);
+        assert_eq!(
+            delta.mask() & EquipmentSlot::Weapon.bit(),
+            EquipmentSlot::Weapon.bit()
+        );
+        assert_eq!(delta.get(EquipmentSlot::Weapon as u8), Some(Some(sword)));
+        assert!(delta.get(EquipmentSlot::Headwear as u8).is_none());
+    }
+
+    #[test]
+    fn stable_equipment_emits_no_update() {
+        let (mut world, observer, remote) = two_players();
+        let sword = ContentId::from_token(42);
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+        assert!(world.set_equipment_slot(remote, EquipmentSlot::Weapon, Some(sword)));
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
+        let _ = pipe.pop();
+        let stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 3, 3);
+        assert_eq!(stats.updates, 0);
+        assert_eq!(stats.pending_updates, 0);
+        if let Some(queued) = pipe.pop() {
+            let frame = decode_replication_frame(&queued.payload).unwrap();
+            assert!(!frame.records.iter().any(|r| matches!(
+                r,
+                ReplicationRecord::Update { domains, .. } if domains.equipment
+            )));
+        }
+    }
+
+    #[test]
+    fn leave_reenter_reconstructs_equipment_from_baseline() {
+        let (mut world, observer, remote) = two_players();
+        let sword = ContentId::from_token(99);
+        assert!(world.set_equipment_slot(remote, EquipmentSlot::Weapon, Some(sword)));
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+        let mut t = world.transform_of(observer).unwrap();
+        t.position[0] += 200.0;
+        world.set_transform(observer, t);
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
+        let _ = pipe.pop();
+        t.position[0] -= 200.0;
+        world.set_transform(observer, t);
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 3, 3);
+        let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
+        let rec = frame.records.iter().find(|r| {
+            matches!(
+                r,
+                ReplicationRecord::Enter { entity, .. } if entity.entity_id == to_wire_id(remote)
+            )
+        });
+        let Some(ReplicationRecord::Enter {
+            equipment: Some(eq),
+            ..
+        }) = rec
+        else {
+            panic!("re-enter must carry current equipment, got {rec:?}");
+        };
+        assert_eq!(eq.get(EquipmentSlot::Weapon as u8), Some(sword));
     }
 }

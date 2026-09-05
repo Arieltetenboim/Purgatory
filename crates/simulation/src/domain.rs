@@ -6,6 +6,11 @@
 //! [`ReplicationDirtyMask`] is a server fan-out signal (6G.7B): which domains
 //! changed on an entity since the last drain. It does not replace per-observer
 //! commit cursors.
+//!
+//! Equipment slot bits ride on this mask. Protocol v12 Update records encode
+//! equipment as domain bit 2; 8A stored the mask before it was on the wire.
+
+use crate::equipment::EquipmentDirtyMask;
 
 /// Monotonic per-domain generations. Increment only when the replicated value changes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -14,6 +19,7 @@ pub struct DomainRevs {
     pub health: u64,
     pub membership: u64,
     pub replication: u64,
+    pub equipment: u64,
 }
 
 /// Which wire-relevant domains changed on an entity (6G.7B dirty fan-out).
@@ -21,6 +27,8 @@ pub struct DomainRevs {
 pub struct ReplicationDirtyMask {
     pub transform: bool,
     pub health: bool,
+    /// Slot bits. Empty means equipment did not change.
+    pub equipment: EquipmentDirtyMask,
 }
 
 impl ReplicationDirtyMask {
@@ -29,6 +37,7 @@ impl ReplicationDirtyMask {
         Self {
             transform: true,
             health: false,
+            equipment: EquipmentDirtyMask::empty(),
         }
     }
 
@@ -37,17 +46,28 @@ impl ReplicationDirtyMask {
         Self {
             transform: false,
             health: true,
+            equipment: EquipmentDirtyMask::empty(),
+        }
+    }
+
+    #[must_use]
+    pub const fn equipment_only(equipment: EquipmentDirtyMask) -> Self {
+        Self {
+            transform: false,
+            health: false,
+            equipment,
         }
     }
 
     #[must_use]
     pub fn any(self) -> bool {
-        self.transform || self.health
+        self.transform || self.health || self.equipment.any()
     }
 
     pub fn merge(&mut self, other: Self) {
         self.transform |= other.transform;
         self.health |= other.health;
+        self.equipment.merge(other.equipment);
     }
 }
 
@@ -67,6 +87,7 @@ impl DomainRevs {
             health: 0,
             membership: 0,
             replication: 0,
+            equipment: 0,
         }
     }
 
@@ -84,6 +105,10 @@ impl DomainRevs {
 
     pub fn bump_replication(&mut self) {
         self.replication = self.replication.saturating_add(1);
+    }
+
+    pub fn bump_equipment(&mut self) {
+        self.equipment = self.equipment.saturating_add(1);
     }
 }
 

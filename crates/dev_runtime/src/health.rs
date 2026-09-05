@@ -1,7 +1,9 @@
 use std::net::UdpSocket;
 use std::time::Instant;
 
-use purgatory_common::{LoadMetricsV1, decode_metrics_response, metrics_request_datagram};
+use purgatory_common::{
+    LoadMetricsV1, METRICS_MAX_DATAGRAM_BYTES, decode_metrics_response, metrics_request_datagram,
+};
 
 use crate::config::{
     LISTEN_HOST, LISTENER_CACHE, METRICS_CACHE, METRICS_PORT, METRICS_RECV_TIMEOUT,
@@ -72,9 +74,37 @@ fn poll_purgstat() -> Option<LoadMetricsV1> {
     sock.connect(&addr).ok()?;
     let req = metrics_request_datagram();
     sock.send(&req).ok()?;
-    let mut buf = [0u8; 2048];
+    // Schema 4 raised the datagram cap to 4096; a 2048 recv buffer makes Windows
+    // UDP return WSAEMSGSIZE and Hub falsely report metrics health lost.
+    let mut buf = [0u8; METRICS_MAX_DATAGRAM_BYTES];
     let n = sock.recv(&mut buf).ok()?;
     decode_metrics_response(&buf[..n])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metrics_recv_buffer_fits_schema_cap() {
+        const {
+            assert!(METRICS_MAX_DATAGRAM_BYTES >= 4096);
+        }
+        // Ensure poll_purgstat's stack buffer constant stays coupled to the shared cap.
+        let _ = [0u8; METRICS_MAX_DATAGRAM_BYTES];
+    }
+
+    #[test]
+    #[ignore = "requires a live purgatory-server with PURGSTAT on 127.0.0.1:5002"]
+    fn live_metrics_poll_succeeds_against_listening_server() {
+        let mut h = StdHealthSource::new();
+        let m = h.poll_metrics(Instant::now());
+        assert!(
+            m.is_some(),
+            "poll_metrics None — buffer/timeout/bind regression vs live server"
+        );
+        assert!(m.unwrap().metrics_schema_version >= 1);
+    }
 }
 
 #[derive(Clone, Debug)]

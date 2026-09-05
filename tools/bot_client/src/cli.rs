@@ -85,6 +85,22 @@ pub struct Cli {
     /// Isolated persist directory. Implies isolation. Server should set `PURGATORY_DATA_DIR`.
     #[arg(long)]
     pub persist_root: Option<std::path::PathBuf>,
+
+    /// Phase 7.4: after connected, this many bots refuse snapshot drain (slow receivers).
+    /// Env fallback: `PURGATORY_LOAD_SLOW_DRAIN_COUNT`.
+    #[arg(long, default_value = "0")]
+    pub slow_drain_count: u32,
+
+    /// Phase 7.4 harness hygiene: after ramp, rotate-poll instead of O(N) full poll.
+    /// Env fallback: `PURGATORY_LOAD_POST_RAMP_THIN=1`.
+    #[arg(long, default_value_t = false)]
+    pub post_ramp_thin: bool,
+
+    /// Phase 7.8 soak: do not fail MixedRuntime when the portal role dies before
+    /// an authoritative transition. Portal attempts remain observed; baseline
+    /// connected-seconds and lifecycle still apply. Env: `PURGATORY_LOAD_RELAX_PORTAL_GATE=1`.
+    #[arg(long, default_value_t = false)]
+    pub relax_portal_gate: bool,
 }
 
 impl Cli {
@@ -197,6 +213,9 @@ mod tests {
             probe: false,
             print_server_env: false,
             persist_root: None,
+            slow_drain_count: 0,
+            post_ramp_thin: false,
+            relax_portal_gate: false,
         }
     }
 

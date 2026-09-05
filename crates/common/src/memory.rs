@@ -21,6 +21,10 @@ pub struct ProcessCpu {
 pub struct ProcessResources {
     pub memory: ProcessMemory,
     pub cpu: ProcessCpu,
+    /// Open handles (Windows). `None` when not sampled.
+    pub handle_count: Option<u32>,
+    /// Process thread count when cheap to sample. `None` if not available.
+    pub thread_count: Option<u32>,
 }
 
 /// Current process working set. `None` on unsupported platforms.
@@ -129,7 +133,17 @@ mod windows_impl {
                 cpu_time_secs,
                 logical_cpus: logical_cpus(),
             },
+            handle_count: process_handle_count(process),
+            thread_count: None,
         })
+    }
+
+    #[allow(unsafe_code)]
+    fn process_handle_count(process: windows_sys::Win32::Foundation::HANDLE) -> Option<u32> {
+        use windows_sys::Win32::System::Threading::GetProcessHandleCount;
+        let mut count = 0u32;
+        let ok = unsafe { GetProcessHandleCount(process, &mut count) };
+        if ok == 0 { None } else { Some(count) }
     }
 
     fn filetime_to_secs(ft: windows_sys::Win32::Foundation::FILETIME) -> f64 {

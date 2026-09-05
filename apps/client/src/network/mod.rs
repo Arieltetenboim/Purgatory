@@ -23,10 +23,13 @@ mod runtime;
 pub mod state;
 
 pub use config::ClientEndpointConfig;
+#[allow(unused_imports)] // DEV diagnostics / impairment UI; shipping keeps types available
 pub use diagnostics::NETWORK_HISTORY_CAP;
 pub use failure::NetworkFailureKind;
+#[allow(unused_imports)] // DEV impairment UI; shipping forces Off at NetworkHandle::start
 pub use purgatory_common::impairment::{
     ImpairmentMetricsSnapshot, ImpairmentProfile, NetworkImpairmentConfig,
 };
 pub use runtime::NetworkHandle;
+#[allow(unused_imports)] // NetworkSnapshot is for DEV diagnostics consumers
 pub use state::{NetworkCommand, NetworkSnapshot};

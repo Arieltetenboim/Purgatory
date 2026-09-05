@@ -1,6 +1,6 @@
 # Phase 6G — Runtime Hardening, Integrated Scale Validation
 
-Phase marker: `6G`. Protocol **v10**. Metrics schema **4** (execution totals; gauges unchanged).
+Phase marker: `6G`. Protocol **v10**. Adopted runtime metrics contract: **schema 3** (`PURGSTAT`). Schema 4 execution-total inventory was deferred and is **not** the closed 6G contract.
 
 **Status (2026-09-01):** **GREEN — architecture closed, production replication-policy tuning deferred.** Closing chain completed in 6G.7A–C; see [`docs/PHASE_6G7C_REPORT.md`](PHASE_6G7C_REPORT.md). Phase 7 remains **not started** until instructed.
 
@@ -64,7 +64,7 @@ Prerequisite for that workspace run: four `purgatory-client` camera/presentation
 
 ## Deviations from the original plan
 
-- Schema 4 adds monotonic execution totals (`scheduler_*_executed_total`, action/effect/spawn/cadence/entity counters) so Mixed validation can be audited from `run_summary.json` when 1 Hz gauges of queue depth / active count stay zero. `effects_active` and persist save counters remain off the datagram. Domain timings stay 6G.2 run artifacts.
+- Schema 4 execution totals were inventoried (monotonic scheduler/action/effect/spawn/cadence/entity counters so Mixed validation can be audited when 1 Hz gauges stay zero) and **deferred**; the adopted UDP `PURGSTAT` contract remains schema **3**. Domain timings stay 6G.2 run artifacts. This report does not adopt a schema bump.
 - Welcome still has no `CharacterId`. Same-login identity is occupancy / `AlreadyConnected` / in-process tests. `EntityId` comes from `ReplicationFrame.local_player_entity`.
 - Portal churn uses existing `ReplicatedKind::Portal` replica data; no test-only protocol. In-process portal ordering remains in earlier phase tests.
 - Soak duration is `--duration` overlayable; 30 minutes is the soak **preset default**, not the only soak definition. Mixed/soak duration is real-client continuity, not “harness process stayed alive after bots dropped.”
@@ -82,11 +82,11 @@ Prerequisite for that workspace run: four `purgatory-client` camera/presentation
 - Developer Tools Runtime Validation must use a 6G `purgatory-load.exe` (`--preset`). A Ready probe only proves `--probe` exists; a 6F binary still exits 2 on Mixed. The GUI now rebuilds the load package when `--print-server-env` rejects the argv.
 - CadenceTable registrations are World-scoped and not reaped on entity despawn (register-once load pressure is finite).
 - Long Mixed soak and high-population ladder are evidence runs, not part of `cargo test --workspace`.
-- Performance opportunities (snapshot fan-out, etc.) are documented for later; 6G does not endless-optimize.
-- **128-client load stall (pending, empirical):** previously observed load-only stall/pending behavior around the 128-client case. Not reproduced in the local-player presentation correctness pass. Do not treat standing jitter or falling remainder-Y as the same bug. `PREDICTION_PENDING_CAP` stays 128; `pending_window_stall_ticks` is a client counter for the upcoming capacity phase only.
+- Replication-discovery architecture is closed (6G.7A–C). Remaining production-policy tuning and capacity ownership belong to Phase 7, not a 6G reopen.
+- Higher-N load timeouts remain **unattributed** (simulation/tick vs server transport vs harness/client). The previously observed ~128-client load stall is **not** an established server bottleneck: 6G.2 did not reproduce a server-domain hang, and 6G.7B/C showed replication remaining cheap at 128 with healthy server-side 256 under the validated workload. Do not treat standing jitter or falling remainder-Y as the same issue. `PREDICTION_PENDING_CAP` stays 128; `pending_window_stall_ticks` is a client/harness counter.
 
 Local-player standing X jitter (~0.02 wu while idle) and falling remainder-Y floor clip were addressed on the client presentation path (last locally executed tick velocity for remainder extra; falling extra keeps tick Y; `rest_lead` / `landing_lead` skip restore). Quiet-play Δx was not observed in a follow-up client run; landing no longer sinks. Local Y is now lerped between consecutive predicted FOOTNOTE tick poses (up to one tick of vertical visual delay) so the jump arc is continuous without ballistic extra or renderer collision.
 
 ## Phase boundary
 
-Work stopped at Phase 6G. Phase 7 (MOB / combat AI) was not started. A MOB must be able to use the generic runtime spine without a fake Character/account/session; that is an exit-review finding, not an implementation task.
+Work stopped at Phase 6G. Phase 6 architecture is closed. Phase 7 (capacity / production scaling) was not started. A future MOB must still use the generic runtime spine without a fake Character/account/session; that is an exit-review invariant, not a Phase 7 implementation task.

@@ -3,9 +3,9 @@ use std::time::Instant;
 
 use crate::backend::{ProcessBackend, SpawnSpec, StdProcessBackend};
 use crate::config::{
-    CLIENT_PACKAGE, CLIENT_STAGGER, CLIENT_STEM, LIFECYCLE_FAST, LIFECYCLE_IDLE, LISTEN_HOST,
-    LISTEN_PORT, LOAD_BIN, LOAD_PACKAGE, LOAD_STEM, PROBE_RETRY, READY_TIMEOUT, RECOVERY_INTERVAL,
-    SERVER_PACKAGE, SERVER_STEM,
+    ANIMATION_LAB_PACKAGE, ANIMATION_LAB_STEM, CLIENT_PACKAGE, CLIENT_STAGGER, CLIENT_STEM,
+    LIFECYCLE_FAST, LIFECYCLE_IDLE, LISTEN_HOST, LISTEN_PORT, LOAD_BIN, LOAD_PACKAGE, LOAD_STEM,
+    PROBE_RETRY, READY_TIMEOUT, RECOVERY_INTERVAL, SERVER_PACKAGE, SERVER_STEM,
 };
 use crate::health::{HealthSource, StdHealthSource};
 use crate::identity::CodeIdentity;
@@ -29,8 +29,8 @@ use crate::settings::{BuildProfile, LogLevel};
 use crate::validation::{
     ValidationJob, ValidationLastResult, ValidationLiveStatus, ValidationPaths, ValidationSpec,
     ValidationState, allocate_persist, classify_harness_exit, is_stale_binary_stderr,
-    load_logs_root, merge_server_env, parse_print_server_env, read_live_status, read_pointer_dir,
-    read_run_summary, rv_stamp, validation_argv,
+    load_logs_root, merge_server_env, parse_print_server_env, read_capacity_live, read_live_status,
+    read_pointer_dir, read_run_summary, rv_stamp, validation_argv,
 };
 
 pub type LiveHubSession = HubSession<StdProcessBackend, StdHealthSource>;
@@ -60,6 +60,9 @@ pub struct HubSession<B: ProcessBackend, H: HealthSource> {
     pub(crate) connection: CheckStatus,
     connection_reason: String,
     pub(crate) metrics_ok: bool,
+    /// True once metrics have successfully passed while this server session was tracked.
+    /// Degraded is only for loss of metrics that had been passing (PARITY Ready semantics).
+    metrics_seen_ok: bool,
     pub(crate) listener: ListenerDiag,
     last_recovery: Option<Instant>,
     next_lifecycle_at: Instant,
@@ -76,10 +79,14 @@ pub struct HubSession<B: ProcessBackend, H: HealthSource> {
     load_log: FileTail,
     clients: Vec<TrackedProcess>,
     pending_clients: u32,
+    pending_animation_lab: bool,
     client_serial: u32,
     client_stagger_until: Instant,
     last_client_live: usize,
     log_level: LogLevel,
+    /// Hub-launched Phase 7.8 gate process. While alive, Hub must not adopt/probe/control
+    /// capacity-ladder servers (those are gate-owned). Cleared when the process exits.
+    phase78_gate_pid: Option<u32>,
 }
 
 pub(crate) struct BuildSlot {
@@ -97,6 +104,8 @@ pub struct HubSnapshot {
     pub pid: Option<u32>,
     pub health: CheckStatus,
     pub connection: CheckStatus,
+    /// Compact probe/connection failure detail (empty when none).
+    pub connection_reason: String,
     pub listener: ListenerDiag,
     pub job: JobPhase,
     pub last_failure: Option<String>,
@@ -119,6 +128,7 @@ pub struct HubSnapshot {
     pub validation_last: ValidationLastResult,
     pub validation_active_label: Option<String>,
     pub validation_metrics: MetricsSeries,
+    pub validation_capacity: purgatory_common::CapacityLiveSnapshot,
     pub server_log_lines: Vec<String>,
     pub load: LoadState,
     pub load_reason: Option<String>,
@@ -128,6 +138,7 @@ pub struct HubSnapshot {
     pub load_last: LoadLastResult,
     pub load_active_label: Option<String>,
     pub load_metrics: MetricsSeries,
+    pub load_capacity: purgatory_common::CapacityLiveSnapshot,
     pub load_log_lines: Vec<String>,
     pub client_count: usize,
     pub pending_clients: u32,
@@ -135,6 +146,10 @@ pub struct HubSnapshot {
     pub can_stop_clients: bool,
     pub client_log_lines: Vec<String>,
     pub log_level: LogLevel,
+    /// True while a Hub-launched Phase 7.8 gate process is still alive.
+    pub phase78_gate_active: bool,
+    /// Latest Phase 7.8 gate summary artifact (read-only; not recomputed).
+    pub phase78_gate: crate::phase78::Phase78GateBrief,
 }
 
 impl LiveHubSession {
@@ -193,6 +208,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             connection: CheckStatus::Unknown,
             connection_reason: String::new(),
             metrics_ok: false,
+            metrics_seen_ok: false,
             listener: ListenerDiag::Unknown,
             last_recovery: None,
             next_lifecycle_at: now,
@@ -208,10 +224,12 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             load_log,
             clients: Vec::new(),
             pending_clients: 0,
+            pending_animation_lab: false,
             client_serial: 0,
             client_stagger_until: now,
             last_client_live: 0,
             log_level: LogLevel::Default,
+            phase78_gate_pid: None,
         };
         session.log_hub(&format!("---- {} ----", session.identity.display()));
         session.startup_recovery(now);
@@ -242,6 +260,8 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             HubCommand::RequestClients { count } => self.request_clients(count, now),
             HubCommand::StopClients => self.request_stop_clients(),
             HubCommand::QualityGate => self.request_quality_gate(),
+            HubCommand::LaunchAnimationLab => self.request_launch_animation_lab(now),
+            HubCommand::Phase78Gate => self.request_phase78_gate(),
             HubCommand::Rebuild => self.request_rebuild(now),
             HubCommand::KillAll => self.request_kill_all(now),
             HubCommand::SetBuildProfile { profile } => self.set_build_profile(profile),
@@ -299,6 +319,31 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         let (live, last, validation_metrics) = self.observe_validation();
         let (load_live, load_metrics) = self.observe_load_presentation();
         let load_last = self.observe_load_last();
+        let load_root = load_logs_root(&self.paths.root);
+        let current = read_pointer_dir(&load_root, "current_run.txt");
+        let validation_capacity = if self.validation_is_active() {
+            current
+                .as_ref()
+                .map(|d| read_capacity_live(d))
+                .unwrap_or_default()
+        } else {
+            last.dir
+                .as_ref()
+                .map(|d| read_capacity_live(d))
+                .unwrap_or_default()
+        };
+        let load_capacity = if self.load_is_active() {
+            current
+                .as_ref()
+                .map(|d| read_capacity_live(d))
+                .unwrap_or_default()
+        } else {
+            load_last
+                .dir
+                .as_ref()
+                .map(|d| read_capacity_live(d))
+                .unwrap_or_default()
+        };
         let validation_active_label = self.validation.as_ref().map(|v| {
             let dur = v
                 .spec
@@ -334,6 +379,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             } else {
                 self.connection
             },
+            connection_reason: self.connection_reason.clone(),
             listener: self.listener,
             job: self.job,
             last_failure: if matches!(self.state, ServerState::Failed | ServerState::Degraded) {
@@ -362,6 +408,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             validation_last: last,
             validation_active_label,
             validation_metrics,
+            validation_capacity,
             server_log_lines: self.server_log.view_lines(),
             load: self.load_phase(),
             load_reason: self.load.as_ref().and_then(|v| v.reason.clone()),
@@ -371,6 +418,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             load_last,
             load_active_label,
             load_metrics,
+            load_capacity,
             load_log_lines: self.load_log.view_lines(),
             client_count: self.clients.len(),
             pending_clients: self.pending_clients,
@@ -383,6 +431,8 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                     .is_empty(),
             client_log_lines: self.client_log.view_lines(),
             log_level: self.log_level,
+            phase78_gate_active: self.phase78_gate_pid.is_some(),
+            phase78_gate: crate::phase78::read_latest_phase78_gate(&self.paths.root),
         }
     }
 
@@ -402,6 +452,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             || self.validation_is_active()
             || self.load_is_active()
             || self.pending_clients > 0
+            || self.phase78_gate_pid.is_some()
     }
 
     fn alloc_job(&mut self) -> JobId {
@@ -490,7 +541,14 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         let id = self.alloc_job();
         self.set_running(id, JobOp::Build);
         self.set_state(ServerState::Building, None);
-        if !self.start_build(cargo, &[SERVER_PACKAGE], BuildReason::StartServer, id, now) {
+        // Build load alongside server so readiness --probe matches the server wire format.
+        if !self.start_build(
+            cargo,
+            &[SERVER_PACKAGE, LOAD_PACKAGE],
+            BuildReason::StartServer,
+            id,
+            now,
+        ) {
             self.set_state(
                 ServerState::Failed,
                 Some(&format!(
@@ -531,6 +589,31 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         let was_building = self.state == ServerState::Building;
         if let Some(build) = self.build.take() {
             self.backend.kill_tree(build.pid);
+        }
+        if self.phase78_gate_owns_ladder() {
+            // Gate owns ladder servers: never discover-kill them. Only stop a Hub-spawned server.
+            if self.server_alive() {
+                if self
+                    .tracked
+                    .as_ref()
+                    .is_some_and(|t| t.origin == ProcessOrigin::Spawned)
+                {
+                    self.set_state(ServerState::Stopping, None);
+                    if let Some(t) = &self.tracked {
+                        self.backend.kill_tree(t.pid);
+                    }
+                    return CommandOutcome::Accepted;
+                }
+                self.release_adopted_server_for_phase78_gate();
+            }
+            self.tracked = None;
+            self.set_state(ServerState::Stopped, None);
+            self.reset_health();
+            self.clear_job();
+            self.log_hub(
+                "Stop ignored ladder servers while Phase 7.8 gate owns the capacity ladder",
+            );
+            return CommandOutcome::Accepted;
         }
         if self.server_alive() {
             self.set_state(ServerState::Stopping, None);
@@ -1130,6 +1213,17 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         exe_appears_locked(&self.paths.client_exe())
     }
 
+    fn animation_lab_exe_locked_or_running(&mut self) -> bool {
+        if !self
+            .backend
+            .discover_workspace(ANIMATION_LAB_STEM, &self.paths.target_prefix())
+            .is_empty()
+        {
+            return true;
+        }
+        exe_appears_locked(&self.paths.animation_lab_exe())
+    }
+
     fn request_clients(&mut self, count: u32, now: Instant) -> CommandOutcome {
         if self.cargo_path.is_none() {
             self.log_hub("cargo is not on PATH");
@@ -1201,11 +1295,32 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 self.client_stagger_until = now + CLIENT_STAGGER;
             }
         } else {
+            let left = self.pending_clients;
+            self.pending_clients = 0;
             self.log_hub(&format!(
-                "Client launch failed; remaining queue={}",
-                self.pending_clients
+                "Client launch FAILED; cleared queue (was {left}). See activity log for spawn error."
             ));
         }
+    }
+
+    fn clear_pending_clients_for_server_failure(&mut self, reason: &str) {
+        if self.pending_clients == 0 {
+            return;
+        }
+        let n = self.pending_clients;
+        self.pending_clients = 0;
+        self.log_hub(&format!(
+            "Cleared {n} queued client(s): {reason} (server must be Ready to launch)"
+        ));
+    }
+
+    fn last_probe_log_line(&self) -> Option<String> {
+        let path = self.paths.dev_log_dir().join("probe.log");
+        let text = std::fs::read_to_string(path).ok()?;
+        text.lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
     }
 
     fn start_one_client(&mut self) -> bool {
@@ -1326,6 +1441,175 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         }
     }
 
+    fn request_launch_animation_lab(&mut self, now: Instant) -> CommandOutcome {
+        if self
+            .build
+            .as_ref()
+            .is_some_and(|b| b.reason == BuildReason::OpenAnimationLab)
+        {
+            self.log_hub("Animation Lab build already in progress");
+            return CommandOutcome::Accepted;
+        }
+        let exe = self.paths.animation_lab_exe();
+        if exe.is_file() {
+            return self.spawn_animation_lab();
+        }
+        let Some(cargo) = self.cargo_path.clone() else {
+            self.log_hub("cargo is not on PATH; cannot build Animation Lab");
+            return CommandOutcome::Ignored;
+        };
+        if self.job.blocks_start() || self.build.is_some() {
+            self.log_hub("Hub is busy; wait for the current job before launching Animation Lab");
+            return CommandOutcome::Ignored;
+        }
+        let id = self.alloc_job();
+        self.set_running(id, JobOp::Build);
+        self.pending_animation_lab = true;
+        if !self.start_build(
+            cargo,
+            &[ANIMATION_LAB_PACKAGE],
+            BuildReason::OpenAnimationLab,
+            id,
+            now,
+        ) {
+            self.pending_animation_lab = false;
+            self.clear_job();
+            return CommandOutcome::Ignored;
+        }
+        CommandOutcome::Accepted
+    }
+
+    fn spawn_animation_lab(&mut self) -> CommandOutcome {
+        let exe = self.paths.animation_lab_exe();
+        if !exe.is_file() {
+            self.log_hub("Animation Lab executable missing");
+            return CommandOutcome::Ignored;
+        }
+        let spec = SpawnSpec {
+            program: exe.clone(),
+            args: Vec::new(),
+            cwd: self.paths.root.clone(),
+            env: self.child_env(),
+            log_name: "animation-lab",
+            ui_pump: false,
+            lifetime: ProcessLifetime::Detached,
+        };
+        match self.backend.spawn_visible(spec) {
+            Ok(pid) => {
+                self.log_hub(&format!(
+                    "Animation Lab launched pid={pid} EXE={}",
+                    exe.display()
+                ));
+                CommandOutcome::Accepted
+            }
+            Err(e) => {
+                self.log_hub(&format!("Animation Lab failed to start: {e}"));
+                CommandOutcome::Ignored
+            }
+        }
+    }
+
+    fn request_phase78_gate(&mut self) -> CommandOutcome {
+        if self.cargo_path.is_none() {
+            self.log_hub("cargo is not on PATH");
+            return CommandOutcome::Ignored;
+        }
+        if self.phase78_gate_owns_ladder() {
+            self.log_hub("Phase 7.8 gate already running");
+            return CommandOutcome::Ignored;
+        }
+        let gate = self.paths.phase78_gate_script();
+        if !gate.is_file() {
+            self.log_hub("scripts/phase_78_gate.ps1 missing");
+            return CommandOutcome::Ignored;
+        }
+        // Exit with the script (no -NoExit) so Hub can clear ladder isolation when the gate ends.
+        let spec = SpawnSpec {
+            program: PathBuf::from("powershell.exe"),
+            args: vec![
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-File".to_string(),
+                gate.display().to_string(),
+            ],
+            cwd: self.paths.root.clone(),
+            env: self.child_env(),
+            log_name: "phase78-gate",
+            ui_pump: false,
+            lifetime: ProcessLifetime::Detached,
+        };
+        match self.backend.spawn_visible(spec) {
+            Ok(pid) => {
+                self.begin_phase78_gate_isolation(pid);
+                self.log_hub(&format!(
+                    "Phase 7.8 performance gate started (pid {pid}); Hub will not adopt/probe ladder servers until it exits"
+                ));
+                CommandOutcome::Accepted
+            }
+            Err(e) => {
+                self.log_hub(&format!("Phase 7.8 gate failed to start: {e}"));
+                CommandOutcome::Ignored
+            }
+        }
+    }
+
+    /// True while Hub-launched Phase 7.8 gate process is alive.
+    pub(crate) fn phase78_gate_owns_ladder(&mut self) -> bool {
+        self.refresh_phase78_gate_isolation();
+        self.phase78_gate_pid.is_some()
+    }
+
+    fn refresh_phase78_gate_isolation(&mut self) {
+        let Some(pid) = self.phase78_gate_pid else {
+            return;
+        };
+        if self.backend.is_alive(pid) {
+            return;
+        }
+        self.phase78_gate_pid = None;
+        self.log_hub("Phase 7.8 gate process exited; Hub server discovery/adoption restored");
+    }
+
+    fn begin_phase78_gate_isolation(&mut self, pid: u32) {
+        self.phase78_gate_pid = Some(pid);
+        self.stop_probe();
+        // If Hub already adopted a foreign workspace server (typical ladder PID), release it
+        // without killing — the gate owns that process.
+        if self
+            .tracked
+            .as_ref()
+            .is_some_and(|t| t.origin == ProcessOrigin::Adopted)
+        {
+            self.release_adopted_server_for_phase78_gate();
+        }
+    }
+
+    fn release_adopted_server_for_phase78_gate(&mut self) {
+        self.stop_probe();
+        if let Some(t) = self.tracked.take() {
+            self.backend.detach(t.pid);
+            self.log_hub(&format!(
+                "Released adopted server pid {} during Phase 7.8 gate (not killing; ladder-owned)",
+                t.pid
+            ));
+        }
+        self.seen_alive = false;
+        self.verify_started_at = None;
+        self.reset_health();
+        if matches!(
+            self.state,
+            ServerState::Starting
+                | ServerState::Verifying
+                | ServerState::Ready
+                | ServerState::Degraded
+                | ServerState::Failed
+        ) {
+            self.set_state(ServerState::Stopped, None);
+        }
+        self.clear_job();
+    }
+
     fn request_rebuild(&mut self, now: Instant) -> CommandOutcome {
         let Some(cargo) = self.cargo_path.clone() else {
             self.log_hub("cargo is not on PATH");
@@ -1351,8 +1635,18 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         } else {
             packages.push(CLIENT_PACKAGE);
         }
+        let lab_running = self.animation_lab_exe_locked_or_running();
+        if lab_running {
+            self.log_hub(
+                "Rebuild skips Animation Lab (purgatory-animation-lab.exe is running; close it first)",
+            );
+        } else {
+            packages.push(ANIMATION_LAB_PACKAGE);
+        }
         if packages.is_empty() {
-            self.log_hub("Rebuild skipped: server and client are running (Stop first)");
+            self.log_hub(
+                "Rebuild skipped: server, client, and Animation Lab are running (Stop / close first)",
+            );
             return CommandOutcome::Ignored;
         }
         let id = self.alloc_job();
@@ -1376,6 +1670,10 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         );
         self.abort_load(LoadState::Cancelled, "Kill All cleared Load Test");
         self.stop_probe();
+        if let Some(gate_pid) = self.phase78_gate_pid.take() {
+            self.backend.kill_tree(gate_pid);
+            self.log_hub("Kill All stopped Phase 7.8 gate process");
+        }
         if let Some(build) = self.build.take() {
             self.backend.kill_tree(build.pid);
         }
@@ -1604,6 +1902,18 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         packages: &[&str],
         reason: BuildReason,
         job_id: JobId,
+        now: Instant,
+    ) -> bool {
+        self.start_build_with_profile(cargo, packages, reason, job_id, self.paths.profile, now)
+    }
+
+    fn start_build_with_profile(
+        &mut self,
+        cargo: PathBuf,
+        packages: &[&str],
+        reason: BuildReason,
+        job_id: JobId,
+        profile: BuildProfile,
         _now: Instant,
     ) -> bool {
         if let Some(build) = &self.build {
@@ -1614,7 +1924,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             return false;
         }
         let mut args = vec!["build".to_string()];
-        if self.paths.profile.cargo_release_flag() {
+        if profile.cargo_release_flag() {
             args.push("--release".to_string());
         }
         for pkg in packages {
@@ -1647,7 +1957,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 self.log_hub(&format!(
                     "Building {} ({}) reason={}",
                     packages.join(","),
-                    self.paths.profile.as_str(),
+                    profile.as_str(),
                     reason.as_str()
                 ));
                 true
@@ -1657,6 +1967,88 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 false
             }
         }
+    }
+
+    /// Profile of the tracked server binary (debug/release), used to pick a matching probe.
+    fn profile_for_tracked_server(&self) -> BuildProfile {
+        let Some(tracked) = &self.tracked else {
+            return self.paths.profile;
+        };
+        let path = tracked.exe_path.to_string_lossy().to_lowercase();
+        if path.contains("\\release\\") || path.contains("/release/") {
+            BuildProfile::Release
+        } else if path.contains("\\debug\\") || path.contains("/debug/") {
+            BuildProfile::Debug
+        } else {
+            self.paths.profile
+        }
+    }
+
+    /// Prefer `purgatory-load` beside the tracked server so release servers are not probed
+    /// with a Hub-debug load binary (protocol skew / stale binary).
+    fn load_exe_for_probe(&self) -> PathBuf {
+        if let Some(tracked) = &self.tracked
+            && let Some(parent) = tracked.exe_path.parent()
+        {
+            let sibling = parent.join(crate::paths::exe_name(LOAD_STEM));
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
+        self.paths.load_exe()
+    }
+
+    fn probe_binary_stale_vs_server(&self) -> bool {
+        let Some(tracked) = &self.tracked else {
+            return false;
+        };
+        let probe = self.load_exe_for_probe();
+        if !probe.is_file() {
+            return true;
+        }
+        let Ok(probe_mtime) = std::fs::metadata(&probe).and_then(|m| m.modified()) else {
+            return false;
+        };
+        let Ok(server_mtime) = std::fs::metadata(&tracked.exe_path).and_then(|m| m.modified())
+        else {
+            return false;
+        };
+        probe_mtime < server_mtime
+    }
+
+    fn ensure_probe_binary(&mut self, now: Instant) -> bool {
+        let probe = self.load_exe_for_probe();
+        let needs = !probe.is_file() || self.probe_binary_stale_vs_server();
+        if !needs {
+            return true;
+        }
+        if self.build.is_some() {
+            return false;
+        }
+        let Some(cargo) = self.cargo_path.clone() else {
+            return false;
+        };
+        let profile = self.profile_for_tracked_server();
+        let id = self.job_id().unwrap_or_else(|| self.alloc_job());
+        if !self.validation_is_active() && !self.load_is_active() {
+            self.set_running(id, JobOp::Build);
+        }
+        if self.probe_binary_stale_vs_server() && probe.is_file() {
+            self.log_hub(&format!(
+                "Probe binary older than server; rebuilding {} ({})",
+                LOAD_PACKAGE,
+                profile.as_str()
+            ));
+        }
+        self.start_build_with_profile(
+            cargo,
+            &[LOAD_PACKAGE],
+            BuildReason::ProbePrep,
+            id,
+            profile,
+            now,
+        );
+        false
     }
 
     fn start_server_process(&mut self, now: Instant) {
@@ -1701,6 +2093,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 self.connection = CheckStatus::Unknown;
                 self.connection_reason.clear();
                 self.metrics_ok = false;
+                self.metrics_seen_ok = false;
                 self.set_state(ServerState::Starting, None);
                 self.log_hub(&format!("Starting server (debug) EXE={}", exe.display()));
             }
@@ -1721,13 +2114,15 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         {
             return true;
         }
-        let exe = self.paths.load_exe();
+        let exe = self.load_exe_for_probe();
         if !exe.is_file() {
+            self.connection = CheckStatus::Fail;
+            self.connection_reason = format!("probe executable missing: {}", exe.display());
             return false;
         }
         let server = format!("{LISTEN_HOST}:{LISTEN_PORT}");
         let spec = SpawnSpec {
-            program: exe,
+            program: exe.clone(),
             args: vec!["--probe".to_string(), "--server".to_string(), server],
             cwd: self.paths.root.clone(),
             env: self.child_env(),
@@ -1743,7 +2138,10 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 self.probe_pid = Some(pid);
                 self.probe_job_id = self.job_id();
                 if !self.probe_logged_start {
-                    self.log_hub("Connection probe started (dev.probe)");
+                    self.log_hub(&format!(
+                        "Connection probe started (dev.probe) EXE={}",
+                        exe.display()
+                    ));
                     self.probe_logged_start = true;
                 }
                 true
@@ -1766,6 +2164,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
 
     fn reset_health(&mut self) {
         self.metrics_ok = false;
+        self.metrics_seen_ok = false;
         self.connection = CheckStatus::Unknown;
         self.connection_reason.clear();
         self.listener = ListenerDiag::Unknown;
@@ -1774,7 +2173,12 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
     fn update_health(&mut self, now: Instant) {
         self.listener = self.health.listener(now);
         match self.health.poll_metrics(now) {
-            Some(m) => self.metrics_ok = m.metrics_schema_version >= 1,
+            Some(m) => {
+                self.metrics_ok = m.metrics_schema_version >= 1;
+                if self.metrics_ok && self.state.uses_live_process() {
+                    self.metrics_seen_ok = true;
+                }
+            }
             None => self.metrics_ok = false,
         }
     }
@@ -1793,7 +2197,10 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         if self.job_id() != Some(job_id)
             && !matches!(
                 reason,
-                BuildReason::ProbePrep | BuildReason::OpenClient | BuildReason::Rebuild
+                BuildReason::ProbePrep
+                    | BuildReason::OpenClient
+                    | BuildReason::OpenAnimationLab
+                    | BuildReason::Rebuild
             )
         {
             return;
@@ -1836,6 +2243,11 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                     self.log_hub(&format!("Rebuild failed (exit {code})"));
                     self.clear_job();
                 }
+                BuildReason::OpenAnimationLab => {
+                    self.pending_animation_lab = false;
+                    self.clear_job();
+                    self.log_hub("Animation Lab build failed");
+                }
             }
             return;
         }
@@ -1847,6 +2259,13 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             BuildReason::OpenClient => {
                 self.clear_job();
                 self.drain_client_queue(now);
+            }
+            BuildReason::OpenAnimationLab => {
+                self.clear_job();
+                if self.pending_animation_lab {
+                    self.pending_animation_lab = false;
+                    let _ = self.spawn_animation_lab();
+                }
             }
             BuildReason::Rebuild => {
                 self.clear_job();
@@ -1866,6 +2285,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
     }
 
     pub(crate) fn run_lifecycle(&mut self, now: Instant) {
+        self.refresh_phase78_gate_isolation();
         self.complete_build_if_exited(now);
         self.complete_validation_harness_if_exited();
         self.complete_load_harness_if_exited();
@@ -1909,6 +2329,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                     ServerState::Failed,
                     Some("server process exited unexpectedly"),
                 );
+                self.clear_pending_clients_for_server_failure("server process exited unexpectedly");
             } else {
                 self.log_hub("No live workspace server; not treating as unexpected exit");
                 self.set_state(ServerState::Stopped, None);
@@ -1937,17 +2358,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         }
 
         if self.state == ServerState::Starting {
-            if !self.paths.load_exe().is_file() {
-                if self.build.is_none()
-                    && let Some(cargo) = self.cargo_path.clone()
-                {
-                    let id = self.job_id().unwrap_or_else(|| self.alloc_job());
-                    if !self.validation_is_active() && !self.load_is_active() {
-                        self.set_running(id, JobOp::Build);
-                    }
-                    let _ =
-                        self.start_build(cargo, &[LOAD_PACKAGE], BuildReason::ProbePrep, id, now);
-                }
+            if !self.ensure_probe_binary(now) {
                 return;
             }
             if self
@@ -1984,6 +2395,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                     READY_TIMEOUT.as_secs()
                 ));
                 self.set_state(ServerState::Failed, Some(&msg));
+                self.clear_pending_clients_for_server_failure("server readiness timed out");
                 if self.validation_is_active() {
                     self.finish_validation(ValidationState::OrchestrationFailed, Some(msg.clone()));
                 } else {
@@ -2027,15 +2439,20 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                     if !self.validation_is_active() && !self.load_is_active() {
                         self.set_running(id, JobOp::Build);
                     }
-                    let _ =
-                        self.start_build(cargo, &[LOAD_PACKAGE], BuildReason::ProbePrep, id, now);
+                    let profile = self.profile_for_tracked_server();
+                    let _ = self.start_build_with_profile(
+                        cargo,
+                        &[LOAD_PACKAGE],
+                        BuildReason::ProbePrep,
+                        id,
+                        profile,
+                        now,
+                    );
                 }
             } else {
-                let detail = if self.connection_reason.is_empty() {
-                    format!("probe exit {code}")
-                } else {
-                    self.connection_reason.clone()
-                };
+                let detail = self
+                    .last_probe_log_line()
+                    .unwrap_or_else(|| format!("probe exit {code}"));
                 if !self.probe_logged_fail {
                     self.log_hub(&format!(
                         "Probe unsuccessful ({detail}); retrying until Ready timeout"
@@ -2058,7 +2475,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             {
                 let _ = self.maybe_spawn_load_harness();
             }
-            if !self.metrics_ok && self.connection == CheckStatus::Pass {
+            if self.metrics_seen_ok && !self.metrics_ok && self.connection == CheckStatus::Pass {
                 self.set_state(
                     ServerState::Degraded,
                     Some("metrics health lost after Ready"),
@@ -2075,6 +2492,9 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
     }
 
     fn startup_recovery(&mut self, now: Instant) {
+        if self.phase78_gate_owns_ladder() {
+            return;
+        }
         let mut servers = self
             .backend
             .discover_workspace(SERVER_STEM, &self.paths.target_prefix());
@@ -2101,6 +2521,9 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             return;
         }
         self.last_recovery = Some(now);
+        if self.phase78_gate_owns_ladder() {
+            return;
+        }
         if self.state != ServerState::Stopped && self.state != ServerState::Failed {
             return;
         }
@@ -2124,6 +2547,8 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         // Do not set seen_alive here. A scan hit can vanish or be a reused PID
         // before the first lifecycle tick; that is Stopped, not unexpected exit.
         self.connection = CheckStatus::Unknown;
+        self.metrics_ok = false;
+        self.metrics_seen_ok = false;
         let id = self.alloc_job();
         self.set_running(id, JobOp::Start);
         self.set_state(ServerState::Starting, None);
@@ -2289,6 +2714,53 @@ mod tests {
         assert_eq!(
             session.tracked.as_ref().unwrap().origin,
             ProcessOrigin::Spawned
+        );
+    }
+
+    #[test]
+    fn ready_without_metrics_stays_ready() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(0);
+        let (mut session, now) = harness("ready-no-metrics", backend, FakeHealthSource::none());
+        let now = drive_to_ready(&mut session, now);
+        assert_eq!(session.state, ServerState::Ready);
+        assert!(!session.metrics_ok);
+        assert!(!session.metrics_seen_ok);
+        // Several health polls while Ready must not falsely Degrade.
+        for i in 1..=5 {
+            session.run_lifecycle(now + LIFECYCLE_IDLE * i);
+            assert_eq!(
+                session.state,
+                ServerState::Ready,
+                "tick {i}: never-had-metrics must not Degrade"
+            );
+        }
+    }
+
+    #[test]
+    fn new_server_session_does_not_inherit_metrics_seen_ok() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(0);
+        let (mut session, now) =
+            harness("metrics-seen-reset", backend, FakeHealthSource::healthy());
+        let now = drive_to_ready(&mut session, now);
+        assert!(session.metrics_seen_ok);
+        session.command(HubCommand::Stop, now);
+        if let Some(pid) = session.tracked.as_ref().map(|t| t.pid) {
+            session.backend.alive.remove(&pid);
+        }
+        session.run_lifecycle(now + LIFECYCLE_FAST);
+        assert_eq!(session.state, ServerState::Stopped);
+        assert!(!session.metrics_seen_ok);
+        session.health.metrics = None;
+        let now = drive_to_ready(&mut session, now + LIFECYCLE_IDLE);
+        assert_eq!(session.state, ServerState::Ready);
+        assert!(!session.metrics_seen_ok);
+        session.run_lifecycle(now + LIFECYCLE_IDLE);
+        assert_eq!(
+            session.state,
+            ServerState::Ready,
+            "new PID without metrics must not Degrade from prior session"
         );
     }
 
@@ -3205,6 +3677,68 @@ mod tests {
                 .unwrap()
                 .contains("purgatory-server")
         );
+        assert!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .any(|s| s.contains("purgatory-animation-lab"))
+        );
+    }
+
+    #[test]
+    fn rebuild_includes_animation_lab() {
+        let (mut session, now) = harness(
+            "rebuild-lab",
+            FakeProcessBackend::new(),
+            FakeHealthSource::none(),
+        );
+        assert_eq!(
+            session.command(HubCommand::Rebuild, now),
+            CommandOutcome::Accepted
+        );
+        let cargo = session
+            .backend
+            .spawn_log
+            .iter()
+            .find(|s| s.contains("purgatory-animation-lab"))
+            .cloned()
+            .expect("rebuild cargo should include Animation Lab");
+        assert!(cargo.contains("purgatory-server"));
+        assert!(cargo.contains("purgatory-client"));
+    }
+
+    #[test]
+    fn rebuild_skips_running_animation_lab() {
+        let (mut session, now) = harness(
+            "rebuild-lab-skip",
+            FakeProcessBackend::new(),
+            FakeHealthSource::none(),
+        );
+        let lab_exe = session.paths.animation_lab_exe();
+        if let Some(parent) = lab_exe.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&lab_exe, b"").unwrap();
+        session.backend.discovered = vec![DiscoveredProcess {
+            pid: 8801,
+            exe_path: lab_exe,
+        }];
+        assert_eq!(
+            session.command(HubCommand::Rebuild, now),
+            CommandOutcome::Accepted
+        );
+        let cargo = session
+            .backend
+            .spawn_log
+            .iter()
+            .find(|s| s.contains("purgatory-client"))
+            .cloned()
+            .expect("rebuild should still build client");
+        assert!(
+            !cargo.contains("purgatory-animation-lab"),
+            "running Animation Lab must be skipped: {cargo}"
+        );
     }
 
     #[test]
@@ -3241,5 +3775,347 @@ mod tests {
                 .iter()
                 .any(|s| s.contains("visible") && s.contains("check.ps1"))
         );
+    }
+
+    #[test]
+    fn launch_animation_lab_does_not_require_ready() {
+        let (mut session, now) = harness(
+            "anim-lab",
+            FakeProcessBackend::new(),
+            FakeHealthSource::none(),
+        );
+        fs::write(
+            session
+                .paths
+                .root
+                .join("target")
+                .join("debug")
+                .join(exe_name("purgatory-animation-lab")),
+            b"",
+        )
+        .unwrap();
+        assert_eq!(session.state, ServerState::Stopped);
+        assert_eq!(
+            session.command(HubCommand::LaunchAnimationLab, now),
+            CommandOutcome::Accepted
+        );
+        assert!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .any(|s| s.contains("visible") && s.contains("purgatory-animation-lab"))
+        );
+    }
+
+    #[test]
+    fn kill_all_does_not_stop_animation_lab() {
+        let (mut session, now) = harness(
+            "anim-lab-kill",
+            FakeProcessBackend::new(),
+            FakeHealthSource::none(),
+        );
+        fs::write(
+            session
+                .paths
+                .root
+                .join("target")
+                .join("debug")
+                .join(exe_name("purgatory-animation-lab")),
+            b"",
+        )
+        .unwrap();
+        assert_eq!(
+            session.command(HubCommand::LaunchAnimationLab, now),
+            CommandOutcome::Accepted
+        );
+        let lab_pids: Vec<u32> = session
+            .backend
+            .alive
+            .iter()
+            .filter(|(_, proc)| proc.kind == crate::backend::FakeKind::Other)
+            .map(|(pid, _)| *pid)
+            .collect();
+        assert!(!lab_pids.is_empty());
+        session.command(HubCommand::KillAll, Instant::now());
+        for pid in lab_pids {
+            assert!(
+                !session.backend.kill_log.contains(&pid),
+                "Kill All must not terminate Animation Lab pid {pid}"
+            );
+        }
+    }
+
+    fn write_phase78_gate_script(session: &HubSession<FakeProcessBackend, FakeHealthSource>) {
+        let scripts = session.paths.root.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(scripts.join("phase_78_gate.ps1"), "echo gate\n").unwrap();
+    }
+
+    #[test]
+    fn phase78_gate_suppresses_adoption_and_probe_until_exit() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(0);
+        let (mut session, now) = harness("p78-iso", backend, FakeHealthSource::healthy());
+        write_phase78_gate_script(&session);
+        assert_eq!(
+            session.command(HubCommand::Phase78Gate, now),
+            CommandOutcome::Accepted
+        );
+        assert!(session.phase78_gate_pid.is_some());
+        let gate_pid = session.phase78_gate_pid.unwrap();
+
+        // Ladder-owned release server appears while Hub is Stopped.
+        session.backend.discovered = vec![DiscoveredProcess {
+            pid: 4242,
+            exe_path: PathBuf::from("target/release/purgatory-server.exe"),
+        }];
+        session.backend.alive.insert(
+            4242,
+            crate::backend::FakeProc {
+                kind: crate::backend::FakeKind::Server,
+                pending_exit: None,
+            },
+        );
+        let now = now + RECOVERY_INTERVAL + Duration::from_millis(1);
+        session.run_lifecycle(now);
+        assert!(
+            session.tracked.is_none(),
+            "must not adopt ladder server during gate"
+        );
+        assert_eq!(session.state, ServerState::Stopped);
+        assert!(
+            !session
+                .backend
+                .spawn_log
+                .iter()
+                .any(|s| s.contains("--probe")),
+            "must not readiness-probe ladder server during gate"
+        );
+
+        // Gate exits → discovery restored.
+        session.backend.alive.remove(&gate_pid);
+        let now = now + RECOVERY_INTERVAL + Duration::from_millis(1);
+        session.run_lifecycle(now);
+        assert!(session.phase78_gate_pid.is_none());
+        assert!(session.tracked.is_some());
+        assert_eq!(session.tracked.as_ref().unwrap().pid, 4242);
+        assert_eq!(session.state, ServerState::Starting);
+    }
+
+    #[test]
+    fn phase78_gate_releases_adopted_server_without_killing() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = None;
+        backend.alive.insert(
+            50,
+            crate::backend::FakeProc {
+                kind: crate::backend::FakeKind::Server,
+                pending_exit: None,
+            },
+        );
+        backend.discovered = vec![DiscoveredProcess {
+            pid: 50,
+            exe_path: PathBuf::from("target/release/purgatory-server.exe"),
+        }];
+        let (mut session, now) = harness("p78-release", backend, FakeHealthSource::none());
+        write_phase78_gate_script(&session);
+        assert_eq!(session.state, ServerState::Starting);
+        session.run_lifecycle(now + LIFECYCLE_FAST);
+        assert_eq!(session.state, ServerState::Verifying);
+        assert!(session.probe_pid.is_some());
+
+        assert_eq!(
+            session.command(HubCommand::Phase78Gate, now),
+            CommandOutcome::Accepted
+        );
+        assert!(session.tracked.is_none());
+        assert_eq!(session.state, ServerState::Stopped);
+        assert!(session.probe_pid.is_none());
+        assert!(
+            !session.backend.kill_log.contains(&50),
+            "must not kill ladder-owned adopted server"
+        );
+        assert!(session.backend.detach_log.contains(&50));
+    }
+
+    #[test]
+    fn phase78_gate_stop_does_not_kill_discovered_ladder_servers() {
+        let (mut session, now) = harness(
+            "p78-stop",
+            FakeProcessBackend::new(),
+            FakeHealthSource::none(),
+        );
+        write_phase78_gate_script(&session);
+        assert_eq!(
+            session.command(HubCommand::Phase78Gate, now),
+            CommandOutcome::Accepted
+        );
+        session.backend.discovered = vec![DiscoveredProcess {
+            pid: 99,
+            exe_path: PathBuf::from("target/release/purgatory-server.exe"),
+        }];
+        session.command(HubCommand::Stop, now);
+        assert!(!session.backend.kill_log.contains(&99));
+        assert_eq!(session.state, ServerState::Stopped);
+    }
+
+    #[test]
+    fn normal_hub_ready_still_probes_when_gate_inactive() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(0);
+        let (mut session, now) = harness("p78-normal-probe", backend, FakeHealthSource::healthy());
+        assert!(session.phase78_gate_pid.is_none());
+        let now = drive_to_ready(&mut session, now);
+        assert_eq!(session.state, ServerState::Ready);
+        assert!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .any(|s| s.contains("--probe"))
+        );
+        let _ = now;
+    }
+
+    #[test]
+    fn start_server_builds_load_with_server() {
+        let mut backend = FakeProcessBackend::new();
+        backend.hold_cargo = true;
+        let (mut session, now) = harness("start-builds-load", backend, FakeHealthSource::none());
+        session.command(HubCommand::Start, now);
+        assert!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .any(|s| { s.contains("purgatory-server") && s.contains("purgatory-bot-client") }),
+            "spawn_log={:?}",
+            session.backend.spawn_log
+        );
+    }
+
+    #[test]
+    fn probe_uses_load_beside_adopted_release_server() {
+        let paths = test_root("probe-sibling");
+        let release = paths.root.join("target").join("release");
+        fs::create_dir_all(&release).unwrap();
+        let server_exe = release.join(exe_name("purgatory-server"));
+        let load_exe = release.join(exe_name("purgatory-load"));
+        fs::write(&server_exe, b"server").unwrap();
+        fs::write(&load_exe, b"load").unwrap();
+
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(0);
+        backend.alive.insert(
+            88,
+            crate::backend::FakeProc {
+                kind: crate::backend::FakeKind::Server,
+                pending_exit: None,
+            },
+        );
+        backend.discovered = vec![DiscoveredProcess {
+            pid: 88,
+            exe_path: server_exe.clone(),
+        }];
+        let now = Instant::now();
+        let mut session = HubSession::new(
+            paths,
+            backend,
+            FakeHealthSource::healthy(),
+            Some(PathBuf::from("cargo")),
+            now,
+        )
+        .unwrap();
+        assert_eq!(session.state, ServerState::Starting);
+        session.run_lifecycle(now + LIFECYCLE_FAST);
+        assert_eq!(session.state, ServerState::Verifying);
+        let snap = session.snapshot(now + LIFECYCLE_FAST);
+        let _ = snap;
+        assert!(
+            session
+                .activity
+                .view_lines()
+                .iter()
+                .any(|l| l.contains("release") && l.contains("purgatory-load")),
+            "activity should log release probe EXE; lines={:?}",
+            session.activity.view_lines()
+        );
+    }
+
+    #[test]
+    fn stale_probe_binary_triggers_probe_prep_rebuild() {
+        let paths = test_root("stale-probe");
+        let server = paths.server_exe();
+        let load = paths.load_exe();
+        // Make load older than server.
+        let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let new = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(200);
+        let _ = filetime_set(&load, old);
+        let _ = filetime_set(&server, new);
+
+        let mut backend = FakeProcessBackend::new();
+        backend.hold_cargo = true;
+        backend.alive.insert(
+            70,
+            crate::backend::FakeProc {
+                kind: crate::backend::FakeKind::Server,
+                pending_exit: None,
+            },
+        );
+        backend.discovered = vec![DiscoveredProcess {
+            pid: 70,
+            exe_path: server.clone(),
+        }];
+        let now = Instant::now();
+        let mut session = HubSession::new(
+            paths,
+            backend,
+            FakeHealthSource::none(),
+            Some(PathBuf::from("cargo")),
+            now,
+        )
+        .unwrap();
+        session.run_lifecycle(now + LIFECYCLE_FAST);
+        assert_eq!(session.state, ServerState::Starting);
+        assert!(
+            session
+                .build
+                .as_ref()
+                .is_some_and(|b| b.reason == BuildReason::ProbePrep),
+            "expected ProbePrep for stale load"
+        );
+    }
+
+    fn filetime_set(path: &std::path::Path, t: std::time::SystemTime) -> std::io::Result<()> {
+        let f = std::fs::File::options().write(true).open(path)?;
+        f.set_modified(t)
+    }
+
+    #[test]
+    fn readiness_failure_clears_queued_clients() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(1);
+        let (mut session, now) = harness("clear-queue", backend, FakeHealthSource::none());
+        session.pending_clients = 2;
+        let now = drive_to_ready(&mut session, now);
+        assert_eq!(session.state, ServerState::Verifying);
+        session.run_lifecycle(now + READY_TIMEOUT + Duration::from_secs(1));
+        assert_eq!(session.state, ServerState::Failed);
+        assert_eq!(session.pending_clients, 0);
+    }
+
+    #[test]
+    fn client_spawn_failure_clears_queue() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(0);
+        backend.client_spawn_fail = true;
+        let (mut session, now) = harness("client-spawn-fail", backend, FakeHealthSource::healthy());
+        let now = drive_to_ready(&mut session, now);
+        assert_eq!(session.state, ServerState::Ready);
+        session.pending_clients = 1;
+        session.drain_client_queue(now + CLIENT_STAGGER);
+        assert_eq!(session.pending_clients, 0);
+        assert!(session.clients.is_empty());
     }
 }

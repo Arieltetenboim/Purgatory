@@ -2,8 +2,8 @@
 
 use eframe::egui::{self, RichText};
 use purgatory_dev_runtime::{
-    HubCommand, HubSnapshot, MetricsSeries, RunSummaryBrief, ServerState, ValidationLiveStatus,
-    ValidationState,
+    CapacityLiveSnapshot, HubCommand, HubSnapshot, MetricsSeries, RunSummaryBrief, SaturationClass,
+    ServerState, TickOwnerId, ValidationLiveStatus, ValidationState,
 };
 
 use crate::theme;
@@ -27,6 +27,7 @@ pub struct RunViewModel<'a> {
     pub can_start: bool,
     pub can_stop: bool,
     pub start_disabled_hint: &'a str,
+    pub capacity: &'a CapacityLiveSnapshot,
 }
 
 pub struct RunViewState {
@@ -170,6 +171,11 @@ pub fn show_run(
         });
         ui.add_space(theme::SECTION_GAP);
 
+        if model.capacity.available {
+            show_capacity_strip(ui, model.capacity);
+            ui.add_space(theme::SECTION_GAP);
+        }
+
         layout::card(ui, "Live chart (metrics.csv)", |ui| {
             layout::metrics_chart(ui, "run_live_chart", model.metrics, &mut state.chart_series);
         });
@@ -275,6 +281,10 @@ pub fn show_run(
 }
 
 fn show_full_details(ui: &mut egui::Ui, model: &RunViewModel<'_>) -> Option<HubCommand> {
+    if model.capacity.available {
+        show_capacity_owners(ui, model.capacity);
+        ui.add_space(8.0);
+    }
     if let Some(label) = model.active_label {
         kv_row(ui, "Configuration", label);
     }
@@ -384,6 +394,7 @@ pub fn validation_model<'a>(snap: &'a HubSnapshot) -> RunViewModel<'a> {
         can_start: snap.can_start_validation,
         can_stop: snap.can_stop_validation,
         start_disabled_hint: "Server must be Ready. Refuse if Load is active.",
+        capacity: &snap.validation_capacity,
     }
 }
 
@@ -403,5 +414,89 @@ pub fn load_model<'a>(snap: &'a HubSnapshot) -> RunViewModel<'a> {
         can_start: snap.can_start_load,
         can_stop: snap.can_stop_load,
         start_disabled_hint: "Server should be Ready (or Stopped for load-mode start).",
+        capacity: &snap.load_capacity,
+    }
+}
+
+fn show_capacity_strip(ui: &mut egui::Ui, cap: &CapacityLiveSnapshot) {
+    layout::card(ui, "Capacity (heuristic)", |ui| {
+        ui.horizontal(|ui| {
+            metric_tile(ui, "Class", saturation_label(cap.saturation_class));
+            ui.add_space(12.0);
+            metric_tile(
+                ui,
+                "Owner",
+                cap.dominant_owner.map(TickOwnerId::as_str).unwrap_or("—"),
+            );
+            ui.add_space(12.0);
+            metric_tile(ui, "Tick p99", &format_ms(cap.tick_p99_ms));
+            ui.add_space(12.0);
+            metric_tile(ui, "Util", &format!("{:.0}%", cap.tick_utilization_pct));
+            ui.add_space(12.0);
+            metric_tile(
+                ui,
+                "CPU (1-core=100)",
+                &format!("{:.0}%", cap.cpu_utilization_pct),
+            );
+        });
+        ui.add_space(4.0);
+        ui.colored_label(
+            theme::muted(),
+            format!(
+                "normalized {:.0}% of all logical cores · write-drain p99 {:.2} ms (drain/backpressure, not QUIC CPU) · class is a heuristic not a verdict",
+                cap.cpu_normalized_per_logical_pct, cap.write_drain_p99_ms
+            ),
+        );
+    });
+}
+
+fn show_capacity_owners(ui: &mut egui::Ui, cap: &CapacityLiveSnapshot) {
+    kv_row(
+        ui,
+        "Saturation class",
+        saturation_label(cap.saturation_class),
+    );
+    kv_row(
+        ui,
+        "Dominant owner",
+        cap.dominant_owner.map(TickOwnerId::as_str).unwrap_or("—"),
+    );
+    kv_row(
+        ui,
+        "Worst spike",
+        cap.worst_spike_owner
+            .map(TickOwnerId::as_str)
+            .unwrap_or("—"),
+    );
+    kv_row(ui, "Unattributed mean", format_ms(cap.unattributed_mean_ms));
+    if cap.accounting_error_ticks > 0 {
+        kv_row(
+            ui,
+            "Accounting errors",
+            cap.accounting_error_ticks.to_string(),
+        );
+    }
+    ui.add_space(4.0);
+    ui.colored_label(theme::muted(), "Owner share (same 120-tick window)");
+    for row in &cap.owners {
+        kv_row(
+            ui,
+            row.owner.as_str(),
+            format!(
+                "mean {}  p99 {}  {:.1}%",
+                format_ms(row.mean_ms),
+                format_ms(row.p99_ms),
+                row.share_pct
+            ),
+        );
+    }
+}
+
+fn saturation_label(class: SaturationClass) -> &'static str {
+    match class {
+        SaturationClass::UnknownUnattributed => "unknown/unattributed",
+        SaturationClass::SimulationTick => "simulation_tick",
+        SaturationClass::ServerTransportBackpressure => "server_transport_backpressure",
+        SaturationClass::HarnessClient => "harness_client",
     }
 }

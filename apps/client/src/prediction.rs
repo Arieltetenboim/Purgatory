@@ -131,6 +131,7 @@ pub struct PredictionDiagnostics {
     pub best_match_tick: Option<u64>,
     pub reset_count: u64,
     /// Soft offset corrections (never teleports), separate from hard snaps.
+    #[allow(dead_code)]
     pub drift_correction_count: u64,
     /// Consecutive snapshots whose aligned residual exceeded the budget.
     pub consecutive_aligned_divergence: u32,
@@ -341,18 +342,6 @@ impl LocalPrediction {
 
     pub fn note_input_stall(&mut self) {
         self.pending_window_stall_ticks = self.pending_window_stall_ticks.saturating_add(1);
-    }
-
-    #[must_use]
-    pub fn last_sent_seq(&self) -> u32 {
-        self.last_sent_seq
-    }
-
-    #[must_use]
-    pub fn pending_seq_range(&self) -> Option<(u32, u32)> {
-        let first = self.pending.front()?.sequence;
-        let last = self.pending.back()?.sequence;
-        Some((first, last))
     }
 
     #[must_use]
@@ -604,8 +593,24 @@ impl LocalPrediction {
         self.replay_pending(world);
         if replayed {
             self.capture_tick_velocity(world);
+        } else {
+            // Restore with nothing to replay moved the sim body. Collapse Y
+            // lerp only when that body actually left the last tick pose so a
+            // rewind-to-ground cannot keep interpolating an airborne segment.
+            // Do not snap when pending replay keeps us on the predicted
+            // trajectory — that path used to run every durable snapshot and
+            // made interpolate_tick_y jump a full tick of Y in one frame.
+            let diverged = match (self.tick_pose, world.player_body().map(|b| b.position)) {
+                (Some(tick), Some(post)) => {
+                    (tick[1] - post[1]).abs() > PREDICTION_ALIGNED_RESIDUAL_WU
+                }
+                (None, Some(_)) => true,
+                _ => false,
+            };
+            if diverged {
+                self.snap_tick_poses(world);
+            }
         }
-        self.snap_tick_poses(world);
 
         if reason == Some(SnapReason::VerticalSettled) {
             restore_durable(world, replica);
@@ -671,30 +676,6 @@ impl LocalPrediction {
             self.last_correction_delta = [0.0, 0.0];
             self.last_correction_wu = 0.0;
         }
-        // #region agent log
-        if self.last_correction_wu > 0.02 || crate::debug::agent_log::should_emit(2, 250) {
-            let (p0, p1) = self.pending_seq_range().unwrap_or((0, 0));
-            crate::debug::agent_log::emit(
-                "F",
-                "prediction.rs:finish_correction",
-                "reconcile",
-                &format!(
-                    "{{\"corr\":{:.4},\"dx\":{:.4},\"dy\":{:.4},\"pending\":{},\"p0\":{},\"p1\":{},\"sent\":{},\"tick\":{},\"auth_tick\":{},\"hard\":{},\"fresh\":{}}}",
-                    self.last_correction_wu,
-                    self.last_correction_delta[0],
-                    self.last_correction_delta[1],
-                    self.pending.len(),
-                    p0,
-                    p1,
-                    self.last_sent_seq,
-                    self.prediction_tick,
-                    self.last_auth_server_tick,
-                    self.last_sync_hard_snap,
-                    self.last_sync_durable
-                ),
-            );
-        }
-        // #endregion
     }
 
     fn trim_pending(&mut self, epoch: u16, ack: u32) {
@@ -2304,5 +2285,38 @@ mod tests {
             "hard/restore must not lerp from airborne Y"
         );
         assert!((cur[1] - spawn[1]).abs() < 0.05 || (cur[1] - airborne[1]).abs() < 0.05);
+    }
+
+    #[test]
+    fn ordinary_snapshot_preserves_y_interp_history() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let jump = PlayerInput::from_buttons_ext(false, false, true, false);
+        tick_recorded(&mut pred, &mut world, jump, 2, 1);
+        tick_recorded(&mut pred, &mut world, PlayerInput::idle(), 3, 2);
+        assert_ne!(
+            pred.prev_tick_pose().unwrap()[1],
+            pred.tick_pose().unwrap()[1]
+        );
+        let body = world.player_body().unwrap();
+        let mut airborne = snap(2, 4, id, body.position, body.velocity);
+        airborne.local_grounded = false;
+        airborne.local_grounded_on = PlatformSupportId::NONE;
+        airborne.last_acknowledged_input_sequence = 2;
+        let _ = replica.apply(airborne);
+        pred.sync_from_replica(&replica, &mut world, 4);
+        let prev = pred.prev_tick_pose().unwrap();
+        let cur = pred.tick_pose().unwrap();
+        assert_ne!(
+            prev[1], cur[1],
+            "ordinary durable snapshot must keep tick-to-tick Y lerp (got prev={} cur={})",
+            prev[1], cur[1]
+        );
+        assert!(!pred.last_sync_hard_snap());
     }
 }

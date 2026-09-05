@@ -12,26 +12,33 @@ pub fn job_label(job: JobPhase) -> String {
     }
 }
 
-/// Footer status bar: live job/clients context + shortcuts.
+/// Footer status bar: pid + job, live rv/load/clients context, shortcuts.
 pub fn bar(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) {
     ui.horizontal(|ui| {
+        if let Some(pid) = snap.pid {
+            ui.colored_label(theme::muted(), format!("pid {pid}"));
+        } else {
+            ui.colored_label(theme::muted(), "pid —");
+        }
+        ui.separator();
+        ui.colored_label(
+            theme::muted(),
+            format!("job {}", job_label(snap.job).to_ascii_lowercase()),
+        );
         if snap.validation != purgatory_dev_runtime::ValidationState::Idle {
-            ui.colored_label(theme::muted(), format!("rv {}", snap.validation.as_str()));
             ui.separator();
+            ui.colored_label(theme::muted(), format!("rv {}", snap.validation.as_str()));
         }
         if snap.load != purgatory_dev_runtime::LoadState::Idle {
-            ui.colored_label(theme::muted(), format!("load {}", snap.load.as_str()));
             ui.separator();
+            ui.colored_label(theme::muted(), format!("load {}", snap.load.as_str()));
         }
         if snap.client_count > 0 || snap.pending_clients > 0 {
+            ui.separator();
             ui.colored_label(
                 theme::muted(),
                 format!("clients {}/+{}", snap.client_count, snap.pending_clients),
             );
-            ui.separator();
-        }
-        if let Some(pid) = snap.pid {
-            ui.colored_label(theme::muted(), format!("pid {pid}"));
         }
         if let Some(fail) = &snap.last_failure {
             ui.separator();
@@ -46,7 +53,7 @@ pub fn bar(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) {
     });
 }
 
-/// Sidebar bottom strip from real server/job state (not a fake account block).
+/// Sidebar bottom strip from real server/client process state (not a fake account block).
 pub fn connection_strip(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) {
     let (label, color) = connection_label(snap.server_state);
     ui.horizontal(|ui| {
@@ -60,12 +67,33 @@ pub fn connection_strip(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnap
                 .font(theme::section_font()),
         );
     });
-    ui.add_space(2.0);
-    ui.label(
-        egui::RichText::new(format!("Job {}", job_label(snap.job)))
-            .font(theme::subtitle_font())
-            .color(theme::muted()),
-    );
+    // Hub tracks client processes only — no authoritative per-client wire "connected"
+    // signal in HubSnapshot. Show RUNNING when a client process is open; never invent CONNECTED.
+    if snap.client_count > 0 {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new("CLIENT")
+                    .font(theme::subtitle_font())
+                    .color(theme::muted()),
+            );
+            let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(6.0), Sense::hover());
+            ui.painter()
+                .circle_filled(dot_rect.center(), 2.5, theme::muted());
+            let running = if snap.client_count == 1 {
+                "RUNNING".to_string()
+            } else {
+                format!("RUNNING ×{}", snap.client_count)
+            };
+            ui.label(
+                egui::RichText::new(running)
+                    .font(theme::subtitle_font())
+                    .color(theme::muted()),
+            );
+        });
+    }
 }
 
 #[must_use]

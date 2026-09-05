@@ -3,10 +3,11 @@ fn main() {
     match purgatory_content::load_registry(&root, purgatory_content::LoadMode::Full) {
         Ok(registry) => {
             println!(
-                "PURGATORY content validator OK root={} maps={} entities={} defs={}",
+                "PURGATORY content validator OK root={} maps={} entities={} equipment={} defs={}",
                 root.display(),
                 registry.map_count(),
                 registry.entity_count(),
+                registry.equipment_count(),
                 registry.definition_count()
             );
         }
@@ -31,5 +32,6 @@ mod tests {
         let registry = purgatory_content::load_registry(&root, purgatory_content::LoadMode::Full)
             .expect("workspace content");
         assert!(registry.map_count() >= 2);
+        assert!(registry.equipment_count() >= 8);
     }
 }

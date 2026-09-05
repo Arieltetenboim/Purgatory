@@ -402,6 +402,135 @@ const WELCOME_V10: &[u8] = &[
     0x64, 0x65, 0x76, // "dev"
 ];
 
+const HELLO_V11: &[u8] = &[
+    0x01, // ClientControl::Hello discriminant
+    0x0B, 0x00, 0x00, 0x00, // protocol_version = 11
+    0x04, // client_build byte length = 4
+    0x74, 0x65, 0x73, 0x74, // "test"
+    0x09, // dev_login byte length = 9
+    0x64, 0x65, 0x76, 0x2E, 0x6C, 0x6F, 0x63, 0x61, 0x6C, // "dev.local"
+];
+
+const WELCOME_V11: &[u8] = &[
+    0x02, // ServerControl::Welcome discriminant
+    0x0B, 0x00, 0x00, 0x00, // protocol_version = 11
+    0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // connection_id = 0x1234
+    0x1E, 0x00, 0x00, 0x00, // server_tick_rate = 30
+    0x14, // server_label byte length = 20
+    0x70, 0x75, 0x72, 0x67, 0x61, 0x74, 0x6F, 0x72, 0x79, 0x2D, // "purgatory-"
+    0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x2D, // "server-"
+    0x64, 0x65, 0x76, // "dev"
+];
+
+const HELLO_V12: &[u8] = &[
+    0x01, // ClientControl::Hello discriminant
+    0x0C, 0x00, 0x00, 0x00, // protocol_version = 12
+    0x04, // client_build byte length = 4
+    0x74, 0x65, 0x73, 0x74, // "test"
+    0x09, // dev_login byte length = 9
+    0x64, 0x65, 0x76, 0x2E, 0x6C, 0x6F, 0x63, 0x61, 0x6C, // "dev.local"
+];
+
+const WELCOME_V12: &[u8] = &[
+    0x02, // ServerControl::Welcome discriminant
+    0x0C, 0x00, 0x00, 0x00, // protocol_version = 12
+    0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // connection_id = 0x1234
+    0x1E, 0x00, 0x00, 0x00, // server_tick_rate = 30
+    0x14, // server_label byte length = 20
+    0x70, 0x75, 0x72, 0x67, 0x61, 0x74, 0x6F, 0x72, 0x79, 0x2D, // "purgatory-"
+    0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x2D, // "server-"
+    0x64, 0x65, 0x76, // "dev"
+];
+
+const HELLO_V13: &[u8] = &[
+    0x01, // ClientControl::Hello discriminant
+    0x0D, 0x00, 0x00, 0x00, // protocol_version = 13
+    0x04, // client_build byte length = 4
+    0x74, 0x65, 0x73, 0x74, // "test"
+    0x09, // dev_login byte length = 9
+    0x64, 0x65, 0x76, 0x2E, 0x6C, 0x6F, 0x63, 0x61, 0x6C, // "dev.local"
+];
+
+const WELCOME_V13: &[u8] = &[
+    0x02, // ServerControl::Welcome discriminant
+    0x0D, 0x00, 0x00, 0x00, // protocol_version = 13
+    0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // connection_id = 0x1234
+    0x1E, 0x00, 0x00, 0x00, // server_tick_rate = 30
+    0x14, // server_label byte length = 20
+    0x70, 0x75, 0x72, 0x67, 0x61, 0x74, 0x6F, 0x72, 0x79, 0x2D, // "purgatory-"
+    0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x2D, // "server-"
+    0x64, 0x65, 0x76, // "dev"
+];
+
+const HELLO_V14: &[u8] = &[
+    0x01, // ClientControl::Hello discriminant
+    0x0E, 0x00, 0x00, 0x00, // protocol_version = 14
+    0x04, // client_build byte length = 4
+    0x74, 0x65, 0x73, 0x74, // "test"
+    0x09, // dev_login byte length = 9
+    0x64, 0x65, 0x76, 0x2E, 0x6C, 0x6F, 0x63, 0x61, 0x6C, // "dev.local"
+];
+
+const WELCOME_V14: &[u8] = &[
+    0x02, // ServerControl::Welcome discriminant
+    0x0E, 0x00, 0x00, 0x00, // protocol_version = 14
+    0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // connection_id = 0x1234
+    0x1E, 0x00, 0x00, 0x00, // server_tick_rate = 30
+    0x14, // server_label byte length = 20
+    0x70, 0x75, 0x72, 0x67, 0x61, 0x74, 0x6F, 0x72, 0x79, 0x2D, // "purgatory-"
+    0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x2D, // "server-"
+    0x64, 0x65, 0x76, // "dev"
+];
+
+const DEV_RESET_PLAYER_V14: &[u8] = &[
+    0x18, // tag 24 DevResetPlayer
+];
+
+const HELLO_V15: &[u8] = &[
+    0x01, // ClientControl::Hello discriminant
+    0x0F, 0x00, 0x00, 0x00, // protocol_version = 15
+    0x04, // client_build byte length = 4
+    0x74, 0x65, 0x73, 0x74, // "test"
+    0x09, // dev_login byte length = 9
+    0x64, 0x65, 0x76, 0x2E, 0x6C, 0x6F, 0x63, 0x61, 0x6C, // "dev.local"
+];
+
+const WELCOME_V15: &[u8] = &[
+    0x02, // ServerControl::Welcome discriminant
+    0x0F, 0x00, 0x00, 0x00, // protocol_version = 15
+    0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // connection_id = 0x1234
+    0x1E, 0x00, 0x00, 0x00, // server_tick_rate = 30
+    0x14, // server_label byte length = 20
+    0x70, 0x75, 0x72, 0x67, 0x61, 0x74, 0x6F, 0x72, 0x79, 0x2D, // "purgatory-"
+    0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x2D, // "server-"
+    0x64, 0x65, 0x76, // "dev"
+];
+
+const ABILITY_ACTIVATE_INDEPENDENT_V15: &[u8] = &[
+    0x19, // tag 25 AbilityActivate
+    0x01, 0x00, 0x00, 0x00, // seq = 1
+    0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // content token 9
+    0x00, // no selected entity
+];
+
+const ABILITY_ACCEPTED_V15: &[u8] = &[
+    0x1A, // tag 26 Ability accepted
+    0x01, 0x00, 0x00, 0x00, // seq = 1
+];
+
+const DEV_PRESENTATION_ONESHOT_ATTACK_V13: &[u8] = &[
+    0x16, // tag 22 DevPresentationOneShot
+    0x01, // Attack
+];
+
+const SERVER_PRESENTATION_ONESHOT_HURT_V13: &[u8] = &[
+    0x17, // tag 23 ServerPresentationOneShot
+    0x03, 0x00, 0x00, 0x00, // index = 3
+    0x02, 0x00, 0x00, 0x00, // generation = 2
+    0x02, // Hurt
+    0x64, 0x00, 0x00, 0x00, // until_tick = 100
+];
+
 const DEV_SET_CHANNEL_V9: &[u8] = &[
     0x11, // ClientControl::DevSetChannel discriminant (tag 17)
     0x01, 0x00, 0x00, 0x00, // channel = 1
@@ -535,8 +664,8 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_10() {
-    assert_eq!(PROTOCOL_VERSION, 10);
+fn current_protocol_version_is_15() {
+    assert_eq!(PROTOCOL_VERSION, 15);
 }
 
 #[test]
@@ -1261,7 +1390,7 @@ fn welcome_v9_matches_golden_bytes() {
 #[test]
 fn hello_v10_matches_golden_bytes() {
     let hello = Hello {
-        protocol_version: PROTOCOL_VERSION,
+        protocol_version: 10,
         client_build: "test".to_string(),
         dev_login: "dev.local".to_string(),
     };
@@ -1276,7 +1405,7 @@ fn hello_v10_matches_golden_bytes() {
 #[test]
 fn welcome_v10_matches_golden_bytes() {
     let welcome = purgatory_protocol::Welcome {
-        protocol_version: PROTOCOL_VERSION,
+        protocol_version: 10,
         connection_id: ConnectionId::from_raw(GOLDEN_CONNECTION_ID),
         server_tick_rate: 30,
         server_label: "purgatory-server-dev".to_string(),
@@ -1286,6 +1415,255 @@ fn welcome_v10_matches_golden_bytes() {
     assert_eq!(
         decode_server_control(WELCOME_V10).expect("decode"),
         ServerControl::Welcome(welcome)
+    );
+}
+
+#[test]
+fn hello_v11_matches_golden_bytes() {
+    let hello = Hello {
+        protocol_version: 11,
+        client_build: "test".to_string(),
+        dev_login: "dev.local".to_string(),
+    };
+    let encoded = encode_client_control(&ClientControl::Hello(hello.clone())).expect("encode");
+    assert_eq!(encoded, HELLO_V11);
+    assert_eq!(
+        decode_client_control(HELLO_V11).expect("decode"),
+        ClientControl::Hello(hello)
+    );
+}
+
+#[test]
+fn welcome_v11_matches_golden_bytes() {
+    let welcome = purgatory_protocol::Welcome {
+        protocol_version: 11,
+        connection_id: ConnectionId::from_raw(GOLDEN_CONNECTION_ID),
+        server_tick_rate: 30,
+        server_label: "purgatory-server-dev".to_string(),
+    };
+    let encoded = encode_server_control(&ServerControl::Welcome(welcome.clone())).expect("encode");
+    assert_eq!(encoded, WELCOME_V11);
+    assert_eq!(
+        decode_server_control(WELCOME_V11).expect("decode"),
+        ServerControl::Welcome(welcome)
+    );
+}
+
+#[test]
+fn hello_v12_matches_golden_bytes() {
+    let hello = Hello {
+        protocol_version: 12,
+        client_build: "test".to_string(),
+        dev_login: "dev.local".to_string(),
+    };
+    let encoded = encode_client_control(&ClientControl::Hello(hello.clone())).expect("encode");
+    assert_eq!(encoded, HELLO_V12);
+    assert_eq!(
+        decode_client_control(HELLO_V12).expect("decode"),
+        ClientControl::Hello(hello)
+    );
+}
+
+#[test]
+fn welcome_v12_matches_golden_bytes() {
+    let welcome = purgatory_protocol::Welcome {
+        protocol_version: 12,
+        connection_id: ConnectionId::from_raw(GOLDEN_CONNECTION_ID),
+        server_tick_rate: 30,
+        server_label: "purgatory-server-dev".to_string(),
+    };
+    let encoded = encode_server_control(&ServerControl::Welcome(welcome.clone())).expect("encode");
+    assert_eq!(encoded, WELCOME_V12);
+    assert_eq!(
+        decode_server_control(WELCOME_V12).expect("decode"),
+        ServerControl::Welcome(welcome)
+    );
+}
+
+#[test]
+fn hello_v13_matches_golden_bytes() {
+    let hello = Hello {
+        protocol_version: 13,
+        client_build: "test".to_string(),
+        dev_login: "dev.local".to_string(),
+    };
+    let encoded = encode_client_control(&ClientControl::Hello(hello.clone())).expect("encode");
+    assert_eq!(encoded, HELLO_V13);
+    assert_eq!(
+        decode_client_control(HELLO_V13).expect("decode"),
+        ClientControl::Hello(hello)
+    );
+}
+
+#[test]
+fn welcome_v13_matches_golden_bytes() {
+    let welcome = purgatory_protocol::Welcome {
+        protocol_version: 13,
+        connection_id: ConnectionId::from_raw(GOLDEN_CONNECTION_ID),
+        server_tick_rate: 30,
+        server_label: "purgatory-server-dev".to_string(),
+    };
+    let encoded = encode_server_control(&ServerControl::Welcome(welcome.clone())).expect("encode");
+    assert_eq!(encoded, WELCOME_V13);
+    assert_eq!(
+        decode_server_control(WELCOME_V13).expect("decode"),
+        ServerControl::Welcome(welcome)
+    );
+}
+
+#[test]
+fn hello_v14_matches_golden_bytes() {
+    let hello = Hello {
+        protocol_version: 14,
+        client_build: "test".to_string(),
+        dev_login: "dev.local".to_string(),
+    };
+    let encoded = encode_client_control(&ClientControl::Hello(hello.clone())).expect("encode");
+    assert_eq!(encoded, HELLO_V14);
+    assert_eq!(
+        decode_client_control(HELLO_V14).expect("decode"),
+        ClientControl::Hello(hello)
+    );
+}
+
+#[test]
+fn welcome_v14_matches_golden_bytes() {
+    let welcome = purgatory_protocol::Welcome {
+        protocol_version: 14,
+        connection_id: ConnectionId::from_raw(GOLDEN_CONNECTION_ID),
+        server_tick_rate: 30,
+        server_label: "purgatory-server-dev".to_string(),
+    };
+    let encoded = encode_server_control(&ServerControl::Welcome(welcome.clone())).expect("encode");
+    assert_eq!(encoded, WELCOME_V14);
+    assert_eq!(
+        decode_server_control(WELCOME_V14).expect("decode"),
+        ServerControl::Welcome(welcome)
+    );
+}
+
+#[test]
+fn presentation_oneshot_v13_matches_golden_bytes() {
+    let req = ClientControl::DevPresentationOneShot(purgatory_protocol::DevPresentationOneShot {
+        kind: 1,
+    });
+    assert_eq!(
+        encode_client_control(&req).expect("encode"),
+        DEV_PRESENTATION_ONESHOT_ATTACK_V13
+    );
+    assert_eq!(
+        decode_client_control(DEV_PRESENTATION_ONESHOT_ATTACK_V13).expect("decode"),
+        req
+    );
+
+    let evt = ServerControl::PresentationOneShot(purgatory_protocol::ServerPresentationOneShot {
+        entity: WireEntityId {
+            index: 3,
+            generation: 2,
+        },
+        kind: 2,
+        until_tick: 100,
+    });
+    assert_eq!(
+        encode_server_control(&evt).expect("encode"),
+        SERVER_PRESENTATION_ONESHOT_HURT_V13
+    );
+    assert_eq!(
+        decode_server_control(SERVER_PRESENTATION_ONESHOT_HURT_V13).expect("decode"),
+        evt
+    );
+}
+
+#[test]
+fn v10_golden_vectors_remain_frozen() {
+    assert_eq!(HELLO_V10[1], 0x0A, "do not rewrite v10 Hello bytes");
+    assert_eq!(WELCOME_V10[1], 0x0A, "do not rewrite v10 Welcome bytes");
+}
+
+#[test]
+fn v11_golden_vectors_remain_frozen() {
+    assert_eq!(HELLO_V11[1], 0x0B, "do not rewrite v11 Hello bytes");
+    assert_eq!(WELCOME_V11[1], 0x0B, "do not rewrite v11 Welcome bytes");
+}
+
+#[test]
+fn v14_golden_vectors_remain_frozen() {
+    assert_eq!(HELLO_V14[1], 0x0E, "do not rewrite v14 Hello bytes");
+    assert_eq!(WELCOME_V14[1], 0x0E, "do not rewrite v14 Welcome bytes");
+}
+
+#[test]
+fn hello_v15_matches_golden_bytes() {
+    let hello = Hello {
+        protocol_version: PROTOCOL_VERSION,
+        client_build: "test".to_string(),
+        dev_login: "dev.local".to_string(),
+    };
+    let encoded = encode_client_control(&ClientControl::Hello(hello.clone())).expect("encode");
+    assert_eq!(encoded, HELLO_V15);
+    assert_eq!(
+        decode_client_control(HELLO_V15).expect("decode"),
+        ClientControl::Hello(hello)
+    );
+}
+
+#[test]
+fn welcome_v15_matches_golden_bytes() {
+    let welcome = purgatory_protocol::Welcome {
+        protocol_version: PROTOCOL_VERSION,
+        connection_id: ConnectionId::from_raw(GOLDEN_CONNECTION_ID),
+        server_tick_rate: 30,
+        server_label: "purgatory-server-dev".to_string(),
+    };
+    let encoded = encode_server_control(&ServerControl::Welcome(welcome.clone())).expect("encode");
+    assert_eq!(encoded, WELCOME_V15);
+    assert_eq!(
+        decode_server_control(WELCOME_V15).expect("decode"),
+        ServerControl::Welcome(welcome)
+    );
+}
+
+#[test]
+fn ability_activate_v15_matches_golden_bytes() {
+    let req = ClientControl::AbilityActivate(purgatory_protocol::AbilityActivateRequest {
+        seq: 1,
+        ability_id: purgatory_common::ContentId::from_token(9),
+        selected: None,
+    });
+    assert_eq!(
+        encode_client_control(&req).expect("encode"),
+        ABILITY_ACTIVATE_INDEPENDENT_V15
+    );
+    assert_eq!(
+        decode_client_control(ABILITY_ACTIVATE_INDEPENDENT_V15).expect("decode"),
+        req
+    );
+    let accepted = ServerControl::Ability(purgatory_protocol::ServerAbility::Accepted { seq: 1 });
+    assert_eq!(
+        encode_server_control(&accepted).expect("encode"),
+        ABILITY_ACCEPTED_V15
+    );
+    assert_eq!(
+        decode_server_control(ABILITY_ACCEPTED_V15).expect("decode"),
+        accepted
+    );
+}
+
+#[test]
+fn v13_golden_vectors_remain_frozen() {
+    assert_eq!(HELLO_V13[1], 0x0D, "do not rewrite v13 Hello bytes");
+    assert_eq!(WELCOME_V13[1], 0x0D, "do not rewrite v13 Welcome bytes");
+}
+
+#[test]
+fn dev_reset_player_v14_matches_golden_bytes() {
+    assert_eq!(
+        encode_client_control(&ClientControl::DevResetPlayer).expect("encode"),
+        DEV_RESET_PLAYER_V14
+    );
+    assert_eq!(
+        decode_client_control(DEV_RESET_PLAYER_V14).expect("decode"),
+        ClientControl::DevResetPlayer
     );
 }
 
@@ -1346,6 +1724,7 @@ fn sample_v8_replication_frame() -> ReplicationFrame {
                 velocity: [0.0, 0.0],
             },
             health: None,
+            equipment: None,
         }],
         aoi_debug: None,
     }

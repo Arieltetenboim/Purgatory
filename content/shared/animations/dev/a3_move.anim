@@ -1,0 +1,84 @@
+schema_version 1
+duration 0.80
+loop Loop
+
+track upper_leg_front
+rot 0.00 0.0 Linear
+rot 0.09 0.421484 Linear
+rot 0.20 0.4 Linear
+rot 0.30 6.368537 Linear
+rot 0.40 0.0 Linear
+rot 0.60 -0.4 Linear
+rot 0.80 0.0 Linear
+endtrack
+
+track upper_leg_back
+rot 0.00 0.129613 Linear
+rot 0.20 -0.4 Linear
+rot 0.30 0.020357 Linear
+rot 0.40 0.428058 Linear
+rot 0.60 0.4 Linear
+rot 0.80 0.0 Linear
+endtrack
+
+track upper_arm_front
+rot 0.00 0.0 Linear
+rot 0.20 -0.35 Linear
+rot 0.40 0.0 Linear
+rot 0.60 0.35 Linear
+rot 0.80 0.0 Linear
+endtrack
+
+track upper_arm_back
+rot 0.00 0.0 Linear
+rot 0.20 0.35 Linear
+rot 0.40 0.0 Linear
+rot 0.60 -0.35 Linear
+rot 0.80 0.0 Linear
+endtrack
+
+track torso
+rot 0.00 0.0 Linear
+rot 0.20 0.05 Linear
+rot 0.40 0.0 Linear
+rot 0.60 -0.05 Linear
+rot 0.80 0.0 Linear
+endtrack
+
+track lower_arm_back
+rot 0.00 0.325255 Linear
+rot 0.20 0.187134 Linear
+rot 0.40 0.237181 Linear
+endtrack
+
+track lower_arm_front
+rot 0.00 0.104981 Linear
+rot 0.20 0.473297 Linear
+rot 0.40 0.225848 Linear
+endtrack
+
+track lower_leg_back
+rot 0.00 -0.168756 Linear
+rot 0.20 -0.172806 Linear
+rot 0.30 -0.647193 Linear
+endtrack
+
+track lower_leg_front
+rot 0.00 -0.07747 Linear
+rot 0.09 -0.617875 Linear
+rot 0.20 -0.394205 Linear
+endtrack
+
+track foot_back
+rot 0.00 6.350455 Linear
+rot 0.20 0.45649 Linear
+rot 0.40 0.098177 Linear
+endtrack
+
+track foot_front
+rot 0.00 -0.003052 Linear
+rot 0.40 0.42102 Linear
+endtrack
+
+markers
+endmarkers

@@ -72,6 +72,13 @@ enum ClientGameplayMsg {
     InteractClose(u32),
     PortalActivate(purgatory_protocol::WireEntityId),
     DevSetChannel(u32),
+    #[allow(dead_code)]
+    Equip(purgatory_protocol::EquipRequest),
+    #[allow(dead_code)]
+    Unequip(purgatory_protocol::UnequipRequest),
+    DevPresentationOneShot(u8),
+    DevResetPlayer,
+    AbilityActivate(purgatory_protocol::AbilityActivateRequest),
 }
 
 struct ImpairmentNet {
@@ -189,6 +196,17 @@ impl EventSink {
                 NetworkEvent::Interact { attempt_id, event } => {
                     self.trace(&format!("attempt={attempt_id} Interact {event:?}"));
                 }
+                NetworkEvent::Equipment { attempt_id, event } => {
+                    self.trace(&format!("attempt={attempt_id} Equipment {event:?}"));
+                }
+                NetworkEvent::PresentationOneShot { attempt_id, event } => {
+                    self.trace(&format!(
+                        "attempt={attempt_id} PresentationOneShot {event:?}"
+                    ));
+                }
+                NetworkEvent::Ability { attempt_id, event } => {
+                    self.trace(&format!("attempt={attempt_id} Ability {event:?}"));
+                }
             }
         }
         if !event.is_lifecycle() {
@@ -261,7 +279,10 @@ impl NetworkHandle {
         let (control_tx, control_rx) = watch::channel(Control::default());
         let (frame_tx, frame_rx) = mpsc::channel(FRAME_CAP);
         let snapshot_malformed = Arc::new(AtomicU64::new(0));
+        #[cfg(feature = "dev-diagnostics")]
         let initial_impairment = NetworkImpairmentConfig::from_env();
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let initial_impairment = NetworkImpairmentConfig::off(0);
         let (imp_cfg_tx, imp_cfg_rx) = watch::channel(initial_impairment);
         let (stall_tx, stall_rx) = mpsc::channel(STALL_CAP);
         let (reset_tx, reset_rx) = mpsc::channel(RESET_CAP);
@@ -391,6 +412,41 @@ impl NetworkHandle {
     pub fn try_send_dev_set_channel(&self, channel: u32) -> bool {
         self.input
             .try_send(ClientGameplayMsg::DevSetChannel(channel))
+            .is_ok()
+    }
+
+    #[allow(dead_code)]
+    pub fn try_send_equip(&self, request: purgatory_protocol::EquipRequest) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::Equip(request))
+            .is_ok()
+    }
+
+    #[allow(dead_code)]
+    pub fn try_send_unequip(&self, request: purgatory_protocol::UnequipRequest) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::Unequip(request))
+            .is_ok()
+    }
+
+    pub fn try_send_dev_presentation_oneshot(&self, kind: u8) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::DevPresentationOneShot(kind))
+            .is_ok()
+    }
+
+    pub fn try_send_dev_reset_player(&self) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::DevResetPlayer)
+            .is_ok()
+    }
+
+    pub fn try_send_ability_activate(
+        &self,
+        request: purgatory_protocol::AbilityActivateRequest,
+    ) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::AbilityActivate(request))
             .is_ok()
     }
 
@@ -858,6 +914,27 @@ async fn handshake_and_live(
                 kind: NetworkFailureKind::UnexpectedMessage,
             });
         }
+        Ok(ServerControl::Equipment(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
+        Ok(ServerControl::PresentationOneShot(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
+        Ok(ServerControl::Ability(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
         Err(kind) => {
             connection.close(0u32.into(), b"handshake");
             return Err(NetworkEvent::Disconnected { attempt_id, kind });
@@ -887,6 +964,15 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
         ClientGameplayMsg::DevSetChannel(channel) => {
             ClientControl::DevSetChannel(purgatory_protocol::DevSetChannel { channel })
         }
+        ClientGameplayMsg::Equip(request) => ClientControl::Equip(request),
+        ClientGameplayMsg::Unequip(request) => ClientControl::Unequip(request),
+        ClientGameplayMsg::DevPresentationOneShot(kind) => {
+            ClientControl::DevPresentationOneShot(purgatory_protocol::DevPresentationOneShot {
+                kind,
+            })
+        }
+        ClientGameplayMsg::DevResetPlayer => ClientControl::DevResetPlayer,
+        ClientGameplayMsg::AbilityActivate(request) => ClientControl::AbilityActivate(request),
     }
 }
 
@@ -1056,6 +1142,30 @@ async fn live_loop(
                         events
                             .emit(
                                 NetworkEvent::Interact { attempt_id, event },
+                                control,
+                            )
+                            .await;
+                    }
+                    Ok(ServerControl::Equipment(event)) => {
+                        events
+                            .emit(
+                                NetworkEvent::Equipment { attempt_id, event },
+                                control,
+                            )
+                            .await;
+                    }
+                    Ok(ServerControl::PresentationOneShot(event)) => {
+                        events
+                            .emit(
+                                NetworkEvent::PresentationOneShot { attempt_id, event },
+                                control,
+                            )
+                            .await;
+                    }
+                    Ok(ServerControl::Ability(event)) => {
+                        events
+                            .emit(
+                                NetworkEvent::Ability { attempt_id, event },
                                 control,
                             )
                             .await;
@@ -1935,6 +2045,7 @@ mod tests {
                     velocity: [0.0, 0.0],
                 },
                 health: None,
+                equipment: None,
             }],
             aoi_debug: None,
         }
@@ -1953,10 +2064,12 @@ mod tests {
             domains: purgatory_protocol::DomainMask {
                 transform: true,
                 health: false,
+                equipment: false,
             },
             position: Some([9.0, 4.0]),
             velocity: Some([0.0, 0.0]),
             health: None,
+            equipment: None,
         }];
         frame
     }

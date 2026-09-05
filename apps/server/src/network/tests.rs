@@ -15,11 +15,12 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::time::timeout;
 
 use purgatory_protocol::{
-    ClientControl, ConnectionId, DisconnectReasonCode, Hello, InputCommand,
-    MAX_CONTROL_MESSAGE_BYTES, MoveAxis, PROTOCOL_VERSION, ReplicatedKind, ReplicationFrame,
-    ReplicationRecord, ServerControl, SnapshotEntity, WireEntityId, decode_client_datagram,
-    decode_replication_frame, decode_server_control, encode_client_control, encode_client_datagram,
-    encode_frame, peek_frame_len, peek_gameplay_frame_len,
+    AbilityActivateRequest, ClientControl, ConnectionId, DisconnectReasonCode, EquipRequest,
+    EquipmentRejectReason, Hello, InputCommand, MAX_CONTROL_MESSAGE_BYTES, MoveAxis,
+    PROTOCOL_VERSION, ReplicatedEquipment, ReplicatedKind, ReplicationFrame, ReplicationRecord,
+    ServerAbility, ServerControl, ServerEquipment, SnapshotEntity, UnequipRequest, WireEntityId,
+    decode_client_datagram, decode_replication_frame, decode_server_control, encode_client_control,
+    encode_client_datagram, encode_frame, peek_frame_len, peek_gameplay_frame_len,
 };
 
 use super::abuse::NetworkAbuseConfig;
@@ -284,6 +285,8 @@ async fn accept_loop(
     gameplay: Option<super::gameplay::GameplayTx>,
     persist: Option<super::persist::PersistenceHandle>,
 ) {
+    let lifecycle = Arc::new(super::connection_lifecycle::ConnectionLifecycleBook::new());
+    let pressure = Arc::new(super::network_pressure::NetworkPressureBook::new());
     while let Some(incoming) = bound.endpoint.accept().await {
         dispatch_incoming(
             incoming,
@@ -296,6 +299,8 @@ async fn accept_loop(
                 stats: bound.stats.clone(),
                 gameplay: gameplay.clone(),
                 persist: persist.clone(),
+                lifecycle: lifecycle.clone(),
+                pressure: pressure.clone(),
             },
         );
     }
@@ -434,6 +439,12 @@ async fn write_input(
     .expect("encode input");
     let frame = encode_frame(&payload).expect("frame");
     send.write_all(&frame).await.expect("write input");
+}
+
+async fn write_control(send: &mut SendStream, msg: ClientControl) {
+    let payload = encode_client_control(&msg).expect("encode control");
+    let frame = encode_frame(&payload).expect("frame");
+    send.write_all(&frame).await.expect("write control");
 }
 
 async fn expect_disconnect(recv: &mut RecvStream, code: DisconnectReasonCode) {
@@ -3377,6 +3388,8 @@ struct ReplicaView {
     input_epoch: u16,
     local_grounded: bool,
     entities: HashMap<WireEntityId, SnapshotEntity>,
+    equipment: HashMap<WireEntityId, Option<ReplicatedEquipment>>,
+    equipment_updates: u32,
 }
 
 impl ReplicaView {
@@ -3392,6 +3405,8 @@ impl ReplicaView {
             input_epoch: 0,
             local_grounded: false,
             entities: HashMap::new(),
+            equipment: HashMap::new(),
+            equipment_updates: 0,
         }
     }
 
@@ -3401,6 +3416,7 @@ impl ReplicaView {
         }
         if frame.observer_baseline_epoch > self.epoch {
             self.entities.clear();
+            self.equipment.clear();
             self.epoch = frame.observer_baseline_epoch;
         }
         self.snapshot_sequence = frame.snapshot_sequence;
@@ -3410,13 +3426,18 @@ impl ReplicaView {
         self.local_grounded = frame.local_grounded;
         for rec in frame.records {
             match rec {
-                ReplicationRecord::Enter { entity, .. } => {
+                ReplicationRecord::Enter {
+                    entity, equipment, ..
+                } => {
                     self.entities.insert(entity.entity_id, entity);
+                    self.equipment.insert(entity.entity_id, equipment);
                 }
                 ReplicationRecord::Update {
                     entity_id,
                     position,
                     velocity,
+                    equipment,
+                    domains,
                     ..
                 } => {
                     if let Some(e) = self.entities.get_mut(&entity_id) {
@@ -3427,9 +3448,21 @@ impl ReplicaView {
                             e.velocity = v;
                         }
                     }
+                    if domains.equipment {
+                        self.equipment_updates = self.equipment_updates.saturating_add(1);
+                        if let Some(delta) = equipment {
+                            let slot = self
+                                .equipment
+                                .entry(entity_id)
+                                .or_insert_with(|| Some(ReplicatedEquipment::empty()));
+                            let state = slot.get_or_insert_with(ReplicatedEquipment::empty);
+                            state.apply_delta(&delta);
+                        }
+                    }
                 }
                 ReplicationRecord::Leave { entity_id } => {
                     self.entities.remove(&entity_id);
+                    self.equipment.remove(&entity_id);
                 }
             }
         }
@@ -3680,6 +3713,336 @@ async fn slow_snapshot_client_does_not_block_simulation_or_peer() {
     }
     assert!(view.snapshot_sequence >= 1);
     assert_eq!(view.player_count(), 2);
+    server.shutdown();
+}
+
+fn debug_sword() -> purgatory_common::ContentId {
+    purgatory_common::ContentId::from_authored("equipment.debug.practice_sword").unwrap()
+}
+
+async fn expect_equipment(recv: &mut RecvStream) -> ServerEquipment {
+    timeout(Duration::from_secs(2), async {
+        loop {
+            match read_server_control(recv).await {
+                Ok(ServerControl::Equipment(event)) => return event,
+                Ok(_) => {}
+                Err(err) => panic!("control read failed: {err}"),
+            }
+        }
+    })
+    .await
+    .expect("equipment control")
+}
+
+#[tokio::test]
+async fn two_clients_converge_on_authoritative_equipment() {
+    let (server, sim) = spawn_gameplay().await;
+    let (client_a, mut send_a, mut recv_a, id_a) = handshake_ok(server.addr).await;
+    let (client_b, mut send_b, _recv_b, id_b) = handshake_ok(server.addr).await;
+    assert!(wait_attached(&sim, id_a).await);
+    assert!(wait_attached(&sim, id_b).await);
+    assert!(lock_sim(&sim).owner.set_player_x(id_a, 0.0));
+    assert!(lock_sim(&sim).owner.set_player_x(id_b, 0.0));
+    write_input(&mut send_a, 1, MoveAxis::Neutral, false, false).await;
+    write_input(&mut send_b, 1, MoveAxis::Neutral, false, false).await;
+    assert!(
+        wait_until(
+            || {
+                let mut g = lock_sim(&sim);
+                g.pump();
+                g.owner.last_received(id_a) == Some(1) && g.owner.last_received(id_b) == Some(1)
+            },
+            Duration::from_secs(2),
+        )
+        .await
+    );
+    lock_sim(&sim).tick_n(8);
+    let mut uni_a = accept_snapshot_stream(&client_a).await;
+    let mut uni_b = accept_snapshot_stream(&client_b).await;
+    let mut view_a = read_latest_view(&mut uni_a).await;
+    let mut view_b = read_latest_view(&mut uni_b).await;
+    assert_eq!(view_a.player_count(), 2);
+    assert_eq!(view_b.player_count(), 2);
+    let ea = super::snapshot::to_wire_id(lock_sim(&sim).owner.entity_of(id_a).unwrap());
+    assert!(view_a.equipment.get(&ea).copied().flatten().is_none());
+    assert!(view_b.equipment.get(&ea).copied().flatten().is_none());
+
+    write_control(
+        &mut send_a,
+        ClientControl::Equip(EquipRequest {
+            seq: 1,
+            slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+            content_id: debug_sword(),
+        }),
+    )
+    .await;
+    assert!(
+        wait_until(
+            || {
+                let mut g = lock_sim(&sim);
+                g.pump();
+                g.owner.entity_of(id_a).and_then(|actor| {
+                    g.owner
+                        .world()
+                        .equipment_slot(actor, purgatory_simulation::EquipmentSlot::Weapon)
+                }) == Some(debug_sword())
+            },
+            Duration::from_secs(2),
+        )
+        .await
+    );
+    assert_eq!(
+        expect_equipment(&mut recv_a).await,
+        ServerEquipment::Accepted { seq: 1 }
+    );
+    lock_sim(&sim).tick_n(4);
+    drain_frames(&mut uni_a, &mut view_a, Duration::from_millis(120)).await;
+    drain_frames(&mut uni_b, &mut view_b, Duration::from_millis(120)).await;
+    let slot = purgatory_simulation::EquipmentSlot::Weapon as u8;
+    let a_eq = view_a
+        .equipment
+        .get(&ea)
+        .copied()
+        .flatten()
+        .expect("A local equipment domain");
+    let b_eq = view_b
+        .equipment
+        .get(&ea)
+        .copied()
+        .flatten()
+        .expect("B remote equipment domain");
+    assert_eq!(a_eq.get(slot), Some(debug_sword()));
+    assert_eq!(b_eq.get(slot), Some(debug_sword()));
+    assert_eq!(a_eq, b_eq);
+
+    write_control(
+        &mut send_a,
+        ClientControl::Unequip(UnequipRequest { seq: 2, slot }),
+    )
+    .await;
+    assert!(
+        wait_until(
+            || {
+                let mut g = lock_sim(&sim);
+                g.pump();
+                g.owner.entity_of(id_a).is_some_and(|actor| {
+                    g.owner
+                        .world()
+                        .equipment_of(actor)
+                        .is_some_and(|s| s.is_empty())
+                })
+            },
+            Duration::from_secs(2),
+        )
+        .await
+    );
+    assert_eq!(
+        expect_equipment(&mut recv_a).await,
+        ServerEquipment::Accepted { seq: 2 }
+    );
+    lock_sim(&sim).tick_n(4);
+    drain_frames(&mut uni_a, &mut view_a, Duration::from_millis(120)).await;
+    drain_frames(&mut uni_b, &mut view_b, Duration::from_millis(120)).await;
+    let a_empty = view_a
+        .equipment
+        .get(&ea)
+        .copied()
+        .flatten()
+        .expect("domain");
+    let b_empty = view_b
+        .equipment
+        .get(&ea)
+        .copied()
+        .flatten()
+        .expect("domain");
+    assert!(a_empty.get(slot).is_none());
+    assert!(b_empty.get(slot).is_none());
+    assert!(a_empty.is_empty());
+    assert_eq!(a_empty, b_empty);
+
+    let updates_after = view_a.equipment_updates.max(view_b.equipment_updates);
+    lock_sim(&sim).tick_n(8);
+    drain_frames(&mut uni_a, &mut view_a, Duration::from_millis(80)).await;
+    drain_frames(&mut uni_b, &mut view_b, Duration::from_millis(80)).await;
+    assert_eq!(
+        view_a.equipment_updates.max(view_b.equipment_updates),
+        updates_after,
+        "stable equipment must not emit recurring equipment Updates"
+    );
+
+    write_control(
+        &mut send_a,
+        ClientControl::Equip(EquipRequest {
+            seq: 3,
+            slot: purgatory_simulation::EquipmentSlot::Headwear as u8,
+            content_id: debug_sword(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        expect_equipment(&mut recv_a).await,
+        ServerEquipment::Rejected {
+            seq: 3,
+            reason: EquipmentRejectReason::SlotMismatch,
+        }
+    );
+    {
+        let g = lock_sim(&sim);
+        let actor = g.owner.entity_of(id_a).unwrap();
+        assert!(g.owner.world().equipment_of(actor).unwrap().is_empty());
+    }
+    lock_sim(&sim).tick_n(4);
+    drain_frames(&mut uni_b, &mut view_b, Duration::from_millis(80)).await;
+    let b_after_reject = view_b
+        .equipment
+        .get(&ea)
+        .copied()
+        .flatten()
+        .expect("domain");
+    assert!(b_after_reject.get(slot).is_none());
+    assert!(b_after_reject.is_empty());
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn reconnect_reconstructs_remote_equipment_from_baseline() {
+    let (server, sim) = spawn_gameplay().await;
+    let (_client_a, mut send_a, mut recv_a, id_a) = handshake_ok(server.addr).await;
+    let (client_b, send_b, recv_b, id_b) = handshake_ok(server.addr).await;
+    assert!(wait_attached(&sim, id_a).await);
+    assert!(wait_attached(&sim, id_b).await);
+    assert!(lock_sim(&sim).owner.set_player_x(id_a, 0.0));
+    assert!(lock_sim(&sim).owner.set_player_x(id_b, 0.0));
+    write_control(
+        &mut send_a,
+        ClientControl::Equip(EquipRequest {
+            seq: 1,
+            slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+            content_id: debug_sword(),
+        }),
+    )
+    .await;
+    assert!(
+        wait_until(
+            || {
+                let mut g = lock_sim(&sim);
+                g.pump();
+                g.owner.entity_of(id_a).and_then(|actor| {
+                    g.owner
+                        .world()
+                        .equipment_slot(actor, purgatory_simulation::EquipmentSlot::Weapon)
+                }) == Some(debug_sword())
+            },
+            Duration::from_secs(2),
+        )
+        .await
+    );
+    assert_eq!(
+        expect_equipment(&mut recv_a).await,
+        ServerEquipment::Accepted { seq: 1 }
+    );
+    drop((client_b, send_b, recv_b));
+    assert!(
+        wait_until(
+            || {
+                let mut g = lock_sim(&sim);
+                g.pump();
+                g.owner.entity_of(id_b).is_none()
+            },
+            Duration::from_secs(2),
+        )
+        .await
+    );
+    let (client_b2, _send_b2, _recv_b2, id_b2) = handshake_ok(server.addr).await;
+    assert!(wait_attached(&sim, id_b2).await);
+    assert!(lock_sim(&sim).owner.set_player_x(id_b2, 0.0));
+    lock_sim(&sim).tick_n(8);
+    let mut uni_b = accept_snapshot_stream(&client_b2).await;
+    let view_b = read_latest_view(&mut uni_b).await;
+    let ea = super::snapshot::to_wire_id(lock_sim(&sim).owner.entity_of(id_a).unwrap());
+    let eq = view_b
+        .equipment
+        .get(&ea)
+        .copied()
+        .flatten()
+        .expect("reconnect baseline equipment");
+    assert_eq!(
+        eq.get(purgatory_simulation::EquipmentSlot::Weapon as u8),
+        Some(debug_sword())
+    );
+    server.shutdown();
+}
+
+fn basic_strike_id() -> purgatory_common::ContentId {
+    purgatory_common::ContentId::from_authored("skill.basic.strike").unwrap()
+}
+
+async fn expect_ability(recv: &mut RecvStream) -> ServerAbility {
+    timeout(Duration::from_secs(2), async {
+        loop {
+            match read_server_control(recv).await {
+                Ok(ServerControl::Ability(event)) => return event,
+                Ok(_) => {}
+                Err(err) => panic!("control read failed: {err}"),
+            }
+        }
+    })
+    .await
+    .expect("ability control")
+}
+
+#[tokio::test]
+async fn ability_activate_empty_swing_over_quic() {
+    let (server, sim) = spawn_gameplay().await;
+    let (_client, mut send, mut recv, id) = handshake_ok(server.addr).await;
+    assert!(wait_attached(&sim, id).await);
+    {
+        let g = lock_sim(&sim);
+        let actor = g.owner.entity_of(id).expect("actor");
+        assert!(g.owner.world().health_of(actor).is_some());
+        assert!(g.owner.world().ability_granted(actor, basic_strike_id()));
+    }
+    write_control(
+        &mut send,
+        ClientControl::AbilityActivate(AbilityActivateRequest {
+            seq: 1,
+            ability_id: basic_strike_id(),
+            selected: None,
+        }),
+    )
+    .await;
+    assert!(
+        wait_until(
+            || {
+                let mut g = lock_sim(&sim);
+                g.pump();
+                g.owner.entity_of(id).is_some_and(|actor| {
+                    g.owner.world().active_action(actor).is_some_and(|action| {
+                        action.kind
+                            == purgatory_simulation::ActionKind::Ability {
+                                id: basic_strike_id(),
+                            }
+                    })
+                })
+            },
+            Duration::from_secs(2),
+        )
+        .await
+    );
+    assert_eq!(
+        expect_ability(&mut recv).await,
+        ServerAbility::Accepted { seq: 1 }
+    );
+    lock_sim(&sim).tick_n(12);
+    {
+        let g = lock_sim(&sim);
+        let actor = g.owner.entity_of(id).expect("actor");
+        assert!(g.owner.world().active_action(actor).is_none());
+        assert_eq!(
+            g.owner.world().health_of(actor).unwrap().current,
+            purgatory_simulation::PLAYER_HEALTH_MAX
+        );
+    }
     server.shutdown();
 }
 

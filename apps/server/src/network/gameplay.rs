@@ -13,19 +13,22 @@ use purgatory_common::{
     RestoreIntent, WorldAddress,
 };
 use purgatory_content::{
-    ContentRegistry, LoadMode, default_content_root, load_registry, map_plan, resolve_restore,
-    runtime_placement, world_address_for_map,
+    ContentRegistry, EquipmentAuthError, LoadMode, authorize_equip, default_content_root,
+    load_registry, map_plan, resolve_restore, runtime_placement, world_address_for_map,
 };
 use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
 use purgatory_protocol::{
-    ConnectionId, DEV_CHANNEL_MAX, InputCommand, InteractCloseReason, InteractRejectReason,
-    MoveAxis, ServerControl, ServerInteract, WireEntityId,
+    AbilityActivateRequest, AbilityCommandReject, ConnectionId, DEV_CHANNEL_MAX, EquipRequest,
+    EquipmentRejectReason, InputCommand, InteractCloseReason, InteractRejectReason, MoveAxis,
+    ServerAbility, ServerControl, ServerEquipment, ServerInteract, ServerPresentationOneShot,
+    UnequipRequest, WireEntityId,
 };
 use purgatory_simulation::{
-    Cadence, CommandClass, CommandDenial, EntityId, FOOTNOTE_SPAWN_X, InputGateReason,
-    InteractionCloseReason, InteractionReject, P0, P0_POSITION, PlayerInput, PlayerState,
-    RuntimeSpawnRequest, ScheduleOwner, SimulationTick, Transform, WorkLane, World,
-    validate_command_preamble,
+    AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, Cadence,
+    CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X, Health,
+    InputGateReason, InteractionCloseReason, InteractionReject, P0, P0_POSITION, PLAYER_HEALTH_MAX,
+    PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest, ScheduleOwner,
+    SimulationTick, Transform, WorkLane, World, validate_command_preamble,
 };
 
 use super::persist::PersistenceHandle;
@@ -49,6 +52,26 @@ pub enum SeqDecision {
 }
 
 const SESSION_QUEUE_CAP: usize = 128;
+const LIVE_COMBAT_CREATURE_TYPE_TOKEN: u32 = 9_000;
+const LIVE_COMBAT_CREATURE_AGGRO_RADIUS: f32 = 3.0;
+
+fn live_basic_strike_id() -> ContentId {
+    ContentId::from_authored("skill.basic.strike").expect("authored basic strike id")
+}
+
+fn map_ability_reject(reason: AbilityRejectReason) -> AbilityCommandReject {
+    match reason {
+        AbilityRejectReason::InvalidDefinition => AbilityCommandReject::InvalidRequest,
+        AbilityRejectReason::MissingActor => AbilityCommandReject::StateBlocked,
+        AbilityRejectReason::MissingTarget => AbilityCommandReject::InvalidActivation,
+        AbilityRejectReason::ActorDead => AbilityCommandReject::ActorDead,
+        AbilityRejectReason::TargetDead => AbilityCommandReject::InvalidActivation,
+        AbilityRejectReason::OutOfRange => AbilityCommandReject::InvalidActivation,
+        AbilityRejectReason::OnCooldown => AbilityCommandReject::OnCooldown,
+        AbilityRejectReason::Busy => AbilityCommandReject::Busy,
+        AbilityRejectReason::Gate(_) => AbilityCommandReject::StateBlocked,
+    }
+}
 
 /// Server-side transition input barrier. Not Phase 6F action-state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -308,6 +331,10 @@ pub struct PlayerBinding {
     replication: Option<ReplicationPipe>,
     interest: ObserverReplicationState,
     interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+    last_equipment_seq: Option<u32>,
+    last_equipment_result: Option<ServerEquipment>,
+    last_ability_seq: Option<u32>,
+    last_ability_result: Option<ServerAbility>,
 }
 
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
@@ -346,6 +373,7 @@ pub struct GameplayOwner {
     pub observer_pending_updates: u64,
     pub observer_pending_enters: u64,
     pub cadence_deferred_updates: u64,
+    pub writer_queue_push_fail_total: u64,
     /// Cumulative micros spent in persist try_save during the current tick window.
     persist_enqueue_us: u64,
     placement: LoadPlacement,
@@ -360,6 +388,7 @@ pub struct GameplayOwner {
     population_class: PopulationClass,
     last_observer_bytes: HashMap<ConnectionId, u32>,
     tick_overrun_hint: bool,
+    pressure: Option<std::sync::Arc<super::network_pressure::NetworkPressureBook>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -454,6 +483,25 @@ pub enum InputUpdate {
     DevSetChannel {
         connection_id: ConnectionId,
         channel: u32,
+    },
+    Equip {
+        connection_id: ConnectionId,
+        request: EquipRequest,
+    },
+    Unequip {
+        connection_id: ConnectionId,
+        request: UnequipRequest,
+    },
+    DevPresentationOneShot {
+        connection_id: ConnectionId,
+        kind: u8,
+    },
+    DevResetPlayer {
+        connection_id: ConnectionId,
+    },
+    AbilityActivate {
+        connection_id: ConnectionId,
+        request: AbilityActivateRequest,
     },
 }
 
@@ -607,6 +655,61 @@ impl GameplayTx {
             .await
             .is_ok()
     }
+
+    pub async fn send_equip(&self, connection_id: ConnectionId, request: EquipRequest) -> bool {
+        self.input
+            .send(InputUpdate::Equip {
+                connection_id,
+                request,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_unequip(&self, connection_id: ConnectionId, request: UnequipRequest) -> bool {
+        self.input
+            .send(InputUpdate::Unequip {
+                connection_id,
+                request,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_dev_presentation_oneshot(
+        &self,
+        connection_id: ConnectionId,
+        kind: u8,
+    ) -> bool {
+        self.input
+            .send(InputUpdate::DevPresentationOneShot {
+                connection_id,
+                kind,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_dev_reset_player(&self, connection_id: ConnectionId) -> bool {
+        self.input
+            .send(InputUpdate::DevResetPlayer { connection_id })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_ability_activate(
+        &self,
+        connection_id: ConnectionId,
+        request: AbilityActivateRequest,
+    ) -> bool {
+        self.input
+            .send(InputUpdate::AbilityActivate {
+                connection_id,
+                request,
+            })
+            .await
+            .is_ok()
+    }
 }
 
 const LIFECYCLE_CAP: usize = 64;
@@ -697,6 +800,7 @@ impl GameplayOwner {
             observer_pending_updates: 0,
             observer_pending_enters: 0,
             cadence_deferred_updates: 0,
+            writer_queue_push_fail_total: 0,
             persist_enqueue_us: 0,
             placement: load_placement_from_env(),
             trace_relevance: false,
@@ -709,11 +813,19 @@ impl GameplayOwner {
             population_class: population_class_from_env(),
             last_observer_bytes: HashMap::new(),
             tick_overrun_hint: false,
+            pressure: None,
         }
     }
 
     pub fn set_persist(&mut self, persist: PersistenceHandle) {
         self.persist = Some(persist);
+    }
+
+    pub fn set_pressure(
+        &mut self,
+        pressure: std::sync::Arc<super::network_pressure::NetworkPressureBook>,
+    ) {
+        self.pressure = Some(pressure);
     }
 
     pub fn flush_persistent_snapshots(&mut self) {
@@ -837,6 +949,7 @@ impl GameplayOwner {
             self.duplicate_session_detected = self.duplicate_session_detected.saturating_add(1);
             return;
         }
+        self.ensure_live_combat_creature();
         let address = self.map_a_address();
         let n = self.bindings.len();
         let spawn_x = match self.placement {
@@ -878,6 +991,7 @@ impl GameplayOwner {
         if self.occupancy.contains_key(&character_id) {
             return Err(EnterError::Occupied);
         }
+        self.ensure_live_combat_creature();
         self.occupancy.insert(character_id, connection_id);
         let logical = resolve_restore(&self.registry, &character.restore);
         let Some((address, spawn_pos)) = runtime_placement(&self.registry, &logical) else {
@@ -944,6 +1058,10 @@ impl GameplayOwner {
         };
         let (transform, state) = PlayerState::standing_on_at(view.id, view.top_surface(), spawn_x);
         let entity = self.world.spawn_player_at(spawn_address, transform, state);
+        let _ = self
+            .world
+            .set_health(entity, Health::full(PLAYER_HEALTH_MAX));
+        let _ = self.world.grant_ability(entity, live_basic_strike_id());
         self.bindings.insert(
             connection_id,
             PlayerBinding {
@@ -955,10 +1073,53 @@ impl GameplayOwner {
                 replication,
                 interest: ObserverReplicationState::new(),
                 interact,
+                last_equipment_seq: None,
+                last_equipment_result: None,
+                last_ability_seq: None,
+                last_ability_result: None,
             },
         );
         self.player_entity_spawned = self.player_entity_spawned.saturating_add(1);
         true
+    }
+
+    fn ensure_live_combat_creature(&mut self) {
+        if self.world.iter().any(|id| {
+            self.world
+                .npc_of(id)
+                .is_some_and(|npc| npc.type_token == LIVE_COMBAT_CREATURE_TYPE_TOKEN)
+        }) {
+            return;
+        }
+        let address = self.map_a_address();
+        let Some(floor) = self
+            .world
+            .iter_platforms()
+            .find(|platform| self.world.address_of(platform.id) == Some(address))
+        else {
+            return;
+        };
+        let (_, player_state) =
+            PlayerState::standing_on_at(floor.id, floor.top_surface(), FOOTNOTE_SPAWN_X);
+        let player_y = floor.top_surface() + player_state.half_extents[1];
+        let now = SimulationTick::from_count(self.ticks);
+        let Some(creature) = self.world.spawn(World::npc_spawn_request(
+            address,
+            [FOOTNOTE_SPAWN_X + 6.0, player_y],
+            LIVE_COMBAT_CREATURE_TYPE_TOKEN,
+            LIVE_COMBAT_CREATURE_AGGRO_RADIUS,
+            9,
+            now,
+            true,
+            purgatory_simulation::NPC_HEALTH_MAX,
+        )) else {
+            return;
+        };
+        if let Some(mut npc) = self.world.npc_of(creature) {
+            npc.walking = false;
+            let _ = self.world.set_npc(creature, npc);
+        }
+        let _ = self.world.grant_ability(creature, live_basic_strike_id());
     }
 
     pub fn detach(&mut self, connection_id: ConnectionId) {
@@ -1034,6 +1195,11 @@ impl GameplayOwner {
                 | InputUpdate::InteractClose { .. }
                 | InputUpdate::PortalActivate { .. }
                 | InputUpdate::DevSetChannel { .. }
+                | InputUpdate::Equip { .. }
+                | InputUpdate::Unequip { .. }
+                | InputUpdate::DevPresentationOneShot { .. }
+                | InputUpdate::DevResetPlayer { .. }
+                | InputUpdate::AbilityActivate { .. }
         ) {
             match update {
                 InputUpdate::InteractOpen {
@@ -1052,6 +1218,25 @@ impl GameplayOwner {
                     connection_id,
                     channel,
                 } => self.handle_dev_set_channel(connection_id, channel),
+                InputUpdate::Equip {
+                    connection_id,
+                    request,
+                } => self.handle_equip(connection_id, request),
+                InputUpdate::Unequip {
+                    connection_id,
+                    request,
+                } => self.handle_unequip(connection_id, request),
+                InputUpdate::DevPresentationOneShot {
+                    connection_id,
+                    kind,
+                } => self.handle_dev_presentation_oneshot(connection_id, kind),
+                InputUpdate::DevResetPlayer { connection_id } => {
+                    self.handle_dev_reset_player(connection_id)
+                }
+                InputUpdate::AbilityActivate {
+                    connection_id,
+                    request,
+                } => self.handle_ability_activate(connection_id, request),
                 _ => {}
             }
             return SeqDecision::Accept;
@@ -1111,8 +1296,15 @@ impl GameplayOwner {
             InputUpdate::InteractOpen { .. }
             | InputUpdate::InteractClose { .. }
             | InputUpdate::PortalActivate { .. }
-            | InputUpdate::DevSetChannel { .. } => {
-                unreachable!("interact/portal/channel handled above")
+            | InputUpdate::DevSetChannel { .. }
+            | InputUpdate::Equip { .. }
+            | InputUpdate::Unequip { .. }
+            | InputUpdate::DevPresentationOneShot { .. }
+            | InputUpdate::DevResetPlayer { .. }
+            | InputUpdate::AbilityActivate { .. } => {
+                unreachable!(
+                    "interact/portal/channel/equipment/oneshot/reset/ability handled above"
+                )
             }
         }
     }
@@ -1175,17 +1367,32 @@ impl GameplayOwner {
         let tick_t0 = std::time::Instant::now();
         let mut sample = TickDomainSample::default();
         self.persist_enqueue_us = 0;
+        let detail = purgatory_common::capacity_detail_enabled();
 
-        let services_t0 = std::time::Instant::now();
         let tick = SimulationTick::from_count(self.ticks.saturating_add(1));
-        self.world.begin_tick(tick);
         let map_a = self.map_a_address();
-        self.load_pressure.maintain(&mut self.world, map_a, tick);
-        if !self.load_pressure.is_active() {
-            self.maybe_arm_runtime_probe(tick);
+
+        let mut drain_us = purgatory_simulation::DrainApplyTiming::default();
+        if detail {
+            // Phase 7.5A: fold begin_tick / gauge refresh into lifecycle leaf.
+            let t0 = std::time::Instant::now();
+            self.world.begin_tick(tick);
+            self.load_pressure.maintain(&mut self.world, map_a, tick);
+            if !self.load_pressure.is_active() {
+                self.maybe_arm_runtime_probe(tick);
+            }
+            sample.entity_lifecycle += t0.elapsed();
+            drain_us = drain_us.saturating_add(self.world.drain_critical_scheduler());
+        } else {
+            let services_t0 = std::time::Instant::now();
+            self.world.begin_tick(tick);
+            self.load_pressure.maintain(&mut self.world, map_a, tick);
+            if !self.load_pressure.is_active() {
+                self.maybe_arm_runtime_probe(tick);
+            }
+            self.world.drain_critical_scheduler();
+            sample.gameplay_services += services_t0.elapsed();
         }
-        self.world.drain_critical_scheduler();
-        sample.gameplay_services += services_t0.elapsed();
 
         let input_t0 = std::time::Instant::now();
         let ids: Vec<(ConnectionId, EntityId, PlayerInput, bool)> = self
@@ -1213,19 +1420,67 @@ impl GameplayOwner {
         }
         sample.simulation_movement += move_t0.elapsed();
 
-        let services2_t0 = std::time::Instant::now();
-        self.world.maintain_portal_reentry();
-        let closed = self.world.maintain_interaction_sessions();
-        self.emit_closed(closed);
-        let _ = self.world.commit_runtime_events();
-        self.world.pump_cadence();
-        self.world.drain_deferred_scheduler();
-        sample.gameplay_services += services2_t0.elapsed();
+        let npc_t0 = std::time::Instant::now();
+        self.world.tick_npcs(dt);
+        if let Some(definition) = self.registry.ability_by_id(live_basic_strike_id()).cloned() {
+            let creature_ids: Vec<_> = self
+                .world
+                .iter()
+                .filter(|&entity| {
+                    self.world
+                        .npc_of(entity)
+                        .is_some_and(|npc| npc.type_token == LIVE_COMBAT_CREATURE_TYPE_TOKEN)
+                })
+                .collect();
+            for creature in creature_ids {
+                if !self.world.ability_granted(creature, definition.id) {
+                    let _ = self.world.grant_ability(creature, definition.id);
+                }
+            }
+            self.world
+                .drive_npc_combat(&definition, LIVE_COMBAT_CREATURE_AGGRO_RADIUS);
+        }
+        self.load_pressure.drive_npc_workload(&mut self.world, tick);
+        sample.npc_activity += npc_t0.elapsed();
+
+        if detail {
+            let life_t0 = std::time::Instant::now();
+            self.world.maintain_portal_reentry();
+            let closed = self.world.maintain_interaction_sessions();
+            self.emit_closed(closed);
+            self.fanout_presentation_runtime_events();
+            sample.entity_lifecycle += life_t0.elapsed();
+            let cad_t0 = std::time::Instant::now();
+            self.world.pump_cadence();
+            sample.cadence += cad_t0.elapsed();
+            drain_us = drain_us.saturating_add(self.world.drain_deferred_scheduler());
+            sample.scheduler += Duration::from_micros(drain_us.scheduler_us);
+            sample.actions += Duration::from_micros(drain_us.actions_us);
+            sample.effects += Duration::from_micros(drain_us.effects_us);
+            sample.entity_lifecycle += Duration::from_micros(drain_us.lifecycle_us);
+            sample.scheduler += Duration::from_micros(drain_us.other_us);
+        } else {
+            let services2_t0 = std::time::Instant::now();
+            self.world.maintain_portal_reentry();
+            let closed = self.world.maintain_interaction_sessions();
+            self.emit_closed(closed);
+            self.fanout_presentation_runtime_events();
+            self.world.pump_cadence();
+            self.world.drain_deferred_scheduler();
+            sample.gameplay_services += services2_t0.elapsed();
+        }
 
         self.ticks = tick.get();
-        let (aoi_us, repl_us) = self.publish_snapshots();
-        sample.spatial_aoi += Duration::from_micros(aoi_us);
-        sample.replication += Duration::from_micros(repl_us);
+        let pub_t = self.publish_snapshots(detail);
+        sample.spatial_aoi += Duration::from_micros(pub_t.aoi_us);
+        sample.replication_discover += Duration::from_micros(pub_t.discover_us);
+        if detail {
+            sample.replication_policy += Duration::from_micros(pub_t.policy_us);
+            sample.replication_encode += Duration::from_micros(pub_t.encode_us);
+            sample.replication_enqueue += Duration::from_micros(pub_t.enqueue_us);
+        } else {
+            sample.replication += Duration::from_micros(pub_t.replicate_us);
+        }
         sample.persistence_enqueue += Duration::from_micros(self.persist_enqueue_us);
         sample.total = tick_t0.elapsed();
         sample
@@ -1393,7 +1648,7 @@ impl GameplayOwner {
             "6D_POSE server_dest_ready actor={actor} dest={dest} portal={dest_portal} pose=({:.3},{:.3}) epoch={epoch} before_tick=true",
             pose[0], pose[1]
         );
-        self.publish_snapshots();
+        self.publish_snapshots(false);
         Ok(dest_portal)
     }
 
@@ -1410,6 +1665,245 @@ impl GameplayOwner {
                 .0
                 .position,
         )
+    }
+
+    fn send_equipment_result(
+        tx: Option<&tokio::sync::mpsc::Sender<ServerControl>>,
+        event: ServerEquipment,
+    ) {
+        if let Some(tx) = tx
+            && tx.try_send(ServerControl::Equipment(event)).is_err()
+        {
+            println!("8C_EQUIP response dropped (interact channel full or closed)");
+        }
+    }
+
+    fn handle_equip(&mut self, connection_id: ConnectionId, request: EquipRequest) {
+        self.handle_equipment_request(
+            connection_id,
+            request.seq,
+            request.slot,
+            Some(request.content_id),
+        );
+    }
+
+    fn handle_unequip(&mut self, connection_id: ConnectionId, request: UnequipRequest) {
+        self.handle_equipment_request(connection_id, request.seq, request.slot, None);
+    }
+
+    fn handle_equipment_request(
+        &mut self,
+        connection_id: ConnectionId,
+        seq: u32,
+        slot: u8,
+        content_id: Option<ContentId>,
+    ) {
+        let interact_tx = self
+            .bindings
+            .get(&connection_id)
+            .and_then(|b| b.interact.clone());
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return;
+        };
+        match SessionInput::classify(binding.last_equipment_seq, seq) {
+            SeqDecision::Duplicate => {
+                if let Some(event) = binding.last_equipment_result {
+                    Self::send_equipment_result(interact_tx.as_ref(), event);
+                }
+                return;
+            }
+            SeqDecision::Stale => {
+                Self::send_equipment_result(
+                    interact_tx.as_ref(),
+                    ServerEquipment::Rejected {
+                        seq,
+                        reason: EquipmentRejectReason::StaleRequest,
+                    },
+                );
+                return;
+            }
+            SeqDecision::Gap | SeqDecision::Overflow | SeqDecision::OldEpoch => {
+                Self::send_equipment_result(
+                    interact_tx.as_ref(),
+                    ServerEquipment::Rejected {
+                        seq,
+                        reason: EquipmentRejectReason::InvalidRequest,
+                    },
+                );
+                return;
+            }
+            SeqDecision::Accept => {}
+        }
+
+        let result = self.apply_equipment_mutation(connection_id, slot, content_id);
+        let event = match result {
+            Ok(()) => ServerEquipment::Accepted { seq },
+            Err(reason) => ServerEquipment::Rejected { seq, reason },
+        };
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.last_equipment_seq = Some(seq);
+            binding.last_equipment_result = Some(event);
+        }
+        Self::send_equipment_result(interact_tx.as_ref(), event);
+    }
+
+    fn send_ability_result(
+        tx: Option<&tokio::sync::mpsc::Sender<ServerControl>>,
+        event: ServerAbility,
+    ) {
+        if let Some(tx) = tx
+            && tx.try_send(ServerControl::Ability(event)).is_err()
+        {
+            println!("9C_ABILITY response dropped (interact channel full or closed)");
+        }
+    }
+
+    fn handle_ability_activate(
+        &mut self,
+        connection_id: ConnectionId,
+        request: AbilityActivateRequest,
+    ) {
+        let interact_tx = self
+            .bindings
+            .get(&connection_id)
+            .and_then(|b| b.interact.clone());
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return;
+        };
+        match SessionInput::classify(binding.last_ability_seq, request.seq) {
+            SeqDecision::Duplicate => {
+                if let Some(event) = binding.last_ability_result {
+                    Self::send_ability_result(interact_tx.as_ref(), event);
+                }
+                return;
+            }
+            SeqDecision::Stale => {
+                Self::send_ability_result(
+                    interact_tx.as_ref(),
+                    ServerAbility::Rejected {
+                        seq: request.seq,
+                        reason: AbilityCommandReject::StaleRequest,
+                    },
+                );
+                return;
+            }
+            SeqDecision::Gap | SeqDecision::Overflow | SeqDecision::OldEpoch => {
+                Self::send_ability_result(
+                    interact_tx.as_ref(),
+                    ServerAbility::Rejected {
+                        seq: request.seq,
+                        reason: AbilityCommandReject::InvalidRequest,
+                    },
+                );
+                return;
+            }
+            SeqDecision::Accept => {}
+        }
+
+        let event = match self.apply_ability_activate(connection_id, request) {
+            Ok(()) => ServerAbility::Accepted { seq: request.seq },
+            Err(reason) => ServerAbility::Rejected {
+                seq: request.seq,
+                reason,
+            },
+        };
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.last_ability_seq = Some(request.seq);
+            binding.last_ability_result = Some(event);
+        }
+        Self::send_ability_result(interact_tx.as_ref(), event);
+        if matches!(event, ServerAbility::Accepted { .. }) {
+            self.fanout_presentation_runtime_events();
+        }
+    }
+
+    fn apply_ability_activate(
+        &mut self,
+        connection_id: ConnectionId,
+        request: AbilityActivateRequest,
+    ) -> Result<(), AbilityCommandReject> {
+        let actor = match self.command_actor(connection_id, CommandClass::Ability) {
+            Ok(actor) => actor,
+            Err(CommandDenial::Disconnected) | Err(CommandDenial::MissingActor) => {
+                return Err(AbilityCommandReject::StateBlocked);
+            }
+            Err(CommandDenial::TransitionLocked) | Err(CommandDenial::Busy) => {
+                return Err(AbilityCommandReject::StateBlocked);
+            }
+        };
+        let def = self
+            .registry
+            .ability_by_id(request.ability_id)
+            .cloned()
+            .ok_or(AbilityCommandReject::UnknownAbility)?;
+        if !self.world.ability_granted(actor, def.id) {
+            return Err(AbilityCommandReject::NotGranted);
+        }
+        let selected = match def.activation {
+            AbilityActivation::Independent => {
+                if request.selected.is_some() {
+                    return Err(AbilityCommandReject::InvalidActivation);
+                }
+                None
+            }
+            AbilityActivation::SelectedEntity => {
+                let Some(wire) = request.selected else {
+                    return Err(AbilityCommandReject::InvalidActivation);
+                };
+                Some(super::snapshot::from_wire_id(wire))
+            }
+        };
+        match self.world.request_ability(
+            AbilityRequest {
+                actor,
+                selected,
+                definition: &def,
+            },
+            ActionGateContext::in_world(),
+        ) {
+            Ok(_) => Ok(()),
+            Err(reason) => Err(map_ability_reject(reason)),
+        }
+    }
+
+    fn apply_equipment_mutation(
+        &mut self,
+        connection_id: ConnectionId,
+        slot: u8,
+        content_id: Option<ContentId>,
+    ) -> Result<(), EquipmentRejectReason> {
+        let actor = match self.command_actor(connection_id, CommandClass::Equipment) {
+            Ok(actor) => actor,
+            Err(CommandDenial::Disconnected) | Err(CommandDenial::MissingActor) => {
+                return Err(EquipmentRejectReason::StateBlocked);
+            }
+            Err(CommandDenial::TransitionLocked) | Err(CommandDenial::Busy) => {
+                return Err(EquipmentRejectReason::StateBlocked);
+            }
+        };
+        if self.world.kind(actor) != Some(EntityKind::Player) {
+            return Err(EquipmentRejectReason::InvalidRequest);
+        }
+        let Some(slot) = EquipmentSlot::from_u8(slot) else {
+            return Err(EquipmentRejectReason::InvalidRequest);
+        };
+        if let Some(content_id) = content_id {
+            match authorize_equip(&self.registry, slot, content_id) {
+                Ok(()) => {}
+                Err(EquipmentAuthError::UnknownContent) => {
+                    return Err(EquipmentRejectReason::UnknownContent);
+                }
+                Err(EquipmentAuthError::SlotMismatch) => {
+                    return Err(EquipmentRejectReason::SlotMismatch);
+                }
+            }
+            if !self.world.set_equipment_slot(actor, slot, Some(content_id)) {
+                return Err(EquipmentRejectReason::StateBlocked);
+            }
+        } else if !self.world.clear_equipment_slot(actor, slot) {
+            return Err(EquipmentRejectReason::StateBlocked);
+        }
+        Ok(())
     }
 
     fn handle_interact_open(&mut self, connection_id: ConnectionId, target: WireEntityId) {
@@ -1476,6 +1970,110 @@ impl GameplayOwner {
             }
         } else {
             println!("6B_INTERACT response dropped (no interact channel)");
+        }
+    }
+
+    fn handle_dev_presentation_oneshot(&mut self, connection_id: ConnectionId, kind: u8) {
+        let Some(kind) = PresentationOneShotKind::from_u8(kind) else {
+            println!("A5_ONESHOT reject connection={connection_id} reason=invalid_kind");
+            return;
+        };
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            println!("A5_ONESHOT reject connection={connection_id} reason=no_binding");
+            return;
+        };
+        let actor = binding.entity;
+        if self.world.kind(actor) != Some(EntityKind::Player) {
+            println!("A5_ONESHOT reject connection={connection_id} reason=not_player");
+            return;
+        }
+        let started = match self.world.try_start_presentation_oneshot(actor, kind) {
+            Ok(oneshot) => oneshot,
+            Err(_) => {
+                println!(
+                    "A5_ONESHOT blocked connection={connection_id} actor={actor} kind={kind:?} reason=hurt_active"
+                );
+                return;
+            }
+        };
+        let until_tick = u32::try_from(started.until_tick.get()).unwrap_or(u32::MAX);
+        let event = ServerControl::PresentationOneShot(ServerPresentationOneShot {
+            entity: WireEntityId {
+                index: actor.index(),
+                generation: actor.generation(),
+            },
+            kind: started.kind.as_u8(),
+            until_tick,
+        });
+        println!(
+            "A5_ONESHOT start actor={actor} kind={:?} until_tick={until_tick}",
+            started.kind
+        );
+        self.broadcast_presentation_oneshot(event);
+    }
+
+    fn handle_dev_reset_player(&mut self, connection_id: ConnectionId) {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            println!("DEV_RESET reject connection={connection_id} reason=no_binding");
+            return;
+        };
+        let actor = binding.entity;
+        if self.world.kind(actor) != Some(EntityKind::Player) {
+            println!("DEV_RESET reject connection={connection_id} reason=not_player");
+            return;
+        }
+        self.world.reset_player_entity(actor);
+        println!("DEV_RESET spawn actor={actor} connection={connection_id}");
+    }
+
+    fn broadcast_presentation_oneshot(&self, event: ServerControl) {
+        for binding in self.bindings.values() {
+            if let Some(tx) = binding.interact.as_ref()
+                && tx.try_send(event.clone()).is_err()
+            {
+                println!("A5_ONESHOT fanout dropped (interact channel full or closed)");
+            }
+        }
+    }
+
+    fn fanout_presentation_runtime_events(&mut self) {
+        use purgatory_simulation::RuntimeEvent;
+        let events = self.world.commit_runtime_events();
+        for event in events {
+            match event {
+                RuntimeEvent::PresentationOneShotStarted {
+                    entity,
+                    kind,
+                    until_tick,
+                } => {
+                    let until = u32::try_from(until_tick).unwrap_or(u32::MAX);
+                    let wire = ServerControl::PresentationOneShot(ServerPresentationOneShot {
+                        entity: WireEntityId {
+                            index: entity.index(),
+                            generation: entity.generation(),
+                        },
+                        kind: kind.as_u8(),
+                        until_tick: until,
+                    });
+                    println!(
+                        "9D_PRESENTATION start actor={entity} kind={kind:?} until_tick={until}"
+                    );
+                    self.broadcast_presentation_oneshot(wire);
+                }
+                RuntimeEvent::PresentationOneShotCleared { entity } => {
+                    let wire = ServerControl::PresentationOneShot(ServerPresentationOneShot {
+                        entity: WireEntityId {
+                            index: entity.index(),
+                            generation: entity.generation(),
+                        },
+                        kind: 0,
+                        until_tick: 0,
+                    });
+                    println!("9D_PRESENTATION clear actor={entity}");
+                    self.broadcast_presentation_oneshot(wire);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -1568,7 +2166,7 @@ impl GameplayOwner {
             }
         }
         self.begin_transition_input_barrier(connection_id, InputGateReason::MembershipTransition);
-        self.publish_snapshots();
+        self.publish_snapshots(false);
         let epoch = self
             .bindings
             .get(&connection_id)
@@ -1761,13 +2359,12 @@ impl GameplayOwner {
         }
     }
 
-    /// Returns `(spatial_aoi_us, replication_us)` accumulated across observers.
-    fn publish_snapshots(&mut self) -> (u64, u64) {
+    /// Returns AOI / replication instrumentation splits (non-overlapping).
+    fn publish_snapshots(&mut self, _detail: bool) -> PublishTimings {
         self.snapshot_sequence = self.snapshot_sequence.saturating_add(1);
         self.snapshots_built = self.snapshots_built.saturating_add(1);
         let mut last_entities = 0u16;
-        let mut aoi_us_total = 0u64;
-        let mut repl_us_total = 0u64;
+        let mut timings = PublishTimings::default();
         if verbose_snapshots() {
             println!(
                 "snapshot seq={} tick={}",
@@ -1776,6 +2373,7 @@ impl GameplayOwner {
         }
 
         // 6G.7B: dirty entity → interested observers before per-observer pack.
+        let discover_t0 = std::time::Instant::now();
         let dirty: Vec<_> = self.world.drain_replication_dirty().into_iter().collect();
         let mut dirty_entities = 0u32;
         let mut dirty_transform = 0u32;
@@ -1794,7 +2392,8 @@ impl GameplayOwner {
             if mask.health {
                 dirty_health = dirty_health.saturating_add(1);
             }
-            for obs in self.interest_fanout.observers(subject).collect::<Vec<_>>() {
+            // 7.5: iterate fan-out observers without an intermediate Vec (discover path).
+            for obs in self.interest_fanout.observers(subject) {
                 // Enqueue all Known interested; domain/cadence/priority policy runs at emit.
                 interested = interested.saturating_add(1);
                 if let Some(cid) = entity_to_cid.get(&obs)
@@ -1810,8 +2409,10 @@ impl GameplayOwner {
             dirty_health,
             interested,
         );
-
+        // Include observer-id collection in discover handoff (7.5A).
         let ids: Vec<ConnectionId> = self.bindings.keys().copied().collect();
+        timings.discover_us = u64::try_from(discover_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+
         let mut observer_pending_updates = 0u64;
         let mut observer_pending_enters = 0u64;
         let mut cadence_deferred_updates = 0u64;
@@ -1819,6 +2420,9 @@ impl GameplayOwner {
         let population = self.population_class;
         let overrun_hint = self.tick_overrun_hint;
         for cid in ids {
+            // Phase 7.5A: attribute per-observer prep + post-frame counters to
+            // enqueue (existing leaf) so detail remainder is not inflated by glue.
+            let outer_t0 = std::time::Instant::now();
             let Some(binding) = self.bindings.get_mut(&cid) else {
                 continue;
             };
@@ -1843,6 +2447,7 @@ impl GameplayOwner {
                 recent_observer_bytes: recent_bytes,
                 tick_overrun_hint: overrun_hint,
             };
+            let prep_us = u64::try_from(outer_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
             let build_start = std::time::Instant::now();
             let stats = publish_observer_frame(
                 &mut binding.interest,
@@ -1858,10 +2463,13 @@ impl GameplayOwner {
                 policy,
             );
             let build_us = u64::try_from(build_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let post_t0 = std::time::Instant::now();
             self.snapshot_build_time_max_us = self.snapshot_build_time_max_us.max(build_us);
             self.snapshot_build_count = self.snapshot_build_count.saturating_add(1);
-            aoi_us_total = aoi_us_total.saturating_add(stats.aoi_us);
-            repl_us_total = repl_us_total.saturating_add(stats.replicate_us);
+            timings.aoi_us = timings.aoi_us.saturating_add(stats.aoi_us);
+            timings.replicate_us = timings.replicate_us.saturating_add(stats.replicate_us);
+            timings.policy_us = timings.policy_us.saturating_add(stats.policy_us);
+            timings.encode_us = timings.encode_us.saturating_add(stats.encode_us);
             last_entities = last_entities.max(stats.known as u16);
             self.aoi_enters = self.aoi_enters.saturating_add(u64::from(stats.enters));
             self.aoi_leaves = self.aoi_leaves.saturating_add(u64::from(stats.leaves));
@@ -1876,6 +2484,22 @@ impl GameplayOwner {
             self.replication_queue_depth_max = self
                 .replication_queue_depth_max
                 .max(u64::from(stats.queue_depth));
+            if stats.mailbox_merge != 0 {
+                self.writer_queue_push_fail_total =
+                    self.writer_queue_push_fail_total.saturating_add(1);
+            }
+            if let Some(book) = &self.pressure {
+                book.note_queue(cid.get(), stats.queue_depth, stats.mailbox_merge != 0);
+                let encoded = stats.frame_encoded != 0;
+                let enqueued = stats.frame_enqueued != 0;
+                let enqueue_attempted = encoded;
+                book.note_outbound_publish(
+                    encoded,
+                    u64::from(stats.bytes),
+                    enqueue_attempted,
+                    enqueued,
+                );
+            }
             observer_pending_updates =
                 observer_pending_updates.saturating_add(u64::from(stats.pending_updates));
             observer_pending_enters = observer_pending_enters
@@ -1905,18 +2529,38 @@ impl GameplayOwner {
                     stats.enters, stats.leaves, stats.updates, stats.bytes
                 );
             }
+            let post_us = u64::try_from(post_t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+            timings.enqueue_us = timings
+                .enqueue_us
+                .saturating_add(stats.enqueue_us)
+                .saturating_add(prep_us)
+                .saturating_add(post_us);
         }
         self.last_snapshot_entities = last_entities;
         self.observer_pending_updates = observer_pending_updates;
         self.observer_pending_enters = observer_pending_enters;
         self.cadence_deferred_updates = cadence_deferred_updates;
+        let session_t0 = std::time::Instant::now();
         let mut session_max = 0u64;
         for binding in self.bindings.values() {
             session_max = session_max.max(binding.input.queued_len() as u64);
         }
         self.session_queue_max = self.session_queue_max.max(session_max);
-        (aoi_us_total, repl_us_total)
+        timings.enqueue_us = timings
+            .enqueue_us
+            .saturating_add(u64::try_from(session_t0.elapsed().as_micros()).unwrap_or(u64::MAX));
+        timings
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PublishTimings {
+    aoi_us: u64,
+    discover_us: u64,
+    replicate_us: u64,
+    policy_us: u64,
+    encode_us: u64,
+    enqueue_us: u64,
 }
 
 fn instantiate_dev_maps(world: &mut World, registry: &ContentRegistry) {
@@ -2011,6 +2655,7 @@ impl Default for GameplayOwner {
 mod tests {
     use super::*;
     use purgatory_protocol::{ReplicationRecord, SnapshotEntity, decode_replication_frame};
+    use purgatory_simulation::{ActionKind, ActionPhase};
     use std::collections::HashMap;
 
     struct ReplicaView {
@@ -2822,6 +3467,27 @@ mod tests {
             owner.world().lifecycle_of(entity_b),
             Some(purgatory_simulation::EntityLifecycle::Active)
         );
+    }
+
+    #[test]
+    fn dev_reset_player_moves_bound_actor_to_spawn() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        assert!(owner.set_player_x(id, -8.0));
+        let actor = owner.entity_of(id).unwrap();
+        let before = owner.world().transform_of(actor).unwrap().position;
+        assert!((before[0] + 8.0).abs() < 0.05);
+        owner.apply_input(InputUpdate::DevResetPlayer { connection_id: id });
+        assert_eq!(owner.entity_of(id), Some(actor));
+        let after = owner.world().transform_of(actor).unwrap().position;
+        assert!(
+            (after[0] - FOOTNOTE_SPAWN_X).abs() < 0.05,
+            "authoritative spawn x, got {}",
+            after[0]
+        );
+        let (_, player) = owner.world().get_player(actor).unwrap();
+        assert_eq!(player.velocity, [0.0, 0.0]);
     }
 
     #[test]
@@ -3756,6 +4422,838 @@ mod tests {
         assert_eq!(
             owner.world().address_of(actor).unwrap().map,
             purgatory_simulation::MapId::from_raw(2)
+        );
+    }
+
+    #[test]
+    fn stale_world_interact_after_portal_rejected() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let portal = find_content(&owner, "entity.portal.to_second");
+        let map_a_switch = find_content(&owner, "entity.interactable.switch");
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::from_raw(2)
+        );
+        expire_input_gate(&mut owner);
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(map_a_switch),
+        });
+        match rx.try_recv().expect("stale-world interact reject") {
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                assert_eq!(reason, InteractRejectReason::WrongAddress);
+            }
+            other => panic!("expected WrongAddress, got {other:?}"),
+        }
+        assert!(owner.world().interaction_session_of(actor).is_none());
+    }
+
+    #[test]
+    fn old_world_portal_after_transition_rejected() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let portal_a = find_content(&owner, "entity.portal.to_second");
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal_a),
+        });
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::from_raw(2)
+        );
+        expire_input_gate(&mut owner);
+        while rx.try_recv().is_ok() {}
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal_a),
+        });
+        match rx.try_recv().expect("old-world portal reject") {
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                assert_eq!(reason, InteractRejectReason::WrongAddress);
+            }
+            other => panic!("expected WrongAddress, got {other:?}"),
+        }
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::from_raw(2),
+            "must stay on destination map"
+        );
+    }
+
+    #[test]
+    fn repeated_portal_activation_single_transition() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let portal = find_content(&owner, "entity.portal.to_second");
+        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        let dest_x = owner.world().transform_of(dest_portal).unwrap().position[0];
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::from_raw(2)
+        );
+        // Immediate retries while gated / reentry-locked must not bounce maps.
+        for _ in 0..4 {
+            owner.apply_input(InputUpdate::PortalActivate {
+                connection_id: id,
+                target: wire_id(portal),
+            });
+            owner.apply_input(InputUpdate::PortalActivate {
+                connection_id: id,
+                target: wire_id(dest_portal),
+            });
+        }
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            purgatory_simulation::MapId::from_raw(2)
+        );
+        let pos = owner.world().transform_of(actor).unwrap().position[0];
+        assert!((pos - dest_x).abs() < 0.05, "no double-teleport drift");
+    }
+
+    #[test]
+    fn old_epoch_command_after_portal_is_ignored() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let portal = find_content(&owner, "entity.portal.to_second");
+        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        assert!(owner.set_player_x(id, 6.0));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(portal),
+        });
+        let dest_x = owner.world().transform_of(dest_portal).unwrap().position[0];
+        let epoch = owner.bindings.get(&id).unwrap().input.input_epoch;
+        assert!(epoch >= 1);
+        let decision = owner.apply_input(command_update(
+            id,
+            cmd_epoch(0, 1, MoveAxis::Right, false, false),
+        ));
+        assert_eq!(decision, SeqDecision::OldEpoch);
+        owner.simulate_tick(dt);
+        let pos = owner.world().transform_of(actor).unwrap().position[0];
+        assert!((pos - dest_x).abs() < 0.05);
+    }
+
+    #[test]
+    fn detach_then_old_connection_commands_are_stale() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let old = owner.entity_of(id).unwrap();
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
+        owner.detach(id);
+        assert!(!owner.contains_entity(old));
+        let decision = owner.apply_input(command_update(id, cmd(2, MoveAxis::Left, true, false)));
+        assert_eq!(decision, SeqDecision::Stale);
+        assert_eq!(owner.player_count(), 0);
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: id,
+            target: wire_id(old),
+        });
+        assert_eq!(owner.player_count(), 0);
+    }
+
+    #[test]
+    fn reconnect_entity_not_controlled_by_prior_detached_session_context() {
+        let mut owner = GameplayOwner::new();
+        let a = ConnectionId::from_raw(1);
+        owner.attach(a);
+        let e1 = owner.entity_of(a).unwrap();
+        owner.apply_input(command_update(a, cmd(1, MoveAxis::Right, false, false)));
+        owner.detach(a);
+        owner.attach(a);
+        let e2 = owner.entity_of(a).unwrap();
+        assert_ne!(e1, e2);
+        assert!(!owner.contains_entity(e1));
+        // Fresh session starts at seq gap unless seq=1; old high seq is Gap/Stale.
+        let decision = owner.apply_input(command_update(a, cmd(99, MoveAxis::Left, false, false)));
+        assert!(
+            matches!(decision, SeqDecision::Gap | SeqDecision::Stale),
+            "stale reconnect seq must not accept, got {decision:?}"
+        );
+        let start = owner.world().transform_of(e2).unwrap().position[0];
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        owner.simulate_tick(dt);
+        let after = owner.world().transform_of(e2).unwrap().position[0];
+        assert!(
+            (after - start).abs() < 0.05,
+            "rejected seq must not move e2"
+        );
+    }
+
+    #[test]
+    fn stale_entity_generation_interact_cannot_hit_replacement() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let chest = find_content(&owner, "entity.interactable.chest");
+        let stale = chest;
+        assert!(owner.world_mut().despawn(chest));
+        // Reuse slot via a fresh interactable spawn near player if possible; despawned
+        // generation must fail even before a replacement exists.
+        assert!(owner.set_player_x(id, -7.4));
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(stale),
+        });
+        match rx.try_recv().expect("stale id reject") {
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                assert!(
+                    matches!(
+                        reason,
+                        InteractRejectReason::StaleId | InteractRejectReason::Unavailable
+                    ),
+                    "got {reason:?}"
+                );
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_session_input_does_not_reapply_movement_intent() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        let start = owner.world().transform_of(actor).unwrap().position[0];
+        assert_eq!(
+            owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false))),
+            SeqDecision::Accept
+        );
+        assert_eq!(
+            owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false))),
+            SeqDecision::Duplicate
+        );
+        owner.simulate_tick(dt);
+        let mid = owner.world().transform_of(actor).unwrap().position[0];
+        assert!(mid > start + 0.01);
+        // Duplicate was ignored: only one accepted intent drives the tick.
+        assert_eq!(owner.input_duplicate, 1);
+    }
+
+    fn debug_sword() -> ContentId {
+        ContentId::from_authored("equipment.debug.practice_sword").unwrap()
+    }
+
+    fn recv_equipment(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerEquipment {
+        match rx.try_recv().expect("equipment result") {
+            ServerControl::Equipment(event) => event,
+            other => panic!("expected Equipment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn equip_creates_domain_and_duplicate_seq_does_not_redirty() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.world().equipment_of(actor).is_none());
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 1,
+                slot: EquipmentSlot::Weapon as u8,
+                content_id: debug_sword(),
+            },
+        });
+        assert_eq!(
+            recv_equipment(&mut rx),
+            ServerEquipment::Accepted { seq: 1 }
+        );
+        assert_eq!(
+            owner.world().equipment_slot(actor, EquipmentSlot::Weapon),
+            Some(debug_sword())
+        );
+        let _ = owner.world_mut().consume_dirty(actor);
+        let revs = owner.world().domain_revs_of(actor).unwrap().equipment;
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 1,
+                slot: EquipmentSlot::Weapon as u8,
+                content_id: debug_sword(),
+            },
+        });
+        assert_eq!(
+            recv_equipment(&mut rx),
+            ServerEquipment::Accepted { seq: 1 }
+        );
+        assert!(!owner.world().dirty_of(actor).unwrap().equipment);
+        assert_eq!(owner.world().domain_revs_of(actor).unwrap().equipment, revs);
+    }
+
+    #[test]
+    fn last_unequip_keeps_empty_domain() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 1,
+                slot: EquipmentSlot::Weapon as u8,
+                content_id: debug_sword(),
+            },
+        });
+        let _ = recv_equipment(&mut rx);
+        owner.apply_input(InputUpdate::Unequip {
+            connection_id: id,
+            request: UnequipRequest {
+                seq: 2,
+                slot: EquipmentSlot::Weapon as u8,
+            },
+        });
+        assert_eq!(
+            recv_equipment(&mut rx),
+            ServerEquipment::Accepted { seq: 2 }
+        );
+        let state = owner.world().equipment_of(actor).expect("domain remains");
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn stale_and_gap_seq_rejected_without_mutation() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        owner.apply_input(InputUpdate::Unequip {
+            connection_id: id,
+            request: UnequipRequest {
+                seq: 0,
+                slot: EquipmentSlot::Weapon as u8,
+            },
+        });
+        match recv_equipment(&mut rx) {
+            ServerEquipment::Rejected {
+                seq: 0,
+                reason: EquipmentRejectReason::InvalidRequest,
+            } => {}
+            other => panic!("first seq 0 must be InvalidRequest, got {other:?}"),
+        }
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 1,
+                slot: EquipmentSlot::Weapon as u8,
+                content_id: debug_sword(),
+            },
+        });
+        let _ = recv_equipment(&mut rx);
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 1,
+                slot: EquipmentSlot::Weapon as u8,
+                content_id: debug_sword(),
+            },
+        });
+        let _ = recv_equipment(&mut rx);
+        owner.apply_input(InputUpdate::Unequip {
+            connection_id: id,
+            request: UnequipRequest {
+                seq: 0,
+                slot: EquipmentSlot::Weapon as u8,
+            },
+        });
+        match recv_equipment(&mut rx) {
+            ServerEquipment::Rejected {
+                seq: 0,
+                reason: EquipmentRejectReason::StaleRequest,
+            } => {}
+            other => panic!("seq 0 after last=1 must be StaleRequest, got {other:?}"),
+        }
+        owner.apply_input(InputUpdate::Unequip {
+            connection_id: id,
+            request: UnequipRequest {
+                seq: 4,
+                slot: EquipmentSlot::Weapon as u8,
+            },
+        });
+        match recv_equipment(&mut rx) {
+            ServerEquipment::Rejected {
+                reason: EquipmentRejectReason::InvalidRequest,
+                ..
+            } => {}
+            other => panic!("gap must be InvalidRequest, got {other:?}"),
+        }
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 2,
+                slot: EquipmentSlot::Weapon as u8,
+                content_id: debug_sword(),
+            },
+        });
+        match recv_equipment(&mut rx) {
+            ServerEquipment::Accepted { seq: 2 } => {}
+            other => panic!("seq 2 same-value Equip must Accept, got {other:?}"),
+        }
+        owner.apply_input(InputUpdate::Unequip {
+            connection_id: id,
+            request: UnequipRequest {
+                seq: 1,
+                slot: EquipmentSlot::Weapon as u8,
+            },
+        });
+        match recv_equipment(&mut rx) {
+            ServerEquipment::Rejected {
+                reason: EquipmentRejectReason::StaleRequest,
+                ..
+            } => {}
+            other => panic!("seq 1 after last=2 must be StaleRequest, got {other:?}"),
+        }
+        assert_eq!(
+            owner.world().equipment_slot(actor, EquipmentSlot::Weapon),
+            Some(debug_sword()),
+            "stale/gap must not mutate"
+        );
+    }
+
+    #[test]
+    fn wrong_slot_and_unknown_content_rejected() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 1,
+                slot: EquipmentSlot::Headwear as u8,
+                content_id: debug_sword(),
+            },
+        });
+        match recv_equipment(&mut rx) {
+            ServerEquipment::Rejected {
+                reason: EquipmentRejectReason::SlotMismatch,
+                ..
+            } => {}
+            other => panic!("expected SlotMismatch, got {other:?}"),
+        }
+        assert!(owner.world().equipment_of(actor).is_none());
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 2,
+                slot: EquipmentSlot::Weapon as u8,
+                content_id: ContentId::from_token(1),
+            },
+        });
+        match recv_equipment(&mut rx) {
+            ServerEquipment::Rejected {
+                reason: EquipmentRejectReason::UnknownContent,
+                ..
+            } => {}
+            other => panic!("expected UnknownContent, got {other:?}"),
+        }
+        assert!(owner.world().equipment_of(actor).is_none());
+    }
+
+    #[test]
+    fn repeated_same_equip_accepts_without_second_mutation() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 1,
+                slot: EquipmentSlot::Weapon as u8,
+                content_id: debug_sword(),
+            },
+        });
+        let _ = recv_equipment(&mut rx);
+        let _ = owner.world_mut().consume_dirty(actor);
+        let revs = owner.world().domain_revs_of(actor).unwrap();
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 2,
+                slot: EquipmentSlot::Weapon as u8,
+                content_id: debug_sword(),
+            },
+        });
+        assert_eq!(
+            recv_equipment(&mut rx),
+            ServerEquipment::Accepted { seq: 2 }
+        );
+        assert!(!owner.world().dirty_of(actor).unwrap().equipment);
+        let after = owner.world().domain_revs_of(actor).unwrap();
+        assert_eq!(after.equipment, revs.equipment);
+        assert_eq!(after.transform, revs.transform);
+        assert_eq!(after.health, revs.health);
+    }
+
+    fn basic_strike_id() -> ContentId {
+        ContentId::from_authored("skill.basic.strike").unwrap()
+    }
+
+    fn recv_ability(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerAbility {
+        loop {
+            match rx.try_recv().expect("ability result") {
+                ServerControl::Ability(event) => return event,
+                ServerControl::PresentationOneShot(_) => continue,
+                other => panic!("expected Ability, got {other:?}"),
+            }
+        }
+    }
+
+    fn activate_strike(
+        owner: &mut GameplayOwner,
+        id: ConnectionId,
+        seq: u32,
+        selected: Option<WireEntityId>,
+    ) {
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: AbilityActivateRequest {
+                seq,
+                ability_id: basic_strike_id(),
+                selected,
+            },
+        });
+    }
+
+    fn tick_ability(owner: &mut GameplayOwner, n: u32) {
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        for _ in 0..n {
+            owner.simulate_tick(dt);
+        }
+    }
+
+    fn health_snapshot(owner: &GameplayOwner) -> Vec<(u32, u32, f32)> {
+        let mut rows: Vec<_> = owner
+            .world()
+            .iter()
+            .filter_map(|eid| {
+                owner
+                    .world()
+                    .health_of(eid)
+                    .map(|h| (eid.index(), eid.generation(), h.current))
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        rows
+    }
+
+    #[test]
+    fn live_player_has_health_and_basic_strike_grant() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.world().health_of(actor).is_some());
+        assert!(owner.world().ability_granted(actor, basic_strike_id()));
+        let creatures: Vec<_> = owner
+            .world()
+            .iter()
+            .filter(|&entity| owner.world().npc_of(entity).is_some())
+            .collect();
+        assert_eq!(creatures.len(), 1);
+        assert!(
+            owner
+                .world()
+                .ability_granted(creatures[0], basic_strike_id())
+        );
+    }
+
+    #[test]
+    fn live_creature_acquires_player_and_uses_basic_strike_runtime() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let player = owner.entity_of(connection).unwrap();
+        let creature = owner
+            .world()
+            .iter()
+            .find(|&entity| owner.world().npc_of(entity).is_some())
+            .expect("live creature");
+        let creature_x = owner.world().transform_of(creature).unwrap().position[0];
+        assert!(owner.set_player_x(connection, creature_x - 1.0));
+        for _ in 0..4 {
+            owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        }
+        assert_eq!(
+            owner.world().health_of(player).unwrap().current,
+            PLAYER_HEALTH_MAX - 5.0
+        );
+    }
+
+    #[test]
+    fn ability_empty_swing_accepts_and_does_not_change_health() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let before = health_snapshot(&owner);
+        activate_strike(&mut owner, id, 1, None);
+        assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
+        let live = owner.world().active_action(actor).expect("ability started");
+        assert_eq!(
+            live.kind,
+            ActionKind::Ability {
+                id: basic_strike_id()
+            }
+        );
+        assert_eq!(live.phase, ActionPhase::Windup);
+        tick_ability(&mut owner, 12);
+        assert_eq!(health_snapshot(&owner), before);
+        assert!(owner.world().active_action(actor).is_none());
+    }
+
+    #[test]
+    fn ability_forward_query_damages_nearby_combatant() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let pos = owner.world().transform_of(actor).unwrap().position;
+        let address = owner.world().address_of(actor).unwrap();
+        let dummy = owner
+            .world_mut()
+            .spawn(
+                RuntimeSpawnRequest::transient_at(address)
+                    .with_transform(Transform::from_position([pos[0] + 1.0, pos[1]]))
+                    .with_health(Health::full(10.0))
+                    .visible(),
+            )
+            .expect("dummy");
+        activate_strike(&mut owner, id, 1, None);
+        assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
+        tick_ability(&mut owner, 8);
+        assert!((owner.world().health_of(dummy).unwrap().current - 5.0).abs() < 1e-5);
+        assert_eq!(
+            owner.world().health_of(actor).unwrap().current,
+            PLAYER_HEALTH_MAX
+        );
+    }
+
+    #[test]
+    fn ability_rejects_unknown_ungranted_duplicate_stale_dead_busy_cooldown() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: AbilityActivateRequest {
+                seq: 1,
+                ability_id: ContentId::from_authored("skill.does.not.exist").unwrap(),
+                selected: None,
+            },
+        });
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 1,
+                reason: AbilityCommandReject::UnknownAbility,
+            }
+        );
+        assert!(owner.world().active_action(actor).is_none());
+
+        owner.world_mut().revoke_ability(actor, basic_strike_id());
+        activate_strike(&mut owner, id, 2, None);
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 2,
+                reason: AbilityCommandReject::NotGranted,
+            }
+        );
+        assert!(owner.world_mut().grant_ability(actor, basic_strike_id()));
+
+        activate_strike(&mut owner, id, 3, Some(wire_id(actor)));
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 3,
+                reason: AbilityCommandReject::InvalidActivation,
+            }
+        );
+
+        activate_strike(&mut owner, id, 4, None);
+        assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 4 });
+        activate_strike(&mut owner, id, 4, None);
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Accepted { seq: 4 },
+            "duplicate seq replays last result without a second start"
+        );
+
+        activate_strike(&mut owner, id, 5, None);
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 5,
+                reason: AbilityCommandReject::OnCooldown,
+            }
+        );
+
+        activate_strike(&mut owner, id, 4, None);
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 4,
+                reason: AbilityCommandReject::StaleRequest,
+            }
+        );
+
+        tick_ability(&mut owner, 16);
+        assert!(owner.world().active_action(actor).is_none());
+        assert!(owner.world_mut().apply_damage(actor, PLAYER_HEALTH_MAX));
+        activate_strike(&mut owner, id, 6, None);
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 6,
+                reason: AbilityCommandReject::ActorDead,
+            }
+        );
+        assert!(owner.world().active_action(actor).is_none());
+    }
+
+    #[test]
+    fn ability_busy_uses_request_ability_not_a_network_path() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        owner
+            .world_mut()
+            .try_start_action(
+                actor,
+                ActionKind::Test { token: 1 },
+                ActionGateContext::in_world(),
+            )
+            .expect("occupy exclusive action");
+        activate_strike(&mut owner, id, 1, None);
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 1,
+                reason: AbilityCommandReject::Busy,
+            }
+        );
+        let live = owner.world().active_action(actor).unwrap();
+        assert_eq!(live.kind, ActionKind::Test { token: 1 });
+    }
+
+    #[test]
+    fn ability_activate_broadcasts_attack_oneshot() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        activate_strike(&mut owner, id, 1, None);
+        assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
+        match rx.try_recv().expect("attack oneshot") {
+            ServerControl::PresentationOneShot(event) => {
+                assert_eq!(event.entity, wire_id(actor));
+                assert_eq!(event.kind, PresentationOneShotKind::Attack.as_u8());
+                assert!(event.until_tick > 0);
+            }
+            other => panic!("expected PresentationOneShot, got {other:?}"),
+        }
+        assert_eq!(
+            owner.world().presentation_oneshot_of(actor).map(|o| o.kind),
+            Some(PresentationOneShotKind::Attack)
+        );
+    }
+
+    #[test]
+    fn ability_hit_broadcasts_hurt_to_observers() {
+        let mut owner = GameplayOwner::new();
+        let attacker = ConnectionId::from_raw(1);
+        let victim_conn = ConnectionId::from_raw(2);
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::channel(16);
+        let (tx_v, mut rx_v) = tokio::sync::mpsc::channel(16);
+        owner.attach(attacker);
+        owner.attach(victim_conn);
+        owner.bindings.get_mut(&attacker).unwrap().interact = Some(tx_a);
+        owner.bindings.get_mut(&victim_conn).unwrap().interact = Some(tx_v);
+        let actor = owner.entity_of(attacker).unwrap();
+        let victim = owner.entity_of(victim_conn).unwrap();
+        let actor_pos = owner.world().transform_of(actor).unwrap().position;
+        let _ = owner.world_mut().set_transform(
+            victim,
+            Transform::from_position([actor_pos[0] + 1.0, actor_pos[1]]),
+        );
+        activate_strike(&mut owner, attacker, 1, None);
+        assert_eq!(recv_ability(&mut rx_a), ServerAbility::Accepted { seq: 1 });
+        tick_ability(&mut owner, 8);
+        let mut saw_hurt = false;
+        for rx in [&mut rx_a, &mut rx_v] {
+            while let Ok(msg) = rx.try_recv() {
+                if let ServerControl::PresentationOneShot(event) = msg
+                    && event.entity == wire_id(victim)
+                    && event.kind == PresentationOneShotKind::Hurt.as_u8()
+                {
+                    saw_hurt = true;
+                }
+            }
+        }
+        assert!(saw_hurt, "valid hit must broadcast Hurt");
+        assert!(
+            (owner.world().health_of(victim).unwrap().current - (PLAYER_HEALTH_MAX - 5.0)).abs()
+                < 1e-5
+        );
+        assert_eq!(
+            owner.world().presentation_oneshot_of(actor).map(|o| o.kind),
+            Some(PresentationOneShotKind::Attack)
         );
     }
 }

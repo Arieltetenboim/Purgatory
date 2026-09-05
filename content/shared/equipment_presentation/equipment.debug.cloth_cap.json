@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "equipment.debug.cloth_cap",
+  "attachments": [
+    {
+      "id": "crown",
+      "bone": "head",
+      "anchor": "crown",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.cloth_cap.side",
+        "back": "equipment.debug.cloth_cap.back"
+      }
+    }
+  ]
+}

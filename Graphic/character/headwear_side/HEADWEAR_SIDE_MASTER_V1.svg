@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<title>PURGATORY Headwear Side master v1</title>
+<desc>Fixed 2×2 empty grid. 512×512 px · 2×2 cells of 256×256 · Crown local (128, 176) · 256 px/wu. Align head-contact to Crown +. Crop by grid only. No example art.</desc>
+  <g id="grid" fill="none" stroke="#a8a29e" stroke-width="1">
+    <rect id="r0c0" data-visual-key="equipment.debug.headwear_proof.a.side" x="0" y="0" width="256" height="256"/>
+    <rect id="r0c1" data-visual-key="equipment.debug.headwear_proof.b.side" x="256" y="0" width="256" height="256"/>
+    <rect id="r1c0" data-visual-key="equipment.debug.headwear_proof.c.side" x="0" y="256" width="256" height="256"/>
+    <rect id="r1c1" data-visual-key="equipment.debug.headwear_proof.d.side" x="256" y="256" width="256" height="256"/>
+  </g>
+  <g id="safe" fill="none" stroke="#a8a29e" stroke-width="1" stroke-dasharray="4 4">
+    <rect x="16" y="16" width="224" height="224"/>
+    <rect x="272" y="16" width="224" height="224"/>
+    <rect x="16" y="272" width="224" height="224"/>
+    <rect x="272" y="272" width="224" height="224"/>
+  </g>
+  <g id="crown" stroke="#b91c1c" stroke-width="1.75" fill="none">
+    <line x1="120.00" y1="176.00" x2="136.00" y2="176.00"/>
+<line x1="128.00" y1="168.00" x2="128.00" y2="184.00"/>
+    <line x1="376.00" y1="176.00" x2="392.00" y2="176.00"/>
+<line x1="384.00" y1="168.00" x2="384.00" y2="184.00"/>
+    <line x1="120.00" y1="432.00" x2="136.00" y2="432.00"/>
+<line x1="128.00" y1="424.00" x2="128.00" y2="440.00"/>
+    <line x1="376.00" y1="432.00" x2="392.00" y2="432.00"/>
+<line x1="384.00" y1="424.00" x2="384.00" y2="440.00"/>
+  </g>
+  <g id="ids" font-family="Segoe UI,Arial,sans-serif" font-size="11" fill="#44403c">
+    <text x="10" y="22">r0c0</text>
+    <text x="266" y="22">r0c1</text>
+    <text x="10" y="278">r1c0</text>
+    <text x="266" y="278">r1c1</text>
+  </g>
+</svg>

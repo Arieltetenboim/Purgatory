@@ -1,6 +1,6 @@
 # Protocol
 
-Phase 5.2 adds **authoritative gameplay replication**. Protocol version is **10**. The client sends per-tick `InputCommand` values identified by `(input_epoch, sequence)`. Phase 5.3 is client-only remote interpolation. Phase 5.4 is client-only local prediction. Phase 5.5 adds acknowledgement, continuation debt, late-collapse compaction, and local restore+replay. Phase 5.6 adds a **development-only** network impairment lab (delay/stall/HOL on the existing reliable streams). Phase 5.7 adds off-protocol localhost load metrics and raises the mechanical entity decode bound to 256. Phase 6.0 adds runtime/replication **contracts**; 6A composition; **6B** adds reliable interaction control envelopes and optional `ReplicatedKind::Interactable`; **6C** adds observer `WorldAddress`, `ReplicatedKind::Portal`, and `PortalActivate`. **6D** replaces full `WorldSnapshot` on the gameplay uni stream with `ReplicationFrame` (Enter/Update/Leave) and server interest-policy AOI, then adds DEV-only `DevSetChannel` (tag 17) so a Channel change is an authoritative `WorldAddress` boundary. **6E** adds DEV `Hello.dev_login` (temporary lookup identity) and `DisconnectReasonCode::AlreadyConnected`. Phase **6F** adds server-side runtime services (scheduler, actions, staged events, effects, cadence) **without** a protocol bump: no v11, no new control tags, frame fields, or reject enums. Historical v1–v9 Hello/Welcome and v1–v7 snapshot goldens stay frozen. The server visibility set comes from `World::spatial_candidates` plus per-observer known-set classification. There is **no** combat or skill model yet. Health on v8 frames proves multi-domain deltas only.
+Phase 5.2 adds **authoritative gameplay replication**. Protocol version is **15**. The client sends per-tick `InputCommand` values identified by `(input_epoch, sequence)`. Phase 5.3 is client-only remote interpolation. Phase 5.4 is client-only local prediction. Phase 5.5 adds acknowledgement, continuation debt, late-collapse compaction, and local restore+replay. Phase 5.6 adds a **development-only** network impairment lab (delay/stall/HOL on the existing reliable streams). Phase 5.7 adds off-protocol localhost load metrics and raises the mechanical entity decode bound to 256. Phase 6.0 adds runtime/replication **contracts**; 6A composition; **6B** adds reliable interaction control envelopes and optional `ReplicatedKind::Interactable`; **6C** adds observer `WorldAddress`, `ReplicatedKind::Portal`, and `PortalActivate`. **6D** replaces full `WorldSnapshot` on the gameplay uni stream with `ReplicationFrame` (Enter/Update/Leave) and server interest-policy AOI, then adds DEV-only `DevSetChannel` (tag 17) so a Channel change is an authoritative `WorldAddress` boundary. **6E** adds DEV `Hello.dev_login` (temporary lookup identity) and `DisconnectReasonCode::AlreadyConnected`. Phase **6F** adds server-side runtime services without a protocol bump. Phase **7.2** adds `ReplicatedKind::Npc` (kind `4`) so visible Generics/NPCs Enter AOI on the wire (ADR-0054). Protocol **v12** adds equipment request envelopes and an optional equipment domain on Enter/Update. Protocol **v13** adds DEV presentation Attack/Hurt oneshot control envelopes (tags 22/23); Enter/Update snapshot layout is unchanged. Historical v1–v12 Hello/Welcome and earlier snapshot goldens stay frozen. Health on v8+ frames proves multi-domain deltas; 7.2 uses Health as a workload mutation domain. Phase **9A** locks ability authority (client requests ability id + targeting; server applies `AbilityEffect`) without adding wire tags. Phase **9B** executes `skill.basic.strike` in simulation only. Protocol **v15** adds ability activation envelopes (tags 25–27).
 
 ## Trust boundary
 
@@ -37,11 +37,21 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 10` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 15` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
-v10 is an intentional incompatible bump: v1–v9 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: a v9 Hello (no `dev_login` field) decodes, then fails version check — it is not treated as a malformed login.
+v15 is an intentional incompatible bump: v1–v14 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: a v14 Hello still decodes, then fails version check.
 
 Client Hello includes `protocol_version`. The server rejects mismatches with `DisconnectReasonCode::VersionMismatch`.
+
+Protocol v11 adds snapshot/frame `ReplicatedKind::Npc` (kind `4`) for visible non-player actors. Payload layout reuses Enter transform + optional health and Update domain mask. Npc is excluded from E-interact and Portal activation candidate sets.
+
+Protocol v12 adds client equipment request envelopes (`Equip` / `Unequip`) and an optional equipment domain on Enter/Update. Hello/Welcome layout is otherwise identical to v11.
+
+Protocol v13 adds DEV presentation oneshot controls: client `DevPresentationOneShot` (tag 22, kind `1`=Attack / `2`=Hurt) and server `PresentationOneShot` (tag 23, entity + kind + `until_tick`). No bones, `sample_t`, or animation events. Enter/Update snapshot layout is unchanged (0 per-frame animation traffic).
+
+Protocol v14 adds DEV-only `DevResetPlayer` (tag **24**, tag-only payload). The server resets the bound player entity to the development spawn. The client must not apply a local spawn while connected.
+
+Protocol v15 adds ability activation: client `AbilityActivate` (tag **25**) and server `Ability` Accepted/Rejected (tags **26**/**27**). The client sends ability id + optional selected entity. It never sends hits, damage, query dimensions, facing, or Health.
 
 ## Golden wire vectors
 
@@ -64,6 +74,16 @@ Protocol v8 Hello/Welcome goldens use `protocol_version = 8`. The gameplay uni p
 Protocol v9 Hello/Welcome goldens use `protocol_version = 9`. v9 adds DEV-only `DevSetChannel` (tag **17**, little-endian `u32` ChannelId). The client cannot mutate `WorldAddress`; the server validates Channel 0..=`DEV_CHANNEL_MAX` (currently 1), preserves MapId and InstanceId, relocates the live player, and bumps the observer replication epoch. v8 Hello/Welcome remain frozen.
 
 Protocol v10 Hello goldens add `dev_login` after `client_build` (same `u8` length + UTF-8). Welcome layout is unchanged except `protocol_version = 10`. v9 Hello/Welcome remain frozen.
+
+Protocol v11 Hello/Welcome goldens use `protocol_version = 11` (layout otherwise identical to v10). v10 Hello/Welcome remain frozen. Snapshot/frame adds `ReplicatedKind::Npc`.
+
+Protocol v12 Hello/Welcome goldens use `protocol_version = 12` (layout otherwise identical to v11). v11 Hello/Welcome remain frozen. Enter/Update may carry an optional equipment domain.
+
+Protocol v13 Hello/Welcome goldens use `protocol_version = 13`. v12 Hello/Welcome remain frozen. Oneshot control goldens freeze tags 22/23.
+
+Protocol v14 Hello/Welcome goldens use `protocol_version = 14`. v13 Hello/Welcome remain frozen. `DevResetPlayer` golden freezes tag 24.
+
+Protocol v15 Hello/Welcome goldens use `protocol_version = 15`. v14 Hello/Welcome remain frozen. Ability control goldens freeze tags 25–27.
 
 **Version change policy.** A failing golden vector means the wire format moved. Do not regenerate the fixture to make the test pass. Instead:
 
@@ -130,7 +150,7 @@ Intent only. Identity is `(input_epoch, sequence)`. Wire layout after the tag: `
 
 The client emits **one command per predicted tick**. There is no send-on-change and no client-side coalescing on the reliable stream.
 
-During a server-recognized Map/Channel transition the session is **input-gated** (ADR-0042). New-epoch `InputCommand` values are still accepted for sequence/ack so the replay window stays aligned, but they are applied as idle and must not adopt held movement. `PortalActivate` / `InteractOpen` / `DevSetChannel` are rejected while gated. No new wire tag; `input_epoch` bump already invalidates pre-transition commands.
+During a server-recognized Map/Channel transition the session is **input-gated** (ADR-0042). New-epoch `InputCommand` values are still accepted for sequence/ack so the replay window stays aligned, but they are applied as idle and must not adopt held movement. `PortalActivate` / `InteractOpen` / `DevSetChannel` / `Equip` / `Unequip` / `AbilityActivate` are rejected while gated (`StateBlocked` for equipment and ability). No new wire tag; `input_epoch` bump already invalidates pre-transition commands.
 
 `HeldCancel` — tag 8. Pathological focus-loss / full send-window barrier. No sequence. Rate-limited as gameplay input. Server handling is idempotent: idle held state, flush queue, cancel-ack `last_acknowledged := last_received`.
 
@@ -144,6 +164,34 @@ Client:
 - `InteractClose { session_id: u32 }` — tag 10
 - `PortalActivate { target: WireEntityId }` — tag 15. Edge-triggered portal travel. Not `InteractOpen`. `E` must not use this path.
 - `DevSetChannel { channel: u32 }` — tag 17. DEV overlay only. Server-authoritative Channel request. Not a Portal, not a reconnect, and not client WorldAddress mutation. Channel values above `DEV_CHANNEL_MAX` are ignored (not a disconnect).
+- `DevResetPlayer` — tag **24**. DEV overlay only. Tag-only. Server-authoritative spawn reset of the bound player. Not a client teleport.
+- `Equip { seq: u32, slot: u8, content_id: ContentId token }` — tag **18**. 14 bytes with tag (`1+4+1+8`). Slot is dense `0..=5` (Headwear…Weapon). No presentation fields.
+- `Unequip { seq: u32, slot: u8 }` — tag **19**. 6 bytes with tag.
+
+Equipment `seq` is **per-connection**, independent of `InputCommand` sequence. First Accept must be `1`. `seq == 0` is a codec error (not encoded or decoded). Duplicate (`seq == last`) resends the last Accept/Reject and does not mutate. Stale (`seq < last`, including a bypass `seq == 0` after last ≥ 1) is `StaleRequest` and does not advance. Gap (first seq ≠ 1, or `seq > last+1`) is `InvalidRequest` and does not advance. Reconnect starts a new binding at `seq = 1`.
+
+Server (`ServerControl::Equipment`) — request lifecycle only; **not** persistent equipment truth:
+
+- Accepted — tag **20** — `seq` (5 bytes with tag)
+- Rejected — tag **21** — `seq` + reason `u8` (6 bytes with tag). Reasons: `UnknownContent=1`, `SlotMismatch=2`, `StaleRequest=3`, `InvalidRequest=4`, `StateBlocked=5`.
+
+Persistent truth is replicated `EquipmentState` on Enter/Update. Remotes reconstruct from baseline, not by replaying Accepted events.
+
+Ability `seq` is **per-connection**, independent of `InputCommand` and equipment sequence, with the same Accept/duplicate/stale/gap rules as equipment. First Accept must be `1`.
+
+Client (`ClientControl::AbilityActivate`) — tag **25**:
+
+- Independent: `seq u32` + ability token `u64` + flag `0` (13 bytes + tag)
+- SelectedEntity: same + `WireEntityId` (21 bytes + tag)
+
+The client must not send hits, damage, range, facing, or Health. Independent Basic Strike sends `selected = None`. Extra selected data on an Independent ability is `InvalidActivation`.
+
+Server (`ServerControl::Ability`) — request lifecycle only; **not** hit results:
+
+- Accepted — tag **26** — `seq` (5 bytes with tag)
+- Rejected — tag **27** — `seq` + reason `u8` (6 bytes with tag). Reasons: `UnknownAbility=1`, `NotGranted=2`, `InvalidActivation=3`, `StaleRequest=4`, `InvalidRequest=5`, `ActorDead=6`, `Busy=7`, `OnCooldown=8`, `StateBlocked=9`.
+
+Authoritative affected entities, damage, and Health come from `World::request_ability` + authored `AbilityDefinition`. An empty swing is a valid Accepted lifecycle.
 
 Server (`ServerControl::Interact`):
 
@@ -216,7 +264,7 @@ records[]: Enter | Update | Leave
 optional aoi_debug trailer (8 bytes): candidates, known, want_enter, want_leave as u16 LE
 ```
 
-Record tags: Enter `1`, Update `2`, Leave `3`. Enter carries a full `SnapshotEntity` plus optional health. Update carries a domain mask (transform bit 0, health bit 1) and only those payloads. Leave carries `entity_id` only.
+Record tags: Enter `1`, Update `2`, Leave `3`. Enter carries a full `SnapshotEntity` plus optional health then optional equipment. Equipment presence `0` = no domain; `1` + occupied-mask (`u8`) + `u64` LE token per occupied slot (token `0` is a real ContentId). `Some(all-empty)` is presence `1` with mask `0`. Update domain mask: transform bit 0, health bit 1, equipment bit 2. An equipment Update is a **slot delta** (changed-mask + per dirty slot: `0` empty or `1`+token). Unchanged slots are omitted. Empty equipment delta is invalid. Protocol **v12** is the equipment-on-wire version.
 
 The optional 8-byte `ObserverAoiDebug` trailer is **DEV overlay counts** from the observer mailbox at encode time. It is not an application ACK and does not change interest. Frozen v8 goldens omit it (`aoi_debug: None`). Decoder: 0 leftover bytes → None; 8 leftover bytes → Some; any other leftover length → `InvalidValue`. Frame layout is unchanged in v9.
 
@@ -365,9 +413,11 @@ The desktop client may still run local FOOTNOTE for **LOCAL DEV / NON-AUTHORITAT
 
 ## Command versus Event (Phase 6F)
 
-Client envelopes (`InputCommand`, `InteractOpen`, `PortalActivate`, `DevSetChannel`) are **commands**: untrusted requests. They are not runtime facts.
+Client envelopes (`InputCommand`, `InteractOpen`, `PortalActivate`, `DevSetChannel`, `DevResetPlayer`) are **commands**: untrusted requests. They are not runtime facts.
 
-Authoritative occurrences are staged `RuntimeEvent` values inside simulation (spawn/despawn, action start/end/reject, effect apply/expire, scheduled fire, cadence). They are not a second wire codec. Protocol stays **v10**. Phase 6G did not add Welcome `CharacterId` or test-only replica fields.
+Phase **9A/9B** (not on the wire): a future player ability envelope is a command carrying **ability id + optional selected entity**. It must not carry damage, hit confirmation, or Health. Basic Attack (`skill.basic.strike`) activates with no selected target; the server resolves a forward query at Active. Server-only: live `ActionPhase`, cooldown table, definition lookup, hit/query, `execute_ability_effect`. Replicated vitality remains the existing Health domain. Semantic Attack/Hurt may later reuse `ServerPresentationOneShot` (v13). Cooldown and live Windup/Active/Recovery are not v1 snapshot fields. No protocol bump in 9A or 9B.
+
+Authoritative occurrences are staged `RuntimeEvent` values inside simulation (spawn/despawn, action start/end/reject, effect apply/expire, scheduled fire, cadence). They are not a second wire codec. Phase 6G did not bump protocol or add Welcome `CharacterId` or test-only replica fields.
 
 ```text
 invalid command → typed reject (existing Unavailable where a wire response already exists)

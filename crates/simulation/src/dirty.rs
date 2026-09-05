@@ -9,12 +9,13 @@ pub struct DirtyFlags {
     pub health: bool,
     pub membership: bool,
     pub replication: bool,
+    pub equipment: bool,
 }
 
 impl DirtyFlags {
     #[must_use]
     pub const fn any(self) -> bool {
-        self.transform || self.health || self.membership || self.replication
+        self.transform || self.health || self.membership || self.replication || self.equipment
     }
 
     pub fn merge(&mut self, other: Self) {
@@ -22,6 +23,7 @@ impl DirtyFlags {
         self.health |= other.health;
         self.membership |= other.membership;
         self.replication |= other.replication;
+        self.equipment |= other.equipment;
     }
 
     pub fn take(&mut self) -> Self {

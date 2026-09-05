@@ -9,8 +9,15 @@ pub mod memory;
 pub mod world_address;
 
 pub use capacity_accounting::{
-    CAPACITY_ARTIFACT_DIR_ENV, DomainTimingMs, IntDistribution, InterestLocalitySnapshot,
-    ProcessResourceSnapshot, ReplicationFanoutSnapshot, TickDomainSnapshot,
+    CAPACITY_ARTIFACT_DIR_ENV, CAPACITY_DETAIL_ENV, CAPACITY_TICK_BUDGET_NS, CapacityLiveSnapshot,
+    ClientPressureRow, ConnectionLifecycleSnapshot, ConnectionRampSnapshot, DomainTimingMs,
+    FunnelInvariantReport, GameplayWorkloadSnapshot, HarnessConnectionSnapshot, IntDistribution,
+    InterestLocalitySnapshot, NetworkPressureSnapshot, OwnerShareRow, ProcessResourceSnapshot,
+    RampFunnel, RemainderResult, ReplicationFanoutSnapshot, SaturationClass, SaturationEvidence,
+    TICK_DOMAIN_WINDOW_SAMPLES, TickDomainSnapshot, TickLeafMicros, TickOwnerId,
+    capacity_detail_enabled, check_ramp_funnel_invariant, classify_saturation,
+    compose_ramp_ownership, dominant_owner_from_means, int_distribution_from_micros,
+    ramp_attainment_pct, worst_spike_owner_from_max,
 };
 pub use identity::{
     AuthoredIdError, CharacterId, ContentId, DEFAULT_DEV_LOGIN, DEFAULT_RESTORE_POINT,
@@ -24,8 +31,8 @@ pub use load_metrics::{
     decode_metrics_response, encode_metrics_response, is_metrics_request, metrics_request_datagram,
 };
 pub use load_validation::{
-    LOAD_MODE_ADMISSION_ENV, LOAD_VALIDATION_ENV, LoadValidationConfig, SchedulerPressure,
-    SpawnPressure,
+    LOAD_MODE_ADMISSION_ENV, LOAD_VALIDATION_ENV, LoadValidationConfig, NpcWorkloadConfig,
+    SchedulerPressure, SpawnPressure,
 };
 pub use memory::{
     ProcessCpu, ProcessMemory, ProcessResources, current_process_memory, current_process_resources,

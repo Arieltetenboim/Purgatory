@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<title>PURGATORY Humanoid v0 authoring template</title>
+<desc>Transparent Photoshop reference. World +X right, +Y up. Canvas origin top-left. 1 wu = 256.00 px. Character origin (root / ground center) = (512.00, 768.00). x = 512.00 + world_x * 256.00; y = 768.00 - world_y * 256.00. Bind pose is PresentationView::Side (RIGHT 3/4). Generated from purgatory-skeleton; do not hand-edit coordinates.</desc>
+  <g id="canvas-bounds" fill="none" stroke="#6b7280" stroke-width="2">
+<rect x="0.5" y="0.5" width="1023.00" height="1023.00"/>
+</g>
+  <g id="side-back-guides" fill="none">
+<text x="24" y="36" font-family="Consolas,monospace" font-size="16" fill="#111827">Humanoid v0 bind · PresentationView::Side (RIGHT 3/4)</text>
+<text x="24" y="56" font-family="Consolas,monospace" font-size="12" fill="#4b5563">Back view hides ArmFront/LegFront; remaining ArmBack/LegBack paint near. Not a second skeleton.</text>
+<text x="24" y="688.00" font-family="Consolas,monospace" font-size="14" fill="#b45309" transform="rotate(-90 24 688.00)">FRONT (near)</text>
+<text x="1000.00" y="688.00" font-family="Consolas,monospace" font-size="14" fill="#1d4ed8" transform="rotate(90 1000.00 688.00)">BACK (far)</text>
+</g>
+  <g id="safe-bounds" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="8 6">
+<rect x="448.64" y="430.08" width="144.81" height="368.64"/>
+<text x="454.64" y="424.08" font-family="Consolas,monospace" font-size="11" fill="#0369a1">safe bounds (+0.12 wu)</text>
+</g>
+  <g id="ground-line" fill="none" stroke="#059669" stroke-width="2">
+<line x1="0.00" y1="768.00" x2="1024.00" y2="768.00"/>
+<text x="536.00" y="760.00" font-family="Consolas,monospace" font-size="12" fill="#047857">ground y=0</text>
+</g>
+  <g id="character-center" stroke="#dc2626" stroke-width="1.5" fill="none">
+<line x1="512.00" y1="750.00" x2="512.00" y2="786.00"/>
+<line x1="494.00" y1="768.00" x2="530.00" y2="768.00"/>
+<circle cx="512.00" cy="768.00" r="5"/>
+<text x="524.00" y="796.00" font-family="Consolas,monospace" font-size="12" fill="#b91c1c">center / root (0,0)</text>
+</g>
+  <g id="bind-body">
+<polygon points="481.92,670.72 535.68,670.72 551.04,522.24 479.36,522.24" fill="#d6d3d1" fill-opacity="0.55" stroke="#44403c" stroke-width="1.5"/>
+</g>
+  <g id="skeleton" fill="none" stroke-linecap="round">
+    <line x1="512.00" y1="768.00" x2="512.00" y2="660.48" stroke="#44403c" stroke-width="3"/>
+    <line x1="512.00" y1="660.48" x2="512.00" y2="583.68" stroke="#44403c" stroke-width="3"/>
+    <line x1="512.00" y1="583.68" x2="529.92" y2="522.24" stroke="#44403c" stroke-width="3"/>
+    <line x1="512.00" y1="583.68" x2="486.40" y2="547.84" stroke="#b45309" stroke-width="3"/>
+    <line x1="486.40" y1="547.84" x2="486.40" y2="604.16" stroke="#b45309" stroke-width="3"/>
+    <line x1="486.40" y1="604.16" x2="486.40" y2="629.76" stroke="#b45309" stroke-width="3"/>
+    <line x1="512.00" y1="583.68" x2="532.48" y2="547.84" stroke="#1d4ed8" stroke-width="3" stroke-dasharray="5 4"/>
+    <line x1="532.48" y1="547.84" x2="532.48" y2="604.16" stroke="#1d4ed8" stroke-width="3" stroke-dasharray="5 4"/>
+    <line x1="532.48" y1="604.16" x2="544.75" y2="626.63" stroke="#1d4ed8" stroke-width="3" stroke-dasharray="5 4"/>
+    <line x1="512.00" y1="660.48" x2="496.64" y2="670.72" stroke="#b45309" stroke-width="3"/>
+    <line x1="496.64" y1="670.72" x2="496.64" y2="721.92" stroke="#b45309" stroke-width="3"/>
+    <line x1="496.64" y1="721.92" x2="496.64" y2="768.00" stroke="#b45309" stroke-width="3"/>
+    <line x1="512.00" y1="660.48" x2="522.24" y2="670.72" stroke="#1d4ed8" stroke-width="3" stroke-dasharray="5 4"/>
+    <line x1="522.24" y1="670.72" x2="522.24" y2="721.92" stroke="#1d4ed8" stroke-width="3" stroke-dasharray="5 4"/>
+    <line x1="522.24" y1="721.92" x2="522.24" y2="768.00" stroke="#1d4ed8" stroke-width="3" stroke-dasharray="5 4"/>
+  </g>
+  <g id="bone-pivots">
+    <circle cx="512.00" cy="768.00" r="4" fill="#111827"/>
+<text x="519.00" y="761.00" font-family="Consolas,monospace" font-size="10" fill="#111827">root</text>
+    <circle cx="512.00" cy="660.48" r="4" fill="#111827"/>
+<text x="519.00" y="653.48" font-family="Consolas,monospace" font-size="10" fill="#111827">pelvis</text>
+    <circle cx="512.00" cy="583.68" r="4" fill="#111827"/>
+<text x="519.00" y="576.68" font-family="Consolas,monospace" font-size="10" fill="#111827">torso</text>
+    <circle cx="529.92" cy="522.24" r="4" fill="#111827"/>
+<text x="536.92" y="515.24" font-family="Consolas,monospace" font-size="10" fill="#111827">head</text>
+    <circle cx="486.40" cy="547.84" r="4" fill="#111827"/>
+<text x="493.40" y="540.84" font-family="Consolas,monospace" font-size="10" fill="#111827">upper_arm_front</text>
+    <circle cx="486.40" cy="604.16" r="4" fill="#111827"/>
+<text x="493.40" y="597.16" font-family="Consolas,monospace" font-size="10" fill="#111827">lower_arm_front</text>
+    <circle cx="486.40" cy="629.76" r="4" fill="#111827"/>
+<text x="493.40" y="622.76" font-family="Consolas,monospace" font-size="10" fill="#111827">hand_front</text>
+    <circle cx="532.48" cy="547.84" r="4" fill="#111827"/>
+<text x="539.48" y="540.84" font-family="Consolas,monospace" font-size="10" fill="#111827">upper_arm_back</text>
+    <circle cx="532.48" cy="604.16" r="4" fill="#111827"/>
+<text x="539.48" y="597.16" font-family="Consolas,monospace" font-size="10" fill="#111827">lower_arm_back</text>
+    <circle cx="544.75" cy="626.63" r="4" fill="#111827"/>
+<text x="551.75" y="619.63" font-family="Consolas,monospace" font-size="10" fill="#111827">hand_back</text>
+    <circle cx="496.64" cy="670.72" r="4" fill="#111827"/>
+<text x="503.64" y="663.72" font-family="Consolas,monospace" font-size="10" fill="#111827">upper_leg_front</text>
+    <circle cx="496.64" cy="721.92" r="4" fill="#111827"/>
+<text x="503.64" y="714.92" font-family="Consolas,monospace" font-size="10" fill="#111827">lower_leg_front</text>
+    <circle cx="496.64" cy="768.00" r="4" fill="#111827"/>
+<text x="503.64" y="761.00" font-family="Consolas,monospace" font-size="10" fill="#111827">foot_front</text>
+    <circle cx="522.24" cy="670.72" r="4" fill="#111827"/>
+<text x="529.24" y="663.72" font-family="Consolas,monospace" font-size="10" fill="#111827">upper_leg_back</text>
+    <circle cx="522.24" cy="721.92" r="4" fill="#111827"/>
+<text x="529.24" y="714.92" font-family="Consolas,monospace" font-size="10" fill="#111827">lower_leg_back</text>
+    <circle cx="522.24" cy="768.00" r="4" fill="#111827"/>
+<text x="529.24" y="761.00" font-family="Consolas,monospace" font-size="10" fill="#111827">foot_back</text>
+  </g>
+  <g id="anchors">
+    <polygon points="529.92,453.80 536.92,460.80 529.92,467.80 522.92,460.80" fill="#c2410c" fill-opacity="0.9"/>
+<text x="539.92" y="450.80" font-family="Consolas,monospace" font-size="11" font-weight="700" fill="#c2410c">CROWN</text>
+    <polygon points="520.96,545.96 527.96,552.96 520.96,559.96 513.96,552.96" fill="#c2410c" fill-opacity="0.9"/>
+<text x="530.96" y="542.96" font-family="Consolas,monospace" font-size="11" font-weight="700" fill="#c2410c">CHEST</text>
+    <polygon points="506.88,622.76 513.88,629.76 506.88,636.76 499.88,629.76" fill="#c2410c" fill-opacity="0.9"/>
+<text x="516.88" y="619.76" font-family="Consolas,monospace" font-size="11" font-weight="700" fill="#c2410c">GRIP</text>
+    <polygon points="562.73,609.81 569.73,616.81 562.73,623.81 555.73,616.81" fill="#c2410c" fill-opacity="0.9"/>
+<text x="572.73" y="606.81" font-family="Consolas,monospace" font-size="11" font-weight="700" fill="#c2410c">GRIP</text>
+    <polygon points="512.00,761.00 519.00,768.00 512.00,775.00 505.00,768.00" fill="#c2410c" fill-opacity="0.9"/>
+<text x="522.00" y="758.00" font-family="Consolas,monospace" font-size="11" font-weight="700" fill="#c2410c">FOOT</text>
+    <polygon points="537.60,761.00 544.60,768.00 537.60,775.00 530.60,768.00" fill="#c2410c" fill-opacity="0.9"/>
+<text x="547.60" y="758.00" font-family="Consolas,monospace" font-size="11" font-weight="700" fill="#c2410c">FOOT</text>
+  </g>
+  <g id="slots">
+    <rect x="526.42" y="518.74" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="537.92" y="536.24" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:head</text>
+    <rect x="526.42" y="518.74" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="537.92" y="536.24" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:hair_back</text>
+    <rect x="526.42" y="518.74" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="537.92" y="536.24" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:hair_front</text>
+    <rect x="508.50" y="580.18" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="520.00" y="597.68" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:torso</text>
+    <rect x="528.98" y="544.34" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="540.48" y="561.84" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:upper_arm_back</text>
+    <rect x="528.98" y="600.66" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="540.48" y="618.16" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:lower_arm_back</text>
+    <rect x="541.25" y="623.13" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="552.75" y="640.63" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:hand_back</text>
+    <rect x="482.90" y="544.34" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="494.40" y="561.84" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:upper_arm_front</text>
+    <rect x="482.90" y="600.66" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="494.40" y="618.16" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:lower_arm_front</text>
+    <rect x="482.90" y="626.26" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="494.40" y="643.76" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:hand_front</text>
+    <rect x="518.74" y="667.22" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="530.24" y="684.72" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:upper_leg_back</text>
+    <rect x="518.74" y="718.42" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="530.24" y="735.92" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:lower_leg_back</text>
+    <rect x="518.74" y="764.50" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="530.24" y="782.00" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:shoe_back</text>
+    <rect x="493.14" y="667.22" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="504.64" y="684.72" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:upper_leg_front</text>
+    <rect x="493.14" y="718.42" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="504.64" y="735.92" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:lower_leg_front</text>
+    <rect x="508.50" y="764.50" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="520.00" y="782.00" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:shoe_front</text>
+    <rect x="503.38" y="626.26" width="7" height="7" fill="#2563eb" fill-opacity="0.85"/>
+<text x="514.88" y="643.76" font-family="Consolas,monospace" font-size="9" fill="#1e40af">slot:weapon</text>
+  </g>
+  <g id="mapping" font-family="Consolas,monospace" font-size="11" fill="#374151">
+<text x="24" y="992">canvas 1024×1024 px · origin top-left · 1 wu = 256.00 px · origin px (512.00, 768.00) = world (0,0)</text>
+<text x="24" y="1008">x = 512.00 + world_x × 256.00 · y = 768.00 − world_y × 256.00 · 8B attachment canvas 128 px = 1 local wu (not this sheet)</text>
+</g>
+</svg>

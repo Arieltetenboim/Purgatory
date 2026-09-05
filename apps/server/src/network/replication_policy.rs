@@ -2,7 +2,7 @@
 //!
 //! Sits on the 6G.7B dirty fan-out path. Does not change wire protocol semantics.
 
-use purgatory_simulation::{EntityId, ReplicationDirtyMask, World};
+use purgatory_simulation::{EntityId, ReplicationDirtyMask, World, point_in_aabb};
 
 /// Env: `baseline` (6G.7B-equivalent) or `selective` (proof policy).
 pub const REPLICATION_POLICY_ENV: &str = "PURGATORY_REPLICATION_POLICY";
@@ -12,12 +12,13 @@ pub const REPLICATION_POLICY_ENV: &str = "PURGATORY_REPLICATION_POLICY";
 pub struct DomainEligibility {
     pub transform: bool,
     pub health: bool,
+    pub equipment: bool,
 }
 
 impl DomainEligibility {
     #[must_use]
     pub fn any(self) -> bool {
-        self.transform || self.health
+        self.transform || self.health || self.equipment
     }
 }
 
@@ -220,8 +221,6 @@ impl PolicyContext {
     }
 }
 
-const NEARBY_DISTANCE: f32 = 10.0;
-
 #[must_use]
 pub fn classify_relation(
     world: &World,
@@ -238,19 +237,25 @@ pub fn classify_relation(
     if overrides.target.get(observer) == Some(subject) {
         return ObserverRelationKind::Target;
     }
-    let Some(a) = world.transform_of(observer) else {
+    let Some(subject_tf) = world.transform_of(subject) else {
         return ObserverRelationKind::DistantStranger;
     };
-    let Some(b) = world.transform_of(subject) else {
+    if world.transform_of(observer).is_none() {
         return ObserverRelationKind::DistantStranger;
-    };
-    let dx = a.position[0] - b.position[0];
-    let dy = a.position[1] - b.position[1];
-    if dx * dx + dy * dy <= NEARBY_DISTANCE * NEARBY_DISTANCE {
-        ObserverRelationKind::NearbyStranger
-    } else {
-        ObserverRelationKind::DistantStranger
     }
+    if world.address_of(observer) != world.address_of(subject) {
+        return ObserverRelationKind::DistantStranger;
+    }
+    // Nearby = inside the validated visible envelope + prefetch. A 10 wu
+    // player-centered radius is smaller than the FOOTNOTE viewport, so using
+    // it here made on-screen edge remotes Distant (cadence 4) while interior
+    // remotes stayed Nearby (cadence 2).
+    if let Some(rects) = world.aoi_rects_for(observer)
+        && point_in_aabb(subject_tf.position, rects.enter)
+    {
+        return ObserverRelationKind::NearbyStranger;
+    }
+    ObserverRelationKind::DistantStranger
 }
 
 /// Decide domain eligibility / priority / cadence for one observer↔subject dirty edge.
@@ -266,7 +271,10 @@ pub fn decide_update_policy(
     }
 }
 
-fn baseline_decision(relation: ObserverRelationKind, dirty: ReplicationDirtyMask) -> PolicyDecision {
+fn baseline_decision(
+    relation: ObserverRelationKind,
+    dirty: ReplicationDirtyMask,
+) -> PolicyDecision {
     let priority = match relation {
         ObserverRelationKind::SelfObserver => ReplicationPriority::SelfState,
         ObserverRelationKind::Party | ObserverRelationKind::Target => {
@@ -279,6 +287,7 @@ fn baseline_decision(relation: ObserverRelationKind, dirty: ReplicationDirtyMask
         eligibility: DomainEligibility {
             transform: dirty.transform,
             health: dirty.health,
+            equipment: dirty.equipment.any(),
         },
         priority,
         cadence_interval: 1,
@@ -296,6 +305,7 @@ fn selective_decision(
             DomainEligibility {
                 transform: dirty.transform,
                 health: dirty.health,
+                equipment: dirty.equipment.any(),
             },
             ReplicationPriority::SelfState,
             1u64,
@@ -304,15 +314,17 @@ fn selective_decision(
             DomainEligibility {
                 transform: dirty.transform,
                 health: dirty.health,
+                equipment: dirty.equipment.any(),
             },
             ReplicationPriority::ImportantRelation,
             1u64,
         ),
         ObserverRelationKind::NearbyStranger => (
-            // Proof: strangers get motion, not health.
+            // Proof: strangers get motion, not health. Equipment is appearance.
             DomainEligibility {
                 transform: dirty.transform,
                 health: false,
+                equipment: dirty.equipment.any(),
             },
             ReplicationPriority::NearbyMotion,
             2u64,
@@ -321,6 +333,7 @@ fn selective_decision(
             DomainEligibility {
                 transform: dirty.transform,
                 health: false,
+                equipment: dirty.equipment.any(),
             },
             ReplicationPriority::DistantVisible,
             4u64,
@@ -338,9 +351,14 @@ fn selective_decision(
             PressureLevel::High => interval.saturating_mul(3).max(3),
             PressureLevel::Extreme => interval.saturating_mul(4).max(4),
         };
+        let cadence_mult = stranger_cadence_mult_from_env();
+        if cadence_mult > 1 {
+            interval = interval.saturating_mul(cadence_mult).max(cadence_mult);
+        }
         if ctx.pressure >= PressureLevel::High
             && relation == ObserverRelationKind::DistantStranger
             && !dirty.transform
+            && !dirty.equipment.any()
         {
             // No remaining eligible domain under extreme — suppress emit.
             return PolicyDecision {
@@ -371,6 +389,19 @@ pub fn observer_frame_budget_bytes(base: usize, pressure: PressureLevel) -> usiz
         PressureLevel::Extreme => base / 2,
     }
     .max(512)
+}
+
+/// Env: optional stranger cadence multiplier for selective policy (1–8). Default 1.
+pub const REPLICATION_STRANGER_CADENCE_MULT_ENV: &str =
+    "PURGATORY_REPLICATION_STRANGER_CADENCE_MULT";
+
+#[must_use]
+pub fn stranger_cadence_mult_from_env() -> u64 {
+    std::env::var(REPLICATION_STRANGER_CADENCE_MULT_ENV)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(1)
+        .clamp(1, 8)
 }
 
 #[must_use]
@@ -406,6 +437,7 @@ mod tests {
             ReplicationDirtyMask {
                 transform: true,
                 health: true,
+                ..ReplicationDirtyMask::default()
             },
         );
         assert!(d.eligibility.transform);
@@ -428,6 +460,7 @@ mod tests {
             ReplicationDirtyMask {
                 transform: true,
                 health: true,
+                ..ReplicationDirtyMask::default()
             },
         );
         assert!(d.eligibility.health);
@@ -449,6 +482,7 @@ mod tests {
             ReplicationDirtyMask {
                 transform: true,
                 health: true,
+                ..ReplicationDirtyMask::default()
             },
         );
         assert!(d.eligibility.transform && d.eligibility.health);
@@ -471,13 +505,38 @@ mod tests {
             ReplicationDirtyMask {
                 transform: true,
                 health: true,
+                ..ReplicationDirtyMask::default()
             },
         );
         assert!(d.eligibility.health);
         assert_eq!(d.priority, ReplicationPriority::ImportantRelation);
-        assert_eq!(domain_semantics(true, true), ReplicationSemantics::StateLike);
+        assert_eq!(
+            domain_semantics(true, true),
+            ReplicationSemantics::StateLike
+        );
         assert!(observer_frame_budget_bytes(4096, PressureLevel::Extreme) < 4096);
         assert_eq!(observer_frame_budget_bytes(4096, PressureLevel::Calm), 4096);
         let _ = ctx.with_counts(10, 10);
+    }
+
+    #[test]
+    fn stranger_equipment_remains_eligible() {
+        let ctx = PolicyContext {
+            mode: PolicyMode::Selective,
+            population: PopulationClass::High,
+            pressure: PressureLevel::Elevated,
+            observer_known: 80,
+            subject_interested: 40,
+        };
+        let d = decide_update_policy(
+            ctx,
+            ObserverRelationKind::NearbyStranger,
+            ReplicationDirtyMask::equipment_only(purgatory_simulation::EquipmentDirtyMask::only(
+                purgatory_simulation::EquipmentSlot::Weapon,
+            )),
+        );
+        assert!(d.eligibility.equipment);
+        assert!(!d.eligibility.health);
+        assert!(!d.suppress_emit);
     }
 }

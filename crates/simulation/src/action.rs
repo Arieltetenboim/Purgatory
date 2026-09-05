@@ -3,10 +3,15 @@
 //! Request / validate / reject are command-pipeline outcomes. An [`Action`]
 //! slot exists only after a start succeeds. Stored phase is the live or
 //! terminal runtime state, not every conceptual planning name.
+//!
+//! Phase 9A: abilities reuse this table. Live phases are Windup / Active /
+//! Recovery (at most one live action per owner). 7.2 `Strike` remains a
+//! workload placeholder and is not [`crate::ability::AbilityDefinition`].
 
 use std::fmt;
 
 use crate::entity::EntityId;
+use purgatory_common::ContentId;
 
 /// Runtime identity for one started action. Not an action type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -38,17 +43,33 @@ impl fmt::Display for ActionId {
     }
 }
 
-/// Synthetic 6F kinds only. Real skills are out of scope.
+/// Synthetic 6F Test, Phase 7.2 workload Strike, and Phase 9A Ability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActionKind {
-    Test { token: u32 },
+    Test {
+        token: u32,
+    },
+    /// Minimal authoritative attack-like action (flat damage placeholder).
+    /// Load-validation / NPC workload only. Not an authored ability.
+    Strike,
+    /// Content-driven ability. Identity is [`ContentId`] (`AbilityId`).
+    Ability {
+        id: ContentId,
+    },
 }
 
 /// Live or terminal action phase. Pipeline denials never create a slot.
+///
+/// Request / validate remain command-pipeline outcomes (ADR-0046). Live
+/// ability timing uses Windup → Active → Recovery on this same slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActionPhase {
-    /// Started and currently executing.
+    /// Ability windup. Occupies the exclusive owner slot.
+    Windup,
+    /// Started and currently executing (6F Test/Strike default).
     Active,
+    /// Ability recovery. Occupies the exclusive owner slot.
+    Recovery,
     Completed,
     Cancelled,
     Interrupted,
@@ -57,8 +78,13 @@ pub enum ActionPhase {
 
 impl ActionPhase {
     #[must_use]
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Windup | Self::Active | Self::Recovery)
+    }
+
+    #[must_use]
     pub const fn is_terminal(self) -> bool {
-        !matches!(self, Self::Active)
+        !self.is_live()
     }
 }
 
@@ -103,7 +129,7 @@ struct Slot {
     action: Option<Action>,
 }
 
-/// Live actions keyed by generational [`ActionId`]. At most one Active per owner.
+/// Live actions keyed by generational [`ActionId`]. At most one live action per owner.
 pub struct ActionTable {
     slots: Vec<Slot>,
     free: Vec<u32>,
@@ -141,10 +167,23 @@ impl ActionTable {
     #[must_use]
     pub fn active_of(&self, owner: EntityId) -> Option<Action> {
         let id = self.by_owner.iter().find(|(e, _)| *e == owner)?.1;
-        self.get(id).filter(|a| a.phase == ActionPhase::Active)
+        self.get(id).filter(|a| a.phase.is_live())
     }
 
     pub fn start(&mut self, owner: EntityId, kind: ActionKind) -> Result<Action, ActionError> {
+        self.start_in_phase(owner, kind, ActionPhase::Active)
+    }
+
+    /// Start in a live phase. Terminal phases are rejected (use [`Self::end`]).
+    pub fn start_in_phase(
+        &mut self,
+        owner: EntityId,
+        kind: ActionKind,
+        phase: ActionPhase,
+    ) -> Result<Action, ActionError> {
+        if !phase.is_live() {
+            return Err(ActionError::Terminal);
+        }
         if self.active_of(owner).is_some() {
             return Err(ActionError::Busy);
         }
@@ -154,10 +193,26 @@ impl ActionTable {
             id,
             owner,
             kind,
-            phase: ActionPhase::Active,
+            phase,
         };
         self.slots[index as usize].action = Some(action);
         self.by_owner.push((owner, id));
+        Ok(action)
+    }
+
+    /// Advance a live action to another live phase. Terminal ends use [`Self::end`].
+    pub fn set_phase(&mut self, id: ActionId, phase: ActionPhase) -> Result<Action, ActionError> {
+        if !phase.is_live() {
+            return Err(ActionError::Terminal);
+        }
+        let Some(mut action) = self.get(id) else {
+            return Err(ActionError::UnknownAction);
+        };
+        if action.phase.is_terminal() {
+            return Err(ActionError::Terminal);
+        }
+        action.phase = phase;
+        self.slots[id.index as usize].action = Some(action);
         Ok(action)
     }
 
@@ -209,6 +264,7 @@ fn next_generation(current: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use purgatory_common::ContentId;
 
     fn owner() -> EntityId {
         EntityId::from_raw(1, 1)
@@ -246,5 +302,27 @@ mod tests {
         assert_eq!(dropped.id, started.id);
         assert_eq!(dropped.phase, ActionPhase::Cancelled);
         assert!(t.active_of(owner()).is_none());
+    }
+
+    #[test]
+    fn windup_occupies_exclusive_slot() {
+        let mut t = ActionTable::new();
+        let id = ContentId::from_token(1);
+        t.start_in_phase(owner(), ActionKind::Ability { id }, ActionPhase::Windup)
+            .unwrap();
+        assert_eq!(
+            t.start(owner(), ActionKind::Test { token: 1 }),
+            Err(ActionError::Busy)
+        );
+        let live = t.active_of(owner()).unwrap();
+        assert_eq!(live.phase, ActionPhase::Windup);
+        let advanced = t.set_phase(live.id, ActionPhase::Active).unwrap();
+        assert_eq!(advanced.phase, ActionPhase::Active);
+        let recovered = t.set_phase(live.id, ActionPhase::Recovery).unwrap();
+        assert_eq!(recovered.phase, ActionPhase::Recovery);
+        assert_eq!(
+            t.set_phase(live.id, ActionPhase::Completed),
+            Err(ActionError::Terminal)
+        );
     }
 }

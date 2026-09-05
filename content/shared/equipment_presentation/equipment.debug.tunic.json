@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "equipment.debug.tunic",
+  "attachments": [
+    {
+      "id": "torso",
+      "bone": "torso",
+      "anchor": "chest",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.tunic.torso.side",
+        "back": "equipment.debug.tunic.torso.back"
+      }
+    },
+    {
+      "id": "sleeve_front",
+      "bone": "upper_arm_front",
+      "anchor": "bone_origin",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.tunic.sleeve_front.side",
+        "back": "equipment.debug.tunic.sleeve_front.back"
+      }
+    },
+    {
+      "id": "sleeve_back",
+      "bone": "upper_arm_back",
+      "anchor": "bone_origin",
+      "coverage": "overlay",
+      "visuals": {
+        "side": "equipment.debug.tunic.sleeve_back.side",
+        "back": "equipment.debug.tunic.sleeve_back.back"
+      }
+    }
+  ]
+}

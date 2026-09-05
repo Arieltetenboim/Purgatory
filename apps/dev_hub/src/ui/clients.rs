@@ -1,5 +1,5 @@
 use eframe::egui;
-use purgatory_dev_runtime::{HubCommand, HubSnapshot};
+use purgatory_dev_runtime::{HubCommand, HubSnapshot, ServerState};
 
 use crate::theme;
 use crate::ui::layout::{self, bounded_log_panel, card, kv_row};
@@ -14,7 +14,20 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
 
     card(ui, "Clients", |ui| {
         kv_row(ui, "Running", snap.client_count.to_string());
-        kv_row(ui, "Queued", snap.pending_clients.to_string());
+        let queue_label = if snap.pending_clients > 0 {
+            if snap.server_state == ServerState::Ready {
+                format!("{} (spawning)", snap.pending_clients)
+            } else {
+                format!(
+                    "{} (waiting for Ready; now {})",
+                    snap.pending_clients,
+                    snap.server_state.as_str()
+                )
+            }
+        } else {
+            "0".into()
+        };
+        kv_row(ui, "Queued", queue_label);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui

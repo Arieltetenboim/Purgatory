@@ -2,6 +2,7 @@
 //!
 //! [`crate::InputGateReason`] is absorbed as [`ActionDenialReason::TransitionLocked`].
 //! This does not rewrite the ADR-0042 transition barrier.
+//! Phase 9A: the exclusive slot is any live action (Windup / Active / Recovery).
 
 use crate::entity::EntityId;
 use crate::input_gate::InputGateReason;

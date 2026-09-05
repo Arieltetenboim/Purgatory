@@ -37,6 +37,15 @@ impl FootnoteConfig {
         gravity: 36.0,
         jump_velocity: 13.0,
     };
+
+    /// Same locomotion as [`Self::DEFAULT`], with matching ground/air max speed.
+    #[must_use]
+    pub const fn with_move_speed(speed: f32) -> Self {
+        let mut cfg = Self::DEFAULT;
+        cfg.max_ground_speed = speed;
+        cfg.max_air_speed = speed;
+        cfg
+    }
 }
 
 impl Default for FootnoteConfig {

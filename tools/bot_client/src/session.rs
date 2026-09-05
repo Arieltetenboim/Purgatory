@@ -68,6 +68,10 @@ pub struct BotSession {
     send_stream: Option<SendStream>,
     control_recv: Option<RecvStream>,
     snapshot_recv: Option<RecvStream>,
+    /// Client-owned connect-attempt start (not a server timestamp).
+    pub attempt_to_quic_ready_us: Option<u64>,
+    pub quic_ready_to_welcome_us: Option<u64>,
+    pub attempt_to_welcome_us: Option<u64>,
 }
 
 impl BotSession {
@@ -90,6 +94,9 @@ impl BotSession {
             send_stream: None,
             control_recv: None,
             snapshot_recv: None,
+            attempt_to_quic_ready_us: None,
+            quic_ready_to_welcome_us: None,
+            attempt_to_welcome_us: None,
         }
     }
 
@@ -113,7 +120,11 @@ impl BotSession {
         self.replica = ReplicaView::default();
         self.control_recv = None;
         self.snapshot_recv = None;
+        self.attempt_to_quic_ready_us = None;
+        self.quic_ready_to_welcome_us = None;
+        self.attempt_to_welcome_us = None;
 
+        let attempt = Instant::now();
         let connecting = endpoint
             .connect(server, "localhost")
             .map_err(|e| format!("connect error: {e}"))?;
@@ -122,6 +133,8 @@ impl BotSession {
             .await
             .map_err(|_| "QUIC connect timeout".to_string())?
             .map_err(|e| format!("QUIC connect failed: {e}"))?;
+        let quic_ready = Instant::now();
+        self.attempt_to_quic_ready_us = Some(us(attempt.elapsed()));
 
         self.state = SessionState::Handshaking;
 
@@ -150,6 +163,8 @@ impl BotSession {
                 self.send_stream = Some(send);
                 self.control_recv = Some(recv);
                 self.state = SessionState::Connected;
+                self.quic_ready_to_welcome_us = Some(us(quic_ready.elapsed()));
+                self.attempt_to_welcome_us = Some(us(attempt.elapsed()));
                 Ok(())
             }
             ServerControl::Disconnect(reason) => {
@@ -160,6 +175,18 @@ impl BotSession {
             ServerControl::Interact(_) => {
                 self.state = SessionState::Failed;
                 Err("unexpected interact during handshake".into())
+            }
+            ServerControl::Equipment(_) => {
+                self.state = SessionState::Failed;
+                Err("unexpected equipment during handshake".into())
+            }
+            ServerControl::PresentationOneShot(_) => {
+                self.state = SessionState::Failed;
+                Err("unexpected presentation oneshot during handshake".into())
+            }
+            ServerControl::Ability(_) => {
+                self.state = SessionState::Failed;
+                Err("unexpected ability during handshake".into())
             }
         }
     }
@@ -288,7 +315,11 @@ impl BotSession {
                         self.metrics.portal_out_of_range.saturating_add(1);
                 }
             }
-            ServerControl::Welcome(_) | ServerControl::Interact(_) => {}
+            ServerControl::Welcome(_)
+            | ServerControl::Interact(_)
+            | ServerControl::Equipment(_)
+            | ServerControl::PresentationOneShot(_)
+            | ServerControl::Ability(_) => {}
         }
         Ok(poll)
     }
@@ -384,6 +415,10 @@ impl BotSession {
         self.snapshot_recv = None;
         self.state = SessionState::Disconnected;
     }
+}
+
+fn us(d: Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
 
 async fn write_client_control(send: &mut SendStream, msg: &ClientControl) -> Result<(), String> {

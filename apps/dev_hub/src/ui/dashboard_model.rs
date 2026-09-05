@@ -152,7 +152,11 @@ fn server_vm(snap: &HubSnapshot) -> StatusModuleVm {
                 ServerState::Starting => "Starting server process…".into(),
                 _ => "Verifying readiness…".into(),
             };
-            detail = None;
+            detail = if !snap.connection_reason.is_empty() {
+                Some(snap.connection_reason.clone())
+            } else {
+                None
+            };
             metrics.push(MetricVm {
                 key: "Endpoint",
                 value: snap.endpoint.clone(),
@@ -494,6 +498,12 @@ fn actions_vm(snap: &HubSnapshot) -> Vec<QuickActionVm> {
             command: HubCommand::RequestClients { count: 1 },
             enabled: snap.can_request_clients,
             kind: ActionKind::Routine,
+        },
+        QuickActionVm {
+            label: "Animation Lab",
+            command: HubCommand::LaunchAnimationLab,
+            enabled: true,
+            kind: ActionKind::Secondary,
         },
         QuickActionVm {
             label: "Quality Gate",

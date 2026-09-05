@@ -2,9 +2,10 @@
 
 use std::time::{Duration, Instant};
 
-use eframe::egui;
+use eframe::egui::{self, TextureHandle};
 use purgatory_dev_runtime::{HubCommand, LiveHubSession, LoadSpec, ValidationSpec};
 
+use crate::assets;
 use crate::navigation::{HubPage, PageKind};
 use crate::theme;
 use crate::ui;
@@ -30,7 +31,7 @@ pub fn run() -> eframe::Result {
         options,
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(DevHubApp::new()))
+            Ok(Box::new(DevHubApp::new(&cc.egui_ctx)))
         }),
     )
 }
@@ -42,10 +43,12 @@ struct DevHubApp {
     load_spec: LoadSpec,
     validation_run: RunViewState,
     load_run: RunViewState,
+    authoring_export_status: Option<String>,
+    logo: Option<TextureHandle>,
 }
 
 impl DevHubApp {
-    fn new() -> Self {
+    fn new(ctx: &egui::Context) -> Self {
         Self {
             session: LiveHubSession::open(),
             page: HubPage::Dashboard,
@@ -53,6 +56,8 @@ impl DevHubApp {
             load_spec: LoadSpec::default(),
             validation_run: RunViewState::default(),
             load_run: RunViewState::default(),
+            authoring_export_status: None,
+            logo: assets::load_logo(ctx),
         }
     }
 }
@@ -100,7 +105,7 @@ impl eframe::App for DevHubApp {
                     .show(ui, |ui| {
                         ui.horizontal_centered(|ui| {
                             ui.label(
-                                egui::RichText::new("PURGATORY Developer Hub")
+                                egui::RichText::new("Developer Hub")
                                     .font(theme::section_font())
                                     .strong()
                                     .color(theme::body()),
@@ -144,6 +149,24 @@ impl eframe::App for DevHubApp {
                     )
                     .show(ui, |ui| {
                         ui.vertical(|ui| {
+                            ui.vertical_centered(|ui| {
+                                assets::paint_logo(
+                                    ui,
+                                    self.logo.as_ref(),
+                                    ui.available_width().min(176.0),
+                                    72.0,
+                                    "PURGATORY",
+                                );
+                                ui.label(
+                                    egui::RichText::new("Developer Hub")
+                                        .font(theme::subtitle_font())
+                                        .color(theme::muted()),
+                                );
+                            });
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.add_space(6.0);
+
                             egui::ScrollArea::vertical()
                                 .id_salt("hub_nav_scroll")
                                 .max_height(ui.available_height() - 56.0)
@@ -247,8 +270,21 @@ impl eframe::App for DevHubApp {
                                             cmd = Some(c);
                                         }
                                     }
+                                    HubPage::Phase7Stats => {
+                                        let outcome = ui::phase7_stats::show(ui, &snap);
+                                        if let Some(c) = outcome.command {
+                                            cmd = Some(c);
+                                        }
+                                    }
                                     HubPage::Settings => {
                                         if let Some(c) = ui::settings::show(ui, &snap) {
+                                            cmd = Some(c);
+                                        }
+                                    }
+                                    HubPage::Content => {
+                                        if let Some(c) =
+                                            ui::content::show(ui, &mut self.authoring_export_status)
+                                        {
                                             cmd = Some(c);
                                         }
                                     }
@@ -279,6 +315,7 @@ mod tests {
         assert_eq!(HubPage::RuntimeClients.kind(), PageKind::Live);
         assert_eq!(HubPage::Validation.kind(), PageKind::Live);
         assert_eq!(HubPage::Performance.kind(), PageKind::Live);
+        assert_eq!(HubPage::Phase7Stats.kind(), PageKind::Live);
         assert_eq!(HubPage::Settings.kind(), PageKind::Live);
     }
 }

@@ -82,6 +82,27 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
                 theme::state_color(ServerState::Failed),
                 egui::RichText::new(fail).font(theme::subtitle_font()),
             );
+        } else if matches!(
+            snap.server_state,
+            ServerState::Verifying | ServerState::Starting
+        ) && !snap.connection_reason.is_empty()
+        {
+            ui.add_space(2.0);
+            ui.colored_label(
+                theme::muted(),
+                egui::RichText::new(format!("Probe: {}", snap.connection_reason))
+                    .font(theme::subtitle_font()),
+            );
+        }
+        if snap.phase78_gate_active {
+            ui.add_space(2.0);
+            ui.colored_label(
+                theme::muted(),
+                egui::RichText::new(
+                    "Phase 7.8 gate active — Hub will not adopt/probe ladder servers",
+                )
+                .font(theme::subtitle_font()),
+            );
         }
         if !snap.cargo_found {
             ui.add_space(2.0);

@@ -3,9 +3,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::domain::ContentDomain;
+use crate::equipment::{EquipmentDefinition, EquipmentPresentation};
 use crate::error::{ContentError, ValidationIssue};
 use crate::schema::{EntityDefinition, MapDefinition, Placement, RestorePolicy};
 use purgatory_common::{ContentId, MAP_FOOTNOTE_AUTHORED, MapId};
+use purgatory_simulation::AbilityDefinition;
 
 /// Validated authored definitions. Runtime systems query this, not JSON.
 #[derive(Clone, Debug, Default)]
@@ -14,6 +16,9 @@ pub struct ContentRegistry {
     entities: BTreeMap<String, EntityDefinition>,
     maps: BTreeMap<String, MapDefinition>,
     placements: BTreeMap<String, Vec<Placement>>,
+    equipment: BTreeMap<String, EquipmentDefinition>,
+    equipment_presentation: BTreeMap<String, EquipmentPresentation>,
+    abilities: BTreeMap<String, AbilityDefinition>,
     map_id_by_content: HashMap<ContentId, MapId>,
     content_by_map_id: HashMap<MapId, ContentId>,
 }
@@ -26,7 +31,7 @@ impl ContentRegistry {
 
     #[must_use]
     pub fn definition_count(&self) -> usize {
-        self.entities.len() + self.maps.len()
+        self.entities.len() + self.maps.len() + self.equipment.len() + self.abilities.len()
     }
 
     #[must_use]
@@ -37,6 +42,22 @@ impl ContentRegistry {
     #[must_use]
     pub fn entity_count(&self) -> usize {
         self.entities.len()
+    }
+
+    #[must_use]
+    pub fn ability_count(&self) -> usize {
+        self.abilities.len()
+    }
+
+    #[must_use]
+    pub fn ability(&self, authored: &str) -> Option<&AbilityDefinition> {
+        self.abilities.get(authored)
+    }
+
+    #[must_use]
+    pub fn ability_by_id(&self, id: ContentId) -> Option<&AbilityDefinition> {
+        let authored = self.labels.get(&id)?;
+        self.abilities.get(authored)
     }
 
     #[must_use]
@@ -99,6 +120,39 @@ impl ContentRegistry {
         self.entities.values()
     }
 
+    #[must_use]
+    pub fn equipment_count(&self) -> usize {
+        self.equipment.len()
+    }
+
+    #[must_use]
+    pub fn equipment(&self, authored: &str) -> Option<&EquipmentDefinition> {
+        self.equipment.get(authored)
+    }
+
+    #[must_use]
+    pub fn equipment_by_id(&self, id: ContentId) -> Option<&EquipmentDefinition> {
+        let authored = self.labels.get(&id)?;
+        self.equipment.get(authored)
+    }
+
+    #[must_use]
+    pub fn equipment_presentation(&self, authored: &str) -> Option<&EquipmentPresentation> {
+        self.equipment_presentation.get(authored)
+    }
+
+    /// Client presentation lookup by the same `ContentId` as gameplay.
+    /// Server `authorize_equip` must not use this.
+    #[must_use]
+    pub fn equipment_presentation_by_id(&self, id: ContentId) -> Option<&EquipmentPresentation> {
+        let authored = self.labels.get(&id)?;
+        self.equipment_presentation.get(authored)
+    }
+
+    pub fn iter_equipment(&self) -> impl Iterator<Item = &EquipmentDefinition> {
+        self.equipment.values()
+    }
+
     pub(crate) fn insert_entity(&mut self, def: EntityDefinition) -> Result<(), ContentError> {
         self.intern(&def.authored_id, def.content_id, "entity")?;
         if self.entities.contains_key(&def.authored_id) {
@@ -114,6 +168,53 @@ impl ContentRegistry {
             return Err(duplicate(&def.authored_id, "map"));
         }
         self.maps.insert(def.authored_id.clone(), def);
+        Ok(())
+    }
+
+    pub(crate) fn insert_equipment(
+        &mut self,
+        def: EquipmentDefinition,
+    ) -> Result<(), ContentError> {
+        if self.entities.contains_key(&def.authored_id) || self.maps.contains_key(&def.authored_id)
+        {
+            return Err(duplicate(&def.authored_id, "equipment"));
+        }
+        crate::equipment::validate_equipment_definition(&def)?;
+        self.intern(&def.authored_id, def.content_id, "equipment")?;
+        if self.equipment.contains_key(&def.authored_id) {
+            return Err(duplicate(&def.authored_id, "equipment"));
+        }
+        self.equipment.insert(def.authored_id.clone(), def);
+        Ok(())
+    }
+
+    pub(crate) fn insert_equipment_presentation(
+        &mut self,
+        def: EquipmentPresentation,
+    ) -> Result<(), ContentError> {
+        self.intern(&def.authored_id, def.content_id, "equipment_presentation")?;
+        if self.equipment_presentation.contains_key(&def.authored_id) {
+            return Err(duplicate(&def.authored_id, "equipment_presentation"));
+        }
+        self.equipment_presentation
+            .insert(def.authored_id.clone(), def);
+        Ok(())
+    }
+
+    pub(crate) fn insert_ability(
+        &mut self,
+        authored: String,
+        def: AbilityDefinition,
+    ) -> Result<(), ContentError> {
+        if self.entities.contains_key(&authored)
+            || self.maps.contains_key(&authored)
+            || self.equipment.contains_key(&authored)
+            || self.abilities.contains_key(&authored)
+        {
+            return Err(duplicate(&authored, "ability"));
+        }
+        self.intern(&authored, def.id, "ability")?;
+        self.abilities.insert(authored, def);
         Ok(())
     }
 
@@ -293,6 +394,25 @@ impl ContentRegistry {
                     }
                     Some(_) => {}
                 },
+            }
+        }
+        for pres in self.equipment_presentation.values() {
+            match self.equipment.get(&pres.authored_id) {
+                None => issues.push(crate::equipment::equip_issue(
+                    &pres.authored_id,
+                    None,
+                    None,
+                    "id",
+                    "schema",
+                    "presentation has no matching equipment gameplay definition",
+                )),
+                Some(eq) => {
+                    if let Err(err) =
+                        crate::equipment::validate_equipment_presentation(pres, eq.slot)
+                    {
+                        issues.extend(err.issues);
+                    }
+                }
             }
         }
         if issues.is_empty() {

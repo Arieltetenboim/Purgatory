@@ -51,10 +51,10 @@ A future MOB must consume this spine without a fake account/session/Character.
 
 ## Stop rule (refinement 18)
 
-Stop now: correctness gates in CI, cleanup tests, Mixed/scale **characterized as the harness and in-process suite**, soak **not required inside `cargo test`**, major queues have intentional policies, this review finds **no core rewrite blocker** for Phase 7.
+Stop now: correctness gates in CI, cleanup tests, Mixed/scale **characterized as the harness and in-process suite**, soak **not required inside `cargo test`**, major queues have intentional policies, this review finds **no core rewrite blocker**. Phase 6 architecture is closed.
 
-Measurable non-blocking performance work (snapshot fan-out, etc.) is deferred. Do not delay gameplay indefinitely.
+Measurable production-policy tuning (cadence/budget thresholds, slow-client degradation) is deferred to Phase 7.4 and must not reopen the Phase 6 replication architecture. Representative gameplay workload is Phase 7.2, not a reason to delay instrumentation (7.1).
 
 ## Phase 7 is not started
 
-No MOB, combat, skills, inventory, SQL, ECS, or distributed architecture was added in 6G.
+No MOB product, combat system, skills, inventory, SQL, ECS, or distributed architecture was added in 6G. Post-6G Phase 7 is **capacity, parallelism & production scaling** ([`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md)), not gameplay vocabulary and not a second AOI/replication-architecture phase.

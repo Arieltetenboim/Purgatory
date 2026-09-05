@@ -16,6 +16,8 @@ Repository documentation is part of the implementation contract. Update a docume
 - `docs/TEST_GATES.md` — recorded gates and how they were verified
 - `docs/PERFORMANCE_BUDGETS.md` — living budgets and measurements (values may be TBD)
 - `docs/CONTENT_PIPELINE.md` — authoring, IDs, validation
+- `docs/DIAGNOSTICS_ARCHITECTURE.md` — client debug vs diagnostics split (D-track)
+- `docs/DIAGNOSTICS_ROADMAP.md` — D-track slice order
 - `README.md` — orientation and current status
 - `PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md` — master execution specification
 - root `PHASE` — current phase marker

@@ -10,8 +10,11 @@ members = [
     "crates/protocol",
     "crates/content",
     "crates/persistence",
+    "crates/skeleton",
+    "crates/animation",
     "tools/content_validator",
     "tools/bot_client",
+    "tools/animation_lab",
 ]
 
 [workspace.package]

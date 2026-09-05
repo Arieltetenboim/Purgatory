@@ -19,6 +19,7 @@ pub enum ReplicaRole {
     RemotePlayer,
     Interactable,
     Portal,
+    Npc,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +50,7 @@ pub fn semantic_label(kind: ReplicatedKind, id: WireEntityId, local: bool) -> St
         ReplicatedKind::Player => format!("PLAYER {id} · REMOTE"),
         ReplicatedKind::Interactable => format!("INTERACTABLE {id}"),
         ReplicatedKind::Portal => format!("PORTAL {id}"),
+        ReplicatedKind::Npc => format!("NPC {id}"),
     }
 }
 
@@ -59,6 +61,7 @@ pub fn role_of(kind: ReplicatedKind, local: bool) -> ReplicaRole {
         ReplicatedKind::Player => ReplicaRole::RemotePlayer,
         ReplicatedKind::Interactable => ReplicaRole::Interactable,
         ReplicatedKind::Portal => ReplicaRole::Portal,
+        ReplicatedKind::Npc => ReplicaRole::Npc,
     }
 }
 
@@ -147,6 +150,7 @@ pub fn compact_world_space_label(role: ReplicaRole) -> &'static str {
         ReplicaRole::RemotePlayer => "REMOTE PLAYER",
         ReplicaRole::Interactable => "INTERACTABLE",
         ReplicaRole::Portal => "PORTAL",
+        ReplicaRole::Npc => "NPC",
     }
 }
 
@@ -157,6 +161,7 @@ pub fn replica_role_tag(role: ReplicaRole) -> u8 {
         ReplicaRole::RemotePlayer => 1,
         ReplicaRole::Interactable => 2,
         ReplicaRole::Portal => 3,
+        ReplicaRole::Npc => 4,
     }
 }
 
@@ -347,6 +352,7 @@ mod tests {
                 velocity: [0.0, 0.0],
             },
             health: None,
+            equipment: None,
         }
     }
 
@@ -357,6 +363,7 @@ mod tests {
             ReplicaRole::RemotePlayer => (ReplicatedKind::Player, false),
             ReplicaRole::Interactable => (ReplicatedKind::Interactable, false),
             ReplicaRole::Portal => (ReplicatedKind::Portal, false),
+            ReplicaRole::Npc => (ReplicatedKind::Npc, false),
         };
         ReplicaEntityDebug {
             entity_id,

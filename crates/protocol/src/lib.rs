@@ -24,22 +24,37 @@
 //! on the server-initiated uni stream, plus DEV-only `DevSetChannel`.
 //! The server remains authoritative.
 
+mod ability;
 mod config;
 mod connection;
+mod equipment;
 mod frame;
 mod framing;
 mod intent;
 mod interact;
 mod message;
+mod presentation_oneshot;
 mod snapshot;
 mod version;
 
+pub use ability::{
+    ABILITY_ACCEPTED_BYTES, ABILITY_ACTIVATE_INDEPENDENT_BYTES, ABILITY_ACTIVATE_SELECTED_BYTES,
+    ABILITY_REJECTED_BYTES, AbilityActivateRequest, AbilityCommandReject, ServerAbility,
+};
 pub use config::{
     ALPN_PROTOCOL, DEFAULT_DEV_HOST, DEFAULT_DEV_PORT, HANDSHAKE_TIMEOUT, IDLE_TIMEOUT,
     MAX_CONTROL_MESSAGE_BYTES, MAX_DATAGRAM_BYTES, MAX_ENTITIES_PER_SNAPSHOT,
     MAX_GAMEPLAY_SNAPSHOT_BYTES, MAX_LABEL_BYTES, NetworkConfig, PING_INTERVAL, dev_socket_addr,
 };
 pub use connection::ConnectionId;
+pub use equipment::{
+    EQUIP_REQUEST_BYTES, EQUIPMENT_ACCEPTED_BYTES, EQUIPMENT_DELTA_EQUIP_BYTES,
+    EQUIPMENT_DELTA_UNEQUIP_BYTES, EQUIPMENT_FULL_ALL_OCCUPIED_BYTES, EQUIPMENT_FULL_EMPTY_BYTES,
+    EQUIPMENT_FULL_ONE_OCCUPIED_BYTES, EQUIPMENT_REJECTED_BYTES, EQUIPMENT_SLOT_COUNT,
+    EquipRequest, EquipmentRejectReason, ReplicatedEquipment, ReplicatedEquipmentDelta,
+    ServerEquipment, UNEQUIP_REQUEST_BYTES, UnequipRequest, decode_equipment_delta,
+    decode_equipment_full, encode_equipment_delta, encode_equipment_full, slot_valid,
+};
 pub use frame::{
     DomainMask, ObserverAoiDebug, ReplicatedHealth, ReplicationFrame, ReplicationRecord,
     decode_replication_frame, encode_replication_frame, encode_replication_record,
@@ -58,6 +73,11 @@ pub use message::{
     MoveAxis, ServerControl, ServerDatagram, Welcome, decode_client_control,
     decode_client_datagram, decode_server_control, decode_server_datagram, encode_client_control,
     encode_client_datagram, encode_server_control, encode_server_datagram, validate_hello,
+};
+pub use presentation_oneshot::{
+    DEV_PRESENTATION_ONESHOT_BYTES, DevPresentationOneShot, SERVER_PRESENTATION_ONESHOT_BYTES,
+    ServerPresentationOneShot, decode_dev_presentation_oneshot, decode_server_presentation_oneshot,
+    encode_dev_presentation_oneshot, encode_server_presentation_oneshot,
 };
 pub use snapshot::{
     PlatformSupportId, ReplicatedKind, SnapshotEntity, WireEntityId, WorldSnapshot,
@@ -86,7 +106,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 15);
     }
 
     #[test]
