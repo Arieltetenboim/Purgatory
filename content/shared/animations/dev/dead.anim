@@ -1,0 +1,13 @@
+schema_version 1
+duration 0.40
+loop Once
+
+track pelvis
+rot 0.00 0.0 Linear
+rot 0.36 1.520754 Linear
+ty 0.00 0.4 Linear
+ty 0.36 0.4 Linear
+endtrack
+
+markers
+endmarkers

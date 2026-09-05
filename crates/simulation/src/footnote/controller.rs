@@ -86,6 +86,7 @@ impl World {
         }
 
         self.clear_stale_footnote_ids_for(id);
+        let dead = self.health_of(id).is_some_and(|health| health.is_dead());
 
         let (prev_pos, prev_half, prev_grounded_on, prev_vel) = {
             let Some((transform, player)) = self.get_player(id) else {
@@ -137,13 +138,23 @@ impl World {
             }
 
             let mut contact = ContactEvent::None;
-            let dropped = apply_drop_through(player, input, support_kind, &mut contact);
+            // A dead player keeps world physics (gravity, integration, and
+            // collision response), but no longer contributes player control.
+            // Clear horizontal control velocity immediately so momentum from
+            // the lethal tick cannot continue as locomotion.
+            let control_input = if dead {
+                player.velocity[0] = 0.0;
+                PlayerInput::idle()
+            } else {
+                input
+            };
+            let dropped = apply_drop_through(player, control_input, support_kind, &mut contact);
             player.last_contact = contact;
 
             if !dropped {
-                apply_jump(player, input, &config);
+                apply_jump(player, control_input, &config);
             }
-            apply_horizontal(player, input, &config, dt_seconds);
+            apply_horizontal(player, control_input, &config, dt_seconds);
 
             // Grounded characters must not sink-then-snap from gravity each tick.
             let stay_grounded = player.grounded;

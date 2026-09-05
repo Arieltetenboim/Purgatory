@@ -31,8 +31,8 @@ pub use depth::{
 pub use dev::{
     A1_HEAD_CLIP_DURATION, A3_IDLE_CLIP_DURATION, A3_MOVE_CLIP_DURATION, A4_FALL_CLIP_DURATION,
     A4_JUMP_CLIP_DURATION, A4_TRANSITION_DURATION, A5_ATTACK_CLIP_DURATION, A5_HURT_CLIP_DURATION,
-    a1_head_loop_clip, a1_head_rotation_clip, a3_idle_clip, a3_move_clip, a4_fall_clip,
-    a4_jump_clip, a5_attack_clip, a5_hurt_clip, climb_back_clip,
+    DEAD_CLIP_DURATION, a1_head_loop_clip, a1_head_rotation_clip, a3_idle_clip, a3_move_clip,
+    a4_fall_clip, a4_jump_clip, a5_attack_clip, a5_hurt_clip, climb_back_clip, dead_clip,
 };
 pub use player::{AnimationPlayer, PlayerError};
 pub use sample::{SampleError, sample};

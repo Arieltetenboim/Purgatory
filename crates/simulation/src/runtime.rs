@@ -819,6 +819,14 @@ impl World {
 
     /// Deterministic NPC activity step. Skips inactive / dead-pending NPCs.
     pub fn tick_npcs(&mut self, dt_seconds: f32) {
+        self.tick_npcs_with_approach(dt_seconds, None);
+    }
+
+    /// Deterministic NPC activity step with optional live-player approach.
+    ///
+    /// This remains the sole owner of authoritative NPC movement state. The
+    /// target is queried for this tick only; it is not retained by the NPC.
+    pub fn tick_npcs_with_approach(&mut self, dt_seconds: f32, approach: Option<(f32, f32, f32)>) {
         let now = self.tick;
         let ids: Vec<EntityId> = self
             .iter()
@@ -836,6 +844,57 @@ impl World {
             active = active.saturating_add(1);
             self.runtime_stats.npc_updates_total =
                 self.runtime_stats.npc_updates_total.saturating_add(1);
+
+            let approach_target =
+                approach.and_then(|(acquisition_radius, stop_range, stop_half_height)| {
+                    self.nearest_living_player_target(id, acquisition_radius)
+                        .and_then(|target| {
+                            let actor_position = self.transform_of(id)?.position;
+                            let target_position = self.transform_of(target)?.position;
+                            let dx = target_position[0] - actor_position[0];
+                            let dy = target_position[1] - actor_position[1];
+                            let facing_x = if dx < 0.0 { -1.0 } else { 1.0 };
+                            let hittable = crate::ability::forward_query_aabb(
+                                actor_position,
+                                facing_x,
+                                stop_range,
+                                stop_half_height,
+                            )
+                            .contains_point(target_position);
+                            Some((target_position, dx * dx + dy * dy, hittable))
+                        })
+                });
+            if let Some((target_position, distance_sq, hittable)) = approach_target {
+                let Some(transform) = self.transform_of(id) else {
+                    let _ = self.set_npc(id, npc);
+                    continue;
+                };
+                if hittable {
+                    npc.heading = if target_position[0] < transform.position[0] {
+                        [-1.0, 0.0]
+                    } else {
+                        [1.0, 0.0]
+                    };
+                    npc.velocity = [0.0, 0.0];
+                    let _ = self.set_npc(id, npc);
+                    continue;
+                }
+                let dx = target_position[0] - transform.position[0];
+                let dy = target_position[1] - transform.position[1];
+                let distance = distance_sq.sqrt().max(1e-6);
+                npc.heading = [dx / distance, dy / distance];
+                let pos = [
+                    transform.position[0] + npc.heading[0] * NPC_MOVE_SPEED * dt_seconds,
+                    transform.position[1] + npc.heading[1] * NPC_MOVE_SPEED * dt_seconds,
+                ];
+                npc.velocity = [
+                    (pos[0] - transform.position[0]) / dt_seconds.max(1e-6),
+                    (pos[1] - transform.position[1]) / dt_seconds.max(1e-6),
+                ];
+                let _ = self.set_npc(id, npc);
+                let _ = self.set_transform(id, Transform::from_position(pos));
+                continue;
+            }
 
             if now.get() >= npc.next_turn_tick.get() {
                 let angle = (npc.advance_rng() as f32 / u32::MAX as f32) * std::f32::consts::TAU;
@@ -887,9 +946,10 @@ impl World {
 
     /// Drive granted NPC abilities against the nearest living player.
     ///
-    /// Acquisition and facing belong to the NPC driver. Ability lifecycle,
-    /// delivery, timing, cooldown, and effects remain owned by the ability
-    /// runtime. Independent abilities intentionally receive no selected target.
+    /// Acquisition belongs to the NPC driver. Movement and facing remain
+    /// owned by `tick_npcs_with_approach`. Ability lifecycle, delivery,
+    /// timing, cooldown, and effects remain owned by the ability runtime.
+    /// Independent abilities intentionally receive no selected target.
     pub fn drive_npc_combat(
         &mut self,
         definition: &crate::ability::AbilityDefinition,
@@ -911,22 +971,9 @@ impl World {
             {
                 continue;
             }
-            let Some(target) = self.nearest_living_player_target(id, acquisition_radius) else {
+            let Some(_target) = self.nearest_living_player_target(id, acquisition_radius) else {
                 continue;
             };
-            let Some(actor_pos) = self.transform_of(id).map(|t| t.position) else {
-                continue;
-            };
-            let Some(target_pos) = self.transform_of(target).map(|t| t.position) else {
-                continue;
-            };
-            let mut facing = npc;
-            facing.heading = if target_pos[0] < actor_pos[0] {
-                [-1.0, 0.0]
-            } else {
-                [1.0, 0.0]
-            };
-            let _ = self.set_npc(id, facing);
             let _ = self.request_ability(
                 crate::ability::AbilityRequest {
                     actor: id,
@@ -1190,6 +1237,32 @@ impl World {
             self.scheduler.cancel(spawn.timer);
         }
         self.events.push(RuntimeEvent::EntityDespawned { id });
+    }
+
+    /// Clear runtime state that cannot survive a player restoration.
+    ///
+    /// Unlike [`Self::cleanup_owned_runtime`], this preserves the entity and
+    /// its ability grants. A restored player starts with no live action,
+    /// ability execution, cooldown, or target effect.
+    pub(crate) fn clear_restoration_runtime(&mut self, id: EntityId) {
+        self.scheduler.cancel_owner(id);
+        if let Some(action) = self.actions.drop_owner(id) {
+            self.ability_runtime.remove(action.id);
+            self.events.push(RuntimeEvent::ActionEnded {
+                id: action.id,
+                owner: action.owner,
+                end: ActionEnd::Cancelled,
+            });
+        }
+        self.ability_runtime.drop_owner(id);
+        self.cooldowns.drop_owner(id);
+        for effect in self.effects.drop_target(id) {
+            self.scheduler.cancel(effect.timer);
+            self.events.push(RuntimeEvent::EffectRemoved {
+                id: effect.id,
+                target: effect.target,
+            });
+        }
     }
 
     pub(crate) fn note_domain_rev(&mut self) {

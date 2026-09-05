@@ -45,6 +45,10 @@ const A5_HURT_ASSET: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../content/shared/animations/dev/a5_hurt.anim"
 ));
+const DEAD_ASSET: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../content/shared/animations/dev/dead.anim"
+));
 const CLIMB_BACK_ASSET: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../content/shared/animations/dev/climb_back.anim"
@@ -64,6 +68,9 @@ pub const A5_ATTACK_CLIP_DURATION: f32 = 0.40;
 
 /// Duration of the A5 debug Hurt one-shot (seconds).
 pub const A5_HURT_CLIP_DURATION: f32 = 0.35;
+
+/// Duration of the debug Dead one-shot (seconds).
+pub const DEAD_CLIP_DURATION: f32 = 0.40;
 
 /// Bind/no-animation fallback only. Authored ClimbBack duration lives on the parsed clip.
 const CLIMB_BACK_BIND_FALLBACK_DURATION: f32 = 1.0;
@@ -209,6 +216,22 @@ pub fn a5_hurt_clip() -> &'static AnimationClip {
             .unwrap_or_else(|err| {
                 eprintln!("A5 hurt asset invalid: {err}; falling back to bind/no-animation");
                 bind_rotation_noop_clip(def, A5_HURT_CLIP_DURATION, LoopPolicy::Once)
+            })
+    })
+}
+
+/// Debug Dead: authored one-shot collapse. No root.
+/// Authored for Facing::Right.
+#[must_use]
+pub fn dead_clip() -> &'static AnimationClip {
+    static CLIP: OnceLock<AnimationClip> = OnceLock::new();
+    CLIP.get_or_init(|| {
+        let def = humanoid_v0();
+        parse_animation_asset_v1("dead.anim", DEAD_ASSET, def)
+            .map(|asset| asset.clip)
+            .unwrap_or_else(|err| {
+                eprintln!("Dead asset invalid: {err}; falling back to bind/no-animation");
+                bind_rotation_noop_clip(def, DEAD_CLIP_DURATION, LoopPolicy::Once)
             })
     })
 }

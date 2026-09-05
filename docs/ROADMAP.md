@@ -62,6 +62,10 @@ Phases execute in order. A later phase starts only after the current gate is gre
 | 9C | Ability command path | **complete**. Protocol **v15**. Report: [`PHASE_9C_REPORT.md`](PHASE_9C_REPORT.md). |
 | 9D | Ability → Character Presentation | **complete**. Protocol **v15** unchanged. Report: [`PHASE_9D_REPORT.md`](PHASE_9D_REPORT.md). |
 | 9E | Minimal Creature Combat Driver | **complete**. Root `PHASE` = `9E`. Protocol **v15** unchanged. Report: [`PHASE_9E_REPORT.md`](PHASE_9E_REPORT.md). |
+| 10B | Target Acquisition & Approach | **complete**. Root `PHASE` = `10B`. Protocol **v15** unchanged. Report: [`PHASE_10B_REPORT.md`](PHASE_10B_REPORT.md). |
+| 10D-2 | Remote Death State | **GREEN (automated)**. Root `PHASE` remains `10B`; protocol **v15** unchanged. Report: [`PHASE_10D_2_REPORT.md`](PHASE_10D_2_REPORT.md). Stop before 10D-3. |
+| 10D-3 | Player Death Resolution Foundation | **GREEN (automated)**. Root `PHASE` remains `10B`; protocol **v15** unchanged. Report: [`PHASE_10D_3_REPORT.md`](PHASE_10D_3_REPORT.md). Stop before 10E. |
+| 10E | End-to-End PvE Proof | **complete**. Protocol **v15** unchanged. Report: [`PHASE_10E_REPORT.md`](PHASE_10E_REPORT.md). |
 | 8 | Content foundation | legacy numbering (superseded) |
 | 9 | Combat core | legacy numbering (superseded) |
 | 10 | Loot, inventory, and progression | legacy numbering (superseded) |

@@ -11,9 +11,9 @@ use purgatory_skeleton::{
 use crate::blend::{BlendError, blend_local_poses};
 use crate::clip::{AnimationClip, BoneTrack, ClipError, Interpolation, Keyframe, LoopPolicy};
 use crate::dev::{
-    A1_HEAD_CLIP_DURATION, A5_ATTACK_CLIP_DURATION, A5_HURT_CLIP_DURATION, a1_head_loop_clip,
-    a1_head_rotation_clip, a3_idle_clip, a3_move_clip, a4_fall_clip, a4_jump_clip, a5_attack_clip,
-    a5_hurt_clip, climb_back_clip,
+    A1_HEAD_CLIP_DURATION, A5_ATTACK_CLIP_DURATION, A5_HURT_CLIP_DURATION, DEAD_CLIP_DURATION,
+    a1_head_loop_clip, a1_head_rotation_clip, a3_idle_clip, a3_move_clip, a4_fall_clip,
+    a4_jump_clip, a5_attack_clip, a5_hurt_clip, climb_back_clip, dead_clip,
 };
 use crate::parse_animation_asset_v1;
 use crate::player::{AnimationPlayer, PlayerError};
@@ -701,6 +701,21 @@ fn a5_hurt_clip_preserves_unkeyed_bones_at_bind() {
     assert!(
         (local.get(UPPER_LEG_BACK).unwrap().rotation - bind_leg_back_rot).abs() < EPS,
         "unkeyed upper_leg_back must remain bind-rotation"
+    );
+}
+
+#[test]
+fn dead_clip_loads_authored_duration_and_once_policy() {
+    let clip = dead_clip();
+    assert_eq!(clip.duration(), DEAD_CLIP_DURATION);
+    assert_eq!(clip.loop_policy(), LoopPolicy::Once);
+
+    let def = humanoid_v0();
+    let mut local = LocalPose::from_bind(def);
+    sample(clip, DEAD_CLIP_DURATION * 0.5, &mut local).unwrap();
+    assert!(
+        local.get(PELVIS).unwrap().rotation > 0.5,
+        "authored dead clip must drive the pelvis rotation"
     );
 }
 

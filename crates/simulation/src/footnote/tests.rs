@@ -3,6 +3,7 @@
 use crate::body::PLAYER_HALF_EXTENTS;
 use crate::entity::EntityId;
 use crate::footnote::FootnoteConfig;
+use crate::health::Health;
 use crate::input::PlayerInput;
 use crate::platform::{
     FLOOR, ONEWAY_A, ONEWAY_A_POSITION, ONEWAY_B, PlatformKind, RAISED_PLATFORM,
@@ -469,6 +470,52 @@ fn no_input_does_not_move_horizontally_when_at_rest() {
     drive(&mut world, 30, DT_30, PlayerInput::idle());
     assert!((player(&world).position[0] - start_x).abs() < 1e-4);
     assert!(player(&world).grounded);
+}
+
+#[test]
+fn dead_player_cannot_move_or_jump_from_input() {
+    let mut world = World::dev_stage();
+    let id = world.player_id().expect("player");
+    assert!(world.set_health(
+        id,
+        Health {
+            current: 0.0,
+            max: 20.0,
+        },
+    ));
+    let start = player(&world).position;
+
+    world.tick(DT_30, PlayerInput::from_buttons(false, true, true));
+
+    let body = player(&world);
+    assert!((body.position[0] - start[0]).abs() < 1e-4);
+    assert_eq!(body.velocity[0], 0.0);
+    assert!(body.grounded, "dead player must not jump");
+}
+
+#[test]
+fn dead_player_keeps_world_physics_without_player_locomotion() {
+    let mut world = World::dev_stage();
+    let id = world.player_id().expect("player");
+    assert!(world.set_health(
+        id,
+        Health {
+            current: 0.0,
+            max: 20.0,
+        },
+    ));
+    set_player(&mut world, [-2.0, 2.0], [4.0, 0.0], false, None);
+
+    world.tick(DT_30, PlayerInput::from_buttons(false, true, false));
+
+    let body = player(&world);
+    assert!((body.position[0] + 2.0).abs() < 1e-4);
+    assert_eq!(body.velocity[0], 0.0);
+    assert!(
+        body.position[1] < 2.0,
+        "dead airborne player must continue falling under gravity"
+    );
+    assert!(body.velocity[1] < 0.0);
 }
 
 #[test]

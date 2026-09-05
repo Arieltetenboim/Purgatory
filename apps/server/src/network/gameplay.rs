@@ -84,6 +84,11 @@ enum InputGate {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlayerDeathResolutionPolicy {
+    Respawn,
+}
+
 impl InputGate {
     #[must_use]
     fn locked(reason: InputGateReason) -> Self {
@@ -1377,6 +1382,7 @@ impl GameplayOwner {
             // Phase 7.5A: fold begin_tick / gauge refresh into lifecycle leaf.
             let t0 = std::time::Instant::now();
             self.world.begin_tick(tick);
+            self.resolve_player_deaths(PlayerDeathResolutionPolicy::Respawn);
             self.load_pressure.maintain(&mut self.world, map_a, tick);
             if !self.load_pressure.is_active() {
                 self.maybe_arm_runtime_probe(tick);
@@ -1386,6 +1392,7 @@ impl GameplayOwner {
         } else {
             let services_t0 = std::time::Instant::now();
             self.world.begin_tick(tick);
+            self.resolve_player_deaths(PlayerDeathResolutionPolicy::Respawn);
             self.load_pressure.maintain(&mut self.world, map_a, tick);
             if !self.load_pressure.is_active() {
                 self.maybe_arm_runtime_probe(tick);
@@ -1421,8 +1428,14 @@ impl GameplayOwner {
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
-        self.world.tick_npcs(dt);
         if let Some(definition) = self.registry.ability_by_id(live_basic_strike_id()).cloned() {
+            let approach = match definition.delivery {
+                purgatory_simulation::AbilityDelivery::ForwardQuery {
+                    range, half_height, ..
+                } => Some((LIVE_COMBAT_CREATURE_AGGRO_RADIUS, range, half_height)),
+                purgatory_simulation::AbilityDelivery::SelectedEntity => None,
+            };
+            self.world.tick_npcs_with_approach(dt, approach);
             let creature_ids: Vec<_> = self
                 .world
                 .iter()
@@ -1439,6 +1452,8 @@ impl GameplayOwner {
             }
             self.world
                 .drive_npc_combat(&definition, LIVE_COMBAT_CREATURE_AGGRO_RADIUS);
+        } else {
+            self.world.tick_npcs(dt);
         }
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
         sample.npc_activity += npc_t0.elapsed();
@@ -1484,6 +1499,39 @@ impl GameplayOwner {
         sample.persistence_enqueue += Duration::from_micros(self.persist_enqueue_us);
         sample.total = tick_t0.elapsed();
         sample
+    }
+
+    /// Apply the current player death policy at the lifecycle boundary.
+    ///
+    /// Death remains visible for the tick in which Health reaches zero. The
+    /// next tick owns resolution, allowing replication to carry dead→alive
+    /// while keeping policy separate from the World restoration primitive.
+    fn resolve_player_deaths(&mut self, policy: PlayerDeathResolutionPolicy) {
+        let dead: Vec<(ConnectionId, EntityId)> = self
+            .bindings
+            .iter()
+            .filter_map(|(connection_id, binding)| {
+                self.world
+                    .health_of(binding.entity)
+                    .is_some_and(|health| health.is_dead())
+                    .then_some((*connection_id, binding.entity))
+            })
+            .collect();
+
+        for (connection_id, entity) in dead {
+            let restored = match policy {
+                PlayerDeathResolutionPolicy::Respawn => self.world.respawn_player_entity(entity),
+            };
+            if !restored {
+                continue;
+            }
+            if let Some(binding) = self.bindings.get_mut(&connection_id) {
+                // Rebase the authoritative input stream so commands sampled
+                // before death cannot move the newly restored player.
+                let _ = binding.input.bump_epoch();
+            }
+            println!("10D3_RESPAWN actor={entity} connection={connection_id}");
+        }
     }
 
     fn maybe_arm_runtime_probe(&mut self, tick: SimulationTick) {
@@ -5023,6 +5071,85 @@ mod tests {
     }
 
     #[test]
+    fn normal_session_pve_encounter_completes_both_directions_and_respawns() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let player = owner.entity_of(connection).expect("player");
+        let creature = owner
+            .world()
+            .iter()
+            .find(|&entity| {
+                owner
+                    .world()
+                    .npc_of(entity)
+                    .is_some_and(|npc| npc.type_token == LIVE_COMBAT_CREATURE_TYPE_TOKEN)
+            })
+            .expect("live combat creature");
+        let creature_x = owner.world().transform_of(creature).unwrap().position[0];
+        assert!(owner.set_player_x(connection, creature_x - 1.0));
+
+        // Player -> creature: use the normal network ability command path until
+        // the authoritative NPC death lifecycle is entered.
+        if let Some(mut npc) = owner.world().npc_of(creature) {
+            npc.active = false;
+            assert!(owner.world_mut().set_npc(creature, npc));
+        }
+        for seq in 1..=4 {
+            activate_strike(&mut owner, connection, seq, None);
+            tick_ability(&mut owner, 16);
+        }
+        assert_eq!(owner.world().health_of(creature).unwrap().current, 0.0);
+        assert!(owner.world().npc_of(creature).unwrap().dead_pending);
+
+        // The dead creature leaves, then the existing scheduled spawn path
+        // creates a fresh runtime entity at its authored home.
+        for _ in 0..32 {
+            owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        }
+        let respawned = owner
+            .world()
+            .iter()
+            .find(|&entity| {
+                owner
+                    .world()
+                    .npc_of(entity)
+                    .is_some_and(|npc| npc.type_token == LIVE_COMBAT_CREATURE_TYPE_TOKEN)
+            })
+            .expect("respawned creature");
+        assert_ne!(respawned, creature);
+        assert_eq!(
+            owner.world().health_of(respawned).unwrap().current,
+            purgatory_simulation::NPC_HEALTH_MAX
+        );
+
+        // Creature -> player: place the live player in range and let the
+        // authoritative NPC driver deliver damage.
+        let respawned_x = owner.world().transform_of(respawned).unwrap().position[0];
+        assert!(owner.set_player_x(connection, respawned_x - 1.0));
+        assert!(owner.world_mut().set_health(
+            player,
+            purgatory_simulation::Health {
+                current: 5.0,
+                max: PLAYER_HEALTH_MAX,
+            },
+        ));
+        for _ in 0..12 {
+            owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+            if owner.world().health_of(player).unwrap().is_dead() {
+                break;
+            }
+        }
+        assert!(owner.world().health_of(player).unwrap().is_dead());
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        assert_eq!(
+            owner.world().health_of(player),
+            Some(purgatory_simulation::Health::full(PLAYER_HEALTH_MAX))
+        );
+        assert!(owner.world().health_of(player).unwrap().is_alive());
+    }
+
+    #[test]
     fn ability_empty_swing_accepts_and_does_not_change_health() {
         let mut owner = GameplayOwner::new();
         let id = ConnectionId::from_raw(1);
@@ -5254,6 +5381,46 @@ mod tests {
         assert_eq!(
             owner.world().presentation_oneshot_of(actor).map(|o| o.kind),
             Some(PresentationOneShotKind::Attack)
+        );
+    }
+
+    #[test]
+    fn player_death_policy_respawns_same_entity_and_rebases_input() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let actor = owner.entity_of(connection).expect("actor");
+        let spawn = owner.world().transform_of(actor).expect("spawn").position;
+        owner.apply_input(command_update(
+            connection,
+            cmd(1, MoveAxis::Right, false, false),
+        ));
+        owner.world_mut().set_health(
+            actor,
+            Health {
+                current: 0.0,
+                max: PLAYER_HEALTH_MAX,
+            },
+        );
+
+        owner.resolve_player_deaths(PlayerDeathResolutionPolicy::Respawn);
+
+        assert_eq!(owner.entity_of(connection), Some(actor));
+        assert_eq!(owner.world().transform_of(actor).unwrap().position, spawn);
+        assert_eq!(
+            owner.world().health_of(actor).unwrap().current,
+            PLAYER_HEALTH_MAX
+        );
+        assert_eq!(owner.bindings[&connection].input.input_epoch, 1);
+        assert_eq!(owner.bindings[&connection].input.queued_len(), 0);
+        assert_eq!(
+            owner
+                .bindings
+                .get_mut(&connection)
+                .expect("binding")
+                .input
+                .take_for_tick(),
+            PlayerInput::idle()
         );
     }
 }

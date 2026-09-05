@@ -92,6 +92,31 @@ const INTERACTABLE_CAP_COLOR: [f32; 4] = [1.0, 0.86, 0.12, 1.0];
 const PORTAL_COLOR: [f32; 4] = [0.32, 0.92, 0.78, 1.0];
 /// Distinct purple for Phase 7.2 NPCs (not Interactable / Portal).
 const NPC_COLOR: [f32; 4] = [0.55, 0.35, 0.85, 1.0];
+const NPC_HURT_COLOR: [f32; 4] = [1.0, 0.72, 0.16, 1.0];
+const NPC_DEAD_COLOR: [f32; 4] = [0.38, 0.16, 0.18, 1.0];
+const NPC_RESPAWN_COLOR: [f32; 4] = [0.25, 0.95, 0.62, 1.0];
+const NPC_STATE_INDICATOR_COLOR: [f32; 4] = [1.0, 0.93, 0.35, 1.0];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NpcVisualCue {
+    Normal,
+    Hurt,
+    Dead,
+    Respawn,
+}
+
+#[must_use]
+fn npc_visual_cue(dead: bool, hurt: bool, respawning: bool) -> NpcVisualCue {
+    if dead {
+        NpcVisualCue::Dead
+    } else if hurt {
+        NpcVisualCue::Hurt
+    } else if respawning {
+        NpcVisualCue::Respawn
+    } else {
+        NpcVisualCue::Normal
+    }
+}
 /// D5 may pass a live IPC subscriber here. D1 has no IPC consumer.
 #[cfg(feature = "dev-diagnostics")]
 const DIAGNOSTICS_IPC_SUBSCRIBED: bool = false;
@@ -2015,7 +2040,7 @@ impl ClientApp {
             let replica_npc_quads = if hold_source || !replica_live {
                 Vec::new()
             } else {
-                npc_quads(&self.replica, &self.interp)
+                npc_quads(&self.replica, &self.interp, &self.presentation_oneshots)
             };
             let interactable_n = replica_interactable_quads.len() + replica_portal_quads.len();
             quads.extend(replica_interactable_quads);
@@ -2992,19 +3017,61 @@ fn scene_quads(
 fn npc_quads(
     replica: &crate::replica::ReplicatedWorld,
     interp: &crate::interp::InterpolationBuffer,
+    oneshots: &PresentationOneShotTable,
 ) -> Vec<DrawQuad> {
     let poses = interp.poses();
+    let server_tick = replica.last_server_tick();
     replica
         .iter()
         .filter(|entity| entity.kind == ReplicatedKind::Npc)
-        .map(|entity| {
+        .flat_map(|entity| {
             let position = poses
                 .iter()
                 .find(|p| p.entity_id == entity.entity_id)
                 .map(|p| p.position)
                 .unwrap_or(entity.position);
             let aabb = Aabb::new(position, [0.35, 0.55]);
-            aabb_quad(aabb, NPC_COLOR)
+            let key =
+                PresentationEntityKey::new(entity.entity_id.index, entity.entity_id.generation);
+            let dead = entity.health.is_some_and(|health| health.current <= 0.0);
+            let hurt = !dead
+                && oneshots.activity_of(key, server_tick)
+                    == Some(crate::character_presentation::PresentationActivity::Hurt);
+            let respawning = !dead
+                && replica.recent_lifecycle().any(|note| {
+                    note.entity_id == entity.entity_id
+                        && note.kind == ReplicatedKind::Npc
+                        && note.event == crate::replica::ReplicaLifecycleEvent::Entered
+                        && server_tick.saturating_sub(note.tick) <= 12
+                });
+            let cue = npc_visual_cue(dead, hurt, respawning);
+            let color = match cue {
+                NpcVisualCue::Dead => NPC_DEAD_COLOR,
+                NpcVisualCue::Hurt => NPC_HURT_COLOR,
+                NpcVisualCue::Respawn => NPC_RESPAWN_COLOR,
+                NpcVisualCue::Normal => NPC_COLOR,
+            };
+            let mut quads = vec![aabb_quad(aabb, color)];
+            if cue == NpcVisualCue::Hurt {
+                quads.push(DrawQuad::rect(
+                    [position[0], position[1] + 0.48],
+                    [0.55, 0.12],
+                    NPC_STATE_INDICATOR_COLOR,
+                ));
+            } else if cue == NpcVisualCue::Dead {
+                quads.push(DrawQuad::rect(
+                    [position[0], position[1] + 0.48],
+                    [0.55, 0.12],
+                    NPC_DEAD_COLOR,
+                ));
+            } else if cue == NpcVisualCue::Respawn {
+                quads.push(DrawQuad::triangle(
+                    [position[0], position[1] + 0.52],
+                    [0.5, 0.28],
+                    NPC_RESPAWN_COLOR,
+                ));
+            }
+            quads
         })
         .collect()
 }
@@ -3587,6 +3654,26 @@ mod tests {
         assert!(!purgatory_protocol::version().is_empty());
         assert!(!purgatory_content::version().is_empty());
         assert!(!purgatory_simulation::version().is_empty());
+    }
+
+    #[test]
+    fn npc_visual_cues_prioritize_lifecycle_states() {
+        assert_eq!(
+            super::npc_visual_cue(false, false, false),
+            super::NpcVisualCue::Normal
+        );
+        assert_eq!(
+            super::npc_visual_cue(false, true, false),
+            super::NpcVisualCue::Hurt
+        );
+        assert_eq!(
+            super::npc_visual_cue(false, false, true),
+            super::NpcVisualCue::Respawn
+        );
+        assert_eq!(
+            super::npc_visual_cue(true, true, true),
+            super::NpcVisualCue::Dead
+        );
     }
 
     #[test]

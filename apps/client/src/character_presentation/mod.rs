@@ -32,7 +32,7 @@ pub(crate) use adapters::{
 pub(crate) use collection::{CharacterPresentationSet, PresentationEntityKey};
 pub(crate) use debug_visual::presentation_debug_quads_with_headwear;
 pub(crate) use oneshot_table::PresentationOneShotTable;
-pub(crate) use state::PresentationView;
+pub(crate) use state::{PresentationActivity, PresentationView};
 
 #[cfg(test)]
 mod phase8e_tests;

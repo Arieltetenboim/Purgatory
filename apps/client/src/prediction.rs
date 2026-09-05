@@ -31,7 +31,7 @@
 use std::collections::VecDeque;
 
 use purgatory_protocol::{InputCommand, WireEntityId};
-use purgatory_simulation::{PlayerInput, TICK_DURATION, World};
+use purgatory_simulation::{Health, PlayerInput, TICK_DURATION, World};
 
 use crate::replica::{ReplicatedEntity, ReplicatedWorld};
 
@@ -426,6 +426,7 @@ impl LocalPrediction {
             self.clear();
             return;
         };
+        sync_local_health(world, auth.health);
         self.last_sync_hard_snap = false;
         self.last_correction_delta = [0.0, 0.0];
         let durable = replica.local_durable_updated();
@@ -967,6 +968,22 @@ fn restore_durable(world: &mut World, replica: &ReplicatedWorld) {
     );
 }
 
+fn sync_local_health(world: &mut World, health: Option<purgatory_protocol::ReplicatedHealth>) {
+    let Some(health) = health else {
+        return;
+    };
+    let Some(id) = world.player_id() else {
+        return;
+    };
+    world.set_health(
+        id,
+        Health {
+            current: health.current,
+            max: health.max,
+        },
+    );
+}
+
 fn player_input_from_command(cmd: InputCommand) -> PlayerInput {
     PlayerInput {
         move_axis: cmd.move_axis.to_i8(),
@@ -992,8 +1009,8 @@ mod tests {
     use crate::input::ActionState;
     use crate::interp::{InterpolationBuffer, PresentationPose};
     use purgatory_protocol::{
-        InputCommand, MoveAxis, PlatformSupportId, ReplicatedKind, ReplicationFrame,
-        SnapshotEntity, WorldSnapshot,
+        InputCommand, MoveAxis, PlatformSupportId, ReplicatedHealth, ReplicatedKind,
+        ReplicationFrame, ReplicationRecord, SnapshotEntity, WorldSnapshot,
     };
     use purgatory_simulation::{MAX_CATCH_UP_TICKS, SimulationClock};
     use std::time::Duration;
@@ -1059,6 +1076,38 @@ mod tests {
         let _ = replica.apply(snap(seq, u64::from(seq), id, pos, [0.0, 0.0]));
     }
 
+    fn dead_auth_frame(id: WireEntityId, pos: [f32; 2]) -> ReplicationFrame {
+        ReplicationFrame {
+            snapshot_sequence: 1,
+            server_tick: 1,
+            local_player_entity: id,
+            input_epoch: 0,
+            last_acknowledged_input_sequence: 0,
+            local_grounded: true,
+            local_grounded_on: PlatformSupportId(1),
+            local_ignored_platform: PlatformSupportId::NONE,
+            continuation_debt: 0,
+            local_map: 1,
+            local_channel: 0,
+            local_instance: 0,
+            observer_baseline_epoch: 1,
+            records: vec![ReplicationRecord::Enter {
+                entity: SnapshotEntity {
+                    entity_id: id,
+                    kind: ReplicatedKind::Player,
+                    position: pos,
+                    velocity: [0.0, 0.0],
+                },
+                health: Some(ReplicatedHealth {
+                    current: 0.0,
+                    max: 20.0,
+                }),
+                equipment: None,
+            }],
+            aoi_debug: None,
+        }
+    }
+
     #[test]
     fn prediction_starts_from_authoritative_local_state() {
         let mut world = World::footnote_test_stage();
@@ -1075,6 +1124,40 @@ mod tests {
         assert_eq!(
             local_presentation_pose(&pred, &world, &replica, true),
             Some([4.0, 3.0])
+        );
+    }
+
+    #[test]
+    fn dead_replica_health_blocks_local_predicted_locomotion() {
+        let mut world = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        assert!(matches!(
+            replica.apply_frame(dead_auth_frame(id, [0.0, 2.0])),
+            crate::replica::FrameDecision::Applied { .. }
+        ));
+        pred.sync_from_replica(&replica, &mut world, 1);
+        let start = world.player_body().expect("player").position;
+
+        for _ in 0..10 {
+            pred.tick(
+                &mut world,
+                PlayerInput::from_buttons_ext(false, true, true, false),
+                1,
+            );
+        }
+
+        let body = world.player_body().expect("player");
+        assert_eq!(
+            world.health_of(world.player_id().unwrap()).unwrap().current,
+            0.0
+        );
+        assert!((body.position[0] - start[0]).abs() < 1e-4);
+        assert_eq!(body.velocity[0], 0.0);
+        assert!(
+            body.velocity[1] <= 0.0,
+            "dead predicted player must not receive a jump impulse"
         );
     }
 

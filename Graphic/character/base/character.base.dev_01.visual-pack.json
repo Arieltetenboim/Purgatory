@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "kind": "purgatory_visual_pack",
+  "id": "character.base.dev_01",
+  "rig": "humanoid_v0",
+  "view": "side",
+  "authored_facing": "right",
+  "pixels_per_unit": 256,
+  "completeness": "partial_dev",
+  "atlas": {
+    "file": "character.base.dev_01.side.atlas.png",
+    "width": 512,
+    "height": 512,
+    "padding_px": 4
+  },
+  "visuals": [
+    {
+      "part": "upper_arm_back",
+      "bone": "upper_arm_back",
+      "visual_key": "character.base.dev_01.upper_arm_back.side",
+      "rect_px": [
+        86,
+        236,
+        46,
+        51
+      ],
+      "pivot_px": [
+        21.914373638648044,
+        -8.993649320699319
+      ]
+    },
+    {
+      "part": "lower_arm_back",
+      "bone": "lower_arm_back",
+      "visual_key": "character.base.dev_01.lower_arm_back.side",
+      "rect_px": [
+        437,
+        4,
+        37,
+        57
+      ],
+      "pivot_px": [
+        18.12095954486972,
+        -11.183580570569347
+      ]
+    },
+    {
+      "part": "hand_back",
+      "bone": "hand_back",
+      "visual_key": "character.base.dev_01.hand_back.side",
+      "rect_px": [
+        187,
+        236,
+        54,
+        49
+      ],
+      "pivot_px": [
+        27.42656372961261,
+        -12.189309587488196
+      ]
+    },
+    {
+      "part": "upper_leg_back",
+      "bone": "upper_leg_back",
+      "visual_key": "character.base.dev_01.upper_leg_back.side",
+      "rect_px": [
+        314,
+        4,
+        37,
+        58
+      ],
+      "pivot_px": [
+        17.938753820577233,
+        -13.40935003620632
+      ]
+    },
+    {
+      "part": "lower_leg_back",
+      "bone": "lower_leg_back",
+      "visual_key": "character.base.dev_01.lower_leg_back.side",
+      "rect_px": [
+        4,
+        236,
+        37,
+        57
+      ],
+      "pivot_px": [
+        18.24723909713134,
+        -10.33620949041881
+      ]
+    },
+    {
+      "part": "torso",
+      "bone": "torso",
+      "visual_key": "character.base.dev_01.torso.side",
+      "rect_px": [
+        209,
+        4,
+        101,
+        99
+      ],
+      "pivot_px": [
+        49.18110342283694,
+        11.082455122678539
+      ]
+    },
+    {
+      "part": "upper_leg_front",
+      "bone": "upper_leg_front",
+      "visual_key": "character.base.dev_01.upper_leg_front.side",
+      "rect_px": [
+        355,
+        4,
+        37,
+        58
+      ],
+      "pivot_px": [
+        19.061246179422767,
+        -13.40935003620632
+      ]
+    },
+    {
+      "part": "lower_leg_front",
+      "bone": "lower_leg_front",
+      "visual_key": "character.base.dev_01.lower_leg_front.side",
+      "rect_px": [
+        396,
+        4,
+        37,
+        58
+      ],
+      "pivot_px": [
+        18.75276090286866,
+        -10.517546499022615
+      ]
+    },
+    {
+      "part": "head",
+      "bone": "head",
+      "visual_key": "character.base.dev_01.head.side",
+      "rect_px": [
+        4,
+        4,
+        201,
+        228
+      ],
+      "pivot_px": [
+        118.45176899334916,
+        226.12907667075393
+      ]
+    },
+    {
+      "part": "upper_arm_front",
+      "bone": "upper_arm_front",
+      "visual_key": "character.base.dev_01.upper_arm_front.side",
+      "rect_px": [
+        136,
+        236,
+        47,
+        51
+      ],
+      "pivot_px": [
+        24.60922693442481,
+        -8.993649320699319
+      ]
+    },
+    {
+      "part": "lower_arm_front",
+      "bone": "lower_arm_front",
+      "visual_key": "character.base.dev_01.lower_arm_front.side",
+      "rect_px": [
+        45,
+        236,
+        37,
+        57
+      ],
+      "pivot_px": [
+        18.87904045513028,
+        -11.183580570569347
+      ]
+    },
+    {
+      "part": "hand_front",
+      "bone": "hand_front",
+      "visual_key": "character.base.dev_01.hand_front.side",
+      "rect_px": [
+        245,
+        236,
+        54,
+        49
+      ],
+      "pivot_px": [
+        26.57343627038739,
+        -12.189309587488196
+      ]
+    }
+  ],
+  "base_appearance": {
+    "upper_arm_back": "character.base.dev_01.upper_arm_back.side",
+    "lower_arm_back": "character.base.dev_01.lower_arm_back.side",
+    "hand_back": "character.base.dev_01.hand_back.side",
+    "upper_leg_back": "character.base.dev_01.upper_leg_back.side",
+    "lower_leg_back": "character.base.dev_01.lower_leg_back.side",
+    "torso": "character.base.dev_01.torso.side",
+    "upper_leg_front": "character.base.dev_01.upper_leg_front.side",
+    "lower_leg_front": "character.base.dev_01.lower_leg_front.side",
+    "head": "character.base.dev_01.head.side",
+    "upper_arm_front": "character.base.dev_01.upper_arm_front.side",
+    "lower_arm_front": "character.base.dev_01.lower_arm_front.side",
+    "hand_front": "character.base.dev_01.hand_front.side"
+  },
+  "draw_order": [
+    "upper_arm_back",
+    "lower_arm_back",
+    "hand_back",
+    "upper_leg_back",
+    "lower_leg_back",
+    "torso",
+    "upper_leg_front",
+    "lower_leg_front",
+    "head",
+    "upper_arm_front",
+    "lower_arm_front",
+    "hand_front"
+  ]
+}

@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use purgatory_animation::{
     A4_TRANSITION_DURATION, AnimationClip, AnimationPlayer, DepthPose, a1_head_rotation_clip,
     a3_idle_clip, a3_move_clip, a4_fall_clip, a4_jump_clip, a5_attack_clip, a5_hurt_clip,
-    apply_depth_projection, blend_depth_poses, blend_local_poses, climb_back_clip, sample,
-    sample_depth,
+    apply_depth_projection, blend_depth_poses, blend_local_poses, climb_back_clip, dead_clip,
+    sample, sample_depth,
 };
 use purgatory_content::ContentRegistry;
 use purgatory_skeleton::{LocalPose, ROOT, WorldPose, evaluate, humanoid_v0};
@@ -39,7 +39,10 @@ pub fn clip_for_playback_activity(activity: PresentationActivity) -> &'static An
         PresentationActivity::Jump => a4_jump_clip(),
         PresentationActivity::Fall => a4_fall_clip(),
         PresentationActivity::Attack => a5_attack_clip(),
-        PresentationActivity::Hurt | PresentationActivity::Dead => a5_hurt_clip(),
+        PresentationActivity::Hurt => a5_hurt_clip(),
+        // Dead is persistent semantically, while its authored one-shot holds
+        // the final pose after completion.
+        PresentationActivity::Dead => dead_clip(),
         PresentationActivity::ClimbBack => climb_back_clip(),
         PresentationActivity::Idle => a3_idle_clip(),
     }

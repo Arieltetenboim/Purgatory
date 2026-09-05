@@ -37,6 +37,8 @@ mod motion_debug;
 mod movement;
 mod npc;
 #[cfg(test)]
+mod phase10d3_tests;
+#[cfg(test)]
 mod phase47_tests;
 #[cfg(test)]
 mod phase60_tests;

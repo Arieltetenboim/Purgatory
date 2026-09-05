@@ -6,6 +6,7 @@
 use crate::body::PLAYER_HALF_EXTENTS;
 use crate::entity::EntityId;
 use crate::footnote::ContactEvent;
+use crate::health::Health;
 use crate::platform::{FLOOR, FLOOR_POSITION};
 use crate::stage::{FOOTNOTE_SPAWN_X, P0, P0_POSITION};
 use crate::transform::Transform;
@@ -33,10 +34,36 @@ impl World {
         }
     }
 
+    /// Development reset retained for the existing local/server DEV command.
     pub fn reset_player_entity(&mut self, id: EntityId) {
-        if self.get_player(id).is_none() {
-            return;
+        let _ = self.restore_player_entity(id, true, false);
+    }
+
+    /// Restore a dead player without changing its runtime identity.
+    ///
+    /// Revive intentionally does not move the player. Respawn adds the
+    /// authoritative entry placement below; both use the same reset path.
+    pub fn revive_player_entity(&mut self, id: EntityId) -> bool {
+        self.restore_player_entity(id, false, true)
+    }
+
+    /// Restore a dead player through normal respawn semantics.
+    pub fn respawn_player_entity(&mut self, id: EntityId) -> bool {
+        self.restore_player_entity(id, true, true)
+    }
+
+    fn restore_player_entity(
+        &mut self,
+        id: EntityId,
+        place_at_entry: bool,
+        require_dead: bool,
+    ) -> bool {
+        let health = self.health_of(id);
+        if (require_dead && !health.is_some_and(Health::is_dead)) || self.get_player(id).is_none() {
+            return false;
         }
+        self.clear_restoration_runtime(id);
+        let previous = self.transform_of(id).map(|transform| transform.position);
         // Prefer Phase-4.6 P0 floor when present; else compact FLOOR.
         let floor = self
             .iter_platforms()
@@ -64,22 +91,33 @@ impl World {
             let top = FLOOR.top_surface(Transform::from_position(FLOOR_POSITION));
             ([-2.0, top + PLAYER_HALF_EXTENTS[1]], false, None)
         };
-        let previous = if let Some((transform, player)) = self.player_parts_mut_for(id) {
-            let previous = transform.position;
+        if place_at_entry {
+            let Some((transform, player)) = self.player_parts_mut_for(id) else {
+                return false;
+            };
             transform.position = position;
-            player.velocity = [0.0, 0.0];
             player.grounded = grounded;
             player.grounded_on = grounded_on;
+        }
+        if let Some((_, player)) = self.player_parts_mut_for(id) {
+            player.velocity = [0.0, 0.0];
             player.ignored_platform = None;
             player.last_contact = ContactEvent::None;
             player.half_extents = PLAYER_HALF_EXTENTS;
-            Some(previous)
         } else {
-            None
-        };
+            return false;
+        }
+        if let Some(health) = health.filter(|health| health.is_dead()) {
+            self.set_health(id, Health::full(health.max));
+        }
+        self.clear_presentation_oneshot(id);
         if let Some(previous) = previous {
             self.refresh_spatial(id, previous);
         }
+        // Velocity is part of the replicated transform domain even when the
+        // respawn position equals the prior position.
+        self.bump_transform_rev(id);
+        true
     }
 }
 
@@ -135,5 +173,26 @@ mod tests {
         world.apply_debug_action(DebugAction::ResetPlayer);
         assert_eq!(world.player_id(), Some(id));
         assert!(world.contains(id));
+    }
+
+    #[test]
+    fn revive_restores_health_without_respawn_placement() {
+        let mut world = World::dev_stage();
+        let id = world.player_id().expect("player");
+        let before = world.transform_of(id).expect("transform").position;
+        let position = [before[0] + 3.0, before[1] + 2.0];
+        world.set_transform(id, Transform::from_position(position));
+        world.set_health(
+            id,
+            Health {
+                current: 0.0,
+                max: 20.0,
+            },
+        );
+
+        assert!(world.revive_player_entity(id));
+        assert_eq!(world.transform_of(id).unwrap().position, position);
+        assert_eq!(world.health_of(id).unwrap(), Health::full(20.0));
+        assert!(!world.revive_player_entity(id));
     }
 }

@@ -1,13 +1,15 @@
 //! Headless Phase 8D proofs. No wgpu / window.
 
-use purgatory_animation::a5_attack_clip;
+use purgatory_animation::{DEAD_CLIP_DURATION, a5_attack_clip, dead_clip};
 use purgatory_common::ContentId;
 use purgatory_content::{BoneTarget, ContentRegistry};
 use purgatory_protocol::PROTOCOL_VERSION;
 use purgatory_simulation::EquipmentSlot;
 use purgatory_skeleton::{HEAD, ROOT, TORSO, humanoid_v0_bone_by_label};
 
-use super::adapters::{from_local, from_remote};
+use super::adapters::{
+    from_local, from_local_with_presentation, from_remote, from_remote_with_presentation,
+};
 use super::bone_map::BoneTargetMap;
 use super::collection::clip_for_playback_activity;
 use super::skeleton_input::{prepared_from_state, skeleton_input_from_state, skeleton_root};
@@ -350,6 +352,70 @@ fn a3_idle_selects_idle_clip() {
         clip_for_playback_activity(entry.playback_activity()) as *const _,
         purgatory_animation::a3_idle_clip() as *const _
     );
+}
+
+#[test]
+fn dead_selects_dead_clip_instead_of_hurt() {
+    let key = PresentationEntityKey::new(6, 1);
+    let mut set = CharacterPresentationSet::new();
+    let dead = from_local_with_presentation(
+        local_idle(EquipmentView::Absent),
+        Facing::Right,
+        Some(PresentationActivity::Hurt),
+        true,
+    );
+
+    set.sync([(key, dead)], &ContentRegistry::new(), 0.1);
+    let first = set.get(key).expect("dead entry");
+    assert_eq!(first.state().activity, PresentationActivity::Dead);
+    assert_eq!(first.playback_activity(), PresentationActivity::Dead);
+    assert_eq!(
+        clip_for_playback_activity(PresentationActivity::Dead) as *const _,
+        dead_clip() as *const _
+    );
+    assert_eq!(dead_clip().duration(), DEAD_CLIP_DURATION);
+    let first_t = first.selected_sample_t();
+
+    set.sync([(key, dead)], &ContentRegistry::new(), 0.1);
+    let second = set.get(key).expect("dead entry");
+    assert_eq!(second.playback_activity(), PresentationActivity::Dead);
+    assert!(second.selected_sample_t() > first_t);
+
+    set.sync([(key, dead)], &ContentRegistry::new(), 1.0);
+    let final_entry = set.get(key).expect("dead entry");
+    assert_eq!(final_entry.selected_sample_t(), DEAD_CLIP_DURATION);
+}
+
+#[test]
+fn remote_dead_health_resolves_dead_activity_and_clip() {
+    let key = PresentationEntityKey::new(7, 1);
+    let mut set = CharacterPresentationSet::new();
+    let dead = from_remote_with_presentation(
+        remote_idle(EquipmentView::Absent),
+        Facing::Right,
+        Some(PresentationActivity::Hurt),
+        true,
+    );
+
+    set.sync([(key, dead)], &ContentRegistry::new(), 0.1);
+    let entry = set.get(key).expect("remote dead entry");
+    assert_eq!(entry.state().activity, PresentationActivity::Dead);
+    assert_eq!(entry.playback_activity(), PresentationActivity::Dead);
+    assert_eq!(
+        clip_for_playback_activity(entry.playback_activity()) as *const _,
+        dead_clip() as *const _
+    );
+
+    let alive = from_remote_with_presentation(
+        remote_idle(EquipmentView::Absent),
+        Facing::Right,
+        None,
+        false,
+    );
+    set.sync([(key, alive)], &ContentRegistry::new(), 0.1);
+    let restored = set.get(key).expect("restored remote entry");
+    assert_ne!(restored.state().activity, PresentationActivity::Dead);
+    assert_eq!(restored.state().activity, PresentationActivity::Idle);
 }
 
 #[test]

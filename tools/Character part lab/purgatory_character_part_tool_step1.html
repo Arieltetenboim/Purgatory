@@ -1,0 +1,2816 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PURGATORY Character Part Authoring Tool — Step 1</title>
+<style>
+  :root{
+    --bg:#14171b;
+    --panel:#1c2127;
+    --panel2:#232a32;
+    --text:#eef3f7;
+    --muted:#9ba8b5;
+    --line:#36404a;
+    --accent:#65d4c7;
+    --warn:#ffcc66;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:Inter,Segoe UI,Arial,sans-serif}
+  body{display:grid;grid-template-rows:auto 1fr}
+  header{
+    display:flex;align-items:center;justify-content:space-between;gap:20px;
+    padding:12px 16px;border-bottom:1px solid var(--line);background:#101318
+  }
+  header h1{font-size:16px;margin:0;font-weight:700}
+  header .sub{font-size:12px;color:var(--muted)}
+  main{
+    min-height:0;display:grid;grid-template-columns:310px 1fr 300px;gap:0
+  }
+  aside{
+    background:var(--panel);border-right:1px solid var(--line);padding:14px;overflow:auto
+  }
+  aside.right{border-right:0;border-left:1px solid var(--line)}
+  .section{margin-bottom:20px}
+  .section h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 9px}
+  .drop{
+    display:block;width:100%;max-width:100%;overflow:hidden;
+    border:1px dashed #596675;border-radius:10px;padding:14px 10px;text-align:center;background:var(--panel2);
+    color:var(--muted);cursor:pointer
+  }
+  .drop strong{display:block;color:var(--text);font-size:12px;margin-bottom:3px}
+  .drop .small{display:block;white-space:normal}
+  .drop.drag{border-color:var(--accent);color:var(--text)}
+  input[type=file]{display:none}
+  button{
+    border:1px solid var(--line);background:#2a323b;color:var(--text);border-radius:7px;
+    padding:8px 10px;cursor:pointer
+  }
+  button:hover{background:#333d48}
+  button.primary{border-color:#4bb8ab}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;align-items:center;gap:8px;margin:8px 0}
+  .row label{font-size:12px;color:var(--muted);min-width:80px}
+  .row input[type=range]{flex:1}
+  .value{font-variant-numeric:tabular-nums;font-size:12px;min-width:35px;text-align:right}
+  .swatch{width:26px;height:26px;border:1px solid #65717e;border-radius:5px;background:#000}
+  .hint{font-size:12px;color:var(--muted);line-height:1.45}
+  .status{font-size:12px;padding:8px;border-radius:7px;background:#151a20;border:1px solid var(--line)}
+  .workspace{position:relative;min-width:0;min-height:0;background:#0d1014;overflow:hidden}
+  #canvas{
+    display:block;width:100%;height:100%;cursor:crosshair;
+    background:
+      linear-gradient(45deg,#171c22 25%,transparent 25%),
+      linear-gradient(-45deg,#171c22 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#171c22 75%),
+      linear-gradient(-45deg,transparent 75%,#171c22 75%);
+    background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0;
+  }
+  .toolbar{
+    position:absolute;left:10px;top:10px;display:flex;gap:6px;padding:6px;
+    border:1px solid var(--line);border-radius:8px;background:rgba(22,27,33,.9);backdrop-filter:blur(6px)
+  }
+  .badge{font-size:11px;color:var(--muted);padding:8px}
+  .parts{display:flex;flex-direction:column;gap:6px}
+  .part{
+    display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:center;
+    padding:8px;border:1px solid var(--line);border-radius:7px;background:#171c22;
+    cursor:pointer
+  }
+  .part:hover{border-color:#566473}
+  .part.active{border-color:var(--warn);box-shadow:0 0 0 1px rgba(255,204,102,.18) inset}
+  .part input{margin:0}
+  .part .name{font-size:12px}
+  .part .meta{font-size:10px;color:var(--muted)}
+  .part .assign{
+    grid-column:1 / -1;display:grid;grid-template-columns:70px 1fr;gap:8px;align-items:center
+  }
+  select{
+    width:100%;min-width:0;background:#222a32;color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:6px;font-size:11px
+  }
+  .coverage{display:flex;flex-direction:column;gap:5px}
+  .coverageRow{
+    display:grid;grid-template-columns:16px 1fr auto;gap:7px;align-items:center;
+    padding:5px 6px;border:1px solid var(--line);border-radius:6px;background:#171c22;font-size:11px
+  }
+  .coverageRow .dot{width:9px;height:9px;border-radius:50%;background:#596675}
+  .coverageRow.ok .dot{background:var(--accent)}
+  .coverageRow .count{color:var(--muted);font-variant-numeric:tabular-nums}
+  .selectedCard{
+    border:1px solid var(--line);border-radius:8px;background:#171c22;padding:9px;font-size:12px
+  }
+  .selectedCard b{color:var(--warn)}
+  .pivotPanel{display:flex;flex-direction:column;gap:8px}
+  .pivotActions{display:flex;gap:6px}
+  .pivotActions button{flex:1}
+  .pivotStatus{
+    padding:7px 8px;border:1px solid var(--line);border-radius:6px;background:#151a20;
+    font-size:11px;color:var(--muted);line-height:1.4
+  }
+  .pivotStatus.ready{color:var(--text);border-color:#4d675f}
+  .modeOn{border-color:var(--warn)!important;background:#4b3a18!important}
+  .pairBox{
+    border:1px solid var(--line);border-radius:8px;background:#171c22;padding:8px;
+    display:flex;flex-direction:column;gap:7px
+  }
+  .pairTitle{font-size:11px;color:var(--muted)}
+  .pairTitle b{color:var(--text)}
+  .pairStats{font-size:11px;color:var(--muted);line-height:1.45}
+  .pairBtns{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .pairBtns button{font-size:11px;padding:7px}
+  .viewToggle{display:flex;gap:4px}
+  .viewToggle button.active{border-color:var(--accent);background:#29403e}
+  .assemblyControls{
+    position:absolute;right:10px;top:10px;display:flex;gap:6px;padding:6px;
+    border:1px solid var(--line);border-radius:8px;background:rgba(22,27,33,.9);backdrop-filter:blur(6px)
+  }
+  .assemblyInfo{
+    position:absolute;left:10px;bottom:10px;max-width:520px;padding:8px 10px;
+    border:1px solid var(--line);border-radius:8px;background:rgba(22,27,33,.92);
+    color:var(--muted);font-size:11px;line-height:1.4;pointer-events:none
+  }
+  .assemblyInfo b{color:var(--text)}
+  .precisionBar{
+    position:absolute;right:10px;top:58px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+    max-width:660px;padding:6px;border:1px solid var(--line);border-radius:8px;
+    background:rgba(22,27,33,.92);backdrop-filter:blur(6px)
+  }
+  .precisionBar label{font-size:11px;color:var(--muted)}
+  .precisionBar select{width:auto;min-width:72px;padding:6px}
+  .precisionBar button{font-size:11px;padding:7px 9px}
+  .precisionBar .sep{width:1px;height:26px;background:var(--line)}
+  .motionOn{border-color:var(--warn)!important;background:#4b3a18!important}
+  .coordReadout{
+    min-width:150px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;
+    font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;background:#151a20
+  }
+  .exportPanel{display:flex;flex-direction:column;gap:8px}
+  .exportPanel input[type=text], .exportPanel input[type=number]{
+    width:100%;background:#222a32;color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:7px;font-size:11px
+  }
+  .exportGrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .exportGrid button{font-size:11px}
+  .exportGrid .wide{grid-column:1 / -1}
+  .exportStatus{
+    border:1px solid var(--line);border-radius:7px;background:#151a20;padding:8px;
+    font-size:11px;line-height:1.45;color:var(--muted)
+  }
+  .exportStatus.ready{border-color:#4d675f;color:var(--text)}
+  .exportStatus.warn{border-color:#6b5933;color:#e9d6a8}
+  .projectPanel{display:flex;flex-direction:column;gap:8px}
+  .projectGrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .projectGrid button{font-size:11px}
+  .projectStatus{
+    border:1px solid var(--line);border-radius:7px;background:#151a20;padding:8px;
+    font-size:11px;line-height:1.45;color:var(--muted)
+  }
+  .projectStatus.ok{border-color:#4d675f;color:var(--text)}
+  #projectFileInput{display:none}
+  .runtimePanel{display:flex;flex-direction:column;gap:8px}
+  .runtimeFiles{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .runtimeFiles button{font-size:11px}
+  .runtimeFiles .wide{grid-column:1 / -1}
+  .runtimeStatus{
+    border:1px solid var(--line);border-radius:7px;background:#151a20;padding:8px;
+    font-size:11px;line-height:1.5;color:var(--muted)
+  }
+  .runtimeStatus.ok{border-color:#4d675f;color:var(--text)}
+  .runtimeStatus.warn{border-color:#6b5933;color:#e9d6a8}
+  .runtimeRow{display:grid;grid-template-columns:92px 1fr;gap:7px;align-items:center}
+  .runtimeRow label{font-size:11px;color:var(--muted)}
+  .runtimeRow select{font-size:11px;padding:6px}
+  #runtimeAtlasInput,#runtimeManifestInput,#runtimeRigInput{display:none}
+  .runtimeLegend{
+    position:absolute;left:10px;bottom:10px;max-width:560px;padding:8px 10px;
+    border:1px solid var(--line);border-radius:8px;background:rgba(22,27,33,.92);
+    color:var(--muted);font-size:11px;line-height:1.45;pointer-events:none
+  }
+  .runtimeLegend b{color:var(--text)}
+  .empty{font-size:12px;color:var(--muted);padding:10px 0}
+  .small{font-size:11px;color:var(--muted)}
+  .kbd{border:1px solid #4c5865;border-bottom-width:2px;border-radius:4px;padding:1px 5px;background:#20262d;color:#dce4eb}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>PURGATORY — Character Part Authoring Tool</h1>
+    <div class="sub">Step 7 · runtime round-trip preview</div>
+  </div>
+  <div class="sub">Local-only · no upload · no game dependency</div>
+</header>
+
+<main>
+  <aside>
+    <div class="section">
+      <h2>1. Source image</h2>
+      <label class="drop" id="dropZone" for="fileInput">
+        <strong>Load PNG / JPG / WebP</strong>
+        <span class="small">Drop image here or click to browse</span>
+      </label>
+      <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" />
+      <div class="status" id="imageStatus" style="margin-top:8px">No image loaded.</div>
+    </div>
+
+    <div class="section">
+      <h2>2. Background removal</h2>
+      <div class="row">
+        <label>Sample</label>
+        <div class="swatch" id="swatch"></div>
+        <button id="sampleBtn" disabled>Pick on canvas</button>
+      </div>
+      <div class="row">
+        <label>Tolerance</label>
+        <input id="tol" type="range" min="0" max="180" step="1" value="28">
+        <div class="value" id="tolVal">28</div>
+      </div>
+      <div class="row">
+        <label>Edge cleanup</label>
+        <input id="edgeCleanup" type="range" min="0" max="100" step="1" value="42">
+        <div class="value" id="edgeCleanupVal">42</div>
+      </div>
+      <div class="row">
+        <label>Edge reach</label>
+        <input id="edgeReach" type="range" min="1" max="4" step="1" value="2">
+        <div class="value" id="edgeReachVal">2</div>
+      </div>
+      <div class="row">
+        <label>Alpha cut</label>
+        <input id="alphaCut" type="range" min="0" max="255" step="1" value="10">
+        <div class="value" id="alphaVal">10</div>
+      </div>
+      <div class="row">
+        <label>Connected</label>
+        <input id="connectedOnly" type="checkbox" checked>
+        <div class="small">protect similar colors inside parts</div>
+      </div>
+      <div class="row">
+        <button class="primary" id="applyBtn" disabled>Apply mask</button>
+        <button id="restoreBtn" disabled>Restore</button>
+      </div>
+      <div class="hint">
+        <b>Connected</b> removes only background connected to the sampled point.
+        <b>Edge cleanup</b> removes anti-aliased background fringe without raising the main tolerance.
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>3. Detect parts</h2>
+      <div class="row">
+        <label>Min pixels</label>
+        <input id="minPixels" type="range" min="5" max="3000" step="5" value="40">
+        <div class="value" id="minPixelsVal">40</div>
+      </div>
+      <div class="row">
+        <button class="primary" id="detectBtn" disabled>Detect islands</button>
+        <button id="clearBoxesBtn" disabled>Clear boxes</button>
+      </div>
+      <div class="hint">
+        Connected transparent-separated regions are detected as candidate body parts. This is geometry only — anatomy is assigned later.
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Controls</h2>
+      <div class="hint">
+        <span class="kbd">Wheel</span> zoom · <span class="kbd">Space + drag</span> pan · <span class="kbd">F</span> fit image
+      </div>
+    </div>
+  </aside>
+
+  <section class="workspace" id="workspace">
+    <canvas id="canvas"></canvas>
+    <div class="toolbar">
+      <div class="viewToggle">
+        <button id="sourceViewBtn" class="active">Source</button>
+        <button id="assemblyViewBtn" disabled>Assembly</button>
+        <button id="runtimeViewBtn" disabled>Runtime</button>
+      </div>
+      <button id="fitBtn" disabled>Fit</button>
+      <button id="zoom100Btn" disabled>100%</button>
+      <div class="badge" id="zoomBadge">100%</div>
+    </div>
+    <div class="assemblyControls" id="assemblyControls" style="display:none">
+      <button id="autoAssembleBtn">Auto layout</button>
+      <button id="resetAssemblyBtn">Reset layout</button>
+      <button id="toggleSkeletonBtn">Skeleton: on</button>
+    </div>
+    <div class="precisionBar" id="precisionBar" style="display:none">
+      <label for="snapSelect">Snap</label>
+      <select id="snapSelect">
+        <option value="0">Off</option>
+        <option value="1">1 px</option>
+        <option value="2" selected>2 px</option>
+        <option value="4">4 px</option>
+      </select>
+      <button id="focusPartBtn">Focus selected</button>
+      <button id="ghostPairBtn">Ghost pair: off</button>
+      <span class="sep"></span>
+      <button id="undoBtn" disabled>Undo</button>
+      <button id="redoBtn" disabled>Redo</button>
+      <span class="sep"></span>
+      <button id="motionBtn">Motion test: off</button>
+      <select id="motionSpeedSelect" aria-label="Motion speed">
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+      </select>
+      <div class="coordReadout" id="coordReadout">No part selected</div>
+    </div>
+    <div class="assemblyInfo" id="assemblyInfo" style="display:none">
+      <b>Assembly:</b> yellow/turquoise markers are bone origins, purple is Pelvis, green diamond is Root/Ground.
+      Drag parts or markers; Arrow keys nudge the selected part. <b>Motion test</b> never edits the rest pose.
+    </div>
+    <div class="runtimeLegend" id="runtimeLegend" style="display:none">
+      <b>Runtime round-trip:</b> this view draws only the loaded Atlas PNG + Runtime JSON.
+      Bone placement comes from the selected Humanoid v0 bind source — never from hidden editor assembly state.
+    </div>
+  </section>
+
+  <aside class="right">
+    <div class="section">
+      <h2>Pivot editor</h2>
+      <div class="pivotPanel">
+        <select id="pivotPartSelect" disabled>
+          <option value="">Assign a body part first</option>
+        </select>
+        <div class="pivotActions">
+          <button class="primary" id="setPivotBtn" disabled>Set pivot on canvas</button>
+          <button id="clearPivotBtn" disabled>Clear</button>
+        </div>
+        <div id="pivotStatus" class="pivotStatus">
+          Select an assigned body part.
+        </div>
+        <div id="pivotGuide" class="hint">
+          The pivot is the virtual joint/origin used when the part rotates. It may sit in transparent space.
+        </div>
+        <div id="pairAssist" class="pairBox" style="display:none">
+          <div id="pairTitle" class="pairTitle"></div>
+          <div id="pairStats" class="pairStats"></div>
+          <div class="pairBtns">
+            <button id="goPairBtn">Go to counterpart</button>
+            <button id="copyPivotBtn">Mirror pivot → pair</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Selected candidate</h2>
+      <div id="selectedInfo" class="selectedCard">
+        Click a box on the canvas or a candidate below.
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Detected candidates</h2>
+      <div id="parts" class="parts">
+        <div class="empty">No parts detected yet.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Humanoid v0 coverage</h2>
+      <div id="coverage" class="coverage"></div>
+      <div class="hint" style="margin-top:8px">
+        Multiple islands may belong to the same body part. That is intentional and useful for disconnected highlights/details.
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Runtime round-trip</h2>
+      <div class="runtimePanel">
+        <div class="runtimeFiles">
+          <button id="loadRuntimeAtlasBtn">Load Atlas PNG</button>
+          <button id="loadRuntimeManifestBtn">Load Runtime JSON</button>
+          <button id="loadRuntimeRigBtn" class="wide">Load Rig Calibration (optional)</button>
+        </div>
+        <input id="runtimeAtlasInput" type="file" accept="image/png">
+        <input id="runtimeManifestInput" type="file" accept=".json,application/json">
+        <input id="runtimeRigInput" type="file" accept=".json,application/json">
+        <div class="runtimeRow">
+          <label for="runtimeBindSelect">Bind source</label>
+          <select id="runtimeBindSelect">
+            <option value="engine">Engine Humanoid v0</option>
+            <option value="calibration" disabled>Loaded calibration</option>
+          </select>
+        </div>
+        <div id="runtimeStatus" class="runtimeStatus">
+          Load the exported Atlas PNG and Runtime JSON.
+        </div>
+        <div class="hint">
+          PASS means the exported files are internally usable. Compare Engine bind vs Calibration visually before wiring the Rust asset registry.
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Project</h2>
+      <div class="projectPanel">
+        <div id="projectStatus" class="projectStatus">
+          Save the editor state to continue later.
+        </div>
+        <div class="projectGrid">
+          <button id="saveProjectBtn">Save project</button>
+          <button id="loadProjectBtn">Load project</button>
+        </div>
+        <input id="projectFileInput" type="file" accept=".json,application/json">
+        <div class="hint">
+          Project files are editor-only. They embed both source and cleaned images so the session can be reconstructed without the original PNG beside it.
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Runtime export</h2>
+      <div class="exportPanel">
+        <div>
+          <div class="small">Asset ID</div>
+          <input id="assetIdInput" type="text" value="character.base.dev_01" spellcheck="false">
+        </div>
+        <div>
+          <div class="small">Pixels per presentation unit</div>
+          <input id="ppuInput" type="number" min="16" max="2048" step="1" value="256">
+        </div>
+        <div id="exportStatus" class="exportStatus">Assign body parts and pivots to prepare export.</div>
+        <div class="exportGrid">
+          <button id="downloadAtlasBtn" disabled>Atlas PNG</button>
+          <button id="downloadRuntimeBtn" disabled>Runtime JSON</button>
+          <button id="downloadRigBtn" class="wide" disabled>Rig calibration JSON</button>
+        </div>
+        <div class="hint">
+          Runtime JSON contains sprite regions + pivots only. Rig calibration is a separate authoring artifact and must not override the skeleton per frame.
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Step 7 goal</h2>
+      <div class="hint">
+        Prove the engine-facing files are self-contained: atlas region + pivot + logical visual key, posed by Humanoid v0 rather than editor state.
+      </div>
+    </div>
+  </aside>
+</main>
+
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently:true });
+  const workspace = document.getElementById('workspace');
+  const fileInput = document.getElementById('fileInput');
+  const dropZone = document.getElementById('dropZone');
+  const imageStatus = document.getElementById('imageStatus');
+  const sampleBtn = document.getElementById('sampleBtn');
+  const swatch = document.getElementById('swatch');
+  const tol = document.getElementById('tol');
+  const tolVal = document.getElementById('tolVal');
+  const edgeCleanup = document.getElementById('edgeCleanup');
+  const edgeCleanupVal = document.getElementById('edgeCleanupVal');
+  const edgeReach = document.getElementById('edgeReach');
+  const edgeReachVal = document.getElementById('edgeReachVal');
+  const connectedOnly = document.getElementById('connectedOnly');
+  const alphaCut = document.getElementById('alphaCut');
+  const alphaVal = document.getElementById('alphaVal');
+  const applyBtn = document.getElementById('applyBtn');
+  const restoreBtn = document.getElementById('restoreBtn');
+  const minPixels = document.getElementById('minPixels');
+  const minPixelsVal = document.getElementById('minPixelsVal');
+  const detectBtn = document.getElementById('detectBtn');
+  const clearBoxesBtn = document.getElementById('clearBoxesBtn');
+  const fitBtn = document.getElementById('fitBtn');
+  const zoom100Btn = document.getElementById('zoom100Btn');
+  const zoomBadge = document.getElementById('zoomBadge');
+  const partsEl = document.getElementById('parts');
+  const selectedInfo = document.getElementById('selectedInfo');
+  const coverageEl = document.getElementById('coverage');
+  const pivotPartSelect = document.getElementById('pivotPartSelect');
+  const setPivotBtn = document.getElementById('setPivotBtn');
+  const clearPivotBtn = document.getElementById('clearPivotBtn');
+  const pivotStatus = document.getElementById('pivotStatus');
+  const pivotGuide = document.getElementById('pivotGuide');
+  const pairAssist = document.getElementById('pairAssist');
+  const pairTitle = document.getElementById('pairTitle');
+  const pairStats = document.getElementById('pairStats');
+  const goPairBtn = document.getElementById('goPairBtn');
+  const copyPivotBtn = document.getElementById('copyPivotBtn');
+  const sourceViewBtn = document.getElementById('sourceViewBtn');
+  const assemblyViewBtn = document.getElementById('assemblyViewBtn');
+  const runtimeViewBtn = document.getElementById('runtimeViewBtn');
+  const assemblyControls = document.getElementById('assemblyControls');
+  const assemblyInfo = document.getElementById('assemblyInfo');
+  const autoAssembleBtn = document.getElementById('autoAssembleBtn');
+  const resetAssemblyBtn = document.getElementById('resetAssemblyBtn');
+  const toggleSkeletonBtn = document.getElementById('toggleSkeletonBtn');
+  const precisionBar = document.getElementById('precisionBar');
+  const snapSelect = document.getElementById('snapSelect');
+  const focusPartBtn = document.getElementById('focusPartBtn');
+  const ghostPairBtn = document.getElementById('ghostPairBtn');
+  const undoBtn = document.getElementById('undoBtn');
+  const redoBtn = document.getElementById('redoBtn');
+  const motionBtn = document.getElementById('motionBtn');
+  const motionSpeedSelect = document.getElementById('motionSpeedSelect');
+  const coordReadout = document.getElementById('coordReadout');
+  const assetIdInput = document.getElementById('assetIdInput');
+  const ppuInput = document.getElementById('ppuInput');
+  const exportStatus = document.getElementById('exportStatus');
+  const downloadAtlasBtn = document.getElementById('downloadAtlasBtn');
+  const downloadRuntimeBtn = document.getElementById('downloadRuntimeBtn');
+  const downloadRigBtn = document.getElementById('downloadRigBtn');
+  const saveProjectBtn = document.getElementById('saveProjectBtn');
+  const loadProjectBtn = document.getElementById('loadProjectBtn');
+  const projectFileInput = document.getElementById('projectFileInput');
+  const projectStatus = document.getElementById('projectStatus');
+  const runtimeLegend = document.getElementById('runtimeLegend');
+  const loadRuntimeAtlasBtn = document.getElementById('loadRuntimeAtlasBtn');
+  const loadRuntimeManifestBtn = document.getElementById('loadRuntimeManifestBtn');
+  const loadRuntimeRigBtn = document.getElementById('loadRuntimeRigBtn');
+  const runtimeAtlasInput = document.getElementById('runtimeAtlasInput');
+  const runtimeManifestInput = document.getElementById('runtimeManifestInput');
+  const runtimeRigInput = document.getElementById('runtimeRigInput');
+  const runtimeBindSelect = document.getElementById('runtimeBindSelect');
+  const runtimeStatus = document.getElementById('runtimeStatus');
+
+  let sourceCanvas = document.createElement('canvas');
+  let sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently:true });
+  let workCanvas = document.createElement('canvas');
+  let workCtx = workCanvas.getContext('2d', { willReadFrequently:true });
+
+  let hasImage = false;
+  let sourceFileName = '';
+  let sampleMode = false;
+  let bgColor = {r:0,g:0,b:0};
+  let bgSeed = null;
+  let scale = 1;
+  let offsetX = 0, offsetY = 0;
+  let panning = false, spaceDown = false;
+  let panStart = null;
+  let components = [];
+  let selected = new Set();
+  let activeCandidate = null;
+  let pivotMode = false;
+  let pivotPartId = '';
+  const pivots = new Map(); // partId -> source-image {x,y}
+
+  let viewMode = 'source';
+  let assemblyInitialized = false;
+  let assemblyShowSkeleton = true;
+  let assemblyRoot = {x:0,y:0};            // presentation/world anchor in authoring px
+  let assemblyPelvis = {x:0,y:0};          // animated body root in assembly-space px
+  const assemblyPos = new Map();            // partId -> bone-origin assembly-space {x,y}
+  let assemblyDrag = null;                   // {partId|null,pelvis,startX,startY,originX,originY}
+  let assemblyGhostPair = false;
+  let motionRunning = false;
+  let motionTime = 0;
+  let motionLastTs = 0;
+  let motionRaf = 0;
+  const undoStack = [];
+  const redoStack = [];
+  const HISTORY_LIMIT = 40;
+
+  let runtimeAtlasImage = null;
+  let runtimeAtlasFileName = '';
+  let runtimeManifest = null;
+  let runtimeManifestFileName = '';
+  let runtimeCalibration = null;
+  let runtimeCalibrationFileName = '';
+
+  // Current Humanoid v0 bind locals from purgatory-skeleton.
+  // Runtime coordinates: +X right, +Y up, presentation units.
+  const ENGINE_BIND_V0 = {
+    root:               {parent:null,              t:[ 0.00,  0.00]},
+    pelvis:             {parent:'root',            t:[ 0.00,  0.42]},
+    torso:              {parent:'pelvis',          t:[ 0.00,  0.30]},
+    head:               {parent:'torso',           t:[ 0.07,  0.24]},
+    upper_arm_front:    {parent:'torso',           t:[-0.10,  0.14]},
+    lower_arm_front:    {parent:'upper_arm_front', t:[ 0.00, -0.22]},
+    hand_front:         {parent:'lower_arm_front', t:[ 0.00, -0.10]},
+    upper_arm_back:     {parent:'torso',           t:[ 0.08,  0.14]},
+    lower_arm_back:     {parent:'upper_arm_back',  t:[ 0.00, -0.22]},
+    hand_back:          {parent:'lower_arm_back',  t:[ 0.00, -0.10]},
+    upper_leg_front:    {parent:'pelvis',          t:[-0.06, -0.04]},
+    lower_leg_front:    {parent:'upper_leg_front', t:[ 0.00, -0.20]},
+    foot_front:         {parent:'lower_leg_front', t:[ 0.00, -0.18]},
+    upper_leg_back:     {parent:'pelvis',          t:[ 0.04, -0.04]},
+    lower_leg_back:     {parent:'upper_leg_back',  t:[ 0.00, -0.20]},
+    foot_back:          {parent:'lower_leg_back',  t:[ 0.00, -0.18]}
+  };
+
+  // Authoring vocabulary. These are visual body-part identities, not extra pose nodes.
+  // Multiple detected islands may share one identity.
+  const BODY_PARTS = [
+    ['head','Head'],
+    ['hair_back','Hair Back'],
+    ['hair_front','Hair Front'],
+    ['torso','Torso'],
+    ['upper_arm_back','Upper Arm Back'],
+    ['lower_arm_back','Lower Arm Back'],
+    ['hand_back','Hand Back'],
+    ['upper_arm_front','Upper Arm Front'],
+    ['lower_arm_front','Lower Arm Front'],
+    ['hand_front','Hand Front'],
+    ['upper_leg_back','Upper Leg Back'],
+    ['lower_leg_back','Lower Leg Back'],
+    ['foot_back','Foot Back'],
+    ['upper_leg_front','Upper Leg Front'],
+    ['lower_leg_front','Lower Leg Front'],
+    ['foot_front','Foot Front']
+  ];
+
+  const REQUIRED_BASE = new Set([
+    'head','torso',
+    'upper_arm_back','lower_arm_back','hand_back',
+    'upper_arm_front','lower_arm_front','hand_front',
+    'upper_leg_back','lower_leg_back','foot_back',
+    'upper_leg_front','lower_leg_front','foot_front'
+  ]);
+
+  function pivotGuideFor(id){
+    if(id==='torso') return 'Torso: place the origin around the pelvis / waist connection.';
+    if(id==='head') return 'Head: place the head origin where the head attaches above the torso; it may be in transparent space.';
+    if(id==='hair_front'||id==='hair_back') return 'Hair: use the same conceptual Head origin, positioned relative to this hair artwork.';
+    if(id.startsWith('upper_arm_')) return 'Upper arm: Shoulder joint.';
+    if(id.startsWith('lower_arm_')) return 'Lower arm: Elbow joint.';
+    if(id.startsWith('hand_')) return 'Hand: Wrist joint.';
+    if(id.startsWith('upper_leg_')) return 'Upper leg: Hip joint.';
+    if(id.startsWith('lower_leg_')) return 'Lower leg: Knee joint.';
+    if(id.startsWith('foot_')) return 'Foot: Ankle joint.';
+    return 'Place the virtual joint/origin used when this part rotates.';
+  }
+
+  const PAIRS = {
+    upper_arm_front:'upper_arm_back', upper_arm_back:'upper_arm_front',
+    lower_arm_front:'lower_arm_back', lower_arm_back:'lower_arm_front',
+    hand_front:'hand_back', hand_back:'hand_front',
+    upper_leg_front:'upper_leg_back', upper_leg_back:'upper_leg_front',
+    lower_leg_front:'lower_leg_back', lower_leg_back:'lower_leg_front',
+    foot_front:'foot_back', foot_back:'foot_front',
+    hair_front:'hair_back', hair_back:'hair_front'
+  };
+
+  // Visual parts mapped onto the existing Humanoid v0 bone hierarchy.
+  // Pelvis is virtual in this authoring tool because there is no required pelvis sprite.
+  const PARENT = {
+    torso:'pelvis',
+    head:'torso',
+    hair_back:'head',
+    hair_front:'head',
+    upper_arm_back:'torso',
+    lower_arm_back:'upper_arm_back',
+    hand_back:'lower_arm_back',
+    upper_arm_front:'torso',
+    lower_arm_front:'upper_arm_front',
+    hand_front:'lower_arm_front',
+    upper_leg_back:'pelvis',
+    lower_leg_back:'upper_leg_back',
+    foot_back:'lower_leg_back',
+    upper_leg_front:'pelvis',
+    lower_leg_front:'upper_leg_front',
+    foot_front:'lower_leg_front'
+  };
+
+  const ASSEMBLY_DRAW_ORDER = [
+    'hair_back',
+    'upper_arm_back','lower_arm_back','hand_back',
+    'upper_leg_back','lower_leg_back','foot_back',
+    'torso',
+    'upper_leg_front','lower_leg_front','foot_front',
+    'head',
+    'upper_arm_front','lower_arm_front','hand_front',
+    'hair_front'
+  ];
+
+  function assignedPartIds(){
+    return [...new Set(components.map(c=>c.partId).filter(Boolean))];
+  }
+
+  function assemblyReady(){
+    return assignedPartIds().some(id=>pivots.has(id));
+  }
+
+  function snapValue(v){
+    const s=Number(snapSelect?.value||0);
+    return s>0 ? Math.round(v/s)*s : v;
+  }
+
+  function cloneAssemblyState(){
+    return {
+      root:{x:assemblyRoot.x,y:assemblyRoot.y},
+      pelvis:{x:assemblyPelvis.x,y:assemblyPelvis.y},
+      pos:[...assemblyPos.entries()].map(([id,p])=>[id,{x:p.x,y:p.y}])
+    };
+  }
+
+  function restoreAssemblyState(state){
+    if(!state) return;
+    assemblyRoot=state.root ? {x:state.root.x,y:state.root.y} : {x:0,y:0};
+    assemblyPelvis={x:state.pelvis.x,y:state.pelvis.y};
+    assemblyPos.clear();
+    state.pos.forEach(([id,p])=>assemblyPos.set(id,{x:p.x,y:p.y}));
+    assemblyInitialized=true;
+    updateHistoryButtons();
+    updateCoordReadout();
+    renderExportStatus();
+    redraw();
+  }
+
+  function pushHistory(){
+    undoStack.push(cloneAssemblyState());
+    if(undoStack.length>HISTORY_LIMIT) undoStack.shift();
+    redoStack.length=0;
+    updateHistoryButtons();
+  }
+
+  function undoAssembly(){
+    if(!undoStack.length) return;
+    redoStack.push(cloneAssemblyState());
+    restoreAssemblyState(undoStack.pop());
+  }
+
+  function redoAssembly(){
+    if(!redoStack.length) return;
+    undoStack.push(cloneAssemblyState());
+    restoreAssemblyState(redoStack.pop());
+  }
+
+  function updateHistoryButtons(){
+    if(!undoBtn||!redoBtn) return;
+    undoBtn.disabled=!undoStack.length;
+    redoBtn.disabled=!redoStack.length;
+  }
+
+  function updateCoordReadout(){
+    if(!coordReadout) return;
+    if(viewMode!=='assembly'){
+      coordReadout.textContent='Assembly only';
+      return;
+    }
+    const p=pivotPartId ? assemblyPos.get(pivotPartId) : null;
+    if(!p){
+      coordReadout.textContent='No part selected';
+      return;
+    }
+    coordReadout.textContent=`${partLabel(pivotPartId)} · x ${p.x.toFixed(1)} · y ${p.y.toFixed(1)}`;
+  }
+
+  function nudgeSelected(dx,dy){
+    if(viewMode!=='assembly'||motionRunning) return;
+    const p=pivotPartId ? assemblyPos.get(pivotPartId) : null;
+    if(!p) return;
+    pushHistory();
+    p.x=snapValue(p.x+dx);
+    p.y=snapValue(p.y+dy);
+    updateCoordReadout();
+    redraw();
+  }
+
+  function componentsForPart(id){
+    return components.filter(c=>c.partId===id);
+  }
+
+  function unionBoundsForPart(id){
+    const list=componentsForPart(id);
+    if(!list.length) return null;
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+    for(const c of list){
+      minX=Math.min(minX,c.minX); minY=Math.min(minY,c.minY);
+      maxX=Math.max(maxX,c.maxX); maxY=Math.max(maxY,c.maxY);
+    }
+    return {minX,minY,maxX,maxY,w:maxX-minX+1,h:maxY-minY+1};
+  }
+
+  function normalizedPivot(id){
+    const b=unionBoundsForPart(id), p=pivots.get(id);
+    if(!b||!p) return null;
+    return {u:(p.x-b.minX)/b.w, v:(p.y-b.minY)/b.h};
+  }
+
+  function setPivotFromNormalized(id,n,{mirrorX=false}={}){
+    const b=unionBoundsForPart(id);
+    if(!b||!n) return false;
+    const u = mirrorX ? (1 - n.u) : n.u;
+    pivots.set(id,{x:b.minX+u*b.w,y:b.minY+n.v*b.h});
+    return true;
+  }
+
+  function resizeCanvas(){
+    const r = workspace.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(r.width*dpr));
+    canvas.height = Math.max(1, Math.round(r.height*dpr));
+    canvas.style.width = r.width+'px';
+    canvas.style.height = r.height+'px';
+    redraw();
+  }
+  new ResizeObserver(resizeCanvas).observe(workspace);
+
+  function setEnabled(v){
+    [sampleBtn,applyBtn,restoreBtn,detectBtn,fitBtn,zoom100Btn].forEach(b=>b.disabled=!v);
+  }
+
+  function loadFile(file){
+    if(!file) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      sourceCanvas.width = workCanvas.width = img.naturalWidth;
+      sourceCanvas.height = workCanvas.height = img.naturalHeight;
+      sourceCtx.clearRect(0,0,img.naturalWidth,img.naturalHeight);
+      workCtx.clearRect(0,0,img.naturalWidth,img.naturalHeight);
+      sourceCtx.drawImage(img,0,0);
+      workCtx.drawImage(img,0,0);
+      URL.revokeObjectURL(url);
+      hasImage = true;
+      components = [];
+      selected.clear();
+      activeCandidate = null;
+      pivots.clear();
+      pivotMode = false;
+      pivotPartId = '';
+      renderParts();
+      sourceFileName = file.name;
+      imageStatus.textContent = `${file.name} · ${img.naturalWidth} × ${img.naturalHeight}`;
+      setEnabled(true);
+      setProjectStatus('New source loaded. Save a project to preserve this session.');
+      fitImage();
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      imageStatus.textContent = 'Could not load image.';
+    };
+    img.src = url;
+  }
+
+  fileInput.addEventListener('change', e=>loadFile(e.target.files[0]));
+  ['dragenter','dragover'].forEach(ev=>dropZone.addEventListener(ev,e=>{
+    e.preventDefault(); dropZone.classList.add('drag');
+  }));
+  ['dragleave','drop'].forEach(ev=>dropZone.addEventListener(ev,e=>{
+    e.preventDefault(); dropZone.classList.remove('drag');
+  }));
+  dropZone.addEventListener('drop',e=>loadFile(e.dataTransfer.files[0]));
+
+  tol.addEventListener('input',()=>tolVal.textContent=tol.value);
+  edgeCleanup.addEventListener('input',()=>edgeCleanupVal.textContent=edgeCleanup.value);
+  edgeReach.addEventListener('input',()=>edgeReachVal.textContent=edgeReach.value);
+  alphaCut.addEventListener('input',()=>alphaVal.textContent=alphaCut.value);
+  minPixels.addEventListener('input',()=>minPixelsVal.textContent=minPixels.value);
+
+  pivotPartSelect.addEventListener('change',()=>{
+    pivotPartId=pivotPartSelect.value;
+    pivotMode=false;
+    setPivotBtn.classList.remove('modeOn');
+    renderPivotEditor();
+    updateViewAvailability();
+    redraw();
+  });
+
+  setPivotBtn.addEventListener('click',()=>{
+    if(!pivotPartId) return;
+    pivotMode=!pivotMode;
+    setPivotBtn.classList.toggle('modeOn',pivotMode);
+    setPivotBtn.textContent=pivotMode ? 'Click canvas…' : 'Set pivot on canvas';
+    canvas.style.cursor=pivotMode ? 'crosshair' : 'crosshair';
+    renderPivotEditor();
+  });
+
+  clearPivotBtn.addEventListener('click',()=>{
+    if(!pivotPartId) return;
+    pivots.delete(pivotPartId);
+    assemblyInitialized=false;
+    assemblyPos.clear();
+    pivotMode=false;
+    setPivotBtn.classList.remove('modeOn');
+    setPivotBtn.textContent='Set pivot on canvas';
+    renderPivotEditor();
+    renderCoverage();
+    renderSelectedInfo();
+    updateViewAvailability();
+    redraw();
+  });
+
+  goPairBtn.addEventListener('click',()=>{
+    const pair=PAIRS[pivotPartId];
+    if(!pair || !unionBoundsForPart(pair)) return;
+    pivotPartId=pair;
+    pivotMode=false;
+    setPivotBtn.classList.remove('modeOn');
+    setPivotBtn.textContent='Set pivot on canvas';
+    renderPivotEditor();
+    redraw();
+  });
+
+  copyPivotBtn.addEventListener('click',()=>{
+    const pair=PAIRS[pivotPartId];
+    if(!pair) return;
+    const n=normalizedPivot(pivotPartId);
+    if(!n || !unionBoundsForPart(pair)) return;
+    // Front/Back counterpart artwork is authored as a visual mirror pair.
+    // Preserve vertical placement, but mirror the normalized X coordinate.
+    setPivotFromNormalized(pair,n,{mirrorX:true});
+    assemblyInitialized=false;
+    assemblyPos.clear();
+    undoStack.length=0; redoStack.length=0; updateHistoryButtons();
+    renderPivotEditor();
+    renderCoverage();
+    renderSelectedInfo();
+    updateViewAvailability();
+    redraw();
+  });
+
+
+  function runtimeReady(){
+    return Boolean(runtimeAtlasImage && runtimeManifest && runtimeManifest.kind==='purgatory_visual_pack');
+  }
+
+  function setRuntimeStatus(text,kind=''){
+    runtimeStatus.className='runtimeStatus'+(kind?` ${kind}`:'');
+    runtimeStatus.innerHTML=text;
+  }
+
+  function validateRuntimeFiles(){
+    const issues=[];
+    if(!runtimeManifest) issues.push('Runtime JSON not loaded');
+    if(!runtimeAtlasImage) issues.push('Atlas PNG not loaded');
+
+    if(runtimeManifest){
+      if(runtimeManifest.kind!=='purgatory_visual_pack') issues.push('JSON kind is not purgatory_visual_pack');
+      if(runtimeManifest.schema_version!==1) issues.push('Unsupported Runtime JSON schema');
+      if(!Array.isArray(runtimeManifest.visuals)||!runtimeManifest.visuals.length) issues.push('No visuals in manifest');
+      const ppu=Number(runtimeManifest.pixels_per_unit);
+      if(!Number.isFinite(ppu)||ppu<=0) issues.push('Invalid pixels_per_unit');
+
+      if(runtimeAtlasImage && runtimeManifest.atlas){
+        if(Number(runtimeManifest.atlas.width)!==runtimeAtlasImage.naturalWidth ||
+           Number(runtimeManifest.atlas.height)!==runtimeAtlasImage.naturalHeight){
+          issues.push(`Atlas size mismatch: JSON ${runtimeManifest.atlas.width}×${runtimeManifest.atlas.height}, PNG ${runtimeAtlasImage.naturalWidth}×${runtimeAtlasImage.naturalHeight}`);
+        }
+      }
+
+      if(runtimeAtlasImage && Array.isArray(runtimeManifest.visuals)){
+        for(const v of runtimeManifest.visuals){
+          const r=v.rect_px;
+          const p=v.pivot_px;
+          if(!Array.isArray(r)||r.length!==4||r.some(n=>!Number.isFinite(Number(n)))){
+            issues.push(`Invalid rect for ${v.part||v.visual_key||'visual'}`); continue;
+          }
+          if(!Array.isArray(p)||p.length!==2||p.some(n=>!Number.isFinite(Number(n)))){
+            issues.push(`Invalid pivot for ${v.part||v.visual_key||'visual'}`);
+          }
+          const [x,y,w,h]=r.map(Number);
+          if(w<=0||h<=0||x<0||y<0||
+             x+w>runtimeAtlasImage.naturalWidth||y+h>runtimeAtlasImage.naturalHeight){
+            issues.push(`Atlas rect outside PNG for ${v.part||v.visual_key||'visual'}`);
+          }
+        }
+      }
+    }
+    return issues;
+  }
+
+  function renderRuntimeStatus(){
+    const issues=validateRuntimeFiles();
+    runtimeViewBtn.disabled=!runtimeReady();
+
+    const atlasLine=runtimeAtlasImage
+      ? `Atlas: ${runtimeAtlasFileName} · ${runtimeAtlasImage.naturalWidth}×${runtimeAtlasImage.naturalHeight}`
+      : 'Atlas: —';
+    const manifestLine=runtimeManifest
+      ? `Manifest: ${runtimeManifestFileName} · ${runtimeManifest.visuals?.length||0} visuals`
+      : 'Manifest: —';
+    const rigLine=runtimeCalibration
+      ? `Calibration: ${runtimeCalibrationFileName}`
+      : 'Calibration: not loaded';
+
+    if(issues.length){
+      setRuntimeStatus(`${atlasLine}<br>${manifestLine}<br>${rigLine}<br><b>${issues.length} issue(s):</b> ${issues.slice(0,3).join(' · ')}`,'warn');
+    }else if(runtimeReady()){
+      setRuntimeStatus(`PASS · exported files are internally usable<br>${atlasLine}<br>${manifestLine}<br>${rigLine}`,'ok');
+    }else{
+      setRuntimeStatus(`${atlasLine}<br>${manifestLine}<br>${rigLine}`);
+    }
+
+    if(!runtimeReady() && viewMode==='runtime') setViewMode(hasImage?'source':'runtime');
+  }
+
+  function runtimeBindLocals(){
+    if(runtimeBindSelect.value==='calibration' && runtimeCalibration?.rest_local){
+      const out={
+        root:{parent:null,t:[0,0]}
+      };
+      for(const [id,v] of Object.entries(runtimeCalibration.rest_local)){
+        if(!v || !Array.isArray(v.translation) || v.translation.length!==2) continue;
+        out[id]={
+          parent:v.parent||null,
+          t:[Number(v.translation[0]),Number(v.translation[1])]
+        };
+      }
+      return out;
+    }
+    return ENGINE_BIND_V0;
+  }
+
+  function runtimeWorldUnits(){
+    const locals=runtimeBindLocals();
+    const world=new Map();
+    world.set('root',{x:0,y:0,angle:0});
+
+    const resolve=(id)=>{
+      if(world.has(id)) return world.get(id);
+      const def=locals[id];
+      if(!def) return null;
+      const parent=def.parent ? resolve(def.parent) : {x:0,y:0,angle:0};
+      if(!parent) return null;
+      const p={x:parent.x+Number(def.t?.[0]||0),y:parent.y+Number(def.t?.[1]||0),angle:0};
+      world.set(id,p); return p;
+    };
+
+    Object.keys(locals).forEach(resolve);
+    return world;
+  }
+
+  function runtimeVisualList(){
+    if(!runtimeManifest?.visuals) return [];
+    const byPart=new Map(runtimeManifest.visuals.map(v=>[v.part,v]));
+    const order=Array.isArray(runtimeManifest.draw_order) && runtimeManifest.draw_order.length
+      ? runtimeManifest.draw_order
+      : runtimeManifest.visuals.map(v=>v.part);
+    return order.map(id=>byPart.get(id)).filter(Boolean);
+  }
+
+  function runtimeVisualBone(v){
+    if(v?.bone) return v.bone;
+    if(v?.part==='hair_front'||v?.part==='hair_back') return 'head';
+    return v?.part||'';
+  }
+
+  function runtimePreviewBounds(){
+    if(!runtimeReady()) return {minX:-100,maxX:100,minY:-100,maxY:100};
+    const world=runtimeWorldUnits();
+    const ppu=Number(runtimeManifest.pixels_per_unit)||256;
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+
+    for(const v of runtimeVisualList()){
+      const b=world.get(runtimeVisualBone(v));
+      if(!b) continue;
+      const [,,w,h]=v.rect_px.map(Number);
+      const [px,py]=v.pivot_px.map(Number);
+      const bx=b.x*ppu;
+      const by=-b.y*ppu; // runtime +Y up -> canvas +Y down
+      minX=Math.min(minX,bx-px); maxX=Math.max(maxX,bx-px+w);
+      minY=Math.min(minY,by-py); maxY=Math.max(maxY,by-py+h);
+    }
+
+    if(!Number.isFinite(minX)) return {minX:-100,maxX:100,minY:-100,maxY:100};
+    // Include Root/Ground.
+    minX=Math.min(minX,0);maxX=Math.max(maxX,0);
+    minY=Math.min(minY,0);maxY=Math.max(maxY,0);
+    return {minX,maxX,minY,maxY};
+  }
+
+  function fitRuntime(){
+    if(!runtimeReady()) return;
+    const b=runtimePreviewBounds();
+    const cssW=workspace.clientWidth,cssH=workspace.clientHeight;
+    const margin=70;
+    const bw=Math.max(1,b.maxX-b.minX),bh=Math.max(1,b.maxY-b.minY);
+    scale=Math.max(0.05,Math.min(6,Math.min((cssW-margin*2)/bw,(cssH-margin*2)/bh)));
+    const cx=(b.minX+b.maxX)/2,cy=(b.minY+b.maxY)/2;
+    offsetX=cssW/2-cx*scale;
+    offsetY=cssH/2-cy*scale;
+    redraw();
+  }
+
+  function drawRuntime(ctx){
+    if(!runtimeReady()) return;
+    const world=runtimeWorldUnits();
+    const ppu=Number(runtimeManifest.pixels_per_unit)||256;
+
+    for(const v of runtimeVisualList()){
+      const bone=world.get(runtimeVisualBone(v));
+      if(!bone) continue;
+      const [x,y,w,h]=v.rect_px.map(Number);
+      const [px,py]=v.pivot_px.map(Number);
+      const bx=offsetX+(bone.x*ppu)*scale;
+      const by=offsetY+(-bone.y*ppu)*scale;
+
+      ctx.drawImage(runtimeAtlasImage,
+        x,y,w,h,
+        bx-px*scale,by-py*scale,w*scale,h*scale);
+    }
+
+    // Runtime bone origins.
+    ctx.save();
+    ctx.lineWidth=1.2;
+    ctx.strokeStyle='rgba(101,212,199,.62)';
+    for(const [id,p] of world.entries()){
+      if(id==='root') continue;
+      const x=offsetX+p.x*ppu*scale;
+      const y=offsetY-p.y*ppu*scale;
+      ctx.beginPath();
+      ctx.moveTo(x-4,y);ctx.lineTo(x+4,y);
+      ctx.moveTo(x,y-4);ctx.lineTo(x,y+4);
+      ctx.stroke();
+    }
+
+    // Root/Ground.
+    const rx=offsetX,ry=offsetY;
+    ctx.strokeStyle='rgba(110,220,160,.9)';
+    ctx.lineWidth=1.8;
+    ctx.beginPath();ctx.moveTo(rx-20,ry);ctx.lineTo(rx+20,ry);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(rx,ry-7);ctx.lineTo(rx+7,ry);ctx.lineTo(rx,ry+7);ctx.lineTo(rx-7,ry);ctx.closePath();ctx.stroke();
+    ctx.font='11px Segoe UI, Arial';
+    ctx.fillStyle='#b9f1cf';
+    ctx.fillText(runtimeBindSelect.value==='calibration'?'Calibration Root':'Engine Root',rx+10,ry+16);
+    ctx.restore();
+  }
+
+  async function loadRuntimeAtlasFile(file){
+    const url=URL.createObjectURL(file);
+    try{
+      const img=await new Promise((resolve,reject)=>{
+        const el=new Image();
+        el.onload=()=>resolve(el);
+        el.onerror=()=>reject(new Error('Could not decode Atlas PNG.'));
+        el.src=url;
+      });
+      runtimeAtlasImage=img;
+      runtimeAtlasFileName=file.name;
+    }finally{
+      URL.revokeObjectURL(url);
+    }
+    renderRuntimeStatus();
+    if(runtimeReady()) { setViewMode('runtime'); fitRuntime(); }
+  }
+
+  async function loadRuntimeManifestFile(file){
+    const data=JSON.parse(await file.text());
+    if(data?.kind!=='purgatory_visual_pack') throw new Error('Not a purgatory_visual_pack Runtime JSON.');
+    runtimeManifest=data;
+    runtimeManifestFileName=file.name;
+    renderRuntimeStatus();
+    if(runtimeReady()) { setViewMode('runtime'); fitRuntime(); }
+  }
+
+  async function loadRuntimeRigFile(file){
+    const data=JSON.parse(await file.text());
+    if(data?.kind!=='purgatory_humanoid_rest_calibration') throw new Error('Not a Humanoid rest calibration JSON.');
+    runtimeCalibration=data;
+    runtimeCalibrationFileName=file.name;
+    runtimeBindSelect.options[1].disabled=false;
+    runtimeBindSelect.value='calibration';
+    renderRuntimeStatus();
+    if(viewMode==='runtime') fitRuntime();
+  }
+
+  loadRuntimeAtlasBtn.addEventListener('click',()=>runtimeAtlasInput.click());
+  loadRuntimeManifestBtn.addEventListener('click',()=>runtimeManifestInput.click());
+  loadRuntimeRigBtn.addEventListener('click',()=>runtimeRigInput.click());
+
+  runtimeAtlasInput.addEventListener('change',async()=>{
+    const file=runtimeAtlasInput.files?.[0];runtimeAtlasInput.value='';
+    if(!file)return;
+    try{await loadRuntimeAtlasFile(file);}
+    catch(err){setRuntimeStatus(`Atlas load failed: ${err?.message||String(err)}`,'warn');}
+  });
+
+  runtimeManifestInput.addEventListener('change',async()=>{
+    const file=runtimeManifestInput.files?.[0];runtimeManifestInput.value='';
+    if(!file)return;
+    try{await loadRuntimeManifestFile(file);}
+    catch(err){setRuntimeStatus(`Runtime JSON load failed: ${err?.message||String(err)}`,'warn');}
+  });
+
+  runtimeRigInput.addEventListener('change',async()=>{
+    const file=runtimeRigInput.files?.[0];runtimeRigInput.value='';
+    if(!file)return;
+    try{await loadRuntimeRigFile(file);}
+    catch(err){setRuntimeStatus(`Calibration load failed: ${err?.message||String(err)}`,'warn');}
+  });
+
+  runtimeBindSelect.addEventListener('change',()=>{
+    if(runtimeBindSelect.value==='calibration'&&!runtimeCalibration){
+      runtimeBindSelect.value='engine';
+    }
+    if(viewMode==='runtime') fitRuntime();
+  });
+
+  runtimeViewBtn.addEventListener('click',()=>setViewMode('runtime'));
+
+  function updateViewAvailability(){
+    const ready=assemblyReady();
+    assemblyViewBtn.disabled=!ready;
+    runtimeViewBtn.disabled=!runtimeReady();
+    if(!ready && viewMode==='assembly') setViewMode('source');
+  }
+
+  function setViewMode(mode){
+    if(mode==='assembly' && !assemblyReady()) return;
+    if(mode==='runtime' && !runtimeReady()) return;
+    viewMode=mode;
+    sourceViewBtn.classList.toggle('active',mode==='source');
+    assemblyViewBtn.classList.toggle('active',mode==='assembly');
+    runtimeViewBtn.classList.toggle('active',mode==='runtime');
+    assemblyControls.style.display=mode==='assembly'?'flex':'none';
+    precisionBar.style.display=mode==='assembly'?'flex':'none';
+    assemblyInfo.style.display=mode==='assembly'?'block':'none';
+    runtimeLegend.style.display=mode==='runtime'?'block':'none';
+
+    if(mode!=='assembly' && motionRunning) stopMotion();
+
+    // Pivot sampling belongs to source-image authoring only.
+    if(mode==='assembly'){
+      pivotMode=false;
+      sampleMode=false;
+      setPivotBtn.classList.remove('modeOn');
+      setPivotBtn.textContent='Set pivot on canvas';
+      sampleBtn.textContent='Pick on canvas';
+      if(!assemblyInitialized) autoLayoutAssembly();
+      fitAssembly();
+    } else if(mode==='runtime'){
+      fitRuntime();
+    } else {
+      fitImage();
+    }
+    updateCoordReadout();
+    renderExportStatus();
+    redraw();
+  }
+
+  sourceViewBtn.addEventListener('click',()=>setViewMode('source'));
+  assemblyViewBtn.addEventListener('click',()=>setViewMode('assembly'));
+  autoAssembleBtn.addEventListener('click',()=>{
+    if(assemblyInitialized) pushHistory();
+    autoLayoutAssembly();
+    fitAssembly();
+    updateCoordReadout();
+    redraw();
+  });
+  resetAssemblyBtn.addEventListener('click',()=>{
+    if(assemblyInitialized) pushHistory();
+    assemblyPos.clear();
+    assemblyInitialized=false;
+    autoLayoutAssembly();
+    fitAssembly();
+    updateCoordReadout();
+    redraw();
+  });
+  toggleSkeletonBtn.addEventListener('click',()=>{
+    assemblyShowSkeleton=!assemblyShowSkeleton;
+    toggleSkeletonBtn.textContent=`Skeleton: ${assemblyShowSkeleton?'on':'off'}`;
+    redraw();
+  });
+
+  focusPartBtn.addEventListener('click',()=>{
+    if(viewMode!=='assembly'||!pivotPartId) return;
+    const p=assemblyPos.get(pivotPartId);
+    if(!p) return;
+    scale=Math.max(0.5,Math.min(4,scale));
+    offsetX=workspace.clientWidth/2-p.x*scale;
+    offsetY=workspace.clientHeight/2-p.y*scale;
+    redraw();
+  });
+
+  ghostPairBtn.addEventListener('click',()=>{
+    assemblyGhostPair=!assemblyGhostPair;
+    ghostPairBtn.textContent=`Ghost pair: ${assemblyGhostPair?'on':'off'}`;
+    redraw();
+  });
+
+  undoBtn.addEventListener('click',undoAssembly);
+  redoBtn.addEventListener('click',redoAssembly);
+
+  motionBtn.addEventListener('click',()=>{
+    motionRunning ? stopMotion() : startMotion();
+  });
+
+  function startMotion(){
+    if(viewMode!=='assembly'||motionRunning) return;
+    motionRunning=true;
+    motionTime=0;
+    motionLastTs=performance.now();
+    motionBtn.textContent='Motion test: on';
+    motionBtn.classList.add('motionOn');
+    motionRaf=requestAnimationFrame(motionFrame);
+  }
+
+  function stopMotion(){
+    motionRunning=false;
+    motionBtn.textContent='Motion test: off';
+    motionBtn.classList.remove('motionOn');
+    if(motionRaf) cancelAnimationFrame(motionRaf);
+    motionRaf=0;
+    redraw();
+  }
+
+  function motionFrame(ts){
+    if(!motionRunning) return;
+    const dt=Math.min(0.05,Math.max(0,(ts-motionLastTs)/1000));
+    motionLastTs=ts;
+    motionTime+=dt*Number(motionSpeedSelect.value||1);
+    redraw();
+    motionRaf=requestAnimationFrame(motionFrame);
+  }
+
+  function fitImage(){
+    if(!hasImage) return;
+    const cssW = workspace.clientWidth, cssH = workspace.clientHeight;
+    const margin = 50;
+    scale = Math.min((cssW-margin*2)/workCanvas.width,(cssH-margin*2)/workCanvas.height);
+    scale = Math.max(0.03, Math.min(10, scale));
+    offsetX = (cssW - workCanvas.width*scale)/2;
+    offsetY = (cssH - workCanvas.height*scale)/2;
+    redraw();
+  }
+  function partSize(id){
+    const b=unionBoundsForPart(id);
+    return b ? {w:b.w,h:b.h} : {w:70,h:90};
+  }
+
+  function autoLayoutAssembly(){
+    const ids=new Set(assignedPartIds().filter(id=>pivots.has(id)));
+    if(!ids.size) return;
+
+    // Coordinates are screen-style assembly px: +X right, +Y down.
+    // This is only an authoring preview. Export can convert Y to runtime +Y-up.
+    const torso=partSize('torso');
+    const uaF=partSize('upper_arm_front'), uaB=partSize('upper_arm_back');
+    const laF=partSize('lower_arm_front'), laB=partSize('lower_arm_back');
+    const ulF=partSize('upper_leg_front'), ulB=partSize('upper_leg_back');
+    const llF=partSize('lower_leg_front'), llB=partSize('lower_leg_back');
+
+    assemblyPelvis={x:0,y:0};
+
+    const put=(id,x,y)=>{ if(ids.has(id)) assemblyPos.set(id,{x,y}); };
+
+    // Center body
+    put('torso', 0, -Math.max(24,torso.h*0.28));
+    put('head', Math.max(8,torso.w*0.06), -Math.max(90,torso.h*0.95));
+    put('hair_back', Math.max(8,torso.w*0.06), -Math.max(90,torso.h*0.95));
+    put('hair_front',Math.max(8,torso.w*0.06), -Math.max(90,torso.h*0.95));
+
+    // Arms: front is near side and slightly more left in our canonical right-facing 3/4.
+    put('upper_arm_front', -Math.max(28,torso.w*0.48), -Math.max(30,torso.h*0.56));
+    put('lower_arm_front', -Math.max(34,torso.w*0.52), -Math.max(30,torso.h*0.56) + Math.max(55,uaF.h*0.78));
+    put('hand_front',      -Math.max(34,torso.w*0.52), -Math.max(30,torso.h*0.56) + Math.max(55,uaF.h*0.78) + Math.max(45,laF.h*0.75));
+
+    put('upper_arm_back', Math.max(24,torso.w*0.38), -Math.max(30,torso.h*0.52));
+    put('lower_arm_back', Math.max(28,torso.w*0.42), -Math.max(30,torso.h*0.52) + Math.max(55,uaB.h*0.78));
+    put('hand_back',      Math.max(28,torso.w*0.42), -Math.max(30,torso.h*0.52) + Math.max(55,uaB.h*0.78) + Math.max(45,laB.h*0.75));
+
+    // Legs originate from virtual pelvis.
+    put('upper_leg_front', -Math.max(14,torso.w*0.16), Math.max(6,torso.h*0.05));
+    put('lower_leg_front', -Math.max(14,torso.w*0.16), Math.max(6,torso.h*0.05) + Math.max(60,ulF.h*0.78));
+    put('foot_front',      -Math.max(14,torso.w*0.16), Math.max(6,torso.h*0.05) + Math.max(60,ulF.h*0.78) + Math.max(60,llF.h*0.78));
+
+    put('upper_leg_back', Math.max(12,torso.w*0.12), Math.max(8,torso.h*0.07));
+    put('lower_leg_back', Math.max(12,torso.w*0.12), Math.max(8,torso.h*0.07) + Math.max(60,ulB.h*0.78));
+    put('foot_back',      Math.max(12,torso.w*0.12), Math.max(8,torso.h*0.07) + Math.max(60,ulB.h*0.78) + Math.max(60,llB.h*0.78));
+
+    // Root is a presentation/world anchor, not another body sprite.
+    // Default it to the lowest visible authored pixel; the user may drag it.
+    let lowest=0;
+    for(const id of assignedPartIds()){
+      const pos=assemblyPos.get(id),pv=pivots.get(id),b=unionBoundsForPart(id);
+      if(!pos||!pv||!b) continue;
+      lowest=Math.max(lowest,pos.y+(b.maxY-pv.y));
+    }
+    assemblyRoot={x:0,y:lowest};
+
+    assemblyInitialized=true;
+  }
+
+  function assemblyBounds(){
+    let minX=Math.min(assemblyPelvis.x,assemblyRoot.x),maxX=Math.max(assemblyPelvis.x,assemblyRoot.x),
+        minY=Math.min(assemblyPelvis.y,assemblyRoot.y),maxY=Math.max(assemblyPelvis.y,assemblyRoot.y);
+    let any=false;
+    for(const id of assignedPartIds()){
+      const pos=assemblyPos.get(id), pv=pivots.get(id), b=unionBoundsForPart(id);
+      if(!pos||!pv||!b) continue;
+      const left=pos.x+(b.minX-pv.x), right=pos.x+(b.maxX-pv.x);
+      const top=pos.y+(b.minY-pv.y), bottom=pos.y+(b.maxY-pv.y);
+      minX=Math.min(minX,left); maxX=Math.max(maxX,right);
+      minY=Math.min(minY,top); maxY=Math.max(maxY,bottom);
+      any=true;
+    }
+    if(!any) return {minX:-100,maxX:100,minY:-150,maxY:150};
+    return {minX,maxX,minY,maxY};
+  }
+
+  function fitAssembly(){
+    if(!assemblyInitialized) autoLayoutAssembly();
+    const b=assemblyBounds();
+    const cssW=workspace.clientWidth,cssH=workspace.clientHeight;
+    const margin=70;
+    const bw=Math.max(1,b.maxX-b.minX), bh=Math.max(1,b.maxY-b.minY);
+    scale=Math.max(0.05,Math.min(5,Math.min((cssW-margin*2)/bw,(cssH-margin*2)/bh)));
+    const cx=(b.minX+b.maxX)/2, cy=(b.minY+b.maxY)/2;
+    offsetX=cssW/2-cx*scale;
+    offsetY=cssH/2-cy*scale;
+    redraw();
+  }
+
+  fitBtn.addEventListener('click',()=>{
+    if(viewMode==='assembly') fitAssembly();
+    else if(viewMode==='runtime') fitRuntime();
+    else fitImage();
+  });
+  zoom100Btn.addEventListener('click',()=>{
+    if(!hasImage && viewMode!=='runtime') return;
+    scale = 1;
+    if(viewMode==='assembly'){
+      offsetX=workspace.clientWidth/2-assemblyRoot.x;
+      offsetY=workspace.clientHeight/2-assemblyRoot.y;
+    } else if(viewMode==='runtime'){
+      offsetX=workspace.clientWidth/2;
+      offsetY=workspace.clientHeight/2;
+    } else {
+      offsetX=(workspace.clientWidth-workCanvas.width)/2;
+      offsetY=(workspace.clientHeight-workCanvas.height)/2;
+    }
+    redraw();
+  });
+
+  sampleBtn.addEventListener('click',()=>{
+    if(!hasImage) return;
+    sampleMode = true;
+    sampleBtn.textContent = 'Click background…';
+  });
+
+  function screenToImage(clientX, clientY){
+    const r = canvas.getBoundingClientRect();
+    return {
+      x:(clientX-r.left-offsetX)/scale,
+      y:(clientY-r.top-offsetY)/scale
+    };
+  }
+
+  function screenToAssembly(clientX,clientY){
+    const r=canvas.getBoundingClientRect();
+    return {
+      x:(clientX-r.left-offsetX)/scale,
+      y:(clientY-r.top-offsetY)/scale
+    };
+  }
+
+  function partHitAtAssembly(x,y){
+    // Hit-test front-to-back so the visible topmost part wins.
+    const order=[...ASSEMBLY_DRAW_ORDER].reverse();
+    for(const id of order){
+      const pos=assemblyPos.get(id), pv=pivots.get(id);
+      if(!pos||!pv) continue;
+      const list=componentsForPart(id);
+      for(const c of list){
+        const left=pos.x+(c.minX-pv.x), right=pos.x+(c.maxX-pv.x);
+        const top=pos.y+(c.minY-pv.y), bottom=pos.y+(c.maxY-pv.y);
+        if(x>=left&&x<=right&&y>=top&&y<=bottom){
+          // Confirm actual alpha under the point instead of bounding-box only.
+          const sx=Math.floor(pv.x+(x-pos.x));
+          const sy=Math.floor(pv.y+(y-pos.y));
+          if(sx>=0&&sy>=0&&sx<workCanvas.width&&sy<workCanvas.height){
+            const a=workCtx.getImageData(sx,sy,1,1).data[3];
+            if(a>Number(alphaCut.value)) return id;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  canvas.addEventListener('mousedown',e=>{
+    if(spaceDown){
+      panning=true;
+      panStart={x:e.clientX,y:e.clientY,ox:offsetX,oy:offsetY};
+      canvas.style.cursor='grabbing';
+      return;
+    }
+    if(!hasImage && viewMode!=='runtime') return;
+
+    if(viewMode==='runtime'){
+      return;
+    }
+
+    if(viewMode==='assembly'){
+      if(motionRunning) return;
+      const p=screenToAssembly(e.clientX,e.clientY);
+      const markerRadius=14/Math.max(scale,0.001);
+
+      if(Math.hypot(p.x-assemblyRoot.x,p.y-assemblyRoot.y)<=markerRadius){
+        pushHistory();
+        assemblyDrag={root:true,startX:p.x,startY:p.y,originX:assemblyRoot.x,originY:assemblyRoot.y};
+        canvas.style.cursor='grabbing';
+        return;
+      }
+
+      const pelvisRadius=12/Math.max(scale,0.001);
+      if(Math.hypot(p.x-assemblyPelvis.x,p.y-assemblyPelvis.y)<=pelvisRadius){
+        pushHistory();
+        assemblyDrag={pelvis:true,startX:p.x,startY:p.y,originX:assemblyPelvis.x,originY:assemblyPelvis.y};
+        canvas.style.cursor='grabbing';
+        return;
+      }
+
+      const id=partHitAtAssembly(p.x,p.y);
+      if(id){
+        pivotPartId=id;
+        const pos=assemblyPos.get(id);
+        pushHistory();
+        assemblyDrag={partId:id,startX:p.x,startY:p.y,originX:pos.x,originY:pos.y};
+        renderPivotEditor();
+        updateCoordReadout();
+        redraw();
+        canvas.style.cursor='grabbing';
+      }
+      return;
+    }
+
+    const p=screenToImage(e.clientX,e.clientY);
+
+    if(pivotMode && pivotPartId){
+      const x=p.x, y=p.y;
+      // Deliberately permit the pivot outside visible pixels / bounding boxes.
+      // A floating cutout joint often lives in transparent space.
+      if(x>=-workCanvas.width && y>=-workCanvas.height &&
+         x<=workCanvas.width*2 && y<=workCanvas.height*2){
+        pivots.set(pivotPartId,{x,y});
+        assemblyInitialized=false;
+        assemblyPos.clear();
+        undoStack.length=0; redoStack.length=0; updateHistoryButtons();
+        pivotMode=false;
+        setPivotBtn.classList.remove('modeOn');
+        setPivotBtn.textContent='Set pivot on canvas';
+        renderPivotEditor();
+        renderCoverage();
+        renderSelectedInfo();
+        updateViewAvailability();
+        redraw();
+      }
+      return;
+    }
+
+    if(sampleMode){
+      const x=Math.floor(p.x), y=Math.floor(p.y);
+      if(x>=0&&y>=0&&x<workCanvas.width&&y<workCanvas.height){
+        const d=workCtx.getImageData(x,y,1,1).data;
+        bgColor={r:d[0],g:d[1],b:d[2]};
+        bgSeed={x,y};
+        swatch.style.background=`rgb(${d[0]},${d[1]},${d[2]})`;
+        sampleMode=false;
+        sampleBtn.textContent='Pick on canvas';
+      }
+      return;
+    }
+
+    // Pick the smallest candidate box under the pointer. This makes nested /
+    // nearby small details easier to select than always choosing the largest box.
+    const hits=[];
+    components.forEach((c,i)=>{
+      if(p.x>=c.minX && p.x<=c.maxX && p.y>=c.minY && p.y<=c.maxY){
+        hits.push([i,(c.maxX-c.minX+1)*(c.maxY-c.minY+1)]);
+      }
+    });
+    if(hits.length){
+      hits.sort((a,b)=>a[1]-b[1]);
+      activeCandidate=hits[0][0];
+      renderParts();
+      redraw();
+      const el=document.querySelector(`.part[data-index="${activeCandidate}"]`);
+      if(el) el.scrollIntoView({block:'nearest'});
+    }
+  });
+  window.addEventListener('mousemove',e=>{
+    if(panning){
+      offsetX=panStart.ox+(e.clientX-panStart.x);
+      offsetY=panStart.oy+(e.clientY-panStart.y);
+      redraw();
+      return;
+    }
+
+    if(assemblyDrag && viewMode==='assembly'){
+      const p=screenToAssembly(e.clientX,e.clientY);
+      const dx=p.x-assemblyDrag.startX, dy=p.y-assemblyDrag.startY;
+      if(assemblyDrag.root){
+        assemblyRoot={
+          x:snapValue(assemblyDrag.originX+dx),
+          y:snapValue(assemblyDrag.originY+dy)
+        };
+        redraw();
+        return;
+      }
+
+      if(assemblyDrag.pelvis){
+        const old={...assemblyPelvis};
+        assemblyPelvis={x:assemblyDrag.originX+dx,y:assemblyDrag.originY+dy};
+
+        // Moving the pelvis is a body-root move: translate every authored bone origin.
+        const ddx=assemblyPelvis.x-old.x, ddy=assemblyPelvis.y-old.y;
+        for(const pos of assemblyPos.values()){
+          pos.x+=ddx; pos.y+=ddy;
+        }
+        assemblyDrag.originX+=ddx;
+        assemblyDrag.originY+=ddy;
+        assemblyDrag.startX=p.x;
+        assemblyDrag.startY=p.y;
+      } else if(assemblyDrag.partId){
+        assemblyPos.set(assemblyDrag.partId,{
+          x:snapValue(assemblyDrag.originX+dx),
+          y:snapValue(assemblyDrag.originY+dy)
+        });
+        updateCoordReadout();
+      }
+      redraw();
+    }
+  });
+  window.addEventListener('mouseup',()=>{
+    panning=false;
+    assemblyDrag=null;
+    canvas.style.cursor='crosshair';
+    renderExportStatus();
+  });
+
+  workspace.addEventListener('wheel',e=>{
+    if(!hasImage && viewMode!=='runtime') return;
+    e.preventDefault();
+    const r=canvas.getBoundingClientRect();
+    const mx=e.clientX-r.left, my=e.clientY-r.top;
+    const ix=(mx-offsetX)/scale, iy=(my-offsetY)/scale;
+    const factor=e.deltaY<0?1.12:1/1.12;
+    const newScale=Math.max(0.03,Math.min(12,scale*factor));
+    offsetX=mx-ix*newScale;
+    offsetY=my-iy*newScale;
+    scale=newScale;
+    redraw();
+  },{passive:false});
+
+  window.addEventListener('keydown',e=>{
+    const editable=['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName);
+    if(e.code==='Space' && !e.repeat && !editable){spaceDown=true; canvas.style.cursor='grab'; e.preventDefault();}
+    if((e.key==='f'||e.key==='F') && !editable){
+      if(viewMode==='assembly') fitAssembly();
+      else if(viewMode==='runtime') fitRuntime();
+      else fitImage();
+    }
+    if(!editable && viewMode==='assembly'){
+      const step=e.shiftKey?10:1;
+      if(e.key==='ArrowLeft'){e.preventDefault();nudgeSelected(-step,0);}
+      else if(e.key==='ArrowRight'){e.preventDefault();nudgeSelected(step,0);}
+      else if(e.key==='ArrowUp'){e.preventDefault();nudgeSelected(0,-step);}
+      else if(e.key==='ArrowDown'){e.preventDefault();nudgeSelected(0,step);}
+      else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){
+        e.preventDefault(); e.shiftKey ? redoAssembly() : undoAssembly();
+      } else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){
+        e.preventDefault(); redoAssembly();
+      }
+    }
+  });
+  window.addEventListener('keyup',e=>{
+    if(e.code==='Space'){spaceDown=false; canvas.style.cursor='crosshair';}
+  });
+
+  applyBtn.addEventListener('click',()=>{
+    if(!hasImage) return;
+    const img=sourceCtx.getImageData(0,0,sourceCanvas.width,sourceCanvas.height);
+    const d=img.data;
+    const w=sourceCanvas.width, h=sourceCanvas.height;
+    const t=Number(tol.value);
+    const t2=t*t;
+    const cleanup=Number(edgeCleanup.value);
+    const cleanupMax=t+cleanup;
+    const cleanupMax2=cleanupMax*cleanupMax;
+    const reach=Number(edgeReach.value);
+
+    function dist2At(idx){
+      const p=idx*4;
+      const dr=d[p]-bgColor.r, dg=d[p+1]-bgColor.g, db=d[p+2]-bgColor.b;
+      return dr*dr+dg*dg+db*db;
+    }
+
+    // Core background mask.
+    // Connected mode floods only from the sampled background point, so a
+    // similar shirt/skin color elsewhere is not removed merely by RGB proximity.
+    const bg=new Uint8Array(w*h);
+
+    if(connectedOnly.checked && bgSeed){
+      const sx=Math.max(0,Math.min(w-1,bgSeed.x|0));
+      const sy=Math.max(0,Math.min(h-1,bgSeed.y|0));
+      const seed=sy*w+sx;
+      const stack=[seed];
+      bg[seed]=1;
+
+      while(stack.length){
+        const idx=stack.pop();
+        const x=idx%w, y=(idx/w)|0;
+        const ns=[];
+        if(x>0) ns.push(idx-1);
+        if(x<w-1) ns.push(idx+1);
+        if(y>0) ns.push(idx-w);
+        if(y<h-1) ns.push(idx+w);
+
+        for(const n of ns){
+          if(bg[n]) continue;
+          if(d[n*4+3]===0 || dist2At(n)<=t2){
+            bg[n]=1;
+            stack.push(n);
+          }
+        }
+      }
+    } else {
+      for(let idx=0;idx<w*h;idx++){
+        if(d[idx*4+3]===0 || dist2At(idx)<=t2) bg[idx]=1;
+      }
+    }
+
+    // Hard-remove core background.
+    for(let idx=0;idx<w*h;idx++){
+      if(bg[idx]) d[idx*4+3]=0;
+    }
+
+    // Refine only the immediate boundary around the removed background.
+    // This is the anti-halo pass: it reaches a few pixels into the antialiased
+    // fringe, but does not search the whole image for similar colors.
+    let frontier=bg.slice();
+    const touched=new Uint8Array(w*h);
+
+    for(let pass=0;pass<reach;pass++){
+      const next=new Uint8Array(w*h);
+
+      for(let idx=0;idx<w*h;idx++){
+        if(bg[idx] || touched[idx] || d[idx*4+3]===0) continue;
+
+        const x=idx%w, y=(idx/w)|0;
+        let near=false;
+        if(x>0 && frontier[idx-1]) near=true;
+        else if(x<w-1 && frontier[idx+1]) near=true;
+        else if(y>0 && frontier[idx-w]) near=true;
+        else if(y<h-1 && frontier[idx+w]) near=true;
+        if(!near) continue;
+
+        const dd=Math.sqrt(dist2At(idx));
+        if(dd>cleanupMax) continue;
+
+        // Smooth alpha ramp between the core threshold and cleanup threshold.
+        // At t -> transparent. At cleanupMax -> fully preserved.
+        const soft = cleanup<=0 ? 1 : Math.max(0,Math.min(1,(dd-t)/cleanup));
+        const p=idx*4;
+        const oldA=d[p+3]/255;
+        const newA=oldA*soft;
+
+        // Decontaminate RGB from the sampled background color so partially
+        // transparent edge pixels do not keep a colored halo when composited.
+        if(newA>0.02 && newA<oldA){
+          const a=Math.max(newA,0.02);
+          d[p]  = Math.max(0,Math.min(255,Math.round((d[p]  -(1-a)*bgColor.r)/a)));
+          d[p+1]= Math.max(0,Math.min(255,Math.round((d[p+1]-(1-a)*bgColor.g)/a)));
+          d[p+2]= Math.max(0,Math.min(255,Math.round((d[p+2]-(1-a)*bgColor.b)/a)));
+        }
+
+        d[p+3]=newA<=0.02 ? 0 : Math.round(newA*255);
+        touched[idx]=1;
+        next[idx]=1;
+      }
+
+      frontier=next;
+    }
+
+    workCtx.putImageData(img,0,0);
+    components=[]; selected.clear(); activeCandidate=null; pivots.clear(); pivotMode=false; pivotPartId=''; renderParts(); redraw();
+  });
+
+  restoreBtn.addEventListener('click',()=>{
+    if(!hasImage) return;
+    workCtx.clearRect(0,0,workCanvas.width,workCanvas.height);
+    workCtx.drawImage(sourceCanvas,0,0);
+    components=[]; selected.clear(); activeCandidate=null; pivots.clear(); pivotMode=false; pivotPartId=''; renderParts(); redraw();
+  });
+
+  clearBoxesBtn.addEventListener('click',()=>{
+    components=[];selected.clear();activeCandidate=null;pivots.clear();pivotMode=false;pivotPartId='';renderParts();redraw();
+  });
+
+  detectBtn.addEventListener('click', detectComponents);
+
+  function detectComponents(){
+    if(!hasImage) return;
+    const w=workCanvas.width,h=workCanvas.height;
+    const data=workCtx.getImageData(0,0,w,h).data;
+    const cut=Number(alphaCut.value);
+    const min=Number(minPixels.value);
+    const visited=new Uint8Array(w*h);
+    const comps=[];
+    const stack=[];
+
+    function isSolid(idx){return data[idx*4+3]>cut}
+
+    for(let y=0;y<h;y++){
+      for(let x=0;x<w;x++){
+        const start=y*w+x;
+        if(visited[start]||!isSolid(start)) continue;
+        visited[start]=1;
+        stack.length=0;
+        stack.push(start);
+        let count=0,minX=x,maxX=x,minY=y,maxY=y;
+        const pixels=[];
+        while(stack.length){
+          const idx=stack.pop();
+          const cx=idx%w, cy=(idx/w)|0;
+          pixels.push(idx);
+          count++;
+          if(cx<minX)minX=cx;if(cx>maxX)maxX=cx;
+          if(cy<minY)minY=cy;if(cy>maxY)maxY=cy;
+          const n1=idx-1,n2=idx+1,n3=idx-w,n4=idx+w;
+          if(cx>0 && !visited[n1] && isSolid(n1)){visited[n1]=1;stack.push(n1)}
+          if(cx<w-1 && !visited[n2] && isSolid(n2)){visited[n2]=1;stack.push(n2)}
+          if(cy>0 && !visited[n3] && isSolid(n3)){visited[n3]=1;stack.push(n3)}
+          if(cy<h-1 && !visited[n4] && isSolid(n4)){visited[n4]=1;stack.push(n4)}
+        }
+        if(count>=min) comps.push({minX,minY,maxX,maxY,count,partId:'',pixels});
+      }
+    }
+    comps.sort((a,b)=>b.count-a.count);
+    components=comps;
+    selected=new Set(comps.map((_,i)=>i));
+    pivots.clear();
+    pivotMode=false;
+    pivotPartId='';
+    activeCandidate = comps.length ? 0 : null;
+    clearBoxesBtn.disabled = comps.length===0;
+    renderParts();
+    redraw();
+  }
+
+  function partLabel(id){
+    const found=BODY_PARTS.find(([pid])=>pid===id);
+    return found ? found[1] : 'Unassigned';
+  }
+
+  function renderCoverage(){
+    coverageEl.innerHTML='';
+    const counts=new Map();
+    for(const c of components){
+      if(c.partId) counts.set(c.partId,(counts.get(c.partId)||0)+1);
+    }
+
+    BODY_PARTS.forEach(([id,label])=>{
+      const count=counts.get(id)||0;
+      const row=document.createElement('div');
+      row.className='coverageRow'+(count?' ok':'');
+      const optional=!REQUIRED_BASE.has(id);
+      const pivotMark=count && pivots.has(id) ? ' · pivot ✓' : (count ? ' · no pivot' : '');
+      row.innerHTML=`<span class="dot"></span>
+                     <span>${label}${optional?' <span class="small">(optional)</span>':''}</span>
+                     <span class="count">${count ? count+' island'+(count>1?'s':'')+pivotMark : '—'}</span>`;
+      coverageEl.appendChild(row);
+    });
+  }
+
+  function renderSelectedInfo(){
+    if(activeCandidate===null || !components[activeCandidate]){
+      selectedInfo.innerHTML='Click a box on the canvas or a candidate below.';
+      return;
+    }
+    const c=components[activeCandidate];
+    const pv=c.partId ? pivots.get(c.partId) : null;
+    selectedInfo.innerHTML=
+      `<b>Candidate ${String(activeCandidate+1).padStart(2,'0')}</b><br>`+
+      `${c.maxX-c.minX+1} × ${c.maxY-c.minY+1} px · ${c.count.toLocaleString()} solid px<br>`+
+      `<span class="small">Assigned: ${partLabel(c.partId)}${pv ? ` · pivot (${pv.x.toFixed(1)}, ${pv.y.toFixed(1)})` : ''}</span>`;
+  }
+
+  function makeAssignmentSelect(index){
+    const sel=document.createElement('select');
+
+    const none=document.createElement('option');
+    none.value='';
+    none.textContent='— Unassigned / Ignore —';
+    sel.appendChild(none);
+
+    const groups = [
+      ['Core',['head','hair_back','hair_front','torso']],
+      ['Back side',['upper_arm_back','lower_arm_back','hand_back','upper_leg_back','lower_leg_back','foot_back']],
+      ['Front side',['upper_arm_front','lower_arm_front','hand_front','upper_leg_front','lower_leg_front','foot_front']]
+    ];
+
+    groups.forEach(([name,ids])=>{
+      const og=document.createElement('optgroup');
+      og.label=name;
+      ids.forEach(id=>{
+        const item=BODY_PARTS.find(([pid])=>pid===id);
+        const op=document.createElement('option');
+        op.value=id;
+        op.textContent=item[1];
+        og.appendChild(op);
+      });
+      sel.appendChild(og);
+    });
+
+    sel.value=components[index].partId || '';
+    sel.addEventListener('click',e=>e.stopPropagation());
+    sel.addEventListener('change',e=>{
+      components[index].partId=e.target.value;
+      assemblyInitialized=false;
+      assemblyPos.clear();
+      undoStack.length=0; redoStack.length=0; updateHistoryButtons();
+      activeCandidate=index;
+      if(e.target.value) pivotPartId=e.target.value;
+      pivotMode=false;
+      setPivotBtn.classList.remove('modeOn');
+      setPivotBtn.textContent='Set pivot on canvas';
+      renderParts();
+      redraw();
+    });
+    return sel;
+  }
+
+  function renderPivotEditor(){
+    const assignedIds=[...new Set(components.map(c=>c.partId).filter(Boolean))];
+
+    pivotPartSelect.innerHTML='';
+    if(!assignedIds.length){
+      const op=document.createElement('option');
+      op.value='';
+      op.textContent='Assign a body part first';
+      pivotPartSelect.appendChild(op);
+      pivotPartSelect.disabled=true;
+      setPivotBtn.disabled=true;
+      clearPivotBtn.disabled=true;
+      pivotStatus.className='pivotStatus';
+      pivotStatus.textContent='Select an assigned body part.';
+      pivotGuide.textContent='The pivot is the virtual joint/origin used when the part rotates. It may sit in transparent space.';
+      pairAssist.style.display='none';
+      pivotPartId='';
+      return;
+    }
+
+    pivotPartSelect.disabled=false;
+    assignedIds.sort((a,b)=>BODY_PARTS.findIndex(x=>x[0]===a)-BODY_PARTS.findIndex(x=>x[0]===b));
+    assignedIds.forEach(id=>{
+      const op=document.createElement('option');
+      op.value=id;
+      op.textContent=partLabel(id);
+      pivotPartSelect.appendChild(op);
+    });
+
+    if(!pivotPartId || !assignedIds.includes(pivotPartId)){
+      const activePart=activeCandidate!==null ? components[activeCandidate]?.partId : '';
+      pivotPartId=(activePart && assignedIds.includes(activePart)) ? activePart : assignedIds[0];
+    }
+
+    pivotPartSelect.value=pivotPartId;
+    setPivotBtn.disabled=false;
+    const pv=pivots.get(pivotPartId);
+    clearPivotBtn.disabled=!pv;
+    pivotStatus.className='pivotStatus'+(pv?' ready':'');
+    pivotStatus.textContent=pv
+      ? `Pivot: x ${pv.x.toFixed(1)}, y ${pv.y.toFixed(1)} source px`
+      : 'Pivot not set yet.';
+    pivotGuide.textContent=pivotGuideFor(pivotPartId);
+
+    const pair=PAIRS[pivotPartId];
+    const b=unionBoundsForPart(pivotPartId);
+    const pb=pair ? unionBoundsForPart(pair) : null;
+    if(pair && b && pb){
+      pairAssist.style.display='flex';
+      pairTitle.innerHTML=`Counterpart: <b>${partLabel(pair)}</b>`;
+      const dw=((pb.w/b.w)-1)*100;
+      const dh=((pb.h/b.h)-1)*100;
+      const srcPivot=pivots.has(pivotPartId);
+      const pairPivot=pivots.has(pair);
+      pairStats.innerHTML=
+        `Current ${b.w}×${b.h}px · pair ${pb.w}×${pb.h}px<br>`+
+        `Δ width ${dw>=0?'+':''}${dw.toFixed(1)}% · Δ height ${dh>=0?'+':''}${dh.toFixed(1)}%<br>`+
+        `Pivot: ${srcPivot?'set':'missing'} · counterpart: ${pairPivot?'set':'missing'}`;
+      goPairBtn.disabled=false;
+      copyPivotBtn.disabled=!srcPivot;
+      copyPivotBtn.textContent=`Mirror pivot → ${partLabel(pair)}`;
+    } else if(pair && b){
+      pairAssist.style.display='flex';
+      pairTitle.innerHTML=`Counterpart: <b>${partLabel(pair)}</b>`;
+      pairStats.textContent='Counterpart has not been assigned yet.';
+      goPairBtn.disabled=true;
+      copyPivotBtn.disabled=true;
+      copyPivotBtn.textContent='Mirror pivot → pair';
+    } else {
+      pairAssist.style.display='none';
+    }
+  }
+
+  function renderParts(){
+    renderCoverage();
+    renderSelectedInfo();
+    renderPivotEditor();
+
+    if(!components.length){
+      partsEl.innerHTML='<div class="empty">No parts detected yet.</div>';
+      clearBoxesBtn.disabled=true;
+      return;
+    }
+
+    partsEl.innerHTML='';
+    components.forEach((c,i)=>{
+      const el=document.createElement('div');
+      el.className='part'+(activeCandidate===i?' active':'');
+      el.dataset.index=String(i);
+      el.addEventListener('click',()=>{
+        activeCandidate=i;
+        renderParts();
+        redraw();
+      });
+
+      const cb=document.createElement('input');
+      cb.type='checkbox';
+      cb.checked=selected.has(i);
+      cb.title='Show/hide this candidate box';
+      cb.addEventListener('click',e=>e.stopPropagation());
+      cb.addEventListener('change',()=>{
+        if(cb.checked)selected.add(i);else selected.delete(i);
+        redraw();
+      });
+
+      const text=document.createElement('div');
+      const assigned=c.partId ? ` · ${partLabel(c.partId)}` : '';
+      text.innerHTML=`<div class="name">Candidate ${String(i+1).padStart(2,'0')}${assigned}</div>
+                      <div class="meta">${c.maxX-c.minX+1}×${c.maxY-c.minY+1} · ${c.count.toLocaleString()} px</div>`;
+
+      const assign=document.createElement('div');
+      assign.className='assign';
+      const lab=document.createElement('span');
+      lab.className='small';
+      lab.textContent='Body part';
+      assign.append(lab,makeAssignmentSelect(i));
+
+      el.append(cb,text,assign);
+      partsEl.appendChild(el);
+    });
+
+    renderCoverage();
+    renderSelectedInfo();
+    renderPivotEditor();
+    updateViewAvailability();
+    updateCoordReadout();
+    renderExportStatus();
+  }
+
+  function motionAngles(){
+    if(!motionRunning) return {};
+    const t=motionTime*Math.PI*2*0.72;
+    const s=Math.sin(t), c=Math.cos(t);
+    // Fixed, intentionally modest diagnostic gait.
+    return {
+      torso: 0.035*Math.sin(t*2),
+      head: -0.025*Math.sin(t*2),
+      upper_leg_front: 0.42*s,
+      lower_leg_front: 0.32*Math.sin(t+0.9),
+      foot_front: -0.16*Math.sin(t+0.9),
+      upper_leg_back: -0.42*s,
+      lower_leg_back: 0.32*Math.sin(t+Math.PI+0.9),
+      foot_back: -0.16*Math.sin(t+Math.PI+0.9),
+      upper_arm_front: -0.30*s,
+      lower_arm_front: -0.18*Math.sin(t+0.6),
+      hand_front: 0.06*c,
+      upper_arm_back: 0.30*s,
+      lower_arm_back: 0.18*Math.sin(t+Math.PI+0.6),
+      hand_back: -0.06*c
+    };
+  }
+
+  function rotateVec(v,angle){
+    const c=Math.cos(angle),s=Math.sin(angle);
+    return {x:v.x*c-v.y*s,y:v.x*s+v.y*c};
+  }
+
+  function computeMotionPose(){
+    const angles=motionAngles();
+    const pose=new Map();
+    pose.set('root',{x:assemblyRoot.x,y:assemblyRoot.y,angle:0});
+    pose.set('pelvis',{x:assemblyPelvis.x,y:assemblyPelvis.y,angle:0});
+
+    const resolve=(id)=>{
+      if(pose.has(id)) return pose.get(id);
+      const base=assemblyPos.get(id);
+      if(!base) return null;
+
+      // Hair follows Head as a visual layer; it keeps its authored local offset.
+      const parentId=PARENT[id];
+      const parentPose=parentId==='pelvis' ? pose.get('pelvis') : resolve(parentId);
+      const parentBase=parentId==='pelvis' ? assemblyPelvis : assemblyPos.get(parentId);
+      if(!parentPose||!parentBase){
+        const lone={x:base.x,y:base.y,angle:angles[id]||0};
+        pose.set(id,lone); return lone;
+      }
+
+      const local={x:base.x-parentBase.x,y:base.y-parentBase.y};
+      const moved=rotateVec(local,parentPose.angle);
+      const worldAngle=parentPose.angle+(angles[id]||0);
+      const out={x:parentPose.x+moved.x,y:parentPose.y+moved.y,angle:worldAngle};
+      pose.set(id,out);
+      return out;
+    };
+
+    assignedPartIds().forEach(resolve);
+    return pose;
+  }
+
+  function drawAssembly(ctx){
+    if(!assemblyInitialized) autoLayoutAssembly();
+
+    const toScreen=(p)=>({x:offsetX+p.x*scale,y:offsetY+p.y*scale});
+    const motionPose=computeMotionPose();
+
+    // Skeleton first, behind artwork.
+    if(assemblyShowSkeleton){
+      ctx.save();
+      ctx.lineWidth=1.5;
+      ctx.strokeStyle='rgba(160,174,190,.55)';
+      ctx.setLineDash([5,5]);
+
+      const rootS=toScreen(motionPose.get('root')||assemblyRoot);
+      const pelvisS=toScreen(motionPose.get('pelvis')||assemblyPelvis);
+      ctx.beginPath();ctx.moveTo(rootS.x,rootS.y);ctx.lineTo(pelvisS.x,pelvisS.y);ctx.stroke();
+
+      for(const [child,parent] of Object.entries(PARENT)){
+        const cp=motionPose.get(child);
+        if(!cp) continue;
+        const pp=parent==='pelvis' ? motionPose.get('pelvis') : motionPose.get(parent);
+        if(!pp) continue;
+        const a=toScreen(pp), b=toScreen(cp);
+        ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Artwork: crop each assigned island from the cleaned source and place all
+    // islands for that semantic part relative to the shared authored pivot.
+    for(const id of ASSEMBLY_DRAW_ORDER){
+      const rest=assemblyPos.get(id), pv=pivots.get(id), pos=motionPose.get(id);
+      if(!rest||!pv||!pos) continue;
+      const ps=toScreen(pos);
+
+      ctx.save();
+      ctx.translate(ps.x,ps.y);
+      ctx.rotate(pos.angle);
+
+      for(const c of componentsForPart(id)){
+        const sw=c.maxX-c.minX+1, sh=c.maxY-c.minY+1;
+        const dx=(c.minX-pv.x)*scale;
+        const dy=(c.minY-pv.y)*scale;
+        ctx.drawImage(workCanvas,
+          c.minX,c.minY,sw,sh,
+          dx,dy,sw*scale,sh*scale);
+      }
+      ctx.restore();
+    }
+
+    // Optional counterpart ghost: shows the paired limb in its own current position,
+    // dimmed, while editing the selected part.
+    if(assemblyGhostPair && pivotPartId && PAIRS[pivotPartId]){
+      const gid=PAIRS[pivotPartId];
+      const gp=motionPose.get(gid), gpv=pivots.get(gid);
+      if(gp&&gpv){
+        const gs=toScreen(gp);
+        ctx.save();
+        ctx.globalAlpha=0.22;
+        ctx.translate(gs.x,gs.y);
+        ctx.rotate(gp.angle);
+        for(const c of componentsForPart(gid)){
+          const sw=c.maxX-c.minX+1,sh=c.maxY-c.minY+1;
+          ctx.drawImage(workCanvas,c.minX,c.minY,sw,sh,
+            (c.minX-gpv.x)*scale,(c.minY-gpv.y)*scale,sw*scale,sh*scale);
+        }
+        ctx.restore();
+      }
+    }
+
+    // Bone origins / selection marker.
+    for(const id of assignedPartIds()){
+      const p=motionPose.get(id);
+      if(!p || !pivots.has(id)) continue;
+      const s=toScreen(p);
+      const active=id===pivotPartId;
+      const r=active?7:5;
+      ctx.save();
+      ctx.lineWidth=active?2.5:1.25;
+      ctx.strokeStyle=active?'rgba(255,204,102,.98)':'rgba(101,212,199,.82)';
+      ctx.beginPath();
+      ctx.moveTo(s.x-r*1.7,s.y);ctx.lineTo(s.x+r*1.7,s.y);
+      ctx.moveTo(s.x,s.y-r*1.7);ctx.lineTo(s.x,s.y+r*1.7);
+      ctx.arc(s.x,s.y,r,0,Math.PI*2);ctx.stroke();
+
+      if(active){
+        ctx.font='11px Segoe UI, Arial';
+        const label=partLabel(id);
+        const tw=ctx.measureText(label).width+8;
+        ctx.fillStyle='rgba(20,28,33,.92)';
+        ctx.fillRect(s.x+10,s.y-18,tw,16);
+        ctx.fillStyle='#eef3f7';
+        ctx.fillText(label,s.x+14,s.y-6);
+      }
+      ctx.restore();
+    }
+
+    // Presentation Root / ground anchor. This stays fixed during diagnostic motion.
+    const rs=toScreen(motionPose.get('root')||assemblyRoot);
+    ctx.save();
+    ctx.lineWidth=2;
+    ctx.strokeStyle='rgba(110,220,160,.95)';
+    ctx.fillStyle='rgba(110,220,160,.15)';
+    ctx.beginPath();
+    ctx.moveTo(rs.x,rs.y-9);ctx.lineTo(rs.x+9,rs.y);ctx.lineTo(rs.x,rs.y+9);ctx.lineTo(rs.x-9,rs.y);
+    ctx.closePath();ctx.fill();ctx.stroke();
+    ctx.beginPath();ctx.moveTo(rs.x-18,rs.y);ctx.lineTo(rs.x+18,rs.y);ctx.stroke();
+    ctx.font='11px Segoe UI, Arial';
+    ctx.fillStyle='#b9f1cf';ctx.fillText('Root / Ground',rs.x+13,rs.y+16);
+    ctx.restore();
+
+    // Virtual pelvis body root.
+    const ps=toScreen(motionPose.get('pelvis')||assemblyPelvis);
+    ctx.save();
+    ctx.lineWidth=2;
+    ctx.strokeStyle='rgba(190,130,255,.95)';
+    ctx.fillStyle='rgba(190,130,255,.18)';
+    ctx.beginPath();
+    ctx.arc(ps.x,ps.y,8,0,Math.PI*2);
+    ctx.fill();ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(ps.x-12,ps.y);ctx.lineTo(ps.x+12,ps.y);
+    ctx.moveTo(ps.x,ps.y-12);ctx.lineTo(ps.x,ps.y+12);
+    ctx.stroke();
+    ctx.font='11px Segoe UI, Arial';
+    ctx.fillStyle='#d8b9ff';
+    ctx.fillText('Pelvis',ps.x+13,ps.y-7);
+    ctx.restore();
+  }
+
+
+
+  function canvasToPngDataUrl(canvasEl){
+    return canvasEl.toDataURL('image/png');
+  }
+
+  function componentKey(c){
+    return `${c.minX},${c.minY},${c.maxX},${c.maxY},${c.count}`;
+  }
+
+  function serializeProject(){
+    if(!hasImage) return null;
+
+    const assignments={};
+    for(const c of components){
+      if(c.partId) assignments[componentKey(c)]=c.partId;
+    }
+
+    const pivotObj={};
+    for(const [id,p] of pivots.entries()) pivotObj[id]={x:p.x,y:p.y};
+
+    const assemblyObj={};
+    for(const [id,p] of assemblyPos.entries()) assemblyObj[id]={x:p.x,y:p.y};
+
+    return {
+      schema_version:1,
+      kind:'purgatory_character_authoring_project',
+      tool_step:'6',
+      source:{
+        file_name:sourceFileName||'source.png',
+        original_png_data_url:canvasToPngDataUrl(sourceCanvas),
+        cleaned_png_data_url:canvasToPngDataUrl(workCanvas),
+        width:workCanvas.width,
+        height:workCanvas.height
+      },
+      mask:{
+        bg_color:bgColor,
+        bg_seed:bgSeed,
+        tolerance:Number(tol.value),
+        edge_cleanup:Number(edgeCleanup.value),
+        edge_reach:Number(edgeReach.value),
+        alpha_cut:Number(alphaCut.value),
+        connected_only:connectedOnly.checked
+      },
+      detection:{
+        min_pixels:Number(minPixels.value),
+        assignments
+      },
+      pivots:pivotObj,
+      assembly:{
+        initialized:assemblyInitialized,
+        root:{x:assemblyRoot.x,y:assemblyRoot.y},
+        pelvis:{x:assemblyPelvis.x,y:assemblyPelvis.y},
+        parts:assemblyObj,
+        show_skeleton:assemblyShowSkeleton,
+        ghost_pair:assemblyGhostPair,
+        snap:Number(snapSelect.value||0)
+      },
+      export:{
+        asset_id:sanitizedAssetId(),
+        pixels_per_unit:pixelsPerUnit()
+      },
+      ui:{
+        pivot_part_id:pivotPartId||'',
+        view_mode:viewMode
+      }
+    };
+  }
+
+  function setProjectStatus(text,ok=false){
+    projectStatus.className='projectStatus'+(ok?' ok':'');
+    projectStatus.textContent=text;
+  }
+
+  saveProjectBtn.addEventListener('click',()=>{
+    const project=serializeProject();
+    if(!project){
+      setProjectStatus('Load an image before saving a project.');
+      return;
+    }
+    const filename=`${sanitizedAssetId()}.character-project.json`;
+    downloadJson(project,filename);
+    setProjectStatus(`Saved ${filename}`,true);
+  });
+
+  loadProjectBtn.addEventListener('click',()=>projectFileInput.click());
+
+  function loadImageDataUrl(dataUrl){
+    return new Promise((resolve,reject)=>{
+      const img=new Image();
+      img.onload=()=>resolve(img);
+      img.onerror=()=>reject(new Error('Could not decode embedded project image.'));
+      img.src=dataUrl;
+    });
+  }
+
+  async function restoreProject(project){
+    if(!project || project.kind!=='purgatory_character_authoring_project' || project.schema_version!==1){
+      throw new Error('Unsupported project file.');
+    }
+    if(!project.source?.original_png_data_url || !project.source?.cleaned_png_data_url){
+      throw new Error('Project is missing embedded source images.');
+    }
+
+    stopMotion();
+    const [srcImg,workImg]=await Promise.all([
+      loadImageDataUrl(project.source.original_png_data_url),
+      loadImageDataUrl(project.source.cleaned_png_data_url)
+    ]);
+
+    sourceCanvas.width=srcImg.naturalWidth;
+    sourceCanvas.height=srcImg.naturalHeight;
+    workCanvas.width=workImg.naturalWidth;
+    workCanvas.height=workImg.naturalHeight;
+    sourceCtx.clearRect(0,0,sourceCanvas.width,sourceCanvas.height);
+    workCtx.clearRect(0,0,workCanvas.width,workCanvas.height);
+    sourceCtx.drawImage(srcImg,0,0);
+    workCtx.drawImage(workImg,0,0);
+
+    hasImage=true;
+    sourceFileName=project.source.file_name||'project_source.png';
+
+    // Restore editor parameters first because detection depends on them.
+    const mask=project.mask||{};
+    bgColor={
+      r:Number(mask.bg_color?.r||0),
+      g:Number(mask.bg_color?.g||0),
+      b:Number(mask.bg_color?.b||0)
+    };
+    bgSeed=mask.bg_seed ? {x:Number(mask.bg_seed.x),y:Number(mask.bg_seed.y)} : null;
+    tol.value=String(mask.tolerance ?? 28);
+    edgeCleanup.value=String(mask.edge_cleanup ?? 42);
+    edgeReach.value=String(mask.edge_reach ?? 2);
+    alphaCut.value=String(mask.alpha_cut ?? 10);
+    connectedOnly.checked=mask.connected_only!==false;
+    minPixels.value=String(project.detection?.min_pixels ?? 40);
+
+    tolVal.textContent=tol.value;
+    edgeCleanupVal.textContent=edgeCleanup.value;
+    edgeReachVal.textContent=edgeReach.value;
+    alphaVal.textContent=alphaCut.value;
+    minPixelsVal.textContent=minPixels.value;
+    swatch.style.background=`rgb(${bgColor.r},${bgColor.g},${bgColor.b})`;
+
+    imageStatus.textContent=`${sourceFileName} · ${workCanvas.width} × ${workCanvas.height} · project`;
+    setEnabled(true);
+
+    // Re-detect deterministically from the embedded cleaned image, then map
+    // semantic assignments back using geometry+pixel-count identity.
+    detectComponents();
+
+    const assignments=project.detection?.assignments||{};
+    for(const c of components){
+      c.partId=assignments[componentKey(c)]||'';
+    }
+
+    pivots.clear();
+    for(const [id,p] of Object.entries(project.pivots||{})){
+      pivots.set(id,{x:Number(p.x),y:Number(p.y)});
+    }
+
+    assemblyPos.clear();
+    const a=project.assembly||{};
+    assemblyInitialized=Boolean(a.initialized);
+    assemblyRoot=a.root ? {x:Number(a.root.x),y:Number(a.root.y)} : {x:0,y:0};
+    assemblyPelvis=a.pelvis ? {x:Number(a.pelvis.x),y:Number(a.pelvis.y)} : {x:0,y:0};
+    for(const [id,p] of Object.entries(a.parts||{})){
+      assemblyPos.set(id,{x:Number(p.x),y:Number(p.y)});
+    }
+    assemblyShowSkeleton=a.show_skeleton!==false;
+    assemblyGhostPair=Boolean(a.ghost_pair);
+    snapSelect.value=String(a.snap ?? 2);
+    toggleSkeletonBtn.textContent=`Skeleton: ${assemblyShowSkeleton?'on':'off'}`;
+    ghostPairBtn.textContent=`Ghost pair: ${assemblyGhostPair?'on':'off'}`;
+
+    assetIdInput.value=project.export?.asset_id||'character.base.dev_01';
+    ppuInput.value=String(project.export?.pixels_per_unit ?? 256);
+
+    pivotPartId=project.ui?.pivot_part_id||'';
+    activeCandidate=null;
+    selected=new Set(components.map((_,i)=>i));
+    undoStack.length=0;redoStack.length=0;
+    updateHistoryButtons();
+
+    renderParts();
+    updateViewAvailability();
+
+    const desiredView=project.ui?.view_mode==='assembly' && assemblyReady() ? 'assembly' : 'source';
+    setViewMode(desiredView);
+    if(desiredView==='assembly') fitAssembly(); else fitImage();
+
+    renderExportStatus();
+    redraw();
+  }
+
+  projectFileInput.addEventListener('change',async()=>{
+    const file=projectFileInput.files?.[0];
+    projectFileInput.value='';
+    if(!file) return;
+    try{
+      setProjectStatus(`Loading ${file.name}…`);
+      const text=await file.text();
+      const project=JSON.parse(text);
+      await restoreProject(project);
+      setProjectStatus(`Loaded ${file.name}`,true);
+    }catch(err){
+      console.error(err);
+      setProjectStatus(`Load failed: ${err?.message||String(err)}`);
+    }
+  });
+
+  function sanitizedAssetId(){
+    let id=(assetIdInput.value||'character.base.dev_01').trim().toLowerCase();
+    id=id.replace(/[^a-z0-9._-]+/g,'_').replace(/^_+|_+$/g,'');
+    return id||'character.base.dev_01';
+  }
+
+  function pixelsPerUnit(){
+    const n=Number(ppuInput.value);
+    return Number.isFinite(n) ? Math.max(16,Math.min(2048,n)) : 256;
+  }
+
+  function exportableParts(){
+    return ASSEMBLY_DRAW_ORDER.filter(id=>
+      componentsForPart(id).length>0 && pivots.has(id) && assemblyPos.has(id)
+    );
+  }
+
+  function exportValidation(){
+    const assigned=new Set(components.map(c=>c.partId).filter(Boolean));
+    const missingParts=[...REQUIRED_BASE].filter(id=>!assigned.has(id));
+    const missingPivots=[...REQUIRED_BASE].filter(id=>assigned.has(id)&&!pivots.has(id));
+    const missingAssembly=[...REQUIRED_BASE].filter(id=>pivots.has(id)&&!assemblyPos.has(id));
+    const parts=exportableParts();
+    return {
+      parts,
+      missingParts,
+      missingPivots,
+      missingAssembly,
+      complete:missingParts.length===0&&missingPivots.length===0&&missingAssembly.length===0,
+      canExport:parts.length>0
+    };
+  }
+
+  function renderExportStatus(){
+    if(!exportStatus) return;
+    const v=exportValidation();
+    downloadAtlasBtn.disabled=!v.canExport;
+    downloadRuntimeBtn.disabled=!v.canExport;
+    downloadRigBtn.disabled=!v.canExport;
+
+    if(!v.canExport){
+      exportStatus.className='exportStatus';
+      exportStatus.textContent='Nothing exportable yet: assign at least one part, set its pivot, and open Assembly.';
+      return;
+    }
+
+    if(v.complete){
+      exportStatus.className='exportStatus ready';
+      exportStatus.innerHTML=`READY · ${v.parts.length} visual parts · Humanoid v0 base complete`;
+      return;
+    }
+
+    exportStatus.className='exportStatus warn';
+    const items=[];
+    if(v.missingParts.length) items.push(`${v.missingParts.length} missing part assignments`);
+    if(v.missingPivots.length) items.push(`${v.missingPivots.length} missing pivots`);
+    if(v.missingAssembly.length) items.push(`${v.missingAssembly.length} missing assembly origins`);
+    exportStatus.innerHTML=`PARTIAL DEV EXPORT · ${v.parts.length} visual parts<br>${items.join(' · ')}`;
+  }
+
+  function partBone(id){
+    if(id==='hair_front'||id==='hair_back') return 'head';
+    return id;
+  }
+
+  function makePartCanvas(id){
+    const list=componentsForPart(id);
+    const b=unionBoundsForPart(id);
+    if(!list.length||!b) return null;
+
+    const c=document.createElement('canvas');
+    c.width=b.w;c.height=b.h;
+    const cctx=c.getContext('2d',{willReadFrequently:true});
+    const out=cctx.createImageData(b.w,b.h);
+    const src=workCtx.getImageData(0,0,workCanvas.width,workCanvas.height).data;
+    const copied=new Uint8Array(b.w*b.h);
+
+    // Copy component pixels plus a 1px alpha fringe so antialiasing survives
+    // without accidentally copying every unrelated island inside the union box.
+    for(const comp of list){
+      const pxs=comp.pixels||[];
+      for(const idx of pxs){
+        const sx=idx%workCanvas.width, sy=(idx/workCanvas.width)|0;
+        for(let oy=-1;oy<=1;oy++){
+          for(let ox=-1;ox<=1;ox++){
+            const x=sx+ox,y=sy+oy;
+            if(x<b.minX||x>b.maxX||y<b.minY||y>b.maxY) continue;
+            const sp=(y*workCanvas.width+x)*4;
+            if(src[sp+3]===0) continue;
+            const lx=x-b.minX,ly=y-b.minY,li=ly*b.w+lx;
+            if(copied[li]) continue;
+            copied[li]=1;
+            const dp=li*4;
+            out.data[dp]=src[sp];out.data[dp+1]=src[sp+1];
+            out.data[dp+2]=src[sp+2];out.data[dp+3]=src[sp+3];
+          }
+        }
+      }
+    }
+    cctx.putImageData(out,0,0);
+    return {canvas:c,bounds:b};
+  }
+
+  function nextPow2(n){
+    let p=1;while(p<n)p*=2;return p;
+  }
+
+  function packSprites(sprites,width){
+    const padding=4;
+    let x=padding,y=padding,rowH=0,maxY=padding;
+    const packed=[];
+    for(const s of sprites){
+      if(x+s.canvas.width+padding>width && x>padding){
+        x=padding;y+=rowH+padding;rowH=0;
+      }
+      packed.push({...s,x,y});
+      x+=s.canvas.width+padding;
+      rowH=Math.max(rowH,s.canvas.height);
+      maxY=Math.max(maxY,y+s.canvas.height+padding);
+    }
+    return {packed,height:nextPow2(Math.max(64,maxY)),padding};
+  }
+
+  function buildAtlas(){
+    const parts=exportableParts();
+    const sprites=parts.map(id=>{
+      const made=makePartCanvas(id);
+      return made ? {id,...made} : null;
+    }).filter(Boolean).sort((a,b)=>b.canvas.height-a.canvas.height);
+
+    if(!sprites.length) return null;
+    const maxW=Math.max(...sprites.map(s=>s.canvas.width+8));
+    let width=nextPow2(Math.max(512,maxW));
+    let pack=packSprites(sprites,width);
+    while(pack.height>2048 && width<4096){
+      width*=2;pack=packSprites(sprites,width);
+    }
+
+    const atlas=document.createElement('canvas');
+    atlas.width=width;atlas.height=pack.height;
+    const actx=atlas.getContext('2d');
+    actx.clearRect(0,0,atlas.width,atlas.height);
+
+    const entries=new Map();
+    for(const s of pack.packed){
+      actx.drawImage(s.canvas,s.x,s.y);
+      entries.set(s.id,{
+        x:s.x,y:s.y,w:s.canvas.width,h:s.canvas.height,
+        bounds:s.bounds
+      });
+    }
+    return {atlas,entries,padding:pack.padding};
+  }
+
+  function buildRuntimeManifest(atlasData){
+    const id=sanitizedAssetId(),ppu=pixelsPerUnit();
+    const parts=[];
+    const baseAppearance={};
+    for(const partId of exportableParts()){
+      const e=atlasData.entries.get(partId);
+      const pv=pivots.get(partId);
+      if(!e||!pv) continue;
+      const key=`${id}.${partId}.side`;
+      const pivotLocal=[pv.x-e.bounds.minX,pv.y-e.bounds.minY];
+      parts.push({
+        part:partId,
+        bone:partBone(partId),
+        visual_key:key,
+        rect_px:[e.x,e.y,e.w,e.h],
+        pivot_px:pivotLocal
+      });
+      baseAppearance[partId]=key;
+    }
+
+    return {
+      schema_version:1,
+      kind:'purgatory_visual_pack',
+      id,
+      rig:'humanoid_v0',
+      view:'side',
+      authored_facing:'right',
+      pixels_per_unit:ppu,
+      completeness:exportValidation().complete?'complete':'partial_dev',
+      atlas:{
+        file:`${id}.side.atlas.png`,
+        width:atlasData.atlas.width,
+        height:atlasData.atlas.height,
+        padding_px:atlasData.padding
+      },
+      visuals:parts,
+      base_appearance:baseAppearance,
+      draw_order:ASSEMBLY_DRAW_ORDER.filter(id=>baseAppearance[id])
+    };
+  }
+
+  function buildRigCalibration(){
+    const id=sanitizedAssetId(),ppu=pixelsPerUnit();
+    const rest={};
+    const worldPx={
+      root:[assemblyRoot.x,assemblyRoot.y],
+      pelvis:[assemblyPelvis.x,assemblyPelvis.y]
+    };
+
+    const toRuntimeLocal=(child,parent)=>[
+      (child.x-parent.x)/ppu,
+      (parent.y-child.y)/ppu
+    ];
+
+    rest.pelvis={
+      parent:'root',
+      translation:toRuntimeLocal(assemblyPelvis,assemblyRoot)
+    };
+
+    for(const partId of exportableParts()){
+      if(partId==='hair_front'||partId==='hair_back') continue;
+      const child=assemblyPos.get(partId);
+      if(!child) continue;
+      worldPx[partId]=[child.x,child.y];
+      const parentId=PARENT[partId];
+      if(!parentId) continue;
+      const parent=parentId==='pelvis'?assemblyPelvis:assemblyPos.get(parentId);
+      if(!parent) continue;
+      rest[partId]={
+        parent:parentId,
+        translation:toRuntimeLocal(child,parent)
+      };
+    }
+
+    return {
+      schema_version:1,
+      kind:'purgatory_humanoid_rest_calibration',
+      rig:'humanoid_v0',
+      source_visual_pack:id,
+      pixels_per_unit:ppu,
+      coordinate_note:'authoring +Y down; exported translations use runtime +Y up',
+      runtime_use:'AUTHORING_CALIBRATION_ONLY_DO_NOT_APPLY_AS_SKIN_OVERRIDE',
+      rest_local:rest,
+      authoring_world_px:worldPx
+    };
+  }
+
+  function downloadBlob(blob,filename){
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download=filename;
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
+
+  function downloadJson(obj,filename){
+    downloadBlob(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}),filename);
+  }
+
+  downloadAtlasBtn.addEventListener('click',()=>{
+    const built=buildAtlas();if(!built)return;
+    built.atlas.toBlob(blob=>{
+      if(blob) downloadBlob(blob,`${sanitizedAssetId()}.side.atlas.png`);
+    },'image/png');
+  });
+
+  downloadRuntimeBtn.addEventListener('click',()=>{
+    const built=buildAtlas();if(!built)return;
+    downloadJson(buildRuntimeManifest(built),`${sanitizedAssetId()}.visual-pack.json`);
+  });
+
+  downloadRigBtn.addEventListener('click',()=>{
+    downloadJson(buildRigCalibration(),`${sanitizedAssetId()}.rig-calibration.json`);
+  });
+
+  assetIdInput.addEventListener('input',renderExportStatus);
+  ppuInput.addEventListener('input',renderExportStatus);
+
+  function redraw(){
+    const dpr=window.devicePixelRatio||1;
+    const cssW=workspace.clientWidth,cssH=workspace.clientHeight;
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,cssW,cssH);
+    ctx.imageSmoothingEnabled=true;
+
+    if(viewMode==='runtime'){
+      if(!runtimeReady()){zoomBadge.textContent='—';return;}
+      drawRuntime(ctx);
+      zoomBadge.textContent=Math.round(scale*100)+'%';
+      return;
+    }
+
+    if(!hasImage){zoomBadge.textContent='—';return;}
+
+    if(viewMode==='assembly'){
+      drawAssembly(ctx);
+      zoomBadge.textContent=Math.round(scale*100)+'%';
+      return;
+    }
+
+    ctx.drawImage(workCanvas,offsetX,offsetY,workCanvas.width*scale,workCanvas.height*scale);
+
+    // Pivots are drawn independently of candidate boxes because a valid
+    // virtual joint may intentionally sit in transparent space.
+    const assignedIds=[...new Set(components.map(c=>c.partId).filter(Boolean))];
+    assignedIds.forEach(id=>{
+      const pv=pivots.get(id);
+      if(!pv) return;
+      const x=offsetX+pv.x*scale;
+      const y=offsetY+pv.y*scale;
+      const active=id===pivotPartId;
+      ctx.lineWidth=active?2.5:1.5;
+      ctx.strokeStyle=active?'rgba(255,204,102,.98)':'rgba(101,212,199,.95)';
+      const r=active?8:6;
+      ctx.beginPath();
+      ctx.moveTo(x-r*1.8,y);ctx.lineTo(x+r*1.8,y);
+      ctx.moveTo(x,y-r*1.8);ctx.lineTo(x,y+r*1.8);
+      ctx.arc(x,y,r,0,Math.PI*2);
+      ctx.stroke();
+
+      const label=partLabel(id);
+      ctx.font='11px Segoe UI, Arial';
+      const tw=ctx.measureText(label).width+8;
+      ctx.fillStyle='rgba(20,28,33,.9)';
+      ctx.fillRect(x+10,y-18,tw,16);
+      ctx.fillStyle='#eef3f7';
+      ctx.fillText(label,x+14,y-6);
+    });
+
+    ctx.lineWidth=1.5;
+    ctx.font='12px Segoe UI, Arial';
+    components.forEach((c,i)=>{
+      if(!selected.has(i))return;
+      const x=offsetX+c.minX*scale;
+      const y=offsetY+c.minY*scale;
+      const w=(c.maxX-c.minX+1)*scale;
+      const h=(c.maxY-c.minY+1)*scale;
+      const active=activeCandidate===i;
+      ctx.lineWidth=active?2.5:1.5;
+      ctx.strokeStyle=active?'rgba(255,204,102,.98)':'rgba(101,212,199,.95)';
+      ctx.strokeRect(x,y,w,h);
+      const partText=c.partId ? ` · ${partLabel(c.partId)}` : '';
+      const label='#'+(i+1)+partText;
+      const tw=ctx.measureText(label).width+10;
+      ctx.fillStyle=active?'rgba(89,67,22,.95)':'rgba(20,28,33,.92)';
+      ctx.fillRect(x,y-20,tw,18);
+      ctx.fillStyle='#eef3f7';
+      ctx.fillText(label,x+5,y-6);
+    });
+    ctx.lineWidth=1.5;
+    zoomBadge.textContent=Math.round(scale*100)+'%';
+  }
+
+  renderCoverage();
+  renderSelectedInfo();
+  renderPivotEditor();
+  updateViewAvailability();
+  updateHistoryButtons();
+  updateCoordReadout();
+  renderExportStatus();
+  setProjectStatus('Save the editor state to continue later.');
+  renderRuntimeStatus();
+  resizeCanvas();
+})();
+</script>
+</body>
+</html>

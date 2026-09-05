@@ -24,7 +24,7 @@ use super::replication_policy::{
 };
 #[cfg(test)]
 use super::replication_policy::{ObserverRelationKind, PressureLevel};
-use super::snapshot::to_wire_id;
+use super::snapshot::{from_wire_id, to_wire_id};
 
 /// Encoded-frame queue cap. If full, sim does not encode-and-drop.
 pub const WRITER_QUEUE_CAP: usize = 4;
@@ -218,6 +218,10 @@ enum Life {
 pub struct ObserverReplicationState {
     pub epoch: u32,
     entities: HashMap<EntityId, Life>,
+    /// Health lifecycle state last delivered to this observer. This is
+    /// distinct from committed revisions so selective ordinary health
+    /// coalescing remains unchanged.
+    known_dead: HashSet<EntityId>,
     enter_cursor: usize,
     last_leave_tick: HashMap<EntityId, u64>,
     /// True after at least one successful classify since bind/epoch (6G.5).
@@ -375,6 +379,7 @@ impl ObserverReplicationState {
     pub fn bump_epoch(&mut self) {
         self.epoch = self.epoch.saturating_add(1);
         self.entities.clear();
+        self.known_dead.clear();
         self.enter_cursor = 0;
         self.last_leave_tick.clear();
         self.interest_classified = false;
@@ -429,6 +434,11 @@ impl ObserverReplicationState {
     #[cfg(test)]
     pub fn is_known(&self, id: EntityId) -> bool {
         matches!(self.entities.get(&id), Some(Life::Known { .. }))
+    }
+
+    #[must_use]
+    fn knows_dead_health(&self, id: EntityId) -> bool {
+        self.known_dead.contains(&id)
     }
 
     #[must_use]
@@ -1047,7 +1057,23 @@ pub fn publish_observer_frame_with_budget(
                 EquipmentDirtyMask::empty()
             },
         };
-        let decision = decide_update_policy(ctx, relation, dirty);
+        let mut decision = decide_update_policy(ctx, relation, dirty);
+        // Dead is a persistent semantic state derived from authoritative
+        // Health. Selective stranger policy may coalesce ordinary health
+        // changes, but it must not silently catch up the lethal transition:
+        // an existing observer needs the Health <= 0 update to resolve
+        // PresentationActivity::Dead. Enter records already carry the same
+        // Health value for late observers and baseline rebuilds.
+        let lethal_health =
+            dirty.health && world.health_of(id).is_some_and(|health| health.is_dead());
+        let restoring_health = dirty.health
+            && world.health_of(id).is_some_and(|health| health.is_alive())
+            && state.knows_dead_health(id);
+        if lethal_health || restoring_health {
+            decision.eligibility.health = true;
+            decision.cadence_interval = 1;
+            decision.suppress_emit = false;
+        }
         if decision.suppress_emit || !decision.eligibility.any() {
             // Ineligible domains: silent catch-up without emit.
             if dirty.health && !decision.eligibility.health {
@@ -1184,6 +1210,7 @@ pub fn publish_observer_frame_with_budget(
         fanout.remove_known(observer, id);
         state.pending_update_ids.remove(&id);
         state.entities.remove(&id);
+        state.known_dead.remove(&id);
         state.last_leave_tick.insert(id, tick);
     }
     for (id, revs) in commit_enters {
@@ -1201,6 +1228,11 @@ pub fn publish_observer_frame_with_budget(
                 since_tick: tick,
             },
         );
+        if world.health_of(id).is_some_and(|health| health.is_dead()) {
+            state.known_dead.insert(id);
+        } else {
+            state.known_dead.remove(&id);
+        }
         fanout.insert_known(observer, id);
     }
     for (id, next) in commit_updates {
@@ -1212,6 +1244,23 @@ pub fn publish_observer_frame_with_budget(
                     since_tick,
                 },
             );
+        }
+    }
+    for record in &frame.records {
+        if let ReplicationRecord::Update {
+            entity_id,
+            domains,
+            health: Some(health),
+            ..
+        } = record
+            && domains.health
+        {
+            let id = from_wire_id(*entity_id);
+            if health.current <= 0.0 {
+                state.known_dead.insert(id);
+            } else {
+                state.known_dead.remove(&id);
+            }
         }
     }
     for id in clear_pending {
@@ -2441,6 +2490,204 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn selective_policy_emits_lethal_health_to_existing_observer() {
+        let (mut world, observer, remote) = two_players();
+        let _ = world.set_health(remote, purgatory_simulation::Health::full(100.0));
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let overrides = RelationOverrides::default();
+        let _ = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+
+        assert!(world.apply_damage(remote, 100.0));
+        let _ = distribute_replication_dirty(&world, &fanout, |obs, subject, _| {
+            if obs == observer {
+                state.queue_pending_update(subject);
+            }
+        });
+        world.clear_replication_dirty();
+        let stats = publish_observer_frame(
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            2,
+            2,
+            0,
+            0,
+            0,
+            PublishPolicyInput {
+                mode: PolicyMode::Selective,
+                population: PopulationClass::High,
+                overrides: &overrides,
+                recent_observer_bytes: 3000,
+                tick_overrun_hint: false,
+            },
+        );
+        assert_eq!(stats.policy_domain_suppressed, 0);
+        let frame = decode_replication_frame(&pipe.pop().expect("lethal update").payload).unwrap();
+        assert!(frame.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Update {
+                entity_id,
+                domains,
+                health: Some(ReplicatedHealth { current, .. }),
+                ..
+            } if *entity_id == to_wire_id(remote) && domains.health && *current <= 0.0
+        )));
+    }
+
+    #[test]
+    fn selective_policy_emits_respawn_health_to_existing_observer() {
+        let (mut world, observer, remote) = two_players();
+        let _ = world.set_health(remote, purgatory_simulation::Health::full(100.0));
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let overrides = RelationOverrides::default();
+        let _ = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let _ = pipe.pop();
+
+        assert!(world.apply_damage(remote, 100.0));
+        let _ = distribute_replication_dirty(&world, &fanout, |obs, subject, _| {
+            if obs == observer {
+                state.queue_pending_update(subject);
+            }
+        });
+        world.clear_replication_dirty();
+        let _ = publish_observer_frame(
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            2,
+            2,
+            0,
+            0,
+            0,
+            PublishPolicyInput {
+                mode: PolicyMode::Selective,
+                population: PopulationClass::High,
+                overrides: &overrides,
+                recent_observer_bytes: 3000,
+                tick_overrun_hint: false,
+            },
+        );
+        let dead = decode_replication_frame(&pipe.pop().expect("dead update").payload).unwrap();
+        assert!(dead.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Update {
+                entity_id,
+                domains,
+                health: Some(ReplicatedHealth { current, .. }),
+                ..
+            } if *entity_id == to_wire_id(remote) && domains.health && *current <= 0.0
+        )));
+
+        assert!(world.respawn_player_entity(remote));
+        let _ = distribute_replication_dirty(&world, &fanout, |obs, subject, _| {
+            if obs == observer {
+                state.queue_pending_update(subject);
+            }
+        });
+        world.clear_replication_dirty();
+        let _ = publish_observer_frame(
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            3,
+            3,
+            0,
+            0,
+            0,
+            PublishPolicyInput {
+                mode: PolicyMode::Selective,
+                population: PopulationClass::High,
+                overrides: &overrides,
+                recent_observer_bytes: 3000,
+                tick_overrun_hint: false,
+            },
+        );
+        let alive = decode_replication_frame(&pipe.pop().expect("respawn update").payload).unwrap();
+        assert!(alive.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Update {
+                entity_id,
+                domains,
+                health: Some(ReplicatedHealth { current, .. }),
+                ..
+            } if *entity_id == to_wire_id(remote) && domains.health && *current > 0.0
+        )));
+    }
+
+    #[test]
+    fn dead_health_is_in_late_baseline_and_epoch_resync() {
+        let (mut world, observer, remote) = two_players();
+        let _ = world.set_health(remote, purgatory_simulation::Health::full(100.0));
+        assert!(world.apply_damage(remote, 100.0));
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        let overrides = RelationOverrides::default();
+        let policy = PublishPolicyInput::baseline(&overrides);
+
+        publish_observer_frame(
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            1,
+            1,
+            0,
+            0,
+            0,
+            policy,
+        );
+        let late_baseline =
+            decode_replication_frame(&pipe.pop().expect("late baseline").payload).unwrap();
+        assert!(late_baseline.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Enter {
+                entity,
+                health: Some(ReplicatedHealth { current, .. }),
+                ..
+            } if entity.entity_id == to_wire_id(remote) && *current <= 0.0
+        )));
+
+        state.bump_epoch();
+        pipe.purge_older_than(state.epoch);
+        publish_observer_frame(
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            2,
+            2,
+            0,
+            0,
+            0,
+            policy,
+        );
+        let resync = decode_replication_frame(&pipe.pop().expect("epoch resync").payload).unwrap();
+        assert_eq!(resync.observer_baseline_epoch, state.epoch);
+        assert!(resync.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Enter {
+                entity,
+                health: Some(ReplicatedHealth { current, .. }),
+                ..
+            } if entity.entity_id == to_wire_id(remote) && *current <= 0.0
+        )));
     }
 
     #[test]
