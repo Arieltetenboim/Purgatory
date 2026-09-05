@@ -112,6 +112,7 @@ The detailed validation policy and extended network/load gates live in the docs 
 |---|---|
 | [`PHASE`](PHASE) | Exact current development phase |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Development roadmap and phase history |
+| [`docs/PROJECT_ENGINEERING_NOTES.md`](docs/PROJECT_ENGINEERING_NOTES.md) | Engineering context, manual observations, rejected hypotheses, tool constraints and deferred polish |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Architecture Decision Records (ADRs) and frozen decisions |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Network protocol contract |
