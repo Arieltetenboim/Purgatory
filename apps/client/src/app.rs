@@ -25,7 +25,7 @@ use crate::character_presentation::{
     CharacterPresentationSet, LocalMotion, PresentationEntityKey, PresentationOneShotTable,
     PresentationView, RemoteMotion, apply_climb_back_overlay, equipment_view_from_replica,
     from_local_with_presentation, from_remote_with_presentation,
-    presentation_debug_quads_with_headwear,
+    presentation_debug_quads_with_assets,
 };
 #[cfg(feature = "dev-diagnostics")]
 use crate::debug::aoi_view::{
@@ -146,7 +146,7 @@ pub fn run() -> Result<(), String> {
         .map_err(|err| format!("PURGATORY client content invalid:\n{err}"))?;
     let event_loop = EventLoop::new().map_err(|err| format!("event loop: {err}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = ClientApp::new(registry);
+    let mut app = ClientApp::new(registry)?;
     event_loop
         .run_app(&mut app)
         .map_err(|err| format!("run app: {err}"))?;
@@ -159,6 +159,8 @@ pub fn run() -> Result<(), String> {
 struct ClientApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    asset_runtime: crate::asset_runtime::AssetRuntime,
+    character_visual_pack: crate::character_assets::CharacterVisualPack,
     #[cfg(feature = "dev-diagnostics")]
     debug: Option<DebugOverlay>,
     #[cfg(feature = "dev-diagnostics")]
@@ -237,10 +239,17 @@ struct ClientApp {
 }
 
 impl ClientApp {
-    fn new(registry: ContentRegistry) -> Self {
-        Self {
+    fn new(registry: ContentRegistry) -> Result<Self, String> {
+        let mut asset_runtime = crate::asset_runtime::AssetRuntime::new();
+        crate::headwear_proof::register_assets(&mut asset_runtime)?;
+        let character_visual_pack =
+            crate::character_assets::embedded_character_visual_pack(&mut asset_runtime)
+                .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
+        Ok(Self {
             window: None,
             renderer: None,
+            asset_runtime,
+            character_visual_pack,
             #[cfg(feature = "dev-diagnostics")]
             debug: None,
             clock: SimulationClock::new(),
@@ -319,7 +328,7 @@ impl ClientApp {
             rf_ab_elapsed: 0.0,
             #[cfg(feature = "dev-diagnostics")]
             rf_proof: None,
-        }
+        })
     }
 
     #[cfg(feature = "dev-diagnostics")]
@@ -2015,9 +2024,11 @@ impl ClientApp {
                     } else {
                         entry.state().view
                     };
-                    quads.extend(presentation_debug_quads_with_headwear(
+                    quads.extend(presentation_debug_quads_with_assets(
                         bone_map,
                         entry,
+                        &self.asset_runtime,
+                        &self.character_visual_pack,
                         preview_scale,
                         true,
                         view,
@@ -3442,7 +3453,7 @@ impl ApplicationHandler for ClientApp {
             }
         };
 
-        match Renderer::new(window.clone()) {
+        match Renderer::new(window.clone(), self.asset_runtime.resources()) {
             Ok(mut renderer) => {
                 renderer.set_render_scale(self.display.settings().render_scale);
                 let camera: Camera = renderer.camera();

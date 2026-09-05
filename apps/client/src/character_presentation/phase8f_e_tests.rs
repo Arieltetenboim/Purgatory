@@ -361,17 +361,20 @@ fn headwear_side_sprite_is_shared_local_remote_path() {
     let map = set.bone_map();
     let lq = presentation_debug_quads(map, local, 1.15, true, PresentationView::Side);
     let rq = presentation_debug_quads(map, remote, 1.15, true, PresentationView::Side);
-    let crown_i = plan_character_draw(local.hidden_base(), local.bound(), PresentationView::Side)
+    let l_crown_i = lq
         .iter()
-        .position(|k| match k {
-            super::draw_order::PlannedKind::Attachment(i) => {
-                local.bound()[*i].attachment_id == "crown"
-            }
-            super::draw_order::PlannedKind::Base(_) => false,
+        .position(|quad| {
+            quad.sprite_texture_id() == Some(crate::renderer::SpriteTextureId::HEADWEAR)
         })
         .unwrap();
-    assert!(lq[crown_i].is_textured());
-    assert!(rq[crown_i].is_textured());
+    let r_crown_i = rq
+        .iter()
+        .position(|quad| {
+            quad.sprite_texture_id() == Some(crate::renderer::SpriteTextureId::HEADWEAR)
+        })
+        .unwrap();
+    assert!(lq[l_crown_i].is_textured());
+    assert!(rq[r_crown_i].is_textured());
     let l_crown = local
         .bound()
         .iter()
@@ -385,11 +388,64 @@ fn headwear_side_sprite_is_shared_local_remote_path() {
         .map(|t| t.translation)
         .unwrap_or([0.0, 0.0]);
     let expected = crate::headwear_proof::sprite_quad_for_cell(xf, 1.15, root, 0);
-    assert_eq!(lq[crown_i].world_corners(), expected.world_corners());
+    assert_eq!(lq[l_crown_i].world_corners(), expected.world_corners());
     assert_eq!(
         xf.rotation,
         local.prepared().world.get(HEAD).unwrap().rotation
     );
+}
+
+#[test]
+fn left_facing_headwear_mirrors_around_root_and_stays_on_crown() {
+    let registry = pack();
+    let equipment = present_slots(&[(EquipmentSlot::Headwear, cid("equipment.debug.cloth_cap"))]);
+    let mut set = CharacterPresentationSet::new();
+    let key = PresentationEntityKey::new(3, 1);
+    set.sync(
+        [(
+            key,
+            from_local(
+                LocalMotion {
+                    pose: [0.0, 0.0],
+                    velocity: [0.0, 0.0],
+                    grounded: true,
+                    equipment,
+                },
+                Facing::Left,
+            ),
+        )],
+        &registry,
+        0.0,
+    );
+    let entry = set.get(key).unwrap();
+    let quads = presentation_debug_quads(set.bone_map(), entry, 1.15, true, PresentationView::Side);
+    let headwear = quads
+        .iter()
+        .find(|quad| quad.sprite_texture_id() == Some(crate::renderer::SpriteTextureId::HEADWEAR))
+        .copied()
+        .unwrap();
+    let crown = entry
+        .bound()
+        .iter()
+        .find(|bound| bound.attachment_id == "crown")
+        .unwrap();
+    let xf = compose_attachment(crown, entry.prepared().world).unwrap();
+    let root = entry
+        .prepared()
+        .world
+        .get(purgatory_skeleton::ROOT)
+        .unwrap()
+        .translation;
+    let right = crate::headwear_proof::sprite_quad_for_cell(xf, 1.15, root, 0);
+    assert_eq!(
+        headwear.world_corners(),
+        right.mirror_x_about(root).world_corners()
+    );
+    assert_eq!(headwear.uvs(), right.mirror_x_about(root).uvs());
+    let crown_origin = xf.translation;
+    assert!(headwear.world_corners().iter().any(|corner| {
+        (corner[0] - crown_origin[0]).abs() < 1.0 && (corner[1] - crown_origin[1]).abs() < 1.0
+    }));
 }
 
 #[test]
@@ -405,22 +461,21 @@ fn headwear_debug_cell_selects_atlas_uvs() {
         presentation_debug_quads_with_headwear(map, entry, 1.15, true, PresentationView::Side, 0);
     let cell1 =
         presentation_debug_quads_with_headwear(map, entry, 1.15, true, PresentationView::Side, 1);
-    let crown_i = plan_character_draw(entry.hidden_base(), entry.bound(), PresentationView::Side)
-        .iter()
-        .position(|k| match k {
-            super::draw_order::PlannedKind::Attachment(i) => {
-                entry.bound()[*i].attachment_id == "crown"
-            }
-            super::draw_order::PlannedKind::Base(_) => false,
-        })
-        .unwrap();
+    let crown_i = |quads: &[crate::renderer::DrawQuad]| {
+        quads
+            .iter()
+            .position(|quad| {
+                quad.sprite_texture_id() == Some(crate::renderer::SpriteTextureId::HEADWEAR)
+            })
+            .unwrap()
+    };
     assert_eq!(
-        cell0[crown_i].uvs(),
+        cell0[crown_i(&cell0)].uvs(),
         crate::headwear_proof::gpu_uvs_for_cell(0)
     );
     assert_eq!(
-        cell1[crown_i].uvs(),
+        cell1[crown_i(&cell1)].uvs(),
         crate::headwear_proof::gpu_uvs_for_cell(1)
     );
-    assert_ne!(cell0[crown_i].uvs(), cell1[crown_i].uvs());
+    assert_ne!(cell0[crown_i(&cell0)].uvs(), cell1[crown_i(&cell1)].uvs());
 }

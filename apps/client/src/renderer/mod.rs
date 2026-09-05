@@ -17,7 +17,7 @@ pub use camera::{
 #[allow(unused_imports)] // OverlayPass is for DEV egui submit; shipping keeps the type
 pub use gpu::OverlayPass;
 #[allow(unused_imports)] // WorldMsaa is DEV Display-selected; shipping stays on the default
-pub use gpu::{DrawQuad, FrameStatus, MAX_QUADS, Renderer, WorldMsaa};
+pub use gpu::{DrawQuad, FrameStatus, MAX_QUADS, Renderer, SpriteTextureId, WorldMsaa};
 #[allow(unused_imports)] // DEV overlay / diagnostics assemble; shipping may omit consumers
 pub use parallax::{
     PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_quads, parallax_quads,

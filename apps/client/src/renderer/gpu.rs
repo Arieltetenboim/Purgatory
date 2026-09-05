@@ -5,6 +5,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use winit::window::Window;
 
+use crate::asset_runtime::SpriteResource;
 use crate::display::{
     RenderScale, SurfaceResizeAction, WorldTargetAction, classify_framebuffer_resize,
     classify_world_target_resize, internal_render_size,
@@ -97,6 +98,26 @@ const DUMMY_UVS: [[f32; 2]; 4] = [[0.0, 0.0]; 4];
 /// Hard cap on world quads uploaded this frame. Excess is truncated.
 pub const MAX_QUADS: usize = 192;
 
+/// Renderer/client identity for a texture used by a world sprite.
+///
+/// This is deliberately separate from content, visual, filesystem, and
+/// gameplay identities.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpriteTextureId(u32);
+
+impl SpriteTextureId {
+    #[cfg(test)]
+    pub const HEADWEAR: Self = Self(1);
+
+    pub(crate) const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    pub(crate) const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
 /// Colored rectangle (or triangle) in world units. Presentation only.
 ///
 /// Axis-aligned callers use [`DrawQuad::rect`] / [`DrawQuad::triangle`].
@@ -112,7 +133,7 @@ pub struct DrawQuad {
     /// When true, vertices form an upward triangle instead of an AABB.
     pub triangle: bool,
     uvs: [[f32; 2]; 4],
-    textured: bool,
+    sprite_texture: Option<SpriteTextureId>,
     layout: QuadLayout,
 }
 
@@ -140,7 +161,7 @@ impl DrawQuad {
             color,
             triangle: false,
             uvs: DUMMY_UVS,
-            textured: false,
+            sprite_texture: None,
             layout: QuadLayout::AxisAligned,
         }
     }
@@ -153,7 +174,7 @@ impl DrawQuad {
             color,
             triangle: true,
             uvs: DUMMY_UVS,
-            textured: false,
+            sprite_texture: None,
             layout: QuadLayout::AxisAligned,
         }
     }
@@ -176,7 +197,7 @@ impl DrawQuad {
             color,
             triangle: false,
             uvs: DUMMY_UVS,
-            textured: false,
+            sprite_texture: None,
             layout: QuadLayout::Oriented {
                 pivot,
                 local_center,
@@ -227,7 +248,7 @@ impl DrawQuad {
             color,
             triangle: false,
             uvs: DUMMY_UVS,
-            textured: false,
+            sprite_texture: None,
             layout: QuadLayout::Convex {
                 pivot,
                 rotation,
@@ -240,6 +261,7 @@ impl DrawQuad {
     /// UVs follow GPU winding (bottom-left, bottom-right, top-right, top-left).
     #[must_use]
     pub fn textured_sprite(
+        sprite_texture: SpriteTextureId,
         pivot: [f32; 2],
         local_corners: [[f32; 2]; 4],
         uvs: [[f32; 2]; 4],
@@ -247,13 +269,74 @@ impl DrawQuad {
     ) -> Self {
         let mut quad = Self::convex(pivot, local_corners, rotation, [1.0, 1.0, 1.0, 1.0]);
         quad.uvs = uvs;
-        quad.textured = true;
+        quad.sprite_texture = Some(sprite_texture);
+        quad
+    }
+
+    /// Mirror presentation geometry around a world-space vertical origin.
+    #[must_use]
+    pub fn mirror_x_about(self, root: [f32; 2]) -> Self {
+        match self.layout {
+            QuadLayout::AxisAligned => Self {
+                center: [root[0] * 2.0 - self.center[0], self.center[1]],
+                ..self
+            },
+            QuadLayout::Oriented {
+                pivot,
+                local_center,
+                rotation,
+            } => Self::oriented(
+                [root[0] * 2.0 - pivot[0], pivot[1]],
+                self.size,
+                [-local_center[0], local_center[1]],
+                -rotation,
+                self.color,
+            ),
+            QuadLayout::Convex {
+                pivot,
+                rotation,
+                local_corners,
+            } => {
+                let mirror = |corner: [f32; 2]| [-corner[0], corner[1]];
+                Self::textured_or_solid_convex(
+                    [root[0] * 2.0 - pivot[0], pivot[1]],
+                    [
+                        mirror(local_corners[1]),
+                        mirror(local_corners[0]),
+                        mirror(local_corners[3]),
+                        mirror(local_corners[2]),
+                    ],
+                    -rotation,
+                    self.color,
+                    self.sprite_texture,
+                    [self.uvs[1], self.uvs[0], self.uvs[3], self.uvs[2]],
+                )
+            }
+        }
+    }
+
+    fn textured_or_solid_convex(
+        pivot: [f32; 2],
+        local_corners: [[f32; 2]; 4],
+        rotation: f32,
+        color: [f32; 4],
+        sprite_texture: Option<SpriteTextureId>,
+        uvs: [[f32; 2]; 4],
+    ) -> Self {
+        let mut quad = Self::convex(pivot, local_corners, rotation, color);
+        quad.sprite_texture = sprite_texture;
+        quad.uvs = uvs;
         quad
     }
 
     #[must_use]
     pub const fn is_textured(self) -> bool {
-        self.textured
+        self.sprite_texture.is_some()
+    }
+
+    #[must_use]
+    pub const fn sprite_texture_id(self) -> Option<SpriteTextureId> {
+        self.sprite_texture
     }
 
     #[must_use]
@@ -289,6 +372,33 @@ struct Vertex {
     color: [f32; 4],
     uv: [f32; 2],
     textured: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DrawRun {
+    texture: Option<SpriteTextureId>,
+    first_quad: usize,
+    quad_count: usize,
+}
+
+fn build_draw_runs(world_quads: &[DrawQuad]) -> Vec<DrawRun> {
+    let mut runs: Vec<DrawRun> = Vec::new();
+    let count = world_quads.len().min(MAX_QUADS);
+    for (quad_index, quad) in world_quads.iter().take(count).enumerate() {
+        let texture = quad.sprite_texture_id();
+        if let Some(run) = runs.last_mut()
+            && run.texture == texture
+        {
+            run.quad_count += 1;
+        } else {
+            runs.push(DrawRun {
+                texture,
+                first_quad: quad_index,
+                quad_count: 1,
+            });
+        }
+    }
+    runs
 }
 
 #[repr(C)]
@@ -357,7 +467,7 @@ pub struct Renderer {
     pipeline_4x: Option<wgpu::RenderPipeline>,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    index_count: u32,
+    draw_runs: Vec<DrawRun>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     camera: Camera,
@@ -367,7 +477,7 @@ pub struct Renderer {
     blit_sampler_nearest: wgpu::Sampler,
     #[cfg(feature = "dev-diagnostics")]
     camera_bind_group_layout: wgpu::BindGroupLayout,
-    headwear: HeadwearSpriteGpu,
+    sprite_textures: Vec<SpriteTextureGpu>,
     world_target: Option<WorldTarget>,
     world_msaa: WorldMsaa,
     msaa_4x_supported: bool,
@@ -384,7 +494,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(window: Arc<Window>) -> Result<Self, String> {
+    pub fn new(window: Arc<Window>, resources: &[SpriteResource]) -> Result<Self, String> {
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
         instance_desc.backends = wgpu::Backends::PRIMARY;
         let instance = wgpu::Instance::new(instance_desc);
@@ -549,7 +659,17 @@ impl Renderer {
                 resource: camera_buffer.as_entire_binding(),
             }],
         });
-        let headwear = create_headwear_sprite(&device, &queue, &sprite_bind_group_layout)?;
+        let mut sprite_textures = Vec::with_capacity(resources.len());
+        for resource in resources {
+            sprite_textures.push(create_sprite_texture(
+                &device,
+                &queue,
+                &sprite_bind_group_layout,
+                resource.id,
+                &format!("purgatory-sprite-{}", resource.id.raw()),
+                &resource.image,
+            )?);
+        }
 
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("purgatory-world-blit-shader"),
@@ -667,7 +787,7 @@ impl Renderer {
             pipeline_4x,
             vertex_buffer,
             index_buffer,
-            index_count: 0,
+            draw_runs: Vec::new(),
             camera_buffer,
             camera_bind_group,
             camera,
@@ -677,7 +797,7 @@ impl Renderer {
             blit_sampler_nearest,
             #[cfg(feature = "dev-diagnostics")]
             camera_bind_group_layout,
-            headwear,
+            sprite_textures,
             world_target,
             world_msaa,
             msaa_4x_supported,
@@ -936,11 +1056,29 @@ impl Renderer {
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            pass.set_bind_group(1, &self.headwear.bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            if self.index_count > 0 {
-                pass.draw_indexed(0..self.index_count, 0, 0..1);
+            for run in &self.draw_runs {
+                // Colored runs still bind a valid sprite resource because the
+                // shader layout requires one. The vertex flag keeps them
+                // untextured.
+                let Some(texture) = run
+                    .texture
+                    .or_else(|| self.sprite_textures.first().map(|sprite| sprite.id))
+                else {
+                    continue;
+                };
+                let Some(sprite) = self
+                    .sprite_textures
+                    .iter()
+                    .find(|sprite| sprite.id == texture)
+                else {
+                    continue;
+                };
+                pass.set_bind_group(1, &sprite.bind_group, &[]);
+                let first_index = (run.first_quad * 6) as u32;
+                let index_count = (run.quad_count * 6) as u32;
+                pass.draw_indexed(first_index..first_index + index_count, 0, 0..1);
             }
         }
 
@@ -1058,7 +1196,7 @@ impl Renderer {
             self.queue
                 .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
         }
-        self.index_count = (n * 6) as u32;
+        self.draw_runs = build_draw_runs(world_quads);
     }
 
     #[cfg(feature = "dev-diagnostics")]
@@ -1162,7 +1300,7 @@ impl Renderer {
         self.queue
             .write_buffer(&rf.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
         let index_count = (quads.len() * 6) as u32;
-        let sprite_bind_group = &self.headwear.bind_group;
+        let sprite_bind_group = &self.sprite_textures[0].bind_group;
         let index_buffer = &self.index_buffer;
         let draw_1x = ColoredPassDraw {
             pipeline: &self.pipeline_1x,
@@ -1227,33 +1365,30 @@ impl Renderer {
     }
 }
 
-struct HeadwearSpriteGpu {
+struct SpriteTextureGpu {
+    id: SpriteTextureId,
     _texture: wgpu::Texture,
     _sampler: wgpu::Sampler,
     bind_group: wgpu::BindGroup,
 }
 
-fn create_headwear_sprite(
+fn create_sprite_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
-) -> Result<HeadwearSpriteGpu, String> {
-    let img = crate::headwear_proof::atlas_rgba()?;
+    id: SpriteTextureId,
+    label: &str,
+    img: &image::RgbaImage,
+) -> Result<SpriteTextureGpu, String> {
     let width = img.width();
     let height = img.height();
-    let expected = crate::headwear_proof::ATLAS_PX;
-    if width != expected || height != expected {
-        return Err(format!(
-            "headwear atlas must be {expected}x{expected}, got {width}x{height}"
-        ));
-    }
     let size = wgpu::Extent3d {
         width,
         height,
         depth_or_array_layers: 1,
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(crate::headwear_proof::VISUAL_KEY),
+        label: Some(label),
         size,
         mip_level_count: 1,
         sample_count: 1,
@@ -1279,7 +1414,7 @@ fn create_headwear_sprite(
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("purgatory-headwear-nearest"),
+        label: Some("purgatory-sprite-nearest"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
         address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -1289,7 +1424,7 @@ fn create_headwear_sprite(
         ..Default::default()
     });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("purgatory-headwear-bg"),
+        label: Some("purgatory-sprite-bg"),
         layout,
         entries: &[
             wgpu::BindGroupEntry {
@@ -1302,7 +1437,8 @@ fn create_headwear_sprite(
             },
         ],
     });
-    Ok(HeadwearSpriteGpu {
+    Ok(SpriteTextureGpu {
+        id,
         _texture: texture,
         _sampler: sampler,
         bind_group,
@@ -1662,11 +1798,99 @@ mod tests {
         let locals = [[-0.5, -0.3], [0.5, -0.3], [0.5, 0.7], [-0.5, 0.7]];
         let uvs = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
         let solid = DrawQuad::convex(pivot, locals, 0.25, [1.0; 4]);
-        let sprite = DrawQuad::textured_sprite(pivot, locals, uvs, 0.25);
+        let sprite = DrawQuad::textured_sprite(SpriteTextureId::HEADWEAR, pivot, locals, uvs, 0.25);
         assert!(sprite.is_textured());
+        assert_eq!(sprite.sprite_texture_id(), Some(SpriteTextureId::HEADWEAR));
         assert!(!solid.is_textured());
         assert!(corners_eq(sprite.world_corners(), solid.world_corners()));
         assert_eq!(sprite.color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    fn test_sprite(texture: SpriteTextureId) -> DrawQuad {
+        DrawQuad::textured_sprite(
+            texture,
+            [0.0, 0.0],
+            [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
+            [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+            0.0,
+        )
+    }
+
+    #[test]
+    fn draw_runs_preserve_a_b_a_order() {
+        let a = SpriteTextureId::from_raw(1);
+        let b = SpriteTextureId::from_raw(2);
+        let runs = build_draw_runs(&[test_sprite(a), test_sprite(b), test_sprite(a)]);
+        assert_eq!(
+            runs,
+            [
+                DrawRun {
+                    texture: Some(a),
+                    first_quad: 0,
+                    quad_count: 1
+                },
+                DrawRun {
+                    texture: Some(b),
+                    first_quad: 1,
+                    quad_count: 1
+                },
+                DrawRun {
+                    texture: Some(a),
+                    first_quad: 2,
+                    quad_count: 1
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn draw_runs_keep_colored_quads_in_sequence() {
+        let a = SpriteTextureId::from_raw(1);
+        let runs = build_draw_runs(&[
+            test_sprite(a),
+            DrawQuad::rect([0.0, 0.0], [1.0, 1.0], [1.0; 4]),
+            test_sprite(a),
+        ]);
+        assert_eq!(
+            runs.iter().map(|run| run.texture).collect::<Vec<_>>(),
+            vec![Some(a), None, Some(a)]
+        );
+        assert_eq!(
+            runs.iter().map(|run| run.first_quad).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn draw_runs_merge_consecutive_same_texture() {
+        let a = SpriteTextureId::from_raw(1);
+        let runs = build_draw_runs(&[test_sprite(a), test_sprite(a), test_sprite(a)]);
+        assert_eq!(
+            runs,
+            [DrawRun {
+                texture: Some(a),
+                first_quad: 0,
+                quad_count: 3
+            }]
+        );
+    }
+
+    #[test]
+    fn draw_runs_truncate_at_max_quads() {
+        let a = SpriteTextureId::from_raw(1);
+        let b = SpriteTextureId::from_raw(2);
+        let mut quads = vec![test_sprite(a); MAX_QUADS];
+        quads.push(test_sprite(b));
+        let runs = build_draw_runs(&quads);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].first_quad, 0);
+        assert_eq!(runs[0].quad_count, MAX_QUADS);
+    }
+
+    #[test]
+    fn colored_quad_has_no_sprite_texture_identity() {
+        let colored = DrawQuad::rect([0.0, 0.0], [1.0, 1.0], [1.0; 4]);
+        assert_eq!(colored.sprite_texture_id(), None);
     }
 
     #[test]

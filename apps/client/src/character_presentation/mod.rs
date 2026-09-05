@@ -30,7 +30,7 @@ pub(crate) use adapters::{
     from_local_with_presentation, from_remote_with_presentation,
 };
 pub(crate) use collection::{CharacterPresentationSet, PresentationEntityKey};
-pub(crate) use debug_visual::presentation_debug_quads_with_headwear;
+pub(crate) use debug_visual::presentation_debug_quads_with_assets;
 pub(crate) use oneshot_table::PresentationOneShotTable;
 pub(crate) use state::{PresentationActivity, PresentationView};
 

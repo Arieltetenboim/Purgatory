@@ -5,9 +5,13 @@
 //! [`crate::character_presentation`] attachments; this module only supplies
 //! the Side sprite quad. Player debug overlay selects cells 1–4 (a–d).
 
+#[cfg(test)]
 use purgatory_skeleton::BoneTransform;
 
-use crate::renderer::DrawQuad;
+use crate::asset_runtime::{AssetRuntime, ResolvedVisual};
+#[cfg(test)]
+use crate::renderer::{DrawQuad, SpriteTextureId};
+#[cfg(test)]
 use crate::skeleton_debug::{sanitize_preview_scale, scale_about_root};
 
 /// Same visual-key string Animation Lab uses. Content packs may use a
@@ -83,7 +87,34 @@ pub fn atlas_rgba() -> Result<image::RgbaImage, String> {
     Ok(atlas)
 }
 
+pub fn register_assets(assets: &mut AssetRuntime) -> Result<(), String> {
+    let atlas = atlas_rgba()?;
+    let texture = assets.register_image("equipment.debug.headwear_proof.atlas", atlas)?;
+    for (index, key) in VISUAL_KEYS.iter().enumerate() {
+        let x = (index as u32 % 2) * SPRITE_PX;
+        let y = (index as u32 / 2) * SPRITE_PX;
+        assets.register_visual(
+            key,
+            ResolvedVisual {
+                texture,
+                rect_px: [x, y, SPRITE_PX, SPRITE_PX],
+                uv: gpu_uvs_for_cell(index as u8),
+                pivot_px: [CROWN_LOCAL_X, CROWN_LOCAL_Y],
+                dimensions_px: [SPRITE_PX, SPRITE_PX],
+                pixels_per_unit: PX_PER_WU,
+            },
+        )?;
+    }
+    // The authored cloth-cap key is the currently shipped first proof cell.
+    let first_visual = *assets
+        .visual(VISUAL_KEY)
+        .expect("registered headwear proof key");
+    assets.register_visual("equipment.debug.cloth_cap.side", first_visual)?;
+    Ok(())
+}
+
 #[must_use]
+#[cfg(test)]
 pub fn pixel_to_local(px: f32, py: f32) -> [f32; 2] {
     [
         (px - CROWN_LOCAL_X) / PX_PER_WU,
@@ -93,6 +124,7 @@ pub fn pixel_to_local(px: f32, py: f32) -> [f32; 2] {
 
 /// Image-space TL, TR, BR, BL (Lab order).
 #[must_use]
+#[cfg(test)]
 pub fn sprite_local_corners_lab() -> [[f32; 2]; 4] {
     let w = SPRITE_PX as f32;
     let h = SPRITE_PX as f32;
@@ -106,6 +138,7 @@ pub fn sprite_local_corners_lab() -> [[f32; 2]; 4] {
 
 /// GPU winding: BL, BR, TR, TL.
 #[must_use]
+#[cfg(test)]
 pub fn sprite_local_corners_gpu() -> [[f32; 2]; 4] {
     let lab = sprite_local_corners_lab();
     [lab[3], lab[2], lab[1], lab[0]]
@@ -125,6 +158,7 @@ pub fn apply_local(xf: BoneTransform, local: [f32; 2]) -> [f32; 2] {
 /// (`HEAD world ∘ ANCHOR_CROWN ∘ correction`). Local origin is Crown.
 /// `cell` is atlas index `0..=3` (HEADWEAR 1–4).
 #[must_use]
+#[cfg(test)]
 pub fn sprite_quad_for_cell(
     xf: BoneTransform,
     preview_scale: f32,
@@ -134,7 +168,13 @@ pub fn sprite_quad_for_cell(
     let scale = sanitize_preview_scale(preview_scale);
     let pivot = scale_about_root(xf.translation, root, scale);
     let locals = sprite_local_corners_gpu().map(|p| [p[0] * scale, p[1] * scale]);
-    DrawQuad::textured_sprite(pivot, locals, gpu_uvs_for_cell(cell), xf.rotation)
+    DrawQuad::textured_sprite(
+        SpriteTextureId::HEADWEAR,
+        pivot,
+        locals,
+        gpu_uvs_for_cell(cell),
+        xf.rotation,
+    )
 }
 
 #[cfg(test)]
@@ -177,6 +217,20 @@ mod tests {
         assert_eq!(atlas.get_pixel(0, 0), a.get_pixel(0, 0));
         let b = image::load_from_memory(PNG_CELLS[1]).unwrap().to_rgba8();
         assert_eq!(atlas.get_pixel(SPRITE_PX, 0), b.get_pixel(0, 0));
+    }
+
+    #[test]
+    fn headwear_visual_keys_resolve_through_shared_asset_runtime() {
+        let mut assets = AssetRuntime::new();
+        register_assets(&mut assets).unwrap();
+        let proof = assets.visual(VISUAL_KEYS[0]).unwrap();
+        let cloth_cap = assets.visual("equipment.debug.cloth_cap.side").unwrap();
+        assert_eq!(assets.resource_count(), 1);
+        assert_eq!(proof.texture, SpriteTextureId::HEADWEAR);
+        assert_eq!(cloth_cap, proof);
+        assert_eq!(proof.rect_px, [0, 0, SPRITE_PX, SPRITE_PX]);
+        assert_eq!(proof.pivot_px, [CROWN_LOCAL_X, CROWN_LOCAL_Y]);
+        assert_eq!(proof.pixels_per_unit, PX_PER_WU);
     }
 
     #[test]

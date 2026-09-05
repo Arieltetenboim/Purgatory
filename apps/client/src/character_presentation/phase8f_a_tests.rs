@@ -229,7 +229,7 @@ fn sword_emits_in_arm_front_after_core_and_back_limbs() {
     assert!(torso_i < front_hand_i);
     assert!(front_hand_i < sword_i);
     let quads = presentation_debug_quads(set.bone_map(), entry, 1.15, true, PresentationView::Side);
-    assert_eq!(quads.len(), plan.len());
+    assert_eq!(quads.len(), plan.len() - 1);
 }
 
 #[test]

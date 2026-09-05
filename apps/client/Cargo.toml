@@ -31,6 +31,8 @@ purgatory-protocol = { path = "../../crates/protocol" }
 purgatory-simulation = { path = "../../crates/simulation" }
 purgatory-animation = { path = "../../crates/animation" }
 purgatory-skeleton = { path = "../../crates/skeleton" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 quinn = { workspace = true }
 rustls = { workspace = true }
 tokio = { workspace = true }

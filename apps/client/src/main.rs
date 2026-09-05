@@ -1,8 +1,10 @@
 #![cfg_attr(not(feature = "dev-diagnostics"), allow(dead_code))]
 
 mod app;
+mod asset_runtime;
 mod assets;
 mod camera_follow;
+mod character_assets;
 mod character_presentation;
 #[cfg(feature = "dev-diagnostics")]
 mod debug;
