@@ -2,8 +2,7 @@
 //! despawn/removal, and channel/address relocations.
 
 use crate::{
-    Aabb, ChannelId, EntityKind, EntityLifecycle, PlayerInput, PlayerState, Transform, World,
-    WorldAddress,
+    Aabb, ChannelId, EntityKind, EntityLifecycle, PlayerInput, Transform, World, WorldAddress,
 };
 
 #[test]

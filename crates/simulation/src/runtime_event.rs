@@ -129,4 +129,50 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert!(q.commit().is_empty());
     }
+
+    #[test]
+    fn events_are_staged_not_recursive_world_integration() {
+        let mut world = crate::World::new();
+        let _id = world
+            .spawn(
+                crate::RuntimeSpawnRequest::transient_at(crate::WorldAddress::DEV)
+                    .with_transform(crate::Transform::from_position([0.0, 1.0]))
+                    .visible(),
+            )
+            .unwrap();
+        world.begin_tick(crate::SimulationTick::from_count(1));
+        let _ = world.schedule_at(
+            crate::SimulationTick::from_count(1),
+            crate::ScheduleOwner::World,
+            crate::WorkLane::Critical,
+            crate::ScheduledKind::RaiseEvent { token: 11 },
+        );
+        world.drain_critical_scheduler();
+        let first = world.commit_runtime_events();
+        assert!(
+            first
+                .iter()
+                .any(|e| matches!(e, RuntimeEvent::ScheduledFired { token: 11, .. }))
+        );
+        assert!(
+            first
+                .iter()
+                .any(|e| matches!(e, RuntimeEvent::EntitySpawned { .. }))
+        );
+        world
+            .schedule_at(
+                crate::SimulationTick::from_count(1),
+                crate::ScheduleOwner::World,
+                crate::WorkLane::Critical,
+                crate::ScheduledKind::RaiseEvent { token: 12 },
+            )
+            .unwrap();
+        world.drain_critical_scheduler();
+        let second = world.commit_runtime_events();
+        assert!(
+            second
+                .iter()
+                .any(|e| matches!(e, RuntimeEvent::ScheduledFired { token: 12, .. }))
+        );
+    }
 }

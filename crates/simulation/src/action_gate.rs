@@ -66,3 +66,123 @@ pub fn evaluate_action_gate(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ActionEnd, ActionKind, RuntimeEvent, RuntimeSpawnRequest, SimulationTick, Transform, World,
+        WorldAddress,
+    };
+
+    fn spawn_generic(world: &mut World, x: f32) -> crate::EntityId {
+        world
+            .spawn(
+                RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                    .with_transform(Transform::from_position([x, 1.0]))
+                    .visible(),
+            )
+            .expect("spawn")
+    }
+
+    // helper not needed here
+
+    #[test]
+    fn action_request_start_complete() {
+        let mut world = World::new();
+        let owner = spawn_generic(&mut world, 0.0);
+        world.begin_tick(SimulationTick::from_count(1));
+        let action = world
+            .try_start_action(
+                owner,
+                ActionKind::Test { token: 1 },
+                ActionGateContext::in_world(),
+            )
+            .expect("start");
+        assert_eq!(action.phase, crate::action::ActionPhase::Active);
+        let ended = world.end_action(action.id, ActionEnd::Completed).unwrap();
+        assert_eq!(ended.phase, crate::action::ActionPhase::Completed);
+        assert!(world.active_action(owner).is_none());
+    }
+
+    #[test]
+    fn action_gate_transition_locked_does_not_create_slot() {
+        let mut world = World::new();
+        let owner = spawn_generic(&mut world, 0.0);
+        world.begin_tick(SimulationTick::from_count(1));
+        let ctx = ActionGateContext {
+            transition: Some(crate::InputGateReason::MapTransition),
+            session_bound: true,
+        };
+        let denied = world.try_start_action(owner, ActionKind::Test { token: 8 }, ctx);
+        assert_eq!(denied, Err(crate::ActionDenialReason::TransitionLocked));
+        assert!(world.active_action(owner).is_none());
+    }
+
+    #[test]
+    fn action_gate_rejects_without_slot() {
+        let mut world = World::new();
+        let owner = spawn_generic(&mut world, 0.0);
+        world.begin_tick(SimulationTick::from_count(1));
+        world
+            .try_start_action(
+                owner,
+                ActionKind::Test { token: 1 },
+                ActionGateContext::in_world(),
+            )
+            .unwrap();
+        let denied = world.try_start_action(
+            owner,
+            ActionKind::Test { token: 2 },
+            ActionGateContext::in_world(),
+        );
+        assert_eq!(denied, Err(crate::ActionDenialReason::Busy));
+        assert_eq!(
+            world.active_action(owner).unwrap().kind,
+            ActionKind::Test { token: 1 }
+        );
+        let events = world.commit_runtime_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, RuntimeEvent::ActionRejected { .. }))
+        );
+    }
+
+    #[test]
+    fn action_cancel_and_no_double_complete() {
+        let mut world = World::new();
+        let owner = spawn_generic(&mut world, 0.0);
+        world.begin_tick(SimulationTick::from_count(1));
+        let action = world
+            .try_start_action(
+                owner,
+                ActionKind::Test { token: 3 },
+                ActionGateContext::in_world(),
+            )
+            .unwrap();
+        world.end_action(action.id, ActionEnd::Cancelled).unwrap();
+        assert!(world.end_action(action.id, ActionEnd::Completed).is_err());
+    }
+
+    #[test]
+    fn owner_loss_cancels_action() {
+        let mut world = World::new();
+        let owner = spawn_generic(&mut world, 0.0);
+        world.begin_tick(SimulationTick::from_count(1));
+        let action = world
+            .try_start_action(
+                owner,
+                ActionKind::Test { token: 4 },
+                ActionGateContext::in_world(),
+            )
+            .unwrap();
+        assert!(world.despawn(owner));
+        assert!(world.active_action(owner).is_none());
+        let events = world.commit_runtime_events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RuntimeEvent::ActionEnded { id, end: ActionEnd::Cancelled, .. } if *id == action.id
+        )));
+    }
+}

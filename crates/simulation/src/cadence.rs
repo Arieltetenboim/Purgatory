@@ -110,4 +110,23 @@ mod tests {
         assert!(staggered_interval_due(1, 2, 1));
         assert!(!staggered_interval_due(1, 2, 0));
     }
+
+    #[test]
+    fn cadence_is_not_every_tick() {
+        let mut world = crate::World::new();
+        world.register_cadence(Cadence::EveryN { n: 4 }, 7);
+        let mut due_ticks = 0u32;
+        for t in 0..8 {
+            world.begin_tick(crate::SimulationTick::from_count(t));
+            world.pump_cadence();
+            let events = world.commit_runtime_events();
+            if events
+                .iter()
+                .any(|e| matches!(e, crate::RuntimeEvent::CadenceFired { token: 7, .. }))
+            {
+                due_ticks += 1;
+            }
+        }
+        assert_eq!(due_ticks, 2);
+    }
 }

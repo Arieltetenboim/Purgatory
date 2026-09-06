@@ -67,8 +67,6 @@ mod phase6b_tests;
 #[cfg(test)]
 mod phase6c_tests;
 #[cfg(test)]
-mod phase6f_tests;
-#[cfg(test)]
 mod phase6g_tests;
 #[cfg(test)]
 mod phase72_tests;

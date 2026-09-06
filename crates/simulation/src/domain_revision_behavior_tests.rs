@@ -1,6 +1,6 @@
 //! Domain revision behavior tests: transform and health revision independence.
 
-use crate::{Health, PlayerInput, PlayerState, Transform, World};
+use crate::{Health, PlayerInput, World};
 
 #[test]
 fn transform_rev_bumps_when_velocity_changes_without_position() {

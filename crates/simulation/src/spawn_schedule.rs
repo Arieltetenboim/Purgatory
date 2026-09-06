@@ -144,3 +144,78 @@ fn next_generation(current: u32) -> u32 {
     let next = current.wrapping_add(1);
     if next == 0 { 1 } else { next }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        RuntimeSpawnRequest, ScheduleOwner, SimulationTick, Transform, WorkLane, World,
+        WorldAddress,
+    };
+
+    fn spawn_generic(world: &mut World, x: f32) -> crate::EntityId {
+        world
+            .spawn(
+                RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                    .with_transform(Transform::from_position([x, 1.0]))
+                    .visible(),
+            )
+            .expect("spawn")
+    }
+
+    fn tick_world(world: &mut World, tick: u64) {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.drain_critical_scheduler();
+        let _ = world.commit_runtime_events();
+        world.pump_cadence();
+        world.drain_deferred_scheduler();
+    }
+
+    #[test]
+    fn scheduled_spawn_mints_fresh_entity_id() {
+        let mut world = World::new();
+        world.begin_tick(SimulationTick::from_count(1));
+        let first = spawn_generic(&mut world, 0.0);
+        world.despawn(first);
+        let req = RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+            .with_transform(Transform::from_position([4.0, 1.0]))
+            .visible();
+        world
+            .schedule_spawn(
+                req,
+                SimulationTick::from_count(3),
+                ScheduleOwner::World,
+                WorkLane::Deferred,
+            )
+            .unwrap();
+        tick_world(&mut world, 2);
+        assert_eq!(world.len(), 0);
+        tick_world(&mut world, 3);
+        assert_eq!(world.len(), 1);
+        let spawned = world
+            .iter_kind(crate::entity::EntityKind::Generic)
+            .next()
+            .unwrap();
+        assert_ne!(spawned, first, "respawn must not assume the old EntityId");
+        assert!(world.contains(spawned));
+        assert!(!world.contains(first));
+    }
+
+    #[test]
+    fn scheduled_spawn_cancel() {
+        let mut world = World::new();
+        world.begin_tick(SimulationTick::from_count(1));
+        let id = world
+            .schedule_spawn(
+                RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                    .with_transform(Transform::from_position([1.0, 1.0]))
+                    .visible(),
+                SimulationTick::from_count(4),
+                ScheduleOwner::World,
+                WorkLane::Deferred,
+            )
+            .unwrap();
+        assert!(world.cancel_scheduled_spawn(id));
+        tick_world(&mut world, 4);
+        assert_eq!(world.len(), 0);
+    }
+}

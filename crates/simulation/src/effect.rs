@@ -170,3 +170,69 @@ fn next_generation(current: u32) -> u32 {
     let next = current.wrapping_add(1);
     if next == 0 { 1 } else { next }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{RuntimeSpawnRequest, SimulationTick, Transform, World, WorldAddress};
+
+    fn spawn_generic(world: &mut World, x: f32) -> crate::EntityId {
+        world
+            .spawn(
+                RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                    .with_transform(Transform::from_position([x, 1.0]))
+                    .visible(),
+            )
+            .expect("spawn")
+    }
+
+    fn tick_world(world: &mut World, tick: u64) {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.drain_critical_scheduler();
+        let _ = world.commit_runtime_events();
+        world.pump_cadence();
+        world.drain_deferred_scheduler();
+    }
+
+    #[test]
+    fn effect_apply_expire_remove() {
+        let mut world = World::new();
+        let target = spawn_generic(&mut world, 2.0);
+        world.begin_tick(SimulationTick::from_count(10));
+        let effect = world
+            .apply_test_effect(target, 2, EffectKind::Test { token: 9 }, None)
+            .unwrap();
+        assert!(world.effect(effect.id).is_some());
+        tick_world(&mut world, 11);
+        assert!(world.effect(effect.id).is_some());
+        tick_world(&mut world, 12);
+        assert!(world.effect(effect.id).is_none());
+    }
+
+    #[test]
+    fn effect_explicit_remove_stale_expiry_is_noop() {
+        let mut world = World::new();
+        let target = spawn_generic(&mut world, 2.0);
+        world.begin_tick(SimulationTick::from_count(1));
+        let effect = world
+            .apply_test_effect(target, 5, EffectKind::Test { token: 1 }, None)
+            .unwrap();
+        assert!(world.remove_effect(effect.id).is_some());
+        assert!(world.remove_effect(effect.id).is_none());
+        tick_world(&mut world, 6);
+        assert!(world.effect(effect.id).is_none());
+    }
+
+    #[test]
+    fn effect_target_despawn_cleans_up() {
+        let mut world = World::new();
+        let target = spawn_generic(&mut world, 3.0);
+        world.begin_tick(SimulationTick::from_count(1));
+        let effect = world
+            .apply_test_effect(target, 30, EffectKind::Test { token: 2 }, None)
+            .unwrap();
+        world.despawn(target);
+        assert!(world.effect(effect.id).is_none());
+        tick_world(&mut world, 31);
+    }
+}

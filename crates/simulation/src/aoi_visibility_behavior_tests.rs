@@ -4,13 +4,10 @@
 //! non-spatial/owner-only visibility cases, and WorldAddress relevance isolation.
 
 use crate::PlayerState;
-use crate::health::Health;
-use crate::input::PlayerInput;
-use crate::platform::{FLOOR, FLOOR_POSITION};
 use crate::stage::FOOTNOTE_SPAWN_X;
 use crate::{
-    Aabb, ChannelId, EntityId, EntityKind, EntityLifecycle, InstanceId, MapId, ReplicationMeta,
-    Transform, World, WorldAddress, aoi_policy_rects, point_in_aabb,
+    ChannelId, InstanceId, MapId, ReplicationMeta, Transform, World, WorldAddress,
+    aoi_policy_rects, point_in_aabb,
 };
 
 #[test]
@@ -129,10 +126,4 @@ fn relevance_isolates_world_address_components() {
     );
 }
 
-#[test]
-fn floor_spawn_still_on_p0() {
-    let _ = FLOOR;
-    let _ = FLOOR_POSITION;
-    let _ = EntityId::from_raw(0, 1);
-    let _ = EntityLifecycle::Active;
-}
+// Phase-era compile/proof artifact `floor_spawn_still_on_p0` removed.

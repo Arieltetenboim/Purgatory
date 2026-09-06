@@ -127,7 +127,7 @@ fn y_axis_motion_uses_xor() {
     if let Some(id) = world.player_id() {
         world.despawn(id);
     }
-    let observer = spawn_player_at(&mut world, 0.0);
+    let _observer = spawn_player_at(&mut world, 0.0);
     let remote = spawn_player_xy(&mut world, 1.0, true);
     clear_all_dirty(&mut world);
     let old = world.transform_of(remote).unwrap().position;
