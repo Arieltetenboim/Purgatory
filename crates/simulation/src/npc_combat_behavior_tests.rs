@@ -1,3 +1,6 @@
+//! NPC combat behavior tests (Phase 9E -> permanent).
+//! acquisition, approach, attack geometry/execution, reacquisition, dead/despawn handling and deterministic targeting.
+
 use crate::ability::{
     AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityRequest,
     AbilityTiming, forward_query_aabb,
@@ -5,10 +8,10 @@ use crate::ability::{
 use crate::action_gate::ActionGateContext;
 use crate::fixtures::RuntimeFixtures;
 use crate::health::Health;
-use crate::npc::NPC_HEALTH_MAX;
+use crate::npc::{NPC_HEALTH_MAX, STRIKE_RANGE};
 use crate::time::SimulationTick;
 use crate::transform::Transform;
-use crate::{ContentId, World, WorldAddress};
+use crate::{ContentId, PLAYER_HEALTH_MAX, World, WorldAddress};
 
 const AGGRO_RADIUS: f32 = 3.0;
 const STRIKE_ABILITY_RANGE: f32 = 1.5;
@@ -303,4 +306,41 @@ fn player_triggered_basic_strike_path_still_works() {
 
 fn player_position(world: &World, player: crate::EntityId) -> [f32; 2] {
     world.transform_of(player).unwrap().position
+}
+
+#[test]
+fn nearest_health_target_skips_players() {
+    let mut world = World::new();
+    let now = SimulationTick::from_count(1);
+    world.begin_tick(now);
+    let npc = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [0.0, 1.0],
+            1,
+            4.0,
+            1,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+    let player = crate::fixtures::RuntimeFixtures::test_player(&mut world);
+    assert!(world.set_health(player, Health::full(PLAYER_HEALTH_MAX)));
+    let _ = world.set_transform(player, Transform::from_position([0.5, 1.0]));
+    let other = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [1.0, 1.0],
+            2,
+            4.0,
+            2,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+    let target = world.nearest_health_target(npc, STRIKE_RANGE).unwrap();
+    assert_eq!(target, other);
+    assert_ne!(target, player);
 }

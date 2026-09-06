@@ -1,13 +1,12 @@
-//! Phase 9A ability foundation. Contracts only — not Basic Attack gameplay.
+//! Ability runtime behavior tests (Phase 9 -> permanent).
+//! Generic ability lifecycle, effects, cooldown and grants.
 
 use crate::ability::{
-    AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityRejectReason,
-    AbilityRequest, AbilityTiming, cue_for_ability_cast, cue_for_damage_outcome,
-    oneshot_kind_for_cue,
+    AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityId,
+    AbilityRejectReason, AbilityRequest, AbilityTiming,
 };
 use crate::action::{ActionKind, ActionPhase};
 use crate::action_gate::ActionGateContext;
-use crate::presentation_oneshot::PresentationOneShotKind;
 use crate::spawn::RuntimeSpawnRequest;
 use crate::time::SimulationTick;
 use crate::transform::Transform;
@@ -186,48 +185,19 @@ fn live_recovery_still_occupies_exclusive_action_slot() {
 }
 
 #[test]
-fn strike_workload_is_not_the_ability_path() {
+fn grant_is_explicit_and_dropped_on_despawn() {
     let mut world = World::new();
-    tick_critical(&mut world, 1);
-    let actor = spawn_combatant(&mut world, 0.0, 10.0);
-    let target = spawn_combatant(&mut world, 1.0, 10.0);
-    let action = world
-        .request_action(
-            crate::ActionRequest {
-                actor,
-                target,
-                kind: ActionKind::Strike,
-            },
-            ActionGateContext::in_world(),
+    let owner = world
+        .spawn(
+            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
+                .with_transform(Transform::from_position([0.0, 1.0]))
+                .visible(),
         )
         .unwrap();
-    assert_eq!(action.kind, ActionKind::Strike);
-    assert_eq!(action.phase, ActionPhase::Active);
-    assert!((world.health_of(target).unwrap().current - 9.0).abs() < 1e-5);
-}
-
-#[test]
-fn presentation_boundary_uses_phase8_oneshot_vocabulary() {
-    assert_eq!(
-        oneshot_kind_for_cue(cue_for_ability_cast()),
-        Some(PresentationOneShotKind::Attack)
-    );
-    assert_eq!(
-        oneshot_kind_for_cue(cue_for_damage_outcome(false)),
-        Some(PresentationOneShotKind::Hurt)
-    );
-    assert_eq!(oneshot_kind_for_cue(cue_for_damage_outcome(true)), None);
-}
-
-#[test]
-fn zero_health_is_dead_without_a_dead_component() {
-    let mut world = World::new();
-    let id = spawn_combatant(&mut world, 0.0, 1.0);
-    assert!(world.health_of(id).unwrap().is_alive());
-    assert!(world.apply_damage(id, 1.0));
-    assert!(world.health_of(id).unwrap().is_dead());
-    assert!(
-        world.contains(id),
-        "player-like generic is not auto-despawned"
-    );
+    let strike_id = AbilityId::from(ContentId::from_authored("skill.basic.strike").unwrap());
+    assert!(!world.ability_granted(owner, strike_id));
+    assert!(world.grant_ability(owner, strike_id));
+    assert!(world.ability_granted(owner, strike_id));
+    assert!(world.despawn(owner));
+    assert!(!world.ability_granted(owner, strike_id));
 }

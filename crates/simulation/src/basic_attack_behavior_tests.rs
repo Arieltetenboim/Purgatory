@@ -1,4 +1,5 @@
-//! Phase 9B Basic Attack path. Data-driven `AbilityDefinition`, not 7.2 Strike.
+//! Basic attack behavior tests (Phase 9B -> permanent).
+//! Basic Attack activation, delivery, hit/miss, cooldown and shared player/NPC runtime.
 
 use crate::ability::{
     AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityRejectReason,
@@ -224,4 +225,25 @@ fn player_and_npc_combatants_can_use_the_same_path() {
     activate(&mut world, npc, &basic_strike());
     tick_critical(&mut world, 23);
     assert!((world.health_of(dummy).unwrap().current - 5.0).abs() < 1e-5);
+}
+
+#[test]
+fn strike_workload_is_not_the_ability_path() {
+    let mut world = World::new();
+    tick_critical(&mut world, 1);
+    let actor = spawn_combatant(&mut world, 0.0, 10.0);
+    let target = spawn_combatant(&mut world, 1.0, 10.0);
+    let action = world
+        .request_action(
+            crate::ActionRequest {
+                actor,
+                target,
+                kind: ActionKind::Strike,
+            },
+            ActionGateContext::in_world(),
+        )
+        .unwrap();
+    assert_eq!(action.kind, ActionKind::Strike);
+    assert_eq!(action.phase, ActionPhase::Active);
+    assert!((world.health_of(target).unwrap().current - 9.0).abs() < 1e-5);
 }

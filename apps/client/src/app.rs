@@ -1,5 +1,6 @@
 //! Client application loop: platform events, simulation clock, renderer.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,9 +23,9 @@ use winit::window::{Window, WindowId};
 
 use crate::camera_follow::{CameraCommit, CameraFollow};
 use crate::character_presentation::{
-    CharacterPresentationSet, LocalMotion, PresentationEntityKey, PresentationOneShotTable,
-    PresentationView, RemoteMotion, apply_climb_back_overlay, equipment_view_from_replica,
-    from_local_with_presentation, from_remote_with_presentation,
+    CharacterPresentationSet, LocalMotion, PresentationActivity, PresentationEntityKey,
+    PresentationOneShotTable, PresentationView, RemoteMotion, apply_climb_back_overlay,
+    equipment_view_from_replica, from_local_with_presentation, from_remote_with_presentation,
     presentation_debug_quads_with_assets,
 };
 #[cfg(feature = "dev-diagnostics")]
@@ -68,6 +69,7 @@ use crate::map_fade::{
 #[cfg(feature = "dev-diagnostics")]
 use crate::network::NetworkImpairmentConfig;
 use crate::network::{ClientEndpointConfig, NetworkCommand, NetworkHandle};
+use crate::npc_presentation::{SpriteAnimationPlayer, SpriteSheet, base_activity, clip_name};
 use crate::platform::{diagnostic_title, window_attributes};
 use crate::prediction::{LocalPrediction, local_presentation_pose};
 #[cfg(feature = "dev-diagnostics")]
@@ -90,9 +92,6 @@ const REMOTE_PLAYER_COLOR: [f32; 4] = [0.72, 0.32, 0.38, 1.0];
 const INTERACTABLE_BODY_COLOR: [f32; 4] = [0.92, 0.18, 0.72, 1.0];
 const INTERACTABLE_CAP_COLOR: [f32; 4] = [1.0, 0.86, 0.12, 1.0];
 const PORTAL_COLOR: [f32; 4] = [0.32, 0.92, 0.78, 1.0];
-/// Distinct purple for Phase 7.2 NPCs (not Interactable / Portal).
-const NPC_COLOR: [f32; 4] = [0.55, 0.35, 0.85, 1.0];
-const NPC_HURT_COLOR: [f32; 4] = [1.0, 0.72, 0.16, 1.0];
 const NPC_DEAD_COLOR: [f32; 4] = [0.38, 0.16, 0.18, 1.0];
 const NPC_RESPAWN_COLOR: [f32; 4] = [0.25, 0.95, 0.62, 1.0];
 const NPC_STATE_INDICATOR_COLOR: [f32; 4] = [1.0, 0.93, 0.35, 1.0];
@@ -216,6 +215,9 @@ struct ClientApp {
     skeleton: crate::skeleton_debug::HumanoidDebug,
     characters: CharacterPresentationSet,
     presentation_oneshots: PresentationOneShotTable,
+    npc_sheet: SpriteSheet,
+    npc_players:
+        HashMap<PresentationEntityKey, (SpriteAnimationPlayer, PresentationActivity, bool)>,
     /// A2 proof playback clock (not Clone; lives on App, not DebugUiState).
     #[cfg(feature = "dev-diagnostics")]
     animation_player: purgatory_animation::AnimationPlayer,
@@ -245,6 +247,8 @@ impl ClientApp {
         let character_visual_pack =
             crate::character_assets::embedded_character_visual_pack(&mut asset_runtime)
                 .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
+        let npc_sheet = SpriteSheet::red_slime(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY red slime sprite error: {error}"))?;
         Ok(Self {
             window: None,
             renderer: None,
@@ -311,6 +315,8 @@ impl ClientApp {
             skeleton: crate::skeleton_debug::HumanoidDebug::new(),
             characters: CharacterPresentationSet::new(),
             presentation_oneshots: PresentationOneShotTable::new(),
+            npc_sheet,
+            npc_players: HashMap::new(),
             #[cfg(feature = "dev-diagnostics")]
             animation_player: purgatory_animation::AnimationPlayer::new(),
             #[cfg(feature = "dev-diagnostics")]
@@ -493,6 +499,7 @@ impl ClientApp {
             self.prediction.clear();
             self.local_presentation.clear();
             self.characters.clear();
+            self.npc_players.clear();
             self.presentation_oneshots.clear();
             #[cfg(feature = "dev-diagnostics")]
             {
@@ -2051,7 +2058,14 @@ impl ClientApp {
             let replica_npc_quads = if hold_source || !replica_live {
                 Vec::new()
             } else {
-                npc_quads(&self.replica, &self.interp, &self.presentation_oneshots)
+                npc_quads(
+                    &self.replica,
+                    &self.interp,
+                    &self.presentation_oneshots,
+                    &self.npc_sheet,
+                    &mut self.npc_players,
+                    frame_dt,
+                )
             };
             let interactable_n = replica_interactable_quads.len() + replica_portal_quads.len();
             quads.extend(replica_interactable_quads);
@@ -3029,10 +3043,21 @@ fn npc_quads(
     replica: &crate::replica::ReplicatedWorld,
     interp: &crate::interp::InterpolationBuffer,
     oneshots: &PresentationOneShotTable,
+    sheet: &crate::npc_presentation::SpriteSheet,
+    players: &mut HashMap<
+        PresentationEntityKey,
+        (
+            crate::npc_presentation::SpriteAnimationPlayer,
+            PresentationActivity,
+            bool,
+        ),
+    >,
+    frame_dt: f32,
 ) -> Vec<DrawQuad> {
     let poses = interp.poses();
     let server_tick = replica.last_server_tick();
-    replica
+    let mut visible = std::collections::HashSet::new();
+    let quads = replica
         .iter()
         .filter(|entity| entity.kind == ReplicatedKind::Npc)
         .flat_map(|entity| {
@@ -3056,13 +3081,46 @@ fn npc_quads(
                         && server_tick.saturating_sub(note.tick) <= 12
                 });
             let cue = npc_visual_cue(dead, hurt, respawning);
-            let color = match cue {
-                NpcVisualCue::Dead => NPC_DEAD_COLOR,
-                NpcVisualCue::Hurt => NPC_HURT_COLOR,
-                NpcVisualCue::Respawn => NPC_RESPAWN_COLOR,
-                NpcVisualCue::Normal => NPC_COLOR,
-            };
-            let mut quads = vec![aabb_quad(aabb, color)];
+            let key =
+                PresentationEntityKey::new(entity.entity_id.index, entity.entity_id.generation);
+            visible.insert(key);
+            if cue == NpcVisualCue::Dead {
+                let mut quads = vec![aabb_quad(aabb, NPC_DEAD_COLOR)];
+                quads.push(DrawQuad::rect(
+                    [position[0], position[1] + 0.48],
+                    [0.55, 0.12],
+                    NPC_DEAD_COLOR,
+                ));
+                return quads;
+            }
+            let one_shot = oneshots.activity_of(key, server_tick);
+            let requested = base_activity(entity.velocity[0], one_shot);
+            let state = players.entry(key).or_insert_with(|| {
+                (
+                    SpriteAnimationPlayer::new(),
+                    if requested == PresentationActivity::Hurt {
+                        PresentationActivity::Idle
+                    } else {
+                        requested
+                    },
+                    entity.velocity[0] < -0.01,
+                )
+            });
+            let flash = requested == PresentationActivity::Hurt;
+            let underlying = if flash { state.1 } else { requested };
+            state.0.set_clip(clip_name(underlying));
+            if state.1 != underlying {
+                state.1 = underlying;
+            }
+            if entity.velocity[0] > 0.01 {
+                state.2 = false;
+            } else if entity.velocity[0] < -0.01 {
+                state.2 = true;
+            }
+            let clip = sheet.clip(clip_name(state.1));
+            state.0.advance(clip, frame_dt);
+            let frame = state.0.frame(clip).unwrap_or(8);
+            let mut quads = vec![sheet.quad(position, frame, flash, state.2)];
             if cue == NpcVisualCue::Hurt {
                 quads.push(DrawQuad::rect(
                     [position[0], position[1] + 0.48],
@@ -3084,7 +3142,9 @@ fn npc_quads(
             }
             quads
         })
-        .collect()
+        .collect::<Vec<_>>();
+    players.retain(|key, _| visible.contains(key));
+    quads
 }
 
 fn interactable_marker_at(position: [f32; 2]) -> [DrawQuad; 2] {

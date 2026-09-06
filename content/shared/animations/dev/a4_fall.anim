@@ -16,15 +16,15 @@ rot 0.60 -0.95 Linear
 endtrack
 
 track upper_leg_front
-rot 0.00 0.2 Linear
-rot 0.30 0.28 Linear
-rot 0.60 0.2 Linear
+rot 0.00 -0.367 Linear
+rot 0.30 -0.607 Linear
+rot 0.60 -0.318 Linear
 endtrack
 
 track upper_leg_back
-rot 0.00 0.15 Linear
-rot 0.30 0.22 Linear
-rot 0.60 0.15 Linear
+rot 0.00 0.197 Linear
+rot 0.30 0.437 Linear
+rot 0.60 0.138 Linear
 endtrack
 
 track torso

@@ -6,14 +6,20 @@
 
 mod aabb;
 mod ability;
+#[cfg(test)]
+mod ability_runtime_behavior_tests;
 mod action;
 mod action_gate;
 mod aoi;
+#[cfg(test)]
+mod basic_attack_behavior_tests;
 mod body;
 mod bounds;
 mod cadence;
 mod clock;
 mod collision;
+#[cfg(test)]
+mod combat_presentation_behavior_tests;
 mod command;
 mod contact;
 mod debug_action;
@@ -36,6 +42,8 @@ mod map_runtime;
 mod motion_debug;
 mod movement;
 mod npc;
+#[cfg(test)]
+mod npc_combat_behavior_tests;
 #[cfg(test)]
 mod phase10d3_tests;
 #[cfg(test)]
@@ -64,16 +72,6 @@ mod phase72_tests;
 mod phase8a_tests;
 #[cfg(test)]
 mod phase8c_tests;
-#[cfg(test)]
-mod phase9a_tests;
-#[cfg(test)]
-mod phase9b_tests;
-#[cfg(test)]
-mod phase9c_tests;
-#[cfg(test)]
-mod phase9d_tests;
-#[cfg(test)]
-mod phase9e_tests;
 mod platform;
 mod presentation_oneshot;
 mod query;

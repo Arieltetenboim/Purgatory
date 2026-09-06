@@ -20,6 +20,7 @@ mod lifecycle;
 mod local_presentation;
 mod map_fade;
 mod network;
+mod npc_presentation;
 mod platform;
 mod prediction;
 mod renderer;

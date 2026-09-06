@@ -1,4 +1,5 @@
-//! Phase 9D: ability/damage → semantic presentation cues (Attack / Hurt / Dead).
+//! Combat presentation behavior tests (Phase 9D -> permanent).
+//! Attack/Hurt/Dead semantic presentation behavior.
 
 use crate::ability::{
     AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityRequest,
@@ -203,6 +204,19 @@ fn ability_hit_path_emits_attack_then_hurt_not_tied_to_basic_strike_id() {
 
 #[test]
 fn presentation_cues_remain_semantic_not_delivery_specific() {
+    assert_eq!(
+        oneshot_kind_for_cue(cue_for_ability_cast()),
+        Some(PresentationOneShotKind::Attack)
+    );
+    assert_eq!(
+        oneshot_kind_for_cue(cue_for_damage_outcome(false)),
+        Some(PresentationOneShotKind::Hurt)
+    );
+    assert_eq!(oneshot_kind_for_cue(cue_for_damage_outcome(true)), None);
+}
+
+#[test]
+fn presentation_boundary_uses_phase8_oneshot_vocabulary() {
     assert_eq!(
         oneshot_kind_for_cue(cue_for_ability_cast()),
         Some(PresentationOneShotKind::Attack)

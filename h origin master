@@ -1,0 +1,1110 @@
+warning: in the working copy of 'crates/simulation/src/ability_runtime_behavior_tests.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'crates/simulation/src/npc_combat_behavior_tests.rs', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/crates/simulation/src/ability_runtime_behavior_tests.rs b/crates/simulation/src/ability_runtime_behavior_tests.rs[m
+[1mindex 9476f5d..96bd201 100644[m
+[1m--- a/crates/simulation/src/ability_runtime_behavior_tests.rs[m
+[1m+++ b/crates/simulation/src/ability_runtime_behavior_tests.rs[m
+[36m@@ -3,12 +3,10 @@[m
+ [m
+ use crate::ability::{[m
+     AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityId,[m
+[31m-    AbilityRejectReason, AbilityRequest, AbilityTiming, cue_for_ability_cast,[m
+[31m-    cue_for_damage_outcome, oneshot_kind_for_cue,[m
+[32m+[m[32m    AbilityRejectReason, AbilityRequest, AbilityTiming,[m
+ };[m
+ use crate::action::{ActionKind, ActionPhase};[m
+ use crate::action_gate::ActionGateContext;[m
+[31m-use crate::presentation_oneshot::PresentationOneShotKind;[m
+ use crate::spawn::RuntimeSpawnRequest;[m
+ use crate::time::SimulationTick;[m
+ use crate::transform::Transform;[m
+[1mdiff --git a/crates/simulation/src/npc_combat_behavior_tests.rs b/crates/simulation/src/npc_combat_behavior_tests.rs[m
+[1mindex 275fd91..220404d 100644[m
+[1m--- a/crates/simulation/src/npc_combat_behavior_tests.rs[m
+[1m+++ b/crates/simulation/src/npc_combat_behavior_tests.rs[m
+[36m@@ -9,7 +9,6 @@[m [muse crate::action_gate::ActionGateContext;[m
+ use crate::fixtures::RuntimeFixtures;[m
+ use crate::health::Health;[m
+ use crate::npc::{NPC_HEALTH_MAX, STRIKE_RANGE};[m
+[31m-use crate::spawn::RuntimeSpawnRequest;[m
+ use crate::time::SimulationTick;[m
+ use crate::transform::Transform;[m
+ use crate::{ContentId, PLAYER_HEALTH_MAX, World, WorldAddress};[m
+[1mdiff --git a/crates/simulation/src/phase9a_tests.rs b/crates/simulation/src/phase9a_tests.rs[m
+[1mdeleted file mode 100644[m
+[1mindex acba594..0000000[m
+[1m--- a/crates/simulation/src/phase9a_tests.rs[m
+[1m+++ /dev/null[m
+[36m@@ -1,233 +0,0 @@[m
+[31m-//! Phase 9A ability foundation. Contracts only — not Basic Attack gameplay.[m
+[31m-[m
+[31m-use crate::ability::{[m
+[31m-    AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityRejectReason,[m
+[31m-    AbilityRequest, AbilityTiming, cue_for_ability_cast, cue_for_damage_outcome,[m
+[31m-    oneshot_kind_for_cue,[m
+[31m-};[m
+[31m-use crate::action::{ActionKind, ActionPhase};[m
+[31m-use crate::action_gate::ActionGateContext;[m
+[31m-use crate::presentation_oneshot::PresentationOneShotKind;[m
+[31m-use crate::spawn::RuntimeSpawnRequest;[m
+[31m-use crate::time::SimulationTick;[m
+[31m-use crate::transform::Transform;[m
+[31m-use crate::{Health, World, WorldAddress};[m
+[31m-use purgatory_common::ContentId;[m
+[31m-[m
+[31m-fn tick_critical(world: &mut World, tick: u64) {[m
+[31m-    world.begin_tick(SimulationTick::from_count(tick));[m
+[31m-    world.drain_critical_scheduler();[m
+[31m-}[m
+[31m-[m
+[31m-fn spawn_combatant(world: &mut World, x: f32, hp: f32) -> crate::EntityId {[m
+[31m-    world[m
+[31m-        .spawn([m
+[31m-            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)[m
+[31m-                .with_transform(Transform::from_position([x, 1.0]))[m
+[31m-                .with_health(Health::full(hp))[m
+[31m-                .visible(),[m
+[31m-        )[m
+[31m-        .expect("spawn")[m
+[31m-}[m
+[31m-[m
+[31m-fn sample_ability() -> AbilityDefinition {[m
+[31m-    AbilityDefinition {[m
+[31m-        id: ContentId::from_authored("skill.basic.strike").unwrap(),[m
+[31m-        timing: AbilityTiming {[m
+[31m-            windup_ticks: 2,[m
+[31m-            active_ticks: 1,[m
+[31m-            recovery_ticks: 2,[m
+[31m-            cooldown_ticks: 8,[m
+[31m-        },[m
+[31m-        activation: AbilityActivation::Independent,[m
+[31m-        delivery: AbilityDelivery::ForwardQuery {[m
+[31m-            range: 4.0,[m
+[31m-            half_height: 1.0,[m
+[31m-            max_targets: 8,[m
+[31m-        },[m
+[31m-        effects: vec![AbilityEffect::Damage { amount: 3.0 }],[m
+[31m-    }[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn player_and_platform_have_no_combat_component_by_default() {[m
+[31m-    let mut world = World::new();[m
+[31m-    let player = crate::fixtures::RuntimeFixtures::test_player(&mut world);[m
+[31m-    assert!(world.health_of(player).is_none());[m
+[31m-    assert!(world.active_action(player).is_none());[m
+[31m-    assert!(world.ability_cooldown_ready(player, ContentId::from_token(1)));[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn windup_does_not_apply_damage_until_active() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let target = spawn_combatant(&mut world, 1.0, 10.0);[m
+[31m-    let def = sample_ability();[m
+[31m-    let started = world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .expect("start");[m
+[31m-    assert_eq!(started.phase, ActionPhase::Windup);[m
+[31m-    assert_eq!(started.kind, ActionKind::Ability { id: def.id });[m
+[31m-    assert_eq!(world.health_of(target).unwrap().current, 10.0);[m
+[31m-    assert!(world.active_action(actor).is_some());[m
+[31m-[m
+[31m-    tick_critical(&mut world, 3);[m
+[31m-    let live = world.active_action(actor).unwrap();[m
+[31m-    assert_eq!(live.phase, ActionPhase::Active);[m
+[31m-    assert!((world.health_of(target).unwrap().current - 7.0).abs() < 1e-5);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn ability_damage_uses_effect_boundary_not_set_health() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let target = spawn_combatant(&mut world, 1.0, 10.0);[m
+[31m-    let applied =[m
+[31m-        world.execute_ability_effect(actor, target, AbilityEffect::Damage { amount: 4.0 });[m
+[31m-    assert!(applied);[m
+[31m-    assert!((world.health_of(target).unwrap().current - 6.0).abs() < 1e-5);[m
+[31m-    assert!(world.health_of(target).unwrap().is_alive());[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn missing_health_is_nonparticipant_not_dead() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let bare = world[m
+[31m-        .spawn([m
+[31m-            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)[m
+[31m-                .with_transform(Transform::from_position([1.0, 1.0]))[m
+[31m-                .visible(),[m
+[31m-        )[m
+[31m-        .expect("bare");[m
+[31m-    assert!(world.health_of(bare).is_none());[m
+[31m-    let def = sample_ability();[m
+[31m-    world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .expect("activation does not require a target");[m
+[31m-    tick_critical(&mut world, 3);[m
+[31m-    assert!(world.health_of(bare).is_none());[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn cooldown_blocks_second_start_on_same_ability() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let def = sample_ability();[m
+[31m-    world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .unwrap();[m
+[31m-    assert!(!world.ability_cooldown_ready(actor, def.id));[m
+[31m-    let denied = world.request_ability([m
+[31m-        AbilityRequest {[m
+[31m-            actor,[m
+[31m-            selected: None,[m
+[31m-            definition: &def,[m
+[31m-        },[m
+[31m-        ActionGateContext::in_world(),[m
+[31m-    );[m
+[31m-    assert_eq!(denied, Err(AbilityRejectReason::OnCooldown));[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn live_recovery_still_occupies_exclusive_action_slot() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let def = sample_ability();[m
+[31m-    world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .unwrap();[m
+[31m-    tick_critical(&mut world, 3);[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    let live = world.active_action(actor).unwrap();[m
+[31m-    assert_eq!(live.phase, ActionPhase::Recovery);[m
+[31m-    let busy = world.try_start_action([m
+[31m-        actor,[m
+[31m-        ActionKind::Test { token: 1 },[m
+[31m-        ActionGateContext::in_world(),[m
+[31m-    );[m
+[31m-    assert_eq!(busy, Err(crate::ActionDenialReason::Busy));[m
+[31m-    tick_critical(&mut world, 6);[m
+[31m-    assert!(world.active_action(actor).is_none());[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn strike_workload_is_not_the_ability_path() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let target = spawn_combatant(&mut world, 1.0, 10.0);[m
+[31m-    let action = world[m
+[31m-        .request_action([m
+[31m-            crate::ActionRequest {[m
+[31m-                actor,[m
+[31m-                target,[m
+[31m-                kind: ActionKind::Strike,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .unwrap();[m
+[31m-    assert_eq!(action.kind, ActionKind::Strike);[m
+[31m-    assert_eq!(action.phase, ActionPhase::Active);[m
+[31m-    assert!((world.health_of(target).unwrap().current - 9.0).abs() < 1e-5);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn presentation_boundary_uses_phase8_oneshot_vocabulary() {[m
+[31m-    assert_eq!([m
+[31m-        oneshot_kind_for_cue(cue_for_ability_cast()),[m
+[31m-        Some(PresentationOneShotKind::Attack)[m
+[31m-    );[m
+[31m-    assert_eq!([m
+[31m-        oneshot_kind_for_cue(cue_for_damage_outcome(false)),[m
+[31m-        Some(PresentationOneShotKind::Hurt)[m
+[31m-    );[m
+[31m-    assert_eq!(oneshot_kind_for_cue(cue_for_damage_outcome(true)), None);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn zero_health_is_dead_without_a_dead_component() {[m
+[31m-    let mut world = World::new();[m
+[31m-    let id = spawn_combatant(&mut world, 0.0, 1.0);[m
+[31m-    assert!(world.health_of(id).unwrap().is_alive());[m
+[31m-    assert!(world.apply_damage(id, 1.0));[m
+[31m-    assert!(world.health_of(id).unwrap().is_dead());[m
+[31m-    assert!([m
+[31m-        world.contains(id),[m
+[31m-        "player-like generic is not auto-despawned"[m
+[31m-    );[m
+[31m-}[m
+[1mdiff --git a/crates/simulation/src/phase9b_tests.rs b/crates/simulation/src/phase9b_tests.rs[m
+[1mdeleted file mode 100644[m
+[1mindex adb5b20..0000000[m
+[1m--- a/crates/simulation/src/phase9b_tests.rs[m
+[1m+++ /dev/null[m
+[36m@@ -1,227 +0,0 @@[m
+[31m-//! Phase 9B Basic Attack path. Data-driven `AbilityDefinition`, not 7.2 Strike.[m
+[31m-[m
+[31m-use crate::ability::{[m
+[31m-    AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityRejectReason,[m
+[31m-    AbilityRequest, AbilityTiming,[m
+[31m-};[m
+[31m-use crate::action::{ActionKind, ActionPhase};[m
+[31m-use crate::action_gate::ActionGateContext;[m
+[31m-use crate::spawn::RuntimeSpawnRequest;[m
+[31m-use crate::time::SimulationTick;[m
+[31m-use crate::transform::Transform;[m
+[31m-use crate::{Health, PLAYER_HEALTH_MAX, World, WorldAddress};[m
+[31m-use purgatory_common::ContentId;[m
+[31m-[m
+[31m-/// Authored `content/shared/abilities/skill.basic.strike.json` (keep in sync).[m
+[31m-fn basic_strike() -> AbilityDefinition {[m
+[31m-    AbilityDefinition {[m
+[31m-        id: ContentId::from_authored("skill.basic.strike").unwrap(),[m
+[31m-        timing: AbilityTiming {[m
+[31m-            windup_ticks: 3,[m
+[31m-            active_ticks: 2,[m
+[31m-            recovery_ticks: 4,[m
+[31m-            cooldown_ticks: 12,[m
+[31m-        },[m
+[31m-        activation: AbilityActivation::Independent,[m
+[31m-        delivery: AbilityDelivery::ForwardQuery {[m
+[31m-            range: 1.5,[m
+[31m-            half_height: 0.8,[m
+[31m-            max_targets: 8,[m
+[31m-        },[m
+[31m-        effects: vec![AbilityEffect::Damage { amount: 5.0 }],[m
+[31m-    }[m
+[31m-}[m
+[31m-[m
+[31m-fn tick_critical(world: &mut World, tick: u64) {[m
+[31m-    world.begin_tick(SimulationTick::from_count(tick));[m
+[31m-    world.drain_critical_scheduler();[m
+[31m-}[m
+[31m-[m
+[31m-fn spawn_combatant(world: &mut World, x: f32, hp: f32) -> crate::EntityId {[m
+[31m-    world[m
+[31m-        .spawn([m
+[31m-            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)[m
+[31m-                .with_transform(Transform::from_position([x, 1.0]))[m
+[31m-                .with_health(Health::full(hp))[m
+[31m-                .visible(),[m
+[31m-        )[m
+[31m-        .expect("spawn")[m
+[31m-}[m
+[31m-[m
+[31m-fn activate(world: &mut World, actor: crate::EntityId, def: &AbilityDefinition) {[m
+[31m-    world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .expect("activate");[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn basic_attack_starts_with_no_target_nearby() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let def = basic_strike();[m
+[31m-    let started = world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .expect("empty space is a valid activation");[m
+[31m-    assert_eq!(started.kind, ActionKind::Ability { id: def.id });[m
+[31m-    assert_eq!(started.phase, ActionPhase::Windup);[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    let live = world.active_action(actor).unwrap();[m
+[31m-    assert_eq!(live.phase, ActionPhase::Active);[m
+[31m-    assert_eq!(world.health_of(actor).unwrap().current, 10.0);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn target_inside_forward_query_takes_damage() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let inside = spawn_combatant(&mut world, 1.0, 10.0);[m
+[31m-    activate(&mut world, actor, &basic_strike());[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    assert!((world.health_of(inside).unwrap().current - 5.0).abs() < 1e-5);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn target_outside_forward_query_is_untouched() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let behind = spawn_combatant(&mut world, -1.0, 10.0);[m
+[31m-    let far = spawn_combatant(&mut world, 4.0, 10.0);[m
+[31m-    activate(&mut world, actor, &basic_strike());[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    assert_eq!(world.health_of(behind).unwrap().current, 10.0);[m
+[31m-    assert_eq!(world.health_of(far).unwrap().current, 10.0);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn no_health_in_query_is_safe() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let bare = world[m
+[31m-        .spawn([m
+[31m-            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)[m
+[31m-                .with_transform(Transform::from_position([1.0, 1.0]))[m
+[31m-                .visible(),[m
+[31m-        )[m
+[31m-        .expect("bare");[m
+[31m-    activate(&mut world, actor, &basic_strike());[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    assert!(world.health_of(bare).is_none());[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn dead_attacker_cannot_start() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 1.0);[m
+[31m-    assert!(world.apply_damage(actor, 1.0));[m
+[31m-    let denied = world.request_ability([m
+[31m-        AbilityRequest {[m
+[31m-            actor,[m
+[31m-            selected: None,[m
+[31m-            definition: &basic_strike(),[m
+[31m-        },[m
+[31m-        ActionGateContext::in_world(),[m
+[31m-    );[m
+[31m-    assert_eq!(denied, Err(AbilityRejectReason::ActorDead));[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn one_active_execution_damages_each_target_once() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let a = spawn_combatant(&mut world, 0.5, 10.0);[m
+[31m-    let b = spawn_combatant(&mut world, 1.0, 10.0);[m
+[31m-    activate(&mut world, actor, &basic_strike());[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    tick_critical(&mut world, 5);[m
+[31m-    tick_critical(&mut world, 6);[m
+[31m-    assert!((world.health_of(a).unwrap().current - 5.0).abs() < 1e-5);[m
+[31m-    assert!((world.health_of(b).unwrap().current - 5.0).abs() < 1e-5);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn cooldown_blocks_immediate_reactivation() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let def = basic_strike();[m
+[31m-    activate(&mut world, actor, &def);[m
+[31m-    assert_eq!([m
+[31m-        world.request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        ),[m
+[31m-        Err(AbilityRejectReason::OnCooldown)[m
+[31m-    );[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn runtime_does_not_special_case_basic_strike_id() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let inside = spawn_combatant(&mut world, 1.0, 10.0);[m
+[31m-    let mut def = basic_strike();[m
+[31m-    def.id = ContentId::from_authored("skill.test.forward_cleave").unwrap();[m
+[31m-    activate(&mut world, actor, &def);[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    assert!((world.health_of(inside).unwrap().current - 5.0).abs() < 1e-5);[m
+[31m-    let live = world.active_action(actor).unwrap();[m
+[31m-    assert_eq!(live.kind, ActionKind::Ability { id: def.id });[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn player_and_npc_combatants_can_use_the_same_path() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let player = crate::fixtures::RuntimeFixtures::test_player(&mut world);[m
+[31m-    assert!(world.set_health(player, Health::full(PLAYER_HEALTH_MAX)));[m
+[31m-    let _ = world.set_transform(player, Transform::from_position([0.0, 1.0]));[m
+[31m-    let npc = world[m
+[31m-        .spawn(World::npc_spawn_request([m
+[31m-            WorldAddress::DEV,[m
+[31m-            [1.0, 1.0],[m
+[31m-            1,[m
+[31m-            2.0,[m
+[31m-            1,[m
+[31m-            SimulationTick::from_count(1),[m
+[31m-            true,[m
+[31m-            10.0,[m
+[31m-        ))[m
+[31m-        .expect("npc");[m
+[31m-    let mut npc_state = world.npc_of(npc).unwrap();[m
+[31m-    npc_state.heading = [1.0, 0.0];[m
+[31m-    assert!(world.set_npc(npc, npc_state));[m
+[31m-    activate(&mut world, player, &basic_strike());[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    assert!((world.health_of(npc).unwrap().current - 5.0).abs() < 1e-5);[m
+[31m-[m
+[31m-    tick_critical(&mut world, 20);[m
+[31m-    let dummy = spawn_combatant(&mut world, 2.0, 10.0);[m
+[31m-    activate(&mut world, npc, &basic_strike());[m
+[31m-    tick_critical(&mut world, 23);[m
+[31m-    assert!((world.health_of(dummy).unwrap().current - 5.0).abs() < 1e-5);[m
+[31m-}[m
+[1mdiff --git a/crates/simulation/src/phase9c_tests.rs b/crates/simulation/src/phase9c_tests.rs[m
+[1mdeleted file mode 100644[m
+[1mindex 2d8b333..0000000[m
+[1m--- a/crates/simulation/src/phase9c_tests.rs[m
+[1m+++ /dev/null[m
+[36m@@ -1,67 +0,0 @@[m
+[31m-//! Phase 9C grants and 7.2 Strike isolation. Command path lives in the server crate.[m
+[31m-[m
+[31m-use crate::ability::AbilityId;[m
+[31m-use crate::npc::{NPC_HEALTH_MAX, STRIKE_RANGE};[m
+[31m-use crate::spawn::RuntimeSpawnRequest;[m
+[31m-use crate::time::SimulationTick;[m
+[31m-use crate::transform::Transform;[m
+[31m-use crate::{Health, PLAYER_HEALTH_MAX, World, WorldAddress};[m
+[31m-use purgatory_common::ContentId;[m
+[31m-[m
+[31m-fn strike_id() -> AbilityId {[m
+[31m-    ContentId::from_authored("skill.basic.strike").unwrap()[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn grant_is_explicit_and_dropped_on_despawn() {[m
+[31m-    let mut world = World::new();[m
+[31m-    let owner = world[m
+[31m-        .spawn([m
+[31m-            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)[m
+[31m-                .with_transform(Transform::from_position([0.0, 1.0]))[m
+[31m-                .visible(),[m
+[31m-        )[m
+[31m-        .unwrap();[m
+[31m-    assert!(!world.ability_granted(owner, strike_id()));[m
+[31m-    assert!(world.grant_ability(owner, strike_id()));[m
+[31m-    assert!(world.ability_granted(owner, strike_id()));[m
+[31m-    assert!(world.despawn(owner));[m
+[31m-    assert!(!world.ability_granted(owner, strike_id()));[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn nearest_health_target_skips_players() {[m
+[31m-    let mut world = World::new();[m
+[31m-    let now = SimulationTick::from_count(1);[m
+[31m-    world.begin_tick(now);[m
+[31m-    let npc = world[m
+[31m-        .spawn(World::npc_spawn_request([m
+[31m-            WorldAddress::DEV,[m
+[31m-            [0.0, 1.0],[m
+[31m-            1,[m
+[31m-            4.0,[m
+[31m-            1,[m
+[31m-            now,[m
+[31m-            true,[m
+[31m-            NPC_HEALTH_MAX,[m
+[31m-        ))[m
+[31m-        .unwrap();[m
+[31m-    let player = crate::fixtures::RuntimeFixtures::test_player(&mut world);[m
+[31m-    assert!(world.set_health(player, Health::full(PLAYER_HEALTH_MAX)));[m
+[31m-    let _ = world.set_transform(player, Transform::from_position([0.5, 1.0]));[m
+[31m-    let other = world[m
+[31m-        .spawn(World::npc_spawn_request([m
+[31m-            WorldAddress::DEV,[m
+[31m-            [1.0, 1.0],[m
+[31m-            2,[m
+[31m-            4.0,[m
+[31m-            2,[m
+[31m-            now,[m
+[31m-            true,[m
+[31m-            NPC_HEALTH_MAX,[m
+[31m-        ))[m
+[31m-        .unwrap();[m
+[31m-    let target = world.nearest_health_target(npc, STRIKE_RANGE).unwrap();[m
+[31m-    assert_eq!(target, other);[m
+[31m-    assert_ne!(target, player);[m
+[31m-}[m
+[1mdiff --git a/crates/simulation/src/phase9d_tests.rs b/crates/simulation/src/phase9d_tests.rs[m
+[1mdeleted file mode 100644[m
+[1mindex 6ce3a9b..0000000[m
+[1m--- a/crates/simulation/src/phase9d_tests.rs[m
+[1m+++ /dev/null[m
+[36m@@ -1,215 +0,0 @@[m
+[31m-//! Phase 9D: ability/damage → semantic presentation cues (Attack / Hurt / Dead).[m
+[31m-[m
+[31m-use crate::ability::{[m
+[31m-    AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityRequest,[m
+[31m-    AbilityTiming, cue_for_ability_cast, cue_for_damage_outcome, oneshot_kind_for_cue,[m
+[31m-};[m
+[31m-use crate::action_gate::ActionGateContext;[m
+[31m-use crate::presentation_oneshot::PresentationOneShotKind;[m
+[31m-use crate::runtime_event::RuntimeEvent;[m
+[31m-use crate::spawn::RuntimeSpawnRequest;[m
+[31m-use crate::time::SimulationTick;[m
+[31m-use crate::transform::Transform;[m
+[31m-use crate::{Health, World, WorldAddress};[m
+[31m-use purgatory_common::ContentId;[m
+[31m-[m
+[31m-fn strike_like(id: &str) -> AbilityDefinition {[m
+[31m-    AbilityDefinition {[m
+[31m-        id: ContentId::from_authored(id).unwrap(),[m
+[31m-        timing: AbilityTiming {[m
+[31m-            windup_ticks: 3,[m
+[31m-            active_ticks: 2,[m
+[31m-            recovery_ticks: 4,[m
+[31m-            cooldown_ticks: 12,[m
+[31m-        },[m
+[31m-        activation: AbilityActivation::Independent,[m
+[31m-        delivery: AbilityDelivery::ForwardQuery {[m
+[31m-            range: 1.5,[m
+[31m-            half_height: 0.8,[m
+[31m-            max_targets: 8,[m
+[31m-        },[m
+[31m-        effects: vec![AbilityEffect::Damage { amount: 5.0 }],[m
+[31m-    }[m
+[31m-}[m
+[31m-[m
+[31m-fn tick_critical(world: &mut World, tick: u64) {[m
+[31m-    world.begin_tick(SimulationTick::from_count(tick));[m
+[31m-    world.drain_critical_scheduler();[m
+[31m-}[m
+[31m-[m
+[31m-fn spawn_combatant(world: &mut World, x: f32, hp: f32) -> crate::EntityId {[m
+[31m-    world[m
+[31m-        .spawn([m
+[31m-            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)[m
+[31m-                .with_transform(Transform::from_position([x, 1.0]))[m
+[31m-                .with_health(Health::full(hp))[m
+[31m-                .visible(),[m
+[31m-        )[m
+[31m-        .expect("spawn")[m
+[31m-}[m
+[31m-[m
+[31m-fn drain_oneshot_starts(world: &mut World) -> Vec<(crate::EntityId, PresentationOneShotKind)> {[m
+[31m-    world[m
+[31m-        .commit_runtime_events()[m
+[31m-        .into_iter()[m
+[31m-        .filter_map(|e| match e {[m
+[31m-            RuntimeEvent::PresentationOneShotStarted { entity, kind, .. } => Some((entity, kind)),[m
+[31m-            _ => None,[m
+[31m-        })[m
+[31m-        .collect()[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn ability_execution_produces_one_attack_cue() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let def = strike_like("skill.test.cleave");[m
+[31m-    world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .expect("start");[m
+[31m-    let starts = drain_oneshot_starts(&mut world);[m
+[31m-    assert_eq!(starts, vec![(actor, PresentationOneShotKind::Attack)]);[m
+[31m-    assert_eq!([m
+[31m-        world.presentation_oneshot_of(actor).map(|o| o.kind),[m
+[31m-        Some(PresentationOneShotKind::Attack)[m
+[31m-    );[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn empty_ability_execution_still_produces_attack() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let def = strike_like("skill.test.empty_swing");[m
+[31m-    world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .expect("empty space is valid");[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    assert_eq!([m
+[31m-        world.presentation_oneshot_of(actor).map(|o| o.kind),[m
+[31m-        Some(PresentationOneShotKind::Attack),[m
+[31m-        "empty Active must not clear Attack"[m
+[31m-    );[m
+[31m-    assert_eq!(world.health_of(actor).unwrap().current, 10.0);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn authoritative_damage_produces_hurt() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let target = spawn_combatant(&mut world, 1.0, 10.0);[m
+[31m-    let _ = world.commit_runtime_events();[m
+[31m-    assert!(world.apply_damage(target, 3.0));[m
+[31m-    let starts = drain_oneshot_starts(&mut world);[m
+[31m-    assert_eq!(starts, vec![(target, PresentationOneShotKind::Hurt)]);[m
+[31m-    assert!((world.health_of(target).unwrap().current - 7.0).abs() < 1e-5);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn no_damage_produces_no_hurt() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let bare = world[m
+[31m-        .spawn([m
+[31m-            RuntimeSpawnRequest::transient_at(WorldAddress::DEV)[m
+[31m-                .with_transform(Transform::from_position([1.0, 1.0]))[m
+[31m-                .visible(),[m
+[31m-        )[m
+[31m-        .unwrap();[m
+[31m-    let _ = world.commit_runtime_events();[m
+[31m-    assert!(!world.apply_damage(bare, 5.0));[m
+[31m-    assert!(drain_oneshot_starts(&mut world).is_empty());[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn lethal_damage_clears_oneshot_and_is_dead_state() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let target = spawn_combatant(&mut world, 1.0, 5.0);[m
+[31m-    let _ = world.try_start_presentation_oneshot(target, PresentationOneShotKind::Attack);[m
+[31m-    let _ = world.commit_runtime_events();[m
+[31m-    assert!(world.apply_damage(target, 5.0));[m
+[31m-    let events = world.commit_runtime_events();[m
+[31m-    assert!(events.iter().any([m
+[31m-        |e| matches!(e, RuntimeEvent::PresentationOneShotCleared { entity } if *entity == target)[m
+[31m-    ));[m
+[31m-    assert!([m
+[31m-        !events.iter().any(|e| matches!([m
+[31m-            e,[m
+[31m-            RuntimeEvent::PresentationOneShotStarted {[m
+[31m-                kind: PresentationOneShotKind::Hurt,[m
+[31m-                ..[m
+[31m-            }[m
+[31m-        )),[m
+[31m-        "lethal must not leave a transient Hurt"[m
+[31m-    );[m
+[31m-    assert!(world.health_of(target).unwrap().is_dead());[m
+[31m-    assert!(world.presentation_oneshot_of(target).is_none());[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn already_dead_damage_does_not_restart_hurt() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let target = spawn_combatant(&mut world, 1.0, 1.0);[m
+[31m-    assert!(world.apply_damage(target, 1.0));[m
+[31m-    let _ = world.commit_runtime_events();[m
+[31m-    assert!(world.apply_damage(target, 1.0));[m
+[31m-    assert!([m
+[31m-        drain_oneshot_starts(&mut world).is_empty(),[m
+[31m-        "dead target must not restart Hurt"[m
+[31m-    );[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn ability_hit_path_emits_attack_then_hurt_not_tied_to_basic_strike_id() {[m
+[31m-    let mut world = World::new();[m
+[31m-    tick_critical(&mut world, 1);[m
+[31m-    let actor = spawn_combatant(&mut world, 0.0, 10.0);[m
+[31m-    let target = spawn_combatant(&mut world, 1.0, 10.0);[m
+[31m-    let def = strike_like("skill.test.forward_cleave");[m
+[31m-    world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .expect("start");[m
+[31m-    let after_start = drain_oneshot_starts(&mut world);[m
+[31m-    assert_eq!(after_start, vec![(actor, PresentationOneShotKind::Attack)]);[m
+[31m-    tick_critical(&mut world, 4);[m
+[31m-    let after_active = drain_oneshot_starts(&mut world);[m
+[31m-    assert_eq!(after_active, vec![(target, PresentationOneShotKind::Hurt)]);[m
+[31m-    assert!((world.health_of(target).unwrap().current - 5.0).abs() < 1e-5);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn presentation_cues_remain_semantic_not_delivery_specific() {[m
+[31m-    assert_eq!([m
+[31m-        oneshot_kind_for_cue(cue_for_ability_cast()),[m
+[31m-        Some(PresentationOneShotKind::Attack)[m
+[31m-    );[m
+[31m-    assert_eq!([m
+[31m-        oneshot_kind_for_cue(cue_for_damage_outcome(false)),[m
+[31m-        Some(PresentationOneShotKind::Hurt)[m
+[31m-    );[m
+[31m-    assert_eq!(oneshot_kind_for_cue(cue_for_damage_outcome(true)), None);[m
+[31m-}[m
+[1mdiff --git a/crates/simulation/src/phase9e_tests.rs b/crates/simulation/src/phase9e_tests.rs[m
+[1mdeleted file mode 100644[m
+[1mindex fa1d7ca..0000000[m
+[1m--- a/crates/simulation/src/phase9e_tests.rs[m
+[1m+++ /dev/null[m
+[36m@@ -1,306 +0,0 @@[m
+[31m-use crate::ability::{[m
+[31m-    AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityRequest,[m
+[31m-    AbilityTiming, forward_query_aabb,[m
+[31m-};[m
+[31m-use crate::action_gate::ActionGateContext;[m
+[31m-use crate::fixtures::RuntimeFixtures;[m
+[31m-use crate::health::Health;[m
+[31m-use crate::npc::NPC_HEALTH_MAX;[m
+[31m-use crate::time::SimulationTick;[m
+[31m-use crate::transform::Transform;[m
+[31m-use crate::{ContentId, World, WorldAddress};[m
+[31m-[m
+[31m-const AGGRO_RADIUS: f32 = 3.0;[m
+[31m-const STRIKE_ABILITY_RANGE: f32 = 1.5;[m
+[31m-[m
+[31m-fn strike() -> AbilityDefinition {[m
+[31m-    AbilityDefinition {[m
+[31m-        id: ContentId::from_authored("skill.basic.strike").unwrap(),[m
+[31m-        timing: AbilityTiming {[m
+[31m-            windup_ticks: 3,[m
+[31m-            active_ticks: 2,[m
+[31m-            recovery_ticks: 4,[m
+[31m-            cooldown_ticks: 12,[m
+[31m-        },[m
+[31m-        activation: AbilityActivation::Independent,[m
+[31m-        delivery: AbilityDelivery::ForwardQuery {[m
+[31m-            range: 1.5,[m
+[31m-            half_height: 0.8,[m
+[31m-            max_targets: 8,[m
+[31m-        },[m
+[31m-        effects: vec![AbilityEffect::Damage { amount: 5.0 }],[m
+[31m-    }[m
+[31m-}[m
+[31m-[m
+[31m-fn setup(player_x: f32, npc_x: f32) -> (World, crate::EntityId, crate::EntityId) {[m
+[31m-    let mut world = World::new();[m
+[31m-    let player = RuntimeFixtures::test_player(&mut world);[m
+[31m-    world.set_health(player, Health::full(20.0));[m
+[31m-    world.set_transform(player, Transform::from_position([player_x, 1.0]));[m
+[31m-    let now = SimulationTick::from_count(1);[m
+[31m-    world.begin_tick(now);[m
+[31m-    let npc = world[m
+[31m-        .spawn([m
+[31m-            World::npc_spawn_request([m
+[31m-                WorldAddress::DEV,[m
+[31m-                [npc_x, 1.0],[m
+[31m-                9,[m
+[31m-                1.0,[m
+[31m-                7,[m
+[31m-                now,[m
+[31m-                true,[m
+[31m-                NPC_HEALTH_MAX,[m
+[31m-            )[m
+[31m-            .with_health(Health::full(NPC_HEALTH_MAX)),[m
+[31m-        )[m
+[31m-        .unwrap();[m
+[31m-    let mut state = world.npc_of(npc).unwrap();[m
+[31m-    state.walking = false;[m
+[31m-    world.set_npc(npc, state);[m
+[31m-    world.grant_ability(npc, strike().id);[m
+[31m-    (world, npc, player)[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn live_combat_creature_receives_basic_strike_grant() {[m
+[31m-    let (world, npc, _) = setup(1.0, 0.0);[m
+[31m-    assert!(world.ability_granted(npc, strike().id));[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn nearby_living_player_is_acquired_and_outside_is_not() {[m
+[31m-    let (world, npc, player) = setup(1.0, 0.0);[m
+[31m-    assert_eq!([m
+[31m-        world.nearest_living_player_target(npc, AGGRO_RADIUS),[m
+[31m-        Some(player)[m
+[31m-    );[m
+[31m-    let (world, npc, _) = setup(4.0, 0.0);[m
+[31m-    assert_eq!(world.nearest_living_player_target(npc, AGGRO_RADIUS), None);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn creature_approaches_living_player_outside_strike_range() {[m
+[31m-    let (mut world, npc, player) = setup(2.5, 0.0);[m
+[31m-    let before = world.transform_of(npc).unwrap().position;[m
+[31m-    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-    let after = world.transform_of(npc).unwrap().position;[m
+[31m-[m
+[31m-    assert!(after[0] > before[0]);[m
+[31m-    assert!(after[0] < world.transform_of(player).unwrap().position[0]);[m
+[31m-    assert!(world.npc_of(npc).unwrap().velocity[0] > 0.0);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn creature_stops_inside_strike_range_and_keeps_ability_path() {[m
+[31m-    let (mut world, npc, player) = setup(1.0, 0.0);[m
+[31m-    let before = world.transform_of(npc).unwrap().position;[m
+[31m-    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-[m
+[31m-    assert_eq!(world.transform_of(npc).unwrap().position, before);[m
+[31m-    assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);[m
+[31m-[m
+[31m-    let def = strike();[m
+[31m-    world.drive_npc_combat(&def, AGGRO_RADIUS);[m
+[31m-    assert!(world.active_action(npc).is_some());[m
+[31m-    world.begin_tick(SimulationTick::from_count(4));[m
+[31m-    world.drain_critical_scheduler();[m
+[31m-    assert_eq!(world.health_of(player).unwrap().current, 15.0);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn creature_at_forward_query_boundary_can_hit_before_approach_stops() {[m
+[31m-    let (mut world, npc, player) = setup(1.5, 0.0);[m
+[31m-    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-    assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);[m
+[31m-[m
+[31m-    let def = strike();[m
+[31m-    world.drive_npc_combat(&def, AGGRO_RADIUS);[m
+[31m-    world.begin_tick(SimulationTick::from_count(4));[m
+[31m-    world.drain_critical_scheduler();[m
+[31m-    assert_eq!(world.health_of(player).unwrap().current, 15.0);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn creature_approach_uses_forward_query_geometry_before_attacking_offset_target() {[m
+[31m-    let (mut world, npc, player) = setup(1.0, 0.0);[m
+[31m-    world.set_transform(player, Transform::from_position([1.0, 2.05]));[m
+[31m-[m
+[31m-    let initial = world.transform_of(npc).unwrap().position;[m
+[31m-    let initial_query = forward_query_aabb(initial, 1.0, STRIKE_ABILITY_RANGE, 0.8);[m
+[31m-    let distance_sq = 1.0_f32 * 1.0 + 1.05 * 1.05;[m
+[31m-    assert!(distance_sq < STRIKE_ABILITY_RANGE * STRIKE_ABILITY_RANGE);[m
+[31m-    assert!(!initial_query.contains_point([1.0, 2.05]));[m
+[31m-[m
+[31m-    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-    assert_ne!(world.transform_of(npc).unwrap().position, initial);[m
+[31m-    assert_ne!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);[m
+[31m-[m
+[31m-    for _ in 0..30 {[m
+[31m-        if world.npc_of(npc).unwrap().velocity == [0.0, 0.0] {[m
+[31m-            break;[m
+[31m-        }[m
+[31m-        world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-    }[m
+[31m-[m
+[31m-    let stopped = world.transform_of(npc).unwrap().position;[m
+[31m-    assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);[m
+[31m-    let stopped_query = forward_query_aabb(stopped, 1.0, STRIKE_ABILITY_RANGE, 0.8);[m
+[31m-    assert!(stopped_query.contains_point([1.0, 2.05]));[m
+[31m-[m
+[31m-    let def = strike();[m
+[31m-    world.drive_npc_combat(&def, AGGRO_RADIUS);[m
+[31m-    world.begin_tick(SimulationTick::from_count(4));[m
+[31m-    world.drain_critical_scheduler();[m
+[31m-    assert_eq!(world.health_of(player).unwrap().current, 15.0);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn dead_player_is_not_acquired() {[m
+[31m-    let (mut world, npc, player) = setup(1.0, 0.0);[m
+[31m-    world.set_health([m
+[31m-        player,[m
+[31m-        Health {[m
+[31m-            current: 0.0,[m
+[31m-            max: 20.0,[m
+[31m-        },[m
+[31m-    );[m
+[31m-    assert_eq!(world.nearest_living_player_target(npc, AGGRO_RADIUS), None);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn dead_target_stops_existing_approach() {[m
+[31m-    let (mut world, npc, player) = setup(2.5, 0.0);[m
+[31m-    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-    let before = world.transform_of(npc).unwrap().position;[m
+[31m-    world.set_health([m
+[31m-        player,[m
+[31m-        Health {[m
+[31m-            current: 0.0,[m
+[31m-            max: 20.0,[m
+[31m-        },[m
+[31m-    );[m
+[31m-    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-[m
+[31m-    assert_eq!(world.transform_of(npc).unwrap().position, before);[m
+[31m-    assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn despawned_target_stops_existing_approach() {[m
+[31m-    let (mut world, npc, player) = setup(2.5, 0.0);[m
+[31m-    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-    let before = world.transform_of(npc).unwrap().position;[m
+[31m-    assert!(world.despawn(player));[m
+[31m-    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-[m
+[31m-    assert_eq!(world.transform_of(npc).unwrap().position, before);[m
+[31m-    assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn approach_reacquires_another_live_player() {[m
+[31m-    let (mut world, npc, first) = setup(2.5, 0.0);[m
+[31m-    let second = RuntimeFixtures::test_player(&mut world);[m
+[31m-    world.set_health(second, Health::full(20.0));[m
+[31m-    world.set_transform(second, Transform::from_position([-2.5, 1.0]));[m
+[31m-    world.set_health([m
+[31m-        first,[m
+[31m-        Health {[m
+[31m-            current: 0.0,[m
+[31m-            max: 20.0,[m
+[31m-        },[m
+[31m-    );[m
+[31m-    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));[m
+[31m-[m
+[31m-    assert!(world.transform_of(npc).unwrap().position[0] < 0.0);[m
+[31m-    assert!(world.npc_of(npc).unwrap().velocity[0] < 0.0);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn acquisition_is_deterministic_with_multiple_players() {[m
+[31m-    let (mut world, npc, first) = setup(1.0, 0.0);[m
+[31m-    let second = RuntimeFixtures::test_player(&mut world);[m
+[31m-    world.set_health(second, Health::full(20.0));[m
+[31m-    world.set_transform(second, Transform::from_position([1.0, 1.0]));[m
+[31m-    let expected = if (first.index(), first.generation()) < (second.index(), second.generation()) {[m
+[31m-        first[m
+[31m-    } else {[m
+[31m-        second[m
+[31m-    };[m
+[31m-    assert_eq!([m
+[31m-        world.nearest_living_player_target(npc, AGGRO_RADIUS),[m
+[31m-        Some(expected)[m
+[31m-    );[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn driver_requests_ability_and_runtime_applies_damage() {[m
+[31m-    let (mut world, npc, player) = setup(1.0, 0.0);[m
+[31m-    let def = strike();[m
+[31m-    world.drive_npc_combat(&def, AGGRO_RADIUS);[m
+[31m-    assert!(world.active_action(npc).is_some());[m
+[31m-    assert_eq!(world.health_of(player).unwrap().current, 20.0);[m
+[31m-    world.begin_tick(SimulationTick::from_count(4));[m
+[31m-    world.drain_critical_scheduler();[m
+[31m-    assert_eq!(world.health_of(player).unwrap().current, 15.0);[m
+[31m-    assert!(world.presentation_oneshot_of(player).is_some());[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn lifecycle_and_cooldown_prevent_attack_spam() {[m
+[31m-    let (mut world, npc, player) = setup(1.0, 0.0);[m
+[31m-    let def = strike();[m
+[31m-    world.drive_npc_combat(&def, AGGRO_RADIUS);[m
+[31m-    let first = world.active_action(npc).unwrap();[m
+[31m-    world.drive_npc_combat(&def, AGGRO_RADIUS);[m
+[31m-    assert_eq!(world.active_action(npc).unwrap().id, first.id);[m
+[31m-    world.begin_tick(SimulationTick::from_count(4));[m
+[31m-    world.drain_critical_scheduler();[m
+[31m-    assert_eq!(world.health_of(player).unwrap().current, 15.0);[m
+[31m-    assert!(!world.ability_cooldown_ready(npc, def.id));[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn dead_creature_stops_requesting_abilities() {[m
+[31m-    let (mut world, npc, player) = setup(1.0, 0.0);[m
+[31m-    let def = strike();[m
+[31m-    world.set_health([m
+[31m-        npc,[m
+[31m-        Health {[m
+[31m-            current: 0.0,[m
+[31m-            max: 20.0,[m
+[31m-        },[m
+[31m-    );[m
+[31m-    world.drive_npc_combat(&def, AGGRO_RADIUS);[m
+[31m-    assert!(world.active_action(npc).is_none());[m
+[31m-    assert_eq!(world.health_of(player).unwrap().current, 20.0);[m
+[31m-}[m
+[31m-[m
+[31m-#[test][m
+[31m-fn player_triggered_basic_strike_path_still_works() {[m
+[31m-    let (mut world, _, player) = setup(1.0, 0.0);[m
+[31m-    let target = RuntimeFixtures::test_mob_like(&mut world);[m
+[31m-    world.set_transform([m
+[31m-        target,[m
+[31m-        Transform::from_position([player_position(&world, player)[0] + 1.0, 1.0]),[m
+[31m-    );[m
+[31m-    let def = strike();[m
+[31m-    world.grant_ability(player, def.id);[m
+[31m-    world[m
+[31m-        .request_ability([m
+[31m-            AbilityRequest {[m
+[31m-                actor: player,[m
+[31m-                selected: None,[m
+[31m-                definition: &def,[m
+[31m-            },[m
+[31m-            ActionGateContext::in_world(),[m
+[31m-        )[m
+[31m-        .unwrap();[m
+[31m-    world.begin_tick(SimulationTick::from_count(4));[m
+[31m-    world.drain_critical_scheduler();[m
+[31m-    assert_eq!(world.health_of(target).unwrap().current, 15.0);[m
+[31m-}[m
+[31m-[m
+[31m-fn player_position(world: &World, player: crate::EntityId) -> [f32; 2] {[m
+[31m-    world.transform_of(player).unwrap().position[m
+[31m-}[m
