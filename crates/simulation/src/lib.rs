@@ -29,6 +29,10 @@ mod effect;
 mod entity;
 mod equipment;
 #[cfg(test)]
+mod equipment_runtime_behavior_tests;
+#[cfg(test)]
+mod equipment_serialization_tests;
+#[cfg(test)]
 mod fixtures;
 mod footnote;
 mod health;
@@ -68,10 +72,6 @@ mod phase6g7a_tests;
 mod phase6g_tests;
 #[cfg(test)]
 mod phase72_tests;
-#[cfg(test)]
-mod phase8a_tests;
-#[cfg(test)]
-mod phase8c_tests;
 mod platform;
 mod presentation_oneshot;
 mod query;

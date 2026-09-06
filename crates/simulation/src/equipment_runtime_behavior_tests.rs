@@ -1,12 +1,20 @@
-//! Phase 8A: authoritative equipment data model and slot dirty tracking.
+//! Equipment: runtime behavior and lifecycle tests (promoted from Phase 8).
+//
+//! Covers:
+//! - equipment domain creation/lifecycle
+//! - get/set/clear slot behavior
+//! - all six independent slots
+//! - authoritative dirty masks and domain revisions
+//! - idempotent writes
+//! - spawn/despawn/missing-entity behavior
+//! - empty vs absent equipment domain semantics
+//! - idle equipment must not create replication churn
 
 use crate::fixtures::RuntimeFixtures;
 use crate::spawn::RuntimeSpawnRequest;
 use crate::{
-    ContentId, EQUIPMENT_DELTA_EQUIP_BYTES, EQUIPMENT_DELTA_UNEQUIP_BYTES,
-    EQUIPMENT_FULL_EMPTY_BYTES, EquipmentDelta, EquipmentDirtyMask, EquipmentSlot, EquipmentState,
-    ReplicationDirtyMask, SimulationTick, World, WorldAddress, decode_equipment_delta,
-    decode_equipment_full, encode_equipment_delta, encode_equipment_full,
+    ContentId, EquipmentDirtyMask, EquipmentSlot, EquipmentState, ReplicationDirtyMask,
+    SimulationTick, World, WorldAddress,
 };
 
 #[test]
@@ -174,52 +182,6 @@ fn clearing_and_resetting_dirty_works() {
 }
 
 #[test]
-fn token_zero_is_equipped_content_not_sentinel_empty() {
-    let mut world = World::new();
-    let id = RuntimeFixtures::transient_replicated(&mut world);
-    let zero = ContentId::from_token(0);
-    assert!(world.set_equipment_slot(id, EquipmentSlot::Pants, Some(zero)));
-    assert_eq!(world.equipment_slot(id, EquipmentSlot::Pants), Some(zero));
-    assert!(world.equipment_slot(id, EquipmentSlot::Weapon).is_none());
-    let encoded = encode_equipment_full(&world.equipment_of(id).unwrap());
-    let (decoded, rest) = decode_equipment_full(&encoded).unwrap();
-    assert!(rest.is_empty());
-    assert_eq!(decoded.get(EquipmentSlot::Pants), Some(zero));
-    assert!(decoded.get(EquipmentSlot::Weapon).is_none());
-}
-
-#[test]
-fn full_and_delta_roundtrip_sizes() {
-    let empty = EquipmentState::default();
-    let full_empty = encode_equipment_full(&empty);
-    assert_eq!(full_empty.len(), EQUIPMENT_FULL_EMPTY_BYTES);
-    let (decoded, rest) = decode_equipment_full(&full_empty).unwrap();
-    assert!(rest.is_empty());
-    assert_eq!(decoded, empty);
-
-    let mut state = EquipmentState::empty();
-    let id = ContentId::from_token(99);
-    assert!(state.set(EquipmentSlot::Weapon, Some(id)));
-    let full = encode_equipment_full(&state);
-    assert_eq!(full.len(), EQUIPMENT_FULL_EMPTY_BYTES + 8);
-    let (decoded, _) = decode_equipment_full(&full).unwrap();
-    assert_eq!(decoded, state);
-
-    let delta = EquipmentDelta::single(EquipmentSlot::Weapon, Some(id));
-    let bytes = encode_equipment_delta(&delta);
-    assert_eq!(bytes.len(), EQUIPMENT_DELTA_EQUIP_BYTES);
-    let (decoded, _) = decode_equipment_delta(&bytes).unwrap();
-    assert_eq!(decoded.get(EquipmentSlot::Weapon), Some(Some(id)));
-    assert!(decoded.get(EquipmentSlot::Headwear).is_none());
-
-    let unequip = EquipmentDelta::single(EquipmentSlot::Weapon, None);
-    assert_eq!(
-        encode_equipment_delta(&unequip).len(),
-        EQUIPMENT_DELTA_UNEQUIP_BYTES
-    );
-}
-
-#[test]
 fn idle_all_none_does_not_churn_equipment() {
     let mut world = World::new();
     let player = RuntimeFixtures::test_player(&mut world);
@@ -239,4 +201,103 @@ fn missing_entity_rejects_equipment_write() {
     let id = RuntimeFixtures::transient_replicated(&mut world);
     assert!(world.despawn(id));
     assert!(!world.set_equipment_slot(id, EquipmentSlot::Weapon, Some(ContentId::from_token(1))));
+}
+
+// Phase 8C lifecycle tests, merged into runtime behavior suite:
+fn token(n: u64) -> ContentId {
+    ContentId::from_token(n)
+}
+
+#[test]
+fn first_equip_creates_domain_from_none() {
+    let mut world = World::new();
+    let player = RuntimeFixtures::test_player(&mut world);
+    assert!(world.equipment_of(player).is_none());
+    assert!(world.set_equipment_slot(player, EquipmentSlot::Weapon, Some(token(7))));
+    let state = world.equipment_of(player).unwrap();
+    assert_eq!(state.get(EquipmentSlot::Weapon), Some(token(7)));
+    assert!(!state.is_empty());
+}
+
+#[test]
+fn last_unequip_retains_empty_domain() {
+    let mut world = World::new();
+    let player = RuntimeFixtures::test_player(&mut world);
+    assert!(world.set_equipment_slot(player, EquipmentSlot::Weapon, Some(token(7))));
+    assert!(world.clear_equipment_slot(player, EquipmentSlot::Weapon));
+    let state = world.equipment_of(player).expect("domain remains");
+    assert!(state.is_empty());
+    assert!(
+        world
+            .equipment_slot(player, EquipmentSlot::Weapon)
+            .is_none()
+    );
+}
+
+#[test]
+fn unequip_without_domain_does_not_create_domain() {
+    let mut world = World::new();
+    let player = RuntimeFixtures::test_player(&mut world);
+    assert!(world.clear_equipment_slot(player, EquipmentSlot::Weapon));
+    assert!(world.equipment_of(player).is_none());
+}
+
+#[test]
+fn idempotent_equip_does_not_dirty_unrelated_domains() {
+    let mut world = World::new();
+    let player = RuntimeFixtures::test_player(&mut world);
+    assert!(world.set_equipment_slot(player, EquipmentSlot::Weapon, Some(token(7))));
+    let _ = world.consume_dirty(player);
+    let _ = world.consume_equipment_dirty(player);
+    let revs = world.domain_revs_of(player).unwrap();
+    let transform = revs.transform;
+    let health = revs.health;
+    assert!(world.set_equipment_slot(player, EquipmentSlot::Weapon, Some(token(7))));
+    let dirty = world.dirty_of(player).unwrap();
+    assert!(!dirty.equipment);
+    assert!(!dirty.transform);
+    assert!(!dirty.health);
+    let revs = world.domain_revs_of(player).unwrap();
+    assert_eq!(revs.transform, transform);
+    assert_eq!(revs.health, health);
+    assert_eq!(revs.equipment, 1);
+}
+
+#[test]
+fn real_equip_does_not_dirty_transform_or_health() {
+    let mut world = World::new();
+    let player = RuntimeFixtures::test_player(&mut world);
+    let _ = world.consume_dirty(player);
+    let before = world.domain_revs_of(player).unwrap();
+    assert!(world.set_equipment_slot(player, EquipmentSlot::Headwear, Some(token(3))));
+    let dirty = world.dirty_of(player).unwrap();
+    assert!(dirty.equipment);
+    assert!(!dirty.transform);
+    assert!(!dirty.health);
+    let after = world.domain_revs_of(player).unwrap();
+    assert_eq!(after.transform, before.transform);
+    assert_eq!(after.health, before.health);
+    assert!(after.equipment > before.equipment);
+}
+
+#[test]
+fn missing_entity_equipment_write_fails() {
+    let mut world = World::new();
+    let player = RuntimeFixtures::test_player(&mut world);
+    world.despawn(player);
+    assert!(!world.set_equipment_slot(player, EquipmentSlot::Weapon, Some(token(1))));
+}
+
+#[test]
+fn spawned_empty_domain_is_not_none() {
+    let mut world = World::new();
+    let id = world
+        .spawn(
+            crate::spawn::RuntimeSpawnRequest::transient_at(crate::WorldAddress::DEV)
+                .with_equipment(EquipmentState::default()),
+        )
+        .unwrap();
+    assert!(world.equipment_of(id).unwrap().is_empty());
+    assert!(world.clear_equipment_slot(id, EquipmentSlot::Pants));
+    assert!(world.equipment_of(id).unwrap().is_empty());
 }
