@@ -12,6 +12,10 @@ mod action;
 mod action_gate;
 mod aoi;
 #[cfg(test)]
+mod aoi_invalidation_behavior_tests;
+#[cfg(test)]
+mod aoi_visibility_behavior_tests;
+#[cfg(test)]
 mod basic_attack_behavior_tests;
 mod body;
 mod bounds;
@@ -25,6 +29,8 @@ mod contact;
 mod debug_action;
 mod dirty;
 mod domain;
+#[cfg(test)]
+mod domain_revision_behavior_tests;
 mod effect;
 mod entity;
 mod equipment;
@@ -61,13 +67,7 @@ mod phase6b_tests;
 #[cfg(test)]
 mod phase6c_tests;
 #[cfg(test)]
-mod phase6d_tests;
-#[cfg(test)]
 mod phase6f_tests;
-#[cfg(test)]
-mod phase6g6_tests;
-#[cfg(test)]
-mod phase6g7a_tests;
 #[cfg(test)]
 mod phase6g_tests;
 #[cfg(test)]
@@ -81,6 +81,8 @@ mod runtime_event;
 mod runtime_stats;
 mod scheduler;
 mod spatial;
+#[cfg(test)]
+mod spatial_index_behavior_tests;
 mod spawn;
 mod spawn_schedule;
 mod stage;

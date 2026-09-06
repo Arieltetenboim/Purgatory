@@ -1,4 +1,8 @@
-//! Phase 6G.7A — Exact enter/leave XOR movement invalidation proofs.
+//! AOI invalidation behavior tests (enter/leave XOR and locality accounting).
+//
+//! Movement enter/leave XOR invalidation, boundary and multi-cell movement,
+//! axis/diagonal motion, dense/separated clusters, spawn/despawn presence invalidation,
+//! and related locality snapshot assertions.
 
 use crate::{
     ChannelId, PlayerState, SPATIAL_CELL_SIZE_WU, World, WorldAddress, aoi_policy_rects,
@@ -16,7 +20,6 @@ fn spawn_player_xy(world: &mut World, x: f32, y_on_floor: bool) -> crate::Entity
     let top = floor.top_surface();
     let y = if y_on_floor { top } else { top + 2.0 };
     let (t, s) = PlayerState::standing_on_at(floor.id, y, x);
-    // standing_on_at uses y as surface; for elevated use transform override after spawn
     let id = world.spawn_player(t, s);
     if !y_on_floor {
         let mut tr = world.transform_of(id).unwrap();
@@ -143,7 +146,6 @@ fn y_axis_motion_uses_xor() {
         dirty_others, xor,
         "non-subject dirty count must equal enter/leave XOR"
     );
-    let _ = observer;
 }
 
 #[test]
@@ -205,11 +207,14 @@ fn separated_clusters_zero_cross_talk() {
     let right = world.bounds().max_x - 1.0;
     let mut left_ids = Vec::new();
     let mut right_ids = Vec::new();
-    for i in 0..10 {
+    for i in 0..12 {
         left_ids.push(spawn_player_at(&mut world, left + i as f32 * 0.05));
         right_ids.push(spawn_player_at(&mut world, right - i as f32 * 0.05));
     }
-    clear_all_dirty(&mut world);
+    for id in left_ids.iter().chain(right_ids.iter()) {
+        world.clear_interest_observer_dirty(*id);
+    }
+    world.reset_interest_locality();
     let mover = right_ids[0];
     let mut t = world.transform_of(mover).unwrap();
     t.position[0] -= 0.2;
@@ -218,6 +223,7 @@ fn separated_clusters_zero_cross_talk() {
     for id in &left_ids {
         assert!(!dirty.contains(id));
     }
+    assert!(dirty.iter().any(|id| right_ids.contains(id)));
 }
 
 #[test]
@@ -265,7 +271,6 @@ fn spawn_and_despawn_use_presence_path() {
     clear_all_dirty(&mut world);
     let pos = world.transform_of(spawned).unwrap().position;
     assert!(world.despawn(spawned));
-    // Observer may be dirtied if pos was in leave (presence).
     let _ = pos;
     let _ = observer;
 }
@@ -285,5 +290,4 @@ fn address_transition_presence_on_both_sides() {
     clear_all_dirty(&mut world);
     assert!(world.set_address(p, b));
     assert!(world.interest_observer_dirty(p));
-    let _ = q;
 }
