@@ -125,5 +125,3 @@ fn relevance_isolates_world_address_components() {
         "same map+channel+instance is eligible"
     );
 }
-
-// Phase-era compile/proof artifact `floor_spawn_still_on_p0` removed.

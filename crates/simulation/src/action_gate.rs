@@ -85,8 +85,6 @@ mod tests {
             .expect("spawn")
     }
 
-    // helper not needed here
-
     #[test]
     fn action_request_start_complete() {
         let mut world = World::new();

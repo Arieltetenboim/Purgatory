@@ -67,8 +67,6 @@ mod phase6b_tests;
 #[cfg(test)]
 mod phase6c_tests;
 #[cfg(test)]
-mod phase6g_tests;
-#[cfg(test)]
 mod phase72_tests;
 mod platform;
 mod presentation_oneshot;
@@ -76,6 +74,8 @@ mod query;
 mod replication;
 mod runtime;
 mod runtime_event;
+#[cfg(test)]
+mod runtime_services_integration_tests;
 mod runtime_stats;
 mod scheduler;
 mod spatial;
