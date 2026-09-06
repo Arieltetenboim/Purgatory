@@ -23,6 +23,7 @@ Human-editable JSON lives under `/content`:
 - `shared/animations/dev/` — A6/A7 v1 `.anim` presentation clips (token text, not JSON). Optional `depth` keys (A7.1 `depth_angle`; omitted = 0). Authored in Animation Lab. Runtime still compiles them in via `include_str!`.
 - `server/entities/` — server-only entities (interactables, portals with `transition: { map, portal }`)
 - `server/placements/` — server-only placement lists keyed by map authored id
+- `definitions/monsters/` — reserved authoring scaffolding; currently empty and not scanned by the content loader. No authored monster definitions are active yet.
 
 JSON must not contain numeric `MapId`, channel, or instance. The registry assigns `MapId` (FOOTNOTE / `map.dev.footnote` is pinned to `MapId` 1).
 
@@ -66,6 +67,10 @@ The quality gate runs it after `cargo test`. Invalid content must be detected be
 - Adding a normal monster, item, or skill is data plus optional presentation data.
 - Engine source changes are required only when content introduces genuinely new behavior.
 - Simple stat changes must not require rebuilding Rust once live/dev reload exists and is safe.
+
+The current NPC runtime is not content-backed: spawn parameters and workload presets
+remain owned by simulation/server runtime code. Do not infer a monster schema from the
+empty `definitions/monsters/` directory.
 
 Portal links are content data: `transition: { "map": "<dest map authored id>", "portal": "<dest portal entity authored id>" }`. Arrival is at the linked portal, not the map's generic spawn. The destination entity does not need a reverse `transition` (one-way portals).
 

@@ -664,8 +664,8 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_16() {
-    assert_eq!(PROTOCOL_VERSION, 16);
+fn current_protocol_version_is_17() {
+    assert_eq!(PROTOCOL_VERSION, 17);
 }
 
 #[test]

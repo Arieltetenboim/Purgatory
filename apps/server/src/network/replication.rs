@@ -702,8 +702,8 @@ fn reconcile_update(
     let current_equipment = world.equipment_of(id);
     let transform = revs.transform > last.transform && allow.transform;
     let immunity = world.damage_immunity_active(id);
-    let health = (revs.health > last.health || immunity != last.damage_immunity_active)
-        && allow.health;
+    let health =
+        (revs.health > last.health || immunity != last.damage_immunity_active) && allow.health;
     let equipment_lag = revs.equipment > last.equipment;
     let equipment_delta = if equipment_lag && allow.equipment {
         equipment_slot_delta(last.equipment_state, current_equipment)
@@ -1300,7 +1300,7 @@ mod tests {
     use super::*;
     use purgatory_protocol::{ReplicatedKind, decode_replication_frame};
     use purgatory_simulation::{
-        ContentId, EquipmentSlot, PlayerState, SimulationTick, Transform, World,
+        ContentId, EquipmentSlot, Health, PlayerState, SimulationTick, Transform, World,
     };
 
     fn two_players() -> (World, EntityId, EntityId) {
@@ -1721,6 +1721,46 @@ mod tests {
             }
         }
         let _ = remote;
+    }
+
+    #[test]
+    fn committed_immunity_true_receives_health_update_false_on_expiry() {
+        let (mut world, observer, remote) = two_players();
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+
+        assert!(world.set_health(remote, Health::full(20.0)));
+        assert!(world.apply_damage(remote, 1.0));
+        assert!(world.damage_immunity_active(remote));
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let active = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
+        assert!(active.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Enter {
+                entity,
+                health: Some(health),
+                ..
+            } if entity.entity_id == to_wire_id(remote) && health.damage_immunity_active
+        )));
+
+        world.begin_tick(SimulationTick::from_count(
+            purgatory_simulation::DAMAGE_IMMUNITY_TICKS + 1,
+        ));
+        assert!(!world.damage_immunity_active(remote));
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 62);
+        let expired = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
+        assert!(expired.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Update {
+                entity_id,
+                domains,
+                health: Some(health),
+                ..
+            } if *entity_id == to_wire_id(remote)
+                && domains.health
+                && !health.damage_immunity_active
+        )));
     }
 
     #[test]

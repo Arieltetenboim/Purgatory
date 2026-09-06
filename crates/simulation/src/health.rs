@@ -3,6 +3,12 @@
 /// Default max Health when a player is attached as a combatant.
 pub const PLAYER_HEALTH_MAX: f32 = 20.0;
 
+/// Fixed-timestep duration of normal victim damage immunity.
+///
+/// The 30 Hz simulation uses 61 ticks so the normal gate remains closed for
+/// every tick before two seconds have elapsed.
+pub const DAMAGE_IMMUNITY_TICKS: u64 = 61;
+
 /// Whether authoritative damage should respect the victim's normal immunity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DamageImmunityPolicy {

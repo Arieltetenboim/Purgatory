@@ -1,7 +1,12 @@
-//! Minimal authoritative NPC runtime for Phase 7.2 workload.
+//! Authoritative NPC capability state and workload parameters.
 //!
-//! Not AI, pathfinding, content definitions, or player-specific FOOTNOTE input.
-//! Sim classification remains [`crate::EntityKind::Generic`].
+//! [`NpcState`] carries the runtime state used by the simulation's NPC driver:
+//! deterministic locomotion, shared [`CollisionBody`] grounding data, target
+//! selection, and combat-adjacent lifecycle/contact state. The driver and
+//! damage/action orchestration live in [`crate::World`]; this module is not a
+//! full AI, pathfinding, or authored monster-definition system.
+//!
+//! NPCs remain capability-composed [`crate::EntityKind::Generic`] entities.
 
 use crate::body::CollisionBody;
 use crate::entity::EntityId;
@@ -14,11 +19,6 @@ pub const NPC_HALF_EXTENTS: [f32; 2] = [0.4, 0.6];
 pub const STRIKE_DAMAGE: f32 = 2.0;
 /// Contact damage dealt by a chasing NPC on collider overlap.
 pub const CONTACT_DAMAGE: f32 = 1.0;
-/// Simulation ticks in the authoritative 2.0-second immunity window.
-///
-/// The fixed step is 33,333,333 ns, so 60 ticks are 1.99999998 seconds.
-/// Ceil the duration to keep the gate closed for every tick before 2.0 s.
-pub const CONTACT_IMMUNITY_TICKS: u64 = 61;
 /// Strike range in world units.
 pub const STRIKE_RANGE: f32 = 4.0;
 /// Action table duration for Strike (ticks).

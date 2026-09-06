@@ -721,7 +721,7 @@ impl World {
         if immunity == DamageImmunityPolicy::Respect && health.current < before {
             let until = self
                 .tick
-                .saturating_add_ticks(crate::npc::CONTACT_IMMUNITY_TICKS);
+                .saturating_add_ticks(crate::health::DAMAGE_IMMUNITY_TICKS);
             if let Some(data) = self.slot_live_mut(target) {
                 data.damage_immunity_until = Some(until);
             }

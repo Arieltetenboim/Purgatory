@@ -705,10 +705,16 @@ impl World {
             })
             .collect();
         for id in expired {
+            let mut bumped = false;
             if let Some(data) = self.slot_live_mut(id) {
                 data.damage_immunity_until = None;
+                data.domain_revs.bump_health();
+                bumped = true;
             }
-            self.mark_replication_dirty(id, ReplicationDirtyMask::health_only());
+            if bumped {
+                self.note_domain_rev();
+                self.mark_replication_dirty(id, ReplicationDirtyMask::health_only());
+            }
         }
     }
 

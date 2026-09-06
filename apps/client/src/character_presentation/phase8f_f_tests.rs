@@ -47,7 +47,7 @@ fn idle(equipment: EquipmentView) -> super::state::CharacterPresentationState {
 
 #[test]
 fn protocol_unchanged_by_8f() {
-    assert_eq!(PROTOCOL_VERSION, 16);
+    assert_eq!(PROTOCOL_VERSION, 17);
 }
 
 #[test]

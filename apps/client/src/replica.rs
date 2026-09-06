@@ -789,6 +789,71 @@ mod tests {
     }
 
     #[test]
+    fn health_update_applies_immunity_expiry_to_replica() {
+        let mut world = ReplicatedWorld::new();
+        let local = WireEntityId {
+            index: 1,
+            generation: 1,
+        };
+        let remote = WireEntityId {
+            index: 2,
+            generation: 1,
+        };
+        world.apply_frame(frame(
+            0,
+            1,
+            local,
+            vec![ReplicationRecord::Enter {
+                entity: entity(2, 1, 2.0),
+                health: Some(ReplicatedHealth {
+                    current: 19.0,
+                    max: 20.0,
+                    damage_immunity_active: true,
+                }),
+                equipment: None,
+            }],
+        ));
+        assert!(
+            world
+                .get(remote)
+                .unwrap()
+                .health
+                .unwrap()
+                .damage_immunity_active
+        );
+
+        world.apply_frame(frame(
+            0,
+            2,
+            local,
+            vec![ReplicationRecord::Update {
+                entity_id: remote,
+                domains: purgatory_protocol::DomainMask {
+                    transform: false,
+                    health: true,
+                    equipment: false,
+                },
+                position: None,
+                velocity: None,
+                health: Some(ReplicatedHealth {
+                    current: 19.0,
+                    max: 20.0,
+                    damage_immunity_active: false,
+                }),
+                equipment: None,
+            }],
+        ));
+        assert!(
+            !world
+                .get(remote)
+                .unwrap()
+                .health
+                .unwrap()
+                .damage_immunity_active
+        );
+    }
+
+    #[test]
     fn header_only_frame_does_not_mark_local_durable() {
         let mut world = ReplicatedWorld::new();
         let a = WireEntityId {

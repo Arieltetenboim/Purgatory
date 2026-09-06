@@ -1433,10 +1433,8 @@ impl GameplayOwner {
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
-        self.world.tick_npcs_with_approach(
-            dt,
-            Some((LIVE_COMBAT_CREATURE_AGGRO_RADIUS, 0.8, 1.2)),
-        );
+        self.world
+            .tick_npcs_with_approach(dt, Some((LIVE_COMBAT_CREATURE_AGGRO_RADIUS, 0.8, 1.2)));
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
         sample.npc_activity += npc_t0.elapsed();
 
@@ -5007,9 +5005,11 @@ mod tests {
             .filter(|&entity| owner.world().npc_of(entity).is_some())
             .collect();
         assert_eq!(creatures.len(), 1);
-        assert!(!owner
-            .world()
-            .ability_granted(creatures[0], basic_strike_id()));
+        assert!(
+            !owner
+                .world()
+                .ability_granted(creatures[0], basic_strike_id())
+        );
     }
 
     #[test]
@@ -5032,9 +5032,7 @@ mod tests {
             owner.world().health_of(player).unwrap().current,
             PLAYER_HEALTH_MAX - 1.0
         );
-        assert!(!owner
-            .world()
-            .ability_granted(creature, basic_strike_id()));
+        assert!(!owner.world().ability_granted(creature, basic_strike_id()));
     }
 
     #[test]

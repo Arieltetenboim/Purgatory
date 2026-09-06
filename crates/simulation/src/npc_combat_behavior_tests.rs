@@ -7,7 +7,7 @@ use crate::ability::{
 };
 use crate::action_gate::ActionGateContext;
 use crate::fixtures::RuntimeFixtures;
-use crate::health::Health;
+use crate::health::{DAMAGE_IMMUNITY_TICKS, Health};
 use crate::npc::{NPC_HEALTH_MAX, STRIKE_RANGE};
 use crate::platform::Platform;
 use crate::time::SimulationTick;
@@ -415,14 +415,18 @@ fn immunity_expiry_marks_authoritative_replication_dirty() {
     world.clear_replication_dirty();
     world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
     assert!(world.damage_immunity_active(player));
+    let active_revision = world.domain_revs_of(player).unwrap().health;
     world.clear_replication_dirty();
 
-    world.begin_tick(SimulationTick::from_count(62));
+    world.begin_tick(SimulationTick::from_count(DAMAGE_IMMUNITY_TICKS + 1));
 
     assert!(!world.damage_immunity_active(player));
-    assert!(world
-        .replication_dirty_iter()
-        .any(|(id, mask)| id == player && mask.health));
+    assert!(world.domain_revs_of(player).unwrap().health > active_revision);
+    assert!(
+        world
+            .replication_dirty_iter()
+            .any(|(id, mask)| id == player && mask.health)
+    );
 }
 
 #[test]
