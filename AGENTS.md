@@ -17,6 +17,7 @@ Scoped workflows: [`.cursor/skills/`](.cursor/skills/) (`purgatory-implement`, `
 - `docs/PROTOCOL.md` — wire protocol
 - `docs/ROADMAP.md` — phase order and status
 - `docs/TEST_GATES.md` — verification gates
+- `docs/QUALITY.md` — repository quality policy
 - `docs/PERFORMANCE_BUDGETS.md` — living performance budgets
 - `docs/CONTENT_PIPELINE.md` — content authoring boundary
 - `docs/DIAGNOSTICS_ARCHITECTURE.md` — client debug/diagnostics split (D-track)
