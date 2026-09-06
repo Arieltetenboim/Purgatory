@@ -1,6 +1,6 @@
 //! FOOTNOTE tick orchestration: intent, accel, gravity, integrate, contact.
 
-use crate::body::PlayerState;
+use crate::body::{CollisionBody, PlayerState};
 use crate::collision::{recover_solid_penetration, resolve_horizontal, resolve_vertical};
 use crate::contact::CONTACT_EPSILON;
 use crate::entity::{EntityId, EntityKind};
@@ -397,13 +397,13 @@ fn apply_jump(player: &mut PlayerState, input: PlayerInput, config: &FootnoteCon
 
 /// Keep a grounded player glued to a valid support top without gravity sink.
 /// Returns `(platform, y_correction)` or `None` if support was lost (walk-off).
-fn glue_to_support(
+pub(crate) fn glue_to_support<B: CollisionBody>(
     transform: &mut Transform,
-    player: &mut PlayerState,
+    body_state: &mut B,
     platforms: impl Iterator<Item = PlatformView>,
     previous_bottom: f32,
 ) -> Option<(EntityId, f32)> {
-    let half = player.half_extents;
+    let half = body_state.half_extents();
     let feet = transform.position[1] - half[1];
     let left = transform.position[0] - half[0];
     let right = transform.position[0] + half[0];
@@ -426,7 +426,7 @@ fn glue_to_support(
             platform_id: view.id,
             previous_bottom: previous_bottom.max(top),
             platform_top: top,
-            ignored_platform: player.ignored_platform,
+            ignored_platform: body_state.ignored_platform(),
         };
         if !crate::footnote::surface_blocks(view.platform, query) {
             continue;
@@ -440,7 +440,9 @@ fn glue_to_support(
     let (top, id) = best?;
     let before = transform.position[1];
     transform.position[1] = top + half[1];
-    player.velocity[1] = 0.0;
+    let mut velocity = body_state.velocity();
+    velocity[1] = 0.0;
+    body_state.set_velocity(velocity);
     Some((id, transform.position[1] - before))
 }
 

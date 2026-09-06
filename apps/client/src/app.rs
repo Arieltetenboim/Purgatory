@@ -2196,6 +2196,7 @@ impl ClientApp {
                         } else {
                             None
                         },
+                        self.replica.local_entity().and_then(|entity| entity.health),
                     );
                     actions = commands;
                     extras
@@ -2734,6 +2735,21 @@ impl ClientApp {
                         println!("PURGATORY debug: Reset to Spawn Point -> local spawn reset");
                         if let Some(debug) = self.debug.as_mut() {
                             debug.ui.note_dev_action_flash(RESET_TO_SPAWN_FLASH);
+                        }
+                    }
+                }
+                DebugCommand::Respawn => {
+                    if self.lifecycle.screen() == ClientScreen::Game
+                        && self
+                            .replica
+                            .local_entity()
+                            .and_then(|entity| entity.health)
+                            .is_some_and(|health| health.current <= 0.0)
+                        && let Some(network) = &self.network
+                    {
+                        println!("RESPAWN send");
+                        if !network.try_send_respawn() {
+                            eprintln!("RESPAWN send failed (input channel full or closed)");
                         }
                     }
                 }
@@ -3615,8 +3631,14 @@ impl ApplicationHandler for ClientApp {
         {
             let overlay_open = self.debug_overlay_visible();
             let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
+            let gameplay_hud_visible = self
+                .replica
+                .local_entity()
+                .and_then(|entity| entity.health)
+                .is_some();
             let feed_overlay = overlay_open
                 || on_connection
+                || gameplay_hud_visible
                 || matches!(
                     event,
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }

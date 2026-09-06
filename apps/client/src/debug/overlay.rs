@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use egui::{Context, ViewportId};
 use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State;
+use purgatory_protocol::ReplicatedHealth;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::Window;
@@ -181,11 +182,13 @@ impl DebugOverlay {
         pass: OverlayPass<'_>,
         frame: &DiagnosticsFrame,
         connection: Option<ConnectionPaint<'_>>,
+        gameplay_health: Option<ReplicatedHealth>,
     ) -> (Vec<wgpu::CommandBuffer>, Vec<DebugCommand>, bool) {
         if connection.is_none()
             && !self.visible
             && !has_persistent_dev_warnings(&self.ui)
             && !self.ui.center_toast_live()
+            && gameplay_health.is_none()
         {
             return (Vec::new(), Vec::new(), false);
         }
@@ -204,6 +207,9 @@ impl DebugOverlay {
         let history = &mut self.collision_history;
         let mut connection = connection;
         let mut full_output = self.ctx.run_ui(raw_input, |egui_ctx| {
+            if let Some(health) = gameplay_health {
+                draw_gameplay_hud(egui_ctx, health, &mut actions);
+            }
             if let Some(paint) = connection.as_mut() {
                 connect_clicked = paint.frontend.paint(
                     egui_ctx,
@@ -293,6 +299,42 @@ impl DebugOverlay {
 
         (extra, actions, connect_clicked)
     }
+}
+
+fn draw_gameplay_hud(
+    ctx: &Context,
+    health: purgatory_protocol::ReplicatedHealth,
+    actions: &mut Vec<DebugCommand>,
+) {
+    let dead = health.current <= 0.0;
+    egui::Area::new(egui::Id::new("purgatory-gameplay-hud"))
+        .anchor(egui::Align2::LEFT_TOP, [16.0, 16.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(10, 12, 16, 220))
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.label(format!(
+                        "Health: {:.0} / {:.0}",
+                        health.current.max(0.0),
+                        health.max.max(0.0)
+                    ));
+                    let fraction = if health.max > 0.0 {
+                        (health.current / health.max).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .desired_width(180.0)
+                            .fill(egui::Color32::from_rgb(70, 190, 95)),
+                    );
+                    if dead && ui.button("Respawn").clicked() {
+                        actions.push(DebugCommand::Respawn);
+                    }
+                });
+        });
 }
 
 #[must_use]

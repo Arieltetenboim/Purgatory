@@ -9,6 +9,7 @@ use crate::npc::{
     ActionRejectReason, ActionRequest, NPC_HEALTH_MAX, NpcState, PULSE_DURATION_TICKS,
     PULSE_PERIOD_TICKS, STRIKE_DAMAGE, STRIKE_RANGE,
 };
+use crate::platform::Platform;
 use crate::spawn::RuntimeSpawnRequest;
 use crate::time::SimulationTick;
 use crate::transform::Transform;
@@ -358,4 +359,240 @@ fn npc_state_attaches_via_spawn_request() {
         )
         .unwrap();
     assert_eq!(world.npc_of(id).unwrap().type_token, 3);
+}
+
+#[test]
+fn npc_falls_onto_solid_and_remains_supported() {
+    let mut world = World::new();
+    let floor = world.spawn_platform(
+        Transform::from_position([0.0, 0.0]),
+        Platform::solid([3.0, 0.2]),
+    );
+    let now = SimulationTick::from_count(1);
+    world.begin_tick(now);
+    let npc = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [0.0, 3.0],
+            1,
+            3.0,
+            7,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+
+    for tick in 2..=90 {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.tick_npcs(1.0 / 30.0);
+    }
+
+    let landed = world.npc_of(npc).unwrap();
+    let position = world.transform_of(npc).unwrap().position;
+    assert!(landed.grounded);
+    assert_eq!(landed.grounded_on, Some(floor));
+    assert!((position[1] - 0.8).abs() < 1e-4);
+    let settled = position;
+    world.tick_npcs(1.0 / 30.0);
+    assert_eq!(world.transform_of(npc).unwrap().position, settled);
+}
+
+#[test]
+fn npc_grounded_patrol_moves_horizontally() {
+    let mut world = World::new();
+    world.spawn_platform(
+        Transform::from_position([0.0, 0.0]),
+        Platform::solid([8.0, 0.2]),
+    );
+    let now = SimulationTick::from_count(1);
+    world.begin_tick(now);
+    let npc = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [0.0, 1.0],
+            1,
+            2.0,
+            7,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+    let mut state = world.npc_of(npc).unwrap();
+    state.heading = [1.0, 0.0];
+    state.walking = true;
+    world.set_npc(npc, state);
+
+    for tick in 2..=90 {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.tick_npcs(1.0 / 30.0);
+    }
+
+    let state = world.npc_of(npc).unwrap();
+    let position = world.transform_of(npc).unwrap().position;
+    assert!(state.grounded);
+    assert!(position[0] > 0.0);
+    assert_eq!(position[1], 0.8);
+}
+
+#[test]
+fn npc_patrol_stays_inside_home_range() {
+    let mut world = World::new();
+    world.spawn_platform(
+        Transform::from_position([0.0, 0.0]),
+        Platform::solid([8.0, 0.2]),
+    );
+    let now = SimulationTick::from_count(1);
+    world.begin_tick(now);
+    let npc = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [0.0, 1.0],
+            1,
+            0.8,
+            7,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+    let mut state = world.npc_of(npc).unwrap();
+    state.heading = [1.0, 0.0];
+    state.walking = true;
+    world.set_npc(npc, state);
+
+    for tick in 2..=300 {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.tick_npcs(1.0 / 30.0);
+        let x = world.transform_of(npc).unwrap().position[0];
+        assert!((-0.8..=0.8).contains(&x), "patrol escaped home range: {x}");
+    }
+}
+
+#[test]
+fn npc_turns_before_walking_off_support_edge() {
+    let mut world = World::new();
+    let platform = world.spawn_platform(
+        Transform::from_position([0.0, 0.0]),
+        Platform::solid([1.0, 0.2]),
+    );
+    let now = SimulationTick::from_count(1);
+    world.begin_tick(now);
+    let npc = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [0.0, 1.0],
+            1,
+            10.0,
+            7,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+    let mut state = world.npc_of(npc).unwrap();
+    state.walking = false;
+    state.next_mode_tick = SimulationTick::from_count(1_000);
+    world.set_npc(npc, state);
+
+    let mut landed_tick = None;
+    for tick in 2..=120 {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.tick_npcs(1.0 / 30.0);
+        if world.npc_of(npc).unwrap().grounded {
+            landed_tick = Some(tick);
+            break;
+        }
+    }
+    let landed_tick = landed_tick.expect("NPC should land on support");
+    let mut state = world.npc_of(npc).unwrap();
+    state.heading = [1.0, 0.0];
+    state.walking = true;
+    world.set_npc(npc, state);
+    let mut transform = world.transform_of(npc).unwrap();
+    transform.position[0] = 0.59;
+    world.set_transform(npc, transform);
+    world.begin_tick(SimulationTick::from_count(landed_tick + 1));
+    world.tick_npcs(1.0 / 30.0);
+
+    let state = world.npc_of(npc).unwrap();
+    let x = world.transform_of(npc).unwrap().position[0];
+    assert_eq!(state.grounded_on, Some(platform));
+    assert!(x <= 1.0 - state.half_extents[0] + 1e-5);
+    assert_eq!(state.heading, [-1.0, 0.0]);
+}
+
+#[test]
+fn npc_ground_physics_filters_platforms_by_exact_world_address() {
+    let mut world = World::new();
+    let floor = world.spawn_platform_at(
+        WorldAddress::DEV,
+        Transform::from_position([0.0, 0.0]),
+        Platform::solid([3.0, 0.2]),
+    );
+    let foreign = WorldAddress::new(
+        purgatory_common::MapId::DEV,
+        purgatory_common::ChannelId::DEFAULT,
+        purgatory_common::InstanceId::from_raw(2),
+    );
+    world.spawn_platform_at(
+        foreign,
+        Transform::from_position([0.0, 1.5]),
+        Platform::solid([3.0, 0.2]),
+    );
+    let now = SimulationTick::from_count(1);
+    world.begin_tick(now);
+    let npc = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [0.0, 3.0],
+            1,
+            3.0,
+            8,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+    for tick in 2..=90 {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.tick_npcs(1.0 / 30.0);
+    }
+    assert_eq!(world.npc_of(npc).unwrap().grounded_on, Some(floor));
+}
+
+#[test]
+fn npc_approach_does_not_move_vertically_toward_elevated_player() {
+    let mut world = World::new();
+    world.spawn_platform(
+        Transform::from_position([0.0, 0.0]),
+        Platform::solid([8.0, 0.2]),
+    );
+    let player = RuntimeFixtures::test_player(&mut world);
+    world.set_transform(player, Transform::from_position([3.0, 4.0]));
+    let now = SimulationTick::from_count(1);
+    world.begin_tick(now);
+    let npc = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [0.0, 3.0],
+            1,
+            3.0,
+            9,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+    for tick in 2..=90 {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.tick_npcs(1.0 / 30.0);
+    }
+    let grounded_y = world.transform_of(npc).unwrap().position[1];
+    world.tick_npcs_with_approach(1.0 / 30.0, Some((5.0, 0.5, 0.8)));
+    let state = world.npc_of(npc).unwrap();
+    assert!(state.grounded);
+    assert!(state.grounded_on.is_some());
+    assert_eq!(world.transform_of(npc).unwrap().position[1], grounded_y);
 }

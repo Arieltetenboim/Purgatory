@@ -15,7 +15,7 @@
 //! Response consults FOOTNOTE [`crate::footnote::surface_blocks`].
 
 use crate::aabb::Aabb;
-use crate::body::PlayerState;
+use crate::body::CollisionBody;
 use crate::contact::{
     CONTACT_EPSILON, MAX_RECOVERY_TRANSLATION, RECOVERY_PENETRATION_MIN, overlap_x, overlap_y,
     penetrates,
@@ -60,12 +60,12 @@ pub struct RecoveryResult {
 /// minimum-translation recovery (shallower axis). Caps magnitude.
 ///
 /// OneWay is ignored. Surface-touch within [`CONTACT_EPSILON`] is not recovery.
-pub fn recover_solid_penetration(
+pub fn recover_solid_penetration<B: CollisionBody>(
     transform: &mut Transform,
-    player: &PlayerState,
+    body_state: &B,
     platforms: impl Iterator<Item = PlatformView>,
 ) -> Option<RecoveryResult> {
-    let body = player.aabb(*transform);
+    let body = body_state.aabb(*transform);
     // (id, pen_x, pen_y, push_x, push_y) — push_* already signed toward exit
     let mut best: Option<(EntityId, f32, f32, f32, f32)> = None;
 
@@ -128,21 +128,21 @@ pub fn recover_solid_penetration(
 /// side-face crossing are ignored (no nearest-face shove).
 ///
 /// Returns `(candidate, correction_delta_x)` when a wall response was applied.
-pub fn resolve_horizontal(
+pub fn resolve_horizontal<B: CollisionBody>(
     transform: &mut Transform,
-    player: &mut PlayerState,
+    body_state: &mut B,
     platforms: impl Iterator<Item = PlatformView>,
     previous_bottom: f32,
     previous_left: f32,
     previous_right: f32,
 ) -> Option<(EntityId, f32)> {
-    let body = player.aabb(*transform);
-    let vx = player.velocity[0];
+    let body = body_state.aabb(*transform);
+    let vx = body_state.velocity()[0];
     if vx == 0.0 {
         return None;
     }
     let approach = Approach::from_horizontal_velocity(vx);
-    let half = player.half_extents[0];
+    let half = body_state.half_extents()[0];
     let eps = CONTACT_EPSILON;
 
     let mut best_cross: Option<(f32, EntityId)> = None;
@@ -156,7 +156,7 @@ pub fn resolve_horizontal(
             platform_id: platform.id,
             previous_bottom,
             platform_top: platform.top_surface(),
-            ignored_platform: player.ignored_platform,
+            ignored_platform: body_state.ignored_platform(),
         };
         if !surface_blocks(platform.platform, query) {
             continue;
@@ -185,7 +185,9 @@ pub fn resolve_horizontal(
         } else {
             transform.position[0] = edge + half;
         }
-        player.velocity[0] = 0.0;
+        let mut velocity = body_state.velocity();
+        velocity[0] = 0.0;
+        body_state.set_velocity(velocity);
         Some((id, transform.position[0] - before))
     } else {
         None
@@ -228,27 +230,28 @@ impl VerticalContact {
 /// Overlapping candidates are not resolved sequentially. One valid surface is
 /// chosen: first top crossed from above when falling, or nearest underside
 /// crossed from below when rising.
-pub fn resolve_vertical(
+pub fn resolve_vertical<B: CollisionBody>(
     transform: &mut Transform,
-    player: &mut PlayerState,
+    body_state: &mut B,
     platforms: impl Iterator<Item = PlatformView>,
     previous_bottom: f32,
     previous_top: f32,
 ) -> (VerticalContact, f32) {
-    let body = player.aabb(*transform);
-    let vy = player.velocity[1];
+    let body = body_state.aabb(*transform);
+    let vy = body_state.velocity()[1];
 
     if vy > 0.0 {
         resolve_upward(
             transform,
-            player,
+            body_state,
             platforms,
             body,
             previous_bottom,
             previous_top,
         )
     } else if vy < 0.0 {
-        let (landed, dy) = resolve_downward(transform, player, platforms, body, previous_bottom);
+        let (landed, dy) =
+            resolve_downward(transform, body_state, platforms, body, previous_bottom);
         (
             landed.map_or(VerticalContact::None, VerticalContact::Land),
             dy,
@@ -258,15 +261,15 @@ pub fn resolve_vertical(
     }
 }
 
-fn resolve_upward(
+fn resolve_upward<B: CollisionBody>(
     transform: &mut Transform,
-    player: &mut PlayerState,
+    body_state: &mut B,
     platforms: impl Iterator<Item = PlatformView>,
     body: Aabb,
     previous_bottom: f32,
     previous_top: f32,
 ) -> (VerticalContact, f32) {
-    let current_top = body.center[1] + player.half_extents[1];
+    let current_top = body.center[1] + body_state.half_extents()[1];
     let mut best: Option<(f32, EntityId)> = None;
 
     for platform in platforms {
@@ -279,7 +282,7 @@ fn resolve_upward(
             platform_id: platform.id,
             previous_bottom,
             platform_top: platform.top_surface(),
-            ignored_platform: player.ignored_platform,
+            ignored_platform: body_state.ignored_platform(),
         };
         if !surface_blocks(platform.platform, query) {
             continue;
@@ -300,22 +303,24 @@ fn resolve_upward(
         let before = transform.position[1];
         // Separate slightly below the underside so flush contact is not
         // reported as AABB penetration on the next X phase (float noise).
-        transform.position[1] = underside - player.half_extents[1] - CONTACT_EPSILON;
-        player.velocity[1] = 0.0;
+        transform.position[1] = underside - body_state.half_extents()[1] - CONTACT_EPSILON;
+        let mut velocity = body_state.velocity();
+        velocity[1] = 0.0;
+        body_state.set_velocity(velocity);
         (VerticalContact::Ceiling(id), transform.position[1] - before)
     } else {
         (VerticalContact::None, 0.0)
     }
 }
 
-fn resolve_downward(
+fn resolve_downward<B: CollisionBody>(
     transform: &mut Transform,
-    player: &mut PlayerState,
+    body_state: &mut B,
     platforms: impl Iterator<Item = PlatformView>,
     body: Aabb,
     previous_bottom: f32,
 ) -> (Option<EntityId>, f32) {
-    let current_bottom = body.center[1] - player.half_extents[1];
+    let current_bottom = body.center[1] - body_state.half_extents()[1];
     let mut best: Option<(f32, EntityId)> = None;
 
     for platform in platforms {
@@ -328,7 +333,7 @@ fn resolve_downward(
             platform_id: platform.id,
             previous_bottom,
             platform_top: top,
-            ignored_platform: player.ignored_platform,
+            ignored_platform: body_state.ignored_platform(),
         };
         if !surface_blocks(platform.platform, query) {
             continue;
@@ -347,8 +352,10 @@ fn resolve_downward(
 
     if let Some((top, id)) = best {
         let before = transform.position[1];
-        transform.position[1] = top + player.half_extents[1];
-        player.velocity[1] = 0.0;
+        transform.position[1] = top + body_state.half_extents()[1];
+        let mut velocity = body_state.velocity();
+        velocity[1] = 0.0;
+        body_state.set_velocity(velocity);
         (Some(id), transform.position[1] - before)
     } else {
         (None, 0.0)

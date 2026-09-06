@@ -3,6 +3,13 @@
 /// Default max Health when a player is attached as a combatant.
 pub const PLAYER_HEALTH_MAX: f32 = 20.0;
 
+/// Whether authoritative damage should respect the victim's normal immunity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DamageImmunityPolicy {
+    Respect,
+    Bypass,
+}
+
 /// Current / max health. Optional capability.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Health {

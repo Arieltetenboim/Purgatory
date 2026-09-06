@@ -14,6 +14,7 @@ pub enum DebugCommand {
     ResetPlayer,
     /// Connected: `DevResetPlayer`. Offline: local `DebugAction::ResetPlayer`.
     ResetToSpawn,
+    Respawn,
     Connect,
     Disconnect,
     SetChannel(u32),

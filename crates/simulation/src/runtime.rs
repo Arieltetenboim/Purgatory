@@ -10,15 +10,18 @@
 use crate::Aabb;
 use crate::action::{Action, ActionEnd, ActionError, ActionKind};
 use crate::action_gate::{ActionDenialReason, ActionGateContext, evaluate_action_gate};
+use crate::body::CollisionBody;
 use crate::cadence::{Cadence, CadenceBinding};
+use crate::collision::{recover_solid_penetration, resolve_horizontal, resolve_vertical};
 use crate::effect::{EffectError, EffectId, EffectKind, TempEffect};
 use crate::entity::EntityId;
-use crate::health::Health;
+use crate::health::{DamageImmunityPolicy, Health};
 use crate::npc::{
-    ActionRejectReason, ActionRequest, NPC_MOVE_SPEED, NPC_STOP_PERIOD_TICKS,
+    ActionRejectReason, ActionRequest, CONTACT_DAMAGE, NPC_MOVE_SPEED, NPC_STOP_PERIOD_TICKS,
     NPC_TURN_PERIOD_TICKS, NPC_WALK_PERIOD_TICKS, NpcState, STRIKE_DAMAGE, STRIKE_DURATION_TICKS,
     STRIKE_RANGE,
 };
+use crate::platform::PlatformView;
 use crate::query::{QueryFilter, QueryLimit};
 use crate::runtime_event::RuntimeEvent;
 use crate::runtime_stats::RuntimeStats;
@@ -381,7 +384,9 @@ impl World {
         effect: crate::ability::AbilityEffect,
     ) -> bool {
         match effect {
-            crate::ability::AbilityEffect::Damage { amount } => self.apply_damage(target, amount),
+            crate::ability::AbilityEffect::Damage { amount } => {
+                self.apply_damage_with_immunity(target, amount, DamageImmunityPolicy::Bypass)
+            }
         }
     }
 
@@ -681,6 +686,21 @@ impl World {
     /// oneshots (Dead is Health-derived, not a oneshot). Already-dead targets
     /// do not restart Hurt.
     pub fn apply_damage(&mut self, target: EntityId, amount: f32) -> bool {
+        self.apply_damage_with_immunity(target, amount, DamageImmunityPolicy::Respect)
+    }
+
+    /// Apply normal NPC contact damage through the victim immunity gate.
+    pub fn apply_contact_damage(&mut self, target: EntityId, amount: f32) -> bool {
+        self.apply_damage_with_immunity(target, amount, DamageImmunityPolicy::Respect)
+    }
+
+    /// Apply flat damage with an explicit victim-immunity policy.
+    pub fn apply_damage_with_immunity(
+        &mut self,
+        target: EntityId,
+        amount: f32,
+        immunity: DamageImmunityPolicy,
+    ) -> bool {
         let Some(mut health) = self.health_of(target) else {
             return false;
         };
@@ -690,9 +710,20 @@ impl World {
             health.current = 0.0;
             return self.set_health(target, health);
         }
+        if immunity == DamageImmunityPolicy::Respect && self.damage_immunity_active(target) {
+            return false;
+        }
         health.current = (health.current - amount).max(0.0);
         if !self.set_health(target, health) {
             return false;
+        }
+        if immunity == DamageImmunityPolicy::Respect && health.current < before {
+            let until = self
+                .tick
+                .saturating_add_ticks(crate::npc::CONTACT_IMMUNITY_TICKS);
+            if let Some(data) = self.slot_live_mut(target) {
+                data.damage_immunity_until = Some(until);
+            }
         }
         if health.current <= 0.0 {
             let _ = self.clear_presentation_oneshot(target);
@@ -761,7 +792,11 @@ impl World {
             Err(reason) => return reject(self, ActionRejectReason::Gate(reason)),
         };
         if matches!(request.kind, ActionKind::Strike) {
-            let _ = self.apply_damage(request.target, STRIKE_DAMAGE);
+            let _ = self.apply_damage_with_immunity(
+                request.target,
+                STRIKE_DAMAGE,
+                DamageImmunityPolicy::Bypass,
+            );
             let due = self.tick.saturating_add_ticks(STRIKE_DURATION_TICKS);
             let _ = self.scheduler.schedule_at(
                 due,
@@ -817,7 +852,7 @@ impl World {
         Ok(effect)
     }
 
-    /// Deterministic NPC activity step. Skips inactive / dead-pending NPCs.
+    /// Deterministic NPC activity and ground-physics step.
     pub fn tick_npcs(&mut self, dt_seconds: f32) {
         self.tick_npcs_with_approach(dt_seconds, None);
     }
@@ -825,7 +860,8 @@ impl World {
     /// Deterministic NPC activity step with optional live-player approach.
     ///
     /// This remains the sole owner of authoritative NPC movement state. The
-    /// target is queried for this tick only; it is not retained by the NPC.
+    /// Player acquisition is retained by the NPC while the target remains
+    /// alive, in the same world address, and inside its home leash.
     pub fn tick_npcs_with_approach(&mut self, dt_seconds: f32, approach: Option<(f32, f32, f32)>) {
         let now = self.tick;
         let ids: Vec<EntityId> = self
@@ -837,7 +873,9 @@ impl World {
             let Some(mut npc) = self.npc_of(id) else {
                 continue;
             };
-            if !npc.active || npc.dead_pending {
+            if !npc.active || npc.dead_pending || self.health_of(id).is_some_and(|h| h.is_dead()) {
+                npc.target = None;
+                npc.velocity = [0.0, 0.0];
                 let _ = self.set_npc(id, npc);
                 continue;
             }
@@ -845,26 +883,50 @@ impl World {
             self.runtime_stats.npc_updates_total =
                 self.runtime_stats.npc_updates_total.saturating_add(1);
 
+            if let Some(target) = npc.target
+                && !self.valid_npc_target(id, target, f32::MAX)
+            {
+                npc.target = None;
+            }
             let approach_target =
                 approach.and_then(|(acquisition_radius, stop_range, stop_half_height)| {
-                    self.nearest_living_player_target(id, acquisition_radius)
-                        .and_then(|target| {
-                            let actor_position = self.transform_of(id)?.position;
-                            let target_position = self.transform_of(target)?.position;
-                            let dx = target_position[0] - actor_position[0];
-                            let dy = target_position[1] - actor_position[1];
-                            let facing_x = if dx < 0.0 { -1.0 } else { 1.0 };
-                            let hittable = crate::ability::forward_query_aabb(
-                                actor_position,
-                                facing_x,
-                                stop_range,
-                                stop_half_height,
-                            )
-                            .contains_point(target_position);
-                            Some((target_position, dx * dx + dy * dy, hittable))
-                        })
+                    if let Some(target) = npc.target
+                        && !self.valid_npc_target(
+                            id,
+                            target,
+                            npc.hotspot_radius.max(acquisition_radius),
+                        )
+                    {
+                        npc.target = None;
+                    }
+                    if npc.target.is_none() {
+                        npc.target = self
+                            .nearest_living_player_target(id, acquisition_radius)
+                            .filter(|&target| {
+                                self.valid_npc_target(
+                                    id,
+                                    target,
+                                    npc.hotspot_radius.max(acquisition_radius),
+                                )
+                            });
+                    }
+                    npc.target.and_then(|target| {
+                        let actor_position = self.transform_of(id)?.position;
+                        let target_position = self.transform_of(target)?.position;
+                        let dx = target_position[0] - actor_position[0];
+                        let dy = target_position[1] - actor_position[1];
+                        let facing_x = if dx < 0.0 { -1.0 } else { 1.0 };
+                        let hittable = crate::ability::forward_query_aabb(
+                            actor_position,
+                            facing_x,
+                            stop_range,
+                            stop_half_height,
+                        )
+                        .contains_point(target_position);
+                        Some((target_position, dx * dx + dy * dy, hittable))
+                    })
                 });
-            if let Some((target_position, distance_sq, hittable)) = approach_target {
+            if let Some((target_position, _distance_sq, hittable)) = approach_target {
                 let Some(transform) = self.transform_of(id) else {
                     let _ = self.set_npc(id, npc);
                     continue;
@@ -875,73 +937,161 @@ impl World {
                     } else {
                         [1.0, 0.0]
                     };
-                    npc.velocity = [0.0, 0.0];
-                    let _ = self.set_npc(id, npc);
-                    continue;
-                }
-                let dx = target_position[0] - transform.position[0];
-                let dy = target_position[1] - transform.position[1];
-                let distance = distance_sq.sqrt().max(1e-6);
-                npc.heading = [dx / distance, dy / distance];
-                let pos = [
-                    transform.position[0] + npc.heading[0] * NPC_MOVE_SPEED * dt_seconds,
-                    transform.position[1] + npc.heading[1] * NPC_MOVE_SPEED * dt_seconds,
-                ];
-                npc.velocity = [
-                    (pos[0] - transform.position[0]) / dt_seconds.max(1e-6),
-                    (pos[1] - transform.position[1]) / dt_seconds.max(1e-6),
-                ];
-                let _ = self.set_npc(id, npc);
-                let _ = self.set_transform(id, Transform::from_position(pos));
-                continue;
-            }
-
-            if now.get() >= npc.next_turn_tick.get() {
-                let angle = (npc.advance_rng() as f32 / u32::MAX as f32) * std::f32::consts::TAU;
-                npc.heading = [angle.cos(), angle.sin()];
-                npc.next_turn_tick = now.saturating_add_ticks(NPC_TURN_PERIOD_TICKS);
-            }
-            if now.get() >= npc.next_mode_tick.get() {
-                npc.walking = !npc.walking;
-                let period = if npc.walking {
-                    NPC_WALK_PERIOD_TICKS
+                    npc.velocity[0] = 0.0;
                 } else {
-                    NPC_STOP_PERIOD_TICKS
-                };
-                npc.next_mode_tick = now.saturating_add_ticks(period);
-            }
-
-            if npc.walking {
-                let Some(transform) = self.transform_of(id) else {
-                    let _ = self.set_npc(id, npc);
-                    continue;
-                };
-                let mut pos = [
-                    transform.position[0] + npc.heading[0] * NPC_MOVE_SPEED * dt_seconds,
-                    transform.position[1] + npc.heading[1] * NPC_MOVE_SPEED * dt_seconds,
-                ];
-                let dx = pos[0] - npc.home[0];
-                let dy = pos[1] - npc.home[1];
-                let dist_sq = dx * dx + dy * dy;
-                let r = npc.hotspot_radius;
-                if dist_sq > r * r {
-                    let dist = dist_sq.sqrt().max(1e-6);
-                    pos[0] = npc.home[0] + dx / dist * r;
-                    pos[1] = npc.home[1] + dy / dist * r;
-                    npc.heading = [-dx / dist, -dy / dist];
+                    let dx = target_position[0] - transform.position[0];
+                    let direction = dx.signum();
+                    npc.heading = [direction, 0.0];
+                    npc.velocity[0] = direction * NPC_MOVE_SPEED;
                 }
-                npc.velocity = [
-                    (pos[0] - transform.position[0]) / dt_seconds.max(1e-6),
-                    (pos[1] - transform.position[1]) / dt_seconds.max(1e-6),
-                ];
-                let _ = self.set_npc(id, npc);
-                let _ = self.set_transform(id, Transform::from_position(pos));
             } else {
-                npc.velocity = [0.0, 0.0];
-                let _ = self.set_npc(id, npc);
+                if now.get() >= npc.next_turn_tick.get() {
+                    npc.heading = if npc.advance_rng() & 1 == 0 {
+                        [-1.0, 0.0]
+                    } else {
+                        [1.0, 0.0]
+                    };
+                    npc.next_turn_tick = now.saturating_add_ticks(NPC_TURN_PERIOD_TICKS);
+                }
+                if now.get() >= npc.next_mode_tick.get() {
+                    npc.walking = !npc.walking;
+                    let period = if npc.walking {
+                        NPC_WALK_PERIOD_TICKS
+                    } else {
+                        NPC_STOP_PERIOD_TICKS
+                    };
+                    npc.next_mode_tick = now.saturating_add_ticks(period);
+                }
+                npc.velocity[0] = if npc.walking {
+                    npc.heading[0] * NPC_MOVE_SPEED
+                } else {
+                    0.0
+                };
+                if npc.walking {
+                    let Some(transform) = self.transform_of(id) else {
+                        let _ = self.set_npc(id, npc);
+                        continue;
+                    };
+                    let next_x = transform.position[0] + npc.velocity[0] * dt_seconds;
+                    let mut min_x = npc.home[0] - npc.hotspot_radius;
+                    let mut max_x = npc.home[0] + npc.hotspot_radius;
+                    if npc.grounded
+                        && let Some(support_id) = npc.grounded_on
+                        && let Some(support) = self.iter_platforms().find(|view| {
+                            view.id == support_id && self.address_of(view.id) == self.address_of(id)
+                        })
+                    {
+                        min_x = min_x
+                            .max(support.platform.min_x(support.transform) + npc.half_extents[0]);
+                        max_x = max_x
+                            .min(support.platform.max_x(support.transform) - npc.half_extents[0]);
+                    }
+                    if min_x > max_x {
+                        npc.velocity[0] = 0.0;
+                    } else if next_x < min_x {
+                        npc.velocity[0] = 0.0;
+                        npc.heading[0] = 1.0;
+                    } else if next_x > max_x {
+                        npc.velocity[0] = 0.0;
+                        npc.heading[0] = -1.0;
+                    }
+                }
             }
+            self.tick_npc_physics(id, &mut npc, dt_seconds);
+            let _ = self.set_npc(id, npc);
         }
         self.runtime_stats.npcs_active = active;
+        self.apply_npc_contact_damage();
+    }
+
+    /// Resolve NPC/player overlap as a gameplay query after all NPC physics.
+    fn apply_npc_contact_damage(&mut self) {
+        let ids: Vec<EntityId> = self
+            .iter()
+            .filter(|&id| self.npc_of(id).is_some())
+            .collect();
+        for id in ids {
+            let Some(npc) = self.npc_of(id) else {
+                continue;
+            };
+            if !npc.active || npc.dead_pending || self.health_of(id).is_some_and(|h| h.is_dead()) {
+                continue;
+            }
+            let Some(target) = npc.target else {
+                continue;
+            };
+            if !self.valid_npc_target(id, target, f32::MAX) {
+                continue;
+            }
+            let (Some(npc_transform), Some((player_transform, player))) =
+                (self.transform_of(id), self.get_player(target))
+            else {
+                continue;
+            };
+            if npc
+                .aabb(npc_transform)
+                .overlaps(player.aabb(*player_transform))
+            {
+                let _ = self.apply_contact_damage(target, CONTACT_DAMAGE);
+            }
+        }
+    }
+
+    fn tick_npc_physics(&mut self, id: EntityId, npc: &mut NpcState, dt_seconds: f32) {
+        let Some(mut transform) = self.transform_of(id) else {
+            return;
+        };
+        let previous = transform.position;
+        let previous_bottom = previous[1] - npc.half_extents[1];
+        let previous_top = previous[1] + npc.half_extents[1];
+        let previous_left = previous[0] - npc.half_extents[0];
+        let previous_right = previous[0] + npc.half_extents[0];
+        let platforms: Vec<PlatformView> = self
+            .iter_platforms()
+            .filter(|view| self.address_of(view.id) == self.address_of(id))
+            .collect();
+
+        let _ = recover_solid_penetration(&mut transform, npc, platforms.iter().copied());
+        if npc.grounded {
+            let glued = crate::footnote::glue_to_support(
+                &mut transform,
+                npc,
+                platforms.iter().copied(),
+                previous_bottom,
+            );
+            if glued.is_none() {
+                npc.grounded = false;
+                npc.grounded_on = None;
+            }
+        }
+        if !npc.grounded {
+            npc.velocity[1] -= self.footnote_config().gravity * dt_seconds;
+        }
+        transform.position[0] += npc.velocity[0] * dt_seconds;
+        let _ = resolve_horizontal(
+            &mut transform,
+            npc,
+            platforms.iter().copied(),
+            previous_bottom,
+            previous_left,
+            previous_right,
+        );
+        if !npc.grounded {
+            transform.position[1] += npc.velocity[1] * dt_seconds;
+            let (contact, _) = resolve_vertical(
+                &mut transform,
+                npc,
+                platforms.iter().copied(),
+                previous_bottom,
+                previous_top,
+            );
+            if let Some(platform) = contact.landing() {
+                npc.grounded = true;
+                npc.grounded_on = Some(platform);
+                npc.last_contact = crate::footnote::ContactEvent::Landed { platform };
+            }
+        }
+        let _ = self.set_transform(id, transform);
     }
 
     /// Drive granted NPC abilities against the nearest living player.
@@ -965,15 +1115,36 @@ impl World {
             };
             if !npc.active
                 || npc.dead_pending
+                || self.health_of(id).is_some_and(|h| h.is_dead())
                 || !self.ability_granted(id, definition.id)
                 || self.active_action(id).is_some()
                 || !self.ability_cooldown_ready(id, definition.id)
             {
                 continue;
             }
-            let Some(_target) = self.nearest_living_player_target(id, acquisition_radius) else {
+            let Some(mut npc) = self.npc_of(id) else {
                 continue;
             };
+            if let Some(target) = npc.target
+                && !self.valid_npc_target(id, target, f32::MAX)
+            {
+                npc.target = None;
+            }
+            if npc.target.is_none() {
+                npc.target = self
+                    .nearest_living_player_target(id, acquisition_radius)
+                    .filter(|&target| {
+                        self.valid_npc_target(
+                            id,
+                            target,
+                            npc.hotspot_radius.max(acquisition_radius),
+                        )
+                    });
+            }
+            let Some(_target) = npc.target else {
+                continue;
+            };
+            let _ = self.set_npc(id, npc);
             let _ = self.request_ability(
                 crate::ability::AbilityRequest {
                     actor: id,
@@ -983,6 +1154,29 @@ impl World {
                 crate::action_gate::ActionGateContext::in_world(),
             );
         }
+    }
+
+    fn valid_npc_target(&self, actor: EntityId, target: EntityId, leash_radius: f32) -> bool {
+        let Some(address) = self.address_of(actor) else {
+            return false;
+        };
+        let Some(npc) = self.npc_of(actor) else {
+            return false;
+        };
+        if self.address_of(target) != Some(address)
+            || self.kind(target) != Some(crate::entity::EntityKind::Player)
+            || !self
+                .health_of(target)
+                .is_some_and(|health| health.is_alive())
+        {
+            return false;
+        }
+        let Some(target_position) = self.transform_of(target).map(|t| t.position) else {
+            return false;
+        };
+        let dx = target_position[0] - npc.home[0];
+        let dy = target_position[1] - npc.home[1];
+        dx * dx + dy * dy <= leash_radius * leash_radius
     }
 
     /// Deterministic nearest living player in the actor's exact live address.
@@ -1143,7 +1337,11 @@ impl World {
             let _ = self.effects.remove(id);
             return;
         }
-        let _ = self.apply_damage(effect.target, crate::npc::PULSE_DAMAGE);
+        let _ = self.apply_damage_with_immunity(
+            effect.target,
+            crate::npc::PULSE_DAMAGE,
+            DamageImmunityPolicy::Bypass,
+        );
         self.runtime_stats.pulse_ticks_total =
             self.runtime_stats.pulse_ticks_total.saturating_add(1);
         let now = self.tick;

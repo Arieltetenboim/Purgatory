@@ -10,6 +10,22 @@ use crate::transform::Transform;
 /// Player collider half-extents in world units.
 pub const PLAYER_HALF_EXTENTS: [f32; 2] = [0.4, 0.6];
 
+/// State required by the shared FOOTNOTE collision resolvers.
+pub trait CollisionBody {
+    fn velocity(&self) -> [f32; 2];
+    fn set_velocity(&mut self, velocity: [f32; 2]);
+    fn half_extents(&self) -> [f32; 2];
+    fn grounded(&self) -> bool;
+    fn set_grounded(&mut self, grounded: bool);
+    fn grounded_on(&self) -> Option<EntityId>;
+    fn set_grounded_on(&mut self, platform: Option<EntityId>);
+    fn ignored_platform(&self) -> Option<EntityId>;
+
+    fn aabb(&self, transform: Transform) -> Aabb {
+        Aabb::new(transform.position, self.half_extents())
+    }
+}
+
 /// Movement state stored on a player entity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerState {
@@ -51,7 +67,41 @@ impl PlayerState {
 
     #[must_use]
     pub fn aabb(self, transform: Transform) -> Aabb {
-        Aabb::new(transform.position, self.half_extents)
+        CollisionBody::aabb(&self, transform)
+    }
+}
+
+impl CollisionBody for PlayerState {
+    fn velocity(&self) -> [f32; 2] {
+        self.velocity
+    }
+
+    fn set_velocity(&mut self, velocity: [f32; 2]) {
+        self.velocity = velocity;
+    }
+
+    fn half_extents(&self) -> [f32; 2] {
+        self.half_extents
+    }
+
+    fn grounded(&self) -> bool {
+        self.grounded
+    }
+
+    fn set_grounded(&mut self, grounded: bool) {
+        self.grounded = grounded;
+    }
+
+    fn grounded_on(&self) -> Option<EntityId> {
+        self.grounded_on
+    }
+
+    fn set_grounded_on(&mut self, platform: Option<EntityId>) {
+        self.grounded_on = platform;
+    }
+
+    fn ignored_platform(&self) -> Option<EntityId> {
+        self.ignored_platform
     }
 }
 

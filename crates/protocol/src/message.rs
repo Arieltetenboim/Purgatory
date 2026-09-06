@@ -45,6 +45,7 @@ const TAG_DEV_RESET_PLAYER: u8 = 24;
 const TAG_ABILITY_ACTIVATE: u8 = 25;
 const TAG_ABILITY_ACCEPTED: u8 = 26;
 const TAG_ABILITY_REJECTED: u8 = 27;
+const TAG_RESPAWN: u8 = 28;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -266,6 +267,8 @@ pub enum ClientControl {
     DevResetPlayer,
     /// Ability activation intent (protocol v15). Ability id + optional selected entity.
     AbilityActivate(AbilityActivateRequest),
+    /// Request authoritative restoration of the bound player after death.
+    Respawn,
 }
 
 /// Server → client reliable control.
@@ -389,6 +392,7 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
         }
         ClientControl::DevResetPlayer => Ok(vec![TAG_DEV_RESET_PLAYER]),
         ClientControl::AbilityActivate(req) => encode_ability_activate(*req),
+        ClientControl::Respawn => Ok(vec![TAG_RESPAWN]),
     }
 }
 
@@ -510,6 +514,10 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
         TAG_ABILITY_ACTIVATE => Ok(ClientControl::AbilityActivate(decode_ability_activate(
             rest,
         )?)),
+        TAG_RESPAWN => {
+            expect_empty(rest)?;
+            Ok(ClientControl::Respawn)
+        }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
 }
@@ -1182,6 +1190,16 @@ mod tests {
         assert_eq!(
             decode_client_control(&encoded).unwrap(),
             ClientControl::DevResetPlayer
+        );
+    }
+
+    #[test]
+    fn respawn_roundtrip() {
+        let encoded = encode_client_control(&ClientControl::Respawn).unwrap();
+        assert_eq!(encoded, [TAG_RESPAWN]);
+        assert_eq!(
+            decode_client_control(&encoded).unwrap(),
+            ClientControl::Respawn
         );
     }
 

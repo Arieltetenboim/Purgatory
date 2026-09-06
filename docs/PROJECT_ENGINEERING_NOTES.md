@@ -137,6 +137,20 @@ These are authoring-tool constraints gathered while planning C1–C8.
 - Rendering visual-quality/shimmer follow-up should be evidence-driven; do not assume vertex snapping without proof.
 - Production replication-policy tuning remains future work; do not reopen 6G architecture casually.
 
+## Post-Phase-10 gameplay-readiness pass
+
+- Phase 10 remains closed and Phase 11 remains not started. The local Health
+  HUD reads replicated Health directly; it does not maintain a second client
+  value.
+- Player death remains authoritative Dead until an explicit Respawn intent is
+  validated by the server. Respawn reuses `World::respawn_player_entity` and
+  rebases the input epoch.
+- The live combat creature uses 2 damage against 20 Health, giving roughly
+  ten successful hits before death.
+- NPC activity currently owns free 2D movement rather than FOOTNOTE platform
+  grounding. Correct base-platform placement therefore remains an architectural
+  gap, not a visual-offset tuning problem.
+
 ## Maintenance rule
 
 Add to this document when a development discussion produces one of the following:

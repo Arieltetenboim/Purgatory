@@ -727,6 +727,25 @@ async fn serve_connection(live: LiveSession) {
                             }
                         }
                     }
+                    Ok(ClientControl::Respawn) => {
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {}
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_respawn(id).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Ok(ClientControl::AbilityActivate(req)) => {
                         match rate.note(Instant::now(), abuse_cfg) {
                             RateDecision::Disconnect => {

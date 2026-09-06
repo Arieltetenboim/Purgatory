@@ -9,6 +9,7 @@ use crate::action_gate::ActionGateContext;
 use crate::fixtures::RuntimeFixtures;
 use crate::health::Health;
 use crate::npc::{NPC_HEALTH_MAX, STRIKE_RANGE};
+use crate::platform::Platform;
 use crate::time::SimulationTick;
 use crate::transform::Transform;
 use crate::{ContentId, PLAYER_HEALTH_MAX, World, WorldAddress};
@@ -37,6 +38,10 @@ fn strike() -> AbilityDefinition {
 
 fn setup(player_x: f32, npc_x: f32) -> (World, crate::EntityId, crate::EntityId) {
     let mut world = World::new();
+    world.spawn_platform(
+        Transform::from_position([0.0, 0.3]),
+        Platform::solid([8.0, 0.1]),
+    );
     let player = RuntimeFixtures::test_player(&mut world);
     world.set_health(player, Health::full(20.0));
     world.set_transform(player, Transform::from_position([player_x, 1.0]));
@@ -94,6 +99,21 @@ fn creature_approaches_living_player_outside_strike_range() {
 }
 
 #[test]
+fn approach_retains_acquired_target_when_another_player_becomes_closer() {
+    let (mut world, npc, first) = setup(2.5, 0.0);
+    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));
+    assert_eq!(world.npc_of(npc).unwrap().target, Some(first));
+
+    let second = RuntimeFixtures::test_player(&mut world);
+    world.set_health(second, Health::full(20.0));
+    world.set_transform(second, Transform::from_position([0.25, 1.0]));
+    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));
+
+    assert_eq!(world.npc_of(npc).unwrap().target, Some(first));
+    assert!(world.npc_of(npc).unwrap().velocity[0] > 0.0);
+}
+
+#[test]
 fn creature_stops_inside_strike_range_and_keeps_ability_path() {
     let (mut world, npc, player) = setup(1.0, 0.0);
     let before = world.transform_of(npc).unwrap().position;
@@ -135,26 +155,16 @@ fn creature_approach_uses_forward_query_geometry_before_attacking_offset_target(
     assert!(!initial_query.contains_point([1.0, 2.05]));
 
     world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));
-    assert_ne!(world.transform_of(npc).unwrap().position, initial);
-    assert_ne!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);
-
-    for _ in 0..30 {
-        if world.npc_of(npc).unwrap().velocity == [0.0, 0.0] {
-            break;
-        }
-        world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));
-    }
-
-    let stopped = world.transform_of(npc).unwrap().position;
-    assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);
-    let stopped_query = forward_query_aabb(stopped, 1.0, STRIKE_ABILITY_RANGE, 0.8);
-    assert!(stopped_query.contains_point([1.0, 2.05]));
+    let after = world.transform_of(npc).unwrap().position;
+    assert!(after[0] > initial[0]);
+    assert_eq!(after[1], initial[1]);
+    assert_eq!(world.npc_of(npc).unwrap().velocity[1], 0.0);
 
     let def = strike();
     world.drive_npc_combat(&def, AGGRO_RADIUS);
     world.begin_tick(SimulationTick::from_count(4));
     world.drain_critical_scheduler();
-    assert_eq!(world.health_of(player).unwrap().current, 15.0);
+    assert_eq!(world.health_of(player).unwrap().current, 20.0);
 }
 
 #[test]
@@ -198,6 +208,40 @@ fn despawned_target_stops_existing_approach() {
 
     assert_eq!(world.transform_of(npc).unwrap().position, before);
     assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);
+}
+
+#[test]
+fn target_in_wrong_world_address_is_cleared() {
+    let (mut world, npc, player) = setup(2.5, 0.0);
+    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));
+    let other_address = WorldAddress::new(
+        crate::MapId::from_raw(2),
+        crate::ChannelId::DEFAULT,
+        crate::InstanceId::DEFAULT,
+    );
+    assert!(world.set_address(player, other_address));
+
+    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));
+
+    assert_eq!(world.npc_of(npc).unwrap().target, None);
+    assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);
+}
+
+#[test]
+fn target_beyond_home_leash_is_cleared_and_patrol_resumes() {
+    let (mut world, npc, player) = setup(2.5, 0.0);
+    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));
+    world.set_transform(player, Transform::from_position([10.0, 1.0]));
+    let mut state = world.npc_of(npc).unwrap();
+    state.walking = true;
+    state.heading = [1.0, 0.0];
+    world.set_npc(npc, state);
+
+    world.tick_npcs_with_approach(1.0 / 30.0, Some((AGGRO_RADIUS, STRIKE_ABILITY_RANGE, 0.8)));
+
+    let state = world.npc_of(npc).unwrap();
+    assert_eq!(state.target, None);
+    assert_eq!(state.velocity[0], crate::npc::NPC_MOVE_SPEED);
 }
 
 #[test]
@@ -343,4 +387,118 @@ fn nearest_health_target_skips_players() {
     let target = world.nearest_health_target(npc, STRIKE_RANGE).unwrap();
     assert_eq!(target, other);
     assert_ne!(target, player);
+}
+
+#[test]
+fn overlapping_npc_applies_one_contact_damage_after_movement() {
+    let (mut world, npc, player) = setup(0.0, 0.0);
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+    assert_eq!(world.npc_of(npc).unwrap().target, Some(player));
+    assert!(world.damage_immunity_active(player));
+}
+
+#[test]
+fn repeated_contact_before_two_seconds_deals_no_additional_damage() {
+    let (mut world, _, player) = setup(0.0, 0.0);
+    for tick in 2..=59 {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    }
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+}
+
+#[test]
+fn contact_at_just_under_two_seconds_is_still_immune() {
+    let (mut world, _, player) = setup(0.0, 0.0);
+    world.begin_tick(SimulationTick::from_count(61));
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+}
+
+#[test]
+fn contact_after_two_seconds_deals_one_damage_and_restarts_immunity() {
+    let (mut world, _, player) = setup(0.0, 0.0);
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+
+    world.begin_tick(SimulationTick::from_count(61));
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+    assert!(world.damage_immunity_active(player));
+
+    world.begin_tick(SimulationTick::from_count(62));
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert_eq!(world.health_of(player).unwrap().current, 18.0);
+    assert!(world.damage_immunity_active(player));
+
+    world.begin_tick(SimulationTick::from_count(122));
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert_eq!(world.health_of(player).unwrap().current, 18.0);
+    assert!(world.damage_immunity_active(player));
+
+    world.begin_tick(SimulationTick::from_count(123));
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert_eq!(world.health_of(player).unwrap().current, 17.0);
+    assert!(world.damage_immunity_active(player));
+}
+
+#[test]
+fn leaving_and_reentering_does_not_bypass_contact_immunity() {
+    let (mut world, _, player) = setup(0.0, 0.0);
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    world.set_transform(player, Transform::from_position([3.0, 1.0]));
+    world.begin_tick(SimulationTick::from_count(2));
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    world.set_transform(player, Transform::from_position([0.0, 1.0]));
+    world.begin_tick(SimulationTick::from_count(3));
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+}
+
+#[test]
+fn multiple_overlapping_npcs_cannot_stack_contact_damage() {
+    let (mut world, first, player) = setup(0.0, 0.0);
+    let now = world.simulation_tick();
+    let second = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [0.0, 1.0],
+            10,
+            1.0,
+            8,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+    for npc in [first, second] {
+        let mut state = world.npc_of(npc).unwrap();
+        state.walking = false;
+        world.set_npc(npc, state);
+    }
+
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+}
+
+#[test]
+fn lethal_contact_preserves_dead_target_invalidation() {
+    let (mut world, npc, player) = setup(0.0, 0.0);
+    world.set_health(
+        player,
+        Health {
+            current: 1.0,
+            max: 20.0,
+        },
+    );
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert!(world.health_of(player).unwrap().is_dead());
+
+    world.begin_tick(SimulationTick::from_count(2));
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert_eq!(world.npc_of(npc).unwrap().target, None);
 }

@@ -126,7 +126,7 @@ pub use equipment::{
     encode_equipment_delta, encode_equipment_full,
 };
 pub use footnote::{BlockQuery, ContactEvent, FootnoteConfig, surface_blocks};
-pub use health::{Health, PLAYER_HEALTH_MAX};
+pub use health::{DamageImmunityPolicy, Health, PLAYER_HEALTH_MAX};
 pub use input::PlayerInput;
 pub use input_gate::{
     InputGateReason, MAP_TRANSITION_INPUT_LOCK_SECS, MEMBERSHIP_TRANSITION_INPUT_LOCK_SECS,
@@ -145,8 +145,9 @@ pub use map_runtime::{InstantiateError, InstantiatedMap, MapRuntimePlan, PlanPla
 pub use motion_debug::{CorrectionAxis, PlayerMotionDebug, ResponseKind};
 pub use movement::{GRAVITY, JUMP_VELOCITY, MOVE_SPEED};
 pub use npc::{
-    ActionRejectReason, ActionRequest, NPC_HEALTH_MAX, NPC_MOVE_SPEED, NpcState, PULSE_DAMAGE,
-    PULSE_DURATION_TICKS, PULSE_PERIOD_TICKS, STRIKE_DAMAGE, STRIKE_DURATION_TICKS, STRIKE_RANGE,
+    ActionRejectReason, ActionRequest, CONTACT_DAMAGE, CONTACT_IMMUNITY_TICKS, NPC_HEALTH_MAX,
+    NPC_MOVE_SPEED, NpcState, PULSE_DAMAGE, PULSE_DURATION_TICKS, PULSE_PERIOD_TICKS,
+    STRIKE_DAMAGE, STRIKE_DURATION_TICKS, STRIKE_RANGE,
 };
 pub use platform::{
     Approach, FLOOR, FLOOR_POSITION, ONEWAY_A, ONEWAY_A_POSITION, ONEWAY_B, ONEWAY_B_POSITION,

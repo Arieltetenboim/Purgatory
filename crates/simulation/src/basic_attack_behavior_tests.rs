@@ -245,5 +245,5 @@ fn strike_workload_is_not_the_ability_path() {
         .unwrap();
     assert_eq!(action.kind, ActionKind::Strike);
     assert_eq!(action.phase, ActionPhase::Active);
-    assert!((world.health_of(target).unwrap().current - 9.0).abs() < 1e-5);
+    assert!((world.health_of(target).unwrap().current - 8.0).abs() < 1e-5);
 }

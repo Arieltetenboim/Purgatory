@@ -1,5 +1,8 @@
 # Protocol
 
+Current protocol version is **16**. The historical phase summary below
+retains its original version references.
+
 Phase 5.2 adds **authoritative gameplay replication**. Protocol version is **15**. The client sends per-tick `InputCommand` values identified by `(input_epoch, sequence)`. Phase 5.3 is client-only remote interpolation. Phase 5.4 is client-only local prediction. Phase 5.5 adds acknowledgement, continuation debt, late-collapse compaction, and local restore+replay. Phase 5.6 adds a **development-only** network impairment lab (delay/stall/HOL on the existing reliable streams). Phase 5.7 adds off-protocol localhost load metrics and raises the mechanical entity decode bound to 256. Phase 6.0 adds runtime/replication **contracts**; 6A composition; **6B** adds reliable interaction control envelopes and optional `ReplicatedKind::Interactable`; **6C** adds observer `WorldAddress`, `ReplicatedKind::Portal`, and `PortalActivate`. **6D** replaces full `WorldSnapshot` on the gameplay uni stream with `ReplicationFrame` (Enter/Update/Leave) and server interest-policy AOI, then adds DEV-only `DevSetChannel` (tag 17) so a Channel change is an authoritative `WorldAddress` boundary. **6E** adds DEV `Hello.dev_login` (temporary lookup identity) and `DisconnectReasonCode::AlreadyConnected`. Phase **6F** adds server-side runtime services without a protocol bump. Phase **7.2** adds `ReplicatedKind::Npc` (kind `4`) so visible Generics/NPCs Enter AOI on the wire (ADR-0054). Protocol **v12** adds equipment request envelopes and an optional equipment domain on Enter/Update. Protocol **v13** adds DEV presentation Attack/Hurt oneshot control envelopes (tags 22/23); Enter/Update snapshot layout is unchanged. Historical v1–v12 Hello/Welcome and earlier snapshot goldens stay frozen. Health on v8+ frames proves multi-domain deltas; 7.2 uses Health as a workload mutation domain. Phase **9A** locks ability authority (client requests ability id + targeting; server applies `AbilityEffect`) without adding wire tags. Phase **9B** executes `skill.basic.strike` in simulation only. Protocol **v15** adds ability activation envelopes (tags 25–27).
 
 ## Trust boundary
@@ -37,9 +40,9 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 15` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 16` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
-v15 is an intentional incompatible bump: v1–v14 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: a v14 Hello still decodes, then fails version check.
+v16 is an intentional incompatible bump: v1–v15 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: a v15 Hello still decodes, then fails version check.
 
 Client Hello includes `protocol_version`. The server rejects mismatches with `DisconnectReasonCode::VersionMismatch`.
 
@@ -52,6 +55,10 @@ Protocol v13 adds DEV presentation oneshot controls: client `DevPresentationOneS
 Protocol v14 adds DEV-only `DevResetPlayer` (tag **24**, tag-only payload). The server resets the bound player entity to the development spawn. The client must not apply a local spawn while connected.
 
 Protocol v15 adds ability activation: client `AbilityActivate` (tag **25**) and server `Ability` Accepted/Rejected (tags **26**/**27**). The client sends ability id + optional selected entity. It never sends hits, damage, query dimensions, facing, or Health.
+
+Protocol v16 adds client `Respawn` (tag **28**). The server accepts it only
+for the bound player while authoritative Health is Dead, then reuses the
+existing `World::respawn_player_entity` lifecycle path.
 
 ## Golden wire vectors
 
@@ -84,6 +91,9 @@ Protocol v13 Hello/Welcome goldens use `protocol_version = 13`. v12 Hello/Welcom
 Protocol v14 Hello/Welcome goldens use `protocol_version = 14`. v13 Hello/Welcome remain frozen. `DevResetPlayer` golden freezes tag 24.
 
 Protocol v15 Hello/Welcome goldens use `protocol_version = 15`. v14 Hello/Welcome remain frozen. Ability control goldens freeze tags 25–27.
+
+Protocol v16 Hello/Welcome goldens use `protocol_version = 16`. v15
+Hello/Welcome remain frozen. `Respawn` freezes tag 28.
 
 **Version change policy.** A failing golden vector means the wire format moved. Do not regenerate the fixture to make the test pass. Instead:
 

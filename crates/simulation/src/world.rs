@@ -65,6 +65,7 @@ pub(crate) struct EntityData {
     player: Option<PlayerState>,
     platform: Option<Platform>,
     health: Option<Health>,
+    pub(crate) damage_immunity_until: Option<SimulationTick>,
     interactable: Option<Interactable>,
     npc: Option<NpcState>,
     equipment: Option<EquipmentState>,
@@ -685,6 +686,13 @@ impl World {
     #[must_use]
     pub fn health_of(&self, id: EntityId) -> Option<Health> {
         self.slot_live(id)?.health
+    }
+
+    #[must_use]
+    pub fn damage_immunity_active(&self, id: EntityId) -> bool {
+        self.slot_live(id)
+            .and_then(|data| data.damage_immunity_until)
+            .is_some_and(|until| self.tick < until)
     }
 
     pub fn set_health(&mut self, id: EntityId, health: Health) -> bool {
@@ -1890,6 +1898,7 @@ fn entity_from_request(request: RuntimeSpawnRequest) -> EntityData {
         player: request.player,
         platform: request.platform,
         health: request.health,
+        damage_immunity_until: None,
         interactable: request.interactable,
         npc: request.npc,
         equipment,

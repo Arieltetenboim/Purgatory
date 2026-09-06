@@ -664,8 +664,8 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_15() {
-    assert_eq!(PROTOCOL_VERSION, 15);
+fn current_protocol_version_is_16() {
+    assert_eq!(PROTOCOL_VERSION, 16);
 }
 
 #[test]
@@ -1595,7 +1595,7 @@ fn v14_golden_vectors_remain_frozen() {
 #[test]
 fn hello_v15_matches_golden_bytes() {
     let hello = Hello {
-        protocol_version: PROTOCOL_VERSION,
+        protocol_version: 15,
         client_build: "test".to_string(),
         dev_login: "dev.local".to_string(),
     };
@@ -1610,7 +1610,7 @@ fn hello_v15_matches_golden_bytes() {
 #[test]
 fn welcome_v15_matches_golden_bytes() {
     let welcome = purgatory_protocol::Welcome {
-        protocol_version: PROTOCOL_VERSION,
+        protocol_version: 15,
         connection_id: ConnectionId::from_raw(GOLDEN_CONNECTION_ID),
         server_tick_rate: 30,
         server_label: "purgatory-server-dev".to_string(),

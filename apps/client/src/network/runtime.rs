@@ -78,6 +78,7 @@ enum ClientGameplayMsg {
     Unequip(purgatory_protocol::UnequipRequest),
     DevPresentationOneShot(u8),
     DevResetPlayer,
+    Respawn,
     AbilityActivate(purgatory_protocol::AbilityActivateRequest),
 }
 
@@ -439,6 +440,10 @@ impl NetworkHandle {
         self.input
             .try_send(ClientGameplayMsg::DevResetPlayer)
             .is_ok()
+    }
+
+    pub fn try_send_respawn(&self) -> bool {
+        self.input.try_send(ClientGameplayMsg::Respawn).is_ok()
     }
 
     pub fn try_send_ability_activate(
@@ -972,6 +977,7 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
             })
         }
         ClientGameplayMsg::DevResetPlayer => ClientControl::DevResetPlayer,
+        ClientGameplayMsg::Respawn => ClientControl::Respawn,
         ClientGameplayMsg::AbilityActivate(request) => ClientControl::AbilityActivate(request),
     }
 }

@@ -84,11 +84,6 @@ enum InputGate {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PlayerDeathResolutionPolicy {
-    Respawn,
-}
-
 impl InputGate {
     #[must_use]
     fn locked(reason: InputGateReason) -> Self {
@@ -504,6 +499,9 @@ pub enum InputUpdate {
     DevResetPlayer {
         connection_id: ConnectionId,
     },
+    Respawn {
+        connection_id: ConnectionId,
+    },
     AbilityActivate {
         connection_id: ConnectionId,
         request: AbilityActivateRequest,
@@ -698,6 +696,13 @@ impl GameplayTx {
     pub async fn send_dev_reset_player(&self, connection_id: ConnectionId) -> bool {
         self.input
             .send(InputUpdate::DevResetPlayer { connection_id })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_respawn(&self, connection_id: ConnectionId) -> bool {
+        self.input
+            .send(InputUpdate::Respawn { connection_id })
             .await
             .is_ok()
     }
@@ -1204,6 +1209,7 @@ impl GameplayOwner {
                 | InputUpdate::Unequip { .. }
                 | InputUpdate::DevPresentationOneShot { .. }
                 | InputUpdate::DevResetPlayer { .. }
+                | InputUpdate::Respawn { .. }
                 | InputUpdate::AbilityActivate { .. }
         ) {
             match update {
@@ -1238,6 +1244,7 @@ impl GameplayOwner {
                 InputUpdate::DevResetPlayer { connection_id } => {
                     self.handle_dev_reset_player(connection_id)
                 }
+                InputUpdate::Respawn { connection_id } => self.handle_respawn(connection_id),
                 InputUpdate::AbilityActivate {
                     connection_id,
                     request,
@@ -1306,6 +1313,7 @@ impl GameplayOwner {
             | InputUpdate::Unequip { .. }
             | InputUpdate::DevPresentationOneShot { .. }
             | InputUpdate::DevResetPlayer { .. }
+            | InputUpdate::Respawn { .. }
             | InputUpdate::AbilityActivate { .. } => {
                 unreachable!(
                     "interact/portal/channel/equipment/oneshot/reset/ability handled above"
@@ -1382,7 +1390,6 @@ impl GameplayOwner {
             // Phase 7.5A: fold begin_tick / gauge refresh into lifecycle leaf.
             let t0 = std::time::Instant::now();
             self.world.begin_tick(tick);
-            self.resolve_player_deaths(PlayerDeathResolutionPolicy::Respawn);
             self.load_pressure.maintain(&mut self.world, map_a, tick);
             if !self.load_pressure.is_active() {
                 self.maybe_arm_runtime_probe(tick);
@@ -1392,7 +1399,6 @@ impl GameplayOwner {
         } else {
             let services_t0 = std::time::Instant::now();
             self.world.begin_tick(tick);
-            self.resolve_player_deaths(PlayerDeathResolutionPolicy::Respawn);
             self.load_pressure.maintain(&mut self.world, map_a, tick);
             if !self.load_pressure.is_active() {
                 self.maybe_arm_runtime_probe(tick);
@@ -1499,39 +1505,6 @@ impl GameplayOwner {
         sample.persistence_enqueue += Duration::from_micros(self.persist_enqueue_us);
         sample.total = tick_t0.elapsed();
         sample
-    }
-
-    /// Apply the current player death policy at the lifecycle boundary.
-    ///
-    /// Death remains visible for the tick in which Health reaches zero. The
-    /// next tick owns resolution, allowing replication to carry dead→alive
-    /// while keeping policy separate from the World restoration primitive.
-    fn resolve_player_deaths(&mut self, policy: PlayerDeathResolutionPolicy) {
-        let dead: Vec<(ConnectionId, EntityId)> = self
-            .bindings
-            .iter()
-            .filter_map(|(connection_id, binding)| {
-                self.world
-                    .health_of(binding.entity)
-                    .is_some_and(|health| health.is_dead())
-                    .then_some((*connection_id, binding.entity))
-            })
-            .collect();
-
-        for (connection_id, entity) in dead {
-            let restored = match policy {
-                PlayerDeathResolutionPolicy::Respawn => self.world.respawn_player_entity(entity),
-            };
-            if !restored {
-                continue;
-            }
-            if let Some(binding) = self.bindings.get_mut(&connection_id) {
-                // Rebase the authoritative input stream so commands sampled
-                // before death cannot move the newly restored player.
-                let _ = binding.input.bump_epoch();
-            }
-            println!("10D3_RESPAWN actor={entity} connection={connection_id}");
-        }
     }
 
     fn maybe_arm_runtime_probe(&mut self, tick: SimulationTick) {
@@ -2072,6 +2045,23 @@ impl GameplayOwner {
         }
         self.world.reset_player_entity(actor);
         println!("DEV_RESET spawn actor={actor} connection={connection_id}");
+    }
+
+    fn handle_respawn(&mut self, connection_id: ConnectionId) {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return;
+        };
+        let actor = binding.entity;
+        if self.world.kind(actor) != Some(EntityKind::Player) {
+            return;
+        }
+        if !self.world.respawn_player_entity(actor) {
+            return;
+        }
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            let _ = binding.input.bump_epoch();
+        }
+        println!("RESPAWN actor={actor} connection={connection_id}");
     }
 
     fn broadcast_presentation_oneshot(&self, event: ServerControl) {
@@ -5142,6 +5132,8 @@ mod tests {
         }
         assert!(owner.world().health_of(player).unwrap().is_dead());
         owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        assert!(owner.world().health_of(player).unwrap().is_dead());
+        owner.handle_respawn(connection);
         assert_eq!(
             owner.world().health_of(player),
             Some(purgatory_simulation::Health::full(PLAYER_HEALTH_MAX))
@@ -5385,7 +5377,7 @@ mod tests {
     }
 
     #[test]
-    fn player_death_policy_respawns_same_entity_and_rebases_input() {
+    fn respawn_request_restores_same_entity_and_rebases_input() {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
@@ -5403,7 +5395,7 @@ mod tests {
             },
         );
 
-        owner.resolve_player_deaths(PlayerDeathResolutionPolicy::Respawn);
+        owner.handle_respawn(connection);
 
         assert_eq!(owner.entity_of(connection), Some(actor));
         assert_eq!(owner.world().transform_of(actor).unwrap().position, spawn);

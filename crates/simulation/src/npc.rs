@@ -1,12 +1,24 @@
 //! Minimal authoritative NPC runtime for Phase 7.2 workload.
 //!
-//! Not AI, pathfinding, content definitions, or FOOTNOTE locomotion.
+//! Not AI, pathfinding, content definitions, or player-specific FOOTNOTE input.
 //! Sim classification remains [`crate::EntityKind::Generic`].
 
+use crate::body::CollisionBody;
+use crate::entity::EntityId;
+use crate::footnote::ContactEvent;
 use crate::time::SimulationTick;
 
-/// Flat Strike damage placeholder. Not a combat formula.
-pub const STRIKE_DAMAGE: f32 = 1.0;
+/// NPC collider half-extents in world units.
+pub const NPC_HALF_EXTENTS: [f32; 2] = [0.4, 0.6];
+/// Flat Strike damage placeholder. Ten strikes defeat the default 20 Health NPC.
+pub const STRIKE_DAMAGE: f32 = 2.0;
+/// Contact damage dealt by a chasing NPC on collider overlap.
+pub const CONTACT_DAMAGE: f32 = 1.0;
+/// Simulation ticks in the authoritative 2.0-second immunity window.
+///
+/// The fixed step is 33,333,333 ns, so 60 ticks are 1.99999998 seconds.
+/// Ceil the duration to keep the gate closed for every tick before 2.0 s.
+pub const CONTACT_IMMUNITY_TICKS: u64 = 61;
 /// Strike range in world units.
 pub const STRIKE_RANGE: f32 = 4.0;
 /// Action table duration for Strike (ticks).
@@ -35,9 +47,15 @@ pub struct NpcState {
     pub type_token: u32,
     pub home: [f32; 2],
     pub hotspot_radius: f32,
+    /// Persistent live-player target, when the NPC has acquired one.
+    pub target: Option<EntityId>,
     /// Unit heading in XZ (2D: x,y world plane).
     pub heading: [f32; 2],
     pub velocity: [f32; 2],
+    pub grounded: bool,
+    pub grounded_on: Option<EntityId>,
+    pub last_contact: ContactEvent,
+    pub half_extents: [f32; 2],
     pub next_turn_tick: SimulationTick,
     pub next_mode_tick: SimulationTick,
     pub walking: bool,
@@ -64,8 +82,13 @@ impl NpcState {
             type_token,
             home,
             hotspot_radius: hotspot_radius.max(0.5),
+            target: None,
             heading,
             velocity: [0.0, 0.0],
+            grounded: false,
+            grounded_on: None,
+            last_contact: ContactEvent::None,
+            half_extents: NPC_HALF_EXTENTS,
             next_turn_tick: now.saturating_add_ticks(NPC_TURN_PERIOD_TICKS),
             next_mode_tick: now.saturating_add_ticks(NPC_WALK_PERIOD_TICKS),
             walking: active,
@@ -85,10 +108,43 @@ impl NpcState {
     }
 }
 
+impl CollisionBody for NpcState {
+    fn velocity(&self) -> [f32; 2] {
+        self.velocity
+    }
+
+    fn set_velocity(&mut self, velocity: [f32; 2]) {
+        self.velocity = velocity;
+    }
+
+    fn half_extents(&self) -> [f32; 2] {
+        self.half_extents
+    }
+
+    fn grounded(&self) -> bool {
+        self.grounded
+    }
+
+    fn set_grounded(&mut self, grounded: bool) {
+        self.grounded = grounded;
+    }
+
+    fn grounded_on(&self) -> Option<EntityId> {
+        self.grounded_on
+    }
+
+    fn set_grounded_on(&mut self, platform: Option<EntityId>) {
+        self.grounded_on = platform;
+    }
+
+    fn ignored_platform(&self) -> Option<EntityId> {
+        None
+    }
+}
+
 fn random_heading(rng: &mut u32) -> [f32; 2] {
     *rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
-    let angle = (*rng as f32 / u32::MAX as f32) * std::f32::consts::TAU;
-    [angle.cos(), angle.sin()]
+    [if *rng < u32::MAX / 2 { 1.0 } else { -1.0 }, 0.0]
 }
 
 /// Simulation-level action request. Not a wire `ClientControl`.

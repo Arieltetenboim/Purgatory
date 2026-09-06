@@ -12,6 +12,7 @@ mod surface;
 mod tests;
 
 pub use contact::ContactEvent;
+pub(crate) use controller::glue_to_support;
 pub use surface::{BlockQuery, surface_blocks};
 
 /// Compile-time FOOTNOTE tuning. Units are world units / second or / second².
