@@ -410,6 +410,22 @@ fn repeated_contact_before_two_seconds_deals_no_additional_damage() {
 }
 
 #[test]
+fn immunity_expiry_marks_authoritative_replication_dirty() {
+    let (mut world, _, player) = setup(0.0, 0.0);
+    world.clear_replication_dirty();
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert!(world.damage_immunity_active(player));
+    world.clear_replication_dirty();
+
+    world.begin_tick(SimulationTick::from_count(62));
+
+    assert!(!world.damage_immunity_active(player));
+    assert!(world
+        .replication_dirty_iter()
+        .any(|(id, mask)| id == player && mask.health));
+}
+
+#[test]
 fn contact_at_just_under_two_seconds_is_still_immune() {
     let (mut world, _, player) = setup(0.0, 0.0);
     world.begin_tick(SimulationTick::from_count(61));
@@ -483,6 +499,48 @@ fn multiple_overlapping_npcs_cannot_stack_contact_damage() {
 
     world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
     assert_eq!(world.health_of(player).unwrap().current, 19.0);
+}
+
+#[test]
+fn basic_enemy_integrated_contact_path_has_no_legacy_strike_source() {
+    let (mut world, first, player) = setup(0.0, 0.0);
+    let def = strike();
+    world.revoke_ability(first, def.id);
+
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+    assert!(world.damage_immunity_active(player));
+
+    let second = world
+        .spawn(World::npc_spawn_request(
+            WorldAddress::DEV,
+            [0.0, 1.0],
+            10,
+            1.0,
+            8,
+            world.simulation_tick(),
+            true,
+            NPC_HEALTH_MAX,
+        ))
+        .unwrap();
+    let mut second_state = world.npc_of(second).unwrap();
+    second_state.walking = false;
+    world.set_npc(second, second_state);
+    world.revoke_ability(second, def.id);
+
+    for tick in 2..=61 {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    }
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+
+    world.drive_npc_combat(&def, AGGRO_RADIUS);
+    assert!(world.active_action(first).is_none());
+    assert!(world.active_action(second).is_none());
+
+    world.begin_tick(SimulationTick::from_count(62));
+    world.tick_npcs_with_approach(0.0, Some((AGGRO_RADIUS, 0.5, 0.8)));
+    assert_eq!(world.health_of(player).unwrap().current, 18.0);
 }
 
 #[test]

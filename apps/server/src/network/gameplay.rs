@@ -1129,7 +1129,6 @@ impl GameplayOwner {
             npc.walking = false;
             let _ = self.world.set_npc(creature, npc);
         }
-        let _ = self.world.grant_ability(creature, live_basic_strike_id());
     }
 
     pub fn detach(&mut self, connection_id: ConnectionId) {
@@ -1434,33 +1433,10 @@ impl GameplayOwner {
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
-        if let Some(definition) = self.registry.ability_by_id(live_basic_strike_id()).cloned() {
-            let approach = match definition.delivery {
-                purgatory_simulation::AbilityDelivery::ForwardQuery {
-                    range, half_height, ..
-                } => Some((LIVE_COMBAT_CREATURE_AGGRO_RADIUS, range, half_height)),
-                purgatory_simulation::AbilityDelivery::SelectedEntity => None,
-            };
-            self.world.tick_npcs_with_approach(dt, approach);
-            let creature_ids: Vec<_> = self
-                .world
-                .iter()
-                .filter(|&entity| {
-                    self.world
-                        .npc_of(entity)
-                        .is_some_and(|npc| npc.type_token == LIVE_COMBAT_CREATURE_TYPE_TOKEN)
-                })
-                .collect();
-            for creature in creature_ids {
-                if !self.world.ability_granted(creature, definition.id) {
-                    let _ = self.world.grant_ability(creature, definition.id);
-                }
-            }
-            self.world
-                .drive_npc_combat(&definition, LIVE_COMBAT_CREATURE_AGGRO_RADIUS);
-        } else {
-            self.world.tick_npcs(dt);
-        }
+        self.world.tick_npcs_with_approach(
+            dt,
+            Some((LIVE_COMBAT_CREATURE_AGGRO_RADIUS, 0.8, 1.2)),
+        );
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
         sample.npc_activity += npc_t0.elapsed();
 
@@ -5031,15 +5007,13 @@ mod tests {
             .filter(|&entity| owner.world().npc_of(entity).is_some())
             .collect();
         assert_eq!(creatures.len(), 1);
-        assert!(
-            owner
-                .world()
-                .ability_granted(creatures[0], basic_strike_id())
-        );
+        assert!(!owner
+            .world()
+            .ability_granted(creatures[0], basic_strike_id()));
     }
 
     #[test]
-    fn live_creature_acquires_player_and_uses_basic_strike_runtime() {
+    fn live_creature_acquires_player_and_uses_contact_damage_runtime() {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
@@ -5050,14 +5024,17 @@ mod tests {
             .find(|&entity| owner.world().npc_of(entity).is_some())
             .expect("live creature");
         let creature_x = owner.world().transform_of(creature).unwrap().position[0];
-        assert!(owner.set_player_x(connection, creature_x - 1.0));
+        assert!(owner.set_player_x(connection, creature_x - 0.5));
         for _ in 0..4 {
             owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
         }
         assert_eq!(
             owner.world().health_of(player).unwrap().current,
-            PLAYER_HEALTH_MAX - 5.0
+            PLAYER_HEALTH_MAX - 1.0
         );
+        assert!(!owner
+            .world()
+            .ability_granted(creature, basic_strike_id()));
     }
 
     #[test]
@@ -5124,7 +5101,7 @@ mod tests {
                 max: PLAYER_HEALTH_MAX,
             },
         ));
-        for _ in 0..12 {
+        for _ in 0..=400 {
             owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
             if owner.world().health_of(player).unwrap().is_dead() {
                 break;

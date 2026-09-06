@@ -10,7 +10,7 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **Phase 10 — PvE Integration & Combat Loop: complete**
 - **Root `PHASE`: `10E`**
 - **Next main phase: 11 — Item Loop**
-- **Protocol: v16**
+- **Protocol: v17**
 
 ---
 

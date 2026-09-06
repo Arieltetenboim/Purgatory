@@ -108,6 +108,9 @@ impl World {
             return false;
         }
         if let Some(health) = health.filter(|health| health.is_dead()) {
+            if let Some(data) = self.slot_live_mut(id) {
+                data.damage_immunity_until = None;
+            }
             self.set_health(id, Health::full(health.max));
         }
         self.clear_presentation_oneshot(id);

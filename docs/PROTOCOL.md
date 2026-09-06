@@ -40,9 +40,9 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 16` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 17` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
-v16 is an intentional incompatible bump: v1–v15 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: a v15 Hello still decodes, then fails version check.
+v17 is an intentional incompatible bump: v1–v16 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
 Client Hello includes `protocol_version`. The server rejects mismatches with `DisconnectReasonCode::VersionMismatch`.
 
@@ -59,6 +59,10 @@ Protocol v15 adds ability activation: client `AbilityActivate` (tag **25**) and 
 Protocol v16 adds client `Respawn` (tag **28**). The server accepts it only
 for the bound player while authoritative Health is Dead, then reuses the
 existing `World::respawn_player_entity` lifecycle path.
+
+Protocol v17 adds `damage_immunity_active` to every replicated Health payload.
+It is authoritative presentation state for the victim's current damage-immunity
+window; clients do not create a gameplay immunity timer.
 
 ## Golden wire vectors
 
@@ -94,6 +98,8 @@ Protocol v15 Hello/Welcome goldens use `protocol_version = 15`. v14 Hello/Welcom
 
 Protocol v16 Hello/Welcome goldens use `protocol_version = 16`. v15
 Hello/Welcome remain frozen. `Respawn` freezes tag 28.
+
+Protocol v17 freezes the replicated Health immunity bit and rejects older peers.
 
 **Version change policy.** A failing golden vector means the wire format moved. Do not regenerate the fixture to make the test pass. Instead:
 

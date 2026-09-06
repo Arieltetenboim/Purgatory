@@ -73,6 +73,7 @@ impl World {
 
     pub fn begin_tick(&mut self, tick: SimulationTick) {
         self.tick = tick;
+        self.expire_damage_immunity();
         self.expire_presentation_oneshots();
         self.refresh_runtime_gauges();
     }

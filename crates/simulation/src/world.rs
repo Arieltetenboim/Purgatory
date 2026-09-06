@@ -695,6 +695,23 @@ impl World {
             .is_some_and(|until| self.tick < until)
     }
 
+    pub(crate) fn expire_damage_immunity(&mut self) {
+        let expired: Vec<EntityId> = self
+            .iter()
+            .filter(|&id| {
+                self.slot_live(id)
+                    .and_then(|data| data.damage_immunity_until)
+                    .is_some_and(|until| until <= self.tick)
+            })
+            .collect();
+        for id in expired {
+            if let Some(data) = self.slot_live_mut(id) {
+                data.damage_immunity_until = None;
+            }
+            self.mark_replication_dirty(id, ReplicationDirtyMask::health_only());
+        }
+    }
+
     pub fn set_health(&mut self, id: EntityId, health: Health) -> bool {
         let mut bumped = false;
         {

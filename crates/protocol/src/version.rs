@@ -23,8 +23,9 @@
 /// player. Protocol v15 adds ability activation envelopes (tags 25–27): client
 /// `AbilityActivate` (ability id + optional selected entity) and server
 /// `Ability` accepted/rejected. Protocol v16 adds client `Respawn` (tag 28).
+/// Protocol v17 adds the authoritative damage-immunity bit to replicated Health.
 /// Historical golden vectors remain frozen.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;

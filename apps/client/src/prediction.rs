@@ -1101,6 +1101,7 @@ mod tests {
                 health: Some(ReplicatedHealth {
                     current: 0.0,
                     max: 20.0,
+                    damage_immunity_active: false,
                 }),
                 equipment: None,
             }],

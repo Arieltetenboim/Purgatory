@@ -48,6 +48,17 @@ pub enum PresentationView {
     Back,
 }
 
+/// Presentation blink is driven by the latest authoritative immunity state.
+/// The tick cadence is visual-only; it does not create gameplay immunity.
+#[must_use]
+pub const fn immunity_flash_visible(
+    alive: bool,
+    damage_immunity_active: bool,
+    server_tick: u64,
+) -> bool {
+    alive && (!damage_immunity_active || server_tick % 4 < 2)
+}
+
 /// Idle / Move / Jump / Fall / Attack / Hurt / Dead → Side. ClimbBack → Back.
 #[must_use]
 pub const fn view_for_activity(activity: PresentationActivity) -> PresentationView {
@@ -123,5 +134,19 @@ impl CharacterPresentationState {
     pub fn is_placeholder_ready(self) -> bool {
         // Side and Back are both valid presentation views.
         self.pose[0].is_finite() && self.pose[1].is_finite()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::immunity_flash_visible;
+
+    #[test]
+    fn immunity_flash_uses_authoritative_state_and_stops_when_dead() {
+        assert!(immunity_flash_visible(true, false, 0));
+        assert!(immunity_flash_visible(true, true, 0));
+        assert!(!immunity_flash_visible(true, true, 2));
+        assert!(!immunity_flash_visible(false, true, 0));
+        assert!(immunity_flash_visible(true, false, 2));
     }
 }

@@ -194,6 +194,7 @@ pub fn distribute_replication_dirty(
 pub struct CommittedRevs {
     pub transform: u64,
     pub health: u64,
+    pub damage_immunity_active: bool,
     pub equipment: u64,
     pub equipment_state: Option<EquipmentState>,
 }
@@ -639,6 +640,7 @@ fn wire_health(world: &World, id: EntityId) -> Option<ReplicatedHealth> {
     world.health_of(id).map(|h| ReplicatedHealth {
         current: h.current,
         max: h.max,
+        damage_immunity_active: world.damage_immunity_active(id),
     })
 }
 
@@ -670,6 +672,7 @@ fn committed_from_world(world: &World, id: EntityId) -> Option<CommittedRevs> {
     Some(CommittedRevs {
         transform: revs.transform,
         health: revs.health,
+        damage_immunity_active: world.damage_immunity_active(id),
         equipment: revs.equipment,
         equipment_state: world.equipment_of(id),
     })
@@ -698,7 +701,9 @@ fn reconcile_update(
     let revs = world.domain_revs_of(id)?;
     let current_equipment = world.equipment_of(id);
     let transform = revs.transform > last.transform && allow.transform;
-    let health = revs.health > last.health && allow.health;
+    let immunity = world.damage_immunity_active(id);
+    let health = (revs.health > last.health || immunity != last.damage_immunity_active)
+        && allow.health;
     let equipment_lag = revs.equipment > last.equipment;
     let equipment_delta = if equipment_lag && allow.equipment {
         equipment_slot_delta(last.equipment_state, current_equipment)
@@ -728,6 +733,11 @@ fn reconcile_update(
             revs.health
         } else {
             last.health
+        },
+        damage_immunity_active: if health || silent_health {
+            immunity
+        } else {
+            last.damage_immunity_active
         },
         equipment: if equipment_lag {
             revs.equipment
@@ -1002,6 +1012,7 @@ pub fn publish_observer_frame_with_budget(
             };
             if (revs.transform > last.transform
                 || revs.health > last.health
+                || world.damage_immunity_active(*id) != last.damage_immunity_active
                 || revs.equipment > last.equipment)
                 && state.pending_update_ids.insert(*id)
             {
@@ -1025,6 +1036,7 @@ pub fn publish_observer_frame_with_budget(
         };
         let pending = revs.transform > last.transform
             || revs.health > last.health
+            || world.damage_immunity_active(id) != last.damage_immunity_active
             || revs.equipment > last.equipment;
         if !pending {
             clear_pending.push(id);

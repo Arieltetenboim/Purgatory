@@ -26,7 +26,7 @@ use crate::character_presentation::{
     CharacterPresentationSet, LocalMotion, PresentationActivity, PresentationEntityKey,
     PresentationOneShotTable, PresentationView, RemoteMotion, apply_climb_back_overlay,
     equipment_view_from_replica, from_local_with_presentation, from_remote_with_presentation,
-    presentation_debug_quads_with_assets,
+    immunity_flash_visible, presentation_debug_quads_with_assets,
 };
 #[cfg(feature = "dev-diagnostics")]
 use crate::debug::aoi_view::{
@@ -2025,7 +2025,22 @@ impl ClientApp {
                     }
                 };
                 let bone_map = self.characters.bone_map();
-                for (_, entry) in self.characters.iter_draw_order() {
+                for (key, entry) in self.characters.iter_draw_order() {
+                    let health = self
+                        .replica
+                        .iter()
+                        .find(|entity| {
+                            entity.entity_id.index == key.index
+                                && entity.entity_id.generation == key.generation
+                        })
+                        .and_then(|entity| entity.health);
+                    if !immunity_flash_visible(
+                        health.is_none_or(|h| h.current > 0.0),
+                        health.is_some_and(|h| h.damage_immunity_active),
+                        self.replica.last_server_tick(),
+                    ) {
+                        continue;
+                    }
                     let view = if force_back {
                         PresentationView::Back
                     } else {

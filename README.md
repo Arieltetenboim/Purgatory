@@ -10,7 +10,7 @@ This README is intentionally small. It is the project entry point, not the proje
 
 - **Phase:** `10E` complete
 - **Next:** Phase 11 — Item Loop
-- **Protocol:** v16
+- **Protocol:** v17
 - **Simulation:** server authoritative
 - **Client:** native `winit` + `wgpu`
 - **Networking:** QUIC via Quinn

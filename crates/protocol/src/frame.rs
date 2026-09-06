@@ -26,6 +26,8 @@ const MASK_EQUIPMENT: u8 = 1 << 2;
 pub struct ReplicatedHealth {
     pub current: f32,
     pub max: f32,
+    /// Authoritative victim damage-immunity state for presentation.
+    pub damage_immunity_active: bool,
 }
 
 /// Domain bits on an Update record.
@@ -401,7 +403,9 @@ fn write_health_opt(out: &mut Vec<u8>, health: Option<ReplicatedHealth>) -> Resu
 
 fn write_health(out: &mut Vec<u8>, health: ReplicatedHealth) -> Result<(), CodecError> {
     write_f32(out, health.current)?;
-    write_f32(out, health.max)
+    write_f32(out, health.max)?;
+    out.push(u8::from(health.damage_immunity_active));
+    Ok(())
 }
 
 fn write_equipment_opt(out: &mut Vec<u8>, equipment: Option<ReplicatedEquipment>) {
@@ -445,7 +449,22 @@ fn read_health_opt(bytes: &[u8]) -> Result<(Option<ReplicatedHealth>, &[u8]), Co
 fn read_health(bytes: &[u8]) -> Result<(ReplicatedHealth, &[u8]), CodecError> {
     let (current, rest) = read_finite_f32(bytes)?;
     let (max, rest) = read_finite_f32(rest)?;
-    Ok((ReplicatedHealth { current, max }, rest))
+    if rest.is_empty() {
+        return Err(CodecError::Truncated);
+    }
+    let damage_immunity_active = match rest[0] {
+        0 => false,
+        1 => true,
+        _ => return Err(CodecError::InvalidValue),
+    };
+    Ok((
+        ReplicatedHealth {
+            current,
+            max,
+            damage_immunity_active,
+        },
+        &rest[1..],
+    ))
 }
 
 #[cfg(test)]
@@ -495,6 +514,7 @@ mod tests {
                 health: Some(ReplicatedHealth {
                     current: 8.0,
                     max: 10.0,
+                    damage_immunity_active: true,
                 }),
                 equipment: None,
             },
