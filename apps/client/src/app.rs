@@ -13,7 +13,7 @@ use purgatory_simulation::{
     PlayerInput, PlayerState, SimulationClock, World, WorldAddress, in_portal_activation_zone,
 };
 #[cfg(feature = "dev-diagnostics")]
-use purgatory_simulation::{FootnoteConfig, TICK_DURATION, aoi_policy_rects};
+use purgatory_simulation::{TICK_DURATION, aoi_policy_rects};
 use winit::application::ApplicationHandler;
 #[cfg(feature = "dev-diagnostics")]
 use winit::event::ElementState;
@@ -355,20 +355,6 @@ impl ClientApp {
             .map(|d| d.ui.time_scale)
             .unwrap_or(1.0)
             .clamp(0.01, 1.0)
-    }
-
-    #[cfg(feature = "dev-diagnostics")]
-    fn apply_debug_move_speed(&mut self) {
-        let speed = self
-            .debug
-            .as_ref()
-            .map(|d| d.ui.debug_move_speed)
-            .unwrap_or(FootnoteConfig::DEFAULT.max_ground_speed);
-        let speed = crate::debug::sanitize_debug_move_speed(speed);
-        let cfg = FootnoteConfig::with_move_speed(speed);
-        if self.world.footnote_config() != cfg {
-            self.world.set_footnote_config(cfg);
-        }
     }
 
     #[cfg(feature = "dev-diagnostics")]
@@ -1219,9 +1205,10 @@ impl ClientApp {
             return;
         };
         self.intent.set_epoch(self.replica.input_epoch());
-        let Some(command) = self.intent.emit_tick_with_portal(
+        let Some(command) = self.intent.emit_tick_with_jump_and_portal(
             move_axis_from_i8(input.move_axis),
             input.jump_pressed,
+            input.jump_held,
             input.down_held,
             self.actions.portal_held(),
         ) else {
@@ -1451,9 +1438,6 @@ impl ClientApp {
         self.last_instant = now;
         let seconds = elapsed.as_secs_f32();
         self.fps = if seconds > 0.0 { 1.0 / seconds } else { 0.0 };
-
-        #[cfg(feature = "dev-diagnostics")]
-        self.apply_debug_move_speed();
 
         // Development time scale: scale wall elapsed into the clock only.
         // TICK_RATE_HZ / TICK_DURATION are unchanged.
@@ -2776,6 +2760,36 @@ impl ClientApp {
                         if !network.try_send_dev_set_channel(channel) {
                             eprintln!("6D_CHANNEL send failed (input channel full or closed)");
                         }
+                    }
+                }
+                DebugCommand::SetMoveSpeed(speed) => {
+                    let local_speed = speed.map(|value| {
+                        crate::debug::sanitize_debug_move_speed(f32::from(value) / 100.0)
+                    });
+                    if let Some(player) = self.world.player_id() {
+                        let _ = self.world.set_player_speed_override(player, local_speed);
+                    }
+                    if self.lifecycle.screen() == ClientScreen::Game
+                        && let Some(network) = &self.network
+                        && !network.try_send_dev_set_speed(speed)
+                    {
+                        eprintln!("DEV_SPEED send failed");
+                    }
+                }
+                DebugCommand::SetJumpSpeed(jump) => {
+                    let local_jump = jump.map(|value| {
+                        crate::debug::sanitize_debug_jump_speed(f32::from(value) / 100.0)
+                    });
+                    if let Some(player) = self.world.player_id() {
+                        let _ = self
+                            .world
+                            .set_player_jump_speed_override(player, local_jump);
+                    }
+                    if self.lifecycle.screen() == ClientScreen::Game
+                        && let Some(network) = &self.network
+                        && !network.try_send_dev_set_jump(jump)
+                    {
+                        eprintln!("DEV_JUMP send failed");
                     }
                 }
                 DebugCommand::SetResolution(resolution) => {

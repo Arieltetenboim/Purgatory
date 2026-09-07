@@ -1576,6 +1576,9 @@ impl World {
             player.velocity = velocity;
             player.ignored_platform = ignored_platform;
             player.last_contact = crate::footnote::ContactEvent::None;
+            player.coyote_ticks = 0;
+            player.jump_buffer_ticks = 0;
+            player.jump_active = false;
             if grounded {
                 if let Some(on) = grounded_on {
                     player.grounded = true;
@@ -1711,6 +1714,26 @@ impl World {
         let transform = data.transform.as_mut()?;
         let player = data.player.as_mut()?;
         Some((transform, player))
+    }
+
+    /// Set the explicit movement-speed override for one player.
+    /// `None` restores the canonical movement speed.
+    pub fn set_player_speed_override(&mut self, id: EntityId, speed: Option<f32>) -> bool {
+        let Some((_, player)) = self.player_parts_mut_for(id) else {
+            return false;
+        };
+        player.movement_speed_override = speed;
+        true
+    }
+
+    /// Set the explicit jump-speed override for one player.
+    /// `None` restores the canonical jump value.
+    pub fn set_player_jump_speed_override(&mut self, id: EntityId, speed: Option<f32>) -> bool {
+        let Some((_, player)) = self.player_parts_mut_for(id) else {
+            return false;
+        };
+        player.jump_speed_override = speed;
+        true
     }
 
     /// Immutable lookup. Stale IDs yield `None`.

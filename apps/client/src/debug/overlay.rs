@@ -28,8 +28,8 @@ use super::interact_status::{
 };
 use super::sections::{debug_section, draw_expand_collapse};
 use super::ui_state::{
-    DEBUG_MOVE_SPEED_DEFAULT, DEBUG_MOVE_SPEED_MAX, DEBUG_MOVE_SPEED_MIN, DebugUiState,
-    RESET_TO_SPAWN_HELP, RESET_TO_SPAWN_LABEL, reset_action_help, reset_action_label,
+    DEBUG_JUMP_SPEED_MAX, DEBUG_JUMP_SPEED_MIN, DEBUG_MOVE_SPEED_MAX, DEBUG_MOVE_SPEED_MIN,
+    DebugUiState, RESET_TO_SPAWN_HELP, RESET_TO_SPAWN_LABEL, reset_action_help, reset_action_label,
     reset_player_uses_replica,
 };
 use crate::renderer::OverlayPass;
@@ -1834,10 +1834,23 @@ fn draw_player_tab(
                 .text("Move speed"),
             );
             if ui.small_button("Reset speed").clicked() {
-                ui_state.debug_move_speed = DEBUG_MOVE_SPEED_DEFAULT;
+                ui_state.request_debug_move_speed_reset();
             }
             ui.small(
-                "Local FOOTNOTE max ground/air (wu/s). Default 6. Connected: prediction only; server stays at default.",
+                "DEV player speed (wu/s). Connected: server-authoritative; prediction uses the same override.",
+            );
+            ui.add(
+                egui::Slider::new(
+                    &mut ui_state.debug_jump_speed,
+                    DEBUG_JUMP_SPEED_MIN..=DEBUG_JUMP_SPEED_MAX,
+                )
+                .text("Jump strength"),
+            );
+            if ui.small_button("Reset jump").clicked() {
+                ui_state.request_debug_jump_speed_reset();
+            }
+            ui.small(
+                "DEV jump speed (wu/s). Connected: server-authoritative; prediction uses the same override.",
             );
             ui.horizontal(|ui| {
                 ui.label("Headwear");

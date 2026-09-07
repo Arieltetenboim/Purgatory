@@ -433,6 +433,7 @@ async fn write_input(
         sequence,
         move_axis,
         jump_pressed,
+        jump_held: false,
         down_held,
         portal_held: false,
     }))

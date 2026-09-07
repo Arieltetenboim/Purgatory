@@ -65,8 +65,8 @@ pub use framing::{
 };
 pub use intent::{IntentNet, move_axis_from_i8};
 pub use interact::{
-    DevSetChannel, InteractClose, InteractCloseReason, InteractOpen, InteractRejectReason,
-    PortalActivate, ServerInteract,
+    DevSetChannel, DevSetJump, DevSetSpeed, InteractClose, InteractCloseReason, InteractOpen,
+    InteractRejectReason, PortalActivate, ServerInteract,
 };
 pub use message::{
     ClientControl, CodecError, DisconnectReason, DisconnectReasonCode, Hello, InputCommand,
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 17);
+        assert_eq!(PROTOCOL_VERSION, 20);
     }
 
     #[test]

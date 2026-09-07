@@ -24,8 +24,12 @@
 /// `AbilityActivate` (ability id + optional selected entity) and server
 /// `Ability` accepted/rejected. Protocol v16 adds client `Respawn` (tag 28).
 /// Protocol v17 adds the authoritative damage-immunity bit to replicated Health.
+/// Protocol v18 adds DEV-authoritative player speed control (tag 29).
+/// Protocol v19 adds DEV-authoritative player jump control (tag 30).
+/// Protocol v20 adds the optional `jump_held` bit to the existing input
+/// intent trailer for authoritative short-hop release semantics.
 /// Historical golden vectors remain frozen.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;

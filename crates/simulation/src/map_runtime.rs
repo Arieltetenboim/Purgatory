@@ -159,6 +159,9 @@ impl World {
             player.grounded_on = None;
             player.ignored_platform = None;
             player.velocity = [0.0, 0.0];
+            player.coyote_ticks = 0;
+            player.jump_buffer_ticks = 0;
+            player.jump_active = false;
             Some(previous)
         } else {
             None

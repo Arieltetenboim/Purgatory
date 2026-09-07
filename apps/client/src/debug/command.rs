@@ -1,8 +1,12 @@
 //! Privileged mutating debug commands. Not read-only diagnostics. Not protocol.
 
-use super::ui_state::DebugUiState;
+use super::ui_state::{
+    DEBUG_JUMP_SPEED_DEFAULT, DEBUG_MOVE_SPEED_DEFAULT, DEBUG_TUNING_SEND_INTERVAL, DebugUiState,
+    sanitize_debug_jump_speed, sanitize_debug_move_speed,
+};
 use crate::display::{RenderScale, Resolution};
 use crate::renderer::WorldMsaa;
+use std::time::Instant;
 
 /// Client-owned DEV commands. `ClientApp` executes these; overlay widgets enqueue them.
 ///
@@ -18,6 +22,8 @@ pub enum DebugCommand {
     Connect,
     Disconnect,
     SetChannel(u32),
+    SetMoveSpeed(Option<u16>),
+    SetJumpSpeed(Option<u16>),
     SetResolution(Resolution),
     SetRenderScale(RenderScale),
     SetWorldMsaa(WorldMsaa),
@@ -41,6 +47,10 @@ pub enum DebugCommand {
 impl DebugUiState {
     /// Take one-shot privileged requests. Persistent view toggles stay on `self`.
     pub fn drain_commands(&mut self) -> Vec<DebugCommand> {
+        self.drain_commands_at(Instant::now())
+    }
+
+    fn drain_commands_at(&mut self, now: Instant) -> Vec<DebugCommand> {
         let mut out = Vec::new();
         if self.network_connect {
             self.network_connect = false;
@@ -52,6 +62,49 @@ impl DebugUiState {
         }
         if let Some(channel) = self.request_channel.take() {
             out.push(DebugCommand::SetChannel(channel));
+        }
+        let mut tuning_sent = false;
+        if self.debug_move_speed_reset_requested {
+            self.debug_move_speed_reset_requested = false;
+            self.last_sent_debug_move_speed = Some(DEBUG_MOVE_SPEED_DEFAULT);
+            out.push(DebugCommand::SetMoveSpeed(None));
+            tuning_sent = true;
+        }
+        if self.debug_jump_speed_reset_requested {
+            self.debug_jump_speed_reset_requested = false;
+            self.last_sent_debug_jump_speed = Some(DEBUG_JUMP_SPEED_DEFAULT);
+            out.push(DebugCommand::SetJumpSpeed(None));
+            tuning_sent = true;
+        }
+
+        let tuning_due = self
+            .debug_tuning_next_send_at
+            .is_none_or(|deadline| now >= deadline);
+        if !tuning_sent && tuning_due {
+            let speed = sanitize_debug_move_speed(self.debug_move_speed);
+            let jump = sanitize_debug_jump_speed(self.debug_jump_speed);
+            let speed_pending = self.last_sent_debug_move_speed != Some(speed);
+            let jump_pending = self.last_sent_debug_jump_speed != Some(jump);
+            let send_speed = speed_pending && (!jump_pending || self.debug_tuning_send_speed_next);
+            let send_jump = jump_pending && !send_speed;
+            if send_speed {
+                self.last_sent_debug_move_speed = Some(speed);
+                self.debug_tuning_send_speed_next = false;
+                out.push(DebugCommand::SetMoveSpeed(Some(
+                    (speed * 100.0).round() as u16
+                )));
+                tuning_sent = true;
+            } else if send_jump {
+                self.last_sent_debug_jump_speed = Some(jump);
+                self.debug_tuning_send_speed_next = true;
+                out.push(DebugCommand::SetJumpSpeed(Some(
+                    (jump * 100.0).round() as u16
+                )));
+                tuning_sent = true;
+            }
+        }
+        if tuning_sent {
+            self.debug_tuning_next_send_at = Some(now + DEBUG_TUNING_SEND_INTERVAL);
         }
         if let Some(resolution) = self.requested_resolution.take() {
             out.push(DebugCommand::SetResolution(resolution));
@@ -150,5 +203,71 @@ mod tests {
         assert!(ui.show_skeleton);
         assert!((ui.time_scale - 0.5).abs() < f32::EPSILON);
         assert!(ui.drain_commands().is_empty());
+    }
+
+    #[test]
+    fn rapid_tuning_changes_are_throttled_and_latest_value_is_retained() {
+        let t0 = Instant::now();
+        let mut ui = DebugUiState {
+            last_sent_debug_move_speed: Some(DEBUG_MOVE_SPEED_DEFAULT),
+            last_sent_debug_jump_speed: Some(DEBUG_JUMP_SPEED_DEFAULT),
+            debug_move_speed: 5.0,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ui.drain_commands_at(t0),
+            vec![DebugCommand::SetMoveSpeed(Some(500))]
+        );
+        ui.debug_move_speed = 6.0;
+        ui.debug_move_speed = 7.0;
+        assert!(
+            ui.drain_commands_at(t0 + std::time::Duration::from_millis(1))
+                .is_empty()
+        );
+        assert_eq!(
+            ui.drain_commands_at(t0 + DEBUG_TUNING_SEND_INTERVAL),
+            vec![DebugCommand::SetMoveSpeed(Some(700))]
+        );
+    }
+
+    #[test]
+    fn speed_and_jump_share_the_same_cadence_policy() {
+        let t0 = Instant::now();
+        let mut ui = DebugUiState {
+            last_sent_debug_move_speed: Some(DEBUG_MOVE_SPEED_DEFAULT),
+            last_sent_debug_jump_speed: Some(DEBUG_JUMP_SPEED_DEFAULT),
+            debug_move_speed: 5.0,
+            debug_jump_speed: 14.0,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ui.drain_commands_at(t0),
+            vec![DebugCommand::SetMoveSpeed(Some(500))]
+        );
+        assert_eq!(
+            ui.drain_commands_at(t0 + DEBUG_TUNING_SEND_INTERVAL),
+            vec![DebugCommand::SetJumpSpeed(Some(1_400))]
+        );
+    }
+
+    #[test]
+    fn reset_bypasses_cadence_and_is_retained_as_authoritative_command() {
+        let t0 = Instant::now();
+        let mut ui = DebugUiState {
+            last_sent_debug_move_speed: Some(6.0),
+            debug_move_speed: 4.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            ui.drain_commands_at(t0),
+            vec![DebugCommand::SetMoveSpeed(Some(400))]
+        );
+        ui.request_debug_move_speed_reset();
+        assert_eq!(
+            ui.drain_commands_at(t0 + std::time::Duration::from_millis(1)),
+            vec![DebugCommand::SetMoveSpeed(None)]
+        );
     }
 }

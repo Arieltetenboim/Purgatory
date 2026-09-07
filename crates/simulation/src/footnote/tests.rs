@@ -16,6 +16,156 @@ const DT_30: f32 = 1.0 / 30.0;
 const DT_40: f32 = 1.0 / 40.0;
 const CFG: FootnoteConfig = FootnoteConfig::DEFAULT;
 
+#[test]
+fn canonical_defaults_keep_ground_speed_and_jump_value() {
+    assert_eq!(CFG.max_ground_speed, 4.0);
+    assert_eq!(CFG.ground_acceleration, 24.0);
+    assert_eq!(CFG.ground_deceleration, 30.0);
+    assert_eq!(CFG.air_acceleration, 10.0);
+    assert_eq!(CFG.max_air_speed, 4.2);
+    assert_eq!(CFG.jump_velocity, 13.0);
+}
+
+fn jump(pressed: bool, held: bool) -> PlayerInput {
+    PlayerInput::from_buttons(false, false, pressed).with_jump_held(held)
+}
+
+#[test]
+fn coyote_jump_succeeds_after_walking_off_ground() {
+    let mut world = World::dev_stage();
+    let raised = raised_id(&world);
+    let top = RAISED_PLATFORM.top_surface(Transform::from_position(RAISED_PLATFORM_POSITION));
+    set_player(
+        &mut world,
+        [
+            RAISED_PLATFORM.max_x(Transform::from_position(RAISED_PLATFORM_POSITION))
+                - PLAYER_HALF_EXTENTS[0] * 0.5,
+            top + PLAYER_HALF_EXTENTS[1],
+        ],
+        [CFG.max_ground_speed, 0.0],
+        true,
+        Some(raised),
+    );
+    for _ in 0..8 {
+        world.tick(DT_30, PlayerInput::from_buttons(false, true, false));
+        if !player(&world).grounded {
+            break;
+        }
+    }
+    assert!(!player(&world).grounded);
+    world.tick(DT_30, jump(true, true));
+    assert!(player(&world).velocity[1] > 0.0);
+}
+
+#[test]
+fn coyote_window_expires_and_cannot_double_jump() {
+    let mut world = World::dev_stage();
+    let raised = raised_id(&world);
+    let top = RAISED_PLATFORM.top_surface(Transform::from_position(RAISED_PLATFORM_POSITION));
+    set_player(
+        &mut world,
+        [
+            RAISED_PLATFORM.max_x(Transform::from_position(RAISED_PLATFORM_POSITION))
+                - PLAYER_HALF_EXTENTS[0] * 0.5,
+            top + PLAYER_HALF_EXTENTS[1],
+        ],
+        [CFG.max_ground_speed, 0.0],
+        true,
+        Some(raised),
+    );
+    for _ in 0..8 {
+        world.tick(DT_30, PlayerInput::from_buttons(false, true, false));
+        if !player(&world).grounded {
+            break;
+        }
+    }
+    assert!(!player(&world).grounded);
+    for _ in 0..3 {
+        world.tick(DT_30, PlayerInput::idle());
+    }
+    world.tick(DT_30, jump(true, true));
+    assert!(player(&world).velocity[1] < 0.0);
+
+    let mut airborne = World::dev_stage();
+    airborne.tick(DT_30, jump(true, true));
+    let first = player(&airborne).velocity[1];
+    airborne.tick(DT_30, jump(true, true));
+    assert!(player(&airborne).velocity[1] < first);
+}
+
+#[test]
+fn buffered_jump_executes_on_landing_and_expires() {
+    let mut world = World::dev_stage();
+    let top = FLOOR.top_surface(Transform::from_position(crate::platform::FLOOR_POSITION));
+    set_player(
+        &mut world,
+        [-2.0, top + PLAYER_HALF_EXTENTS[1] + 0.02],
+        [0.0, -1.0],
+        false,
+        None,
+    );
+    world.tick(DT_30, jump(true, true));
+    assert!(player(&world).velocity[1] > 0.0);
+    assert!(!player(&world).grounded);
+    let launched = player(&world).velocity[1];
+    world.tick(DT_30, jump(false, true));
+    assert!(player(&world).velocity[1] < launched);
+
+    let mut expired = World::dev_stage();
+    set_player(&mut expired, [-2.0, 2.0], [0.0, 0.0], false, None);
+    expired.tick(DT_30, jump(true, true));
+    for _ in 0..4 {
+        expired.tick(DT_30, PlayerInput::idle());
+    }
+    assert!(player(&expired).velocity[1] < 0.0);
+}
+
+#[test]
+fn short_hop_is_shorter_but_release_on_descent_has_no_impulse_cut() {
+    let mut full = World::dev_stage();
+    full.tick(DT_30, jump(true, true));
+    for _ in 0..10 {
+        full.tick(DT_30, jump(false, true));
+    }
+    let full_height = player(&full).position[1];
+
+    let mut short = World::dev_stage();
+    short.tick(DT_30, jump(true, true));
+    short.tick(DT_30, PlayerInput::idle());
+    for _ in 0..9 {
+        short.tick(DT_30, PlayerInput::idle());
+    }
+    assert!(player(&short).position[1] < full_height);
+
+    let mut descent = World::dev_stage();
+    descent.tick(DT_30, jump(true, true));
+    while player(&descent).velocity[1] > 0.0 {
+        descent.tick(DT_30, jump(false, true));
+    }
+    let before = player(&descent).velocity[1];
+    descent.tick(DT_30, PlayerInput::idle());
+    assert!((player(&descent).velocity[1] - (before - CFG.gravity * DT_30)).abs() < 1e-3);
+}
+
+#[test]
+fn jump_timing_state_clears_on_reset() {
+    let mut world = World::dev_stage();
+    let id = world.player_id().expect("player");
+    {
+        let Some((_, player)) = world.player_parts_mut() else {
+            panic!("player state");
+        };
+        player.coyote_ticks = 3;
+        player.jump_buffer_ticks = 3;
+        player.jump_active = true;
+    }
+    world.reset_player_entity(id);
+    let (_, player) = world.get_player(id).expect("reset player");
+    assert_eq!(player.coyote_ticks, 0);
+    assert_eq!(player.jump_buffer_ticks, 0);
+    assert!(!player.jump_active);
+}
+
 fn drive(world: &mut World, ticks: u32, dt: f32, input: PlayerInput) {
     for _ in 0..ticks {
         world.tick(dt, input);
@@ -74,6 +224,9 @@ fn set_player(
     player.grounded = grounded;
     player.grounded_on = grounded_on;
     player.ignored_platform = None;
+    player.coyote_ticks = 0;
+    player.jump_buffer_ticks = 0;
+    player.jump_active = false;
 }
 
 #[test]
@@ -111,6 +264,46 @@ fn stored_footnote_config_caps_ground_speed() {
 }
 
 #[test]
+fn player_speed_override_changes_effective_speed_and_reset_restores_default() {
+    let mut world = World::dev_stage();
+    let player_id = world.player_id().expect("player");
+    world.set_player_speed_override(player_id, Some(12.0));
+    drive(
+        &mut world,
+        20,
+        DT_30,
+        PlayerInput::from_buttons(false, true, false),
+    );
+    assert!((player(&world).velocity[0] - 12.0).abs() < 0.05);
+
+    assert!(world.set_player_speed_override(player_id, None));
+    world.apply_debug_action(crate::DebugAction::ResetPlayer);
+    drive(
+        &mut world,
+        20,
+        DT_30,
+        PlayerInput::from_buttons(false, true, false),
+    );
+    assert!((player(&world).velocity[0] - CFG.max_ground_speed).abs() < 0.05);
+}
+
+#[test]
+fn jump_speed_override_changes_effective_jump_and_reset_restores_default() {
+    let mut world = World::dev_stage();
+    let player_id = world.player_id().expect("player");
+    assert!(world.set_player_jump_speed_override(player_id, Some(20.0)));
+    world.tick(DT_30, PlayerInput::from_buttons(false, false, true));
+    let overridden = player(&world);
+    assert!((overridden.velocity[1] - (20.0 - CFG.gravity * DT_30)).abs() < 1e-3);
+
+    world.apply_debug_action(crate::DebugAction::ResetPlayer);
+    assert!(world.set_player_jump_speed_override(player_id, None));
+    world.tick(DT_30, PlayerInput::from_buttons(false, false, true));
+    let reset = player(&world);
+    assert!((reset.velocity[1] - (CFG.jump_velocity - CFG.gravity * DT_30)).abs() < 1e-3);
+}
+
+#[test]
 fn releasing_input_decelerates_without_snap() {
     let mut world = World::dev_stage();
     drive(
@@ -139,10 +332,18 @@ fn reverse_direction_does_not_teleport_velocity() {
     let before = player(&world).velocity[0];
     world.tick(DT_30, PlayerInput::from_buttons(true, false, false));
     let after = player(&world).velocity[0];
+    let expected_after_one_tick = before - CFG.ground_acceleration * DT_30;
+    assert!((after - expected_after_one_tick).abs() < 0.05);
     assert!(after < before);
     assert!(after > -CFG.max_ground_speed);
-    // Must not snap to -max in one tick.
     assert!(after > -CFG.max_ground_speed + 0.5);
+
+    for _ in 0..5 {
+        world.tick(DT_30, PlayerInput::from_buttons(true, false, false));
+    }
+    let crossed_zero = player(&world).velocity[0];
+    assert!(crossed_zero < 0.0);
+    assert!(crossed_zero > -CFG.max_ground_speed);
 }
 
 #[test]
@@ -157,7 +358,11 @@ fn jump_preserves_horizontal_momentum() {
     let vx = player(&world).velocity[0];
     world.tick(DT_30, PlayerInput::from_buttons(false, true, true));
     assert!(!player(&world).grounded);
-    assert!((player(&world).velocity[0] - vx).abs() < 0.05);
+    let expected_vx = (vx + CFG.air_acceleration * DT_30).min(CFG.max_air_speed);
+    assert!(
+        (player(&world).velocity[0] - expected_vx).abs() < 0.05,
+        "jump must preserve momentum while applying air acceleration"
+    );
 }
 
 #[test]
@@ -205,6 +410,58 @@ fn airborne_input_uses_air_acceleration() {
     let expected = CFG.air_acceleration * DT_30;
     assert!((vx - expected).abs() < 1e-3);
     assert!(vx < CFG.max_air_speed);
+}
+
+#[test]
+fn airborne_input_caps_and_reverses_more_slowly_than_grounded() {
+    let mut air = World::dev_stage();
+    set_player(&mut air, [-2.0, 2.0], [CFG.max_air_speed, 0.0], false, None);
+    air.tick(DT_30, PlayerInput::from_buttons(true, false, false));
+    let air_vx = player(&air).velocity[0];
+    assert!((air_vx - (CFG.max_air_speed - CFG.air_acceleration * DT_30)).abs() < 1e-3);
+    assert!(air_vx > 0.0);
+
+    let mut ground = World::dev_stage();
+    drive(
+        &mut ground,
+        30,
+        DT_30,
+        PlayerInput::from_buttons(false, true, false),
+    );
+    ground.tick(DT_30, PlayerInput::from_buttons(true, false, false));
+    let ground_vx = player(&ground).velocity[0];
+    assert!(ground_vx < air_vx);
+
+    let mut capped = World::dev_stage();
+    set_player(
+        &mut capped,
+        [-2.0, 2.0],
+        [CFG.max_air_speed, 0.0],
+        false,
+        None,
+    );
+    capped.tick(DT_30, PlayerInput::from_buttons(false, true, false));
+    assert!((player(&capped).velocity[0] - CFG.max_air_speed).abs() < 1e-3);
+}
+
+#[test]
+fn repeated_jump_input_does_not_add_horizontal_speed() {
+    let mut world = World::dev_stage();
+    let player_id = world.player_id().expect("player");
+    set_player(
+        &mut world,
+        [-2.0, 2.0],
+        [CFG.max_air_speed, 0.0],
+        false,
+        None,
+    );
+    world.tick(DT_30, PlayerInput::from_buttons(false, false, true));
+    let first = player(&world).velocity[0];
+    world.tick(DT_30, PlayerInput::from_buttons(false, false, true));
+    let second = player(&world).velocity[0];
+    assert_eq!(world.player_id(), Some(player_id));
+    assert_eq!(first, CFG.max_air_speed);
+    assert_eq!(second, first);
 }
 
 #[test]

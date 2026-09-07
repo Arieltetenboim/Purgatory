@@ -138,6 +138,16 @@ pub struct DebugUiState {
     pub request_debug_unequip_all: bool,
     /// Player tab: local FOOTNOTE max ground/air speed (wu/s).
     pub debug_move_speed: f32,
+    pub(crate) debug_move_speed_reset_requested: bool,
+    pub(crate) last_sent_debug_move_speed: Option<f32>,
+    /// Player tab: local FOOTNOTE jump speed (wu/s).
+    pub debug_jump_speed: f32,
+    pub(crate) debug_jump_speed_reset_requested: bool,
+    pub(crate) last_sent_debug_jump_speed: Option<f32>,
+    /// Shared cadence gate for continuous DEV tuning controls.
+    pub(crate) debug_tuning_next_send_at: Option<std::time::Instant>,
+    /// Round-robin tie-breaker when both continuous controls are pending.
+    pub(crate) debug_tuning_send_speed_next: bool,
     /// Player tab: Headwear Side atlas cell `0..=3` (HEADWEAR 1–4).
     pub headwear_side_cell: u8,
     pub sections: DebugSectionMap,
@@ -214,6 +224,13 @@ impl Default for DebugUiState {
             request_debug_unequip_slot: None,
             request_debug_unequip_all: false,
             debug_move_speed: DEBUG_MOVE_SPEED_DEFAULT,
+            debug_move_speed_reset_requested: false,
+            last_sent_debug_move_speed: None,
+            debug_jump_speed: DEBUG_JUMP_SPEED_DEFAULT,
+            debug_jump_speed_reset_requested: false,
+            last_sent_debug_jump_speed: None,
+            debug_tuning_next_send_at: None,
+            debug_tuning_send_speed_next: true,
             headwear_side_cell: 0,
             sections: DebugSectionMap::default(),
             dev_action_flash_text: String::new(),
@@ -224,6 +241,16 @@ impl Default for DebugUiState {
 
 impl DebugUiState {
     pub const TIME_SCALES: [f32; 3] = [1.0, 0.5, 0.25];
+
+    pub fn request_debug_move_speed_reset(&mut self) {
+        self.debug_move_speed = DEBUG_MOVE_SPEED_DEFAULT;
+        self.debug_move_speed_reset_requested = true;
+    }
+
+    pub fn request_debug_jump_speed_reset(&mut self) {
+        self.debug_jump_speed = DEBUG_JUMP_SPEED_DEFAULT;
+        self.debug_jump_speed_reset_requested = true;
+    }
 
     /// Overlay defaults, then honor launcher env (`PURGATORY_NET_LOG` / `PURGATORY_NET_VERBOSE`).
     #[must_use]
@@ -296,9 +323,13 @@ pub const RESET_TO_SPAWN_LABEL: &str = "Reset to Spawn Point";
 pub const RESET_TO_SPAWN_HELP: &str = "Connected: server-authoritative spawn reset (DevResetPlayer). Offline: local World spawn and camera center.";
 pub const RESET_TO_SPAWN_FLASH: &str = "RESET TO SPAWN POINT";
 
-pub const DEBUG_MOVE_SPEED_DEFAULT: f32 = 6.0;
+pub const DEBUG_MOVE_SPEED_DEFAULT: f32 = 4.0;
 pub const DEBUG_MOVE_SPEED_MIN: f32 = 0.5;
 pub const DEBUG_MOVE_SPEED_MAX: f32 = 24.0;
+pub const DEBUG_JUMP_SPEED_DEFAULT: f32 = 13.0;
+pub const DEBUG_JUMP_SPEED_MIN: f32 = 1.0;
+pub const DEBUG_JUMP_SPEED_MAX: f32 = 30.0;
+pub const DEBUG_TUNING_SEND_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
 
 #[must_use]
 pub fn sanitize_debug_move_speed(speed: f32) -> f32 {
@@ -306,6 +337,14 @@ pub fn sanitize_debug_move_speed(speed: f32) -> f32 {
         return DEBUG_MOVE_SPEED_DEFAULT;
     }
     speed.clamp(DEBUG_MOVE_SPEED_MIN, DEBUG_MOVE_SPEED_MAX)
+}
+
+#[must_use]
+pub fn sanitize_debug_jump_speed(speed: f32) -> f32 {
+    if !speed.is_finite() {
+        return DEBUG_JUMP_SPEED_DEFAULT;
+    }
+    speed.clamp(DEBUG_JUMP_SPEED_MIN, DEBUG_JUMP_SPEED_MAX)
 }
 
 #[must_use]

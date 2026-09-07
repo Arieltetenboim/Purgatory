@@ -42,7 +42,7 @@ pub use snapshot::{
 #[allow(unused_imports)] // public debug API
 pub use ui_state::{
     AnimationProofMode, DebugUiState, RESET_TO_SPAWN_FLASH, reset_action_flash,
-    reset_player_uses_replica, sanitize_debug_move_speed,
+    reset_player_uses_replica, sanitize_debug_jump_speed, sanitize_debug_move_speed,
 };
 pub use viz::{
     aoi_entity_debug_quads, append_debug_gizmos, camera_deadzone_quads, footnote_debug_quads,

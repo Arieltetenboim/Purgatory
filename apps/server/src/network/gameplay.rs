@@ -52,6 +52,10 @@ pub enum SeqDecision {
 }
 
 const SESSION_QUEUE_CAP: usize = 128;
+const DEV_SPEED_MIN_HUNDREDTHS: u16 = 50;
+const DEV_SPEED_MAX_HUNDREDTHS: u16 = 2_400;
+const DEV_JUMP_MIN_HUNDREDTHS: u16 = 100;
+const DEV_JUMP_MAX_HUNDREDTHS: u16 = 3_000;
 const LIVE_COMBAT_CREATURE_TYPE_TOKEN: u32 = 9_000;
 const LIVE_COMBAT_CREATURE_AGGRO_RADIUS: f32 = 3.0;
 
@@ -128,6 +132,7 @@ pub struct SessionInput {
     /// Unmatched Continuation steps. Saturates; never wraps.
     pub unmatched_continuation_ticks: u16,
     pub move_axis: MoveAxis,
+    pub jump_held: bool,
     pub down_held: bool,
     queue: VecDeque<InputCommand>,
     pub late_collapse_count: u64,
@@ -151,6 +156,7 @@ impl SessionInput {
             last_acknowledged_seq: None,
             unmatched_continuation_ticks: 0,
             move_axis: MoveAxis::Neutral,
+            jump_held: false,
             down_held: false,
             queue: VecDeque::new(),
             late_collapse_count: 0,
@@ -198,6 +204,7 @@ impl SessionInput {
     pub fn held_cancel(&mut self) {
         self.queue.clear();
         self.move_axis = MoveAxis::Neutral;
+        self.jump_held = false;
         self.down_held = false;
         self.last_acknowledged_seq = self.last_received_seq;
         self.unmatched_continuation_ticks = 0;
@@ -215,6 +222,7 @@ impl SessionInput {
         self.last_acknowledged_seq = None;
         self.unmatched_continuation_ticks = 0;
         self.move_axis = MoveAxis::Neutral;
+        self.jump_held = false;
         self.down_held = false;
         self.gate = InputGate::Open;
         Some(self.input_epoch)
@@ -225,6 +233,7 @@ impl SessionInput {
     pub fn lock_transition(&mut self, reason: InputGateReason) {
         self.queue.clear();
         self.move_axis = MoveAxis::Neutral;
+        self.jump_held = false;
         self.down_held = false;
         self.unmatched_continuation_ticks = 0;
         self.gate = InputGate::locked(reason);
@@ -263,6 +272,7 @@ impl SessionInput {
             return PlayerInput {
                 move_axis: self.move_axis.to_i8(),
                 jump_pressed: false,
+                jump_held: self.jump_held,
                 down_held: self.down_held,
             };
         }
@@ -277,11 +287,13 @@ impl SessionInput {
 
     fn consume_one(&mut self, cmd: InputCommand) -> PlayerInput {
         self.move_axis = cmd.move_axis;
+        self.jump_held = cmd.jump_held;
         self.down_held = cmd.down_held;
         self.last_acknowledged_seq = Some(cmd.sequence);
         PlayerInput {
             move_axis: cmd.move_axis.to_i8(),
             jump_pressed: cmd.jump_pressed,
+            jump_held: cmd.jump_held,
             down_held: cmd.down_held,
         }
     }
@@ -298,6 +310,7 @@ impl SessionInput {
         }
         let cmd = last.expect("n >= 1");
         self.move_axis = cmd.move_axis;
+        self.jump_held = cmd.jump_held;
         self.down_held = cmd.down_held;
         self.last_acknowledged_seq = Some(cmd.sequence);
         self.unmatched_continuation_ticks = debt.saturating_sub(n as u16);
@@ -306,6 +319,7 @@ impl SessionInput {
         PlayerInput {
             move_axis: cmd.move_axis.to_i8(),
             jump_pressed: jump,
+            jump_held: cmd.jump_held,
             down_held: cmd.down_held,
         }
     }
@@ -484,6 +498,14 @@ pub enum InputUpdate {
         connection_id: ConnectionId,
         channel: u32,
     },
+    DevSetSpeed {
+        connection_id: ConnectionId,
+        speed: Option<u16>,
+    },
+    DevSetJump {
+        connection_id: ConnectionId,
+        jump: Option<u16>,
+    },
     Equip {
         connection_id: ConnectionId,
         request: EquipRequest,
@@ -654,6 +676,30 @@ impl GameplayTx {
             .send(InputUpdate::DevSetChannel {
                 connection_id,
                 channel,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_dev_set_speed(
+        &self,
+        connection_id: ConnectionId,
+        speed: Option<u16>,
+    ) -> bool {
+        self.input
+            .send(InputUpdate::DevSetSpeed {
+                connection_id,
+                speed,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_dev_set_jump(&self, connection_id: ConnectionId, jump: Option<u16>) -> bool {
+        self.input
+            .send(InputUpdate::DevSetJump {
+                connection_id,
+                jump,
             })
             .await
             .is_ok()
@@ -1204,6 +1250,8 @@ impl GameplayOwner {
                 | InputUpdate::InteractClose { .. }
                 | InputUpdate::PortalActivate { .. }
                 | InputUpdate::DevSetChannel { .. }
+                | InputUpdate::DevSetSpeed { .. }
+                | InputUpdate::DevSetJump { .. }
                 | InputUpdate::Equip { .. }
                 | InputUpdate::Unequip { .. }
                 | InputUpdate::DevPresentationOneShot { .. }
@@ -1228,6 +1276,14 @@ impl GameplayOwner {
                     connection_id,
                     channel,
                 } => self.handle_dev_set_channel(connection_id, channel),
+                InputUpdate::DevSetSpeed {
+                    connection_id,
+                    speed,
+                } => self.handle_dev_set_speed(connection_id, speed),
+                InputUpdate::DevSetJump {
+                    connection_id,
+                    jump,
+                } => self.handle_dev_set_jump(connection_id, jump),
                 InputUpdate::Equip {
                     connection_id,
                     request,
@@ -1308,6 +1364,8 @@ impl GameplayOwner {
             | InputUpdate::InteractClose { .. }
             | InputUpdate::PortalActivate { .. }
             | InputUpdate::DevSetChannel { .. }
+            | InputUpdate::DevSetSpeed { .. }
+            | InputUpdate::DevSetJump { .. }
             | InputUpdate::Equip { .. }
             | InputUpdate::Unequip { .. }
             | InputUpdate::DevPresentationOneShot { .. }
@@ -1315,7 +1373,7 @@ impl GameplayOwner {
             | InputUpdate::Respawn { .. }
             | InputUpdate::AbilityActivate { .. } => {
                 unreachable!(
-                    "interact/portal/channel/equipment/oneshot/reset/ability handled above"
+                    "interact/portal/channel/speed/jump/equipment/oneshot/reset/ability handled above"
                 )
             }
         }
@@ -2191,6 +2249,61 @@ impl GameplayOwner {
         );
     }
 
+    fn handle_dev_set_speed(&mut self, connection_id: ConnectionId, speed: Option<u16>) {
+        let Some(actor) = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+        else {
+            println!("DEV_SPEED reject connection={connection_id} reason=no_binding");
+            return;
+        };
+        let applied = speed.map(|raw| {
+            raw.clamp(DEV_SPEED_MIN_HUNDREDTHS, DEV_SPEED_MAX_HUNDREDTHS) as f32 / 100.0
+        });
+        if !self.world.set_player_speed_override(actor, applied) {
+            println!("DEV_SPEED reject connection={connection_id} reason=not_player");
+            return;
+        }
+        match (speed, applied) {
+            (Some(requested), Some(effective)) => println!(
+                "DEV_SPEED apply connection={connection_id} requested={requested} effective={effective:.2}"
+            ),
+            (None, None) => println!(
+                "DEV_SPEED reset connection={connection_id} effective={:.2}",
+                purgatory_simulation::FootnoteConfig::DEFAULT.max_ground_speed
+            ),
+            _ => unreachable!("speed request and effective speed have matching presence"),
+        }
+    }
+
+    fn handle_dev_set_jump(&mut self, connection_id: ConnectionId, jump: Option<u16>) {
+        let Some(actor) = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+        else {
+            println!("DEV_JUMP reject connection={connection_id} reason=no_binding");
+            return;
+        };
+        let applied = jump
+            .map(|raw| raw.clamp(DEV_JUMP_MIN_HUNDREDTHS, DEV_JUMP_MAX_HUNDREDTHS) as f32 / 100.0);
+        if !self.world.set_player_jump_speed_override(actor, applied) {
+            println!("DEV_JUMP reject connection={connection_id} reason=not_player");
+            return;
+        }
+        match (jump, applied) {
+            (Some(requested), Some(effective)) => println!(
+                "DEV_JUMP apply connection={connection_id} requested={requested} effective={effective:.2}"
+            ),
+            (None, None) => println!(
+                "DEV_JUMP reset connection={connection_id} effective={:.2}",
+                purgatory_simulation::FootnoteConfig::DEFAULT.jump_velocity
+            ),
+            _ => unreachable!("jump request and effective jump have matching presence"),
+        }
+    }
+
     fn handle_portal_activate(&mut self, connection_id: ConnectionId, target: WireEntityId) {
         let Some(binding) = self.bindings.get(&connection_id) else {
             println!(
@@ -2776,6 +2889,7 @@ mod tests {
             sequence: seq,
             move_axis: axis,
             jump_pressed: jump,
+            jump_held: false,
             down_held: down,
             portal_held: false,
         }
@@ -2787,6 +2901,7 @@ mod tests {
             sequence: seq,
             move_axis: MoveAxis::Neutral,
             jump_pressed: false,
+            jump_held: false,
             down_held: false,
             portal_held,
         }
@@ -2798,6 +2913,7 @@ mod tests {
             sequence: seq,
             move_axis: axis,
             jump_pressed: jump,
+            jump_held: false,
             down_held: down,
             portal_held: false,
         }
@@ -3500,6 +3616,99 @@ mod tests {
         );
         let (_, player) = owner.world().get_player(actor).unwrap();
         assert_eq!(player.velocity, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn authoritative_speed_override_drives_movement_and_reset_restores_default() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+
+        owner.apply_input(InputUpdate::DevSetSpeed {
+            connection_id: id,
+            speed: Some(0),
+        });
+        assert_eq!(
+            owner
+                .world()
+                .get_player(actor)
+                .unwrap()
+                .1
+                .movement_speed_override,
+            Some(0.5)
+        );
+        owner.apply_input(InputUpdate::DevSetSpeed {
+            connection_id: id,
+            speed: Some(2_400),
+        });
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
+        for _ in 0..40 {
+            owner.simulate_tick(dt);
+        }
+        assert!((owner.world().get_player(actor).unwrap().1.velocity[0] - 24.0).abs() < 0.05);
+
+        owner.apply_input(InputUpdate::DevSetSpeed {
+            connection_id: id,
+            speed: None,
+        });
+        owner.apply_input(InputUpdate::DevResetPlayer { connection_id: id });
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
+        for _ in 0..40 {
+            owner.simulate_tick(dt);
+        }
+        assert!((owner.world().get_player(actor).unwrap().1.velocity[0] - 4.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn authoritative_jump_override_drives_jump_and_reset_restores_default() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+
+        owner.apply_input(InputUpdate::DevSetJump {
+            connection_id: id,
+            jump: Some(0),
+        });
+        assert_eq!(
+            owner
+                .world()
+                .get_player(actor)
+                .unwrap()
+                .1
+                .jump_speed_override,
+            Some(1.0)
+        );
+        owner.apply_input(InputUpdate::DevSetJump {
+            connection_id: id,
+            jump: Some(2_000),
+        });
+        assert_eq!(
+            owner
+                .world()
+                .get_player(actor)
+                .unwrap()
+                .1
+                .jump_speed_override,
+            Some(20.0)
+        );
+
+        owner.apply_input(InputUpdate::DevSetJump {
+            connection_id: id,
+            jump: None,
+        });
+        owner.apply_input(InputUpdate::DevResetPlayer { connection_id: id });
+        assert_eq!(
+            owner
+                .world()
+                .get_player(actor)
+                .unwrap()
+                .1
+                .jump_speed_override,
+            None
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Protocol
 
-Current protocol version is **17**. The historical phase summary below
+Current protocol version is **20**. The historical phase summary below
 retains its original version references.
 
 Phase 5.2 adds **authoritative gameplay replication**. Protocol version is **15**. The client sends per-tick `InputCommand` values identified by `(input_epoch, sequence)`. Phase 5.3 is client-only remote interpolation. Phase 5.4 is client-only local prediction. Phase 5.5 adds acknowledgement, continuation debt, late-collapse compaction, and local restore+replay. Phase 5.6 adds a **development-only** network impairment lab (delay/stall/HOL on the existing reliable streams). Phase 5.7 adds off-protocol localhost load metrics and raises the mechanical entity decode bound to 256. Phase 6.0 adds runtime/replication **contracts**; 6A composition; **6B** adds reliable interaction control envelopes and optional `ReplicatedKind::Interactable`; **6C** adds observer `WorldAddress`, `ReplicatedKind::Portal`, and `PortalActivate`. **6D** replaces full `WorldSnapshot` on the gameplay uni stream with `ReplicationFrame` (Enter/Update/Leave) and server interest-policy AOI, then adds DEV-only `DevSetChannel` (tag 17) so a Channel change is an authoritative `WorldAddress` boundary. **6E** adds DEV `Hello.dev_login` (temporary lookup identity) and `DisconnectReasonCode::AlreadyConnected`. Phase **6F** adds server-side runtime services without a protocol bump. Phase **7.2** adds `ReplicatedKind::Npc` (kind `4`) so visible Generics/NPCs Enter AOI on the wire (ADR-0054). Protocol **v12** adds equipment request envelopes and an optional equipment domain on Enter/Update. Protocol **v13** adds DEV presentation Attack/Hurt oneshot control envelopes (tags 22/23); Enter/Update snapshot layout is unchanged. Historical v1–v12 Hello/Welcome and earlier snapshot goldens stay frozen. Health on v8+ frames proves multi-domain deltas; 7.2 uses Health as a workload mutation domain. Phase **9A** locks ability authority (client requests ability id + targeting; server applies `AbilityEffect`) without adding wire tags. Phase **9B** executes `skill.basic.strike` in simulation only. Protocol **v15** adds ability activation envelopes (tags 25–27).
@@ -40,9 +40,9 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 17` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 20` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
-v17 is an intentional incompatible bump: v1–v16 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
+v20 is an intentional incompatible bump: v1–v19 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
 Client Hello includes `protocol_version`. The server rejects mismatches with `DisconnectReasonCode::VersionMismatch`.
 
@@ -63,6 +63,17 @@ existing `World::respawn_player_entity` lifecycle path.
 Protocol v17 adds `damage_immunity_active` to every replicated Health payload.
 It is authoritative presentation state for the victim's current damage-immunity
 window; clients do not create a gameplay immunity timer.
+Protocol v18 adds DEV `DevSetSpeed` (tag 29), carrying an optional speed in
+hundredths of world units per second. The server validates and applies it to
+the bound player; `None` restores the canonical default. This is a debug
+control, not a gameplay modifier or client-authoritative movement result.
+Protocol v19 adds DEV `DevSetJump` (tag 30), carrying an optional jump speed
+in hundredths of world units per second. The server validates and applies it
+to the bound player; `None` restores the canonical default.
+Protocol v20 extends the existing `InputCommand` intent with an optional
+one-byte held-state trailer. Bit 0 remains `portal_held`; bit 1 is
+`jump_held`. The edge-triggered `jump_pressed` field remains the admission
+signal. Omitted trailers decode as both held flags being false.
 
 ## Golden wire vectors
 
@@ -100,6 +111,10 @@ Protocol v16 Hello/Welcome goldens use `protocol_version = 16`. v15
 Hello/Welcome remain frozen. `Respawn` freezes tag 28.
 
 Protocol v17 freezes the replicated Health immunity bit and rejects older peers.
+Protocol v18 freezes DEV `DevSetSpeed` and rejects older peers.
+Protocol v19 freezes DEV `DevSetJump` and rejects older peers.
+Protocol v20 freezes the optional `InputCommand` held-state trailer and
+rejects older peers.
 
 **Version change policy.** A failing golden vector means the wire format moved. Do not regenerate the fixture to make the test pass. Instead:
 
@@ -181,6 +196,12 @@ Client:
 - `PortalActivate { target: WireEntityId }` — tag 15. Edge-triggered portal travel. Not `InteractOpen`. `E` must not use this path.
 - `DevSetChannel { channel: u32 }` — tag 17. DEV overlay only. Server-authoritative Channel request. Not a Portal, not a reconnect, and not client WorldAddress mutation. Channel values above `DEV_CHANNEL_MAX` are ignored (not a disconnect).
 - `DevResetPlayer` — tag **24**. DEV overlay only. Tag-only. Server-authoritative spawn reset of the bound player. Not a client teleport.
+- `DevSetSpeed` — tag **29**. DEV overlay only. Optional speed is encoded in
+  hundredths of world units per second; the server clamps it for the bound
+  player. Omitted speed restores canonical movement speed.
+- `DevSetJump` — tag **30**. DEV overlay only. Optional jump speed is encoded
+  in hundredths of world units per second; the server clamps it for the bound
+  player. Omitted speed restores canonical jump speed.
 - `Equip { seq: u32, slot: u8, content_id: ContentId token }` — tag **18**. 14 bytes with tag (`1+4+1+8`). Slot is dense `0..=5` (Headwear…Weapon). No presentation fields.
 - `Unequip { seq: u32, slot: u8 }` — tag **19**. 6 bytes with tag.
 
@@ -429,7 +450,7 @@ The desktop client may still run local FOOTNOTE for **LOCAL DEV / NON-AUTHORITAT
 
 ## Command versus Event (Phase 6F)
 
-Client envelopes (`InputCommand`, `InteractOpen`, `PortalActivate`, `DevSetChannel`, `DevResetPlayer`) are **commands**: untrusted requests. They are not runtime facts.
+Client envelopes (`InputCommand`, `InteractOpen`, `PortalActivate`, `DevSetChannel`, `DevSetSpeed`, `DevResetPlayer`) are **commands**: untrusted requests. They are not runtime facts.
 
 Phase **9A/9B** (not on the wire): a future player ability envelope is a command carrying **ability id + optional selected entity**. It must not carry damage, hit confirmation, or Health. Basic Attack (`skill.basic.strike`) activates with no selected target; the server resolves a forward query at Active. Server-only: live `ActionPhase`, cooldown table, definition lookup, hit/query, `execute_ability_effect`. Replicated vitality remains the existing Health domain. Semantic Attack/Hurt may later reuse `ServerPresentationOneShot` (v13). Cooldown and live Windup/Active/Recovery are not v1 snapshot fields. No protocol bump in 9A or 9B.
 

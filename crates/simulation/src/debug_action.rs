@@ -103,6 +103,9 @@ impl World {
             player.velocity = [0.0, 0.0];
             player.ignored_platform = None;
             player.last_contact = ContactEvent::None;
+            player.coyote_ticks = 0;
+            player.jump_buffer_ticks = 0;
+            player.jump_active = false;
             player.half_extents = PLAYER_HALF_EXTENTS;
         } else {
             return false;

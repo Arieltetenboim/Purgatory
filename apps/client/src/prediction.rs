@@ -988,6 +988,7 @@ fn player_input_from_command(cmd: InputCommand) -> PlayerInput {
     PlayerInput {
         move_axis: cmd.move_axis.to_i8(),
         jump_pressed: cmd.jump_pressed,
+        jump_held: cmd.jump_held,
         down_held: cmd.down_held,
     }
 }
@@ -1056,6 +1057,7 @@ mod tests {
                 _ => MoveAxis::Neutral,
             },
             jump_pressed: input.jump_pressed,
+            jump_held: input.jump_held,
             down_held: input.down_held,
             portal_held: false,
         }
@@ -2038,6 +2040,11 @@ mod tests {
     #[test]
     fn restore_and_replay_matches_local_prediction_for_held_move() {
         let mut world = World::footnote_test_stage();
+        let player_id = world.player_id().expect("player");
+        assert!(world.set_player_speed_override(player_id, Some(12.0)));
+        let mut authoritative = World::footnote_test_stage();
+        let authoritative_id = authoritative.player_id().expect("player");
+        assert!(authoritative.set_player_speed_override(authoritative_id, Some(12.0)));
         let mut replica = ReplicatedWorld::new();
         let mut pred = LocalPrediction::new();
         let id = wire(1, 1);
@@ -2049,6 +2056,19 @@ mod tests {
             tick_recorded(&mut pred, &mut world, right, u64::from(seq) + 1, seq);
         }
         let predicted = world.player_body().unwrap().position;
+        for _ in 0..8 {
+            authoritative.tick(
+                TICK_DURATION.as_secs_f32(),
+                PlayerInput::from_buttons_ext(false, true, false, false),
+            );
+        }
+        assert!((predicted[0] - authoritative.player_body().unwrap().position[0]).abs() < 1e-3);
+        assert!(
+            (world.player_body().unwrap().velocity[0]
+                - authoritative.player_body().unwrap().velocity[0])
+                .abs()
+                < 1e-3
+        );
         let mut lagged = snap(2, 2, id, spawn, [0.0, 0.0]);
         lagged.last_acknowledged_input_sequence = 0;
         let _ = replica.apply(lagged);
@@ -2063,6 +2083,83 @@ mod tests {
         );
         assert_eq!(d.total_reconciliation_count, 1);
         assert!(d.aligned_error.is_some());
+    }
+
+    #[test]
+    fn prediction_and_authority_use_the_same_jump_override() {
+        let mut world = World::footnote_test_stage();
+        let player_id = world.player_id().expect("player");
+        assert!(world.set_player_jump_speed_override(player_id, Some(20.0)));
+        let mut authoritative = World::footnote_test_stage();
+        let authoritative_id = authoritative.player_id().expect("player");
+        assert!(authoritative.set_player_jump_speed_override(authoritative_id, Some(20.0)));
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+
+        let jump = PlayerInput::from_buttons_ext(false, false, true, false);
+        tick_recorded(&mut pred, &mut world, jump, 2, 1);
+        authoritative.tick(TICK_DURATION.as_secs_f32(), jump);
+
+        let predicted_body = world.player_body().unwrap();
+        let authoritative_body = authoritative.player_body().unwrap();
+        assert!((predicted_body.velocity[1] - authoritative_body.velocity[1]).abs() < 1e-3);
+        assert!((predicted_body.position[1] - authoritative_body.position[1]).abs() < 1e-3);
+    }
+
+    #[test]
+    fn prediction_and_authority_match_airborne_horizontal_control() {
+        let mut world = World::footnote_test_stage();
+        let mut authoritative = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+
+        let jump = PlayerInput::from_buttons_ext(false, false, true, false);
+        tick_recorded(&mut pred, &mut world, jump, 2, 1);
+        authoritative.tick(TICK_DURATION.as_secs_f32(), jump);
+        let right = PlayerInput::from_buttons_ext(false, true, false, false);
+        tick_recorded(&mut pred, &mut world, right, 3, 2);
+        authoritative.tick(TICK_DURATION.as_secs_f32(), right);
+
+        assert!(!world.player_body().unwrap().grounded);
+        assert!(!authoritative.player_body().unwrap().grounded);
+        assert!(
+            (world.player_body().unwrap().velocity[0]
+                - authoritative.player_body().unwrap().velocity[0])
+                .abs()
+                < 1e-3
+        );
+    }
+
+    #[test]
+    fn prediction_and_authority_match_short_hop_release() {
+        let mut world = World::footnote_test_stage();
+        let mut authoritative = World::footnote_test_stage();
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(1, 1);
+        let spawn = world.player_body().unwrap().position;
+        auth_at(&mut replica, 1, id, spawn);
+        pred.sync_from_replica(&replica, &mut world, 1);
+
+        let press = PlayerInput::from_buttons(false, false, true).with_jump_held(true);
+        tick_recorded(&mut pred, &mut world, press, 2, 1);
+        authoritative.tick(TICK_DURATION.as_secs_f32(), press);
+        let release = PlayerInput::idle();
+        tick_recorded(&mut pred, &mut world, release, 3, 2);
+        authoritative.tick(TICK_DURATION.as_secs_f32(), release);
+
+        let predicted = world.player_body().unwrap();
+        let authoritative = authoritative.player_body().unwrap();
+        assert!((predicted.position[1] - authoritative.position[1]).abs() < 1e-3);
+        assert!((predicted.velocity[1] - authoritative.velocity[1]).abs() < 1e-3);
     }
 
     #[test]
@@ -2254,7 +2351,7 @@ mod tests {
         tick_recorded(&mut pred, &mut world, right, 2, 1);
         let vx = pred.last_tick_velocity()[0];
         assert!(
-            vx > 1.0,
+            vx > 0.5,
             "walking tick must leave remainder velocity, got {vx}"
         );
         let pose = world.player_body().unwrap().position;

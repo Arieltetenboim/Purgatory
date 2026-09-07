@@ -278,7 +278,10 @@ fn hz_30_and_40_ceiling_momentum_agree_logically() {
         let mut hit = false;
         let mut horiz_teleport = false;
         for _ in 0..50 {
-            world.tick(dt, PlayerInput::from_buttons(false, true, false));
+            world.tick(
+                dt,
+                PlayerInput::from_buttons(false, true, false).with_jump_held(true),
+            );
             let m = world.last_motion_debug();
             if m.collision_candidate == Some(ceiling)
                 && m.correction_axis == CorrectionAxis::Vertical

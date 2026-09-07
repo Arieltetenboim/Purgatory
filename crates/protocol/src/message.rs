@@ -10,7 +10,10 @@ use crate::ability::{
 use crate::equipment::{
     EquipRequest, EquipmentRejectReason, ServerEquipment, UnequipRequest, slot_valid,
 };
-use crate::interact::{DevSetChannel, InteractClose, InteractOpen, PortalActivate, ServerInteract};
+use crate::interact::{
+    DevSetChannel, DevSetJump, DevSetSpeed, InteractClose, InteractOpen, PortalActivate,
+    ServerInteract,
+};
 use crate::presentation_oneshot::{
     DevPresentationOneShot, ServerPresentationOneShot, TAG_DEV_PRESENTATION_ONESHOT,
     TAG_SERVER_PRESENTATION_ONESHOT, decode_dev_presentation_oneshot,
@@ -46,6 +49,8 @@ const TAG_ABILITY_ACTIVATE: u8 = 25;
 const TAG_ABILITY_ACCEPTED: u8 = 26;
 const TAG_ABILITY_REJECTED: u8 = 27;
 const TAG_RESPAWN: u8 = 28;
+const TAG_DEV_SET_SPEED: u8 = 29;
+const TAG_DEV_SET_JUMP: u8 = 30;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,9 +238,12 @@ pub struct InputCommand {
     pub sequence: u32,
     pub move_axis: MoveAxis,
     pub jump_pressed: bool,
+    /// True while Jump is held. Optional trailer bit for short-hop authority.
+    pub jump_held: bool,
     pub down_held: bool,
-    /// True while Up (portal activate) is held. Optional 1-byte trailer; omitted when false.
-    /// Server uses a falling edge to clear the portal reentry lock. Not movement.
+    /// True while Up (portal activate) is held. Optional 1-byte trailer bit 0;
+    /// omitted when both held-state bits are false. Server uses a falling edge
+    /// to clear the portal reentry lock. Not movement.
     pub portal_held: bool,
 }
 
@@ -259,6 +267,10 @@ pub enum ClientControl {
     PortalActivate(PortalActivate),
     /// DEV overlay Channel request. Server validates and owns WorldAddress.
     DevSetChannel(DevSetChannel),
+    /// DEV overlay movement speed request. Server validates and owns the result.
+    DevSetSpeed(DevSetSpeed),
+    /// DEV overlay jump-speed request. Server validates and owns the result.
+    DevSetJump(DevSetJump),
     Equip(EquipRequest),
     Unequip(UnequipRequest),
     /// DEV presentation Attack/Hurt oneshot request (protocol v13).
@@ -333,8 +345,9 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             out.push(cmd.move_axis.as_u8());
             out.push(u8::from(cmd.jump_pressed));
             out.push(u8::from(cmd.down_held));
-            if cmd.portal_held {
-                out.push(1);
+            let input_trailer = u8::from(cmd.portal_held) | (u8::from(cmd.jump_held) << 1);
+            if input_trailer != 0 {
+                out.push(input_trailer);
             }
             Ok(out)
         }
@@ -361,6 +374,30 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             let mut out = Vec::with_capacity(1 + 4);
             out.push(TAG_DEV_SET_CHANNEL);
             out.extend_from_slice(&req.channel.to_le_bytes());
+            Ok(out)
+        }
+        ClientControl::DevSetSpeed(req) => {
+            let mut out = Vec::with_capacity(1 + 1 + 2);
+            out.push(TAG_DEV_SET_SPEED);
+            match req.speed {
+                Some(speed) => {
+                    out.push(1);
+                    out.extend_from_slice(&speed.to_le_bytes());
+                }
+                None => out.push(0),
+            }
+            Ok(out)
+        }
+        ClientControl::DevSetJump(req) => {
+            let mut out = Vec::with_capacity(1 + 1 + 2);
+            out.push(TAG_DEV_SET_JUMP);
+            match req.jump {
+                Some(jump) => {
+                    out.push(1);
+                    out.extend_from_slice(&jump.to_le_bytes());
+                }
+                None => out.push(0),
+            }
             Ok(out)
         }
         ClientControl::Equip(req) => {
@@ -424,18 +461,21 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
             let jump_pressed = read_flag(rest[3])?;
             let down_held = read_flag(rest[4])?;
             let trailer = &rest[5..];
-            let portal_held = if trailer.is_empty() {
-                false
-            } else if trailer.len() == 1 {
-                read_flag(trailer[0])?
+            let input_trailer = if trailer.is_empty() {
+                0
+            } else if trailer.len() == 1 && trailer[0] <= 3 {
+                trailer[0]
             } else {
                 return Err(CodecError::InvalidValue);
             };
+            let portal_held = input_trailer & 1 != 0;
+            let jump_held = input_trailer & 2 != 0;
             Ok(ClientControl::Input(InputCommand {
                 input_epoch,
                 sequence,
                 move_axis,
                 jump_pressed,
+                jump_held,
                 down_held,
                 portal_held,
             }))
@@ -463,6 +503,56 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
             let (channel, rest) = read_u32(rest)?;
             expect_empty(rest)?;
             Ok(ClientControl::DevSetChannel(DevSetChannel { channel }))
+        }
+        TAG_DEV_SET_SPEED => {
+            let Some((&present, rest)) = rest.split_first() else {
+                return Err(CodecError::Truncated);
+            };
+            let speed = match present {
+                0 => {
+                    expect_empty(rest)?;
+                    None
+                }
+                1 => {
+                    if rest.len() != 2 {
+                        return Err(if rest.len() < 2 {
+                            CodecError::Truncated
+                        } else {
+                            CodecError::InvalidValue
+                        });
+                    }
+                    Some(u16::from_le_bytes(
+                        rest.try_into().map_err(|_| CodecError::Truncated)?,
+                    ))
+                }
+                _ => return Err(CodecError::InvalidValue),
+            };
+            Ok(ClientControl::DevSetSpeed(DevSetSpeed { speed }))
+        }
+        TAG_DEV_SET_JUMP => {
+            let Some((&present, rest)) = rest.split_first() else {
+                return Err(CodecError::Truncated);
+            };
+            let jump = match present {
+                0 => {
+                    expect_empty(rest)?;
+                    None
+                }
+                1 => {
+                    if rest.len() != 2 {
+                        return Err(if rest.len() < 2 {
+                            CodecError::Truncated
+                        } else {
+                            CodecError::InvalidValue
+                        });
+                    }
+                    Some(u16::from_le_bytes(
+                        rest.try_into().map_err(|_| CodecError::Truncated)?,
+                    ))
+                }
+                _ => return Err(CodecError::InvalidValue),
+            };
+            Ok(ClientControl::DevSetJump(DevSetJump { jump }))
         }
         TAG_EQUIP => {
             let (seq, rest) = read_u32(rest)?;
@@ -983,6 +1073,7 @@ mod tests {
             sequence: 7,
             move_axis: MoveAxis::Right,
             jump_pressed: true,
+            jump_held: false,
             down_held: false,
             portal_held: false,
         }
@@ -1013,6 +1104,14 @@ mod tests {
             ClientControl::Input(cmd) => assert!(!cmd.portal_held),
             other => panic!("{other:?}"),
         }
+
+        held.jump_held = true;
+        let encoded = encode_client_control(&ClientControl::Input(held)).unwrap();
+        assert_eq!(encoded[encoded.len() - 1], 3);
+        assert_eq!(
+            decode_client_control(&encoded).unwrap(),
+            ClientControl::Input(held)
+        );
     }
 
     #[test]
@@ -1181,6 +1280,50 @@ mod tests {
         let encoded = encode_client_control(&msg).unwrap();
         assert_eq!(encoded[0], TAG_DEV_SET_CHANNEL);
         assert_eq!(decode_client_control(&encoded).unwrap(), msg);
+    }
+
+    #[test]
+    fn dev_set_speed_roundtrip_and_reset() {
+        for speed in [Some(1_200), None] {
+            let msg = ClientControl::DevSetSpeed(DevSetSpeed { speed });
+            let encoded = encode_client_control(&msg).unwrap();
+            assert_eq!(encoded[0], TAG_DEV_SET_SPEED);
+            assert_eq!(decode_client_control(&encoded).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn dev_set_speed_rejects_invalid_presence_and_length() {
+        assert_eq!(
+            decode_client_control(&[TAG_DEV_SET_SPEED, 2]),
+            Err(CodecError::InvalidValue)
+        );
+        assert_eq!(
+            decode_client_control(&[TAG_DEV_SET_SPEED, 1, 0]),
+            Err(CodecError::Truncated)
+        );
+    }
+
+    #[test]
+    fn dev_set_jump_roundtrip_and_reset() {
+        for jump in [Some(2_000), None] {
+            let msg = ClientControl::DevSetJump(DevSetJump { jump });
+            let encoded = encode_client_control(&msg).unwrap();
+            assert_eq!(encoded[0], TAG_DEV_SET_JUMP);
+            assert_eq!(decode_client_control(&encoded).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn dev_set_jump_rejects_invalid_presence_and_length() {
+        assert_eq!(
+            decode_client_control(&[TAG_DEV_SET_JUMP, 2]),
+            Err(CodecError::InvalidValue)
+        );
+        assert_eq!(
+            decode_client_control(&[TAG_DEV_SET_JUMP, 1, 0]),
+            Err(CodecError::Truncated)
+        );
     }
 
     #[test]

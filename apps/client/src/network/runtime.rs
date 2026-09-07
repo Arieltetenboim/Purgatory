@@ -72,6 +72,8 @@ enum ClientGameplayMsg {
     InteractClose(u32),
     PortalActivate(purgatory_protocol::WireEntityId),
     DevSetChannel(u32),
+    DevSetSpeed(Option<u16>),
+    DevSetJump(Option<u16>),
     #[allow(dead_code)]
     Equip(purgatory_protocol::EquipRequest),
     #[allow(dead_code)]
@@ -413,6 +415,18 @@ impl NetworkHandle {
     pub fn try_send_dev_set_channel(&self, channel: u32) -> bool {
         self.input
             .try_send(ClientGameplayMsg::DevSetChannel(channel))
+            .is_ok()
+    }
+
+    pub fn try_send_dev_set_speed(&self, speed: Option<u16>) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::DevSetSpeed(speed))
+            .is_ok()
+    }
+
+    pub fn try_send_dev_set_jump(&self, jump: Option<u16>) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::DevSetJump(jump))
             .is_ok()
     }
 
@@ -968,6 +982,12 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
         }
         ClientGameplayMsg::DevSetChannel(channel) => {
             ClientControl::DevSetChannel(purgatory_protocol::DevSetChannel { channel })
+        }
+        ClientGameplayMsg::DevSetSpeed(speed) => {
+            ClientControl::DevSetSpeed(purgatory_protocol::DevSetSpeed { speed })
+        }
+        ClientGameplayMsg::DevSetJump(jump) => {
+            ClientControl::DevSetJump(purgatory_protocol::DevSetJump { jump })
         }
         ClientGameplayMsg::Equip(request) => ClientControl::Equip(request),
         ClientGameplayMsg::Unequip(request) => ClientControl::Unequip(request),

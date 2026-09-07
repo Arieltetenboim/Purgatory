@@ -623,6 +623,66 @@ async fn serve_connection(live: LiveSession) {
                             }
                         }
                     }
+                    Ok(ClientControl::DevSetSpeed(req)) => {
+                        println!(
+                            "DEV_SPEED recv connection={id} speed={:?}",
+                            req.speed
+                        );
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_dev_set_speed(id, req.speed).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ClientControl::DevSetJump(req)) => {
+                        println!(
+                            "DEV_JUMP recv connection={id} jump={:?}",
+                            req.jump
+                        );
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_dev_set_jump(id, req.jump).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Ok(ClientControl::Equip(req)) => {
                         match rate.note(Instant::now(), abuse_cfg) {
                             RateDecision::Disconnect => {

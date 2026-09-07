@@ -58,7 +58,18 @@ impl World {
     ///
     /// Stale IDs are a no-op. FOOTNOTE rules are unchanged.
     pub fn tick_player(&mut self, id: EntityId, dt_seconds: f32, input: PlayerInput) {
-        self.tick_player_with_config(id, dt_seconds, input, self.footnote_config());
+        let (movement_speed, jump_speed) = self
+            .get_player(id)
+            .map(|(_, player)| (player.movement_speed_override, player.jump_speed_override))
+            .unwrap_or((None, None));
+        let mut config = movement_speed.map_or_else(
+            || self.footnote_config(),
+            |speed| self.footnote_config().with_speed_override(speed),
+        );
+        if let Some(speed) = jump_speed {
+            config = config.with_jump_speed_override(speed);
+        }
+        self.tick_player_with_config(id, dt_seconds, input, config);
     }
 
     pub fn tick_with_config(
@@ -88,13 +99,14 @@ impl World {
         self.clear_stale_footnote_ids_for(id);
         let dead = self.health_of(id).is_some_and(|health| health.is_dead());
 
-        let (prev_pos, prev_half, prev_grounded_on, prev_vel) = {
+        let (prev_pos, prev_half, prev_grounded, prev_grounded_on, prev_vel) = {
             let Some((transform, player)) = self.get_player(id) else {
                 return;
             };
             (
                 transform.position,
                 player.half_extents,
+                player.grounded,
                 player.grounded_on,
                 player.velocity,
             )
@@ -148,11 +160,33 @@ impl World {
             } else {
                 input
             };
+            if control_input.jump_pressed && !control_input.down_held {
+                player.jump_buffer_ticks = crate::footnote::JUMP_BUFFER_TICKS;
+            }
+            let buffered_jump = player.jump_buffer_ticks > 0;
+            let jump_input = if buffered_jump {
+                PlayerInput {
+                    jump_pressed: true,
+                    ..control_input
+                }
+            } else {
+                control_input
+            };
             let dropped = apply_drop_through(player, control_input, support_kind, &mut contact);
             player.last_contact = contact;
 
-            if !dropped {
-                apply_jump(player, control_input, &config);
+            let jump_consumed = !dropped && apply_jump(player, jump_input, &config);
+            if jump_consumed {
+                player.jump_buffer_ticks = 0;
+                player.coyote_ticks = 0;
+            }
+            if !jump_consumed
+                && player.jump_active
+                && !control_input.jump_held
+                && player.velocity[1] > 0.0
+            {
+                player.velocity[1] *= 0.5;
+                player.jump_active = false;
             }
             apply_horizontal(player, control_input, &config, dt_seconds);
 
@@ -253,6 +287,35 @@ impl World {
                 correction[1] += bdy;
                 correction_axis = CorrectionAxis::WorldBound;
                 response_kind = ResponseKind::Normal;
+            }
+        }
+
+        if let Some((_, player)) = self.player_parts_mut_for(id) {
+            let grounded_now = player.grounded;
+            let left_ground =
+                prev_grounded && !grounded_now && !input.jump_pressed && !player.jump_active;
+            if grounded_now {
+                player.coyote_ticks = 0;
+                player.jump_active = false;
+            } else if left_ground && !player.jump_active {
+                player.coyote_ticks = crate::footnote::COYOTE_TICKS;
+            } else if player.coyote_ticks > 0 {
+                player.coyote_ticks -= 1;
+            }
+            if grounded_now && !prev_grounded && player.jump_buffer_ticks > 0 {
+                let _ = apply_jump(
+                    player,
+                    PlayerInput {
+                        jump_pressed: true,
+                        jump_held: input.jump_held,
+                        ..PlayerInput::idle()
+                    },
+                    &config,
+                );
+                player.jump_buffer_ticks = 0;
+            }
+            if player.jump_buffer_ticks > 0 {
+                player.jump_buffer_ticks -= 1;
             }
         }
 
@@ -384,15 +447,18 @@ fn apply_drop_through(
     true
 }
 
-fn apply_jump(player: &mut PlayerState, input: PlayerInput, config: &FootnoteConfig) {
-    if input.jump_pressed && player.grounded {
+fn apply_jump(player: &mut PlayerState, input: PlayerInput, config: &FootnoteConfig) -> bool {
+    if input.jump_pressed && (player.grounded || player.coyote_ticks > 0) {
         player.velocity[1] = config.jump_velocity;
         if let Some(platform) = player.grounded_on {
             player.last_contact = ContactEvent::LeftGround { platform };
         }
         player.grounded = false;
         player.grounded_on = None;
+        player.jump_active = input.jump_held || input.jump_pressed;
+        return true;
     }
+    false
 }
 
 /// Keep a grounded player glued to a valid support top without gravity sink.

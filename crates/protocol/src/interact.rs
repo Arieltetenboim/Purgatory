@@ -27,6 +27,21 @@ pub struct DevSetChannel {
     pub channel: u32,
 }
 
+/// DEV-only request to set or clear the bound player's movement speed.
+/// `speed` is in hundredths of world units per second; `None` resets to the
+/// canonical default. The server validates the range and owns the result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DevSetSpeed {
+    pub speed: Option<u16>,
+}
+
+/// DEV-only request to set or clear the bound player's jump speed.
+/// `jump` is in hundredths of world units per second.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DevSetJump {
+    pub jump: Option<u16>,
+}
+
 /// Authoritative reject reason. Unknown wire values are [`CodecError::InvalidValue`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]

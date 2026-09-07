@@ -40,6 +40,18 @@ pub struct PlayerState {
     pub half_extents: [f32; 2],
     /// Last non-zero horizontal intent. `1` right, `-1` left. Not on the wire.
     pub facing_sign: i8,
+    /// Per-player movement-speed override. `None` means canonical movement
+    /// speed; future gameplay systems may feed this seam without a modifier
+    /// framework.
+    pub movement_speed_override: Option<f32>,
+    /// Per-player jump-speed override. `None` means the canonical jump value.
+    pub jump_speed_override: Option<f32>,
+    /// Fixed-tick coyote-time countdown after leaving valid ground.
+    pub coyote_ticks: u8,
+    /// Fixed-tick countdown for a jump pressed before landing.
+    pub jump_buffer_ticks: u8,
+    /// Whether the current jump impulse is still eligible for full height.
+    pub jump_active: bool,
 }
 
 impl PlayerState {
@@ -61,6 +73,11 @@ impl PlayerState {
                 last_contact: ContactEvent::None,
                 half_extents: half,
                 facing_sign: 1,
+                movement_speed_override: None,
+                jump_speed_override: None,
+                coyote_ticks: 0,
+                jump_buffer_ticks: 0,
+                jump_active: false,
             },
         )
     }
