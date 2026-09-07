@@ -1,6 +1,6 @@
 # Item Domain Boundary
 
-Status: Phase 11 design contract
+Status: Phase 11 design contract — research gate complete
 
 ## Purpose
 
@@ -152,6 +152,42 @@ Runtime `EntityId` must not be persisted as durable item identity. Saved `ItemIn
 
 World-drop persistence is a separate world/persistence concern and is not defined here.
 
+## Implementation-facing code audit
+
+Targeted inspection of the current repository confirms that Phase 11 needs new Item-domain primitives rather than an Equipment rewrite.
+
+### Proven code that must be reused
+
+- `crates/simulation/src/equipment.rs` already owns the fixed six-slot `EquipmentState`, dirty masks, deltas, and idempotent slot mutation. Its module contract explicitly excludes inventory and combat.
+- `crates/content/src/equipment.rs` already owns `EquipmentDefinition`, slot compatibility, `authorize_equip`, and presentation metadata. Its gameplay definition is intentionally slot-only and has no inventory/stat ownership model.
+- `World` already owns authoritative gameplay state and Equipment replication dirtiness; the Item runtime should be World-owned rather than a parallel server-side gameplay manager.
+- `AbilityGrantTable` already exists as the explicit seam for future equipment/progression/status ability grants and is the correct Phase 11E proof boundary.
+- Character persistence v1 currently stores identity/restore context only and deliberately excludes runtime `EntityId`; Phase 12 can project durable item state without changing the Phase 11 runtime identity model.
+
+### Missing code that Phase 11 must create
+
+1. **Identity primitive** — new `ItemInstanceId` in the common identity domain, with server-only minting authority and tests that reject reserved/invalid identity semantics as appropriate.
+2. **Item content contract** — new minimal `ItemDefinition` plus loader/registry lookup and validation. Equipment-capable definitions share the same `ContentId` with existing `EquipmentDefinition`; registry validation prevents mismatched identities.
+3. **Authoritative Item runtime table** — one World-owned table keyed by `ItemInstanceId`, storing definition, quantity, and exclusive `ItemLocation`.
+4. **World-drop bridge** — a runtime drop entity maps one-to-one to an Item record. `EntityId` remains only the visible/runtime pickup target.
+5. **Atomic transfer API** — Item-domain operations own `WorldDrop -> Inventory`, `Inventory -> Equipped`, `Equipped -> Inventory`, and destruction/consumption transitions. Callers do not mutate multiple containers independently.
+6. **Inventory state/query surface** — bounded owner inventory slots/capacity backed by the canonical Item table; no duplicate Item records inside a second inventory store.
+7. **Owner-private synchronization** — minimum reliable/private inventory state needed by the owning client, including instance identity where the client must reference an exact owned item.
+8. **Item-backed equipment command path** — replace the current content-only ownership assumption with an intent that resolves one owned `ItemInstanceId`, then reuses `authorize_equip` and writes the existing `EquipmentState` projection atomically.
+9. **Invariant/audit tests** — duplicate instance insertion, one-location rule, drop reciprocity, equipment projection reciprocity, pickup race, duplicate request, full inventory, failed transaction rollback, and client-cannot-mint ownership.
+10. **Phase 12 projection seam only** — a snapshot shape capable of preserving instance id/content/quantity/character-relative location later; no persistence implementation in Phase 11.
+
+### Explicitly not required for Phase 11
+
+- a second equipment slot/state model,
+- generic ECS or inventory service layer,
+- database/economy service,
+- trading,
+- account-wide inventory,
+- generic stat/modifier framework,
+- persistent world-drop storage,
+- stack split/merge unless a concrete Phase 11 gameplay case requires it.
+
 ## Recommended Phase 11 implementation slices
 
 1. **11A — Item identity + definitions**: add `ItemInstanceId`, minimal `ItemDefinition`, registry consistency with existing Equipment definitions. No wire change unless concrete need appears.
@@ -162,3 +198,9 @@ World-drop persistence is a separate world/persistence concern and is not define
 6. **11E — Gameplay proof**: equipment grants/removes one authored ability through existing `AbilityGrantTable`.
 
 Stop and re-audit before adding generic stats, currency implementation, trading, database services, account-wide inventories, or other Phase 12+ economy systems.
+
+## Research gate closeout
+
+Issue #3's design questions are resolved at the contract level. No existing ADR, Equipment identity, protocol discipline, or persistence ownership rule was found to conflict with this model.
+
+Implementation remains intentionally unstarted. Root `PHASE = 11R` may remain the preparation marker until the first 11A implementation task is explicitly started.
