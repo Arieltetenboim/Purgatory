@@ -1,25 +1,39 @@
 ---
-description: Honor PURGATORY phase/sub-phase scope, non-goals, and end-of-phase reporting.
+description: Honor PURGATORY roadmap hierarchy, phase boundaries, scope, non-goals, and completion reporting.
 alwaysApply: true
 ---
 
-# Phase boundaries
+# Roadmap hierarchy and phase boundaries
 
-PURGATORY is developed incrementally through explicit phases and sub-phases.
+PURGATORY uses one explicit roadmap hierarchy:
+
+`ERA -> PHASE -> STAGE -> STEP`
+
+## Semantics
+
+- **ERA** — highest roadmap layer. Groups multiple Phases that share a broad product or architectural goal.
+- **PHASE** — meaningful milestone within an Era. Defines a capability or objective that should reach a clear GREEN state.
+- **STAGE** — coherent work domain or capability slice inside a Phase. A Stage groups closely related implementation work that is best evolved together.
+- **STEP** — smallest planned roadmap unit inside a Stage. A Step should have a bounded objective and explicit acceptance criteria and should normally be implementable/testable independently.
+
+Do not use `sub-phase` as a roadmap level when `STAGE` or `STEP` is the intended meaning.
+
+GitHub Issues are execution tracking, not a roadmap hierarchy level. One Step may map to one or more Issues, and bugs or investigations may exist outside a Step when appropriate.
 
 Current phase marker: root `PHASE`. Status and notes: `docs/ROADMAP.md`, `README.md`, `docs/TEST_GATES.md`. The master execution specification is `PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md`.
 
-Do not start the next phase until instructed. Do not treat a future phase document as authorization to start that phase.
+Do not start the next Phase, Stage, or Step until instructed. Do not treat a future roadmap entry as authorization to begin it.
 
-Research, prototypes, and fixes inside an existing phase are in scope when requested. Phase order is not a ban on that work.
+Research, prototypes, readiness work, and fixes around the current Phase are in scope when explicitly requested.
 
-## When given a phase-scoped task
+## When given roadmap-scoped work
 
-- Implement only the requested phase or sub-phase.
-- Honor explicit goals and explicit non-goals.
-- Do not begin the next phase.
-- Do not pre-build future systems merely because they will eventually be needed.
+- Implement only the requested Phase, Stage, Step, Issue, or bounded fix.
+- Honor explicit goals and non-goals.
+- Do not begin the next roadmap unit automatically.
+- Do not pre-build future systems merely because they may eventually be needed.
 - Avoid speculative extensibility outside current requirements.
+- Prefer the smallest correct owner and scope.
 - Stop at the requested boundary.
 
 ## Missing prerequisites
@@ -32,15 +46,22 @@ If a genuine missing prerequisite prevents correct implementation:
 
 Do not use a missing prerequisite as justification for silently expanding project scope.
 
-## End-of-phase report
+## Completion reporting
 
-At the end of a phase implementation, state:
+For implementation work, default to the compact report:
+
+- Root cause / objective
+- Changed
+- Tests
+- Remaining risk
+
+At Phase or major Stage closeout, additionally state:
 
 - implemented scope
 - important files/modules changed
 - tests added or changed
-- quality-gate results (commands actually run)
+- quality-gate results actually run
 - manual/runtime verification still required
-- deviations from the original plan
+- deviations from the plan
 - unresolved issues or risks
-- confirmation that work stopped at the requested phase boundary
+- confirmation that work stopped at the requested roadmap boundary
