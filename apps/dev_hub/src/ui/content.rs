@@ -10,7 +10,10 @@ fn launch_npc_lab() -> Result<(), String> {
     let root = std::env::current_dir().map_err(|err| format!("current directory: {err}"))?;
     let launcher = root.join("tools").join("npc_lab").join("run.ps1");
     if !launcher.is_file() {
-        return Err(format!("NPC Lab launcher not found: {}", launcher.display()));
+        return Err(format!(
+            "NPC Lab launcher not found: {}",
+            launcher.display()
+        ));
     }
 
     #[cfg(windows)]
@@ -59,9 +62,7 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
     });
     ui.add_space(12.0);
     card(ui, "NPC Lab", |ui| {
-        ui.label(
-            "Local Web authoring shell. Repository JSON remains the source of truth.",
-        );
+        ui.label("Local Web authoring shell. Repository JSON remains the source of truth.");
         ui.add_space(6.0);
         ui.colored_label(
             theme::muted(),
