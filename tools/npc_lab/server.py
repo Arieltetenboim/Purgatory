@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""PURGATORY NPC Lab N1 local server.
-
-Stdlib-only local authoring bridge:
-- serves tools/npc_lab/web
-- reads/writes content/authoring/npcs
-- never touches runtime content registries
-"""
+"""PURGATORY NPC Lab N2 local server."""
 
 from __future__ import annotations
 
@@ -20,9 +14,21 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+
+
+def contains_hebrew(value: Any) -> bool:
+    if isinstance(value, str):
+        return any(0x0590 <= ord(ch) <= 0x05FF for ch in value)
+    if isinstance(value, dict):
+        return any(
+            contains_hebrew(key) or contains_hebrew(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(contains_hebrew(item) for item in value)
+    return False
 
 
 def validate_npc_document(value: Any) -> list[str]:
@@ -47,6 +53,11 @@ def validate_npc_document(value: Any) -> list[str]:
     interaction = value.get("interaction")
     if interaction is not None and not isinstance(interaction, dict):
         errors.append("interaction must be an object when present.")
+
+    if contains_hebrew(value):
+        errors.append(
+            "NPC authored content is English-only; Hebrew characters are not allowed."
+        )
 
     return errors
 
@@ -149,7 +160,7 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/health":
-            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N1"})
+            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N2"})
             return
 
         if parsed.path == "/api/npcs":
@@ -161,7 +172,9 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
                 relative = self._single_query_value("path")
                 path = resolve_npc_path(self.authoring_root, relative)
                 if not path.is_file():
-                    self._json_response({"error": "NPC file not found."}, HTTPStatus.NOT_FOUND)
+                    self._json_response(
+                        {"error": "NPC file not found."}, HTTPStatus.NOT_FOUND
+                    )
                     return
                 with path.open("r", encoding="utf-8") as fh:
                     payload = json.load(fh)
@@ -183,15 +196,12 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
-
         if parsed.path == "/api/npc":
             self._handle_save_npc()
             return
-
         if parsed.path == "/api/new":
             self._handle_new_npc()
             return
-
         self._json_response({"error": "Unknown API route."}, HTTPStatus.NOT_FOUND)
 
     def _handle_list_npcs(self) -> None:
@@ -242,14 +252,19 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
             errors = validate_npc_document(doc)
             if errors:
                 self._json_response(
-                    {"error": "NPC document failed N1 validation.", "validation_errors": errors},
+                    {
+                        "error": "NPC document failed N2 validation.",
+                        "validation_errors": errors,
+                    },
                     HTTPStatus.UNPROCESSABLE_ENTITY,
                 )
                 return
 
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(path.suffix + ".tmp")
-            encoded = (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+            encoded = (
+                json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
+            ).encode("utf-8")
             with tmp.open("wb") as fh:
                 fh.write(encoded)
                 fh.flush()
@@ -278,7 +293,9 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
 
             requested_area = str(request.get("area", "")).strip()
             area = requested_area or authored_area_from_id(authored_id)
-            safe_area = "".join(ch for ch in area.lower() if ch.isalnum() or ch in "-_")
+            safe_area = "".join(
+                ch for ch in area.lower() if ch.isalnum() or ch in "-_"
+            )
             if not safe_area:
                 safe_area = "unassigned"
 
@@ -309,11 +326,17 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="PURGATORY NPC Lab local server")
-    parser.add_argument("--root", type=Path, required=True, help="PURGATORY repository root")
+    parser = argparse.ArgumentParser(
+        description="PURGATORY NPC Lab local server"
+    )
+    parser.add_argument(
+        "--root", type=Path, required=True, help="PURGATORY repository root"
+    )
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--open", action="store_true", help="Open NPC Lab in the default browser")
+    parser.add_argument(
+        "--open", action="store_true", help="Open NPC Lab in the default browser"
+    )
     args = parser.parse_args()
 
     repo_root = args.root.resolve()
@@ -331,7 +354,7 @@ def main() -> int:
 
     server = ThreadingHTTPServer((args.host, args.port), NpcLabHandler)
     url = f"http://{args.host}:{args.port}/"
-    print(f"PURGATORY NPC Lab N1")
+    print("PURGATORY NPC Lab N2")
     print(f"Repository: {repo_root}")
     print(f"Authoring:  {authoring_root}")
     print(f"URL:        {url}")
