@@ -78,6 +78,8 @@ enum ClientGameplayMsg {
     Equip(purgatory_protocol::EquipRequest),
     #[allow(dead_code)]
     Unequip(purgatory_protocol::UnequipRequest),
+    #[allow(dead_code)]
+    Pickup(purgatory_protocol::PickupRequest),
     DevPresentationOneShot(u8),
     DevResetPlayer,
     Respawn,
@@ -201,6 +203,12 @@ impl EventSink {
                 }
                 NetworkEvent::Equipment { attempt_id, event } => {
                     self.trace(&format!("attempt={attempt_id} Equipment {event:?}"));
+                }
+                NetworkEvent::Item { attempt_id, event } => {
+                    self.trace(&format!("attempt={attempt_id} Item {event:?}"));
+                }
+                NetworkEvent::Inventory { attempt_id, event } => {
+                    self.trace(&format!("attempt={attempt_id} Inventory {event:?}"));
                 }
                 NetworkEvent::PresentationOneShot { attempt_id, event } => {
                     self.trace(&format!(
@@ -441,6 +449,13 @@ impl NetworkHandle {
     pub fn try_send_unequip(&self, request: purgatory_protocol::UnequipRequest) -> bool {
         self.input
             .try_send(ClientGameplayMsg::Unequip(request))
+            .is_ok()
+    }
+
+    #[allow(dead_code)]
+    pub fn try_send_pickup(&self, request: purgatory_protocol::PickupRequest) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::Pickup(request))
             .is_ok()
     }
 
@@ -940,6 +955,20 @@ async fn handshake_and_live(
                 kind: NetworkFailureKind::UnexpectedMessage,
             });
         }
+        Ok(ServerControl::Item(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
+        Ok(ServerControl::Inventory(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
         Ok(ServerControl::PresentationOneShot(_)) => {
             connection.close(0u32.into(), b"handshake");
             return Err(NetworkEvent::Disconnected {
@@ -991,6 +1020,7 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
         }
         ClientGameplayMsg::Equip(request) => ClientControl::Equip(request),
         ClientGameplayMsg::Unequip(request) => ClientControl::Unequip(request),
+        ClientGameplayMsg::Pickup(request) => ClientControl::Pickup(request),
         ClientGameplayMsg::DevPresentationOneShot(kind) => {
             ClientControl::DevPresentationOneShot(purgatory_protocol::DevPresentationOneShot {
                 kind,
@@ -1178,6 +1208,16 @@ async fn live_loop(
                                 NetworkEvent::Equipment { attempt_id, event },
                                 control,
                             )
+                            .await;
+                    }
+                    Ok(ServerControl::Item(event)) => {
+                        events
+                            .emit(NetworkEvent::Item { attempt_id, event }, control)
+                            .await;
+                    }
+                    Ok(ServerControl::Inventory(event)) => {
+                        events
+                            .emit(NetworkEvent::Inventory { attempt_id, event }, control)
                             .await;
                     }
                     Ok(ServerControl::PresentationOneShot(event)) => {

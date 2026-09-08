@@ -13,9 +13,10 @@
 use crate::fixtures::RuntimeFixtures;
 use crate::spawn::RuntimeSpawnRequest;
 use crate::{
-    ContentId, EquipmentDirtyMask, EquipmentSlot, EquipmentState, ReplicationDirtyMask,
-    SimulationTick, World, WorldAddress,
+    ContentId, EquipmentDirtyMask, EquipmentSlot, EquipmentState, ItemLocation,
+    ReplicationDirtyMask, SimulationTick, World, WorldAddress,
 };
+use purgatory_common::ItemInstanceId;
 
 #[test]
 fn default_and_spawned_player_have_no_equipment() {
@@ -286,6 +287,194 @@ fn missing_entity_equipment_write_fails() {
     let player = RuntimeFixtures::test_player(&mut world);
     world.despawn(player);
     assert!(!world.set_equipment_slot(player, EquipmentSlot::Weapon, Some(token(1))));
+}
+
+fn pickup_item(world: &mut World, actor: crate::EntityId, definition: ContentId) -> ItemInstanceId {
+    let position = world
+        .transform_of(actor)
+        .expect("player transform")
+        .position;
+    let (item, entity) = world
+        .spawn_world_drop_item(WorldAddress::DEV, position, definition, 1, 1)
+        .expect("item drop");
+    world.pickup_world_drop(actor, entity).expect("pickup");
+    item
+}
+
+#[test]
+fn equip_moves_owned_instance_and_updates_definition_projection() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let definition = token(700);
+    let item = pickup_item(&mut world, actor, definition);
+
+    assert_eq!(
+        world.equip_item(actor, item, EquipmentSlot::Weapon),
+        Ok(None)
+    );
+    assert_eq!(world.inventory_count(actor), 0);
+    assert_eq!(
+        world.item_record(item).map(|record| record.location),
+        Some(ItemLocation::Equipped {
+            owner: actor,
+            slot: EquipmentSlot::Weapon
+        })
+    );
+    assert_eq!(
+        world.equipment_slot(actor, EquipmentSlot::Weapon),
+        Some(definition)
+    );
+}
+
+#[test]
+fn proof_equipment_grants_and_unequips_only_its_authored_ability() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let item = pickup_item(
+        &mut world,
+        actor,
+        ContentId::from_authored("equipment.debug.practice_sword").unwrap(),
+    );
+    let proof_ability = ContentId::from_authored("skill.debug.practice_sword_strike").unwrap();
+    let unrelated = ContentId::from_authored("skill.basic.strike").unwrap();
+    world.grant_ability(actor, unrelated);
+
+    world
+        .equip_item(actor, item, EquipmentSlot::Weapon)
+        .expect("proof equip");
+    assert!(world.ability_granted(actor, proof_ability));
+    assert!(world.ability_granted(actor, unrelated));
+
+    world
+        .unequip_item(actor, EquipmentSlot::Weapon)
+        .expect("proof unequip");
+    assert!(!world.ability_granted(actor, proof_ability));
+    assert!(world.ability_granted(actor, unrelated));
+}
+
+#[test]
+fn failed_equip_of_foreign_or_stale_instance_does_not_mutate_state() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let before = world.equipment_of(actor);
+    let item = pickup_item(&mut world, actor, token(706));
+    let foreign_owner = RuntimeFixtures::transient_replicated(&mut world);
+    assert!(
+        world
+            .equip_item(foreign_owner, item, EquipmentSlot::Weapon)
+            .is_err()
+    );
+    assert_eq!(world.equipment_of(actor), before);
+    assert_eq!(world.inventory_item(actor, 0), Some(item));
+
+    let stale = ItemInstanceId::from_raw(0xdead);
+    assert!(
+        world
+            .equip_item(actor, stale, EquipmentSlot::Weapon)
+            .is_err()
+    );
+    assert_eq!(world.equipment_of(actor), before);
+    assert_eq!(world.item_record(stale), None);
+
+    let item = pickup_item(&mut world, actor, token(701));
+    world
+        .equip_item(actor, item, EquipmentSlot::Weapon)
+        .expect("first equip");
+    let before = world.equipment_of(actor);
+    assert!(
+        world
+            .equip_item(actor, item, EquipmentSlot::Weapon)
+            .is_err()
+    );
+    assert_eq!(world.equipment_of(actor), before);
+    assert_eq!(
+        world.item_record(item).map(|record| record.location),
+        Some(ItemLocation::Equipped {
+            owner: actor,
+            slot: EquipmentSlot::Weapon
+        })
+    );
+}
+
+#[test]
+fn occupied_slot_replaces_and_returns_previous_instance_to_inventory() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let first = pickup_item(&mut world, actor, token(702));
+    let second = pickup_item(&mut world, actor, token(703));
+    world
+        .equip_item(actor, first, EquipmentSlot::Weapon)
+        .expect("first equip");
+    assert_eq!(
+        world.equip_item(actor, second, EquipmentSlot::Weapon),
+        Ok(Some(first))
+    );
+    assert_eq!(world.inventory_count(actor), 1);
+    assert_eq!(
+        world.item_record(first).map(|record| record.location),
+        Some(ItemLocation::Inventory {
+            owner: actor,
+            slot: 0
+        })
+    );
+    assert_eq!(
+        world.item_record(second).map(|record| record.location),
+        Some(ItemLocation::Equipped {
+            owner: actor,
+            slot: EquipmentSlot::Weapon
+        })
+    );
+    assert_eq!(
+        world.equipment_slot(actor, EquipmentSlot::Weapon),
+        Some(token(703))
+    );
+}
+
+#[test]
+fn unequip_returns_same_instance_without_duplication() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let item = pickup_item(&mut world, actor, token(704));
+    world
+        .equip_item(actor, item, EquipmentSlot::Weapon)
+        .expect("equip");
+    assert_eq!(world.unequip_item(actor, EquipmentSlot::Weapon), Ok(item));
+    assert_eq!(world.inventory_count(actor), 1);
+    assert_eq!(world.inventory_item(actor, 0), Some(item));
+    assert_eq!(
+        world.item_record(item).map(|record| record.location),
+        Some(ItemLocation::Inventory {
+            owner: actor,
+            slot: 0
+        })
+    );
+    assert_eq!(world.equipment_slot(actor, EquipmentSlot::Weapon), None);
+    assert!(world.unequip_item(actor, EquipmentSlot::Weapon).is_err());
+}
+
+#[test]
+fn full_inventory_rejects_unequip_without_mutation() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let equipped = pickup_item(&mut world, actor, token(705));
+    world
+        .equip_item(actor, equipped, EquipmentSlot::Weapon)
+        .expect("equip");
+    for n in 0..crate::INVENTORY_CAPACITY {
+        let _ = pickup_item(&mut world, actor, token(800 + n as u64));
+    }
+    assert_eq!(world.inventory_count(actor), crate::INVENTORY_CAPACITY);
+    let before = world.equipment_of(actor);
+    assert!(world.unequip_item(actor, EquipmentSlot::Weapon).is_err());
+    assert_eq!(world.equipment_of(actor), before);
+    assert_eq!(world.inventory_count(actor), crate::INVENTORY_CAPACITY);
+    assert_eq!(
+        world.item_record(equipped).map(|record| record.location),
+        Some(ItemLocation::Equipped {
+            owner: actor,
+            slot: EquipmentSlot::Weapon
+        })
+    );
 }
 
 #[test]

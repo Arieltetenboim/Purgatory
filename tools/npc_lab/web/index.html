@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PURGATORY NPC Lab</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="brand">PURGATORY</div>
+      <div class="tool-name">NPC LAB <span class="slice">N1</span></div>
+    </div>
+    <div class="top-actions">
+      <button id="newButton" class="button secondary">NEW NPC</button>
+      <button id="reloadButton" class="button secondary">RELOAD</button>
+      <button id="saveButton" class="button primary" disabled>SAVE</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <aside class="sidebar pane">
+      <div class="pane-title">NPCS</div>
+      <input id="filterInput" class="input" type="search" placeholder="Filter NPCs">
+      <div id="npcList" class="npc-list"></div>
+    </aside>
+
+    <section class="workspace pane">
+      <div class="workspace-header">
+        <div>
+          <div id="documentTitle" class="document-title">No NPC selected</div>
+          <div id="documentPath" class="document-path">Select a repository NPC document.</div>
+        </div>
+        <div id="dirtyBadge" class="badge clean">CLEAN</div>
+      </div>
+
+      <textarea
+        id="jsonEditor"
+        class="json-editor"
+        spellcheck="false"
+        disabled
+        aria-label="NPC JSON editor"
+      ></textarea>
+    </section>
+
+    <aside class="inspector pane">
+      <div class="pane-title">INSPECTOR</div>
+      <div class="inspector-section">
+        <div class="label">Status</div>
+        <div id="validationStatus" class="value muted">No document</div>
+      </div>
+      <div class="inspector-section">
+        <div class="label">Authored ID</div>
+        <div id="summaryId" class="value monospace">—</div>
+      </div>
+      <div class="inspector-section">
+        <div class="label">Schema</div>
+        <div id="summarySchema" class="value">—</div>
+      </div>
+      <div class="inspector-section">
+        <div class="label">Working name</div>
+        <div id="summaryName" class="value">—</div>
+      </div>
+      <div class="inspector-section">
+        <div class="label">Area</div>
+        <div id="summaryArea" class="value">—</div>
+      </div>
+      <div class="inspector-section">
+        <div class="label">Role</div>
+        <div id="summaryRole" class="value">—</div>
+      </div>
+      <div class="inspector-section">
+        <div class="label">Validation</div>
+        <div id="validationErrors" class="validation-list">—</div>
+      </div>
+    </aside>
+  </main>
+
+  <nav class="future-tabs" aria-label="Planned NPC Lab surfaces">
+    <button class="future-tab active">SHELL</button>
+    <button class="future-tab" disabled>IDENTITY</button>
+    <button class="future-tab" disabled>DIALOGUE</button>
+    <button class="future-tab" disabled>STATE</button>
+    <button class="future-tab" disabled>BEHAVIOR</button>
+    <button class="future-tab" disabled>PRESENTATION</button>
+    <button class="future-tab" disabled>TEST</button>
+  </nav>
+
+  <footer class="statusbar">
+    <span id="statusText">Ready.</span>
+    <span>Repository JSON is the source of truth.</span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

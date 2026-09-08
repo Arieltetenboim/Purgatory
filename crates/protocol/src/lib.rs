@@ -32,6 +32,8 @@ mod frame;
 mod framing;
 mod intent;
 mod interact;
+mod inventory;
+mod item;
 mod message;
 mod presentation_oneshot;
 mod snapshot;
@@ -67,6 +69,11 @@ pub use intent::{IntentNet, move_axis_from_i8};
 pub use interact::{
     DevSetChannel, DevSetJump, DevSetSpeed, InteractClose, InteractCloseReason, InteractOpen,
     InteractRejectReason, PortalActivate, ServerInteract,
+};
+pub use inventory::{InventoryEntry, ServerInventory};
+pub use item::{
+    PICKUP_ACCEPTED_BYTES, PICKUP_REJECTED_BYTES, PICKUP_REQUEST_BYTES, PickupRejectReason,
+    PickupRequest, ServerItem,
 };
 pub use message::{
     ClientControl, CodecError, DisconnectReason, DisconnectReasonCode, Hello, InputCommand,
@@ -106,7 +113,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 20);
+        assert_eq!(PROTOCOL_VERSION, 24);
     }
 
     #[test]

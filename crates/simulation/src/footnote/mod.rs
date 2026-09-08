@@ -16,7 +16,7 @@ pub(crate) use controller::glue_to_support;
 pub use surface::{BlockQuery, surface_blocks};
 
 /// Fixed-tick grace window for a jump after leaving valid ground.
-pub const COYOTE_TICKS: u8 = 3;
+pub const COYOTE_TICKS: u8 = 2;
 /// Fixed-tick window in which a pre-landing jump press is retained.
 pub const JUMP_BUFFER_TICKS: u8 = 3;
 

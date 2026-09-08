@@ -13,6 +13,7 @@ use crate::equipment::{
     validate_equipment_definition,
 };
 use crate::error::{ContentError, ValidationIssue};
+use crate::item::{ITEM_CONTENT_SCHEMA_VERSION, ItemDefinition, validate_item_definition};
 use crate::registry::ContentRegistry;
 use crate::schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
@@ -55,6 +56,13 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         &root.join("shared").join("maps"),
         ContentDomain::Shared,
         Kind::Map,
+    );
+    load_dir(
+        &mut registry,
+        &mut issues,
+        &root.join("shared").join("items"),
+        ContentDomain::Shared,
+        Kind::Item,
     );
     load_dir(
         &mut registry,
@@ -105,6 +113,7 @@ enum Kind {
     Entity,
     Map,
     Placements,
+    Item,
     Equipment,
     EquipmentPresentation,
     Ability,
@@ -175,6 +184,11 @@ fn load_file(
             }
             registry.insert_placements(raw.map, placements)
         }
+        Kind::Item => {
+            let raw: RawItem = parse(path, &text)?;
+            let def = raw.into_def(path, domain)?;
+            registry.insert_item(def)
+        }
         Kind::Equipment => {
             let raw: RawEquipment = parse(path, &text)?;
             let def = raw.into_def(path, domain)?;
@@ -219,6 +233,20 @@ fn check_equipment_schema(path: &Path, version: u32, def: &str) -> Result<(), Co
             "schema_version",
             format!(
                 "unsupported equipment schema version {version} (want {EQUIPMENT_CONTENT_SCHEMA_VERSION})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn check_item_schema(path: &Path, version: u32, def: &str) -> Result<(), ContentError> {
+    if version != ITEM_CONTENT_SCHEMA_VERSION {
+        return Err(ContentError::from_path(
+            path.to_path_buf(),
+            def,
+            "schema_version",
+            format!(
+                "unsupported item schema version {version} (want {ITEM_CONTENT_SCHEMA_VERSION})"
             ),
         ));
     }
@@ -337,6 +365,14 @@ struct RawEquipment {
     schema_version: u32,
     id: String,
     equipment_slot: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawItem {
+    schema_version: u32,
+    id: String,
+    stack_limit: u32,
 }
 
 #[derive(Deserialize)]
@@ -544,6 +580,21 @@ impl RawEquipment {
             domain,
         };
         validate_equipment_definition(&def)?;
+        Ok(def)
+    }
+}
+
+impl RawItem {
+    fn into_def(self, path: &Path, domain: ContentDomain) -> Result<ItemDefinition, ContentError> {
+        check_item_schema(path, self.schema_version, &self.id)?;
+        check_authored(path, &self.id)?;
+        let def = ItemDefinition {
+            content_id: ContentId::from_authored(&self.id).expect("validated"),
+            authored_id: self.id,
+            domain,
+            stack_limit: self.stack_limit,
+        };
+        validate_item_definition(&def)?;
         Ok(def)
     }
 }
@@ -908,6 +959,7 @@ mod tests {
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
         assert_eq!(shared.map_count(), 2);
         assert_eq!(shared.entity_count(), 0);
+        assert!(shared.item_count() >= 8);
         assert!(shared.equipment_count() >= 8);
         assert!(shared.ability_count() >= 1);
         assert!(shared.ability("skill.basic.strike").is_some());
@@ -969,6 +1021,81 @@ mod tests {
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("orphan");
         assert!(err.to_string().contains("no matching equipment gameplay"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn item_definition_loads_and_resolves_by_content_id() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-item-ok-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/items"),
+            "item.debug.token.json",
+            r#"{"schema_version":1,"id":"item.debug.token","stack_limit":20}"#,
+        );
+        let registry = load_registry(&tmp, LoadMode::Shared).expect("valid item");
+        let id = ContentId::from_authored("item.debug.token").unwrap();
+        let item = registry.item_by_id(id).expect("lookup by ContentId");
+        assert_eq!(item.authored_id, "item.debug.token");
+        assert_eq!(item.stack_limit, 20);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn invalid_item_invariants_are_rejected() {
+        let tmp = std::env::temp_dir().join(format!("purgatory-item-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/items"),
+            "item.debug.zero.json",
+            r#"{"schema_version":1,"id":"item.debug.zero","stack_limit":0}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("zero stack limit");
+        assert!(err.to_string().contains("stack_limit"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn equipment_requires_matching_item_definition() {
+        let tmp =
+            std::env::temp_dir().join(format!("purgatory-item-equipment-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.orphan.json",
+            r#"{"schema_version":1,"id":"equipment.debug.orphan","equipment_slot":"headwear"}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("missing matching item");
+        assert!(
+            err.to_string()
+                .contains("requires a matching item definition")
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn matching_item_and_equipment_content_is_accepted() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-item-equipment-ok-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/items"),
+            "equipment.debug.cap.json",
+            r#"{"schema_version":1,"id":"equipment.debug.cap","stack_limit":1}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.cap.json",
+            r#"{"schema_version":1,"id":"equipment.debug.cap","equipment_slot":"headwear"}"#,
+        );
+        let registry = load_registry(&tmp, LoadMode::Shared).expect("matching definitions");
+        let id = ContentId::from_authored("equipment.debug.cap").unwrap();
+        assert_eq!(
+            registry.item_by_id(id).unwrap().content_id,
+            registry.equipment_by_id(id).unwrap().content_id
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 

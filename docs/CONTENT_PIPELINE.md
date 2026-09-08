@@ -17,6 +17,7 @@ Human-editable JSON lives under `/content`:
 
 - `shared/maps/` — client-safe map geometry, bounds, spawn points
 - `shared/entities/` — client-safe entity definitions (none required for 6C)
+- `shared/items/` — generic item definitions (`schema_version`, `id`, `stack_limit`)
 - `shared/equipment/` — gameplay equipment identity (`schema_version`, `id`, `equipment_slot`)
 - `shared/equipment_presentation/` — client presentation for the same `ContentId` (`attachments[]`)
 - `shared/abilities/` — gameplay ability JSON (`AbilityDefinition`; schema_version 1). Loaded in Shared and Full modes.
@@ -107,6 +108,14 @@ Gameplay JSON (`content/shared/equipment/*.json`):
 ```text
 { "schema_version": 1, "id": "<ContentId>", "equipment_slot": "headwear|bodywear|pants|gloves|boots|weapon" }
 ```
+
+Item JSON (`content/shared/items/*.json`):
+
+```text
+{ "schema_version": 1, "id": "<ContentId>", "stack_limit": 1 }
+```
+
+Every Equipment definition must have an Item definition with the same canonical `ContentId`.
 
 Presentation JSON (`content/shared/equipment_presentation/*.json`) uses the **same** `id`. It must not repeat `equipment_slot`. Attachments are `0..N`:
 

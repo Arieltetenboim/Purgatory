@@ -26,10 +26,14 @@
 /// Protocol v17 adds the authoritative damage-immunity bit to replicated Health.
 /// Protocol v18 adds DEV-authoritative player speed control (tag 29).
 /// Protocol v19 adds DEV-authoritative player jump control (tag 30).
-/// Protocol v20 adds the optional `jump_held` bit to the existing input
-/// intent trailer for authoritative short-hop release semantics.
+/// Protocol v21 removes the unused `jump_held` short-hop field from the input
+/// intent after fixed-height jump behavior was retained. Protocol v22 adds the
+/// reliable authoritative world-drop pickup contract.
+/// Protocol v23 changes `EquipRequest` to carry the exact owned
+/// `ItemInstanceId` rather than a client-selected `ContentId`.
+/// Protocol v24 adds the Item world-drop replication kind used by Phase 11E.
 /// Historical golden vectors remain frozen.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;

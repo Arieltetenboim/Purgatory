@@ -319,3 +319,12 @@ N0 is ready for review when:
 3. NPC #3 has a compact valid JSON proof document;
 4. no runtime/PHASE/protocol behavior changed;
 5. the document is understandable without requiring JavaScript or a custom DSL.
+
+## Language policy
+
+NPC authored game content is English-only in the current game scope.
+
+- Player-visible NPC names, dialogue, choices, barks, and game-facing authored text are English.
+- NPC Lab UI and authored identifiers use English.
+- Localization, translated variants, and language-selection fields are out of scope until explicitly introduced.
+- Design discussion outside canonical game content may use other languages.

@@ -433,7 +433,6 @@ async fn write_input(
         sequence,
         move_axis,
         jump_pressed,
-        jump_held: false,
         down_held,
         portal_held: false,
     }))
@@ -3721,6 +3720,36 @@ fn debug_sword() -> purgatory_common::ContentId {
     purgatory_common::ContentId::from_authored("equipment.debug.practice_sword").unwrap()
 }
 
+fn owned_debug_sword(
+    sim: &Mutex<GameplaySim>,
+    connection: ConnectionId,
+) -> purgatory_common::ItemInstanceId {
+    let mut game = lock_sim(sim);
+    let actor = game.owner.entity_of(connection).expect("actor");
+    let position = game
+        .owner
+        .world()
+        .transform_of(actor)
+        .expect("transform")
+        .position;
+    let (item, entity) = game
+        .owner
+        .world_mut()
+        .spawn_world_drop_item(
+            purgatory_common::WorldAddress::DEV,
+            position,
+            debug_sword(),
+            1,
+            1,
+        )
+        .expect("drop");
+    game.owner
+        .world_mut()
+        .pickup_world_drop(actor, entity)
+        .expect("pickup");
+    item
+}
+
 async fn expect_equipment(recv: &mut RecvStream) -> ServerEquipment {
     timeout(Duration::from_secs(2), async {
         loop {
@@ -3773,7 +3802,7 @@ async fn two_clients_converge_on_authoritative_equipment() {
         ClientControl::Equip(EquipRequest {
             seq: 1,
             slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
-            content_id: debug_sword(),
+            item_instance_id: owned_debug_sword(&sim, id_a),
         }),
     )
     .await;
@@ -3876,7 +3905,7 @@ async fn two_clients_converge_on_authoritative_equipment() {
         ClientControl::Equip(EquipRequest {
             seq: 3,
             slot: purgatory_simulation::EquipmentSlot::Headwear as u8,
-            content_id: debug_sword(),
+            item_instance_id: owned_debug_sword(&sim, id_a),
         }),
     )
     .await;
@@ -3919,7 +3948,7 @@ async fn reconnect_reconstructs_remote_equipment_from_baseline() {
         ClientControl::Equip(EquipRequest {
             seq: 1,
             slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
-            content_id: debug_sword(),
+            item_instance_id: owned_debug_sword(&sim, id_a),
         }),
     )
     .await;

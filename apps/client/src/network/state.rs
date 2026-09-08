@@ -113,6 +113,14 @@ pub enum NetworkEvent {
         attempt_id: ConnectionAttemptId,
         event: purgatory_protocol::ServerEquipment,
     },
+    Item {
+        attempt_id: ConnectionAttemptId,
+        event: purgatory_protocol::ServerItem,
+    },
+    Inventory {
+        attempt_id: ConnectionAttemptId,
+        event: purgatory_protocol::ServerInventory,
+    },
     PresentationOneShot {
         attempt_id: ConnectionAttemptId,
         event: purgatory_protocol::ServerPresentationOneShot,
@@ -135,6 +143,8 @@ impl NetworkEvent {
             | Self::RttUpdated { attempt_id, .. }
             | Self::Interact { attempt_id, .. }
             | Self::Equipment { attempt_id, .. }
+            | Self::Item { attempt_id, .. }
+            | Self::Inventory { attempt_id, .. }
             | Self::PresentationOneShot { attempt_id, .. }
             | Self::Ability { attempt_id, .. } => attempt_id,
         }
@@ -167,6 +177,8 @@ pub struct NetworkView {
     pub messages_rx: u64,
     pub counters: NetworkCounters,
     pub history: NetworkHistory,
+    /// Owner-private inventory baseline received over the reliable control path.
+    pub inventory: Vec<purgatory_protocol::InventoryEntry>,
     next_attempt: u64,
 }
 
@@ -189,6 +201,7 @@ impl NetworkView {
             messages_rx: 0,
             counters: NetworkCounters::default(),
             history: NetworkHistory::new(),
+            inventory: Vec::new(),
             next_attempt: 0,
         }
     }
@@ -286,6 +299,7 @@ impl NetworkView {
         self.rtt = None;
         self.rtt_stats.reset();
         self.connected_since = None;
+        self.inventory.clear();
     }
 
     pub fn apply_trusted(&mut self, event: NetworkEvent) {
@@ -369,6 +383,11 @@ impl NetworkView {
             }
             NetworkEvent::Interact { .. } => {}
             NetworkEvent::Equipment { .. } => {}
+            NetworkEvent::Item { .. } => {}
+            NetworkEvent::Inventory { event, .. } => {
+                self.inventory = event.entries;
+                self.messages_rx = self.messages_rx.saturating_add(1);
+            }
             NetworkEvent::PresentationOneShot { .. } => {}
             NetworkEvent::Ability { .. } => {}
         }

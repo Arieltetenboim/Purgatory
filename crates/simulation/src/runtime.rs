@@ -1414,6 +1414,7 @@ impl World {
 
     pub(crate) fn cleanup_owned_runtime(&mut self, id: EntityId) {
         self.scheduler.cancel_owner(id);
+        self.cleanup_item_runtime_for_entity(id);
         if let Some(action) = self.actions.drop_owner(id) {
             self.ability_runtime.remove(action.id);
             self.events.push(RuntimeEvent::ActionEnded {

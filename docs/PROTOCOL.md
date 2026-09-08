@@ -1,6 +1,6 @@
 # Protocol
 
-Current protocol version is **20**. The historical phase summary below
+Current protocol version is **24**. The historical phase summary below
 retains its original version references.
 
 Phase 5.2 adds **authoritative gameplay replication**. Protocol version is **15**. The client sends per-tick `InputCommand` values identified by `(input_epoch, sequence)`. Phase 5.3 is client-only remote interpolation. Phase 5.4 is client-only local prediction. Phase 5.5 adds acknowledgement, continuation debt, late-collapse compaction, and local restore+replay. Phase 5.6 adds a **development-only** network impairment lab (delay/stall/HOL on the existing reliable streams). Phase 5.7 adds off-protocol localhost load metrics and raises the mechanical entity decode bound to 256. Phase 6.0 adds runtime/replication **contracts**; 6A composition; **6B** adds reliable interaction control envelopes and optional `ReplicatedKind::Interactable`; **6C** adds observer `WorldAddress`, `ReplicatedKind::Portal`, and `PortalActivate`. **6D** replaces full `WorldSnapshot` on the gameplay uni stream with `ReplicationFrame` (Enter/Update/Leave) and server interest-policy AOI, then adds DEV-only `DevSetChannel` (tag 17) so a Channel change is an authoritative `WorldAddress` boundary. **6E** adds DEV `Hello.dev_login` (temporary lookup identity) and `DisconnectReasonCode::AlreadyConnected`. Phase **6F** adds server-side runtime services without a protocol bump. Phase **7.2** adds `ReplicatedKind::Npc` (kind `4`) so visible Generics/NPCs Enter AOI on the wire (ADR-0054). Protocol **v12** adds equipment request envelopes and an optional equipment domain on Enter/Update. Protocol **v13** adds DEV presentation Attack/Hurt oneshot control envelopes (tags 22/23); Enter/Update snapshot layout is unchanged. Historical v1–v12 Hello/Welcome and earlier snapshot goldens stay frozen. Health on v8+ frames proves multi-domain deltas; 7.2 uses Health as a workload mutation domain. Phase **9A** locks ability authority (client requests ability id + targeting; server applies `AbilityEffect`) without adding wire tags. Phase **9B** executes `skill.basic.strike` in simulation only. Protocol **v15** adds ability activation envelopes (tags 25–27).
@@ -40,9 +40,9 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 20` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 24` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
-v20 is an intentional incompatible bump: v1–v19 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
+v23 is an intentional incompatible bump: v1–v22 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
 Client Hello includes `protocol_version`. The server rejects mismatches with `DisconnectReasonCode::VersionMismatch`.
 
@@ -70,10 +70,24 @@ control, not a gameplay modifier or client-authoritative movement result.
 Protocol v19 adds DEV `DevSetJump` (tag 30), carrying an optional jump speed
 in hundredths of world units per second. The server validates and applies it
 to the bound player; `None` restores the canonical default.
-Protocol v20 extends the existing `InputCommand` intent with an optional
-one-byte held-state trailer. Bit 0 remains `portal_held`; bit 1 is
-`jump_held`. The edge-triggered `jump_pressed` field remains the admission
-signal. Omitted trailers decode as both held flags being false.
+Protocol v21 removes the unused `jump_held` short-hop field from the existing
+`InputCommand` intent. `jump_pressed` remains the edge-triggered admission
+signal, and the existing optional `portal_held` trailer is unchanged.
+Protocol v22 adds reliable client `Pickup` requests (tag 31) and owner-private
+server `Item` pickup results (tags 32/33). The client identifies only the
+visible world-drop entity; the server resolves the authoritative
+`ItemInstanceId`, validates actor/state/address/range/capacity, and returns the
+accepted item identity and inventory slot only to the requesting session.
+
+Protocol v23 changes the existing `Equip` request to carry the exact owned
+`ItemInstanceId` in its eight-byte identity field. The payload size is
+unchanged, but the meaning is incompatible with v22: the server resolves the
+item definition from canonical ownership and continues to replicate equipment
+by `ContentId`.
+
+Protocol v24 adds `ReplicatedKind::Item` for visible Item-backed world drops.
+The existing Pickup request targets this replicated entity and the server
+continues to resolve ownership through the authoritative Item runtime.
 
 ## Golden wire vectors
 
@@ -113,8 +127,10 @@ Hello/Welcome remain frozen. `Respawn` freezes tag 28.
 Protocol v17 freezes the replicated Health immunity bit and rejects older peers.
 Protocol v18 freezes DEV `DevSetSpeed` and rejects older peers.
 Protocol v19 freezes DEV `DevSetJump` and rejects older peers.
-Protocol v20 freezes the optional `InputCommand` held-state trailer and
-rejects older peers.
+Protocol v21 freezes the fixed-height jump intent contract and rejects older
+peers.
+Protocol v22 freezes the authoritative world-drop pickup contract and rejects
+older peers.
 
 **Version change policy.** A failing golden vector means the wire format moved. Do not regenerate the fixture to make the test pass. Instead:
 

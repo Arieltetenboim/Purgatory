@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::domain::ContentDomain;
 use crate::equipment::{EquipmentDefinition, EquipmentPresentation};
 use crate::error::{ContentError, ValidationIssue};
+use crate::item::ItemDefinition;
 use crate::schema::{EntityDefinition, MapDefinition, Placement, RestorePolicy};
 use purgatory_common::{ContentId, MAP_FOOTNOTE_AUTHORED, MapId};
 use purgatory_simulation::AbilityDefinition;
@@ -16,6 +17,7 @@ pub struct ContentRegistry {
     entities: BTreeMap<String, EntityDefinition>,
     maps: BTreeMap<String, MapDefinition>,
     placements: BTreeMap<String, Vec<Placement>>,
+    items: BTreeMap<String, ItemDefinition>,
     equipment: BTreeMap<String, EquipmentDefinition>,
     equipment_presentation: BTreeMap<String, EquipmentPresentation>,
     abilities: BTreeMap<String, AbilityDefinition>,
@@ -31,7 +33,11 @@ impl ContentRegistry {
 
     #[must_use]
     pub fn definition_count(&self) -> usize {
-        self.entities.len() + self.maps.len() + self.equipment.len() + self.abilities.len()
+        self.entities.len()
+            + self.maps.len()
+            + self.items.len()
+            + self.equipment.len()
+            + self.abilities.len()
     }
 
     #[must_use]
@@ -126,6 +132,22 @@ impl ContentRegistry {
     }
 
     #[must_use]
+    pub fn item_count(&self) -> usize {
+        self.items.len()
+    }
+
+    #[must_use]
+    pub fn item(&self, authored: &str) -> Option<&ItemDefinition> {
+        self.items.get(authored)
+    }
+
+    #[must_use]
+    pub fn item_by_id(&self, id: ContentId) -> Option<&ItemDefinition> {
+        let authored = self.labels.get(&id)?;
+        self.items.get(authored)
+    }
+
+    #[must_use]
     pub fn equipment(&self, authored: &str) -> Option<&EquipmentDefinition> {
         self.equipment.get(authored)
     }
@@ -180,11 +202,45 @@ impl ContentRegistry {
             return Err(duplicate(&def.authored_id, "equipment"));
         }
         crate::equipment::validate_equipment_definition(&def)?;
+        if let Some(item) = self.items.get(&def.authored_id)
+            && item.content_id != def.content_id
+        {
+            return Err(ContentError::one(item_equipment_issue(
+                &def.authored_id,
+                "id",
+                "item and equipment definitions must share the same ContentId",
+            )));
+        }
         self.intern(&def.authored_id, def.content_id, "equipment")?;
         if self.equipment.contains_key(&def.authored_id) {
             return Err(duplicate(&def.authored_id, "equipment"));
         }
         self.equipment.insert(def.authored_id.clone(), def);
+        Ok(())
+    }
+
+    pub(crate) fn insert_item(&mut self, def: ItemDefinition) -> Result<(), ContentError> {
+        if self.entities.contains_key(&def.authored_id)
+            || self.maps.contains_key(&def.authored_id)
+            || self.abilities.contains_key(&def.authored_id)
+        {
+            return Err(duplicate(&def.authored_id, "item"));
+        }
+        crate::item::validate_item_definition(&def)?;
+        if let Some(equipment) = self.equipment.get(&def.authored_id)
+            && equipment.content_id != def.content_id
+        {
+            return Err(ContentError::one(item_equipment_issue(
+                &def.authored_id,
+                "id",
+                "item and equipment definitions must share the same ContentId",
+            )));
+        }
+        self.intern(&def.authored_id, def.content_id, "item")?;
+        if self.items.contains_key(&def.authored_id) {
+            return Err(duplicate(&def.authored_id, "item"));
+        }
+        self.items.insert(def.authored_id.clone(), def);
         Ok(())
     }
 
@@ -415,6 +471,23 @@ impl ContentRegistry {
                 }
             }
         }
+        for equipment in self.equipment.values() {
+            match self.items.get(&equipment.authored_id) {
+                None => issues.push(item_equipment_issue(
+                    &equipment.authored_id,
+                    "item",
+                    "equipment definition requires a matching item definition",
+                )),
+                Some(item) if item.content_id != equipment.content_id => {
+                    issues.push(item_equipment_issue(
+                        &equipment.authored_id,
+                        "id",
+                        "item and equipment definitions must share the same ContentId",
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
         if issues.is_empty() {
             Ok(())
         } else {
@@ -425,6 +498,14 @@ impl ContentRegistry {
 
 fn duplicate(id: &str, kind: &str) -> ContentError {
     ContentError::one(ValidationIssue::new(kind, id, "id", "duplicate ContentId"))
+}
+
+fn item_equipment_issue(
+    definition: &str,
+    field: &str,
+    detail: impl std::fmt::Display,
+) -> ValidationIssue {
+    ValidationIssue::new("item", definition, field, detail.to_string())
 }
 
 #[cfg(test)]
@@ -542,6 +623,31 @@ mod tests {
             err.issues
                 .iter()
                 .any(|i| i.field == "transition.portal" && i.reason.contains("unresolved portal"))
+        );
+    }
+
+    #[test]
+    fn mismatched_item_and_equipment_content_ids_are_rejected() {
+        let authored = "equipment.debug.mismatch";
+        let mut reg = ContentRegistry::new();
+        reg.insert_item(ItemDefinition {
+            content_id: ContentId::from_authored(authored).unwrap(),
+            authored_id: authored.into(),
+            domain: ContentDomain::Shared,
+            stack_limit: 1,
+        })
+        .unwrap();
+        let err = reg
+            .insert_equipment(EquipmentDefinition {
+                content_id: ContentId::from_authored("equipment.debug.other").unwrap(),
+                authored_id: authored.into(),
+                slot: purgatory_simulation::EquipmentSlot::Headwear,
+                domain: ContentDomain::Shared,
+            })
+            .expect_err("mismatched ids");
+        assert!(
+            err.to_string()
+                .contains("item and equipment definitions must share")
         );
     }
 

@@ -139,9 +139,9 @@ These are authoring-tool constraints gathered while planning C1–C8.
 
 ## Post-Phase-10 gameplay-readiness pass
 
-- Phase 10 remains closed and Phase 11 remains not started. The local Health
-  HUD reads replicated Health directly; it does not maintain a second client
-  value.
+- Phase 10 remains closed. Phase 11 Item Loop is complete and closed after a
+  normal client/server runtime proof. The local Health HUD reads replicated
+  Health directly; it does not maintain a second client value.
 - Player death remains authoritative Dead until an explicit Respawn intent is
   validated by the server. Respawn reuses `World::respawn_player_entity` and
   rebases the input epoch.

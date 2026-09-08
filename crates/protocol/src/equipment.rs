@@ -4,7 +4,7 @@
 //! Slot identity is `u8` `0..=5` matching simulation [`EquipmentSlot`] dense
 //! indices. Content is a [`ContentId`] token.
 
-use purgatory_common::ContentId;
+use purgatory_common::{ContentId, ItemInstanceId};
 
 use crate::CodecError;
 
@@ -31,7 +31,7 @@ pub const EQUIPMENT_DELTA_UNEQUIP_BYTES: usize = 2;
 pub struct EquipRequest {
     pub seq: u32,
     pub slot: u8,
-    pub content_id: ContentId,
+    pub item_instance_id: ItemInstanceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

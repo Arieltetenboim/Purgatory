@@ -14,6 +14,10 @@ use crate::interact::{
     DevSetChannel, DevSetJump, DevSetSpeed, InteractClose, InteractOpen, PortalActivate,
     ServerInteract,
 };
+use crate::inventory::{
+    INVENTORY_CAPACITY, InventoryEntry, ServerInventory, decode_inventory_entry,
+};
+use crate::item::{PickupRejectReason, PickupRequest, ServerItem, decode_item_instance_id};
 use crate::presentation_oneshot::{
     DevPresentationOneShot, ServerPresentationOneShot, TAG_DEV_PRESENTATION_ONESHOT,
     TAG_SERVER_PRESENTATION_ONESHOT, decode_dev_presentation_oneshot,
@@ -51,6 +55,10 @@ const TAG_ABILITY_REJECTED: u8 = 27;
 const TAG_RESPAWN: u8 = 28;
 const TAG_DEV_SET_SPEED: u8 = 29;
 const TAG_DEV_SET_JUMP: u8 = 30;
+const TAG_PICKUP: u8 = 31;
+const TAG_PICKUP_ACCEPTED: u8 = 32;
+const TAG_PICKUP_REJECTED: u8 = 33;
+const TAG_INVENTORY_SNAPSHOT: u8 = 34;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -238,12 +246,10 @@ pub struct InputCommand {
     pub sequence: u32,
     pub move_axis: MoveAxis,
     pub jump_pressed: bool,
-    /// True while Jump is held. Optional trailer bit for short-hop authority.
-    pub jump_held: bool,
     pub down_held: bool,
-    /// True while Up (portal activate) is held. Optional 1-byte trailer bit 0;
-    /// omitted when both held-state bits are false. Server uses a falling edge
-    /// to clear the portal reentry lock. Not movement.
+    /// True while Up (portal activate) is held. Optional 1-byte trailer;
+    /// omitted when false. Server uses a falling edge to clear the portal
+    /// reentry lock. Not movement.
     pub portal_held: bool,
 }
 
@@ -279,6 +285,8 @@ pub enum ClientControl {
     DevResetPlayer,
     /// Ability activation intent (protocol v15). Ability id + optional selected entity.
     AbilityActivate(AbilityActivateRequest),
+    /// Request pickup of a visible world-drop manifestation.
+    Pickup(PickupRequest),
     /// Request authoritative restoration of the bound player after death.
     Respawn,
 }
@@ -294,6 +302,10 @@ pub enum ServerControl {
     PresentationOneShot(ServerPresentationOneShot),
     /// Ability request lifecycle only (protocol v15). Not a hit or Health write.
     Ability(ServerAbility),
+    /// Authoritative item transaction result.
+    Item(ServerItem),
+    /// Owner-private authoritative inventory baseline.
+    Inventory(ServerInventory),
 }
 
 /// Server datagram (pong only in Phase 5.0).
@@ -345,9 +357,8 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             out.push(cmd.move_axis.as_u8());
             out.push(u8::from(cmd.jump_pressed));
             out.push(u8::from(cmd.down_held));
-            let input_trailer = u8::from(cmd.portal_held) | (u8::from(cmd.jump_held) << 1);
-            if input_trailer != 0 {
-                out.push(input_trailer);
+            if cmd.portal_held {
+                out.push(1);
             }
             Ok(out)
         }
@@ -408,7 +419,7 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             out.push(TAG_EQUIP);
             out.extend_from_slice(&req.seq.to_le_bytes());
             out.push(req.slot);
-            out.extend_from_slice(&req.content_id.token().to_le_bytes());
+            out.extend_from_slice(&req.item_instance_id.raw().to_le_bytes());
             Ok(out)
         }
         ClientControl::Unequip(req) => {
@@ -430,6 +441,16 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
         ClientControl::DevResetPlayer => Ok(vec![TAG_DEV_RESET_PLAYER]),
         ClientControl::AbilityActivate(req) => encode_ability_activate(*req),
         ClientControl::Respawn => Ok(vec![TAG_RESPAWN]),
+        ClientControl::Pickup(req) => {
+            if req.seq == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            let mut out = Vec::with_capacity(1 + 4 + 8);
+            out.push(TAG_PICKUP);
+            out.extend_from_slice(&req.seq.to_le_bytes());
+            write_wire_entity(&mut out, req.target);
+            Ok(out)
+        }
     }
 }
 
@@ -463,19 +484,17 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
             let trailer = &rest[5..];
             let input_trailer = if trailer.is_empty() {
                 0
-            } else if trailer.len() == 1 && trailer[0] <= 3 {
+            } else if trailer.len() == 1 && trailer[0] <= 1 {
                 trailer[0]
             } else {
                 return Err(CodecError::InvalidValue);
             };
             let portal_held = input_trailer & 1 != 0;
-            let jump_held = input_trailer & 2 != 0;
             Ok(ClientControl::Input(InputCommand {
                 input_epoch,
                 sequence,
                 move_axis,
                 jump_pressed,
-                jump_held,
                 down_held,
                 portal_held,
             }))
@@ -567,12 +586,12 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
             if !slot_valid(slot) || seq == 0 {
                 return Err(CodecError::InvalidValue);
             }
-            let token =
+            let item_instance_id =
                 u64::from_le_bytes(rest[1..9].try_into().map_err(|_| CodecError::Truncated)?);
             Ok(ClientControl::Equip(EquipRequest {
                 seq,
                 slot,
-                content_id: purgatory_common::ContentId::from_token(token),
+                item_instance_id: purgatory_common::ItemInstanceId::from_raw(item_instance_id),
             }))
         }
         TAG_UNEQUIP => {
@@ -608,6 +627,15 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
             expect_empty(rest)?;
             Ok(ClientControl::Respawn)
         }
+        TAG_PICKUP => {
+            let (seq, rest) = read_u32(rest)?;
+            let (target, rest) = read_wire_entity(rest)?;
+            expect_empty(rest)?;
+            if seq == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(ClientControl::Pickup(PickupRequest { seq, target }))
+        }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
 }
@@ -634,6 +662,8 @@ pub fn encode_server_control(msg: &ServerControl) -> Result<Vec<u8>, CodecError>
         ServerControl::Equipment(event) => encode_server_equipment(event),
         ServerControl::PresentationOneShot(event) => Ok(encode_server_presentation_oneshot(event)),
         ServerControl::Ability(event) => encode_server_ability(event),
+        ServerControl::Item(event) => encode_server_item(event),
+        ServerControl::Inventory(snapshot) => encode_server_inventory(snapshot),
     }
 }
 
@@ -676,6 +706,10 @@ pub fn decode_server_control(bytes: &[u8]) -> Result<ServerControl, CodecError> 
         TAG_ABILITY_ACCEPTED | TAG_ABILITY_REJECTED => {
             Ok(ServerControl::Ability(decode_server_ability(tag, rest)?))
         }
+        TAG_PICKUP_ACCEPTED | TAG_PICKUP_REJECTED => {
+            Ok(ServerControl::Item(decode_server_item(tag, rest)?))
+        }
+        TAG_INVENTORY_SNAPSHOT => Ok(ServerControl::Inventory(decode_server_inventory(rest)?)),
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
 }
@@ -848,6 +882,108 @@ fn decode_server_equipment(tag: u8, rest: &[u8]) -> Result<ServerEquipment, Code
         }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
+}
+
+fn encode_server_item(event: &ServerItem) -> Result<Vec<u8>, CodecError> {
+    match *event {
+        ServerItem::PickupAccepted {
+            seq,
+            item_instance_id,
+            slot,
+        } => {
+            let mut out = Vec::with_capacity(1 + 4 + 8 + 2);
+            out.push(TAG_PICKUP_ACCEPTED);
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.extend_from_slice(&item_instance_id.raw().to_le_bytes());
+            out.extend_from_slice(&slot.to_le_bytes());
+            Ok(out)
+        }
+        ServerItem::PickupRejected { seq, reason } => {
+            let mut out = Vec::with_capacity(1 + 4 + 1);
+            out.push(TAG_PICKUP_REJECTED);
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.push(reason.as_u8());
+            Ok(out)
+        }
+    }
+}
+
+fn decode_server_item(tag: u8, rest: &[u8]) -> Result<ServerItem, CodecError> {
+    let (seq, rest) = read_u32(rest)?;
+    if seq == 0 {
+        return Err(CodecError::InvalidValue);
+    }
+    match tag {
+        TAG_PICKUP_ACCEPTED => {
+            if rest.len() != 10 {
+                return Err(if rest.len() < 10 {
+                    CodecError::Truncated
+                } else {
+                    CodecError::InvalidValue
+                });
+            }
+            let item_instance_id = decode_item_instance_id(&rest[..8])?;
+            let slot =
+                u16::from_le_bytes(rest[8..10].try_into().map_err(|_| CodecError::Truncated)?);
+            Ok(ServerItem::PickupAccepted {
+                seq,
+                item_instance_id,
+                slot,
+            })
+        }
+        TAG_PICKUP_REJECTED => {
+            if rest.is_empty() {
+                return Err(CodecError::Truncated);
+            }
+            let reason = PickupRejectReason::from_u8(rest[0]).ok_or(CodecError::InvalidValue)?;
+            expect_empty(&rest[1..])?;
+            Ok(ServerItem::PickupRejected { seq, reason })
+        }
+        other => Err(CodecError::UnknownDiscriminant(other)),
+    }
+}
+
+fn encode_server_inventory(snapshot: &ServerInventory) -> Result<Vec<u8>, CodecError> {
+    if snapshot.entries.len() > INVENTORY_CAPACITY {
+        return Err(CodecError::InvalidValue);
+    }
+    let mut out = Vec::with_capacity(2 + snapshot.entries.len() * 22);
+    out.push(TAG_INVENTORY_SNAPSHOT);
+    out.push(u8::try_from(snapshot.entries.len()).map_err(|_| CodecError::InvalidValue)?);
+    for entry in &snapshot.entries {
+        if usize::from(entry.slot) >= INVENTORY_CAPACITY || entry.quantity == 0 {
+            return Err(CodecError::InvalidValue);
+        }
+        out.extend_from_slice(&entry.slot.to_le_bytes());
+        out.extend_from_slice(&entry.item_instance_id.raw().to_le_bytes());
+        out.extend_from_slice(&entry.definition.token().to_le_bytes());
+        out.extend_from_slice(&entry.quantity.to_le_bytes());
+    }
+    Ok(out)
+}
+
+fn decode_server_inventory(rest: &[u8]) -> Result<ServerInventory, CodecError> {
+    let Some(&count) = rest.first() else {
+        return Err(CodecError::Truncated);
+    };
+    let count = usize::from(count);
+    if count > INVENTORY_CAPACITY || rest.len() != 1 + count * 22 {
+        return Err(CodecError::InvalidValue);
+    }
+    let mut entries = Vec::with_capacity(count);
+    for chunk in rest[1..].chunks(22) {
+        let entry = decode_inventory_entry(chunk)?;
+        if usize::from(entry.slot) >= INVENTORY_CAPACITY || entry.quantity == 0 {
+            return Err(CodecError::InvalidValue);
+        }
+        if entries.iter().any(|previous: &InventoryEntry| {
+            previous.slot == entry.slot || previous.item_instance_id == entry.item_instance_id
+        }) {
+            return Err(CodecError::InvalidValue);
+        }
+        entries.push(entry);
+    }
+    Ok(ServerInventory { entries })
 }
 
 fn encode_ability_activate(req: AbilityActivateRequest) -> Result<Vec<u8>, CodecError> {
@@ -1073,7 +1209,6 @@ mod tests {
             sequence: 7,
             move_axis: MoveAxis::Right,
             jump_pressed: true,
-            jump_held: false,
             down_held: false,
             portal_held: false,
         }
@@ -1104,14 +1239,6 @@ mod tests {
             ClientControl::Input(cmd) => assert!(!cmd.portal_held),
             other => panic!("{other:?}"),
         }
-
-        held.jump_held = true;
-        let encoded = encode_client_control(&ClientControl::Input(held)).unwrap();
-        assert_eq!(encoded[encoded.len() - 1], 3);
-        assert_eq!(
-            decode_client_control(&encoded).unwrap(),
-            ClientControl::Input(held)
-        );
     }
 
     #[test]
@@ -1567,7 +1694,7 @@ mod tests {
         let equip = ClientControl::Equip(EquipRequest {
             seq: 1,
             slot: 5,
-            content_id: purgatory_common::ContentId::from_token(42),
+            item_instance_id: purgatory_common::ItemInstanceId::from_raw(42),
         });
         let encoded = encode_client_control(&equip).unwrap();
         assert_eq!(encoded.len(), 1 + crate::EQUIP_REQUEST_BYTES);
@@ -1589,6 +1716,37 @@ mod tests {
         });
         let encoded = encode_server_control(&rejected).unwrap();
         assert_eq!(encoded.len(), 1 + crate::EQUIPMENT_REJECTED_BYTES);
+        assert_eq!(decode_server_control(&encoded).unwrap(), rejected);
+    }
+
+    #[test]
+    fn pickup_request_and_result_roundtrip_and_sizes() {
+        let pickup = ClientControl::Pickup(PickupRequest {
+            seq: 4,
+            target: WireEntityId {
+                index: 7,
+                generation: 3,
+            },
+        });
+        let encoded = encode_client_control(&pickup).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::PICKUP_REQUEST_BYTES);
+        assert_eq!(decode_client_control(&encoded).unwrap(), pickup);
+
+        let accepted = ServerControl::Item(ServerItem::PickupAccepted {
+            seq: 4,
+            item_instance_id: purgatory_common::ItemInstanceId::from_raw(0x1234),
+            slot: 2,
+        });
+        let encoded = encode_server_control(&accepted).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::PICKUP_ACCEPTED_BYTES);
+        assert_eq!(decode_server_control(&encoded).unwrap(), accepted);
+
+        let rejected = ServerControl::Item(ServerItem::PickupRejected {
+            seq: 5,
+            reason: PickupRejectReason::InventoryFull,
+        });
+        let encoded = encode_server_control(&rejected).unwrap();
+        assert_eq!(encoded.len(), 1 + crate::PICKUP_REJECTED_BYTES);
         assert_eq!(decode_server_control(&encoded).unwrap(), rejected);
     }
 
@@ -1644,13 +1802,43 @@ mod tests {
             encode_client_control(&ClientControl::Equip(EquipRequest {
                 seq: 0,
                 slot: 5,
-                content_id: purgatory_common::ContentId::from_token(1),
+                item_instance_id: purgatory_common::ItemInstanceId::from_raw(1),
             }))
             .is_err()
         );
         assert!(
             encode_client_control(&ClientControl::Unequip(UnequipRequest { seq: 1, slot: 6 }))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn owner_private_inventory_snapshot_roundtrips_and_rejects_duplicates() {
+        let snapshot = ServerControl::Inventory(ServerInventory {
+            entries: vec![
+                InventoryEntry {
+                    slot: 0,
+                    item_instance_id: purgatory_common::ItemInstanceId::from_raw(7),
+                    definition: purgatory_common::ContentId::from_token(8),
+                    quantity: 3,
+                },
+                InventoryEntry {
+                    slot: 4,
+                    item_instance_id: purgatory_common::ItemInstanceId::from_raw(9),
+                    definition: purgatory_common::ContentId::from_token(10),
+                    quantity: 1,
+                },
+            ],
+        });
+        let encoded = encode_server_control(&snapshot).unwrap();
+        assert_eq!(decode_server_control(&encoded).unwrap(), snapshot);
+
+        let mut duplicate = encoded;
+        duplicate[2 + 22] = 0;
+        duplicate[3 + 22] = 0;
+        assert_eq!(
+            decode_server_control(&duplicate),
+            Err(CodecError::InvalidValue)
         );
     }
 }

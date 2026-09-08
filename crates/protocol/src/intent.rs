@@ -13,7 +13,6 @@ pub struct IntentNet {
     pub commands_sent: u64,
     pub move_axis: MoveAxis,
     pub jump_pressed: bool,
-    pub jump_held: bool,
     pub down_held: bool,
     pub input_epoch: u16,
 }
@@ -40,18 +39,7 @@ impl IntentNet {
         jump_pressed: bool,
         down_held: bool,
     ) -> Option<InputCommand> {
-        self.emit(axis, jump_pressed, false, down_held, false)
-    }
-
-    #[must_use]
-    pub fn emit_tick_with_jump(
-        &mut self,
-        axis: MoveAxis,
-        jump_pressed: bool,
-        jump_held: bool,
-        down_held: bool,
-    ) -> Option<InputCommand> {
-        self.emit(axis, jump_pressed, jump_held, down_held, false)
+        self.emit(axis, jump_pressed, down_held, false)
     }
 
     /// Same as [`Self::emit_tick`], including Up-held latch state for portal reentry.
@@ -63,32 +51,19 @@ impl IntentNet {
         down_held: bool,
         portal_held: bool,
     ) -> Option<InputCommand> {
-        self.emit(axis, jump_pressed, false, down_held, portal_held)
-    }
-
-    #[must_use]
-    pub fn emit_tick_with_jump_and_portal(
-        &mut self,
-        axis: MoveAxis,
-        jump_pressed: bool,
-        jump_held: bool,
-        down_held: bool,
-        portal_held: bool,
-    ) -> Option<InputCommand> {
-        self.emit(axis, jump_pressed, jump_held, down_held, portal_held)
+        self.emit(axis, jump_pressed, down_held, portal_held)
     }
 
     /// Forced Neutral command paired with a `SimulationClock` step (focus-loss).
     #[must_use]
     pub fn emit_neutral(&mut self) -> Option<InputCommand> {
-        self.emit(MoveAxis::Neutral, false, false, false, false)
+        self.emit(MoveAxis::Neutral, false, false, false)
     }
 
     fn emit(
         &mut self,
         axis: MoveAxis,
         jump_pressed: bool,
-        jump_held: bool,
         down_held: bool,
         portal_held: bool,
     ) -> Option<InputCommand> {
@@ -99,14 +74,12 @@ impl IntentNet {
         self.move_axis = axis;
         self.down_held = down_held;
         self.jump_pressed = jump_pressed;
-        self.jump_held = jump_held;
         self.commands_sent = self.commands_sent.saturating_add(1);
         Some(InputCommand {
             input_epoch: self.input_epoch,
             sequence: self.sequence,
             move_axis: axis,
             jump_pressed,
-            jump_held,
             down_held,
             portal_held,
         })

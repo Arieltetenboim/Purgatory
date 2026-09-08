@@ -108,6 +108,34 @@ impl std::fmt::Display for CharacterId {
     }
 }
 
+/// Server-minted authoritative item-instance identity.
+///
+/// This identifies one economic item (or one stack), never its authored
+/// [`ContentId`], an `EntityId`, a `CharacterId`, or client-provided input.
+/// `from_raw` exists for authoritative storage/restore boundaries and tests;
+/// server gameplay is responsible for minting values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct ItemInstanceId(u64);
+
+impl ItemInstanceId {
+    #[must_use]
+    pub const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for ItemInstanceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "item#{:016x}", self.0)
+    }
+}
+
 /// DEV-only lookup identity. Temporary until a real account system exists.
 /// Exact validated input is the lookup key. Never used as a filesystem path.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -304,6 +332,16 @@ mod tests {
         assert_eq!(character.raw(), persistent.token());
         assert_eq!(character.to_string(), "char#0000000000000001");
         assert_eq!(persistent.to_string(), "persist#1");
+    }
+
+    #[test]
+    fn item_instance_id_is_a_distinct_opaque_identity() {
+        let item = ItemInstanceId::from_raw(1);
+        let character = CharacterId::from_raw(1);
+        let content = ContentId::from_token(1);
+        assert_eq!(item.raw(), character.raw());
+        assert_eq!(item.raw(), content.token());
+        assert_eq!(item.to_string(), "item#0000000000000001");
     }
 
     #[test]

@@ -188,6 +188,14 @@ impl BotSession {
                 self.state = SessionState::Failed;
                 Err("unexpected ability during handshake".into())
             }
+            ServerControl::Item(_) => {
+                self.state = SessionState::Failed;
+                Err("unexpected item result during handshake".into())
+            }
+            ServerControl::Inventory(_) => {
+                self.state = SessionState::Failed;
+                Err("unexpected inventory during handshake".into())
+            }
         }
     }
 
@@ -319,7 +327,9 @@ impl BotSession {
             | ServerControl::Interact(_)
             | ServerControl::Equipment(_)
             | ServerControl::PresentationOneShot(_)
-            | ServerControl::Ability(_) => {}
+            | ServerControl::Ability(_)
+            | ServerControl::Item(_)
+            | ServerControl::Inventory(_) => {}
         }
         Ok(poll)
     }

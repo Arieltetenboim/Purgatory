@@ -95,7 +95,7 @@ const BACK_BASES: [BasePiece; 9] = [
 
 #[test]
 fn protocol_unchanged() {
-    assert_eq!(PROTOCOL_VERSION, 20);
+    assert_eq!(PROTOCOL_VERSION, 24);
 }
 
 #[test]

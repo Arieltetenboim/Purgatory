@@ -105,6 +105,15 @@ pub fn collect_entities(world: &World, visible: &[EntityId]) -> Vec<SnapshotEnti
                     velocity: [0.0, 0.0],
                 });
             }
+            if world.item_instance_at_world_drop(id).is_some() {
+                let transform = world.transform_of(id)?;
+                return Some(SnapshotEntity {
+                    entity_id: to_wire_id(id),
+                    kind: ReplicatedKind::Item,
+                    position: transform.position,
+                    velocity: [0.0, 0.0],
+                });
+            }
             if world.kind(id) != Some(purgatory_simulation::EntityKind::Generic) {
                 return None;
             }

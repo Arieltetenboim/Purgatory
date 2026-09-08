@@ -19,16 +19,17 @@ use purgatory_content::{
 use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
 use purgatory_protocol::{
     AbilityActivateRequest, AbilityCommandReject, ConnectionId, DEV_CHANNEL_MAX, EquipRequest,
-    EquipmentRejectReason, InputCommand, InteractCloseReason, InteractRejectReason, MoveAxis,
-    ServerAbility, ServerControl, ServerEquipment, ServerInteract, ServerPresentationOneShot,
-    UnequipRequest, WireEntityId,
+    EquipmentRejectReason, InputCommand, InteractCloseReason, InteractRejectReason, InventoryEntry,
+    MoveAxis, PickupRejectReason, PickupRequest, ServerAbility, ServerControl, ServerEquipment,
+    ServerInteract, ServerInventory, ServerItem, ServerPresentationOneShot, UnequipRequest,
+    WireEntityId,
 };
 use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, Cadence,
     CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X, Health,
-    InputGateReason, InteractionCloseReason, InteractionReject, P0, P0_POSITION, PLAYER_HEALTH_MAX,
-    PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest, ScheduleOwner,
-    SimulationTick, Transform, WorkLane, World, validate_command_preamble,
+    InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError, P0, P0_POSITION,
+    PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest,
+    ScheduleOwner, SimulationTick, Transform, WorkLane, World, validate_command_preamble,
 };
 
 use super::persist::PersistenceHandle;
@@ -132,7 +133,6 @@ pub struct SessionInput {
     /// Unmatched Continuation steps. Saturates; never wraps.
     pub unmatched_continuation_ticks: u16,
     pub move_axis: MoveAxis,
-    pub jump_held: bool,
     pub down_held: bool,
     queue: VecDeque<InputCommand>,
     pub late_collapse_count: u64,
@@ -156,7 +156,6 @@ impl SessionInput {
             last_acknowledged_seq: None,
             unmatched_continuation_ticks: 0,
             move_axis: MoveAxis::Neutral,
-            jump_held: false,
             down_held: false,
             queue: VecDeque::new(),
             late_collapse_count: 0,
@@ -204,7 +203,6 @@ impl SessionInput {
     pub fn held_cancel(&mut self) {
         self.queue.clear();
         self.move_axis = MoveAxis::Neutral;
-        self.jump_held = false;
         self.down_held = false;
         self.last_acknowledged_seq = self.last_received_seq;
         self.unmatched_continuation_ticks = 0;
@@ -222,7 +220,6 @@ impl SessionInput {
         self.last_acknowledged_seq = None;
         self.unmatched_continuation_ticks = 0;
         self.move_axis = MoveAxis::Neutral;
-        self.jump_held = false;
         self.down_held = false;
         self.gate = InputGate::Open;
         Some(self.input_epoch)
@@ -233,7 +230,6 @@ impl SessionInput {
     pub fn lock_transition(&mut self, reason: InputGateReason) {
         self.queue.clear();
         self.move_axis = MoveAxis::Neutral;
-        self.jump_held = false;
         self.down_held = false;
         self.unmatched_continuation_ticks = 0;
         self.gate = InputGate::locked(reason);
@@ -272,7 +268,6 @@ impl SessionInput {
             return PlayerInput {
                 move_axis: self.move_axis.to_i8(),
                 jump_pressed: false,
-                jump_held: self.jump_held,
                 down_held: self.down_held,
             };
         }
@@ -287,13 +282,11 @@ impl SessionInput {
 
     fn consume_one(&mut self, cmd: InputCommand) -> PlayerInput {
         self.move_axis = cmd.move_axis;
-        self.jump_held = cmd.jump_held;
         self.down_held = cmd.down_held;
         self.last_acknowledged_seq = Some(cmd.sequence);
         PlayerInput {
             move_axis: cmd.move_axis.to_i8(),
             jump_pressed: cmd.jump_pressed,
-            jump_held: cmd.jump_held,
             down_held: cmd.down_held,
         }
     }
@@ -310,7 +303,6 @@ impl SessionInput {
         }
         let cmd = last.expect("n >= 1");
         self.move_axis = cmd.move_axis;
-        self.jump_held = cmd.jump_held;
         self.down_held = cmd.down_held;
         self.last_acknowledged_seq = Some(cmd.sequence);
         self.unmatched_continuation_ticks = debt.saturating_sub(n as u16);
@@ -319,7 +311,6 @@ impl SessionInput {
         PlayerInput {
             move_axis: cmd.move_axis.to_i8(),
             jump_pressed: jump,
-            jump_held: cmd.jump_held,
             down_held: cmd.down_held,
         }
     }
@@ -349,6 +340,8 @@ pub struct PlayerBinding {
     last_equipment_result: Option<ServerEquipment>,
     last_ability_seq: Option<u32>,
     last_ability_result: Option<ServerAbility>,
+    last_pickup_seq: Option<u32>,
+    last_pickup_result: Option<ServerItem>,
 }
 
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
@@ -394,6 +387,7 @@ pub struct GameplayOwner {
     trace_relevance: bool,
     trace_snapshot: bool,
     runtime_probe: RuntimeProbe,
+    proof_drop_spawned: bool,
     load_pressure: super::load_pressure::LoadPressure,
     /// Shared entity → Known-observer reverse index (6G.7B).
     interest_fanout: InterestFanoutIndex,
@@ -527,6 +521,10 @@ pub enum InputUpdate {
     AbilityActivate {
         connection_id: ConnectionId,
         request: AbilityActivateRequest,
+    },
+    Pickup {
+        connection_id: ConnectionId,
+        request: PickupRequest,
     },
 }
 
@@ -766,6 +764,16 @@ impl GameplayTx {
             .await
             .is_ok()
     }
+
+    pub async fn send_pickup(&self, connection_id: ConnectionId, request: PickupRequest) -> bool {
+        self.input
+            .send(InputUpdate::Pickup {
+                connection_id,
+                request,
+            })
+            .await
+            .is_ok()
+    }
 }
 
 const LIFECYCLE_CAP: usize = 64;
@@ -862,6 +870,7 @@ impl GameplayOwner {
             trace_relevance: false,
             trace_snapshot: false,
             runtime_probe: RuntimeProbe::from_env(),
+            proof_drop_spawned: false,
             load_pressure: super::load_pressure::LoadPressure::from_process_env(),
             interest_fanout: InterestFanoutIndex::new(),
             replication_fanout_accounting: ReplicationFanoutAccounting::default(),
@@ -1133,10 +1142,45 @@ impl GameplayOwner {
                 last_equipment_result: None,
                 last_ability_seq: None,
                 last_ability_result: None,
+                last_pickup_seq: None,
+                last_pickup_result: None,
             },
         );
         self.player_entity_spawned = self.player_entity_spawned.saturating_add(1);
+        self.send_inventory_snapshot(connection_id);
         true
+    }
+
+    fn inventory_snapshot(&self, entity: EntityId) -> ServerInventory {
+        let entries = self
+            .world
+            .inventory_snapshot(entity)
+            .into_iter()
+            .map(|(slot, item_instance_id, record)| InventoryEntry {
+                slot,
+                item_instance_id,
+                definition: record.definition,
+                quantity: record.quantity,
+            })
+            .collect();
+        ServerInventory { entries }
+    }
+
+    fn send_inventory_snapshot(&self, connection_id: ConnectionId) {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return;
+        };
+        let Some(tx) = &binding.interact else {
+            return;
+        };
+        if tx
+            .try_send(ServerControl::Inventory(
+                self.inventory_snapshot(binding.entity),
+            ))
+            .is_err()
+        {
+            println!("11C_INVENTORY response dropped (interact channel full or closed)");
+        }
     }
 
     fn ensure_live_combat_creature(&mut self) {
@@ -1258,6 +1302,7 @@ impl GameplayOwner {
                 | InputUpdate::DevResetPlayer { .. }
                 | InputUpdate::Respawn { .. }
                 | InputUpdate::AbilityActivate { .. }
+                | InputUpdate::Pickup { .. }
         ) {
             match update {
                 InputUpdate::InteractOpen {
@@ -1304,6 +1349,10 @@ impl GameplayOwner {
                     connection_id,
                     request,
                 } => self.handle_ability_activate(connection_id, request),
+                InputUpdate::Pickup {
+                    connection_id,
+                    request,
+                } => self.handle_pickup(connection_id, request),
                 _ => {}
             }
             return SeqDecision::Accept;
@@ -1371,9 +1420,10 @@ impl GameplayOwner {
             | InputUpdate::DevPresentationOneShot { .. }
             | InputUpdate::DevResetPlayer { .. }
             | InputUpdate::Respawn { .. }
-            | InputUpdate::AbilityActivate { .. } => {
+            | InputUpdate::AbilityActivate { .. }
+            | InputUpdate::Pickup { .. } => {
                 unreachable!(
-                    "interact/portal/channel/speed/jump/equipment/oneshot/reset/ability handled above"
+                    "interact/portal/channel/speed/jump/equipment/oneshot/reset/ability/pickup handled above"
                 )
             }
         }
@@ -1488,6 +1538,7 @@ impl GameplayOwner {
             }
             self.world.tick_player(entity, dt, player_input);
         }
+        self.spawn_phase_11e_proof_drop();
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
@@ -1537,6 +1588,35 @@ impl GameplayOwner {
         sample.persistence_enqueue += Duration::from_micros(self.persist_enqueue_us);
         sample.total = tick_t0.elapsed();
         sample
+    }
+
+    fn spawn_phase_11e_proof_drop(&mut self) {
+        if self.proof_drop_spawned {
+            return;
+        }
+        let Some((&connection_id, binding)) = self.bindings.iter().next() else {
+            return;
+        };
+        let entity = binding.entity;
+        let Some(address) = self.world.address_of(entity) else {
+            return;
+        };
+        let Some(position) = self.world.transform_of(entity).map(|t| t.position) else {
+            return;
+        };
+        let proof_item = ContentId::from_authored("equipment.debug.practice_sword")
+            .expect("valid Phase 11E proof item");
+        self.world
+            .spawn_world_drop_item(
+                address,
+                [position[0] + 1.25, position[1] + 0.75],
+                proof_item,
+                1,
+                1,
+            )
+            .expect("Phase 11E proof item drop");
+        self.proof_drop_spawned = true;
+        println!("11E proof Item drop spawned for connection={connection_id}");
     }
 
     fn maybe_arm_runtime_probe(&mut self, tick: SimulationTick) {
@@ -1736,7 +1816,7 @@ impl GameplayOwner {
             connection_id,
             request.seq,
             request.slot,
-            Some(request.content_id),
+            Some(request.item_instance_id),
         );
     }
 
@@ -1749,7 +1829,7 @@ impl GameplayOwner {
         connection_id: ConnectionId,
         seq: u32,
         slot: u8,
-        content_id: Option<ContentId>,
+        item_instance_id: Option<purgatory_common::ItemInstanceId>,
     ) {
         let interact_tx = self
             .bindings
@@ -1788,7 +1868,7 @@ impl GameplayOwner {
             SeqDecision::Accept => {}
         }
 
-        let result = self.apply_equipment_mutation(connection_id, slot, content_id);
+        let result = self.apply_equipment_mutation(connection_id, slot, item_instance_id);
         let event = match result {
             Ok(()) => ServerEquipment::Accepted { seq },
             Err(reason) => ServerEquipment::Rejected { seq, reason },
@@ -1870,6 +1950,98 @@ impl GameplayOwner {
         }
     }
 
+    fn send_pickup_result(
+        tx: Option<&tokio::sync::mpsc::Sender<ServerControl>>,
+        event: ServerItem,
+    ) {
+        if let Some(tx) = tx
+            && tx.try_send(ServerControl::Item(event)).is_err()
+        {
+            println!("11B2_PICKUP response dropped (interact channel full or closed)");
+        }
+    }
+
+    fn handle_pickup(&mut self, connection_id: ConnectionId, request: PickupRequest) {
+        let interact_tx = self
+            .bindings
+            .get(&connection_id)
+            .and_then(|binding| binding.interact.clone());
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return;
+        };
+        match SessionInput::classify(binding.last_pickup_seq, request.seq) {
+            SeqDecision::Duplicate => {
+                if let Some(event) = binding.last_pickup_result {
+                    Self::send_pickup_result(interact_tx.as_ref(), event);
+                }
+                return;
+            }
+            SeqDecision::Stale => {
+                Self::send_pickup_result(
+                    interact_tx.as_ref(),
+                    ServerItem::PickupRejected {
+                        seq: request.seq,
+                        reason: PickupRejectReason::StaleRequest,
+                    },
+                );
+                return;
+            }
+            SeqDecision::Gap | SeqDecision::Overflow | SeqDecision::OldEpoch => {
+                Self::send_pickup_result(
+                    interact_tx.as_ref(),
+                    ServerItem::PickupRejected {
+                        seq: request.seq,
+                        reason: PickupRejectReason::InvalidRequest,
+                    },
+                );
+                return;
+            }
+            SeqDecision::Accept => {}
+        }
+
+        let result = self.apply_pickup(connection_id, request.target);
+        let event = match result {
+            Ok((item_instance_id, slot)) => ServerItem::PickupAccepted {
+                seq: request.seq,
+                item_instance_id,
+                slot,
+            },
+            Err(reason) => ServerItem::PickupRejected {
+                seq: request.seq,
+                reason,
+            },
+        };
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.last_pickup_seq = Some(request.seq);
+            binding.last_pickup_result = Some(event);
+        }
+        Self::send_pickup_result(interact_tx.as_ref(), event);
+        if matches!(event, ServerItem::PickupAccepted { .. }) {
+            self.send_inventory_snapshot(connection_id);
+        }
+    }
+
+    fn apply_pickup(
+        &mut self,
+        connection_id: ConnectionId,
+        target: WireEntityId,
+    ) -> Result<(purgatory_common::ItemInstanceId, u16), PickupRejectReason> {
+        let actor = self
+            .command_actor(connection_id, CommandClass::Pickup)
+            .map_err(|_| PickupRejectReason::StateBlocked)?;
+        self.world
+            .pickup_world_drop(actor, super::snapshot::from_wire_id(target))
+            .map_err(|reason| match reason {
+                ItemRuntimeError::PickupTargetMissing(_)
+                | ItemRuntimeError::MissingItem(_)
+                | ItemRuntimeError::InvalidPickupActor => PickupRejectReason::TargetMissing,
+                ItemRuntimeError::PickupWrongAddress => PickupRejectReason::WrongAddress,
+                ItemRuntimeError::PickupOutOfRange => PickupRejectReason::OutOfRange,
+                ItemRuntimeError::InventoryFull(_) => PickupRejectReason::InventoryFull,
+                _ => PickupRejectReason::InvalidRequest,
+            })
+    }
+
     fn apply_ability_activate(
         &mut self,
         connection_id: ConnectionId,
@@ -1923,7 +2095,7 @@ impl GameplayOwner {
         &mut self,
         connection_id: ConnectionId,
         slot: u8,
-        content_id: Option<ContentId>,
+        item_instance_id: Option<purgatory_common::ItemInstanceId>,
     ) -> Result<(), EquipmentRejectReason> {
         let actor = match self.command_actor(connection_id, CommandClass::Equipment) {
             Ok(actor) => actor,
@@ -1940,8 +2112,11 @@ impl GameplayOwner {
         let Some(slot) = EquipmentSlot::from_u8(slot) else {
             return Err(EquipmentRejectReason::InvalidRequest);
         };
-        if let Some(content_id) = content_id {
-            match authorize_equip(&self.registry, slot, content_id) {
+        if let Some(item_instance_id) = item_instance_id {
+            let Some(record) = self.world.item_record(item_instance_id) else {
+                return Err(EquipmentRejectReason::InvalidRequest);
+            };
+            match authorize_equip(&self.registry, slot, record.definition) {
                 Ok(()) => {}
                 Err(EquipmentAuthError::UnknownContent) => {
                     return Err(EquipmentRejectReason::UnknownContent);
@@ -1950,10 +2125,14 @@ impl GameplayOwner {
                     return Err(EquipmentRejectReason::SlotMismatch);
                 }
             }
-            if !self.world.set_equipment_slot(actor, slot, Some(content_id)) {
-                return Err(EquipmentRejectReason::StateBlocked);
+            if self
+                .world
+                .equip_item(actor, item_instance_id, slot)
+                .is_err()
+            {
+                return Err(EquipmentRejectReason::InvalidRequest);
             }
-        } else if !self.world.clear_equipment_slot(actor, slot) {
+        } else if self.world.unequip_item(actor, slot).is_err() {
             return Err(EquipmentRejectReason::StateBlocked);
         }
         Ok(())
@@ -2889,7 +3068,6 @@ mod tests {
             sequence: seq,
             move_axis: axis,
             jump_pressed: jump,
-            jump_held: false,
             down_held: down,
             portal_held: false,
         }
@@ -2901,7 +3079,6 @@ mod tests {
             sequence: seq,
             move_axis: MoveAxis::Neutral,
             jump_pressed: false,
-            jump_held: false,
             down_held: false,
             portal_held,
         }
@@ -2913,7 +3090,6 @@ mod tests {
             sequence: seq,
             move_axis: axis,
             jump_pressed: jump,
-            jump_held: false,
             down_held: down,
             portal_held: false,
         }
@@ -4885,6 +5061,47 @@ mod tests {
         ContentId::from_authored("equipment.debug.practice_sword").unwrap()
     }
 
+    fn owned_debug_sword(
+        owner: &mut GameplayOwner,
+        actor: EntityId,
+    ) -> purgatory_common::ItemInstanceId {
+        let position = owner
+            .world()
+            .transform_of(actor)
+            .expect("player transform")
+            .position;
+        let (item, entity) = owner
+            .world_mut()
+            .spawn_world_drop_item(WorldAddress::DEV, position, debug_sword(), 1, 1)
+            .expect("debug sword drop");
+        owner
+            .world_mut()
+            .pickup_world_drop(actor, entity)
+            .expect("debug sword pickup");
+        item
+    }
+
+    fn owned_item(
+        owner: &mut GameplayOwner,
+        actor: EntityId,
+        definition: ContentId,
+    ) -> purgatory_common::ItemInstanceId {
+        let position = owner
+            .world()
+            .transform_of(actor)
+            .expect("player transform")
+            .position;
+        let (item, entity) = owner
+            .world_mut()
+            .spawn_world_drop_item(WorldAddress::DEV, position, definition, 1, 1)
+            .expect("item drop");
+        owner
+            .world_mut()
+            .pickup_world_drop(actor, entity)
+            .expect("item pickup");
+        item
+    }
+
     fn recv_equipment(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerEquipment {
         match rx.try_recv().expect("equipment result") {
             ServerControl::Equipment(event) => event,
@@ -4901,12 +5118,13 @@ mod tests {
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
         assert!(owner.world().equipment_of(actor).is_none());
+        let item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 1,
                 slot: EquipmentSlot::Weapon as u8,
-                content_id: debug_sword(),
+                item_instance_id: item,
             },
         });
         assert_eq!(
@@ -4919,12 +5137,13 @@ mod tests {
         );
         let _ = owner.world_mut().consume_dirty(actor);
         let revs = owner.world().domain_revs_of(actor).unwrap().equipment;
+        let duplicate_item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 1,
                 slot: EquipmentSlot::Weapon as u8,
-                content_id: debug_sword(),
+                item_instance_id: duplicate_item,
             },
         });
         assert_eq!(
@@ -4943,12 +5162,13 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 1,
                 slot: EquipmentSlot::Weapon as u8,
-                content_id: debug_sword(),
+                item_instance_id: item,
             },
         });
         let _ = recv_equipment(&mut rx);
@@ -4989,21 +5209,23 @@ mod tests {
             } => {}
             other => panic!("first seq 0 must be InvalidRequest, got {other:?}"),
         }
+        let item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 1,
                 slot: EquipmentSlot::Weapon as u8,
-                content_id: debug_sword(),
+                item_instance_id: item,
             },
         });
         let _ = recv_equipment(&mut rx);
+        let duplicate_item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 1,
                 slot: EquipmentSlot::Weapon as u8,
-                content_id: debug_sword(),
+                item_instance_id: duplicate_item,
             },
         });
         let _ = recv_equipment(&mut rx);
@@ -5035,12 +5257,13 @@ mod tests {
             } => {}
             other => panic!("gap must be InvalidRequest, got {other:?}"),
         }
+        let replacement_item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 2,
                 slot: EquipmentSlot::Weapon as u8,
-                content_id: debug_sword(),
+                item_instance_id: replacement_item,
             },
         });
         match recv_equipment(&mut rx) {
@@ -5076,12 +5299,13 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
+        let wrong_slot_item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 1,
                 slot: EquipmentSlot::Headwear as u8,
-                content_id: debug_sword(),
+                item_instance_id: wrong_slot_item,
             },
         });
         match recv_equipment(&mut rx) {
@@ -5092,12 +5316,13 @@ mod tests {
             other => panic!("expected SlotMismatch, got {other:?}"),
         }
         assert!(owner.world().equipment_of(actor).is_none());
+        let unknown_item = owned_item(&mut owner, actor, ContentId::from_token(1));
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 2,
                 slot: EquipmentSlot::Weapon as u8,
-                content_id: ContentId::from_token(1),
+                item_instance_id: unknown_item,
             },
         });
         match recv_equipment(&mut rx) {
@@ -5118,23 +5343,25 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 1,
                 slot: EquipmentSlot::Weapon as u8,
-                content_id: debug_sword(),
+                item_instance_id: item,
             },
         });
         let _ = recv_equipment(&mut rx);
         let _ = owner.world_mut().consume_dirty(actor);
         let revs = owner.world().domain_revs_of(actor).unwrap();
+        let replacement_item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
             request: EquipRequest {
                 seq: 2,
                 slot: EquipmentSlot::Weapon as u8,
-                content_id: debug_sword(),
+                item_instance_id: replacement_item,
             },
         });
         assert_eq!(

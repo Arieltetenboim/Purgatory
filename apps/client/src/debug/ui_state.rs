@@ -2,6 +2,7 @@
 
 use super::sections::DebugSectionMap;
 use crate::network::ImpairmentProfile;
+use purgatory_common::ItemInstanceId;
 
 /// Skeleton Proof animation source. Default remains the A1 manual slider.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -132,6 +133,8 @@ pub struct DebugUiState {
     pub reset_impairment_metrics: bool,
     /// DEV overlay: equip authored equipment id (`equipment.debug.*`).
     pub request_debug_equip: Option<&'static str>,
+    pub request_debug_equip_item: Option<ItemInstanceId>,
+    pub selected_inventory_item: Option<ItemInstanceId>,
     /// DEV overlay: unequip slot index `0..=5`.
     pub request_debug_unequip_slot: Option<u8>,
     /// DEV overlay: unequip every slot.
@@ -221,6 +224,8 @@ impl Default for DebugUiState {
             impairment_stall_ms: None,
             reset_impairment_metrics: false,
             request_debug_equip: None,
+            request_debug_equip_item: None,
+            selected_inventory_item: None,
             request_debug_unequip_slot: None,
             request_debug_unequip_all: false,
             debug_move_speed: DEBUG_MOVE_SPEED_DEFAULT,

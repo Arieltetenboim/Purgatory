@@ -988,7 +988,6 @@ fn player_input_from_command(cmd: InputCommand) -> PlayerInput {
     PlayerInput {
         move_axis: cmd.move_axis.to_i8(),
         jump_pressed: cmd.jump_pressed,
-        jump_held: cmd.jump_held,
         down_held: cmd.down_held,
     }
 }
@@ -1057,7 +1056,6 @@ mod tests {
                 _ => MoveAxis::Neutral,
             },
             jump_pressed: input.jump_pressed,
-            jump_held: input.jump_held,
             down_held: input.down_held,
             portal_held: false,
         }
@@ -2136,30 +2134,6 @@ mod tests {
                 .abs()
                 < 1e-3
         );
-    }
-
-    #[test]
-    fn prediction_and_authority_match_short_hop_release() {
-        let mut world = World::footnote_test_stage();
-        let mut authoritative = World::footnote_test_stage();
-        let mut replica = ReplicatedWorld::new();
-        let mut pred = LocalPrediction::new();
-        let id = wire(1, 1);
-        let spawn = world.player_body().unwrap().position;
-        auth_at(&mut replica, 1, id, spawn);
-        pred.sync_from_replica(&replica, &mut world, 1);
-
-        let press = PlayerInput::from_buttons(false, false, true).with_jump_held(true);
-        tick_recorded(&mut pred, &mut world, press, 2, 1);
-        authoritative.tick(TICK_DURATION.as_secs_f32(), press);
-        let release = PlayerInput::idle();
-        tick_recorded(&mut pred, &mut world, release, 3, 2);
-        authoritative.tick(TICK_DURATION.as_secs_f32(), release);
-
-        let predicted = world.player_body().unwrap();
-        let authoritative = authoritative.player_body().unwrap();
-        assert!((predicted.position[1] - authoritative.position[1]).abs() < 1e-3);
-        assert!((predicted.velocity[1] - authoritative.velocity[1]).abs() < 1e-3);
     }
 
     #[test]

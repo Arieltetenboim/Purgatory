@@ -1404,6 +1404,33 @@ fn draw_skeleton_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut
                 frame.presentation.bound,
                 frame.presentation.hidden
             ));
+            ui.separator();
+            ui.label("Owned item instances (authoritative Inventory):");
+            if frame.network.inventory.is_empty() {
+                ui.small("Inventory empty — press E near the gold Item drop.");
+            } else {
+                for entry in &frame.network.inventory {
+                    let selected = ui_state.selected_inventory_item == Some(entry.item_instance_id);
+                    if ui
+                        .selectable_label(
+                            selected,
+                            format!(
+                                "slot {}  {}  qty {}  id {}",
+                                entry.slot, entry.definition, entry.quantity, entry.item_instance_id
+                            ),
+                        )
+                        .clicked()
+                    {
+                        ui_state.selected_inventory_item = Some(entry.item_instance_id);
+                    }
+                }
+                if ui
+                    .button("Equip selected Item (Weapon proof slot)")
+                    .clicked()
+                {
+                    ui_state.request_debug_equip_item = ui_state.selected_inventory_item;
+                }
+            }
             if frame.presentation.missing.is_empty() {
                 ui.label("Missing presentation: none");
             } else {
@@ -1411,21 +1438,7 @@ fn draw_skeleton_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut
                     ui.label(format!("missing: {line}"));
                 }
             }
-            const ITEMS: &[(&str, &str)] = &[
-                ("unadorned", "equipment.debug.unadorned"),
-                ("cloth cap", "equipment.debug.cloth_cap"),
-                ("tunic", "equipment.debug.tunic"),
-                ("plate cuirass", "equipment.debug.plate_cuirass"),
-                ("cloth pants", "equipment.debug.cloth_pants"),
-                ("leather gloves", "equipment.debug.leather_gloves"),
-                ("iron boots", "equipment.debug.iron_boots"),
-                ("practice sword", "equipment.debug.practice_sword"),
-            ];
-            for (label, authored) in ITEMS {
-                if ui.button(*label).clicked() {
-                    ui_state.request_debug_equip = Some(*authored);
-                }
-            }
+            ui.small("Equip controls use the selected owned ItemInstanceId; no content-only shortcut.");
             ui.horizontal(|ui| {
                 for (i, name) in ["Head", "Body", "Pants"].iter().enumerate() {
                     if ui.small_button(format!("−{name}")).clicked() {

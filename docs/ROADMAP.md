@@ -7,10 +7,10 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 ## Current
 
 - **ERA II — Combat & First Playable Loop**
-- **Phase 10 — PvE Integration & Combat Loop: complete**
-- **Root `PHASE`: `10E`**
-- **Next main phase: 11 — Item Loop**
-- **Protocol: v20**
+- **Phase 11 — Item Loop: complete + closeout**
+- **Root `PHASE`: `11.closeout`**
+- **Current slice: Phase 11 closeout**
+- **Protocol: v24**
 
 ---
 
@@ -55,17 +55,23 @@ Historical implementation also included the minimal creature combat-driver bridg
 
 Phase 10 is closed. Known presentation rough edges belong to the later polish pass unless new evidence shows a runtime failure.
 
-## 11 — Item Loop — next
+## 11 — Item Loop — complete + closeout
 
 | Slice | Name | Status |
 |---|---|---|
-| 11A | Item Definitions | not started |
-| 11B | World Drops & Pickup | not started |
-| 11C | Inventory | not started |
-| 11D | Equipment | not started |
-| 11E | Equip → Gameplay / Presentation Proof | not started |
+| 11A | Item Definitions | complete |
+| 11B1 | Authoritative Item Runtime State + World-Drop Manifestation | complete |
+| 11B2 | Pickup Transaction | complete |
+| 11C | Inventory | complete |
+| 11D | Equipment | complete |
+| 11E | Equip → Gameplay / Presentation Proof | complete |
 
 Goal: establish the first complete item loop without redesigning the already-proven Character Presentation / Equipment foundation.
+
+Phase 11 is closed. The closeout report records the successful normal
+client/server runtime proof and the intentionally deferred Inventory UI,
+persistence, advanced stacking, trading, currency, and economy work:
+[`PHASE_11_CLOSEOUT_REPORT.md`](PHASE_11_CLOSEOUT_REPORT.md).
 
 ## 12 — Character Continuity — planned
 

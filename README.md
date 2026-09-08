@@ -8,9 +8,9 @@ This README is intentionally small. It is the project entry point, not the proje
 
 ## Current
 
-- **Phase:** `10E` complete
-- **Next:** Phase 11 — Item Loop
-- **Protocol:** v19
+- **Phase:** `11.closeout` — Phase 11 Item Loop complete
+- **Next:** Phase 12 — Character Continuity
+- **Protocol:** v24
 - **Simulation:** server authoritative
 - **Client:** native `winit` + `wgpu`
 - **Networking:** QUIC via Quinn

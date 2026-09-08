@@ -47,6 +47,9 @@ mod input_gate;
 mod interactable;
 mod interaction;
 mod interest_locality;
+mod item_runtime;
+#[cfg(test)]
+mod item_runtime_behavior_tests;
 mod lifecycle;
 mod map_runtime;
 mod motion_debug;
@@ -91,9 +94,9 @@ mod world;
 pub use aabb::Aabb;
 pub use ability::{
     ABILITY_EFFECT_CAP, AbilityActivation, AbilityDefinition, AbilityDefinitionError,
-    AbilityDelivery, AbilityEffect, AbilityGrantTable, AbilityId, AbilityRejectReason,
-    AbilityRequest, AbilityTiming, CooldownTable, GameplayPresentationCue, cue_for_ability_cast,
-    cue_for_damage_outcome, forward_query_aabb, oneshot_kind_for_cue,
+    AbilityDelivery, AbilityEffect, AbilityGrantSource, AbilityGrantTable, AbilityId,
+    AbilityRejectReason, AbilityRequest, AbilityTiming, CooldownTable, GameplayPresentationCue,
+    cue_for_ability_cast, cue_for_damage_outcome, forward_query_aabb, oneshot_kind_for_cue,
 };
 pub use action::{Action, ActionEnd, ActionError, ActionId, ActionKind, ActionPhase};
 pub use action_gate::{ActionDenialReason, ActionGateContext, evaluate_action_gate};
@@ -140,6 +143,7 @@ pub use interaction::{
     InteractionSessionState,
 };
 pub use interest_locality::InterestLocalityAccounting;
+pub use item_runtime::{INVENTORY_CAPACITY, ItemLocation, ItemRecord, ItemRuntimeError};
 pub use lifecycle::EntityLifecycle;
 pub use map_runtime::{InstantiateError, InstantiatedMap, MapRuntimePlan, PlanPlatform};
 pub use motion_debug::{CorrectionAxis, PlayerMotionDebug, ResponseKind};
@@ -157,7 +161,9 @@ pub use presentation_oneshot::{
     ATTACK_DURATION_TICKS, HURT_DURATION_TICKS, PresentationOneShot, PresentationOneShotError,
     PresentationOneShotKind, duration_ticks, oneshot_if_active, try_start_oneshot,
 };
-pub use purgatory_common::{ChannelId, ContentId, InstanceId, MapId, PersistentId, WorldAddress};
+pub use purgatory_common::{
+    ChannelId, ContentId, InstanceId, ItemInstanceId, MapId, PersistentId, WorldAddress,
+};
 pub use query::{QueryFilter, QueryLimit};
 pub use replication::{
     ReplicationClass, ReplicationMeta, ReplicationPayloadKind, UpdateFrequencyTier,

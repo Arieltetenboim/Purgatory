@@ -622,6 +622,15 @@ fn snapshot_entity(world: &World, id: EntityId) -> Option<SnapshotEntity> {
             velocity: [0.0, 0.0],
         });
     }
+    if world.item_instance_at_world_drop(id).is_some() {
+        let transform = world.transform_of(id)?;
+        return Some(SnapshotEntity {
+            entity_id: to_wire_id(id),
+            kind: ReplicatedKind::Item,
+            position: transform.position,
+            velocity: [0.0, 0.0],
+        });
+    }
     // Visible Generic / NPC: Transform required. Never emit Platform as Npc.
     if world.kind(id) != Some(purgatory_simulation::EntityKind::Generic) {
         return None;

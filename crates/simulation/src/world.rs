@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::aabb::Aabb;
-use crate::ability::{AbilityGrantTable, AbilityRuntimeTable, CooldownTable};
+use crate::ability::{AbilityGrantSource, AbilityGrantTable, AbilityRuntimeTable, CooldownTable};
 use crate::action::ActionTable;
 use crate::aoi::{AOI_INFLUENCE_HALF_EXTENTS, AoiRects, aoi_policy_rects, point_in_aabb};
 use crate::body::{PlayerBody, PlayerState};
@@ -27,6 +27,7 @@ use crate::interaction::{
     InteractionSessionState,
 };
 use crate::interest_locality::InterestLocalityAccounting;
+use crate::item_runtime::{ItemRecord, ItemRuntimeError, ItemRuntimeState};
 use crate::lifecycle::EntityLifecycle;
 use crate::map_runtime::InstantiatedMap;
 use crate::motion_debug::PlayerMotionDebug;
@@ -48,7 +49,7 @@ use crate::spawn::RuntimeSpawnRequest;
 use crate::spawn_schedule::SpawnSchedule;
 use crate::time::SimulationTick;
 use crate::transform::Transform;
-use purgatory_common::{ContentId, PersistentId, WorldAddress};
+use purgatory_common::{ContentId, ItemInstanceId, PersistentId, WorldAddress};
 
 struct Slot {
     generation: u32,
@@ -109,6 +110,7 @@ pub struct World {
     interest_locality: InterestLocalityAccounting,
     /// Entities with transform/health/equipment domain bumps since last drain (6G.7B).
     replication_dirty: HashMap<EntityId, ReplicationDirtyMask>,
+    item_runtime: ItemRuntimeState,
     pub(crate) tick: SimulationTick,
     pub(crate) scheduler: Scheduler,
     pub(crate) actions: ActionTable,
@@ -143,6 +145,7 @@ impl Default for World {
             interest_dirty_observers: HashSet::new(),
             interest_locality: InterestLocalityAccounting::default(),
             replication_dirty: HashMap::new(),
+            item_runtime: ItemRuntimeState::default(),
             tick: SimulationTick::ZERO,
             scheduler: Scheduler::new(),
             actions: ActionTable::new(),
@@ -584,6 +587,310 @@ impl World {
         };
         data.persistent_id = persistent_id;
         true
+    }
+
+    /// Server-authoritative item-instance minting.
+    #[must_use]
+    pub fn mint_item_instance_id(&mut self) -> ItemInstanceId {
+        self.item_runtime.mint_item_instance_id()
+    }
+
+    /// Canonical live item-record count.
+    #[must_use]
+    pub fn item_record_count(&self) -> usize {
+        self.item_runtime.len()
+    }
+
+    /// Canonical lookup by authoritative item-instance id.
+    #[must_use]
+    pub fn item_record(&self, id: ItemInstanceId) -> Option<ItemRecord> {
+        self.item_runtime.record(id)
+    }
+
+    /// Reciprocal lookup for a world-drop manifestation entity.
+    #[must_use]
+    pub fn item_instance_at_world_drop(&self, entity: EntityId) -> Option<ItemInstanceId> {
+        self.item_runtime.world_drop_item(entity)
+    }
+
+    /// Reciprocal lookup for an item's world-drop manifestation entity.
+    #[must_use]
+    pub fn world_drop_entity_for_item(&self, id: ItemInstanceId) -> Option<EntityId> {
+        self.item_runtime.world_drop_entity_for_item(id)
+    }
+
+    /// Authoritative owner-private inventory lookup for the minimal pickup slice.
+    #[must_use]
+    pub fn inventory_item(&self, owner: EntityId, slot: u16) -> Option<ItemInstanceId> {
+        self.item_runtime.inventory_slot(owner, slot)
+    }
+
+    #[must_use]
+    pub fn inventory_count(&self, owner: EntityId) -> usize {
+        self.item_runtime.inventory_count(owner)
+    }
+
+    /// Owner-private authoritative inventory contents in deterministic slot order.
+    #[must_use]
+    pub fn inventory_snapshot(&self, owner: EntityId) -> Vec<(u16, ItemInstanceId, ItemRecord)> {
+        self.item_runtime.inventory_snapshot(owner)
+    }
+
+    #[must_use]
+    pub fn inventory_contains(&self, owner: EntityId, item: ItemInstanceId) -> bool {
+        self.item_runtime.inventory_contains(owner, item)
+    }
+
+    /// Atomically move an owned inventory item into equipment and retain its
+    /// content definition in the existing equipment projection.
+    pub fn equip_item(
+        &mut self,
+        owner: EntityId,
+        item: ItemInstanceId,
+        slot: EquipmentSlot,
+    ) -> Result<Option<ItemInstanceId>, ItemRuntimeError> {
+        if self.slot_live(owner).is_none() || !self.inventory_contains(owner, item) {
+            return Err(ItemRuntimeError::ItemNotInInventory { owner, item });
+        }
+        let content = self
+            .item_record(item)
+            .expect("inventory membership has a canonical record")
+            .definition;
+        let replaced = self
+            .item_runtime
+            .move_inventory_to_equipment(owner, item, slot)?;
+        if let Some(replaced_item) = replaced {
+            self.revoke_equipment_ability_grant(owner, replaced_item);
+        }
+        if !self.set_equipment_slot(owner, slot, Some(content)) {
+            return Err(ItemRuntimeError::ItemNotInInventory { owner, item });
+        }
+        self.grant_equipment_ability(owner, item, content);
+        Ok(replaced)
+    }
+
+    /// Atomically move the equipped item back into the owner's inventory.
+    pub fn unequip_item(
+        &mut self,
+        owner: EntityId,
+        slot: EquipmentSlot,
+    ) -> Result<ItemInstanceId, ItemRuntimeError> {
+        if self.slot_live(owner).is_none() || self.equipment_slot(owner, slot).is_none() {
+            return Err(ItemRuntimeError::EquipmentEmpty { owner, slot });
+        }
+        let item = self
+            .item_runtime
+            .equipped_item(owner, slot)
+            .ok_or(ItemRuntimeError::EquipmentEmpty { owner, slot })?;
+        let moved = self.item_runtime.move_equipment_to_inventory(owner, slot)?;
+        debug_assert_eq!(moved, item);
+        if !self.clear_equipment_slot(owner, slot) {
+            return Err(ItemRuntimeError::EquipmentEmpty { owner, slot });
+        }
+        self.revoke_equipment_ability_grant(owner, item);
+        Ok(moved)
+    }
+
+    fn equipment_ability(definition: ContentId) -> Option<crate::ability::AbilityId> {
+        (definition
+            == ContentId::from_authored("equipment.debug.practice_sword")
+                .expect("valid proof content"))
+        .then(|| {
+            ContentId::from_authored("skill.debug.practice_sword_strike")
+                .expect("valid proof ability")
+        })
+    }
+
+    fn grant_equipment_ability(
+        &mut self,
+        owner: EntityId,
+        item: ItemInstanceId,
+        definition: ContentId,
+    ) {
+        if let Some(ability) = Self::equipment_ability(definition) {
+            self.ability_grants.insert_from_source(
+                owner,
+                ability,
+                AbilityGrantSource::Equipment(item),
+            );
+        }
+    }
+
+    fn revoke_equipment_ability_grant(&mut self, owner: EntityId, item: ItemInstanceId) {
+        let Some(record) = self.item_record(item) else {
+            return;
+        };
+        if let Some(ability) = Self::equipment_ability(record.definition) {
+            self.ability_grants.remove_from_source(
+                owner,
+                ability,
+                AbilityGrantSource::Equipment(item),
+            );
+        }
+    }
+
+    /// Move one contained item without creating another canonical item record.
+    pub fn move_inventory_item(
+        &mut self,
+        owner: EntityId,
+        from: u16,
+        to: u16,
+    ) -> Result<ItemInstanceId, ItemRuntimeError> {
+        self.item_runtime.move_inventory_item(owner, from, to)
+    }
+
+    /// Remove one contained item. Absence from the canonical table represents destruction.
+    pub fn remove_inventory_item(
+        &mut self,
+        owner: EntityId,
+        slot: u16,
+    ) -> Option<(ItemInstanceId, ItemRecord)> {
+        self.item_runtime.remove_inventory_item(owner, slot)
+    }
+
+    /// Atomically move a validated world drop into the first free inventory slot.
+    ///
+    /// The target is only an ephemeral manifestation. The item instance is
+    /// resolved from the authoritative world-drop index before ownership moves.
+    pub fn pickup_world_drop(
+        &mut self,
+        actor: EntityId,
+        target: EntityId,
+    ) -> Result<(ItemInstanceId, u16), ItemRuntimeError> {
+        let Some(actor_data) = self.slot_live(actor) else {
+            return Err(ItemRuntimeError::InvalidPickupActor);
+        };
+        if actor_data.player.is_none()
+            || actor_data.lifecycle != EntityLifecycle::Active
+            || actor_data.transform.is_none()
+        {
+            return Err(ItemRuntimeError::InvalidPickupActor);
+        }
+        let Some(item) = self.item_runtime.world_drop_item(target) else {
+            return Err(ItemRuntimeError::PickupTargetMissing(target));
+        };
+        let Some(target_data) = self.slot_live(target) else {
+            return Err(ItemRuntimeError::PickupTargetMissing(target));
+        };
+        if target_data.lifecycle != EntityLifecycle::Active {
+            return Err(ItemRuntimeError::PickupTargetMissing(target));
+        }
+        if target_data.address != actor_data.address {
+            return Err(ItemRuntimeError::PickupWrongAddress);
+        }
+        let actor_position = actor_data.transform.expect("checked above").position;
+        let Some(target_position) = target_data.transform.map(|transform| transform.position)
+        else {
+            return Err(ItemRuntimeError::PickupTargetMissing(target));
+        };
+        let dx = actor_position[0] - target_position[0];
+        let dy = actor_position[1] - target_position[1];
+        if dx * dx + dy * dy > INTERACT_RANGE * INTERACT_RANGE {
+            return Err(ItemRuntimeError::PickupOutOfRange);
+        }
+        let Some(slot) = self.item_runtime.first_inventory_slot(actor) else {
+            return Err(ItemRuntimeError::InventoryFull(actor));
+        };
+
+        let moved = self
+            .item_runtime
+            .move_world_drop_to_inventory(target, actor, slot)?;
+        debug_assert_eq!(moved, item);
+        debug_assert!(self.despawn(target));
+        Ok((moved, slot))
+    }
+
+    /// Authoritative create: mint one `ItemInstanceId`, spawn one world-drop entity,
+    /// and bind one canonical runtime record.
+    pub fn spawn_world_drop_item(
+        &mut self,
+        address: WorldAddress,
+        position: [f32; 2],
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+    ) -> Result<(ItemInstanceId, EntityId), ItemRuntimeError> {
+        let id = self.mint_item_instance_id();
+        self.spawn_world_drop_item_with_instance(
+            id,
+            address,
+            position,
+            definition,
+            quantity,
+            stack_limit,
+        )
+    }
+
+    /// Authoritative restore/test insert with an explicit instance id.
+    pub(crate) fn spawn_world_drop_item_with_instance(
+        &mut self,
+        id: ItemInstanceId,
+        address: WorldAddress,
+        position: [f32; 2],
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+    ) -> Result<(ItemInstanceId, EntityId), ItemRuntimeError> {
+        ItemRuntimeState::validate_quantity(quantity, stack_limit)?;
+        if self.item_runtime.record(id).is_some() {
+            return Err(ItemRuntimeError::DuplicateInstance(id));
+        }
+        let Some(entity) = self.spawn(
+            RuntimeSpawnRequest::transient_at(address)
+                .with_transform(Transform::from_position(position))
+                .with_content(definition)
+                .visible(),
+        ) else {
+            return Err(ItemRuntimeError::SpawnFailed);
+        };
+        if let Err(err) =
+            self.bind_world_drop_item_instance(id, definition, quantity, stack_limit, entity)
+        {
+            let _ = self.despawn(entity);
+            return Err(err);
+        }
+        Ok((id, entity))
+    }
+
+    /// Authoritative bind to an existing drop manifestation.
+    pub(crate) fn bind_world_drop_item_instance(
+        &mut self,
+        id: ItemInstanceId,
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+        world_drop_entity: EntityId,
+    ) -> Result<(), ItemRuntimeError> {
+        self.item_runtime.bind_world_drop(
+            id,
+            definition,
+            quantity,
+            stack_limit,
+            world_drop_entity,
+            self.contains(world_drop_entity),
+        )
+    }
+
+    /// Quantity mutation with stack-contract validation.
+    pub fn set_item_quantity(
+        &mut self,
+        id: ItemInstanceId,
+        quantity: u32,
+        stack_limit: u32,
+    ) -> Result<(), ItemRuntimeError> {
+        self.item_runtime.set_quantity(id, quantity, stack_limit)
+    }
+
+    /// Remove a live world-drop item by item-instance identity.
+    pub fn destroy_world_drop_item(&mut self, id: ItemInstanceId) -> bool {
+        let Some(entity) = self.item_runtime.world_drop_entity_for_item(id) else {
+            return false;
+        };
+        self.despawn(entity)
+    }
+
+    pub(crate) fn cleanup_item_runtime_for_entity(&mut self, entity: EntityId) {
+        let _ = self.item_runtime.remove_by_world_drop(entity);
     }
 
     #[must_use]
@@ -1578,7 +1885,6 @@ impl World {
             player.last_contact = crate::footnote::ContactEvent::None;
             player.coyote_ticks = 0;
             player.jump_buffer_ticks = 0;
-            player.jump_active = false;
             if grounded {
                 if let Some(on) = grounded_on {
                     player.grounded = true;

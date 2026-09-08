@@ -8,7 +8,7 @@ use crate::action::ActionId;
 use crate::entity::EntityId;
 use crate::presentation_oneshot::PresentationOneShotKind;
 use crate::time::SimulationTick;
-use purgatory_common::ContentId;
+use purgatory_common::{ContentId, ItemInstanceId};
 
 /// Stable authored ability identity. Same type as other content ids.
 pub type AbilityId = ContentId;
@@ -347,7 +347,13 @@ impl CooldownTable {
 /// equipment, status) write through this table.
 #[derive(Clone, Debug, Default)]
 pub struct AbilityGrantTable {
-    grants: Vec<(EntityId, AbilityId)>,
+    grants: Vec<(EntityId, AbilityId, AbilityGrantSource)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AbilityGrantSource {
+    Intrinsic,
+    Equipment(ItemInstanceId),
 }
 
 impl AbilityGrantTable {
@@ -358,21 +364,46 @@ impl AbilityGrantTable {
 
     #[must_use]
     pub fn contains(&self, owner: EntityId, id: AbilityId) -> bool {
-        self.grants.iter().any(|(e, a)| *e == owner && *a == id)
+        self.grants.iter().any(|(e, a, _)| *e == owner && *a == id)
     }
 
     pub fn insert(&mut self, owner: EntityId, id: AbilityId) {
-        if !self.contains(owner, id) {
-            self.grants.push((owner, id));
+        self.insert_from_source(owner, id, AbilityGrantSource::Intrinsic);
+    }
+
+    pub fn insert_from_source(
+        &mut self,
+        owner: EntityId,
+        id: AbilityId,
+        source: AbilityGrantSource,
+    ) {
+        if !self
+            .grants
+            .iter()
+            .any(|(e, a, existing)| *e == owner && *a == id && *existing == source)
+        {
+            self.grants.push((owner, id, source));
         }
     }
 
     pub fn remove(&mut self, owner: EntityId, id: AbilityId) {
-        self.grants.retain(|(e, a)| !(*e == owner && *a == id));
+        self.grants.retain(|(e, a, source)| {
+            !(*e == owner && *a == id && *source == AbilityGrantSource::Intrinsic)
+        });
+    }
+
+    pub fn remove_from_source(
+        &mut self,
+        owner: EntityId,
+        id: AbilityId,
+        source: AbilityGrantSource,
+    ) {
+        self.grants
+            .retain(|(e, a, existing)| !(*e == owner && *a == id && *existing == source));
     }
 
     pub fn drop_owner(&mut self, owner: EntityId) {
-        self.grants.retain(|(e, _)| *e != owner);
+        self.grants.retain(|(e, _, _)| *e != owner);
     }
 }
 
@@ -476,5 +507,19 @@ mod tests {
         table.insert(owner, id);
         table.drop_owner(owner);
         assert!(!table.contains(owner, id));
+    }
+
+    #[test]
+    fn removing_equipment_source_preserves_intrinsic_grant() {
+        let mut table = AbilityGrantTable::new();
+        let owner = EntityId::from_raw(1, 1);
+        let ability = ContentId::from_token(9);
+        let item = ItemInstanceId::from_raw(42);
+        table.insert(owner, ability);
+        table.insert_from_source(owner, ability, AbilityGrantSource::Equipment(item));
+        table.remove_from_source(owner, ability, AbilityGrantSource::Equipment(item));
+        assert!(table.contains(owner, ability));
+        table.remove(owner, ability);
+        assert!(!table.contains(owner, ability));
     }
 }

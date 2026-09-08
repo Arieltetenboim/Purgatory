@@ -5,6 +5,7 @@ mod domain;
 mod equipment;
 mod error;
 mod instantiate;
+mod item;
 mod loader;
 mod registry;
 mod restore;
@@ -21,6 +22,9 @@ pub use equipment::{
 };
 pub use error::{ContentError, ValidationIssue};
 pub use instantiate::{geometry_plan, map_plan, spawn_point_position, world_address_for_map};
+pub use item::{
+    ITEM_CONTENT_SCHEMA_VERSION, ItemDefinition, is_stackable, validate_item_definition,
+};
 pub use loader::{LoadMode, default_content_root, load_registry};
 pub use registry::ContentRegistry;
 pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement};

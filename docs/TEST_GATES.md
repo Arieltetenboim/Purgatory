@@ -582,6 +582,13 @@ Owner Phase 0 clarifications:
 - Command/test: `cargo test -p purgatory-dev-hub` (6 passed). `./scripts/check.ps1` GREEN on 2026-09-01.
 - Notes: Mockup-aligned palette/tokens; HubCard + btn_primary/ghost/destructive; sidebar active accent + real CONNECTED/job strip; Phase/profile chips; Project 2-col metrics; Attention healthy check; Recent Activity from real ActivityLog only; no System Status host gauges / Customize / profile block. Docs: [`docs/dev-tools/README.md`](dev-tools/README.md).
 
+## Gate 11.closeout — Phase 11 Item Loop closeout
+
+- Status: **closed 2026-09-07 — complete (GREEN).** **Phase 11 CLOSE.** Do not start Phase 12 from this closeout.
+- Command/test: No automated workspace validation rerun; this was a documentation/marker closeout and no runtime code changed. Phase 11A–11E were already GREEN.
+- Date: 2026-09-07
+- Notes: Manual normal client/server proof passed: visible real world Item drop; `E` pickup; owned Inventory Item; DEV selection by real `ItemInstanceId`; equip and sword presentation; equipment-granted attack ability; unequip returning the same Item to Inventory; and removal of the equipment-derived ability. Production Inventory UI, Phase 12 persistence, advanced stacking, trading, currency, and economy remain deferred. Temporary/dev presentation or diagnostics rough edges do not reopen Phase 11. Report: [`docs/PHASE_11_CLOSEOUT_REPORT.md`](PHASE_11_CLOSEOUT_REPORT.md).
+
 ## Later gates
 
 Legacy Gate 7 (client reconciliation / input replay) already shipped as Phase 5.5. Legacy Gates 8–17 follow superseded numbering and are **not** the post-6G sequence.

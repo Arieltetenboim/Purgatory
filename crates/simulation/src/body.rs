@@ -50,8 +50,6 @@ pub struct PlayerState {
     pub coyote_ticks: u8,
     /// Fixed-tick countdown for a jump pressed before landing.
     pub jump_buffer_ticks: u8,
-    /// Whether the current jump impulse is still eligible for full height.
-    pub jump_active: bool,
 }
 
 impl PlayerState {
@@ -77,7 +75,6 @@ impl PlayerState {
                 jump_speed_override: None,
                 coyote_ticks: 0,
                 jump_buffer_ticks: 0,
-                jump_active: false,
             },
         )
     }

@@ -9,8 +9,6 @@ pub struct PlayerInput {
     pub move_axis: i8,
     /// True only on the tick that should attempt a jump (or drop-through).
     pub jump_pressed: bool,
-    /// True while Jump remains held; used for authoritative short-hop control.
-    pub jump_held: bool,
     /// True while Down is held. Combined with jump for OneWay drop-through.
     pub down_held: bool,
 }
@@ -21,7 +19,6 @@ impl PlayerInput {
         Self {
             move_axis: 0,
             jump_pressed: false,
-            jump_held: false,
             down_held: false,
         }
     }
@@ -50,15 +47,8 @@ impl PlayerInput {
         Self {
             move_axis,
             jump_pressed,
-            jump_held: jump_pressed,
             down_held,
         }
-    }
-
-    #[must_use]
-    pub const fn with_jump_held(mut self, jump_held: bool) -> Self {
-        self.jump_held = jump_held;
-        self
     }
 }
 

@@ -227,6 +227,7 @@ struct ClientApp {
     #[cfg(feature = "dev-diagnostics")]
     equipment_seq: u32,
     ability_seq: u32,
+    pickup_seq: u32,
     display: DisplayController,
     dev_login: String,
     /// Shipping: auto-connect once when the window is ready on Connection.
@@ -324,6 +325,7 @@ impl ClientApp {
             #[cfg(feature = "dev-diagnostics")]
             equipment_seq: 0,
             ability_seq: 0,
+            pickup_seq: 0,
             display: DisplayController::new(),
             dev_login: purgatory_common::DEFAULT_DEV_LOGIN.to_string(),
             #[cfg(not(feature = "dev-diagnostics"))]
@@ -492,6 +494,7 @@ impl ClientApp {
                 self.equipment_seq = 0;
             }
             self.ability_seq = 0;
+            self.pickup_seq = 0;
             self.frame_local = FrameLocalPose::default();
             self.last_observer = None;
             self.frozen_presentation = None;
@@ -671,17 +674,43 @@ impl ClientApp {
             return;
         }
         let slot = def.slot as u8;
-        let content_id = def.content_id;
         let seq = self.next_equipment_seq();
         let sent = self.network.as_ref().is_some_and(|network| {
             network.try_send_equip(purgatory_protocol::EquipRequest {
                 seq,
                 slot,
-                content_id,
+                // The diagnostics command predates owner-private inventory.
+                // It cannot authorize an item without an inventory instance.
+                item_instance_id: purgatory_common::ItemInstanceId::from_raw(0),
             })
         });
         if !sent {
             eprintln!("8E_EQUIP send failed seq={seq} id={authored}");
+        }
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn send_debug_equip_item(&mut self, item_instance_id: purgatory_common::ItemInstanceId) {
+        if !self
+            .lifecycle
+            .view()
+            .inventory
+            .iter()
+            .any(|entry| entry.item_instance_id == item_instance_id)
+        {
+            eprintln!("11E_EQUIP item is no longer in synchronized inventory: {item_instance_id}");
+            return;
+        }
+        let seq = self.next_equipment_seq();
+        let sent = self.network.as_ref().is_some_and(|network| {
+            network.try_send_equip(purgatory_protocol::EquipRequest {
+                seq,
+                slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+                item_instance_id,
+            })
+        });
+        if !sent {
+            eprintln!("11E_EQUIP send failed seq={seq} item={item_instance_id}");
         }
     }
 
@@ -1205,10 +1234,9 @@ impl ClientApp {
             return;
         };
         self.intent.set_epoch(self.replica.input_epoch());
-        let Some(command) = self.intent.emit_tick_with_jump_and_portal(
+        let Some(command) = self.intent.emit_tick_with_portal(
             move_axis_from_i8(input.move_axis),
             input.jump_pressed,
-            input.jump_held,
             input.down_held,
             self.actions.portal_held(),
         ) else {
@@ -1268,6 +1296,24 @@ impl ClientApp {
         }
         let routing = replica_interact_routing(&self.replica);
         log_interact_routing("6B_INTERACT", &routing);
+        if let Some((target, distance)) = routing.nearest_item
+            && distance <= INTERACT_RANGE
+        {
+            self.pickup_seq = self.pickup_seq.saturating_add(1);
+            let sent = self.network.as_ref().expect("checked").try_send_pickup(
+                purgatory_protocol::PickupRequest {
+                    seq: self.pickup_seq,
+                    target,
+                },
+            );
+            self.last_interact_request = format!("Pickup {target}");
+            self.last_interact_result = if sent {
+                "pickup sent".into()
+            } else {
+                "pickup send failed".into()
+            };
+            return;
+        }
         match interact_open_send_target(&routing) {
             Some(target) => {
                 self.last_interact_request = format!("Open {target}");
@@ -1324,8 +1370,8 @@ impl ClientApp {
         if self.network.is_none() {
             return;
         }
-        let Some(def) = self.registry.ability("skill.basic.strike") else {
-            eprintln!("9C_ABILITY missing skill.basic.strike in pack");
+        let Some(def) = self.registry.ability("skill.debug.practice_sword_strike") else {
+            eprintln!("11E_ABILITY missing skill.debug.practice_sword_strike in pack");
             return;
         };
         let ability_id = def.id;
@@ -2069,6 +2115,7 @@ impl ClientApp {
             let interactable_n = replica_interactable_quads.len() + replica_portal_quads.len();
             quads.extend(replica_interactable_quads);
             quads.extend(replica_portal_quads);
+            quads.extend(item_drop_quads(&self.replica));
             quads.extend(replica_npc_quads);
             self.trace_scene_once(&camera, local_pose, interactable_n, quads.len());
             #[cfg(feature = "dev-diagnostics")]
@@ -2443,6 +2490,7 @@ impl ClientApp {
         let pred = self.prediction.diagnostics(&self.world, &self.replica);
         let network = NetworkDiagnostics {
             lifecycle: self.lifecycle.snapshot(),
+            inventory: self.lifecycle.view().inventory.clone(),
             net_input_seq: self.intent.sequence,
             net_input_sent: self.intent.commands_sent,
             net_move_axis: self.intent.move_axis.to_i8(),
@@ -2861,6 +2909,7 @@ impl ClientApp {
                     }
                 }
                 DebugCommand::Equip(authored) => self.send_debug_equip(authored),
+                DebugCommand::EquipItem(item) => self.send_debug_equip_item(item),
                 DebugCommand::UnequipSlot(slot) => self.send_debug_unequip(slot),
                 DebugCommand::UnequipAll => {
                     for slot in 0..purgatory_simulation::EquipmentSlot::COUNT as u8 {
@@ -3220,6 +3269,20 @@ fn portal_quads(replica: &ReplicatedWorld) -> Vec<DrawQuad> {
         .collect()
 }
 
+fn item_drop_quads(replica: &ReplicatedWorld) -> Vec<DrawQuad> {
+    replica
+        .iter()
+        .filter(|entity| entity.kind == ReplicatedKind::Item)
+        .map(|entity| {
+            DrawQuad::rect(
+                [entity.position[0], entity.position[1] + 0.22],
+                [0.42, 0.42],
+                [0.95, 0.78, 0.18, 1.0],
+            )
+        })
+        .collect()
+}
+
 fn replica_interactable_count(replica: &ReplicatedWorld) -> usize {
     replica
         .iter()
@@ -3371,6 +3434,7 @@ fn replica_kind_labels(replica: &ReplicatedWorld, kind: ReplicatedKind) -> Vec<S
 #[derive(Clone, Copy, Debug, Default)]
 struct ReplicaInteractRouting {
     nearest_generic: Option<(purgatory_protocol::WireEntityId, f32)>,
+    nearest_item: Option<(purgatory_protocol::WireEntityId, f32)>,
     nearest_portal: Option<(purgatory_protocol::WireEntityId, f32)>,
     #[cfg_attr(not(feature = "dev-diagnostics"), allow(dead_code))]
     nearest_portal_pos: Option<[f32; 2]>,
@@ -3383,6 +3447,7 @@ fn replica_interact_routing(replica: &ReplicatedWorld) -> ReplicaInteractRouting
     let activate_portal = advisory_centered_portal(replica);
     ReplicaInteractRouting {
         nearest_generic: advisory_nearest_generic(replica),
+        nearest_item: advisory_nearest_item(replica),
         nearest_portal: nearest_portal.map(|(id, dist, _)| (id, dist)),
         nearest_portal_pos: nearest_portal.map(|(_, _, pos)| pos),
         portal_eligible: activate_portal.is_some(),
@@ -3391,6 +3456,9 @@ fn replica_interact_routing(replica: &ReplicatedWorld) -> ReplicaInteractRouting
 }
 
 fn log_interact_routing(prefix: &str, routing: &ReplicaInteractRouting) {
+    if let Some((id, distance)) = routing.nearest_item {
+        println!("{prefix} nearest item={id} distance={distance:.3}");
+    }
     match routing.nearest_generic {
         Some((id, distance)) => {
             println!("{prefix} nearest generic interactable={id} distance={distance:.3}");
@@ -3455,6 +3523,12 @@ fn advisory_nearest_generic(
     replica: &ReplicatedWorld,
 ) -> Option<(purgatory_protocol::WireEntityId, f32)> {
     nearest_of_kind(replica, ReplicatedKind::Interactable).map(|(id, dist, _)| (id, dist))
+}
+
+fn advisory_nearest_item(
+    replica: &ReplicatedWorld,
+) -> Option<(purgatory_protocol::WireEntityId, f32)> {
+    nearest_of_kind(replica, ReplicatedKind::Item).map(|(id, dist, _)| (id, dist))
 }
 
 fn advisory_nearest_portal(

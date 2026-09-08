@@ -26,8 +26,8 @@ fn canonical_defaults_keep_ground_speed_and_jump_value() {
     assert_eq!(CFG.jump_velocity, 13.0);
 }
 
-fn jump(pressed: bool, held: bool) -> PlayerInput {
-    PlayerInput::from_buttons(false, false, pressed).with_jump_held(held)
+fn jump(pressed: bool) -> PlayerInput {
+    PlayerInput::from_buttons(false, false, pressed)
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn coyote_jump_succeeds_after_walking_off_ground() {
         }
     }
     assert!(!player(&world).grounded);
-    world.tick(DT_30, jump(true, true));
+    world.tick(DT_30, jump(true));
     assert!(player(&world).velocity[1] > 0.0);
 }
 
@@ -83,13 +83,13 @@ fn coyote_window_expires_and_cannot_double_jump() {
     for _ in 0..3 {
         world.tick(DT_30, PlayerInput::idle());
     }
-    world.tick(DT_30, jump(true, true));
+    world.tick(DT_30, jump(true));
     assert!(player(&world).velocity[1] < 0.0);
 
     let mut airborne = World::dev_stage();
-    airborne.tick(DT_30, jump(true, true));
+    airborne.tick(DT_30, jump(true));
     let first = player(&airborne).velocity[1];
-    airborne.tick(DT_30, jump(true, true));
+    airborne.tick(DT_30, jump(true));
     assert!(player(&airborne).velocity[1] < first);
 }
 
@@ -104,16 +104,16 @@ fn buffered_jump_executes_on_landing_and_expires() {
         false,
         None,
     );
-    world.tick(DT_30, jump(true, true));
+    world.tick(DT_30, jump(true));
     assert!(player(&world).velocity[1] > 0.0);
     assert!(!player(&world).grounded);
     let launched = player(&world).velocity[1];
-    world.tick(DT_30, jump(false, true));
+    world.tick(DT_30, jump(false));
     assert!(player(&world).velocity[1] < launched);
 
     let mut expired = World::dev_stage();
     set_player(&mut expired, [-2.0, 2.0], [0.0, 0.0], false, None);
-    expired.tick(DT_30, jump(true, true));
+    expired.tick(DT_30, jump(true));
     for _ in 0..4 {
         expired.tick(DT_30, PlayerInput::idle());
     }
@@ -121,30 +121,17 @@ fn buffered_jump_executes_on_landing_and_expires() {
 }
 
 #[test]
-fn short_hop_is_shorter_but_release_on_descent_has_no_impulse_cut() {
-    let mut full = World::dev_stage();
-    full.tick(DT_30, jump(true, true));
+fn releasing_jump_does_not_modify_vertical_velocity() {
+    let mut released = World::dev_stage();
+    let mut continued = World::dev_stage();
+    released.tick(DT_30, jump(true));
+    continued.tick(DT_30, jump(true));
     for _ in 0..10 {
-        full.tick(DT_30, jump(false, true));
+        released.tick(DT_30, PlayerInput::idle());
+        continued.tick(DT_30, PlayerInput::idle());
     }
-    let full_height = player(&full).position[1];
-
-    let mut short = World::dev_stage();
-    short.tick(DT_30, jump(true, true));
-    short.tick(DT_30, PlayerInput::idle());
-    for _ in 0..9 {
-        short.tick(DT_30, PlayerInput::idle());
-    }
-    assert!(player(&short).position[1] < full_height);
-
-    let mut descent = World::dev_stage();
-    descent.tick(DT_30, jump(true, true));
-    while player(&descent).velocity[1] > 0.0 {
-        descent.tick(DT_30, jump(false, true));
-    }
-    let before = player(&descent).velocity[1];
-    descent.tick(DT_30, PlayerInput::idle());
-    assert!((player(&descent).velocity[1] - (before - CFG.gravity * DT_30)).abs() < 1e-3);
+    assert!((player(&released).velocity[1] - player(&continued).velocity[1]).abs() < 1e-6);
+    assert!((player(&released).position[1] - player(&continued).position[1]).abs() < 1e-6);
 }
 
 #[test]
@@ -157,13 +144,11 @@ fn jump_timing_state_clears_on_reset() {
         };
         player.coyote_ticks = 3;
         player.jump_buffer_ticks = 3;
-        player.jump_active = true;
     }
     world.reset_player_entity(id);
     let (_, player) = world.get_player(id).expect("reset player");
     assert_eq!(player.coyote_ticks, 0);
     assert_eq!(player.jump_buffer_ticks, 0);
-    assert!(!player.jump_active);
 }
 
 fn drive(world: &mut World, ticks: u32, dt: f32, input: PlayerInput) {
@@ -226,7 +211,6 @@ fn set_player(
     player.ignored_platform = None;
     player.coyote_ticks = 0;
     player.jump_buffer_ticks = 0;
-    player.jump_active = false;
 }
 
 #[test]

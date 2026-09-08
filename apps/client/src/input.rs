@@ -121,7 +121,6 @@ impl ActionState {
             jump_pressed,
             self.move_down,
         )
-        .with_jump_held(self.jump_held)
     }
 
     #[must_use]
@@ -331,11 +330,9 @@ mod tests {
         let first = state.consume_tick_input();
         let second = state.consume_tick_input();
         assert!(first.jump_pressed);
-        assert!(first.jump_held);
         assert!(!second.jump_pressed);
-        assert!(second.jump_held);
         state.set_action(Action::Jump, false, false);
-        assert!(!state.consume_tick_input().jump_held);
+        assert!(!state.consume_tick_input().jump_pressed);
     }
 
     #[test]

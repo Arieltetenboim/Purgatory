@@ -637,7 +637,6 @@ fn input_right_jump() -> InputCommand {
         sequence: GOLDEN_SEQUENCE,
         move_axis: MoveAxis::Right,
         jump_pressed: true,
-        jump_held: false,
         down_held: false,
         portal_held: false,
     }
@@ -665,8 +664,8 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_20() {
-    assert_eq!(PROTOCOL_VERSION, 20);
+fn current_protocol_version_is_24() {
+    assert_eq!(PROTOCOL_VERSION, 24);
 }
 
 #[test]

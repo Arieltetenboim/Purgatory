@@ -60,6 +60,7 @@ pub struct WorldDiagnostics {
 #[derive(Debug, Default)]
 pub struct NetworkDiagnostics {
     pub lifecycle: NetworkSnapshot,
+    pub inventory: Vec<purgatory_protocol::InventoryEntry>,
     pub net_input_seq: u32,
     pub net_input_sent: u64,
     pub net_move_axis: i8,

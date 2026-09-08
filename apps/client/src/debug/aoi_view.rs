@@ -51,6 +51,7 @@ pub fn semantic_label(kind: ReplicatedKind, id: WireEntityId, local: bool) -> St
         ReplicatedKind::Interactable => format!("INTERACTABLE {id}"),
         ReplicatedKind::Portal => format!("PORTAL {id}"),
         ReplicatedKind::Npc => format!("NPC {id}"),
+        ReplicatedKind::Item => format!("ITEM DROP {id}"),
     }
 }
 
@@ -62,6 +63,7 @@ pub fn role_of(kind: ReplicatedKind, local: bool) -> ReplicaRole {
         ReplicatedKind::Interactable => ReplicaRole::Interactable,
         ReplicatedKind::Portal => ReplicaRole::Portal,
         ReplicatedKind::Npc => ReplicaRole::Npc,
+        ReplicatedKind::Item => ReplicaRole::Interactable,
     }
 }
 

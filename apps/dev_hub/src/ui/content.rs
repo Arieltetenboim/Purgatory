@@ -6,13 +6,42 @@ use crate::authoring_template;
 use crate::headwear_side_master;
 use crate::theme;
 use crate::ui::layout::{self, btn_ghost, btn_primary, card};
+fn launch_npc_lab() -> Result<(), String> {
+    let root = std::env::current_dir().map_err(|err| format!("current directory: {err}"))?;
+    let launcher = root.join("tools").join("npc_lab").join("run.ps1");
+    if !launcher.is_file() {
+        return Err(format!("NPC Lab launcher not found: {}", launcher.display()));
+    }
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NoExit",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&launcher)
+            .current_dir(&root)
+            .spawn()
+            .map_err(|err| format!("launch {}: {err}", launcher.display()))?;
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("NPC Lab N1 launcher currently supports Windows only".to_owned())
+    }
+}
 
 pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<HubCommand> {
     let mut cmd = None;
     layout::page_header(
         ui,
         "Content",
-        "Standalone authoring tools. Animation Lab is A7.0; map/NPC editors stay later.",
+        "Standalone authoring tools. Animation Lab and NPC Lab launch independently of the Hub.",
     );
     card(ui, "Animation Lab", |ui| {
         ui.label(
@@ -26,6 +55,24 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
         ui.add_space(8.0);
         if ui.add(btn_primary("Launch Animation Lab")).clicked() {
             cmd = Some(HubCommand::LaunchAnimationLab);
+        }
+    });
+    ui.add_space(12.0);
+    card(ui, "NPC Lab", |ui| {
+        ui.label(
+            "Local Web authoring shell. Repository JSON remains the source of truth.",
+        );
+        ui.add_space(6.0);
+        ui.colored_label(
+            theme::muted(),
+            "N1: list, open, edit, create, save, and reopen NPC authoring documents.",
+        );
+        ui.add_space(8.0);
+        if ui.add(btn_primary("Launch NPC Lab")).clicked() {
+            *export_status = Some(match launch_npc_lab() {
+                Ok(()) => "NPC Lab launch requested".to_owned(),
+                Err(err) => format!("NPC Lab launch failed: {err}"),
+            });
         }
     });
     ui.add_space(12.0);

@@ -663,10 +663,7 @@ mod tests {
         world.tick(DT, PlayerInput::from_buttons(false, true, true));
         let mut saw_ceiling = false;
         for _ in 0..45 {
-            world.tick(
-                DT,
-                PlayerInput::from_buttons(false, true, false).with_jump_held(true),
-            );
+            world.tick(DT, PlayerInput::from_buttons(false, true, false));
             let motion = world.last_motion_debug();
             let body = world.player_body().expect("p");
             if motion.correction_axis == CorrectionAxis::Vertical
@@ -722,10 +719,7 @@ mod tests {
         world.tick(DT, PlayerInput::from_buttons(false, true, true));
         let mut saw_ceiling = false;
         for _ in 0..40 {
-            world.tick(
-                DT,
-                PlayerInput::from_buttons(false, true, false).with_jump_held(true),
-            );
+            world.tick(DT, PlayerInput::from_buttons(false, true, false));
             let motion = world.last_motion_debug();
             assert!(
                 !motion.discontinuity,

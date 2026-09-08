@@ -30,6 +30,7 @@ pub enum DebugCommand {
     PresentationAttack,
     PresentationHurt,
     Equip(&'static str),
+    EquipItem(purgatory_common::ItemInstanceId),
     UnequipSlot(u8),
     UnequipAll,
     AnimationPlay,
@@ -125,6 +126,9 @@ impl DebugUiState {
         }
         if let Some(authored) = self.request_debug_equip.take() {
             out.push(DebugCommand::Equip(authored));
+        }
+        if let Some(item) = self.request_debug_equip_item.take() {
+            out.push(DebugCommand::EquipItem(item));
         }
         if let Some(slot) = self.request_debug_unequip_slot.take() {
             out.push(DebugCommand::UnequipSlot(slot));

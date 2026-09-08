@@ -180,14 +180,6 @@ impl World {
                 player.jump_buffer_ticks = 0;
                 player.coyote_ticks = 0;
             }
-            if !jump_consumed
-                && player.jump_active
-                && !control_input.jump_held
-                && player.velocity[1] > 0.0
-            {
-                player.velocity[1] *= 0.5;
-                player.jump_active = false;
-            }
             apply_horizontal(player, control_input, &config, dt_seconds);
 
             // Grounded characters must not sink-then-snap from gravity each tick.
@@ -292,12 +284,10 @@ impl World {
 
         if let Some((_, player)) = self.player_parts_mut_for(id) {
             let grounded_now = player.grounded;
-            let left_ground =
-                prev_grounded && !grounded_now && !input.jump_pressed && !player.jump_active;
+            let left_ground = prev_grounded && !grounded_now && !input.jump_pressed;
             if grounded_now {
                 player.coyote_ticks = 0;
-                player.jump_active = false;
-            } else if left_ground && !player.jump_active {
+            } else if left_ground {
                 player.coyote_ticks = crate::footnote::COYOTE_TICKS;
             } else if player.coyote_ticks > 0 {
                 player.coyote_ticks -= 1;
@@ -307,7 +297,6 @@ impl World {
                     player,
                     PlayerInput {
                         jump_pressed: true,
-                        jump_held: input.jump_held,
                         ..PlayerInput::idle()
                     },
                     &config,
@@ -455,7 +444,6 @@ fn apply_jump(player: &mut PlayerState, input: PlayerInput, config: &FootnoteCon
         }
         player.grounded = false;
         player.grounded_on = None;
-        player.jump_active = input.jump_held || input.jump_pressed;
         return true;
     }
     false

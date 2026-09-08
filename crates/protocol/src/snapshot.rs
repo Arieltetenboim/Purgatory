@@ -14,6 +14,7 @@ const KIND_PLAYER: u8 = 1;
 const KIND_INTERACTABLE: u8 = 2;
 const KIND_PORTAL: u8 = 3;
 const KIND_NPC: u8 = 4;
+const KIND_ITEM: u8 = 5;
 
 /// Wire entity identity. Generation is part of equality; index reuse is a
 /// different entity.
@@ -61,6 +62,8 @@ pub enum ReplicatedKind {
     Portal = 3,
     /// Visible non-player actor (sim `EntityKind::Generic` with Transform).
     Npc = 4,
+    /// Authoritative Item-backed world drop.
+    Item = 5,
 }
 
 impl std::fmt::Display for ReplicatedKind {
@@ -70,6 +73,7 @@ impl std::fmt::Display for ReplicatedKind {
             Self::Interactable => "Interactable",
             Self::Portal => "Portal",
             Self::Npc => "Npc",
+            Self::Item => "Item",
         })
     }
 }
@@ -87,6 +91,7 @@ impl ReplicatedKind {
             KIND_INTERACTABLE => Some(Self::Interactable),
             KIND_PORTAL => Some(Self::Portal),
             KIND_NPC => Some(Self::Npc),
+            KIND_ITEM => Some(Self::Item),
             _ => None,
         }
     }
