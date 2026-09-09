@@ -1,6 +1,6 @@
 # NPC Lab
 
-Status: **FORGE N6a - Synthetic Test Bench + Conversation Preview implemented; pending local verification.**
+Status: **FORGE N6b - player-facing Test Preview + compact selection diagnostics; pending local verification.**
 
 NPC Lab is a local Web authoring tool for PURGATORY NPC content. Repository JSON remains the source of truth.
 
@@ -12,75 +12,55 @@ Edits canonical NPC identity/design context: authored ID/schema, names, role/are
 
 ### DIALOGUE — N3 + N5
 
-Edits `interaction.beats` including:
+Edits `interaction.beats` including beat identity/priority, ENTRY or CONTINUATION role, dialogue, choices, explicit next/end transitions, notes and Dialogue Pool (`mandatory`, `once`, `repeatable`, `rare`, `lore`).
 
-- beat ID/title/integer priority;
-- ENTRY / CONTINUATION role;
-- dialogue lines and player choices;
-- explicit next-beat / end transitions;
-- beat notes and preserved presentation refs;
-- Dialogue Pool: `mandatory`, `once`, `repeatable`, `rare`, `lore`.
-
-N5 pool semantics:
-
-- `mandatory` — normal condition/priority selection;
-- `once` — suppressed after this NPC beat has been heard;
-- `repeatable` — remains eligible after being heard;
-- `lore` — optional one-shot content;
-- `rare` — valid authoring metadata but deliberately not auto-selected until a real cadence/probability requirement exists.
+N5 pool semantics remain unchanged: mandatory follows normal selection; once/lore are suppressed after dialogue memory; repeatable remains eligible; rare is valid authoring metadata but deliberately not auto-selected until real cadence requirements exist.
 
 ### STATE — N4
 
-Closed typed conditions:
-
-- Fact;
-- NPC Met;
-- Dialogue Heard;
-- Item Owned;
-- Item Equipped.
-
-Choice actions:
-
-- Set Fact;
-- Mark NPC Met;
-- Give Item;
-- Remove Item.
+Closed typed conditions: Fact, NPC Met, Dialogue Heard, Item Owned and Item Equipped. Choice actions: Set Fact, Mark NPC Met, Give Item and Remove Item.
 
 Top-level selection remains deterministic: ENTRY only, all conditions AND, pool eligibility, highest priority, authored order for equal priority.
 
-### TEST — N6a
+### TEST — N6a + N6b
 
-The Test Bench provides editable synthetic character/world state and a conversation-facing preview without launching the game client/server runtime.
+The Test Bench provides editable synthetic character/world state and a conversation preview without launching the game client/server runtime.
 
-Synthetic state fields:
+Synthetic state fields: boolean Facts (`fact.id=true/false`), NPC Met, Dialogue Heard (`npc.id|beat_id`), Item Owned and Item Equipped.
 
-- boolean Facts (`fact.id=true/false`);
-- NPC Met;
-- Dialogue Heard (`npc.id|beat_id`);
-- Item Owned;
-- Item Equipped.
+`Start / Evaluate` sends the current authored NPC document plus synthetic state to the local preview API. The server uses the same `selection.py` evaluator covered by N4/N5/N6 tests; the browser does not own parallel selection logic.
 
-`Evaluate` sends the current authored NPC document plus synthetic state to the local N6a preview API. The server uses the same Python `selection.py` evaluator already covered by N4/N5 tests; the browser does not own a parallel selection implementation.
+#### Player-facing conversation preview
 
-The preview shows:
+The central preview is intentionally separated from author/debug metadata. Its content contract is the content the future player dialogue surface is expected to consume:
 
-- NPC working/display name;
-- selected beat id, priority and pool;
-- authored NPC dialogue text;
-- player choices.
+- authored `design.display_name` only when one exists;
+- every authored `lines[].text`, in authored order;
+- every authored `choices[].text`, in authored order;
+- choice selection follows the authored `next` path and applies the already-defined synthetic actions/state changes.
 
-Choosing an option synthetically:
+`working_name`, beat id/title, priority, pool, conditions, action records and diagnostic reasons are **not player-facing content** and stay outside the conversation surface.
 
-1. records the current beat in `dialogue_heard`;
-2. applies the existing closed action vocabulary to synthetic state;
-3. follows explicit `next` directly when present;
-4. ends the synthetic conversation when `next` is null.
+When `display_name` is `null`, the Preview does not substitute the author-only `working_name` into the player-facing conversation. The authoring toolbar still identifies which NPC document is under test.
 
-A beat with no choices exposes `Continue / End`, which records the beat as heard and ends the current preview conversation.
+A no-choice beat uses a generic Preview `Continue` control to complete/end the synthetic conversation. That control is Test Bench chrome, not authored dialogue content.
 
-N6a intentionally does **not** add selection diagnostics / `Why this dialogue?`, rejected-condition explanations, graphs, runtime networking, persistence or game-client dialogue UI. Those remain later N6/N10 work.
+This is a content-fidelity preview, not a frozen visual design for the eventual game dialogue HUD.
 
-Synthetic item mutation is intentionally boolean ownership only. `Give Item` / `Remove Item` support quantity `1`; stack/count simulation is deferred until real authored content requires it.
+#### Why this dialogue? — N6b
+
+Selection diagnostics are secondary authoring information and are collapsed by default. The compact view answers the useful questions first:
+
+- which ENTRY beat won;
+- which other ENTRY beats were eligible but lost on priority/authored order;
+- which ENTRY beats are blocked, showing only their failed conditions or pool reason;
+- how many continuation beats exist outside top-level ENTRY selection.
+
+Full PASS traces are deliberately not shown in the default diagnostic view. CONTINUATION beats are hidden behind their own disclosure because they are not candidates for top-level selection.
+
+Diagnostics come from `selection.explain_entry_selection()` and do not change selection semantics. They apply only to top-level `Evaluate`; explicit `next` transitions remain authored conversation flow.
+
+No graph editor/visualization is part of N6.
 
 ### SHELL
 
@@ -100,24 +80,27 @@ If an older NPC Lab server is still occupying port 8765, stop its terminal/serve
 
 ## Tests
 
-Run all focused NPC Lab tests:
-
 ```powershell
 py -3 -m unittest discover -s .\tools\npc_lab -p "test_*.py"
 ```
 
-The suite covers N4 typed validation/selection, N5 pools, and N6a synthetic progression including dialogue memory, explicit continuation flow, first-meeting `Mark NPC Met`, and the real Traveler package `Give Item` + `Set Fact` actions.
+The suite covers N4 typed validation/selection, N5 pools, N6a synthetic progression and N6b diagnostics. N6b tests prove diagnostics report the same winner as the selector, expose failed expected/actual condition values, explain one-shot pool rejection, preserve eligible-but-lower-priority status, and keep CONTINUATION beats outside ENTRY selection.
 
-## N6a gate
+## N6 gate
 
-Using the real Welcome NPC content, the local Test Bench must prove without launching the game runtime that:
+Using the real Welcome NPC content, the Test Bench must allow currently authored NPC #3 states to be exercised deterministically without launching the game runtime.
 
-1. synthetic state selects the expected ENTRY beat;
-2. the selected NPC text and choices are visible as a conversation preview;
-3. choosing `ask_place` from the Traveler intro marks the Traveler as met and previews `intro_place`;
-4. choosing `take_package` from `workshop_package_unknown` adds `item.package`, sets `welcome.workshop.package_at_inn=false`, records the beat as heard, and ends the conversation;
-5. completing `lore_roofs` records it as heard so a subsequent Evaluate can select repeatable `filler_food`.
+For each tested state:
 
-## Known narrow limitation
+1. the central conversation shows the same authored player-facing text/choices and authored flow the runtime is expected to consume;
+2. author/debug metadata does not leak into the player-facing content;
+3. the author can inspect a concise explanation of why the top-level ENTRY beat was selected;
+4. blocked alternatives expose only decision-relevant failures by default;
+5. continuation flow remains distinct from top-level selection diagnostics.
 
-The browser-side Pool editor validates allowed pool labels and the selector rejects unknown explicit values. The legacy Python save validator still does not mirror that Pool-label check for raw JSON edits. Keep this as a small validation-hardening follow-up rather than expanding N6a into unrelated server refactoring.
+## Known narrow limitations
+
+- synthetic item mutation remains boolean ownership; Give/Remove Item currently supports quantity 1 only;
+- `rare` automatic cadence remains intentionally undefined;
+- raw-JSON Pool labels are still not mirrored by the legacy Python save validator;
+- runtime/N10, persistence and final game-client dialogue visuals are out of scope.

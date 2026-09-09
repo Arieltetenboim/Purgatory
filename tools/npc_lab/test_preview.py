@@ -114,5 +114,93 @@ class NpcLabN6aPreviewTests(unittest.TestCase):
         self.assertEqual(selection.select_entry_beat(doc, new_state)["id"], "filler_food")
 
 
+class NpcLabN6bDiagnosticsTests(unittest.TestCase):
+    def test_diagnostics_report_same_winner_as_selector(self):
+        doc = load_npc("npc.welcome.traveler_stayed.json")
+        state = {
+            "facts": {},
+            "npc_met": [],
+            "dialogue_heard": [],
+            "item_owned": [],
+            "item_equipped": [],
+        }
+        winner = selection.select_entry_beat(doc, state)
+        report = selection.explain_entry_selection(doc, state)
+        self.assertEqual(report["winner_id"], winner["id"])
+        winner_rows = [row for row in report["beats"] if row["status"] == "winner"]
+        self.assertEqual([row["id"] for row in winner_rows], [winner["id"]])
+
+    def test_failed_condition_reports_expected_and_actual(self):
+        doc = load_npc("npc.welcome.traveler_stayed.json")
+        state = {
+            "facts": {
+                "welcome.workshop.package_needed": False,
+                "welcome.workshop.package_at_inn": False,
+                "welcome.workshop.package_delivered": False,
+            },
+            "npc_met": ["npc.welcome.traveler_stayed"],
+            "dialogue_heard": [],
+            "item_owned": [],
+            "item_equipped": [],
+        }
+        report = selection.explain_entry_selection(doc, state)
+        row = next(value for value in report["beats"] if value["id"] == "workshop_package_unknown")
+        self.assertEqual(row["status"], "rejected")
+        failures = [value for value in row["conditions"] if not value["matched"]]
+        self.assertTrue(failures)
+        self.assertTrue(any(value["expected"] is True and value["actual"] is False for value in failures))
+
+    def test_once_pool_rejection_is_explained_after_heard(self):
+        doc = load_npc("npc.welcome.traveler_stayed.json")
+        state = {
+            "facts": {},
+            "npc_met": ["npc.welcome.traveler_stayed"],
+            "dialogue_heard": [
+                {"npc": "npc.welcome.traveler_stayed", "beat": "lore_roofs"}
+            ],
+            "item_owned": [],
+            "item_equipped": [],
+        }
+        report = selection.explain_entry_selection(doc, state)
+        lore = next(value for value in report["beats"] if value["id"] == "lore_roofs")
+        filler = next(value for value in report["beats"] if value["id"] == "filler_food")
+        self.assertEqual(lore["status"], "rejected")
+        self.assertFalse(lore["pool_result"]["allowed"])
+        self.assertIn("already", lore["pool_result"]["reason"].lower())
+        self.assertEqual(filler["status"], "winner")
+
+    def test_lower_priority_eligible_beat_is_not_reported_rejected(self):
+        doc = {
+            "id": "npc.welcome.test",
+            "interaction": {
+                "beats": [
+                    {"id": "high", "title": "High", "priority": 10, "entry": True, "pool": "mandatory", "conditions": [], "lines": [], "choices": []},
+                    {"id": "low", "title": "Low", "priority": 1, "entry": True, "pool": "repeatable", "conditions": [], "lines": [], "choices": []},
+                ]
+            },
+        }
+        report = selection.explain_entry_selection(doc, {})
+        low = next(value for value in report["beats"] if value["id"] == "low")
+        self.assertEqual(report["winner_id"], "high")
+        self.assertEqual(low["status"], "eligible")
+        self.assertTrue(low["eligible"])
+        self.assertIn("below winner", low["reason"])
+
+    def test_continuation_is_reported_outside_entry_selection(self):
+        doc = {
+            "id": "npc.welcome.test",
+            "interaction": {
+                "beats": [
+                    {"id": "entry", "title": "Entry", "priority": 1, "entry": True, "pool": "mandatory", "conditions": [], "lines": [], "choices": []},
+                    {"id": "detail", "title": "Detail", "priority": 100, "entry": False, "pool": "once", "conditions": [], "lines": [], "choices": []},
+                ]
+            },
+        }
+        report = selection.explain_entry_selection(doc, {})
+        detail = next(value for value in report["beats"] if value["id"] == "detail")
+        self.assertEqual(detail["status"], "continuation")
+        self.assertFalse(detail["eligible"])
+
+
 if __name__ == "__main__":
     unittest.main()

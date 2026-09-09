@@ -3,7 +3,8 @@
 N4 owns typed state conditions and deterministic ENTRY selection.
 N5 adds the currently frozen dialogue-pool semantics.
 N6a reuses those rules for a local synthetic conversation preview and adds only
-synthetic choice/action progression. Runtime projection remains deferred to N10.
+synthetic choice/action progression. N6b exposes structured diagnostics from the
+same evaluator. Runtime projection remains deferred to N10.
 
 The caller is expected to pass an NPC document that already passed server.py
 validation.
@@ -122,6 +123,113 @@ def select_entry_beat(document: dict[str, Any], state: dict[str, Any]) -> dict[s
         if winner is None or beat["priority"] > winner["priority"]:
             winner = beat
     return winner
+
+
+def _condition_reference(condition: dict[str, Any]) -> dict[str, Any]:
+    for key in ("fact", "npc_met", "dialogue_heard", "item_owned", "item_equipped"):
+        if key in condition:
+            return {"kind": key, "reference": condition[key]}
+    raise ValueError("Unsupported N4 condition shape.")
+
+
+def _pool_diagnostic(
+    document: dict[str, Any], beat: dict[str, Any], state: dict[str, Any]
+) -> dict[str, Any]:
+    pool = beat.get("pool") or POOL_MANDATORY
+    allowed = pool_allows_selection(document, beat, state)
+    if pool == POOL_RARE:
+        reason = "Rare automatic cadence is not defined, so this beat is not auto-selected."
+    elif pool in (POOL_ONCE, POOL_LORE) and not allowed:
+        reason = "This one-shot beat is already present in Dialogue Heard."
+    elif pool in (POOL_ONCE, POOL_LORE):
+        reason = "This one-shot beat has not been heard yet."
+    elif pool == POOL_REPEATABLE:
+        reason = "Repeatable pool remains eligible regardless of Dialogue Heard."
+    else:
+        reason = "Mandatory pool does not suppress an otherwise eligible beat."
+    return {"pool": pool, "allowed": allowed, "reason": reason}
+
+
+def explain_entry_selection(
+    document: dict[str, Any], state: dict[str, Any]
+) -> dict[str, Any]:
+    """Return structured N6b diagnostics without changing selection semantics."""
+    winner = select_entry_beat(document, state)
+    winner_id = winner.get("id") if winner is not None else None
+    winner_priority = winner.get("priority") if winner is not None else None
+
+    interaction = document.get("interaction", {})
+    beats = interaction.get("beats", []) if isinstance(interaction, dict) else []
+    diagnostics: list[dict[str, Any]] = []
+
+    for authored_index, beat in enumerate(beats):
+        if not isinstance(beat, dict):
+            continue
+
+        is_entry = beat.get("entry") is True
+        condition_results: list[dict[str, Any]] = []
+        for condition in beat.get("conditions", []):
+            expected = condition["equals"]
+            actual = condition_value(condition, state)
+            reference = _condition_reference(condition)
+            condition_results.append(
+                {
+                    **reference,
+                    "expected": expected,
+                    "actual": actual,
+                    "matched": actual == expected,
+                }
+            )
+
+        conditions_match = all(item["matched"] for item in condition_results)
+        pool_info = _pool_diagnostic(document, beat, state) if is_entry else None
+        eligible = is_entry and conditions_match and bool(pool_info and pool_info["allowed"])
+
+        if not is_entry:
+            status = "continuation"
+            reason = "CONTINUATION beats do not participate in top-level ENTRY selection."
+        elif not conditions_match:
+            failed = sum(1 for item in condition_results if not item["matched"])
+            status = "rejected"
+            reason = f"Rejected: {failed} condition(s) failed."
+        elif pool_info is not None and not pool_info["allowed"]:
+            status = "rejected"
+            reason = f"Rejected by pool: {pool_info['reason']}"
+        elif beat.get("id") == winner_id:
+            status = "winner"
+            reason = "Selected: highest-priority eligible ENTRY beat."
+        elif winner_priority is not None and beat["priority"] < winner_priority:
+            status = "eligible"
+            reason = f"Eligible, but P{beat['priority']} is below winner P{winner_priority}."
+        else:
+            status = "eligible"
+            reason = "Eligible at the winning priority, but appears later in authored order."
+
+        diagnostics.append(
+            {
+                "id": beat.get("id"),
+                "title": beat.get("title"),
+                "authored_index": authored_index,
+                "entry": is_entry,
+                "priority": beat.get("priority"),
+                "pool": beat.get("pool") or POOL_MANDATORY,
+                "conditions": condition_results,
+                "conditions_match": conditions_match,
+                "pool_result": pool_info,
+                "eligible": eligible,
+                "status": status,
+                "reason": reason,
+            }
+        )
+
+    eligible_ids = [item["id"] for item in diagnostics if item["eligible"]]
+    rejected_ids = [item["id"] for item in diagnostics if item["status"] == "rejected"]
+    return {
+        "winner_id": winner_id,
+        "eligible_ids": eligible_ids,
+        "rejected_ids": rejected_ids,
+        "beats": diagnostics,
+    }
 
 
 def find_beat(document: dict[str, Any], beat_id: str) -> dict[str, Any]:
