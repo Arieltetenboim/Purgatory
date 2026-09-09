@@ -4,19 +4,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$Server = Join-Path $PSScriptRoot "server.py"
+$Server = Join-Path $PSScriptRoot "server_n6.py"
 $Url = "http://127.0.0.1:$Port/"
 $HealthUrl = "${Url}api/health"
 
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 1
-    if ($health.ok) {
+    if ($health.ok -and $health.slice -eq "N6a-preview") {
         Start-Process $Url | Out-Null
         exit 0
     }
 }
 catch {
-    # No running NPC Lab on this port; start one below.
+    # No running N6a NPC Lab on this port; start one below.
 }
 
 $pythonExe = $null
