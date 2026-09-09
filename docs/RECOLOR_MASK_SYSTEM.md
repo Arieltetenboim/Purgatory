@@ -1,7 +1,8 @@
 # PURGATORY Recolor Mask System
 
 Status: **planned architecture / future implementation contract**  
-Date: 2026-09-09
+Date: 2026-09-09  
+Runtime detail: [`RECOLOR_RUNTIME_ARCHITECTURE.md`](RECOLOR_RUNTIME_ARCHITECTURE.md)
 
 ## Purpose
 
@@ -145,6 +146,15 @@ Recolor application belongs to client presentation/rendering.
 
 The game may eventually own or persist appearance choices such as skin tone, hair color, eye color, or item dye selection. Those choices are logical appearance data. They must not contain atlas coordinates, pixel masks, or shader-specific details.
 
+The runtime is intentionally split into distinct responsibilities:
+
+- **appearance state** selects palettes by semantic recolor slot;
+- **asset resolution** binds normal art to optional recolor-mask metadata;
+- **palette resolution** turns the semantic choice into highlight/base/shadow colors;
+- **presentation** emits the already-selected visual plus recolor payload without choosing animation/view differently;
+- **renderer** performs one generic Art + Mask + Palette operation;
+- **persistence/networking**, when later required, transport semantic appearance choices only.
+
 The renderer resolves:
 
 1. the normal visual asset;
@@ -154,6 +164,8 @@ The renderer resolves:
 
 Unmasked pixels remain the authored art. Masked pixels preserve the authored highlight/base/shadow structure while receiving the selected palette.
 
+The first runtime proof must not create a per-character recolored texture. Art and masks are shared assets; palette data is the variable input.
+
 The system must not affect:
 
 - simulation;
@@ -162,6 +174,8 @@ The system must not affect:
 - pivots;
 - draw order;
 - gameplay authority.
+
+Full runtime ownership, rendering rules, validation/fallbacks, performance constraints, multi-slot strategy and staged implementation are frozen in [`RECOLOR_RUNTIME_ARCHITECTURE.md`](RECOLOR_RUNTIME_ARCHITECTURE.md).
 
 ## Scaling beyond skin
 
@@ -217,4 +231,6 @@ The architecture is proven when:
 3. unmasked pixels and permanent base garments are unchanged;
 4. art and mask atlases remain pixel-aligned through Character Lab export;
 5. the same runtime path can later accept `hair`, `eyes`, or item-dye slots without introducing a second recolor engine;
-6. Side and Back remain explicit, independent authored views using the same recolor contract.
+6. Side and Back remain explicit, independent authored views using the same recolor contract;
+7. different characters may share the same art/mask resources while selecting different palettes;
+8. a second semantic slot can be added without a feature-specific shader/runtime subsystem.
