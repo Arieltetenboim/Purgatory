@@ -20,10 +20,14 @@ pub use capacity_accounting::{
     ramp_attainment_pct, worst_spike_owner_from_max,
 };
 pub use identity::{
-    AuthoredIdError, CharacterId, ContentId, DEFAULT_DEV_LOGIN, DEFAULT_RESTORE_POINT,
-    DEV_LOGIN_MAX_LEN, DEV_LOGIN_MIN_LEN, DevLogin, DevLoginError, InstanceExitContext,
-    ItemInstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED, MAX_AUTHORED_CONTENT_ID_LEN,
-    PersistentId, RestoreIntent, fnv1a64, validate_authored_id,
+    AuthoredIdError, CONTENT_ABILITY_END, CONTENT_ABILITY_START, CONTENT_ID_BLOCK_SIZE,
+    CONTENT_ITEM_END, CONTENT_ITEM_START, CONTENT_MAP_END, CONTENT_MAP_START,
+    CONTENT_MONSTER_END, CONTENT_MONSTER_START, CONTENT_NPC_END, CONTENT_NPC_START,
+    CONTENT_WORLD_OBJECT_END, CONTENT_WORLD_OBJECT_START, CharacterId, ContentId, ContentKind,
+    DEFAULT_DEV_LOGIN, DEFAULT_RESTORE_POINT, DEV_LOGIN_MAX_LEN, DEV_LOGIN_MIN_LEN, DevLogin,
+    DevLoginError, InstanceExitContext, ItemInstanceId, MAP_FOOTNOTE_AUTHORED,
+    MAP_SECOND_AUTHORED, MAX_AUTHORED_CONTENT_ID_LEN, PersistentId, RestoreIntent, fnv1a64,
+    validate_authored_id,
 };
 pub use load_metrics::{
     DEFAULT_METRICS_PORT, LOAD_METRICS_SCHEMA_VERSION, LoadMetricsV1, METRICS_MAX_DATAGRAM_BYTES,
