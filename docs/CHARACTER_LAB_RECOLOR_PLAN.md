@@ -1,7 +1,8 @@
 # Character Lab — Recolor Authoring Plan
 
 Status: **planned**  
-System contract: [`RECOLOR_MASK_SYSTEM.md`](RECOLOR_MASK_SYSTEM.md)
+System contract: [`RECOLOR_MASK_SYSTEM.md`](RECOLOR_MASK_SYSTEM.md)  
+Runtime architecture: [`RECOLOR_RUNTIME_ARCHITECTURE.md`](RECOLOR_RUNTIME_ARCHITECTURE.md)
 
 ## Goal
 
@@ -123,15 +124,21 @@ Left/right locomotion remains presentation mirroring, not additional source art.
 
 Character Lab produces recolor data but does not itself make the game render alternate colors.
 
-A later runtime slice must:
+The runtime work is deliberately specified separately in [`RECOLOR_RUNTIME_ARCHITECTURE.md`](RECOLOR_RUNTIME_ARCHITECTURE.md). That document is the authoritative plan for the game-side core and records:
 
-- load recolor mask metadata/assets through the presentation asset path;
-- resolve a palette/ramp selected for a semantic recolor slot;
-- apply highlight/base/shadow recoloring during character/equipment rendering;
-- leave unmasked artwork unchanged;
-- keep animation, skeleton transforms, pivots, draw order, gameplay and network authority unchanged.
+- semantic recolor slots and palette/ramp ownership;
+- appearance selection boundaries;
+- extension of the existing asset-resolution path;
+- generic Art + Mask + Palette rendering behavior;
+- mask/palette validation and deterministic fallbacks;
+- Side/Back behavior;
+- shared-resource/per-character-palette performance requirements;
+- the intentionally deferred physical packing of multiple recolor slots;
+- persistence/network boundaries;
+- focused test strategy;
+- staged runtime slices R-R1 through R-R8.
 
-Skin should be the first end-to-end proof. Hair, eyes and item dyes are future content/editor uses of the same runtime primitive.
+Skin is the first end-to-end runtime proof. Hair, eyes and item dyes are future users of that same primitive rather than separate systems.
 
 ## Base-character art assumptions for the first proof
 
@@ -158,7 +165,7 @@ Permanent base shorts/underwear and permanent top pixels remain unmasked.
 5. Validate against the real new Side base body.
 6. Add minimal correction tooling only if real art exposes errors.
 7. Apply the same authoring path to Back art.
-8. Separately implement client-runtime recoloring and prove skin end to end.
+8. Start the separate runtime sequence at R-R1 only when the authoring output and base art are ready.
 
 ## Stop boundary
 
