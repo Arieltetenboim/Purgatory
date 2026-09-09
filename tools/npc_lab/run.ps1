@@ -14,9 +14,15 @@ try {
         Start-Process $Url | Out-Null
         exit 0
     }
+    if ($health.ok) {
+        throw "An older NPC Lab is already running on port $Port. Stop that terminal/server, then launch NPC Lab again."
+    }
 }
 catch {
-    # No running N6a NPC Lab on this port; start one below.
+    if ($_.Exception.Message -like "An older NPC Lab*") {
+        throw
+    }
+    # No running NPC Lab on this port; start N6a below.
 }
 
 $pythonExe = $null
