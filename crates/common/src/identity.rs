@@ -3,23 +3,50 @@
 //! Runtime instance identity lives in `purgatory-simulation` as generational
 //! `EntityId`. This module only holds **content** and **persistent** boundaries.
 //!
-//! The **canonical** [`ContentId`] is the authored string (`map.dev.footnote`).
-//! The compact `u64` token is an implementation detail (FNV-1a of that string)
-//! for Copy storage. The content registry is the source of the string label.
+//! Stable numeric content IDs are the forward architecture contract. The current
+//! authored-string/FNV constructor remains only as a temporary migration bridge
+//! for content that has not yet moved to the numeric catalog.
 
-/// Maximum length of a canonical authored content id.
+/// Maximum length of a legacy authored content label.
 pub const MAX_AUTHORED_CONTENT_ID_LEN: usize = 80;
+
+pub const CONTENT_ID_BLOCK_SIZE: u32 = 10_000;
+pub const CONTENT_MONSTER_START: u32 = 10_000;
+pub const CONTENT_MONSTER_END: u32 = 19_999;
+pub const CONTENT_NPC_START: u32 = 20_000;
+pub const CONTENT_NPC_END: u32 = 29_999;
+pub const CONTENT_ITEM_START: u32 = 30_000;
+pub const CONTENT_ITEM_END: u32 = 39_999;
+pub const CONTENT_ABILITY_START: u32 = 40_000;
+pub const CONTENT_ABILITY_END: u32 = 49_999;
+pub const CONTENT_MAP_START: u32 = 50_000;
+pub const CONTENT_MAP_END: u32 = 59_999;
+pub const CONTENT_WORLD_OBJECT_START: u32 = 60_000;
+pub const CONTENT_WORLD_OBJECT_END: u32 = 69_999;
+
+/// Broad durable content domain encoded by the stable numeric catalog block.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ContentKind {
+    Monster,
+    Npc,
+    Item,
+    Ability,
+    Map,
+    WorldObject,
+}
 
 /// Stable authored definition identity (template / content).
 ///
-/// Construct production ids with [`ContentId::from_authored`]. [`ContentId::from_token`]
-/// is a test/development escape hatch and is not a second public identity space.
+/// New durable content must use [`ContentId::from_raw`] with a catalog number in
+/// the explicitly allocated domain block. [`ContentId::from_authored`] is a
+/// temporary compatibility bridge for the pre-migration content pack and must
+/// not be used to allocate new durable content IDs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct ContentId {
     token: u64,
 }
 
-/// Why an authored content id string was rejected.
+/// Why a legacy authored content label was rejected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthoredIdError {
     Empty,
@@ -28,7 +55,46 @@ pub enum AuthoredIdError {
 }
 
 impl ContentId {
-    /// Canonical constructor: authored string → compact token.
+    /// Canonical stable numeric catalog constructor.
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self {
+            token: raw as u64,
+        }
+    }
+
+    /// Numeric value when this ID fits the stable u32 catalog representation.
+    #[must_use]
+    pub const fn raw(self) -> Option<u32> {
+        if self.token <= u32::MAX as u64 {
+            Some(self.token as u32)
+        } else {
+            None
+        }
+    }
+
+    /// Broad catalog domain for an allocated stable numeric ID.
+    /// Reserved/unallocated values and legacy FNV tokens return `None`.
+    #[must_use]
+    pub const fn kind(self) -> Option<ContentKind> {
+        let Some(raw) = self.raw() else {
+            return None;
+        };
+        match raw {
+            CONTENT_MONSTER_START..=CONTENT_MONSTER_END => Some(ContentKind::Monster),
+            CONTENT_NPC_START..=CONTENT_NPC_END => Some(ContentKind::Npc),
+            CONTENT_ITEM_START..=CONTENT_ITEM_END => Some(ContentKind::Item),
+            CONTENT_ABILITY_START..=CONTENT_ABILITY_END => Some(ContentKind::Ability),
+            CONTENT_MAP_START..=CONTENT_MAP_END => Some(ContentKind::Map),
+            CONTENT_WORLD_OBJECT_START..=CONTENT_WORLD_OBJECT_END => Some(ContentKind::WorldObject),
+            _ => None,
+        }
+    }
+
+    /// Legacy migration bridge: authored label -> FNV token.
+    ///
+    /// This is not the forward content identity contract. New durable content
+    /// must be assigned an explicit numeric catalog ID instead.
     pub fn from_authored(id: &str) -> Result<Self, AuthoredIdError> {
         validate_authored_id(id)?;
         Ok(Self {
@@ -36,13 +102,15 @@ impl ContentId {
         })
     }
 
-    /// Test / development token. Not the canonical content-architecture contract.
+    /// Wire/test compatibility constructor used by the current 8-byte protocol.
+    /// Numeric catalog IDs round-trip through this unchanged; legacy tokens are
+    /// tolerated until the protocol/content migration slice removes them.
     #[must_use]
     pub const fn from_token(token: u64) -> Self {
         Self { token }
     }
 
-    /// Compact token. Implementation detail; do not treat as the authored id.
+    /// Current protocol representation. Kept at u64 until the intentional wire migration.
     #[must_use]
     pub const fn token(self) -> u64 {
         self.token
@@ -51,7 +119,11 @@ impl ContentId {
 
 impl std::fmt::Display for ContentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "content#{:016x}", self.token)
+        if self.kind().is_some() {
+            write!(f, "content#{}", self.token)
+        } else {
+            write!(f, "content#{:016x}", self.token)
+        }
     }
 }
 
@@ -228,11 +300,11 @@ pub struct InstanceExitContext {
     pub reason: Option<String>,
 }
 
-/// Well-known development map authored ids. [`MapId`] values come only from the registry.
+/// Legacy development map labels. Stable map identity moves to numeric IDs.
 pub const MAP_FOOTNOTE_AUTHORED: &str = "map.dev.footnote";
 pub const MAP_SECOND_AUTHORED: &str = "map.dev.second";
 
-/// FNV-1a 64-bit. Implementation detail of [`ContentId`] compact storage.
+/// FNV-1a 64-bit used only by the temporary authored-string migration bridge.
 #[must_use]
 pub fn fnv1a64(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -245,7 +317,7 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Canonical authored id: `segment.segment` with lowercase `[a-z0-9_]` segments.
+/// Legacy authored label validation: `segment.segment` with lowercase `[a-z0-9_]` segments.
 pub fn validate_authored_id(id: &str) -> Result<(), AuthoredIdError> {
     if id.is_empty() {
         return Err(AuthoredIdError::Empty);
@@ -290,25 +362,44 @@ mod tests {
     }
 
     #[test]
-    fn content_id_equality_is_by_token() {
-        assert_eq!(ContentId::from_token(7), ContentId::from_token(7));
-        assert_ne!(ContentId::from_token(7), ContentId::from_token(8));
+    fn stable_numeric_content_id_is_canonical_catalog_form() {
+        let item = ContentId::from_raw(30_001);
+        assert_eq!(item.raw(), Some(30_001));
+        assert_eq!(item.kind(), Some(ContentKind::Item));
+        assert_eq!(item.token(), 30_001);
+        assert_eq!(item.to_string(), "content#30001");
     }
 
     #[test]
-    fn authored_string_is_canonical_constructor() {
-        let a = ContentId::from_authored("map.dev.footnote").expect("id");
-        let b = ContentId::from_authored("map.dev.footnote").expect("id");
+    fn content_domain_blocks_are_exact_and_reserved_space_is_unclassified() {
+        assert_eq!(ContentId::from_raw(10_000).kind(), Some(ContentKind::Monster));
+        assert_eq!(ContentId::from_raw(19_999).kind(), Some(ContentKind::Monster));
+        assert_eq!(ContentId::from_raw(20_000).kind(), Some(ContentKind::Npc));
+        assert_eq!(ContentId::from_raw(30_000).kind(), Some(ContentKind::Item));
+        assert_eq!(ContentId::from_raw(40_000).kind(), Some(ContentKind::Ability));
+        assert_eq!(ContentId::from_raw(50_000).kind(), Some(ContentKind::Map));
+        assert_eq!(ContentId::from_raw(60_000).kind(), Some(ContentKind::WorldObject));
+        assert_eq!(ContentId::from_raw(9_999).kind(), None);
+        assert_eq!(ContentId::from_raw(70_000).kind(), None);
+    }
+
+    #[test]
+    fn content_id_equality_is_by_numeric_token() {
+        assert_eq!(ContentId::from_raw(30_007), ContentId::from_token(30_007));
+        assert_ne!(ContentId::from_raw(30_007), ContentId::from_raw(30_008));
+    }
+
+    #[test]
+    fn legacy_authored_constructor_remains_only_for_migration() {
+        let a = ContentId::from_authored("map.dev.footnote").expect("legacy label");
+        let b = ContentId::from_authored("map.dev.footnote").expect("legacy label");
         assert_eq!(a, b);
-        assert_ne!(
-            a,
-            ContentId::from_authored("map.dev.second").expect("second")
-        );
         assert_eq!(a.token(), fnv1a64(b"map.dev.footnote"));
+        assert_eq!(a.kind(), None);
     }
 
     #[test]
-    fn authored_id_rejects_malformed() {
+    fn authored_label_rejects_malformed() {
         assert_eq!(validate_authored_id(""), Err(AuthoredIdError::Empty));
         assert_eq!(
             validate_authored_id("map"),
@@ -322,7 +413,7 @@ mod tests {
             validate_authored_id(".dev.footnote"),
             Err(AuthoredIdError::InvalidChar)
         );
-        assert!(ContentId::from_authored("entity.interactable.switch").is_ok());
+        assert!(validate_authored_id("entity.interactable.switch").is_ok());
     }
 
     #[test]
