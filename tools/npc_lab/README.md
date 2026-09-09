@@ -1,39 +1,69 @@
 # NPC Lab
 
-Status: **FORGE N2 - Identity & Character Design (local working slice).**
+Status: **FORGE N3 - Dialogue Authoring complete; N4 condition authoring is in progress.**
 
 NPC Lab is a local Web authoring tool for PURGATORY NPC content.
 
 Repository JSON remains the source of truth.
 
-## N2
+## Current surfaces
 
-The **IDENTITY** surface is the default authoring view and edits the existing
-canonical NPC document directly.
+### IDENTITY
 
-It exposes:
+Edits the existing canonical NPC document directly and exposes:
 
-- authored ID and schema (read-only in N2);
-- working name;
-- optional display name;
-- role;
-- area metadata;
-- tags;
+- authored ID and schema (read-only);
+- working and optional display names;
+- role / area / tags;
 - background;
 - personality;
 - speech style;
-- gameplay purposes;
-- narrative purposes;
+- gameplay and narrative purposes;
 - relationships;
 - design notes.
 
-The **SHELL** surface remains available for raw JSON inspection/editing.
+### DIALOGUE — N3
 
-Fields outside the N2 surface, including `interaction.beats`, remain in the
-same document and are preserved by form edits.
+Edits `interaction.beats` without requiring raw JSON work.
 
-Canonical NPC authored content is English-only in the current game scope.
-The local server rejects Hebrew Unicode characters on save.
+Supported authoring includes:
+
+- beat ID, title and integer priority;
+- explicit ENTRY / CONTINUATION selection role;
+- one or more NPC dialogue text lines;
+- player choices;
+- transition to another beat or conversation end;
+- beat notes;
+- preserved optional `voice` / `animation` references on existing lines;
+- automatic update of choice transitions when a beat ID is renamed;
+- validation for duplicate beat/choice IDs and broken `next` references.
+
+The Welcome package content proves multiple context-sensitive paths across the Traveler and Workshop Craftsman NPCs.
+
+### STATE — N4 work in progress
+
+The current Lab already exposes a closed typed condition vocabulary:
+
+- Fact;
+- NPC Met;
+- Dialogue Heard;
+- Item Owned;
+- Item Equipped.
+
+Choice actions currently include:
+
+- Set Fact;
+- Mark NPC Met;
+- Give Item;
+- Remove Item.
+
+This is authoring/validation work toward N4. **N4 is not considered complete yet** because the Lab does not yet provide the synthetic state evaluator required by the N4 gate to prove which ENTRY beat wins for a supplied character/world state and why.
+
+### SHELL
+
+Raw JSON remains available for inspection and repair. Structured surfaces preserve fields outside their current editing scope.
+
+Canonical NPC authored content is English-only in the current game scope. The local server rejects Hebrew Unicode characters on save.
 
 ## Run
 
@@ -51,16 +81,20 @@ Or:
 py -3 -m unittest .\tools\npc_lab\test_server.py
 ```
 
-## N2 gate
+The focused suite covers the current typed condition/action vocabulary, explicit beat selection role, continuation transitions, broken references, duplicate beat IDs, English-only validation and path safety.
 
-Using `npc.welcome.traveler_stayed`:
+## N3 gate
 
-1. Open the NPC in IDENTITY.
-2. Edit one scalar field and one list field.
-3. Add/edit/remove a relationship.
-4. Save.
-5. Reopen and confirm identity/design data.
-6. Open SHELL and confirm existing `interaction.beats` remain present.
+Using the Welcome NPCs:
 
-Still out of scope: authored-ID rename/move, dialogue authoring, state/conditions,
-behavior, presentation, voice, localization, runtime integration.
+1. Open the Traveler or Workshop Craftsman in DIALOGUE.
+2. Select or create a beat.
+3. Edit beat ID/title/priority and ENTRY/CONTINUATION role.
+4. Add/edit/remove NPC dialogue text.
+5. Add/edit/remove player choices.
+6. Point a choice to another beat or END CONVERSATION.
+7. Save and reopen the NPC.
+8. Confirm the dialogue structure and transitions survive round-trip.
+9. Confirm the workshop-package content contains distinct context-sensitive paths for Inn-first and Workshop-first play.
+
+N3 does not own dialogue selection/evaluation, dialogue pools, runtime dialogue UI/networking, presentation playback, localization or NPC runtime integration.
