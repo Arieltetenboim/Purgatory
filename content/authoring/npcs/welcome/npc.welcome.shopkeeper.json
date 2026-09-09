@@ -1,0 +1,322 @@
+{
+  "schema_version": 1,
+  "id": "npc.welcome.shopkeeper",
+  "design": {
+    "working_name": "Welcome Shopkeeper",
+    "display_name": null,
+    "role": "Runs Welcome's small general shop; manages limited stock, local supplies, and practical trade",
+    "area": "welcome",
+    "tags": [
+      "shop",
+      "supplies",
+      "caravan",
+      "welcome_core",
+      "practical"
+    ],
+    "background": "The shopkeeper keeps a small general store supplied mostly through passing caravans. They hired the workshop craftsperson and sent him ahead to establish the workshop because repairs and replacement gear were becoming too important to depend entirely on outside trade. The shop is useful but deliberately limited; Welcome depends on regular resupply for food, medicine, tools, and guard equipment.",
+    "personality": [
+      "organized",
+      "practical",
+      "calm under routine pressure",
+      "careful with stock",
+      "not easily impressed",
+      "helpful when help does not require pretending supplies are unlimited"
+    ],
+    "speech_style": [
+      "brief and matter-of-fact",
+      "often frames problems in terms of stock, timing, and what is actually available",
+      "avoids dramatic language",
+      "does not promise what the shop cannot provide",
+      "notices shortages before treating them as emergencies"
+    ],
+    "gameplay_purposes": [
+      "establish Welcome's intentionally limited shop",
+      "give another perspective on caravan dependence",
+      "connect the workshop craftsperson to the settlement economy",
+      "support later shop and supply interactions",
+      "provide ordinary dialogue before and during the delayed-caravan situation"
+    ],
+    "narrative_purposes": [
+      "show that Welcome functions through mundane supply systems",
+      "make shortages understandable before they become dangerous",
+      "reinforce that the missing caravan affects several parts of ordinary life",
+      "make the workshop feel like a practical response to dependence on outside supply rather than a quest-only location"
+    ]
+  },
+  "relationships": [
+    {
+      "working_label": "Workshop Craftsman",
+      "target_id": "npc.welcome.workshop_craftsperson",
+      "notes": "The shopkeeper employed him and sent him ahead to establish the workshop. They still rely on one another for stock, fittings, repairs, and replacement gear."
+    },
+    {
+      "working_label": "The Traveler Who Stayed",
+      "target_id": "npc.welcome.traveler_stayed",
+      "notes": "The inn is a common caravan drop point and a useful place to leave small deliveries temporarily."
+    }
+  ],
+  "interaction": {
+    "beats": [
+      {
+        "id": "intro",
+        "title": "First meeting",
+        "priority": 100,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.shopkeeper",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "If you need something, ask. If I don't have it, asking twice won't improve the stock.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "ask_stock",
+            "text": "What do you sell?",
+            "next": "intro_stock",
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.shopkeeper"
+              }
+            ]
+          },
+          {
+            "id": "ask_workshop",
+            "text": "You run the workshop too?",
+            "next": "intro_workshop",
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.shopkeeper"
+              }
+            ]
+          },
+          {
+            "id": "leave",
+            "text": "Just looking.",
+            "next": null,
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.shopkeeper"
+              }
+            ]
+          }
+        ],
+        "notes": "Any completed first-meeting choice records NPC Met."
+      },
+      {
+        "id": "intro_stock",
+        "title": "About the shop stock",
+        "priority": 0,
+        "entry": false,
+        "pool": "once",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.shopkeeper",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Food that keeps. Basic tools. A little medicine when we're lucky. Guard gear when the caravans remember us.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Enough for ordinary problems. Not enough for people to get creative with them.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Supports the design constraint that the starter shop is useful but intentionally limited."
+      },
+      {
+        "id": "intro_workshop",
+        "title": "About the workshop",
+        "priority": 0,
+        "entry": false,
+        "pool": "once",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.shopkeeper",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "No. I hired the one who does.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Sending every torn boot and bent fitting away with a caravan was getting ridiculous, so I sent him ahead to set up the workshop.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Makes the existing relationship to the craftsperson explicit without requiring a new quest state."
+      },
+      {
+        "id": "caravan_expected",
+        "title": "Important caravan expected",
+        "priority": 50,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.shopkeeper",
+            "equals": true
+          },
+          {
+            "fact": "welcome.caravan.important.expected",
+            "equals": true
+          },
+          {
+            "fact": "welcome.caravan.important.late",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "The next caravan should be here today. I'll have more to sell once they've unloaded.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Medicine first, then the guard crates. Everything else can wait its turn.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Routine expectation, not disaster foreshadowing."
+      },
+      {
+        "id": "caravan_late",
+        "title": "Important caravan late",
+        "priority": 80,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.shopkeeper",
+            "equals": true
+          },
+          {
+            "fact": "welcome.caravan.important.late",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "They're late.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "I can stretch food. I can stretch lamp oil. Medicine doesn't stretch.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Shows why the delay matters without requiring the shopkeeper to know what happened to the caravan."
+      },
+      {
+        "id": "workshop_package_delivered",
+        "title": "Workshop package delivered",
+        "priority": 30,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.shopkeeper",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_delivered",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Good. The workshop got its materials.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "That buys us a few more repairs before somebody has to start arguing with a broken buckle.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Acknowledges shared world state; it does not grant a reward or own the package quest."
+      },
+      {
+        "id": "lore_workshop",
+        "title": "Why the workshop exists",
+        "priority": 5,
+        "entry": true,
+        "pool": "lore",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.shopkeeper",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "A shop is mostly waiting for someone else to bring you what people need.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "The workshop was my attempt to wait for fewer things.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Optional lore that reinforces local resilience without becoming a required progression beat."
+      },
+      {
+        "id": "filler_stock",
+        "title": "Normal shop interaction",
+        "priority": 1,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.shopkeeper",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Still the same shelves. Still the same prices.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Ordinary fallback dialogue. Actual buying/selling remains outside the current NPC Lab contract."
+      }
+    ]
+  },
+  "notes": [
+    "This NPC does not implement shop transactions; current scope is authored dialogue and state selection only.",
+    "The shop is intentionally limited in Welcome. A later runtime/economy phase may define actual stock and prices.",
+    "The delayed caravan carries food, medicine, and guard supplies. Exact item definitions are not frozen here.",
+    "The shopkeeper hired the workshop craftsperson and sent him ahead to establish the workshop.",
+    "Current NPC authoring still uses the temporary string-ID schema; global NPC identity will migrate through issue #24 after the shared numeric ContentId path is ready."
+  ]
+}
