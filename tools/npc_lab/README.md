@@ -1,49 +1,37 @@
 # NPC Lab
 
-Status: **FORGE N5 - Dialogue Pools implemented; pending local verification.**
+Status: **FORGE N6a - Synthetic Test Bench + Conversation Preview implemented; pending local verification.**
 
-NPC Lab is a local Web authoring tool for PURGATORY NPC content.
-
-Repository JSON remains the source of truth.
+NPC Lab is a local Web authoring tool for PURGATORY NPC content. Repository JSON remains the source of truth.
 
 ## Current surfaces
 
 ### IDENTITY
 
-Edits the existing canonical NPC document directly and exposes:
-
-- authored ID and schema (read-only);
-- working and optional display names;
-- role / area / tags;
-- background;
-- personality;
-- speech style;
-- gameplay and narrative purposes;
-- relationships;
-- design notes.
+Edits canonical NPC identity/design context: authored ID/schema, names, role/area/tags, background, personality, speech style, gameplay/narrative purposes, relationships and notes.
 
 ### DIALOGUE — N3 + N5
 
-Edits `interaction.beats` without requiring raw JSON work.
+Edits `interaction.beats` including:
 
-Supported authoring includes:
+- beat ID/title/integer priority;
+- ENTRY / CONTINUATION role;
+- dialogue lines and player choices;
+- explicit next-beat / end transitions;
+- beat notes and preserved presentation refs;
+- Dialogue Pool: `mandatory`, `once`, `repeatable`, `rare`, `lore`.
 
-- beat ID, title and integer priority;
-- explicit ENTRY / CONTINUATION selection role;
-- one or more NPC dialogue text lines;
-- player choices;
-- transition to another beat or conversation end;
-- beat notes;
-- preserved optional `voice` / `animation` references on existing lines;
-- automatic update of choice transitions when a beat ID is renamed;
-- validation for duplicate beat/choice IDs and broken `next` references;
-- editable Dialogue Pool: `mandatory`, `once`, `repeatable`, `rare`, or `lore`.
+N5 pool semantics:
 
-The Welcome package content proves multiple context-sensitive paths across the Traveler and Workshop Craftsman NPCs.
+- `mandatory` — normal condition/priority selection;
+- `once` — suppressed after this NPC beat has been heard;
+- `repeatable` — remains eligible after being heard;
+- `lore` — optional one-shot content;
+- `rare` — valid authoring metadata but deliberately not auto-selected until a real cadence/probability requirement exists.
 
 ### STATE — N4
 
-The Lab exposes a closed typed condition vocabulary:
+Closed typed conditions:
 
 - Fact;
 - NPC Met;
@@ -51,40 +39,52 @@ The Lab exposes a closed typed condition vocabulary:
 - Item Owned;
 - Item Equipped.
 
-Choice actions currently include:
+Choice actions:
 
 - Set Fact;
 - Mark NPC Met;
 - Give Item;
 - Remove Item.
 
-The pure deterministic selection core in `selection.py` evaluates supplied character/world state using these rules:
+Top-level selection remains deterministic: ENTRY only, all conditions AND, pool eligibility, highest priority, authored order for equal priority.
 
-1. only ENTRY beats participate in top-level selection;
-2. all conditions on a beat must match (AND);
-3. pool eligibility is applied before priority comparison;
-4. the highest integer priority wins;
-5. equal priorities preserve authored JSON order.
+### TEST — N6a
 
-### Dialogue Pool semantics — N5
+The Test Bench provides editable synthetic character/world state and a conversation-facing preview without launching the game client/server runtime.
 
-The currently frozen pool behavior is intentionally small:
+Synthetic state fields:
 
-- `mandatory` — normal condition/priority selection; prior dialogue memory does not suppress it;
-- `once` — eligible until this NPC beat has been heard once;
-- `repeatable` — remains eligible even after being heard;
-- `lore` — optional one-shot content; eligible until heard, then yields to other eligible content;
-- `rare` — valid authoring metadata, but **not automatically selected yet**. No probability/cadence is invented until real content defines the requirement.
+- boolean Facts (`fact.id=true/false`);
+- NPC Met;
+- Dialogue Heard (`npc.id|beat_id`);
+- Item Owned;
+- Item Equipped.
 
-Pool memory uses the existing typed `Dialogue Heard` state rather than introducing a parallel progression fact.
+`Evaluate` sends the current authored NPC document plus synthetic state to the local N6a preview API. The server uses the same Python `selection.py` evaluator already covered by N4/N5 tests; the browser does not own a parallel selection implementation.
 
-The real Traveler content proves the N5 gate: after the character has met the Traveler and no higher-priority event is active, `lore_roofs` is selected first; after that beat is recorded as heard, `filler_food` becomes the repeatable fallback. No gameplay fact needs to change for this transition.
+The preview shows:
+
+- NPC working/display name;
+- selected beat id, priority and pool;
+- authored NPC dialogue text;
+- player choices.
+
+Choosing an option synthetically:
+
+1. records the current beat in `dialogue_heard`;
+2. applies the existing closed action vocabulary to synthetic state;
+3. follows explicit `next` directly when present;
+4. ends the synthetic conversation when `next` is null.
+
+A beat with no choices exposes `Continue / End`, which records the beat as heard and ends the current preview conversation.
+
+N6a intentionally does **not** add selection diagnostics / `Why this dialogue?`, rejected-condition explanations, graphs, runtime networking, persistence or game-client dialogue UI. Those remain later N6/N10 work.
+
+Synthetic item mutation is intentionally boolean ownership only. `Give Item` / `Remove Item` support quantity `1`; stack/count simulation is deferred until real authored content requires it.
 
 ### SHELL
 
-Raw JSON remains available for inspection and repair. Structured surfaces preserve fields outside their current editing scope.
-
-Canonical NPC authored content is English-only in the current game scope. The local server rejects Hebrew Unicode characters on save.
+Raw JSON remains available for inspection and repair. Structured surfaces preserve fields outside their editing scope. Authored NPC content is English-only in the current game scope.
 
 ## Run
 
@@ -96,6 +96,8 @@ Or:
 
 **Developer Hub -> Content -> NPC Lab -> Launch NPC Lab**
 
+If an older NPC Lab server is still occupying port 8765, stop its terminal/server first and launch again.
+
 ## Tests
 
 Run all focused NPC Lab tests:
@@ -104,21 +106,18 @@ Run all focused NPC Lab tests:
 py -3 -m unittest discover -s .\tools\npc_lab -p "test_*.py"
 ```
 
-The focused tests cover N4 validation/selection plus N5 pool behavior: one-shot dialogue memory, repeatable fallback, mandatory priority behavior, deliberately deferred rare selection, rejection of unknown pool semantics in the selector, and the real Traveler lore-to-filler path.
+The suite covers N4 typed validation/selection, N5 pools, and N6a synthetic progression including dialogue memory, explicit continuation flow, first-meeting `Mark NPC Met`, and the real Traveler package `Give Item` + `Set Fact` actions.
 
-## N5 gate
+## N6a gate
 
-Using the real Traveler NPC:
+Using the real Welcome NPC content, the local Test Bench must prove without launching the game runtime that:
 
-1. the character has already met `npc.welcome.traveler_stayed`;
-2. no higher-priority package/caravan event is active;
-3. before `lore_roofs` has been heard, it is selected over repeatable filler;
-4. after `lore_roofs` is recorded in `dialogue_heard`, `filler_food` is selected;
-5. the transition requires no progression fact mutation;
-6. the Pool field can be edited and saved through the Dialogue surface.
-
-N5 does not own editable synthetic-state UI, conversation preview, selection diagnostics / `Why this dialogue?`, graph visualization, runtime dialogue UI/networking, persistence, or NPC runtime integration. Those remain N6+ and N10 work.
+1. synthetic state selects the expected ENTRY beat;
+2. the selected NPC text and choices are visible as a conversation preview;
+3. choosing `ask_place` from the Traveler intro marks the Traveler as met and previews `intro_place`;
+4. choosing `take_package` from `workshop_package_unknown` adds `item.package`, sets `welcome.workshop.package_at_inn=false`, records the beat as heard, and ends the conversation;
+5. completing `lore_roofs` records it as heard so a subsequent Evaluate can select repeatable `filler_food`.
 
 ## Known narrow limitation
 
-The browser-side editor validates the allowed pool labels and the pure selector rejects unknown explicit pool values. The Python save validator does not yet mirror the pool-label check. This does not affect the structured Pool editor path, but raw JSON can currently reach server save with an unsupported pool label. Keep this as a small validation-hardening follow-up rather than expanding N5 into unrelated server refactoring.
+The browser-side Pool editor validates allowed pool labels and the selector rejects unknown explicit values. The legacy Python save validator still does not mirror that Pool-label check for raw JSON edits. Keep this as a small validation-hardening follow-up rather than expanding N6a into unrelated server refactoring.

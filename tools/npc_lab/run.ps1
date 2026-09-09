@@ -4,19 +4,25 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$Server = Join-Path $PSScriptRoot "server.py"
+$Server = Join-Path $PSScriptRoot "server_n6.py"
 $Url = "http://127.0.0.1:$Port/"
 $HealthUrl = "${Url}api/health"
 
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 1
-    if ($health.ok) {
+    if ($health.ok -and $health.slice -eq "N6a-preview") {
         Start-Process $Url | Out-Null
         exit 0
     }
+    if ($health.ok) {
+        throw "An older NPC Lab is already running on port $Port. Stop that terminal/server, then launch NPC Lab again."
+    }
 }
 catch {
-    # No running NPC Lab on this port; start one below.
+    if ($_.Exception.Message -like "An older NPC Lab*") {
+        throw
+    }
+    # No running NPC Lab on this port; start N6a below.
 }
 
 $pythonExe = $null
