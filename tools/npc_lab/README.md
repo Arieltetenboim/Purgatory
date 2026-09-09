@@ -1,6 +1,6 @@
 # NPC Lab
 
-Status: **FORGE N3 - Dialogue Authoring complete; N4 condition authoring is in progress.**
+Status: **FORGE N4 - Conditions & State Selection complete.**
 
 NPC Lab is a local Web authoring tool for PURGATORY NPC content.
 
@@ -40,9 +40,9 @@ Supported authoring includes:
 
 The Welcome package content proves multiple context-sensitive paths across the Traveler and Workshop Craftsman NPCs.
 
-### STATE — N4 work in progress
+### STATE — N4
 
-The current Lab already exposes a closed typed condition vocabulary:
+The Lab exposes a closed typed condition vocabulary:
 
 - Fact;
 - NPC Met;
@@ -57,7 +57,16 @@ Choice actions currently include:
 - Give Item;
 - Remove Item.
 
-This is authoring/validation work toward N4. **N4 is not considered complete yet** because the Lab does not yet provide the synthetic state evaluator required by the N4 gate to prove which ENTRY beat wins for a supplied character/world state and why.
+N4 also provides a pure deterministic selection core in `selection.py`. It evaluates supplied synthetic character/world state using these rules:
+
+1. only ENTRY beats participate in top-level selection;
+2. all conditions on a beat must match (AND);
+3. the highest integer priority wins;
+4. equal priorities preserve authored JSON order.
+
+Pool labels do not affect N4 selection. Their selection/randomization semantics remain N5.
+
+Focused tests use the real Welcome NPC documents to prove that the selected package dialogue changes when the workshop NPC has already been met and when the player carries the package.
 
 ### SHELL
 
@@ -81,20 +90,15 @@ Or:
 py -3 -m unittest .\tools\npc_lab\test_server.py
 ```
 
-The focused suite covers the current typed condition/action vocabulary, explicit beat selection role, continuation transitions, broken references, duplicate beat IDs, English-only validation and path safety.
+The focused suite covers typed conditions/actions, explicit beat selection role, continuation transitions, broken references, duplicate beat IDs, English-only validation, path safety, AND condition matching, ENTRY-only selection, deterministic priority ordering, all five N4 condition types, and the real Welcome package selection paths.
 
-## N3 gate
+## N4 gate
 
-Using the Welcome NPCs:
+Using the Welcome package content, the evaluator must deterministically select:
 
-1. Open the Traveler or Workshop Craftsman in DIALOGUE.
-2. Select or create a beat.
-3. Edit beat ID/title/priority and ENTRY/CONTINUATION role.
-4. Add/edit/remove NPC dialogue text.
-5. Add/edit/remove player choices.
-6. Point a choice to another beat or END CONVERSATION.
-7. Save and reopen the NPC.
-8. Confirm the dialogue structure and transitions survive round-trip.
-9. Confirm the workshop-package content contains distinct context-sensitive paths for Inn-first and Workshop-first play.
+- `workshop_package_unknown` at the Traveler when the workshop NPC has not been met;
+- `workshop_package_known` after the workshop NPC has been met;
+- `package_waiting_first_meeting` at the Workshop Craftsman when the package is still at the inn;
+- `package_delivery_first_meeting` when the player reaches the Workshop Craftsman carrying the package for the first time.
 
-N3 does not own dialogue selection/evaluation, dialogue pools, runtime dialogue UI/networking, presentation playback, localization or NPC runtime integration.
+N4 does not own dialogue pools, editable synthetic-state UI, selection diagnostics / `Why this dialogue?`, runtime dialogue UI/networking, persistence, or NPC runtime integration. Those remain N5, N6 and N10 work.
