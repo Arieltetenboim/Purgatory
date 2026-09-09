@@ -10,7 +10,7 @@
   <header class="topbar">
     <div>
       <div class="brand">PURGATORY</div>
-      <div class="tool-name">NPC LAB <span class="slice">N2</span></div>
+      <div class="tool-name">NPC LAB <span class="slice">N4 REPAIR</span></div>
     </div>
     <div class="top-actions">
       <button id="newButton" class="button secondary">NEW NPC</button>
@@ -36,126 +36,166 @@
       </div>
 
       <div class="workspace-body">
-        <section id="identitySurface" class="surface active">
+        <section id="identitySurface" class="surface">
           <div class="form-scroll">
             <div class="form-section">
               <div class="section-heading">
-                <div>
-                  <div class="section-kicker">N2</div>
-                  <h2>Identity</h2>
-                </div>
-                <div class="section-note">Authored ID is immutable in N2. Rename/move semantics are deferred.</div>
+                <div><div class="section-kicker">N2</div><h2>Identity</h2></div>
+                <div class="section-note">Authored ID remains immutable in the current Lab.</div>
               </div>
-
               <div class="form-grid two">
-                <label class="field">
-                  <span>Authored ID</span>
-                  <input id="authoredId" class="input monospace-input" type="text" readonly>
-                </label>
-                <label class="field">
-                  <span>Schema</span>
-                  <input id="schemaVersion" class="input" type="text" readonly>
-                </label>
-                <label class="field">
-                  <span>Working Name</span>
-                  <input id="workingName" class="input" type="text" placeholder="Internal design name">
-                </label>
-                <label class="field">
-                  <span>Display Name</span>
-                  <input id="displayName" class="input" type="text" placeholder="Optional player-facing name">
-                </label>
+                <label class="field"><span>Authored ID</span><input id="authoredId" class="input monospace-input" readonly></label>
+                <label class="field"><span>Schema</span><input id="schemaVersion" class="input" readonly></label>
+                <label class="field"><span>Working Name</span><input id="workingName" class="input"></label>
+                <label class="field"><span>Display Name</span><input id="displayName" class="input"></label>
               </div>
-
-              <label class="field">
-                <span>Role</span>
-                <textarea id="role" class="form-textarea short" placeholder="What this NPC does in the world"></textarea>
-              </label>
-
+              <label class="field"><span>Role</span><textarea id="role" class="form-textarea short"></textarea></label>
               <div class="form-grid two">
-                <label class="field">
-                  <span>Area</span>
-                  <input id="area" class="input" type="text" placeholder="welcome">
-                  <small>N2 edits metadata only; changing Area does not move the file.</small>
-                </label>
-                <label class="field">
-                  <span>Tags</span>
-                  <input id="tags" class="input" type="text" placeholder="friendly, transit, caravan">
-                  <small>Comma-separated.</small>
-                </label>
+                <label class="field"><span>Area</span><input id="area" class="input"></label>
+                <label class="field"><span>Tags</span><input id="tags" class="input"><small>Comma-separated.</small></label>
               </div>
             </div>
-
             <div class="form-section">
-              <div class="section-heading">
-                <div>
-                  <div class="section-kicker">CHARACTER</div>
-                  <h2>Character Design</h2>
-                </div>
-              </div>
-
-              <label class="field">
-                <span>Background</span>
-                <textarea id="background" class="form-textarea tall"></textarea>
-              </label>
-
+              <div class="section-heading"><div><div class="section-kicker">CHARACTER</div><h2>Character Design</h2></div></div>
+              <label class="field"><span>Background</span><textarea id="background" class="form-textarea tall"></textarea></label>
               <div class="form-grid two">
-                <label class="field">
-                  <span>Personality</span>
-                  <textarea id="personality" class="form-textarea list" placeholder="One trait per line"></textarea>
-                  <small>One trait per line.</small>
-                </label>
-                <label class="field">
-                  <span>Speech Style</span>
-                  <textarea id="speechStyle" class="form-textarea list" placeholder="One speech rule per line"></textarea>
-                  <small>One rule per line.</small>
-                </label>
+                <label class="field"><span>Personality</span><textarea id="personality" class="form-textarea list"></textarea><small>One trait per line.</small></label>
+                <label class="field"><span>Speech Style</span><textarea id="speechStyle" class="form-textarea list"></textarea><small>One rule per line.</small></label>
               </div>
             </div>
-
             <div class="form-section">
-              <div class="section-heading">
-                <div>
-                  <div class="section-kicker">PURPOSE</div>
-                  <h2>Why This NPC Exists</h2>
-                </div>
-              </div>
-
+              <div class="section-heading"><div><div class="section-kicker">PURPOSE</div><h2>Why This NPC Exists</h2></div></div>
               <div class="form-grid two">
-                <label class="field">
-                  <span>Gameplay Purposes</span>
-                  <textarea id="gameplayPurposes" class="form-textarea list" placeholder="One purpose per line"></textarea>
-                </label>
-                <label class="field">
-                  <span>Narrative Purposes</span>
-                  <textarea id="narrativePurposes" class="form-textarea list" placeholder="One purpose per line"></textarea>
-                </label>
+                <label class="field"><span>Gameplay Purposes</span><textarea id="gameplayPurposes" class="form-textarea list"></textarea></label>
+                <label class="field"><span>Narrative Purposes</span><textarea id="narrativePurposes" class="form-textarea list"></textarea></label>
               </div>
             </div>
-
             <div class="form-section">
               <div class="section-heading">
-                <div>
-                  <div class="section-kicker">CONNECTIONS</div>
-                  <h2>Relationships</h2>
-                </div>
+                <div><div class="section-kicker">CONNECTIONS</div><h2>Relationships</h2></div>
                 <button id="addRelationshipButton" class="button compact" type="button">+ RELATIONSHIP</button>
               </div>
               <div id="relationshipList" class="relationship-list"></div>
             </div>
-
             <div class="form-section">
-              <div class="section-heading">
-                <div>
-                  <div class="section-kicker">AUTHORING</div>
-                  <h2>Design Notes</h2>
+              <div class="section-heading"><div><div class="section-kicker">AUTHORING</div><h2>Design Notes</h2></div></div>
+              <label class="field"><span>Notes</span><textarea id="designNotes" class="form-textarea list"></textarea></label>
+            </div>
+          </div>
+        </section>
+
+        <section id="dialogueSurface" class="surface active">
+          <div class="dialogue-layout">
+            <aside class="beat-browser">
+              <div class="beat-browser-header">
+                <div><div class="section-kicker">N3</div><div class="beat-browser-title">Conversation Beats</div></div>
+                <button id="addBeatButton" class="button compact" type="button">+ BEAT</button>
+              </div>
+              <div class="dialogue-scope-note">Dialogue structure here. Conditions are edited in STATE.</div>
+              <div id="beatList" class="beat-list"></div>
+            </aside>
+            <section class="beat-editor">
+              <div id="beatEmpty" class="dialogue-empty">
+                <div class="dialogue-empty-title">No beat selected</div>
+                <div class="muted">Choose a beat or create one.</div>
+              </div>
+              <div id="beatForm" class="beat-form hidden">
+                <div class="beat-form-scroll">
+                  <div class="form-section dialogue-section">
+                    <div class="section-heading">
+                      <div><div class="section-kicker">BEAT</div><h2 id="beatEditorHeading">Conversation Beat</h2></div>
+                      <button id="removeBeatButton" class="icon-button danger-action" type="button">REMOVE BEAT</button>
+                    </div>
+                    <div class="form-grid beat-meta-grid">
+                      <label class="field"><span>Beat ID</span><input id="beatId" class="input monospace-input"></label>
+                      <label class="field"><span>Title</span><input id="beatTitle" class="input"></label>
+                      <label class="field"><span>Priority</span><input id="beatPriority" class="input" type="number" step="1"></label>
+                      <label class="field">
+                        <span>Selection Role</span>
+                        <select id="beatEntryMode" class="input">
+                          <option value="">UNSET</option>
+                          <option value="entry">ENTRY</option>
+                          <option value="continuation">CONTINUATION</option>
+                        </select>
+                        <small>Only ENTRY beats can open a conversation. Next Beat may target either role.</small>
+                      </label>
+                    </div>
+                    <div class="deferred-strip">
+                      <div><span class="deferred-label">Pool</span><span id="beatPool" class="deferred-value">-</span><span class="deferred-owner">N5</span></div>
+                      <button id="editConditionsButton" class="condition-jump" type="button">Conditions: <span id="beatConditionCount">0</span> · EDIT IN STATE</button>
+                    </div>
+                    <div id="conditionPreview" class="condition-preview"></div>
+                    <label class="field"><span>Beat Notes</span><textarea id="beatNotes" class="form-textarea short"></textarea></label>
+                  </div>
+
+                  <div class="form-section dialogue-section">
+                    <div class="section-heading">
+                      <div><div class="section-kicker">NPC</div><h2>Dialogue Text</h2></div>
+                      <button id="addLineButton" class="button compact" type="button">+ DIALOGUE TEXT</button>
+                    </div>
+                    <div id="lineList" class="dialogue-card-list"></div>
+                  </div>
+
+                  <div class="form-section dialogue-section">
+                    <div class="section-heading">
+                      <div><div class="section-kicker">PLAYER</div><h2>Choices</h2></div>
+                      <button id="addChoiceButton" class="button compact" type="button">+ CHOICE</button>
+                    </div>
+                    <div id="choiceList" class="dialogue-card-list"></div>
+                  </div>
                 </div>
               </div>
-              <label class="field">
-                <span>Notes</span>
-                <textarea id="designNotes" class="form-textarea list" placeholder="One note per line"></textarea>
-                <small>Authoring-only notes. Not player-facing dialogue.</small>
-              </label>
-            </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="stateSurface" class="surface">
+          <div class="state-layout">
+            <aside class="beat-browser">
+              <div class="beat-browser-header">
+                <div><div class="section-kicker">N4</div><div class="beat-browser-title">Beat State</div></div>
+              </div>
+              <div class="dialogue-scope-note">A beat is eligible only when every condition matches. Current combination rule: AND.</div>
+              <div id="stateBeatList" class="beat-list"></div>
+            </aside>
+
+            <section class="state-editor">
+              <div id="stateEmpty" class="dialogue-empty">
+                <div class="dialogue-empty-title">No beat selected</div>
+                <div class="muted">Choose a beat to author its conditions.</div>
+              </div>
+
+              <div id="stateForm" class="beat-form hidden">
+                <div class="beat-form-scroll">
+                  <div class="form-section dialogue-section">
+                    <div class="section-heading">
+                      <div>
+                        <div class="section-kicker">STATE SELECTION</div>
+                        <h2 id="stateBeatHeading">Beat Conditions</h2>
+                      </div>
+                      <button id="addConditionButton" class="button compact" type="button">+ CONDITION</button>
+                    </div>
+                    <div class="state-beat-meta">
+                      <span id="stateBeatId" class="monospace">-</span>
+                      <span id="stateBeatPriority" class="beat-priority">P?</span>
+                    </div>
+                    <div class="and-rule">ALL conditions must match. Only ENTRY beats participate in top-level selection; CONTINUATION beats are reached through Next Beat.</div>
+                    <div id="conditionEditorList" class="condition-editor-list"></div>
+                  </div>
+
+                  <div class="form-section dialogue-section">
+                    <div class="section-heading"><div><div class="section-kicker">VOCABULARY</div><h2>Available Checks</h2></div></div>
+                    <div class="vocabulary-grid">
+                      <div class="vocab-card"><strong>Fact</strong><span>Boolean authored fact such as package_needed.</span></div>
+                      <div class="vocab-card"><strong>NPC Met</strong><span>Whether this character has met a specific NPC.</span></div>
+                      <div class="vocab-card"><strong>Dialogue Heard</strong><span>Whether a specific NPC beat was completed earlier. Completion records this automatically; do not encode it as a Fact.</span></div>
+                      <div class="vocab-card"><strong>Item Owned</strong><span>Whether the character owns a specific item ContentId.</span></div>
+                      <div class="vocab-card"><strong>Item Equipped</strong><span>Whether a specific item is currently equipped.</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
           </div>
         </section>
 
@@ -169,19 +209,18 @@
       <div class="pane-title">INSPECTOR</div>
       <div class="inspector-section"><div class="label">Status</div><div id="validationStatus" class="value muted">No document</div></div>
       <div class="inspector-section"><div class="label">Authored ID</div><div id="summaryId" class="value monospace">-</div></div>
-      <div class="inspector-section"><div class="label">Schema</div><div id="summarySchema" class="value">-</div></div>
       <div class="inspector-section"><div class="label">Working name</div><div id="summaryName" class="value">-</div></div>
-      <div class="inspector-section"><div class="label">Area</div><div id="summaryArea" class="value">-</div></div>
-      <div class="inspector-section"><div class="label">Role</div><div id="summaryRole" class="value">-</div></div>
+      <div class="inspector-section"><div class="label">Dialogue beats</div><div id="summaryBeatCount" class="value">-</div></div>
+      <div class="inspector-section"><div class="label">Selected beat</div><div id="summaryBeat" class="value">-</div></div>
       <div class="inspector-section"><div class="label">Validation</div><div id="validationErrors" class="validation-list">-</div></div>
     </aside>
   </main>
 
   <nav class="future-tabs">
     <button class="future-tab" data-surface="shell">SHELL</button>
-    <button class="future-tab active" data-surface="identity">IDENTITY</button>
-    <button class="future-tab" disabled>DIALOGUE</button>
-    <button class="future-tab" disabled>STATE</button>
+    <button class="future-tab" data-surface="identity">IDENTITY</button>
+    <button class="future-tab active" data-surface="dialogue">DIALOGUE</button>
+    <button class="future-tab" data-surface="state">STATE</button>
     <button class="future-tab" disabled>BEHAVIOR</button>
     <button class="future-tab" disabled>PRESENTATION</button>
     <button class="future-tab" disabled>TEST</button>

@@ -519,7 +519,7 @@ fn npc_turns_before_walking_off_support_edge() {
     let state = world.npc_of(npc).unwrap();
     let x = world.transform_of(npc).unwrap().position[0];
     assert_eq!(state.grounded_on, Some(platform));
-    assert!(x <= 1.0 - state.half_extents[0] + 1e-5);
+    assert!(x <= 1.0 - state.runtime_config.half_extents[0] + 1e-5);
     assert_eq!(state.heading, [-1.0, 0.0]);
 }
 

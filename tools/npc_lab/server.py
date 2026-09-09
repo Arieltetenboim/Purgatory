@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PURGATORY NPC Lab N2 local server."""
+"""PURGATORY NPC Lab N4 local server."""
 
 from __future__ import annotations
 
@@ -31,13 +31,112 @@ def contains_hebrew(value: Any) -> bool:
     return False
 
 
+def validate_condition(value: Any, label: str = "condition") -> list[str]:
+    if not isinstance(value, dict):
+        return [f"{label} must be an object."]
+
+    supported = [
+        key
+        for key in ("fact", "npc_met", "dialogue_heard", "item_owned", "item_equipped")
+        if key in value
+    ]
+    errors: list[str] = []
+
+    if len(supported) != 1:
+        return [f"{label} must contain exactly one supported N4 check."]
+
+    if not isinstance(value.get("equals"), bool):
+        errors.append(f"{label}.equals must be true or false.")
+
+    kind = supported[0]
+    reference = value.get(kind)
+
+    if kind == "fact":
+        if not isinstance(reference, str) or not reference.strip():
+            errors.append(f"{label}.fact must be a non-empty authored fact id.")
+        elif reference.startswith("npc.") and reference.endswith(".met"):
+            errors.append(
+                f"{label}.fact must not encode NPC met state; use the typed npc_met condition."
+            )
+
+    elif kind == "npc_met":
+        if not isinstance(reference, str) or not reference.startswith("npc."):
+            errors.append(f"{label}.npc_met must use an npc.* ContentId.")
+
+    elif kind in ("item_owned", "item_equipped"):
+        if not isinstance(reference, str) or not reference.startswith("item."):
+            errors.append(f"{label}.{kind} must use an item.* ContentId.")
+
+    elif kind == "dialogue_heard":
+        if not isinstance(reference, dict):
+            errors.append(f"{label}.dialogue_heard must be an object.")
+        else:
+            npc = reference.get("npc")
+            beat = reference.get("beat")
+            if not isinstance(npc, str) or not npc.startswith("npc."):
+                errors.append(f"{label}.dialogue_heard.npc must use an npc.* ContentId.")
+            if not isinstance(beat, str) or not beat.strip():
+                errors.append(f"{label}.dialogue_heard.beat must be a non-empty beat id.")
+
+    return errors
+
+
+def validate_action(value: Any, label: str = "action") -> list[str]:
+    if not isinstance(value, dict):
+        return [f"{label} must be an object."]
+
+    supported = [
+        key
+        for key in ("set_fact", "mark_npc_met", "give_item", "remove_item")
+        if key in value
+    ]
+    if len(supported) != 1:
+        return [f"{label} must contain exactly one supported N4 action."]
+
+    kind = supported[0]
+    data = value.get(kind)
+    errors: list[str] = []
+
+    if kind == "mark_npc_met":
+        if not isinstance(data, str) or not data.startswith("npc."):
+            errors.append(f"{label}.mark_npc_met must use an npc.* ContentId.")
+        return errors
+
+    if not isinstance(data, dict):
+        return [f"{label}.{kind} must be an object."]
+
+    if kind == "set_fact":
+        fact = data.get("fact")
+        fact_value = data.get("value")
+        if not isinstance(fact, str) or not fact.strip():
+            errors.append(f"{label}.set_fact.fact must be a non-empty fact id.")
+        elif fact.startswith("npc.") and fact.endswith(".met"):
+            errors.append(
+                f"{label}.set_fact must not encode NPC met state; use mark_npc_met."
+            )
+        if not isinstance(fact_value, bool):
+            errors.append(f"{label}.set_fact.value must be true or false.")
+    else:
+        item = data.get("item")
+        quantity = data.get("quantity")
+        if not isinstance(item, str) or not item.startswith("item."):
+            errors.append(f"{label}.{kind}.item must use an item.* ContentId.")
+        if (
+            not isinstance(quantity, int)
+            or isinstance(quantity, bool)
+            or quantity < 1
+        ):
+            errors.append(f"{label}.{kind}.quantity must be an integer >= 1.")
+
+    return errors
+
 def validate_npc_document(value: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(value, dict):
         return ["NPC document must be a JSON object."]
 
     schema_version = value.get("schema_version")
-    if not isinstance(schema_version, int) or schema_version < 1:
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version < 1:
         errors.append("schema_version must be an integer >= 1.")
 
     authored_id = value.get("id")
@@ -53,6 +152,98 @@ def validate_npc_document(value: Any) -> list[str]:
     interaction = value.get("interaction")
     if interaction is not None and not isinstance(interaction, dict):
         errors.append("interaction must be an object when present.")
+    elif isinstance(interaction, dict):
+        beats = interaction.get("beats", [])
+        if not isinstance(beats, list):
+            errors.append("interaction.beats must be an array.")
+        else:
+            beat_ids: set[str] = set()
+
+            for beat_index, beat in enumerate(beats):
+                label = f"interaction.beats[{beat_index}]"
+                if not isinstance(beat, dict):
+                    errors.append(f"{label} must be an object.")
+                    continue
+
+                beat_id = beat.get("id")
+                if not isinstance(beat_id, str) or not beat_id.strip():
+                    errors.append(f"{label}.id must be a non-empty string.")
+                elif beat_id in beat_ids:
+                    errors.append(f"{label}.id duplicates beat id '{beat_id}'.")
+                else:
+                    beat_ids.add(beat_id)
+
+                if not isinstance(beat.get("entry"), bool):
+                    errors.append(
+                        f"{label}.entry must explicitly be true (ENTRY) or false (CONTINUATION)."
+                    )
+
+                priority = beat.get("priority")
+                if not isinstance(priority, int) or isinstance(priority, bool):
+                    errors.append(f"{label}.priority must be an integer.")
+
+                conditions = beat.get("conditions", [])
+                if not isinstance(conditions, list):
+                    errors.append(f"{label}.conditions must be an array.")
+                else:
+                    for condition_index, condition in enumerate(conditions):
+                        errors.extend(
+                            validate_condition(
+                                condition,
+                                f"{label}.conditions[{condition_index}]",
+                            )
+                        )
+
+                choices = beat.get("choices", [])
+                if not isinstance(choices, list):
+                    errors.append(f"{label}.choices must be an array.")
+                else:
+                    choice_ids: set[str] = set()
+                    for choice_index, choice in enumerate(choices):
+                        choice_label = f"{label}.choices[{choice_index}]"
+                        if not isinstance(choice, dict):
+                            errors.append(f"{choice_label} must be an object.")
+                            continue
+
+                        choice_id = choice.get("id")
+                        if not isinstance(choice_id, str) or not choice_id.strip():
+                            errors.append(f"{choice_label}.id must be a non-empty string.")
+                        elif choice_id in choice_ids:
+                            errors.append(
+                                f"{choice_label}.id duplicates choice id '{choice_id}'."
+                            )
+                        else:
+                            choice_ids.add(choice_id)
+
+                        actions = choice.get("actions", [])
+                        if not isinstance(actions, list):
+                            errors.append(f"{choice_label}.actions must be an array.")
+                        else:
+                            for action_index, action in enumerate(actions):
+                                errors.extend(
+                                    validate_action(
+                                        action,
+                                        f"{choice_label}.actions[{action_index}]",
+                                    )
+                                )
+
+            for beat_index, beat in enumerate(beats):
+                if not isinstance(beat, dict):
+                    continue
+                choices = beat.get("choices", [])
+                if not isinstance(choices, list):
+                    continue
+                for choice_index, choice in enumerate(choices):
+                    if not isinstance(choice, dict):
+                        continue
+                    next_beat = choice.get("next")
+                    if next_beat is not None and (
+                        not isinstance(next_beat, str) or next_beat not in beat_ids
+                    ):
+                        errors.append(
+                            f"interaction.beats[{beat_index}].choices[{choice_index}].next "
+                            f"references missing beat '{next_beat}'."
+                        )
 
     if contains_hebrew(value):
         errors.append(
@@ -60,7 +251,6 @@ def validate_npc_document(value: Any) -> list[str]:
         )
 
     return errors
-
 
 def resolve_npc_path(authoring_root: Path, relative_path: str) -> Path:
     relative_path = relative_path.replace("\\", "/").strip("/")
@@ -158,40 +348,31 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
             self.send_response(HTTPStatus.NO_CONTENT)
             self.end_headers()
             return
-
         if parsed.path == "/api/health":
-            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N2"})
+            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N4-repair"})
             return
-
         if parsed.path == "/api/npcs":
             self._handle_list_npcs()
             return
-
         if parsed.path == "/api/npc":
             try:
                 relative = self._single_query_value("path")
                 path = resolve_npc_path(self.authoring_root, relative)
                 if not path.is_file():
-                    self._json_response(
-                        {"error": "NPC file not found."}, HTTPStatus.NOT_FOUND
-                    )
+                    self._json_response({"error": "NPC file not found."}, HTTPStatus.NOT_FOUND)
                     return
                 with path.open("r", encoding="utf-8") as fh:
                     payload = json.load(fh)
-                self._json_response(
-                    {
-                        "path": path.relative_to(self.authoring_root).as_posix(),
-                        "document": payload,
-                        "validation_errors": validate_npc_document(payload),
-                    }
-                )
+                self._json_response({
+                    "path": path.relative_to(self.authoring_root).as_posix(),
+                    "document": payload,
+                    "validation_errors": validate_npc_document(payload),
+                })
             except (ValueError, OSError, json.JSONDecodeError) as exc:
                 self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-
         if parsed.path == "/":
             self.path = "/index.html"
-
         super().do_GET()
 
     def do_POST(self) -> None:
@@ -207,17 +388,11 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
     def _handle_list_npcs(self) -> None:
         items: list[dict[str, Any]] = []
         self.authoring_root.mkdir(parents=True, exist_ok=True)
-
         for path in sorted(self.authoring_root.rglob("*.json")):
             relative = path.relative_to(self.authoring_root).as_posix()
             entry: dict[str, Any] = {
-                "path": relative,
-                "id": None,
-                "working_name": None,
-                "area": None,
-                "schema_version": None,
-                "valid": False,
-                "error": None,
+                "path": relative, "id": None, "working_name": None, "area": None,
+                "schema_version": None, "valid": False, "error": None,
             }
             try:
                 with path.open("r", encoding="utf-8") as fh:
@@ -226,22 +401,17 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
                 if not isinstance(design, dict):
                     design = {}
                 errors = validate_npc_document(doc)
-                entry.update(
-                    {
-                        "id": doc.get("id") if isinstance(doc, dict) else None,
-                        "working_name": design.get("working_name"),
-                        "area": design.get("area"),
-                        "schema_version": doc.get("schema_version")
-                        if isinstance(doc, dict)
-                        else None,
-                        "valid": not errors,
-                        "error": "; ".join(errors) if errors else None,
-                    }
-                )
+                entry.update({
+                    "id": doc.get("id") if isinstance(doc, dict) else None,
+                    "working_name": design.get("working_name"),
+                    "area": design.get("area"),
+                    "schema_version": doc.get("schema_version") if isinstance(doc, dict) else None,
+                    "valid": not errors,
+                    "error": "; ".join(errors) if errors else None,
+                })
             except (OSError, json.JSONDecodeError) as exc:
                 entry["error"] = str(exc)
             items.append(entry)
-
         self._json_response({"items": items})
 
     def _handle_save_npc(self) -> None:
@@ -252,32 +422,23 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
             errors = validate_npc_document(doc)
             if errors:
                 self._json_response(
-                    {
-                        "error": "NPC document failed N2 validation.",
-                        "validation_errors": errors,
-                    },
+                    {"error": "NPC document failed N4 Repair validation.", "validation_errors": errors},
                     HTTPStatus.UNPROCESSABLE_ENTITY,
                 )
                 return
-
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(path.suffix + ".tmp")
-            encoded = (
-                json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
-            ).encode("utf-8")
+            encoded = (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
             with tmp.open("wb") as fh:
                 fh.write(encoded)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, path)
-
-            self._json_response(
-                {
-                    "ok": True,
-                    "path": path.relative_to(self.authoring_root).as_posix(),
-                    "validation_errors": [],
-                }
-            )
+            self._json_response({
+                "ok": True,
+                "path": path.relative_to(self.authoring_root).as_posix(),
+                "validation_errors": [],
+            })
         except (ValueError, OSError) as exc:
             self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
@@ -286,63 +447,39 @@ class NpcLabHandler(SimpleHTTPRequestHandler):
             request = self._read_json_body()
             if not isinstance(request, dict):
                 raise ValueError("New NPC request must be an object.")
-
             authored_id = str(request.get("id", "")).strip()
             if not authored_id.startswith("npc.") or len(authored_id) < 5:
                 raise ValueError("New NPC id must be a non-empty npc.* authored id.")
-
             requested_area = str(request.get("area", "")).strip()
             area = requested_area or authored_area_from_id(authored_id)
-            safe_area = "".join(
-                ch for ch in area.lower() if ch.isalnum() or ch in "-_"
-            )
+            safe_area = "".join(ch for ch in area.lower() if ch.isalnum() or ch in "-_")
             if not safe_area:
                 safe_area = "unassigned"
-
-            safe_name = "".join(
-                ch for ch in authored_id if ch.isalnum() or ch in "._-"
-            )
+            safe_name = "".join(ch for ch in authored_id if ch.isalnum() or ch in "._-")
             relative = f"{safe_area}/{safe_name}.json"
             path = resolve_npc_path(self.authoring_root, relative)
             if path.exists():
-                self._json_response(
-                    {"error": f"NPC already exists at {relative}."},
-                    HTTPStatus.CONFLICT,
-                )
+                self._json_response({"error": f"NPC already exists at {relative}."}, HTTPStatus.CONFLICT)
                 return
-
             doc = new_npc_document(authored_id, safe_area)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            self._json_response(
-                {"ok": True, "path": relative, "document": doc},
-                HTTPStatus.CREATED,
-            )
+            path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            self._json_response({"ok": True, "path": relative, "document": doc}, HTTPStatus.CREATED)
         except (ValueError, OSError) as exc:
             self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="PURGATORY NPC Lab local server"
-    )
-    parser.add_argument(
-        "--root", type=Path, required=True, help="PURGATORY repository root"
-    )
+    parser = argparse.ArgumentParser(description="PURGATORY NPC Lab local server")
+    parser.add_argument("--root", type=Path, required=True, help="PURGATORY repository root")
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument(
-        "--open", action="store_true", help="Open NPC Lab in the default browser"
-    )
+    parser.add_argument("--open", action="store_true", help="Open NPC Lab in the default browser")
     args = parser.parse_args()
 
     repo_root = args.root.resolve()
     web_root = repo_root / "tools" / "npc_lab" / "web"
     authoring_root = repo_root / "content" / "authoring" / "npcs"
-
     if not web_root.is_dir():
         raise SystemExit(f"NPC Lab web root not found: {web_root}")
     if not authoring_root.is_dir():
@@ -354,7 +491,7 @@ def main() -> int:
 
     server = ThreadingHTTPServer((args.host, args.port), NpcLabHandler)
     url = f"http://{args.host}:{args.port}/"
-    print("PURGATORY NPC Lab N2")
+    print("PURGATORY NPC Lab N4 Repair")
     print(f"Repository: {repo_root}")
     print(f"Authoring:  {authoring_root}")
     print(f"URL:        {url}")

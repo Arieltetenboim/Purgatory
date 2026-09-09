@@ -13,8 +13,6 @@ use crate::entity::EntityId;
 use crate::footnote::ContactEvent;
 use crate::time::SimulationTick;
 
-/// NPC collider half-extents in world units.
-pub const NPC_HALF_EXTENTS: [f32; 2] = [0.4, 0.6];
 /// Flat Strike damage placeholder. Ten strikes defeat the default 20 Health NPC.
 pub const STRIKE_DAMAGE: f32 = 2.0;
 /// Contact damage dealt by a chasing NPC on collider overlap.
@@ -25,20 +23,42 @@ pub const STRIKE_RANGE: f32 = 4.0;
 pub const STRIKE_DURATION_TICKS: u64 = 3;
 /// Default NPC health max for workload spawns.
 pub const NPC_HEALTH_MAX: f32 = 20.0;
-/// Walk speed for active NPCs (world units / second).
-pub const NPC_MOVE_SPEED: f32 = 2.0;
-/// Ticks between heading changes when active.
-pub const NPC_TURN_PERIOD_TICKS: u64 = 45;
-/// Ticks of walk before a short stop.
-pub const NPC_WALK_PERIOD_TICKS: u64 = 30;
-/// Ticks of idle stop between walks.
-pub const NPC_STOP_PERIOD_TICKS: u64 = 15;
 /// Pulse tick damage placeholder.
 pub const PULSE_DAMAGE: f32 = 1.0;
 /// Default pulse period between damage ticks.
 pub const PULSE_PERIOD_TICKS: u64 = 10;
 /// Default pulse lifetime.
 pub const PULSE_DURATION_TICKS: u64 = 30;
+
+/// Per-NPC locomotion and collision-body parameters.
+///
+/// This is simulation runtime data. It deliberately has no authored-content
+/// identity or monster-specific behavior.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NpcRuntimeConfig {
+    /// Horizontal movement speed in world units per second.
+    pub movement_speed: f32,
+    /// Axis-aligned collision-body half-extents in world units.
+    pub half_extents: [f32; 2],
+    /// Ticks between patrol heading changes while active.
+    pub turn_period_ticks: u64,
+    /// Ticks spent walking before a patrol stop.
+    pub walk_period_ticks: u64,
+    /// Ticks spent idle between patrol walks.
+    pub stop_period_ticks: u64,
+}
+
+impl Default for NpcRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            movement_speed: 2.0,
+            half_extents: [0.4, 0.6],
+            turn_period_ticks: 45,
+            walk_period_ticks: 30,
+            stop_period_ticks: 15,
+        }
+    }
+}
 
 /// Optional NPC capability on a Generic entity.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,7 +75,7 @@ pub struct NpcState {
     pub grounded: bool,
     pub grounded_on: Option<EntityId>,
     pub last_contact: ContactEvent,
-    pub half_extents: [f32; 2],
+    pub runtime_config: NpcRuntimeConfig,
     pub next_turn_tick: SimulationTick,
     pub next_mode_tick: SimulationTick,
     pub walking: bool,
@@ -76,6 +96,28 @@ impl NpcState {
         now: SimulationTick,
         active: bool,
     ) -> Self {
+        Self::new_with_runtime_config(
+            type_token,
+            home,
+            hotspot_radius,
+            seed,
+            now,
+            active,
+            NpcRuntimeConfig::default(),
+        )
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_runtime_config(
+        type_token: u32,
+        home: [f32; 2],
+        hotspot_radius: f32,
+        seed: u32,
+        now: SimulationTick,
+        active: bool,
+        runtime_config: NpcRuntimeConfig,
+    ) -> Self {
         let mut rng_state = if seed == 0 { 1 } else { seed };
         let heading = random_heading(&mut rng_state);
         Self {
@@ -88,9 +130,9 @@ impl NpcState {
             grounded: false,
             grounded_on: None,
             last_contact: ContactEvent::None,
-            half_extents: NPC_HALF_EXTENTS,
-            next_turn_tick: now.saturating_add_ticks(NPC_TURN_PERIOD_TICKS),
-            next_mode_tick: now.saturating_add_ticks(NPC_WALK_PERIOD_TICKS),
+            runtime_config,
+            next_turn_tick: now.saturating_add_ticks(runtime_config.turn_period_ticks),
+            next_mode_tick: now.saturating_add_ticks(runtime_config.walk_period_ticks),
             walking: active,
             active,
             dead_pending: false,
@@ -118,7 +160,7 @@ impl CollisionBody for NpcState {
     }
 
     fn half_extents(&self) -> [f32; 2] {
-        self.half_extents
+        self.runtime_config.half_extents
     }
 
     fn grounded(&self) -> bool {

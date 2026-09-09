@@ -149,7 +149,7 @@ pub use map_runtime::{InstantiateError, InstantiatedMap, MapRuntimePlan, PlanPla
 pub use motion_debug::{CorrectionAxis, PlayerMotionDebug, ResponseKind};
 pub use movement::{GRAVITY, JUMP_VELOCITY, MOVE_SPEED};
 pub use npc::{
-    ActionRejectReason, ActionRequest, CONTACT_DAMAGE, NPC_HEALTH_MAX, NPC_MOVE_SPEED, NpcState,
+    ActionRejectReason, ActionRequest, CONTACT_DAMAGE, NPC_HEALTH_MAX, NpcRuntimeConfig, NpcState,
     PULSE_DAMAGE, PULSE_DURATION_TICKS, PULSE_PERIOD_TICKS, STRIKE_DAMAGE, STRIKE_DURATION_TICKS,
     STRIKE_RANGE,
 };

@@ -1,360 +1,442 @@
 {
-    "schema_version":  1,
-    "id":  "npc.welcome.traveler_stayed",
-    "design":  {
-                   "working_name":  "The Traveler Who Stayed",
-                   "display_name":  null,
-                   "role":  "Welcome transit host; food, beds, local meeting point, and temporary caravan drop point",
-                   "area":  "welcome",
-                   "tags":  [
-                                "friendly",
-                                "transit",
-                                "hospitality",
-                                "caravan",
-                                "welcome_core"
-                            ],
-                   "background":  "He arrived in Welcome years ago with a caravan and intended to stay only briefly. A mundane delay became temporary work, then responsibility, then a life. He can still joke that he is only passing through even though the community treats him as local.",
-                   "personality":  [
-                                       "warm without being sentimental",
-                                       "direct",
-                                       "dry humor",
-                                       "observant but not intrusive",
-                                       "helpful without making a performance of it",
-                                       "skeptical of grand promises but invested in ordinary life"
-                                   ],
-                   "speech_style":  [
-                                        "short practical sentences",
-                                        "dry understatement",
-                                        "rarely explains world facts the player character should already know",
-                                        "uses ordinary work and people as context instead of lore lectures"
-                                    ],
-                   "gameplay_purposes":  [
-                                             "recurring interaction anchor in Welcome",
-                                             "optional dialogue and side lore",
-                                             "one access point into the workshop-package situation",
-                                             "caravan logistics continuity",
-                                             "later equipment-aware reaction to the workshop boots"
-                                         ],
-                   "narrative_purposes":  [
-                                              "show that Welcome is a functioning lived-in place",
-                                              "embody someone who stayed without turning that choice into a philosophy lecture",
-                                              "make caravan dependence understandable before the important caravan fails to arrive",
-                                              "be someone the player expects to see again rather than an obvious farewell character"
-                                          ]
-               },
-    "relationships":  [
-                          {
-                              "working_label":  "Welcome workshop craftsperson",
-                              "target_id":  null,
-                              "notes":  "The workshop package can be discovered from either side. Exact NPC identity is intentionally unresolved until that NPC is authored."
-                          },
-                          {
-                              "working_label":  "The one who does not attach",
-                              "target_id":  null,
-                              "notes":  "Possible older connection from before or during arrival at Welcome. Not frozen."
-                          }
-                      ],
-    "interaction":  {
-                        "beats":  [
-                                      {
-                                          "id":  "intro",
-                                          "title":  "First meeting",
-                                          "priority":  100,
-                                          "pool":  "mandatory",
-                                          "conditions":  [
-                                                             {
-                                                                 "fact":  "npc.welcome.traveler_stayed.met",
-                                                                 "equals":  false
-                                                             }
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "If you\u0027re looking for food, there is some. A bed — maybe. Work? Somehow, there\u0027s always work.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-                                                          {
-                                                              "id":  "ask_place",
-                                                              "text":  "What\u0027s here?",
-                                                              "next":  "intro_place"
-                                                          },
-                                                          {
-                                                              "id":  "passing_through",
-                                                              "text":  "I\u0027m just passing through.",
-                                                              "next":  "intro_passing"
-                                                          },
-                                                          {
-                                                              "id":  "leave",
-                                                              "text":  "Maybe later.",
-                                                              "next":  null
-                                                          }
-                                                      ],
-                                          "notes":  "Meeting memory is a future authoritative action and is not encoded as arbitrary script in N0."
-                                      },
-                                      {
-                                          "id":  "intro_place",
-                                          "title":  "About this place",
-                                          "priority":  0,
-                                          "pool":  "once",
-                                          "conditions":  [
-
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "Food, beds, people arriving too late and people leaving too early. Stay a little and you\u0027ll understand.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-
-                                                      ],
-                                          "notes":  "Draft wording; content is intentionally not final dialogue."
-                                      },
-                                      {
-                                          "id":  "intro_passing",
-                                          "title":  "Only passing through",
-                                          "priority":  0,
-                                          "pool":  "once",
-                                          "conditions":  [
-
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "So am I.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-
-                                                      ],
-                                          "notes":  "The joke gains meaning only if the player later learns how long he has lived here."
-                                      },
-                                      {
-                                          "id":  "workshop_package_unknown",
-                                          "title":  "Workshop package — player has not met workshop craftsperson",
-                                          "priority":  80,
-                                          "pool":  "mandatory",
-                                          "conditions":  [
-                                                             {
-                                                                 "fact":  "welcome.workshop.package_needed",
-                                                                 "equals":  true
-                                                             },
-                                                             {
-                                                                 "fact":  "npc.welcome.workshop_craftsperson.met",
-                                                                 "equals":  false
-                                                             },
-                                                             {
-                                                                 "fact":  "welcome.workshop.package_delivered",
-                                                                 "equals":  false
-                                                             }
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "The workshop\u0027s things have been sitting here for two days. If you\u0027re heading that way, save us a trip.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-                                                          {
-                                                              "id":  "take_package",
-                                                              "text":  "I\u0027ll take it.",
-                                                              "next":  null
-                                                          },
-                                                          {
-                                                              "id":  "ask_contents",
-                                                              "text":  "What\u0027s inside?",
-                                                              "next":  "workshop_package_contents"
-                                                          },
-                                                          {
-                                                              "id":  "decline_package",
-                                                              "text":  "Maybe later.",
-                                                              "next":  null
-                                                          }
-                                                      ],
-                                          "notes":  "Actual item transfer must later route through the authoritative Item owner; choosing this option is not itself the mutation contract."
-                                      },
-                                      {
-                                          "id":  "workshop_package_known",
-                                          "title":  "Workshop package — player already met workshop craftsperson",
-                                          "priority":  90,
-                                          "pool":  "mandatory",
-                                          "conditions":  [
-                                                             {
-                                                                 "fact":  "welcome.workshop.package_needed",
-                                                                 "equals":  true
-                                                             },
-                                                             {
-                                                                 "fact":  "npc.welcome.workshop_craftsperson.met",
-                                                                 "equals":  true
-                                                             },
-                                                             {
-                                                                 "fact":  "welcome.workshop.package_delivered",
-                                                                 "equals":  false
-                                                             }
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "Ah, he already sent you? Good. His things have been sitting here for two days.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-                                                          {
-                                                              "id":  "take_package",
-                                                              "text":  "Give it here. I\u0027m heading that way.",
-                                                              "next":  null
-                                                          },
-                                                          {
-                                                              "id":  "leave",
-                                                              "text":  "I\u0027ll come back to it.",
-                                                              "next":  null
-                                                          }
-                                                      ],
-                                          "notes":  "Same world situation, different framing because the player reached the workshop first."
-                                      },
-                                      {
-                                          "id":  "workshop_package_contents",
-                                          "title":  "Workshop package contents",
-                                          "priority":  0,
-                                          "pool":  "once",
-                                          "conditions":  [
-
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "Leather, buckles, sole pieces. Nothing exciting until you have to walk all day with a torn shoe.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-                                                          {
-                                                              "id":  "take_after_contents",
-                                                              "text":  "All right, I\u0027ll take it.",
-                                                              "next":  null
-                                                          },
-                                                          {
-                                                              "id":  "leave",
-                                                              "text":  "Maybe later.",
-                                                              "next":  null
-                                                          }
-                                                      ],
-                                          "notes":  "Draft content demonstrating optional conversational freedom without a different quest outcome."
-                                      },
-                                      {
-                                          "id":  "caravan_expected",
-                                          "title":  "Important caravan expected today",
-                                          "priority":  40,
-                                          "pool":  "once",
-                                          "conditions":  [
-                                                             {
-                                                                 "fact":  "welcome.caravan.important.expected",
-                                                                 "equals":  true
-                                                             },
-                                                             {
-                                                                 "fact":  "welcome.caravan.important.late",
-                                                                 "equals":  false
-                                                             }
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "The caravan should come in today. Food, medicine, gear for the guards. About time — we\u0027re starting to scrape the bottom of a few shelves.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-
-                                                      ],
-                                          "notes":  "Continuity setup. This should sound routine, not like disaster foreshadowing."
-                                      },
-                                      {
-                                          "id":  "caravan_late",
-                                          "title":  "Important caravan is clearly late",
-                                          "priority":  70,
-                                          "pool":  "mandatory",
-                                          "conditions":  [
-                                                             {
-                                                                 "fact":  "welcome.caravan.important.late",
-                                                                 "equals":  true
-                                                             }
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "They should\u0027ve been here by now.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-
-                                                      ],
-                                          "notes":  "Later content may distinguish slightly-late from concerning-late. N0 does not freeze those runtime states."
-                                      },
-                                      {
-                                          "id":  "lore_roofs",
-                                          "title":  "How Welcome changed",
-                                          "priority":  5,
-                                          "pool":  "lore",
-                                          "conditions":  [
-                                                             {
-                                                                 "fact":  "npc.welcome.traveler_stayed.met",
-                                                                 "equals":  true
-                                                             }
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "When I arrived, there were three roofs here. Two of them leaked.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        },
-                                                        {
-                                                            "text":  "There are more roofs now. Some still leak.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-
-                                                      ],
-                                          "notes":  "Optional lore; hearing it must never be required to progress through Welcome."
-                                      },
-                                      {
-                                          "id":  "filler_food",
-                                          "title":  "Normal filler",
-                                          "priority":  1,
-                                          "pool":  "repeatable",
-                                          "conditions":  [
-                                                             {
-                                                                 "fact":  "npc.welcome.traveler_stayed.met",
-                                                                 "equals":  true
-                                                             }
-                                                         ],
-                                          "lines":  [
-                                                        {
-                                                            "text":  "The kitchen\u0027s still open.",
-                                                            "voice":  null,
-                                                            "animation":  null
-                                                        }
-                                                    ],
-                                          "choices":  [
-
-                                                      ],
-                                          "notes":  "Demonstrates repeatable filler that does not advance progression."
-                                      }
-                                  ]
-                    },
-    "notes":  [
-                  "Draft dialogue wording is disposable; the structural proof is the N0 goal.",
-                  "Equipment-aware dialogue for visibly worn workshop boots is a known requirement but is not representable by the N0 boolean-fact-only condition vocabulary yet. Add a typed equipped-item condition only when N4 reaches that proof.",
-                  "NPC knowledge must not be treated as automatically equal to all character/world facts.",
-                  "Shared physical NPC activity versus per-client conversational gestures remains a future runtime/presentation concern.",
-                  "The important caravan carries food, medicine/healing supplies, guard equipment, and better shop equipment that never arrives during Welcome. Exact quantities and item identities are intentionally not frozen here."
-              ]
+  "schema_version": 1,
+  "id": "npc.welcome.traveler_stayed",
+  "design": {
+    "working_name": "The Traveler Who Stayed",
+    "display_name": null,
+    "role": "Welcome transit host; food, beds, local meeting point, and temporary caravan drop point",
+    "area": "welcome",
+    "tags": [
+      "friendly",
+      "transit",
+      "hospitality",
+      "caravan",
+      "welcome_core"
+    ],
+    "background": "He arrived in Welcome years ago with a caravan and intended to stay only briefly. A mundane delay became temporary work, then responsibility, then a life. He can still joke that he is only passing through even though the community treats him as local.",
+    "personality": [
+      "warm without being sentimental",
+      "direct",
+      "dry humor",
+      "observant but not intrusive",
+      "helpful without making a performance of it",
+      "skeptical of grand promises but invested in ordinary life"
+    ],
+    "speech_style": [
+      "short practical sentences",
+      "dry understatement",
+      "rarely explains world facts the player character should already know",
+      "uses ordinary work and people as context instead of lore lectures"
+    ],
+    "gameplay_purposes": [
+      "recurring interaction anchor in Welcome",
+      "optional dialogue and side lore",
+      "one access point into the workshop-package situation",
+      "caravan logistics continuity",
+      "later equipment-aware reaction to the workshop boots"
+    ],
+    "narrative_purposes": [
+      "show that Welcome is a functioning lived-in place",
+      "embody someone who stayed without turning that choice into a philosophy lecture",
+      "make caravan dependence understandable before the important caravan fails to arrive",
+      "be someone the player expects to see again rather than an obvious farewell character"
+    ]
+  },
+  "relationships": [
+    {
+      "working_label": "Welcome workshop craftsperson",
+      "target_id": "npc.welcome.workshop_craftsperson",
+      "notes": "The workshop package can be discovered from either side. The Traveler currently holds the workshop materials at the inn."
+    },
+    {
+      "working_label": "The one who does not attach",
+      "target_id": null,
+      "notes": "Possible older connection from before or during arrival at Welcome. Not frozen."
+    }
+  ],
+  "interaction": {
+    "beats": [
+      {
+        "id": "intro",
+        "title": "First meeting",
+        "priority": 100,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.traveler_stayed",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "If you're looking for food, there is some. A bed — maybe. Work? Somehow, there's always work.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "ask_place",
+            "text": "What's here?",
+            "next": "intro_place",
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.traveler_stayed"
+              }
+            ]
+          },
+          {
+            "id": "passing_through",
+            "text": "I'm just passing through.",
+            "next": "intro_passing",
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.traveler_stayed"
+              }
+            ]
+          },
+          {
+            "id": "leave",
+            "text": "Maybe later.",
+            "next": null,
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.traveler_stayed"
+              }
+            ]
+          }
+        ],
+        "notes": "Any completed first-meeting choice records that this character has met the NPC."
+      },
+      {
+        "id": "intro_place",
+        "title": "About this place",
+        "priority": 0,
+        "entry": false,
+        "pool": "once",
+        "conditions": [],
+        "lines": [
+          {
+            "text": "Food, beds, people arriving too late and people leaving too early. Stay a little and you'll understand.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Draft wording."
+      },
+      {
+        "id": "intro_passing",
+        "title": "Only passing through",
+        "priority": 0,
+        "entry": false,
+        "pool": "once",
+        "conditions": [],
+        "lines": [
+          {
+            "text": "So am I.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "The joke gains meaning only if the player later learns how long he has lived here."
+      },
+      {
+        "id": "workshop_package_unknown",
+        "title": "Workshop package — craftsperson not yet met",
+        "priority": 80,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "fact": "welcome.workshop.package_needed",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_at_inn",
+            "equals": true
+          },
+          {
+            "npc_met": "npc.welcome.workshop_craftsperson",
+            "equals": false
+          },
+          {
+            "item_owned": "item.package",
+            "equals": false
+          },
+          {
+            "fact": "welcome.workshop.package_delivered",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "The workshop's things have been sitting here for two days. If you're heading that way, save us a trip.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "take_package",
+            "text": "I'll take it.",
+            "next": null,
+            "actions": [
+              {
+                "give_item": {
+                  "item": "item.package",
+                  "quantity": 1
+                }
+              },
+              {
+                "set_fact": {
+                  "fact": "welcome.workshop.package_at_inn",
+                  "value": false
+                }
+              }
+            ]
+          },
+          {
+            "id": "ask_contents",
+            "text": "What's inside?",
+            "next": "workshop_package_contents"
+          },
+          {
+            "id": "decline_package",
+            "text": "Maybe later.",
+            "next": null
+          }
+        ],
+        "notes": "This path allows the player to discover the workshop situation through the inn before ever visiting the workshop."
+      },
+      {
+        "id": "workshop_package_known",
+        "title": "Workshop package — craftsperson already met",
+        "priority": 90,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "fact": "welcome.workshop.package_needed",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_at_inn",
+            "equals": true
+          },
+          {
+            "npc_met": "npc.welcome.workshop_craftsperson",
+            "equals": true
+          },
+          {
+            "item_owned": "item.package",
+            "equals": false
+          },
+          {
+            "fact": "welcome.workshop.package_delivered",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "Ah, he already sent you? Good. His things have been sitting here for two days.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "take_package",
+            "text": "Give it here. I'm heading that way.",
+            "next": null,
+            "actions": [
+              {
+                "give_item": {
+                  "item": "item.package",
+                  "quantity": 1
+                }
+              },
+              {
+                "set_fact": {
+                  "fact": "welcome.workshop.package_at_inn",
+                  "value": false
+                }
+              }
+            ]
+          },
+          {
+            "id": "leave",
+            "text": "I'll come back to it.",
+            "next": null
+          }
+        ],
+        "notes": "Same world situation, different framing because the player reached the workshop first."
+      },
+      {
+        "id": "workshop_package_contents",
+        "title": "Workshop package contents",
+        "priority": 0,
+        "entry": false,
+        "pool": "once",
+        "conditions": [
+          {
+            "fact": "welcome.workshop.package_needed",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_at_inn",
+            "equals": true
+          },
+          {
+            "item_owned": "item.package",
+            "equals": false
+          },
+          {
+            "fact": "welcome.workshop.package_delivered",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "Leather, buckles, sole pieces. Nothing exciting until you have to walk all day with a torn shoe.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "take_after_contents",
+            "text": "All right, I'll take it.",
+            "next": null,
+            "actions": [
+              {
+                "give_item": {
+                  "item": "item.package",
+                  "quantity": 1
+                }
+              },
+              {
+                "set_fact": {
+                  "fact": "welcome.workshop.package_at_inn",
+                  "value": false
+                }
+              }
+            ]
+          },
+          {
+            "id": "leave",
+            "text": "Maybe later.",
+            "next": null
+          }
+        ],
+        "notes": "Optional conversational freedom without a different world outcome."
+      },
+      {
+        "id": "caravan_expected",
+        "title": "Important caravan expected today",
+        "priority": 40,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "fact": "welcome.caravan.important.expected",
+            "equals": true
+          },
+          {
+            "fact": "welcome.caravan.important.late",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "The caravan should come in today. Food, medicine, gear for the guards. About time — we're starting to scrape the bottom of a few shelves.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Continuity setup. This should sound routine, not like disaster foreshadowing."
+      },
+      {
+        "id": "caravan_late",
+        "title": "Important caravan is clearly late",
+        "priority": 70,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "fact": "welcome.caravan.important.late",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "They should've been here by now.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Later content may distinguish slightly-late from concerning-late."
+      },
+      {
+        "id": "lore_roofs",
+        "title": "How Welcome changed",
+        "priority": 5,
+        "entry": true,
+        "pool": "lore",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.traveler_stayed",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "When I arrived, there were three roofs here. Two of them leaked.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "There are more roofs now. Some still leak.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Optional lore; hearing it must never be required to progress through Welcome."
+      },
+      {
+        "id": "filler_food",
+        "title": "Normal filler",
+        "priority": 1,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.traveler_stayed",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "The kitchen's still open.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Repeatable filler that does not advance progression."
+      }
+    ]
+  },
+  "notes": [
+    "The workshop package is a pre-existing world situation. Neither the Traveler nor the workshop craftsperson owns or starts it.",
+    "Welcome initialization should begin with welcome.workshop.package_needed=true, welcome.workshop.package_at_inn=true, and welcome.workshop.package_delivered=false.",
+    "Taking the package changes package_at_inn to false. Delivery at the workshop changes package_delivered to true and package_needed to false.",
+    "NPC knowledge must not automatically equal all character/world facts.",
+    "Shared physical NPC activity versus per-client conversational gestures remains a future runtime/presentation concern."
+  ]
 }

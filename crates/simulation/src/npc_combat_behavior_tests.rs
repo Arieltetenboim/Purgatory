@@ -12,7 +12,7 @@ use crate::npc::{NPC_HEALTH_MAX, STRIKE_RANGE};
 use crate::platform::Platform;
 use crate::time::SimulationTick;
 use crate::transform::Transform;
-use crate::{ContentId, PLAYER_HEALTH_MAX, World, WorldAddress};
+use crate::{ContentId, NpcRuntimeConfig, PLAYER_HEALTH_MAX, World, WorldAddress};
 
 const AGGRO_RADIUS: f32 = 3.0;
 const STRIKE_ABILITY_RANGE: f32 = 1.5;
@@ -67,6 +67,127 @@ fn setup(player_x: f32, npc_x: f32) -> (World, crate::EntityId, crate::EntityId)
     world.set_npc(npc, state);
     world.grant_ability(npc, strike().id);
     (world, npc, player)
+}
+
+#[test]
+fn configured_npcs_move_at_independent_authoritative_speeds() {
+    let mut world = World::new();
+    world.spawn_platform(
+        Transform::from_position([0.0, 0.3]),
+        Platform::solid([8.0, 0.1]),
+    );
+    let now = SimulationTick::from_count(1);
+    world.begin_tick(now);
+    let slow = world
+        .spawn(World::npc_spawn_request_with_runtime_config(
+            WorldAddress::DEV,
+            [-2.0, 1.0],
+            1,
+            8.0,
+            1,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+            NpcRuntimeConfig {
+                movement_speed: 1.0,
+                half_extents: [0.4, 0.6],
+                ..NpcRuntimeConfig::default()
+            },
+        ))
+        .expect("slow npc");
+    let fast = world
+        .spawn(World::npc_spawn_request_with_runtime_config(
+            WorldAddress::DEV,
+            [2.0, 1.0],
+            2,
+            8.0,
+            2,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+            NpcRuntimeConfig {
+                movement_speed: 3.0,
+                half_extents: [0.4, 0.6],
+                ..NpcRuntimeConfig::default()
+            },
+        ))
+        .expect("fast npc");
+    for id in [slow, fast] {
+        let mut npc = world.npc_of(id).expect("npc");
+        npc.heading = [1.0, 0.0];
+        npc.walking = true;
+        assert!(world.set_npc(id, npc));
+    }
+
+    world.tick_npcs(0.1);
+
+    assert_eq!(world.npc_of(slow).unwrap().velocity[0], 1.0);
+    assert_eq!(world.npc_of(fast).unwrap().velocity[0], 3.0);
+    assert!((world.transform_of(slow).unwrap().position[0] - -1.9).abs() < 1e-6);
+    assert!((world.transform_of(fast).unwrap().position[0] - 2.3).abs() < 1e-6);
+}
+
+#[test]
+fn configured_npc_body_remains_grounded_on_shared_collision_surface() {
+    let mut world = World::new();
+    let floor = world.spawn_platform(
+        Transform::from_position([0.0, 0.3]),
+        Platform::solid([8.0, 0.1]),
+    );
+    let half_extents = [0.7, 0.9];
+    let floor_top = 0.4;
+    let now = SimulationTick::from_count(1);
+    world.begin_tick(now);
+    let npc = world
+        .spawn(World::npc_spawn_request_with_runtime_config(
+            WorldAddress::DEV,
+            [0.0, floor_top + half_extents[1]],
+            1,
+            8.0,
+            1,
+            now,
+            true,
+            NPC_HEALTH_MAX,
+            NpcRuntimeConfig {
+                movement_speed: 2.0,
+                half_extents,
+                ..NpcRuntimeConfig::default()
+            },
+        ))
+        .expect("npc");
+    let mut state = world.npc_of(npc).expect("npc state");
+    state.walking = false;
+    state.grounded = true;
+    state.grounded_on = Some(floor);
+    assert!(world.set_npc(npc, state));
+
+    world.tick_npcs(0.1);
+
+    let state = world.npc_of(npc).expect("npc state");
+    assert_eq!(state.runtime_config.half_extents, half_extents);
+    assert!(state.grounded);
+    assert_eq!(state.grounded_on, Some(floor));
+    assert!(
+        (world.transform_of(npc).unwrap().position[1] - (floor_top + half_extents[1])).abs() < 1e-6
+    );
+}
+
+#[test]
+fn default_npc_runtime_config_preserves_existing_patrol_speed() {
+    let (mut world, npc, _) = setup(20.0, 0.0);
+    let mut state = world.npc_of(npc).expect("npc");
+    state.heading = [1.0, 0.0];
+    state.walking = true;
+    assert!(world.set_npc(npc, state));
+
+    world.tick_npcs(0.1);
+
+    assert_eq!(
+        world.npc_of(npc).unwrap().runtime_config,
+        NpcRuntimeConfig::default()
+    );
+    assert_eq!(world.npc_of(npc).unwrap().velocity[0], 2.0);
+    assert!((world.transform_of(npc).unwrap().position[0] - 0.2).abs() < 1e-6);
 }
 
 #[test]
@@ -241,7 +362,10 @@ fn target_beyond_home_leash_is_cleared_and_patrol_resumes() {
 
     let state = world.npc_of(npc).unwrap();
     assert_eq!(state.target, None);
-    assert_eq!(state.velocity[0], crate::npc::NPC_MOVE_SPEED);
+    assert_eq!(
+        state.velocity[0],
+        NpcRuntimeConfig::default().movement_speed
+    );
 }
 
 #[test]

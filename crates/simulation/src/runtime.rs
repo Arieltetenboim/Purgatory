@@ -17,9 +17,8 @@ use crate::effect::{EffectError, EffectId, EffectKind, TempEffect};
 use crate::entity::EntityId;
 use crate::health::{DamageImmunityPolicy, Health};
 use crate::npc::{
-    ActionRejectReason, ActionRequest, CONTACT_DAMAGE, NPC_MOVE_SPEED, NPC_STOP_PERIOD_TICKS,
-    NPC_TURN_PERIOD_TICKS, NPC_WALK_PERIOD_TICKS, NpcState, STRIKE_DAMAGE, STRIKE_DURATION_TICKS,
-    STRIKE_RANGE,
+    ActionRejectReason, ActionRequest, CONTACT_DAMAGE, NpcRuntimeConfig, NpcState, STRIKE_DAMAGE,
+    STRIKE_DURATION_TICKS, STRIKE_RANGE,
 };
 use crate::platform::PlatformView;
 use crate::query::{QueryFilter, QueryLimit};
@@ -943,7 +942,7 @@ impl World {
                     let dx = target_position[0] - transform.position[0];
                     let direction = dx.signum();
                     npc.heading = [direction, 0.0];
-                    npc.velocity[0] = direction * NPC_MOVE_SPEED;
+                    npc.velocity[0] = direction * npc.runtime_config.movement_speed;
                 }
             } else {
                 if now.get() >= npc.next_turn_tick.get() {
@@ -952,19 +951,20 @@ impl World {
                     } else {
                         [1.0, 0.0]
                     };
-                    npc.next_turn_tick = now.saturating_add_ticks(NPC_TURN_PERIOD_TICKS);
+                    npc.next_turn_tick =
+                        now.saturating_add_ticks(npc.runtime_config.turn_period_ticks);
                 }
                 if now.get() >= npc.next_mode_tick.get() {
                     npc.walking = !npc.walking;
                     let period = if npc.walking {
-                        NPC_WALK_PERIOD_TICKS
+                        npc.runtime_config.walk_period_ticks
                     } else {
-                        NPC_STOP_PERIOD_TICKS
+                        npc.runtime_config.stop_period_ticks
                     };
                     npc.next_mode_tick = now.saturating_add_ticks(period);
                 }
                 npc.velocity[0] = if npc.walking {
-                    npc.heading[0] * NPC_MOVE_SPEED
+                    npc.heading[0] * npc.runtime_config.movement_speed
                 } else {
                     0.0
                 };
@@ -982,10 +982,14 @@ impl World {
                             view.id == support_id && self.address_of(view.id) == self.address_of(id)
                         })
                     {
-                        min_x = min_x
-                            .max(support.platform.min_x(support.transform) + npc.half_extents[0]);
-                        max_x = max_x
-                            .min(support.platform.max_x(support.transform) - npc.half_extents[0]);
+                        min_x = min_x.max(
+                            support.platform.min_x(support.transform)
+                                + npc.runtime_config.half_extents[0],
+                        );
+                        max_x = max_x.min(
+                            support.platform.max_x(support.transform)
+                                - npc.runtime_config.half_extents[0],
+                        );
                     }
                     if min_x > max_x {
                         npc.velocity[0] = 0.0;
@@ -1043,10 +1047,10 @@ impl World {
             return;
         };
         let previous = transform.position;
-        let previous_bottom = previous[1] - npc.half_extents[1];
-        let previous_top = previous[1] + npc.half_extents[1];
-        let previous_left = previous[0] - npc.half_extents[0];
-        let previous_right = previous[0] + npc.half_extents[0];
+        let previous_bottom = previous[1] - npc.runtime_config.half_extents[1];
+        let previous_top = previous[1] + npc.runtime_config.half_extents[1];
+        let previous_left = previous[0] - npc.runtime_config.half_extents[0];
+        let previous_right = previous[0] + npc.runtime_config.half_extents[0];
         let platforms: Vec<PlatformView> = self
             .iter_platforms()
             .filter(|view| self.address_of(view.id) == self.address_of(id))
@@ -1263,17 +1267,45 @@ impl World {
         active: bool,
         health_max: f32,
     ) -> RuntimeSpawnRequest {
+        Self::npc_spawn_request_with_runtime_config(
+            address,
+            home,
+            type_token,
+            hotspot_radius,
+            seed,
+            now,
+            active,
+            health_max,
+            NpcRuntimeConfig::default(),
+        )
+    }
+
+    /// Build a visible NPC spawn request with simulation-owned body parameters.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn npc_spawn_request_with_runtime_config(
+        address: WorldAddress,
+        home: [f32; 2],
+        type_token: u32,
+        hotspot_radius: f32,
+        seed: u32,
+        now: SimulationTick,
+        active: bool,
+        health_max: f32,
+        runtime_config: NpcRuntimeConfig,
+    ) -> RuntimeSpawnRequest {
         RuntimeSpawnRequest::transient_at(address)
             .with_transform(Transform::from_position(home))
             .visible()
             .with_health(Health::full(health_max))
-            .with_npc(NpcState::new(
+            .with_npc(NpcState::new_with_runtime_config(
                 type_token,
                 home,
                 hotspot_radius,
                 seed,
                 now,
                 active,
+                runtime_config,
             ))
     }
 
@@ -1292,6 +1324,7 @@ impl World {
         let radius = npc.hotspot_radius;
         let type_token = npc.type_token;
         let seed = npc.rng_state;
+        let runtime_config = npc.runtime_config;
         let address = self.address_of(id).unwrap_or(WorldAddress::DEV);
         let _ = self.set_npc(id, npc);
         self.runtime_stats.deaths_total = self.runtime_stats.deaths_total.saturating_add(1);
@@ -1309,7 +1342,7 @@ impl World {
         let despawn_due = self.tick.saturating_add_ticks(delay);
         let _ = self.schedule_despawn(id, despawn_due, WorkLane::Deferred);
         let respawn_due = self.tick.saturating_add_ticks(delay.saturating_add(1));
-        let req = Self::npc_spawn_request(
+        let req = Self::npc_spawn_request_with_runtime_config(
             address,
             home,
             type_token,
@@ -1318,6 +1351,7 @@ impl World {
             respawn_due,
             true,
             health_max,
+            runtime_config,
         );
         if self
             .schedule_spawn(req, respawn_due, ScheduleOwner::World, WorkLane::Deferred)
