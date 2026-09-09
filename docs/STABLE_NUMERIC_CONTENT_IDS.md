@@ -4,7 +4,7 @@ Status: **accepted owner architecture principle**
 
 This document is authoritative for future content identity work. It supersedes the **canonical authored-string identity** portion of ADR-0036 and any later documentation that treats a string such as `item.foo` or `npc.area.name` as the permanent identity of content.
 
-The current implementation has **not yet been migrated**. Existing string-backed `ContentId` behavior remains a temporary compatibility state until a dedicated migration is performed.
+The current implementation has **not yet been migrated**. Existing string-backed `ContentId` behavior remains a temporary compatibility state until the dedicated migration in issue #24 is performed.
 
 ## Principle
 
@@ -19,7 +19,9 @@ Once an ID has been allocated to content, its meaning is permanent:
 - retired IDs stay retired;
 - references, persistence, networking, admin commands and tools must ultimately converge on the same stable number.
 
-Runtime-instance identities remain separate. A spawned monster/NPC/world drop still has a runtime `EntityId`; an owned economic item still has an `ItemInstanceId`. The numeric content ID identifies the **definition/template**, not one spawned instance.
+This applies to all globally addressable unique content definitions, including maps and world objects. There is no permanent string-ID exception for maps or another content domain.
+
+Runtime-instance identities remain separate. A spawned monster/NPC/world object/world drop still has a runtime `EntityId`; an owned economic item still has an `ItemInstanceId`. The numeric content ID identifies the **definition/template**, not one spawned instance.
 
 ## Global 10,000-ID domain blocks
 
@@ -33,6 +35,8 @@ Frozen initial blocks:
 | `20,000–29,999` | NPCs |
 | `30,000–39,999` | Items |
 | `40,000–49,999` | Skills / Abilities |
+| `50,000–59,999` | Maps |
+| `60,000–69,999` | World Objects / Interactables (for example portals, chests and switches) |
 
 `0–9,999` is currently unallocated/reserved. Additional 10,000-ID blocks must be assigned explicitly when another durable content domain needs one; do not silently invent allocations.
 
@@ -45,6 +49,8 @@ Examples (illustrative numbers, not allocations unless separately entered into t
 20001 -> an NPC definition
 30001 -> an Item definition
 40001 -> a Skill/Ability definition
+50001 -> a Map definition
+60001 -> a World Object / Interactable definition
 ```
 
 A command such as:
@@ -65,6 +71,8 @@ struct ItemId(ContentId);
 struct NpcId(ContentId);
 struct MonsterId(ContentId);
 struct AbilityId(ContentId);
+struct MapContentId(ContentId);
+struct WorldObjectId(ContentId);
 ```
 
 The raw numeric value remains globally unique. Typed wrappers are compile-time/API safety, not separate numeric namespaces.
@@ -99,7 +107,7 @@ Multiple files/facets that describe the **same logical content object** should s
 
 Example: an equippable sword's item definition, equipment rules and equipment-presentation facet are all facets of the same Item and should resolve to the same Item-range content ID.
 
-Local IDs inside one definition (for example a dialogue beat ID or an attachment-local ID) are not automatically global content IDs. Promote a concept to the global ID catalog only when it needs durable cross-definition/runtime identity.
+Local IDs inside one definition (for example a dialogue beat ID, animation-track-local key, spawn point ID, or attachment-local ID) are not automatically global content IDs. Promote a concept to the global ID catalog only when it is itself a globally addressable durable content definition.
 
 ## Migration boundary
 
@@ -111,7 +119,7 @@ A migration must deliberately cover the shared identity boundary rather than cha
 2. add block/domain validation and global duplicate-ID validation;
 3. change content JSON definition IDs and durable cross-content references from canonical strings to numeric IDs;
 4. make registries primarily ID-keyed; retain names/labels only as metadata/search indexes where useful;
-5. migrate live item/equipment/ability/map/entity references and tests;
+5. migrate live monster/NPC/item/equipment/ability/map/world-object references and tests;
 6. update protocol codecs and bump protocol version if the wire representation changes from the current 8-byte token;
 7. migrate FORGE authoring schemas, including NPC references, after the shared identity primitive is stable;
 8. before persistence ships, define the catalog/retirement process that prevents accidental ID reuse.
@@ -120,4 +128,4 @@ Do not perform this as opportunistic cleanup inside an unrelated Phase/FORGE sli
 
 ## Non-goals of this decision
 
-This decision does not yet allocate IDs to existing content, assign blocks beyond the frozen initial set, define a database sequence, define public/mod IDs, or decide how externally authored/modded content would coexist with first-party IDs.
+This decision does not yet allocate IDs to individual existing definitions, define a database sequence, define public/mod IDs, or decide how externally authored/modded content would coexist with first-party IDs.
