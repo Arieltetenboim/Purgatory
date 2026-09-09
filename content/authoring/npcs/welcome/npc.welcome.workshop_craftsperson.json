@@ -1,0 +1,367 @@
+{
+  "schema_version": 1,
+  "id": "npc.welcome.workshop_craftsperson",
+  "design": {
+    "working_name": "Workshop Craftsman",
+    "display_name": null,
+    "role": "Welcome workshop keeper; repairs tools, footwear, fittings, and general non-medical equipment",
+    "area": "welcome",
+    "tags": [
+      "workshop",
+      "craftsman",
+      "repair",
+      "equipment",
+      "welcome_core"
+    ],
+    "background": "He came to Welcome under the shopkeeper's employment and was sent ahead to establish the workshop. What began as assigned work became his place in the settlement. He now keeps the workshop running and handles the practical repairs that accumulate in ordinary life.",
+    "personality": [
+      "practical",
+      "somewhat impatient without being unpleasant",
+      "focused on problems rather than ceremony",
+      "reliable",
+      "economical with words"
+    ],
+    "speech_style": [
+      "short practical sentences",
+      "asks what is broken, missing, or delayed",
+      "dry phrasing",
+      "rarely wastes words on explanation",
+      "sounds more concerned with getting work done than being socially polished"
+    ],
+    "gameplay_purposes": [
+      "second access point into the workshop-package situation",
+      "receive the workshop package",
+      "establish practical crafting and repair activity in Welcome",
+      "connect the package materials to basic workshop boots",
+      "later support equipment-aware dialogue"
+    ],
+    "narrative_purposes": [
+      "show ordinary skilled work as part of Welcome's functioning life",
+      "make the workshop package feel like a real logistical need rather than an abstract quest object",
+      "reinforce that several people depend on the same settlement supply network",
+      "provide another perspective on the delayed caravan without turning it into exposition"
+    ]
+  },
+  "relationships": [
+    {
+      "working_label": "The Traveler Who Stayed",
+      "target_id": "npc.welcome.traveler_stayed",
+      "notes": "The workshop package is temporarily held at the Traveler's inn. Either NPC can expose the same situation depending on player visit order."
+    },
+    {
+      "working_label": "Shopkeeper who employed him",
+      "target_id": null,
+      "notes": "He originally came to Welcome under the shopkeeper's employment and was sent ahead to establish the workshop. Exact authored NPC identity is not frozen yet."
+    }
+  ],
+  "interaction": {
+    "beats": [
+      {
+        "id": "package_delivery_first_meeting",
+        "title": "First meeting — player already carries workshop package",
+        "priority": 110,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.workshop_craftsperson",
+            "equals": false
+          },
+          {
+            "fact": "welcome.workshop.package_needed",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_at_inn",
+            "equals": false
+          },
+          {
+            "fact": "welcome.workshop.package_delivered",
+            "equals": false
+          },
+          {
+            "item_owned": "item.package",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Finally.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "You're not late. It's been sitting there two days.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "hand_over_package",
+            "text": "This is yours, then.",
+            "next": null,
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.workshop_craftsperson"
+              },
+              {
+                "remove_item": {
+                  "item": "item.package",
+                  "quantity": 1
+                }
+              },
+              {
+                "set_fact": {
+                  "fact": "welcome.workshop.package_delivered",
+                  "value": true
+                }
+              },
+              {
+                "set_fact": {
+                  "fact": "welcome.workshop.package_needed",
+                  "value": false
+                }
+              }
+            ]
+          }
+        ],
+        "notes": "Supports Inn-first play. The player may meet the craftsman for the first time while already carrying the package."
+      },
+      {
+        "id": "package_waiting_first_meeting",
+        "title": "First meeting — workshop package still at inn",
+        "priority": 100,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.workshop_craftsperson",
+            "equals": false
+          },
+          {
+            "fact": "welcome.workshop.package_needed",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_at_inn",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_delivered",
+            "equals": false
+          },
+          {
+            "item_owned": "item.package",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "If it isn't broken, put it aside.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "There's a package for the workshop waiting at the inn. Leather, soles, buckles. I need it here.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "offer_to_fetch",
+            "text": "I'll pick it up.",
+            "next": null,
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.workshop_craftsperson"
+              }
+            ]
+          },
+          {
+            "id": "leave",
+            "text": "I'm just looking around.",
+            "next": null,
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.workshop_craftsperson"
+              }
+            ]
+          }
+        ],
+        "notes": "Supports Workshop-first play. Meeting the craftsman changes only the player's relationship state; it does not create the package situation."
+      },
+      {
+        "id": "intro",
+        "title": "First meeting — no active package handoff",
+        "priority": 90,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.workshop_craftsperson",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "If it isn't broken, put it aside.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "acknowledge",
+            "text": "All right.",
+            "next": null,
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.workshop_craftsperson"
+              }
+            ]
+          }
+        ],
+        "notes": "Fallback first meeting if the package situation is no longer the relevant context."
+      },
+      {
+        "id": "package_delivery",
+        "title": "Deliver workshop package",
+        "priority": 100,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.workshop_craftsperson",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_needed",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_at_inn",
+            "equals": false
+          },
+          {
+            "fact": "welcome.workshop.package_delivered",
+            "equals": false
+          },
+          {
+            "item_owned": "item.package",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Finally.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "You're not late. It's been sitting there two days.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "hand_over_package",
+            "text": "Here.",
+            "next": null,
+            "actions": [
+              {
+                "remove_item": {
+                  "item": "item.package",
+                  "quantity": 1
+                }
+              },
+              {
+                "set_fact": {
+                  "fact": "welcome.workshop.package_delivered",
+                  "value": true
+                }
+              },
+              {
+                "set_fact": {
+                  "fact": "welcome.workshop.package_needed",
+                  "value": false
+                }
+              }
+            ]
+          }
+        ],
+        "notes": "Completes the shared package situation regardless of whether it was first discovered at the inn or workshop."
+      },
+      {
+        "id": "package_waiting_reminder",
+        "title": "Workshop package still waiting",
+        "priority": 70,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.workshop_craftsperson",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_needed",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_at_inn",
+            "equals": true
+          },
+          {
+            "fact": "welcome.workshop.package_delivered",
+            "equals": false
+          },
+          {
+            "item_owned": "item.package",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "The package is still at the inn.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Simple reminder, not a new quest stage."
+      },
+      {
+        "id": "normal_workshop",
+        "title": "Normal workshop interaction",
+        "priority": 1,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.workshop_craftsperson",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "What broke?",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Ordinary fallback interaction."
+      }
+    ]
+  },
+  "notes": [
+    "The workshop package contains practical repair materials such as leather, soles, straps, buckles, nails, and small metal fittings.",
+    "The package arrived with an earlier caravan and has been waiting at the inn for roughly two days.",
+    "The workshop can later use these materials to make or repair practical work boots.",
+    "A later equipment-aware beat should recognize the player visibly wearing the workshop boots. Exact boot ContentId and final wording are not frozen yet.",
+    "The craftsman is practical and somewhat impatient, but not hostile.",
+    "The package situation belongs to shared world state, not to this NPC's dialogue script."
+  ]
+}
