@@ -1,6 +1,6 @@
 # NPC Lab
 
-Status: **FORGE N4 - Conditions & State Selection complete.**
+Status: **FORGE N5 - Dialogue Pools implemented; pending local verification.**
 
 NPC Lab is a local Web authoring tool for PURGATORY NPC content.
 
@@ -22,7 +22,7 @@ Edits the existing canonical NPC document directly and exposes:
 - relationships;
 - design notes.
 
-### DIALOGUE — N3
+### DIALOGUE — N3 + N5
 
 Edits `interaction.beats` without requiring raw JSON work.
 
@@ -36,7 +36,8 @@ Supported authoring includes:
 - beat notes;
 - preserved optional `voice` / `animation` references on existing lines;
 - automatic update of choice transitions when a beat ID is renamed;
-- validation for duplicate beat/choice IDs and broken `next` references.
+- validation for duplicate beat/choice IDs and broken `next` references;
+- editable Dialogue Pool: `mandatory`, `once`, `repeatable`, `rare`, or `lore`.
 
 The Welcome package content proves multiple context-sensitive paths across the Traveler and Workshop Craftsman NPCs.
 
@@ -57,16 +58,27 @@ Choice actions currently include:
 - Give Item;
 - Remove Item.
 
-N4 also provides a pure deterministic selection core in `selection.py`. It evaluates supplied synthetic character/world state using these rules:
+The pure deterministic selection core in `selection.py` evaluates supplied character/world state using these rules:
 
 1. only ENTRY beats participate in top-level selection;
 2. all conditions on a beat must match (AND);
-3. the highest integer priority wins;
-4. equal priorities preserve authored JSON order.
+3. pool eligibility is applied before priority comparison;
+4. the highest integer priority wins;
+5. equal priorities preserve authored JSON order.
 
-Pool labels do not affect N4 selection. Their selection/randomization semantics remain N5.
+### Dialogue Pool semantics — N5
 
-Focused tests use the real Welcome NPC documents to prove that the selected package dialogue changes when the workshop NPC has already been met and when the player carries the package.
+The currently frozen pool behavior is intentionally small:
+
+- `mandatory` — normal condition/priority selection; prior dialogue memory does not suppress it;
+- `once` — eligible until this NPC beat has been heard once;
+- `repeatable` — remains eligible even after being heard;
+- `lore` — optional one-shot content; eligible until heard, then yields to other eligible content;
+- `rare` — valid authoring metadata, but **not automatically selected yet**. No probability/cadence is invented until real content defines the requirement.
+
+Pool memory uses the existing typed `Dialogue Heard` state rather than introducing a parallel progression fact.
+
+The real Traveler content proves the N5 gate: after the character has met the Traveler and no higher-priority event is active, `lore_roofs` is selected first; after that beat is recorded as heard, `filler_food` becomes the repeatable fallback. No gameplay fact needs to change for this transition.
 
 ### SHELL
 
@@ -86,19 +98,27 @@ Or:
 
 ## Tests
 
+Run all focused NPC Lab tests:
+
 ```powershell
-py -3 -m unittest .\tools\npc_lab\test_server.py
+py -3 -m unittest discover -s .\tools\npc_lab -p "test_*.py"
 ```
 
-The focused suite covers typed conditions/actions, explicit beat selection role, continuation transitions, broken references, duplicate beat IDs, English-only validation, path safety, AND condition matching, ENTRY-only selection, deterministic priority ordering, all five N4 condition types, and the real Welcome package selection paths.
+The focused tests cover N4 validation/selection plus N5 pool behavior: one-shot dialogue memory, repeatable fallback, mandatory priority behavior, deliberately deferred rare selection, rejection of unknown pool semantics in the selector, and the real Traveler lore-to-filler path.
 
-## N4 gate
+## N5 gate
 
-Using the Welcome package content, the evaluator must deterministically select:
+Using the real Traveler NPC:
 
-- `workshop_package_unknown` at the Traveler when the workshop NPC has not been met;
-- `workshop_package_known` after the workshop NPC has been met;
-- `package_waiting_first_meeting` at the Workshop Craftsman when the package is still at the inn;
-- `package_delivery_first_meeting` when the player reaches the Workshop Craftsman carrying the package for the first time.
+1. the character has already met `npc.welcome.traveler_stayed`;
+2. no higher-priority package/caravan event is active;
+3. before `lore_roofs` has been heard, it is selected over repeatable filler;
+4. after `lore_roofs` is recorded in `dialogue_heard`, `filler_food` is selected;
+5. the transition requires no progression fact mutation;
+6. the Pool field can be edited and saved through the Dialogue surface.
 
-N4 does not own dialogue pools, editable synthetic-state UI, selection diagnostics / `Why this dialogue?`, runtime dialogue UI/networking, persistence, or NPC runtime integration. Those remain N5, N6 and N10 work.
+N5 does not own editable synthetic-state UI, conversation preview, selection diagnostics / `Why this dialogue?`, graph visualization, runtime dialogue UI/networking, persistence, or NPC runtime integration. Those remain N6+ and N10 work.
+
+## Known narrow limitation
+
+The browser-side editor validates the allowed pool labels and the pure selector rejects unknown explicit pool values. The Python save validator does not yet mirror the pool-label check. This does not affect the structured Pool editor path, but raw JSON can currently reach server save with an unsupported pool label. Keep this as a small validation-hardening follow-up rather than expanding N5 into unrelated server refactoring.
