@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PURGATORY NPC Lab N6a local server with synthetic dialogue preview API."""
+"""PURGATORY NPC Lab N6 local server with synthetic dialogue preview diagnostics."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class NpcLabN6Handler(server.NpcLabHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
-            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N6a-preview"})
+            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N6b-diagnostics"})
             return
         super().do_GET()
 
@@ -56,9 +56,11 @@ class NpcLabN6Handler(server.NpcLabHandler):
 
             next_state = synthetic_state
             beat: dict[str, Any] | None
+            diagnostics: dict[str, Any] | None = None
 
             if operation == "evaluate":
                 beat = selection.select_entry_beat(document, synthetic_state)
+                diagnostics = selection.explain_entry_selection(document, synthetic_state)
             elif operation == "advance":
                 beat_id = request.get("beat_id")
                 choice_id = request.get("choice_id")
@@ -82,6 +84,7 @@ class NpcLabN6Handler(server.NpcLabHandler):
                     "state": next_state,
                     "beat": beat,
                     "ended": beat is None and operation != "evaluate",
+                    "diagnostics": diagnostics,
                 }
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -89,7 +92,7 @@ class NpcLabN6Handler(server.NpcLabHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="PURGATORY NPC Lab N6a local server")
+    parser = argparse.ArgumentParser(description="PURGATORY NPC Lab N6 local server")
     parser.add_argument("--root", type=Path, required=True, help="PURGATORY repository root")
     parser.add_argument("--host", default=server.HOST)
     parser.add_argument("--port", type=int, default=server.DEFAULT_PORT)
@@ -110,7 +113,7 @@ def main() -> int:
 
     httpd = ThreadingHTTPServer((args.host, args.port), NpcLabN6Handler)
     url = f"http://{args.host}:{args.port}/"
-    print("PURGATORY NPC Lab N6a Preview")
+    print("PURGATORY NPC Lab N6 Diagnostics")
     print(f"Repository: {repo_root}")
     print(f"Authoring:  {authoring_root}")
     print(f"URL:        {url}")
