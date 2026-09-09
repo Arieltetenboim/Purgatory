@@ -187,7 +187,7 @@
           {
             "id": "take_package",
             "text": "I'll take it.",
-            "next": null,
+            "next": "take_package",
             "actions": [
               {
                 "give_item": {
@@ -434,6 +434,28 @@
         ],
         "choices": [],
         "notes": "Repeatable filler that does not advance progression."
+      },
+      {
+        "id": "take_package",
+        "title": "Taking the Package",
+        "priority": 0,
+        "entry": false,
+        "pool": "once",
+        "conditions": [
+          {
+            "item_owned": "item.package",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Take this to the workshop.\n\nAnd try not to lose it.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": ""
       }
     ]
   },
