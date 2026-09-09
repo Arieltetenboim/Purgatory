@@ -115,7 +115,12 @@
         "priority": 0,
         "entry": false,
         "pool": "once",
-        "conditions": [],
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.traveler_stayed",
+            "equals": true
+          }
+        ],
         "lines": [
           {
             "text": "Food, beds, people arriving too late and people leaving too early. Stay a little and you'll understand.",
