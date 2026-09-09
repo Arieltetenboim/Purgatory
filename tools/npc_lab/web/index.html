@@ -10,7 +10,7 @@
   <header class="topbar">
     <div>
       <div class="brand">PURGATORY</div>
-      <div class="tool-name">NPC LAB <span class="slice">N4 REPAIR</span></div>
+      <div class="tool-name">NPC LAB <span class="slice">N5</span></div>
     </div>
     <div class="top-actions">
       <button id="newButton" class="button secondary">NEW NPC</button>
@@ -88,10 +88,10 @@
           <div class="dialogue-layout">
             <aside class="beat-browser">
               <div class="beat-browser-header">
-                <div><div class="section-kicker">N3</div><div class="beat-browser-title">Conversation Beats</div></div>
+                <div><div class="section-kicker">N5</div><div class="beat-browser-title">Conversation Beats</div></div>
                 <button id="addBeatButton" class="button compact" type="button">+ BEAT</button>
               </div>
-              <div class="dialogue-scope-note">Dialogue structure here. Conditions are edited in STATE.</div>
+              <div class="dialogue-scope-note">Dialogue structure and pool behavior here. Conditions are edited in STATE.</div>
               <div id="beatList" class="beat-list"></div>
             </aside>
             <section class="beat-editor">
@@ -119,9 +119,14 @@
                         </select>
                         <small>Only ENTRY beats can open a conversation. Next Beat may target either role.</small>
                       </label>
+                      <label class="field">
+                        <span>Dialogue Pool</span>
+                        <select id="beatPoolEditor" class="input"></select>
+                        <small>Once/Lore are one-shot by dialogue memory; Repeatable may return. Rare cadence remains deferred.</small>
+                      </label>
                     </div>
                     <div class="deferred-strip">
-                      <div><span class="deferred-label">Pool</span><span id="beatPool" class="deferred-value">-</span><span class="deferred-owner">N5</span></div>
+                      <div><span class="deferred-label">Pool</span><span id="beatPool" class="deferred-value">-</span></div>
                       <button id="editConditionsButton" class="condition-jump" type="button">Conditions: <span id="beatConditionCount">0</span> · EDIT IN STATE</button>
                     </div>
                     <div id="conditionPreview" class="condition-preview"></div>
@@ -232,5 +237,6 @@
   </footer>
 
   <script src="/app.js"></script>
+  <script src="/pools.js"></script>
 </body>
 </html>
