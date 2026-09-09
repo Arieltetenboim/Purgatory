@@ -79,6 +79,7 @@ mod tests {
 
     #[test]
     fn phase_is_nonempty() {
+        assert!(!phase().is_empty());
         assert!(
             phase()
                 .chars()
