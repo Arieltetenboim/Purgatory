@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PURGATORY NPC Lab N6 local server with synthetic dialogue preview diagnostics."""
+"""PURGATORY NPC Lab N7 local server with hardened authoring validation."""
 
 from __future__ import annotations
 
@@ -15,12 +15,44 @@ from typing import Any
 import selection
 import server
 
+SUPPORTED_POOLS = {"mandatory", "once", "repeatable", "rare", "lore"}
+_BASE_VALIDATE_NPC_DOCUMENT = server.validate_npc_document
+
+
+def validate_npc_document_n7(value: Any) -> list[str]:
+    errors = _BASE_VALIDATE_NPC_DOCUMENT(value)
+    if not isinstance(value, dict):
+        return errors
+    interaction = value.get("interaction")
+    if not isinstance(interaction, dict):
+        return errors
+    beats = interaction.get("beats")
+    if not isinstance(beats, list):
+        return errors
+
+    for index, beat in enumerate(beats):
+        if not isinstance(beat, dict):
+            continue
+        pool = beat.get("pool")
+        if pool is None:
+            continue
+        if not isinstance(pool, str) or pool not in SUPPORTED_POOLS:
+            label = beat.get("id") if isinstance(beat.get("id"), str) else f"Beat {index + 1}"
+            errors.append(
+                f"{label} pool must be one of: {', '.join(sorted(SUPPORTED_POOLS))}."
+            )
+    return errors
+
+
+def install_n7_validation() -> None:
+    server.validate_npc_document = validate_npc_document_n7
+
 
 class NpcLabN6Handler(server.NpcLabHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
-            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N6b-diagnostics"})
+            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N7-state-hardening"})
             return
         super().do_GET()
 
@@ -92,12 +124,14 @@ class NpcLabN6Handler(server.NpcLabHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="PURGATORY NPC Lab N6 local server")
+    parser = argparse.ArgumentParser(description="PURGATORY NPC Lab N7 local server")
     parser.add_argument("--root", type=Path, required=True, help="PURGATORY repository root")
     parser.add_argument("--host", default=server.HOST)
     parser.add_argument("--port", type=int, default=server.DEFAULT_PORT)
     parser.add_argument("--open", action="store_true", help="Open NPC Lab in the default browser")
     args = parser.parse_args()
+
+    install_n7_validation()
 
     repo_root = args.root.resolve()
     web_root = repo_root / "tools" / "npc_lab" / "web"
@@ -113,7 +147,7 @@ def main() -> int:
 
     httpd = ThreadingHTTPServer((args.host, args.port), NpcLabN6Handler)
     url = f"http://{args.host}:{args.port}/"
-    print("PURGATORY NPC Lab N6 Diagnostics")
+    print("PURGATORY NPC Lab N7 State Hardening")
     print(f"Repository: {repo_root}")
     print(f"Authoring:  {authoring_root}")
     print(f"URL:        {url}")
