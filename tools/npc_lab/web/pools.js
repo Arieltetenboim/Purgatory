@@ -60,6 +60,11 @@ n7StateScript.src = "/state_hardening.js";
 n7StateScript.addEventListener("load", () => {
   const n6PreviewScript = document.createElement("script");
   n6PreviewScript.src = "/test_preview.js";
+  n6PreviewScript.addEventListener("load", () => {
+    const n8FlowScript = document.createElement("script");
+    n8FlowScript.src = "/flow_view.js";
+    document.body.appendChild(n8FlowScript);
+  });
   document.body.appendChild(n6PreviewScript);
 });
 document.body.appendChild(n7StateScript);
