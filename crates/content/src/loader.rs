@@ -21,7 +21,7 @@ use crate::schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
     SpawnPoint, TransitionRef,
 };
-use purgatory_common::{ContentId, allocated_id_for_label, validate_authored_id};
+use purgatory_common::{ContentId, ContentKind, allocated_id_for_label, validate_authored_id};
 use purgatory_simulation::{
     AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityTiming,
     EquipmentSlot, InteractableKind, PlatformKind, WorldBounds,
@@ -797,8 +797,29 @@ impl RawEntity {
         } else {
             None
         };
+        let content_id = if interactable == Some(InteractableKind::Npc) {
+            let content_id = allocated_id_for_label(&self.id).ok_or_else(|| {
+                ContentError::from_path(
+                    path.to_path_buf(),
+                    &self.id,
+                    "id",
+                    "NPC entity requires a numeric ContentId allocation",
+                )
+            })?;
+            if content_id.kind() != Some(ContentKind::Npc) {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    &self.id,
+                    "id",
+                    "NPC entity ContentId must be allocated in the NPC block",
+                ));
+            }
+            content_id
+        } else {
+            ContentId::from_authored(&self.id).expect("validated")
+        };
         Ok(EntityDefinition {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
+            content_id,
             authored_id: self.id,
             debug_name: self.debug_name,
             domain,
@@ -1040,6 +1061,11 @@ mod tests {
             .expect("numeric Traveler dialogue");
         assert_eq!(traveler.authored_id, "npc.welcome.traveler_stayed");
         assert_eq!(traveler.content_id.kind(), Some(ContentKind::Npc));
+        let traveler_entity = registry
+            .entity_by_id(NPC_WELCOME_TRAVELER_STAYED)
+            .expect("numeric Traveler entity");
+        assert_eq!(traveler_entity.authored_id, traveler.authored_id);
+        assert_eq!(traveler_entity.content_id, traveler.content_id);
         assert_eq!(registry.npc_dialogue_count(), 1);
 
         let intro = &traveler.beats[0];
@@ -1064,6 +1090,34 @@ mod tests {
 
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
         assert_eq!(shared.npc_dialogue_count(), 0);
+    }
+
+    #[test]
+    fn social_npc_entity_without_catalog_allocation_fails_clearly() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-npc-entity-allocation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("server/entities"),
+            "unallocated.json",
+            r#"{
+                "schema_version": 1,
+                "id": "npc.welcome.unallocated",
+                "debug_name": "Unallocated NPC",
+                "visible": true,
+                "interactable": "npc"
+            }"#,
+        );
+
+        let error = load_registry(&tmp, LoadMode::Full).expect_err("missing NPC allocation");
+        assert!(
+            error
+                .to_string()
+                .contains("NPC entity requires a numeric ContentId allocation")
+        );
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

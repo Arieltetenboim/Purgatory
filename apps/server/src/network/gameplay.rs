@@ -3568,8 +3568,17 @@ mod tests {
                 .values()
                 .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Interactable)
                 .count(),
+            1,
+            "AOI at x=-8 must include the chest as a generic interactable"
+        );
+        assert_eq!(
+            view_a
+                .entities
+                .values()
+                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Npc)
+                .count(),
             2,
-            "AOI at x=-8 must include Map A switch and chest"
+            "AOI at x=-8 must include the Social NPC and combat creature as NPCs"
         );
         assert_eq!(
             view_a
@@ -4242,7 +4251,11 @@ mod tests {
     }
 
     fn find_content(owner: &GameplayOwner, authored: &str) -> EntityId {
-        let cid = ContentId::from_authored(authored).unwrap();
+        let cid = owner
+            .registry
+            .entity(authored)
+            .unwrap_or_else(|| panic!("missing definition {authored}"))
+            .content_id;
         owner
             .world()
             .iter()
@@ -4255,7 +4268,11 @@ mod tests {
         authored: &str,
         address: purgatory_simulation::WorldAddress,
     ) -> EntityId {
-        let cid = ContentId::from_authored(authored).unwrap();
+        let cid = owner
+            .registry
+            .entity(authored)
+            .unwrap_or_else(|| panic!("missing definition {authored}"))
+            .content_id;
         owner
             .world()
             .iter()
@@ -4343,10 +4360,10 @@ mod tests {
         assert!(owner.world().interaction_session_of(actor).is_none());
         assert_eq!(owner.bindings.get(&id).unwrap().input.input_epoch, 1);
         let visible = owner.world().relevance_for(actor);
-        let map_a_switch = find_content(&owner, "entity.interactable.switch");
+        let map_a_traveler = find_content(&owner, "npc.welcome.traveler_stayed");
         assert!(
-            !visible.contains(&map_a_switch),
-            "Map A switch must not be relevant on Map B"
+            !visible.contains(&map_a_traveler),
+            "Map A Traveler must not be relevant on Map B"
         );
         assert!(visible.contains(&dest_portal));
     }
@@ -4737,21 +4754,42 @@ mod tests {
     }
 
     #[test]
-    fn generic_e_interaction_still_opens() {
+    fn social_npc_e_interaction_opens() {
         let mut owner = GameplayOwner::new();
         let id = ConnectionId::from_raw(1);
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
-        let switch = find_content(&owner, "entity.interactable.switch");
+        let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
         assert!(owner.set_player_x(id, -17.8));
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
-            target: wire_id(switch),
+            target: wire_id(traveler),
         });
         match rx.try_recv().expect("response") {
             ServerControl::Interact(ServerInteract::Opened { .. }) => {}
             other => panic!("expected Opened, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn social_npc_e_interaction_out_of_range_is_rejected() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
+        assert!(owner.set_player_x(id, -8.0));
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(traveler),
+        });
+        match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {
+                assert_eq!(reason, InteractRejectReason::OutOfRange);
+            }
+            other => panic!("expected OutOfRange, got {other:?}"),
         }
     }
 
@@ -4831,7 +4869,7 @@ mod tests {
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
         let portal = find_content(&owner, "entity.portal.to_second");
-        let map_a_switch = find_content(&owner, "entity.interactable.switch");
+        let map_a_traveler = find_content(&owner, "npc.welcome.traveler_stayed");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -4844,7 +4882,7 @@ mod tests {
         expire_input_gate(&mut owner);
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
-            target: wire_id(map_a_switch),
+            target: wire_id(map_a_traveler),
         });
         match rx.try_recv().expect("stale-world interact reject") {
             ServerControl::Interact(ServerInteract::Rejected { reason, .. }) => {

@@ -613,6 +613,7 @@ fn snapshot_entity(world: &World, id: EntityId) -> Option<SnapshotEntity> {
         let transform = world.transform_of(id)?;
         let kind = match interactable.kind {
             purgatory_simulation::InteractableKind::Portal => ReplicatedKind::Portal,
+            purgatory_simulation::InteractableKind::Npc => ReplicatedKind::Npc,
             _ => ReplicatedKind::Interactable,
         };
         return Some(SnapshotEntity {
@@ -1309,7 +1310,8 @@ mod tests {
     use super::*;
     use purgatory_protocol::{ReplicatedKind, decode_replication_frame};
     use purgatory_simulation::{
-        ContentId, EquipmentSlot, Health, PlayerState, SimulationTick, Transform, World,
+        ContentId, EquipmentSlot, EquipmentState, Health, Interactable, InteractableKind,
+        PlayerState, RuntimeSpawnRequest, SimulationTick, Transform, World,
     };
 
     fn two_players() -> (World, EntityId, EntityId) {
@@ -2153,6 +2155,37 @@ mod tests {
         let _ = pipe.pop();
         let leave_stats = publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 2);
         assert!(leave_stats.leaves >= 1 || leave_stats.enters == 0);
+    }
+
+    #[test]
+    fn interactable_social_npc_enters_as_humanoid_npc() {
+        let (mut world, observer, _remote) = two_players();
+        let address = world.address_of(observer).unwrap();
+        let position = world.transform_of(observer).unwrap().position;
+        let social_npc = world
+            .spawn(
+                RuntimeSpawnRequest::transient_at(address)
+                    .with_transform(Transform::from_position(position))
+                    .visible()
+                    .with_interactable(Interactable::new(InteractableKind::Npc))
+                    .with_equipment(EquipmentState::empty()),
+            )
+            .expect("social NPC");
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+        publish(&mut state, &pipe, &mut world, &mut fanout, observer, 1, 1);
+        let frame = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
+        assert!(frame.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Enter {
+                entity,
+                equipment: Some(equipment),
+                ..
+            } if entity.entity_id == to_wire_id(social_npc)
+                && entity.kind == ReplicatedKind::Npc
+                && equipment.is_empty()
+        )));
     }
 
     #[test]

@@ -61,8 +61,11 @@ mod tests {
 
     #[test]
     fn full_pack_instantiates_map_a_and_b() {
-        use purgatory_common::{ChannelId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED};
-        use purgatory_simulation::World;
+        use purgatory_common::{
+            ChannelId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
+            NPC_WELCOME_TRAVELER_STAYED, WORLD_OBJECT_SWITCH,
+        };
+        use purgatory_simulation::{InteractableKind, World};
         let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
         let mut world = World::new();
         for authored in [MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED] {
@@ -74,11 +77,29 @@ mod tests {
             world.instantiate_map(&plan).unwrap();
         }
         assert_eq!(world.instantiated_count(), 2);
-        let switch = ContentId::from_authored("entity.interactable.switch").unwrap();
-        let found = world
+        let traveler = world
             .iter()
-            .any(|id| world.content_id_of(id) == Some(switch));
-        assert!(found);
+            .find(|&id| world.content_id_of(id) == Some(NPC_WELCOME_TRAVELER_STAYED))
+            .expect("live Traveler placement");
+        assert_eq!(
+            world.interactable_of(traveler).map(|cap| cap.kind),
+            Some(InteractableKind::Npc)
+        );
+        assert!(
+            world
+                .equipment_of(traveler)
+                .is_some_and(|state| state.is_empty())
+        );
+        assert!(
+            world.npc_of(traveler).is_none(),
+            "Social NPC has no combat AI"
+        );
+        assert!(
+            world
+                .iter()
+                .all(|id| world.content_id_of(id) != Some(WORLD_OBJECT_SWITCH)),
+            "the legacy Dev Switch definition remains available but is not live"
+        );
         assert!(world.iter().all(|id| world.persistent_id_of(id).is_none()));
     }
 

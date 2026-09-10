@@ -24,9 +24,10 @@ use winit::window::{Window, WindowId};
 use crate::camera_follow::{CameraCommit, CameraFollow};
 use crate::character_presentation::{
     CharacterPresentationSet, LocalMotion, PresentationActivity, PresentationEntityKey,
-    PresentationOneShotTable, PresentationView, RemoteMotion, apply_climb_back_overlay,
-    equipment_view_from_replica, from_local_with_presentation, from_remote_with_presentation,
-    immunity_flash_visible, presentation_debug_quads_with_assets,
+    PresentationOneShotTable, PresentationView, RemoteMotion, SocialNpcMotion,
+    apply_climb_back_overlay, equipment_view_from_replica, from_local_with_presentation,
+    from_remote_with_presentation, from_social_npc, immunity_flash_visible,
+    presentation_debug_quads_with_assets,
 };
 #[cfg(feature = "dev-diagnostics")]
 use crate::debug::aoi_view::{
@@ -83,7 +84,7 @@ use crate::renderer::{
 };
 #[cfg(feature = "dev-diagnostics")]
 use crate::replica::ReplicaLifecycleEvent;
-use crate::replica::{FrameDecision, ReplicatedWorld};
+use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -552,14 +553,16 @@ impl ClientApp {
         let local_id = self.replica.local_player();
         let server_tick = self.replica.last_server_tick();
         self.presentation_oneshots.expire(server_tick);
-        let players: Vec<_> = self
+        let characters: Vec<_> = self
             .replica
             .iter()
-            .filter(|entity| entity.kind == ReplicatedKind::Player)
+            .filter(|entity| {
+                entity.kind == ReplicatedKind::Player || is_humanoid_social_npc(entity)
+            })
             .collect();
         let interp_poses: Vec<_> = self.interp.poses().to_vec();
         let mut items = Vec::new();
-        for entity in players {
+        for entity in characters {
             let key =
                 PresentationEntityKey::new(entity.entity_id.index, entity.entity_id.generation);
             let held = self.characters.facing_of(key);
@@ -579,7 +582,11 @@ impl ClientApp {
                     false
                 }
             };
-            let mut state = if Some(entity.entity_id) == local_id {
+            let mut state = if is_humanoid_social_npc(&entity) {
+                let (pose, _) =
+                    interpolated_or_replica_pose(&interp_poses, entity.entity_id, entity.position);
+                from_social_npc(SocialNpcMotion { pose, equipment }, held)
+            } else if Some(entity.entity_id) == local_id {
                 // Velocity and grounded must come from the same source. Pairing
                 // predicted velocity with lagged replica.local_grounded kept
                 // airborne locals on Idle/Move (A4 manual-proof failure).
@@ -616,7 +623,7 @@ impl ClientApp {
                     dead,
                 )
             };
-            if climb_back && oneshot.is_none() && !dead {
+            if entity.kind == ReplicatedKind::Player && climb_back && oneshot.is_none() && !dead {
                 state = apply_climb_back_overlay(state, true);
             }
             items.push((key, state));
@@ -2520,8 +2527,8 @@ impl ClientApp {
                 self.interact_last_transition.clone(),
                 &trail_display(&self.interact_trail),
             ),
-            interact_nearest: routing.nearest_generic.map(|(id, _)| id.to_string()),
-            interact_nearest_distance: routing.nearest_generic.map(|(_, dist)| dist),
+            interact_nearest: routing.nearest_interaction.map(|(id, _)| id.to_string()),
+            interact_nearest_distance: routing.nearest_interaction.map(|(_, dist)| dist),
             interact_nearest_portal: routing.nearest_portal.map(|(id, _)| id.to_string()),
             interact_nearest_portal_distance: routing.nearest_portal.map(|(_, dist)| dist),
             portal_eligible: routing.portal_eligible,
@@ -3133,6 +3140,12 @@ fn scene_quads(
     quads
 }
 
+/// The existing optional equipment domain is the wire-visible humanoid facet.
+/// `Some(empty)` is intentionally distinct from no equipment domain.
+fn is_humanoid_social_npc(entity: &ReplicatedEntity) -> bool {
+    entity.kind == ReplicatedKind::Npc && entity.equipment.is_some()
+}
+
 fn npc_quads(
     replica: &crate::replica::ReplicatedWorld,
     interp: &crate::interp::InterpolationBuffer,
@@ -3153,7 +3166,7 @@ fn npc_quads(
     let mut visible = std::collections::HashSet::new();
     let quads = replica
         .iter()
-        .filter(|entity| entity.kind == ReplicatedKind::Npc)
+        .filter(|entity| entity.kind == ReplicatedKind::Npc && !is_humanoid_social_npc(entity))
         .flat_map(|entity| {
             let position = poses
                 .iter()
@@ -3433,7 +3446,7 @@ fn replica_kind_labels(replica: &ReplicatedWorld, kind: ReplicatedKind) -> Vec<S
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ReplicaInteractRouting {
-    nearest_generic: Option<(purgatory_protocol::WireEntityId, f32)>,
+    nearest_interaction: Option<(purgatory_protocol::WireEntityId, f32)>,
     nearest_item: Option<(purgatory_protocol::WireEntityId, f32)>,
     nearest_portal: Option<(purgatory_protocol::WireEntityId, f32)>,
     #[cfg_attr(not(feature = "dev-diagnostics"), allow(dead_code))]
@@ -3446,7 +3459,7 @@ fn replica_interact_routing(replica: &ReplicatedWorld) -> ReplicaInteractRouting
     let nearest_portal = advisory_nearest_portal(replica);
     let activate_portal = advisory_centered_portal(replica);
     ReplicaInteractRouting {
-        nearest_generic: advisory_nearest_generic(replica),
+        nearest_interaction: advisory_nearest_interaction_target(replica),
         nearest_item: advisory_nearest_item(replica),
         nearest_portal: nearest_portal.map(|(id, dist, _)| (id, dist)),
         nearest_portal_pos: nearest_portal.map(|(_, _, pos)| pos),
@@ -3459,11 +3472,11 @@ fn log_interact_routing(prefix: &str, routing: &ReplicaInteractRouting) {
     if let Some((id, distance)) = routing.nearest_item {
         println!("{prefix} nearest item={id} distance={distance:.3}");
     }
-    match routing.nearest_generic {
+    match routing.nearest_interaction {
         Some((id, distance)) => {
-            println!("{prefix} nearest generic interactable={id} distance={distance:.3}");
+            println!("{prefix} nearest interaction target={id} distance={distance:.3}");
         }
-        None => println!("{prefix} nearest generic interactable=none distance=n/a"),
+        None => println!("{prefix} nearest interaction target=none distance=n/a"),
     }
     match routing.nearest_portal {
         Some((id, distance)) => {
@@ -3479,13 +3492,13 @@ fn log_interact_routing(prefix: &str, routing: &ReplicaInteractRouting) {
     }
 }
 
-/// E send path: nearest generic interactable inside [`INTERACT_RANGE`].
+/// E send path: nearest generic interactable or Social NPC inside [`INTERACT_RANGE`].
 /// Portals are never candidates.
 fn interact_open_send_target(
     routing: &ReplicaInteractRouting,
 ) -> Option<purgatory_protocol::WireEntityId> {
     routing
-        .nearest_generic
+        .nearest_interaction
         .and_then(|(id, dist)| (dist <= INTERACT_RANGE).then_some(id))
 }
 
@@ -3500,10 +3513,17 @@ fn nearest_of_kind(
     replica: &ReplicatedWorld,
     kind: ReplicatedKind,
 ) -> Option<(purgatory_protocol::WireEntityId, f32, [f32; 2])> {
+    nearest_matching(replica, |entity| entity.kind == kind)
+}
+
+fn nearest_matching(
+    replica: &ReplicatedWorld,
+    predicate: impl Fn(&ReplicatedEntity) -> bool,
+) -> Option<(purgatory_protocol::WireEntityId, f32, [f32; 2])> {
     let local = replica.local_entity()?;
     replica
         .iter()
-        .filter(|entity| entity.kind == kind && entity.entity_id != local.entity_id)
+        .filter(|entity| predicate(entity) && entity.entity_id != local.entity_id)
         .min_by(|a, b| {
             let da = dist2(local.position, a.position);
             let db = dist2(local.position, b.position);
@@ -3518,11 +3538,14 @@ fn nearest_of_kind(
         })
 }
 
-/// Advisory nearest replica generic interactable. Portals are excluded.
-fn advisory_nearest_generic(
+/// Advisory nearest interaction target. Portals and combat NPCs are excluded.
+fn advisory_nearest_interaction_target(
     replica: &ReplicatedWorld,
 ) -> Option<(purgatory_protocol::WireEntityId, f32)> {
-    nearest_of_kind(replica, ReplicatedKind::Interactable).map(|(id, dist, _)| (id, dist))
+    nearest_matching(replica, |entity| {
+        entity.kind == ReplicatedKind::Interactable || is_humanoid_social_npc(entity)
+    })
+    .map(|(id, dist, _)| (id, dist))
 }
 
 fn advisory_nearest_item(
@@ -4055,10 +4078,10 @@ mod tests {
         assert_eq!(labels.len(), 1);
         assert!(labels[0].starts_with("7:1"));
         assert_eq!(
-            super::advisory_nearest_generic(&replica).map(|(id, _)| id),
+            super::advisory_nearest_interaction_target(&replica).map(|(id, _)| id),
             Some(target)
         );
-        let dist = super::advisory_nearest_generic(&replica)
+        let dist = super::advisory_nearest_interaction_target(&replica)
             .map(|(_, d)| d)
             .unwrap();
         assert!((dist - 1.201).abs() < 0.02);
@@ -4117,7 +4140,7 @@ mod tests {
         assert_eq!(super::interactable_quads(&replica).len(), 2);
         let routing = super::replica_interact_routing(&replica);
         assert_eq!(
-            routing.nearest_generic.map(|(id, _)| id),
+            routing.nearest_interaction.map(|(id, _)| id),
             Some(switch),
             "E must not target a nearer portal"
         );
@@ -4168,6 +4191,35 @@ mod tests {
         replica
     }
 
+    fn replica_from_records(
+        local: purgatory_protocol::WireEntityId,
+        records: Vec<purgatory_protocol::ReplicationRecord>,
+    ) -> crate::replica::ReplicatedWorld {
+        let mut replica = crate::replica::ReplicatedWorld::new();
+        let decision = replica.apply_frame(purgatory_protocol::ReplicationFrame {
+            snapshot_sequence: 1,
+            server_tick: 1,
+            local_player_entity: local,
+            input_epoch: 0,
+            last_acknowledged_input_sequence: 0,
+            local_grounded: false,
+            local_grounded_on: purgatory_protocol::PlatformSupportId::NONE,
+            local_ignored_platform: purgatory_protocol::PlatformSupportId::NONE,
+            continuation_debt: 0,
+            local_map: 1,
+            local_channel: 0,
+            local_instance: 0,
+            observer_baseline_epoch: 0,
+            records,
+            aoi_debug: None,
+        });
+        assert!(matches!(
+            decision,
+            crate::replica::FrameDecision::Applied { epoch_reset: false }
+        ));
+        replica
+    }
+
     fn pose(
         id: purgatory_protocol::WireEntityId,
         kind: purgatory_protocol::ReplicatedKind,
@@ -4179,6 +4231,62 @@ mod tests {
             position,
             velocity: [0.0, 0.0],
         }
+    }
+
+    #[test]
+    fn social_npc_is_humanoid_e_target_without_magenta_quad() {
+        use purgatory_protocol::{
+            ReplicatedEquipment, ReplicatedKind, ReplicationRecord, WireEntityId,
+        };
+
+        let local = WireEntityId {
+            index: 1,
+            generation: 1,
+        };
+        let combat_npc = WireEntityId {
+            index: 8,
+            generation: 1,
+        };
+        let traveler = WireEntityId {
+            index: 9,
+            generation: 1,
+        };
+        let replica = replica_from_records(
+            local,
+            vec![
+                ReplicationRecord::Enter {
+                    entity: pose(local, ReplicatedKind::Player, [-19.4, -2.9]),
+                    health: None,
+                    equipment: None,
+                },
+                ReplicationRecord::Enter {
+                    entity: pose(combat_npc, ReplicatedKind::Npc, [-19.0, -2.9]),
+                    health: None,
+                    equipment: None,
+                },
+                ReplicationRecord::Enter {
+                    entity: pose(traveler, ReplicatedKind::Npc, [-17.8, -2.9]),
+                    health: None,
+                    equipment: Some(ReplicatedEquipment::empty()),
+                },
+            ],
+        );
+
+        assert!(super::is_humanoid_social_npc(
+            &replica.get(traveler).expect("Traveler replica")
+        ));
+        assert!(!super::is_humanoid_social_npc(
+            &replica.get(combat_npc).expect("combat NPC replica")
+        ));
+        assert_eq!(
+            super::interact_open_send_target(&super::replica_interact_routing(&replica)),
+            Some(traveler),
+            "a closer combat NPC must not hide the Social NPC E target"
+        );
+        assert!(
+            super::interactable_quads(&replica).is_empty(),
+            "ReplicatedKind::Npc must not use the magenta generic-interactable draw path"
+        );
     }
 
     #[test]
@@ -4210,8 +4318,8 @@ mod tests {
             ],
         );
         let routing = super::replica_interact_routing(&replica);
-        assert_eq!(routing.nearest_generic.map(|(id, _)| id), Some(chest));
-        let generic_dist = routing.nearest_generic.unwrap().1;
+        assert_eq!(routing.nearest_interaction.map(|(id, _)| id), Some(chest));
+        let generic_dist = routing.nearest_interaction.unwrap().1;
         assert!(
             (generic_dist - 13.4).abs() < 0.2,
             "standing on the triangle, nearest generic is the chest (~13.4), not the portal; got {generic_dist}"
@@ -4350,7 +4458,7 @@ mod tests {
     fn empty_replica_has_no_advisory_interact_target() {
         use crate::replica::ReplicatedWorld;
         let replica = ReplicatedWorld::new();
-        assert!(super::advisory_nearest_generic(&replica).is_none());
+        assert!(super::advisory_nearest_interaction_target(&replica).is_none());
     }
 
     #[test]
@@ -4386,7 +4494,7 @@ mod tests {
                 },
             ],
         ));
-        assert!(super::advisory_nearest_generic(&replica).is_none());
+        assert!(super::advisory_nearest_interaction_target(&replica).is_none());
     }
 
     #[test]

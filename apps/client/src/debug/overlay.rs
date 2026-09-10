@@ -2531,7 +2531,7 @@ fn draw_network_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut 
             ));
             ui.small("Headline is current session state. Fields below are forensic.");
             ui.label(format!(
-                "Nearest generic interactable: {} / {}",
+                "Nearest interaction target: {} / {}",
                 frame.network.interact_nearest.as_deref().unwrap_or("-"),
                 frame.network.interact_nearest_distance
                     .map(|d| format!("{d:.2}"))

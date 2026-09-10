@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "npc.welcome.traveler_stayed",
+  "debug_name": "Traveler",
+  "visible": true,
+  "interactable": "npc"
+}
