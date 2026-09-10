@@ -4,7 +4,8 @@ use crate::error::{ContentError, ValidationIssue};
 use crate::registry::ContentRegistry;
 use purgatory_common::{ContentId, WorldAddress};
 use purgatory_simulation::{
-    Interactable, MapRuntimePlan, PlanPlatform, Platform, RuntimeSpawnRequest, Transform,
+    EquipmentState, Interactable, InteractableKind, MapRuntimePlan, PlanPlatform, Platform,
+    RuntimeSpawnRequest, Transform,
 };
 
 pub fn map_plan(
@@ -66,6 +67,12 @@ pub fn map_plan(
         }
         if let Some(kind) = ent.interactable {
             req = req.with_interactable(Interactable::new(kind));
+            if kind == InteractableKind::Npc {
+                // An equipment domain, even when empty, is the existing wire-visible
+                // humanoid presentation facet. Combat NPCs without this facet keep
+                // their sprite presentation.
+                req = req.with_equipment(EquipmentState::empty());
+            }
         }
         placements.push(req);
     }

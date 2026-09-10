@@ -3,7 +3,7 @@
   "map": "map.dev.footnote",
   "placements": [
     {
-      "entity": "entity.interactable.switch",
+      "entity": "npc.welcome.traveler_stayed",
       "position": [-17.8, -2.9]
     },
     {

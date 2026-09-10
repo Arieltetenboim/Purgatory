@@ -3539,8 +3539,13 @@ async fn client_receives_authoritative_snapshot() {
     assert!(player.position[0] > purgatory_simulation::FOOTNOTE_SPAWN_X);
     assert_eq!(
         snap.kind_count(ReplicatedKind::Interactable),
+        1,
+        "AOI at x=-8 must include the chest as a generic interactable"
+    );
+    assert_eq!(
+        snap.kind_count(ReplicatedKind::Npc),
         2,
-        "AOI at x=-8 must include Map A switch and chest"
+        "AOI at x=-8 must include the Social NPC and combat creature as NPCs"
     );
     assert_eq!(
         snap.kind_count(ReplicatedKind::Portal),

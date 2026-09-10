@@ -46,7 +46,7 @@ v23 is an intentional incompatible bump: v1–v22 peers are rejected with `Disco
 
 Client Hello includes `protocol_version`. The server rejects mismatches with `DisconnectReasonCode::VersionMismatch`.
 
-Protocol v11 adds snapshot/frame `ReplicatedKind::Npc` (kind `4`) for visible non-player actors. Payload layout reuses Enter transform + optional health and Update domain mask. Npc is excluded from E-interact and Portal activation candidate sets.
+Protocol v11 adds snapshot/frame `ReplicatedKind::Npc` (kind `4`) for visible non-player actors. Payload layout reuses Enter transform + optional health and Update domain mask. N10b keeps that wire format: an NPC carrying the existing optional Equipment domain is a humanoid Social NPC and may be an advisory E-interact candidate; combat NPCs without that domain remain excluded. Npc remains excluded from Portal activation.
 
 Protocol v12 adds client equipment request envelopes (`Equip` / `Unequip`) and an optional equipment domain on Enter/Update. Hello/Welcome layout is otherwise identical to v11.
 
@@ -203,7 +203,7 @@ During a server-recognized Map/Channel transition the session is **input-gated**
 
 ### Interaction control (Phase 6B)
 
-Event/change-driven on the reliable control stream. Not per-tick snapshot spam. Client nearest-target is **advisory**; the server validates generation, address, range, and `Interactable` capability. The E candidate set is `ReplicatedKind::Interactable` only — `ReplicatedKind::Portal` is excluded. Portals use `PortalActivate` and the shared `in_portal_activation_zone` check.
+Event/change-driven on the reliable control stream. Not per-tick snapshot spam. Client nearest-target is **advisory**; the server validates generation, address, range, and `Interactable` capability. The E candidate set is `ReplicatedKind::Interactable` plus humanoid Social NPCs (`ReplicatedKind::Npc` with an Equipment domain, including an all-empty state). Combat NPCs without that domain and all `ReplicatedKind::Portal` values are excluded. Portals use `PortalActivate` and the shared `in_portal_activation_zone` check.
 
 Client:
 

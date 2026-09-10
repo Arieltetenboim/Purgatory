@@ -96,6 +96,7 @@ pub fn collect_entities(world: &World, visible: &[EntityId]) -> Vec<SnapshotEnti
                 let transform = world.transform_of(id)?;
                 let kind = match interactable.kind {
                     purgatory_simulation::InteractableKind::Portal => ReplicatedKind::Portal,
+                    purgatory_simulation::InteractableKind::Npc => ReplicatedKind::Npc,
                     _ => ReplicatedKind::Interactable,
                 };
                 return Some(SnapshotEntity {
@@ -154,6 +155,30 @@ mod tests {
         assert!(snap.local_grounded);
         assert!(!snap.local_grounded_on.is_none());
         assert!(world.iter_platforms().count() >= 1);
+    }
+
+    #[test]
+    fn builder_classifies_interactable_social_npc_as_npc() {
+        use purgatory_simulation::{
+            EquipmentState, Interactable, InteractableKind, RuntimeSpawnRequest, Transform,
+        };
+
+        let mut world = World::footnote_test_stage();
+        let player = world.player_id().expect("fixture player");
+        let address = world.address_of(player).expect("player address");
+        let social_npc = world
+            .spawn(
+                RuntimeSpawnRequest::transient_at(address)
+                    .with_transform(Transform::from_position([FOOTNOTE_SPAWN_X + 1.0, -2.9]))
+                    .visible()
+                    .with_interactable(Interactable::new(InteractableKind::Npc))
+                    .with_equipment(EquipmentState::empty()),
+            )
+            .expect("social NPC");
+        let snap = build(1, 1, player, &world, &[player, social_npc], 0, 0, 0);
+        assert!(snap.entities.iter().any(|entity| {
+            entity.entity_id == to_wire_id(social_npc) && entity.kind == ReplicatedKind::Npc
+        }));
     }
 
     #[test]

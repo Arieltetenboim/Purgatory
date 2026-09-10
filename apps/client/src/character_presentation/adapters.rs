@@ -29,6 +29,12 @@ pub struct RemoteMotion {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct SocialNpcMotion {
+    pub pose: [f32; 2],
+    pub equipment: EquipmentView,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct MotionSample {
     pose: [f32; 2],
     velocity: [f32; 2],
@@ -75,6 +81,22 @@ pub fn from_remote(motion: RemoteMotion, held_facing: Facing) -> CharacterPresen
         },
         held_facing,
     )
+}
+
+/// Static Social NPC adapter for the shared humanoid presentation path.
+///
+/// Dialogue-facing and line animation overrides belong to later N10 slices;
+/// N10b deliberately starts the ordinary shared presentation in Idle.
+#[must_use]
+pub fn from_social_npc(motion: SocialNpcMotion, held_facing: Facing) -> CharacterPresentationState {
+    let activity = PresentationActivity::Idle;
+    CharacterPresentationState {
+        pose: motion.pose,
+        facing: held_facing,
+        activity,
+        view: view_for_activity(activity),
+        equipment: motion.equipment,
+    }
 }
 
 fn build_character_presentation(
