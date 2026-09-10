@@ -56,4 +56,8 @@ No authored catalog definitions allocated yet.
 
 ### NPCs — 20,000–29,999
 
-No runtime content definitions allocated yet. FORGE/NPC authoring migration is tracked separately in issue #24; do not allocate NPC Lab string IDs implicitly.
+| ID | Label | Status |
+| ---: | --- | --- |
+| `20001` | `npc.welcome.traveler_stayed` | active |
+
+Additional NPC Lab string IDs remain unallocated until they enter the runtime pack deliberately.

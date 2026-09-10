@@ -1,6 +1,7 @@
 //! Content loading, validation, and registry. JSON stays in this crate.
 
 mod ability;
+mod dialogue;
 mod domain;
 mod equipment;
 mod error;
@@ -12,6 +13,11 @@ mod restore;
 mod schema;
 
 pub use ability::ABILITY_CONTENT_SCHEMA_VERSION;
+pub use dialogue::{
+    DialogueAction, DialogueBeat, DialogueBeatIndex, DialogueChoice, DialogueCondition,
+    DialogueLine, DialoguePool, DialogueSelectionRole, NPC_DIALOGUE_SCHEMA_VERSION,
+    NpcDialogueDefinition,
+};
 pub use domain::ContentDomain;
 pub use equipment::{
     AnchorPoint, BoneTarget, CORRECTION_OFFSET_MAX_PX, CORRECTION_ROTATION_MAX_DEG,
