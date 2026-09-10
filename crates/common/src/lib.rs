@@ -1,6 +1,7 @@
 //! Shared primitives for PURGATORY client, server, and tools.
 
 pub mod capacity_accounting;
+pub mod content_catalog;
 pub mod identity;
 pub mod impairment;
 pub mod load_metrics;
@@ -18,6 +19,13 @@ pub use capacity_accounting::{
     capacity_detail_enabled, check_ramp_funnel_invariant, classify_saturation,
     compose_ramp_ownership, dominant_owner_from_means, int_distribution_from_micros,
     ramp_attainment_pct, worst_spike_owner_from_max,
+};
+pub use content_catalog::{
+    ABILITY_BASIC_STRIKE, ABILITY_PRACTICE_SWORD_STRIKE, ITEM_CLOTH_CAP, ITEM_CLOTH_PANTS,
+    ITEM_IRON_BOOTS, ITEM_LEATHER_GLOVES, ITEM_PLATE_CUIRASS, ITEM_PRACTICE_SWORD, ITEM_TUNIC,
+    ITEM_UNADORNED, MAP_FOOTNOTE, MAP_SECOND, WORLD_OBJECT_CHEST, WORLD_OBJECT_MAP_B_SWITCH,
+    WORLD_OBJECT_PORTAL_TO_FOOTNOTE, WORLD_OBJECT_PORTAL_TO_SECOND, WORLD_OBJECT_SWITCH,
+    allocated_id_for_label, label_for_allocated_id,
 };
 pub use identity::{
     AuthoredIdError, CONTENT_ABILITY_END, CONTENT_ABILITY_START, CONTENT_ID_BLOCK_SIZE,
