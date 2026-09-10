@@ -11,6 +11,7 @@
       "road",
       "watch",
       "caravan",
+      "fieldwork",
       "welcome_core"
     ],
     "background": "He keeps watch at the road into Welcome. The job is not to control who may leave, but to notice who passes, whether the road is behaving normally, and when expected travelers fail to appear. Years of routine have made him attentive to small absences: no wheel noise, no dust, no messenger coming ahead of a delayed caravan.",
@@ -30,16 +31,17 @@
     ],
     "gameplay_purposes": [
       "establish the road out of Welcome as a real boundary without implementing a gate system",
-      "give the player basic road-safety flavor without tutorial exposition",
+      "give the player fieldwork that naturally exercises combat, pickup, investigation, and combat-plus-retrieval",
       "provide a second perspective on the expected and delayed caravan",
-      "exercise item-equipped dialogue with the practice sword",
+      "teach through useful village work rather than explicit tutorial dialogue",
       "serve as a recurring edge-of-settlement interaction point"
     ],
     "narrative_purposes": [
       "make departures and arrivals part of ordinary village life",
       "foreshadow danger through missing routine rather than prophecy",
       "support the theme that absence becomes meaningful because people notice who should have returned",
-      "show Welcome as connected to a larger world through one watched road"
+      "show Welcome as connected to a larger world through one watched road",
+      "let the player's growing competence be acknowledged through increasingly demanding errands"
     ]
   },
   "relationships": [
@@ -107,7 +109,7 @@
             ]
           }
         ],
-        "notes": "First meeting establishes the watchman's function without turning him into a gatekeeper or quest authority."
+        "notes": "First meeting establishes the watchman's function without turning him into a gatekeeper or tutorial narrator."
       },
       {
         "id": "intro_road",
@@ -225,35 +227,541 @@
         "notes": "Concern is expressed through missing expected signs, not unexplained knowledge."
       },
       {
-        "id": "practice_sword",
-        "title": "Player is carrying the practice sword",
-        "priority": 20,
+        "id": "fieldwork_clear_offer",
+        "title": "Fieldwork 1 — clear the road",
+        "priority": 25,
         "entry": true,
-        "pool": "once",
+        "pool": "repeatable",
         "conditions": [
           {
             "npc_met": "npc.welcome.gate_watchman",
             "equals": true
           },
           {
-            "item_equipped": "equipment.debug.practice_sword",
-            "equals": true
+            "fact": "welcome.watch.road_pests.requested",
+            "equals": false
+          },
+          {
+            "fact": "welcome.watch.road_pests.cleared",
+            "equals": false
           }
         ],
         "lines": [
           {
-            "text": "Practice blade. Sensible.",
+            "text": "I've got a small job if you're heading out.",
             "voice": null,
             "animation": null
           },
           {
-            "text": "Better to learn what you don't know while the sword is still forgiving.",
+            "text": "Something's been nesting around the first road marker. Small, mean, and confident enough to chase people off the road.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Clear the ones holding the road. Don't follow them into the brush just to prove a point.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "accept",
+            "text": "I'll clear them out.",
+            "next": null,
+            "actions": [
+              {
+                "set_fact": {
+                  "fact": "welcome.watch.road_pests.requested",
+                  "value": true
+                }
+              }
+            ]
+          },
+          {
+            "id": "decline",
+            "text": "Not right now.",
+            "next": null
+          }
+        ],
+        "notes": "Combat-training job. Exact enemy definition and required count are intentionally not frozen here. Gameplay completion should set welcome.watch.road_pests.cleared=true through the authoritative gameplay owner."
+      },
+      {
+        "id": "fieldwork_clear_active",
+        "title": "Fieldwork 1 — active reminder",
+        "priority": 10,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "fact": "welcome.watch.road_pests.requested",
+            "equals": true
+          },
+          {
+            "fact": "welcome.watch.road_pests.cleared",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "First marker past the gate. Clear the road, not the whole countryside.",
             "voice": null,
             "animation": null
           }
         ],
         "choices": [],
-        "notes": "Uses the existing item_equipped condition only as presentation-aware dialogue. It grants no combat state or item."
+        "notes": "Reminder only."
+      },
+      {
+        "id": "fieldwork_clear_complete",
+        "title": "Fieldwork 1 — road cleared",
+        "priority": 70,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "fact": "welcome.watch.road_pests.requested",
+            "equals": true
+          },
+          {
+            "fact": "welcome.watch.road_pests.cleared",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Road's quiet again. Good.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "You came back without chasing trouble farther than the job required. Better.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Acknowledges combat completion and deliberately rewards restraint as well as success."
+      },
+      {
+        "id": "fieldwork_collect_offer",
+        "title": "Fieldwork 2 — gather road-marker cloth",
+        "priority": 24,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "fact": "welcome.watch.road_pests.cleared",
+            "equals": true
+          },
+          {
+            "fact": "welcome.watch.marker_cloth.requested",
+            "equals": false
+          },
+          {
+            "fact": "welcome.watch.marker_cloth.returned",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "Since you're already learning the road, there's another thing.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "The wind tore marker cloth off the outer posts. Bring me a bundle's worth of the pieces you find along the road.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Bright cloth looks useless right up until fog decides otherwise.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "accept",
+            "text": "I'll gather what I find.",
+            "next": null,
+            "actions": [
+              {
+                "set_fact": {
+                  "fact": "welcome.watch.marker_cloth.requested",
+                  "value": true
+                }
+              }
+            ]
+          },
+          {
+            "id": "decline",
+            "text": "Later.",
+            "next": null
+          }
+        ],
+        "notes": "Pickup/collection job. The authored hand-in uses one logical bundle item because NPC Lab currently models item possession as boolean, not a quantity condition. World collection/counting remains future gameplay work."
+      },
+      {
+        "id": "fieldwork_collect_active",
+        "title": "Fieldwork 2 — active reminder",
+        "priority": 10,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "fact": "welcome.watch.marker_cloth.requested",
+            "equals": true
+          },
+          {
+            "item_owned": "item.welcome.road_marker_cloth_bundle",
+            "equals": false
+          },
+          {
+            "fact": "welcome.watch.marker_cloth.returned",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "Marker cloth tends to catch on stones and low branches. Look where the road narrows.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "The future world/pickup owner should grant the logical bundle when the collection requirement is satisfied."
+      },
+      {
+        "id": "fieldwork_collect_complete",
+        "title": "Fieldwork 2 — return marker cloth",
+        "priority": 70,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "fact": "welcome.watch.marker_cloth.requested",
+            "equals": true
+          },
+          {
+            "item_owned": "item.welcome.road_marker_cloth_bundle",
+            "equals": true
+          },
+          {
+            "fact": "welcome.watch.marker_cloth.returned",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "That's enough cloth. Ugly, but visible.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Roads don't care about pretty.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "hand_over",
+            "text": "Here.",
+            "next": null,
+            "actions": [
+              {
+                "remove_item": {
+                  "item": "item.welcome.road_marker_cloth_bundle",
+                  "quantity": 1
+                }
+              },
+              {
+                "set_fact": {
+                  "fact": "welcome.watch.marker_cloth.returned",
+                  "value": true
+                }
+              }
+            ]
+          }
+        ],
+        "notes": "Collection hand-in uses existing item-owned/remove-item authoring capabilities."
+      },
+      {
+        "id": "fieldwork_investigate_offer",
+        "title": "Fieldwork 3 — inspect the outer marker",
+        "priority": 23,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "fact": "welcome.watch.marker_cloth.returned",
+            "equals": true
+          },
+          {
+            "fact": "welcome.watch.outer_marker.requested",
+            "equals": false
+          },
+          {
+            "fact": "welcome.watch.outer_marker.checked",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "One of the outer markers stopped catching the light last night.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Go look at it. Don't fix anything yet. I want to know whether it fell, broke, or was moved.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "accept",
+            "text": "I'll take a look.",
+            "next": null,
+            "actions": [
+              {
+                "set_fact": {
+                  "fact": "welcome.watch.outer_marker.requested",
+                  "value": true
+                }
+              }
+            ]
+          },
+          {
+            "id": "decline",
+            "text": "Not yet.",
+            "next": null
+          }
+        ],
+        "notes": "Investigation/exploration job. A future authoritative world interaction should set welcome.watch.outer_marker.checked=true after the player inspects the authored marker."
+      },
+      {
+        "id": "fieldwork_investigate_active",
+        "title": "Fieldwork 3 — active reminder",
+        "priority": 10,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "fact": "welcome.watch.outer_marker.requested",
+            "equals": true
+          },
+          {
+            "fact": "welcome.watch.outer_marker.checked",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "Look first. Fix later. A changed marker tells you more before you put it back where you think it belongs.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Reminder only."
+      },
+      {
+        "id": "fieldwork_investigate_complete",
+        "title": "Fieldwork 3 — report the moved marker",
+        "priority": 70,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "fact": "welcome.watch.outer_marker.requested",
+            "equals": true
+          },
+          {
+            "fact": "welcome.watch.outer_marker.checked",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Turned, not broken.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Wind doesn't usually take the time to point things somewhere else.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "The exact world clue is intentionally small. It creates unease without resolving who or what moved the marker."
+      },
+      {
+        "id": "fieldwork_retrieve_offer",
+        "title": "Fieldwork 4 — recover the watch lantern",
+        "priority": 22,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "fact": "welcome.watch.outer_marker.checked",
+            "equals": true
+          },
+          {
+            "fact": "welcome.watch.lantern.requested",
+            "equals": false
+          },
+          {
+            "fact": "welcome.watch.lantern.returned",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "There's an old watch post beyond that marker. I left a shuttered signal lantern there last season.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Bring it back. If something has taken over the post, don't negotiate over my property.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "accept",
+            "text": "I'll bring it back.",
+            "next": null,
+            "actions": [
+              {
+                "set_fact": {
+                  "fact": "welcome.watch.lantern.requested",
+                  "value": true
+                }
+              }
+            ]
+          },
+          {
+            "id": "decline",
+            "text": "I'll wait.",
+            "next": null
+          }
+        ],
+        "notes": "Combined exploration/combat/retrieval job. Exact watch-post geometry and enemy population remain unfrozen."
+      },
+      {
+        "id": "fieldwork_retrieve_active",
+        "title": "Fieldwork 4 — active reminder",
+        "priority": 10,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "fact": "welcome.watch.lantern.requested",
+            "equals": true
+          },
+          {
+            "item_owned": "item.welcome.watch_signal_lantern",
+            "equals": false
+          },
+          {
+            "fact": "welcome.watch.lantern.returned",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "Old watch post, beyond the turned marker. Lantern should still be inside if nobody found a use for it first.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Future world content owns placing and granting the lantern item."
+      },
+      {
+        "id": "fieldwork_retrieve_complete",
+        "title": "Fieldwork 4 — return the watch lantern",
+        "priority": 70,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "fact": "welcome.watch.lantern.requested",
+            "equals": true
+          },
+          {
+            "item_owned": "item.welcome.watch_signal_lantern",
+            "equals": true
+          },
+          {
+            "fact": "welcome.watch.lantern.returned",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "Still works. That's more than I expected.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "You too, apparently.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "hand_over",
+            "text": "Your lantern.",
+            "next": null,
+            "actions": [
+              {
+                "remove_item": {
+                  "item": "item.welcome.watch_signal_lantern",
+                  "quantity": 1
+                }
+              },
+              {
+                "set_fact": {
+                  "fact": "welcome.watch.lantern.returned",
+                  "value": true
+                }
+              }
+            ]
+          }
+        ],
+        "notes": "Final fieldwork hand-in. No reward item/currency is invented before the relevant economy/reward owner exists."
+      },
+      {
+        "id": "fieldwork_finished",
+        "title": "Fieldwork chain acknowledgement",
+        "priority": 15,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "fact": "welcome.watch.lantern.returned",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Four jobs out past the gate and you keep coming back through it.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "That's a useful habit. Keep it.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Acknowledges the player's increasing field competence without creating a formal tutorial-complete flag."
       },
       {
         "id": "lore_departures",
@@ -309,8 +817,12 @@
   "notes": [
     "The watchman does not control whether the player may leave Welcome. Gate/travel restrictions are not part of this authoring slice.",
     "The important caravan state is shared with the Traveler and Shopkeeper content through welcome.caravan.important.expected and welcome.caravan.important.late.",
-    "The practice-sword beat is deliberately observational and uses the existing item_equipped condition without changing equipment or combat behavior.",
-    "The road's exact geography remains unfrozen; dialogue avoids naming landmarks, distances, or routes that would constrain later map design.",
+    "The four fieldwork jobs intentionally progress through combat, collection/pickup, investigation, and combined combat/retrieval without tutorial-style exposition.",
+    "Kill counts, enemy ContentIds, world locations, pickup counts, and investigation triggers are deliberately not invented here. Their authoritative gameplay owners should set the descriptive completion facts or grant the authored hand-in item when those systems are implemented.",
+    "The collection flow uses item.welcome.road_marker_cloth_bundle as one logical hand-in object because the current NPC authoring/test model has boolean item possession rather than quantity-based conditions.",
+    "The retrieval flow uses item.welcome.watch_signal_lantern as an authored hand-in reference; it is not yet a runtime ItemDefinition allocation.",
+    "No reward item, currency, XP system, or quest manager is introduced by this NPC document.",
+    "The road's exact geography remains unfrozen; dialogue avoids naming distances or permanent landmarks that would constrain later map design.",
     "This NPC currently uses the legacy string NPC authoring ID because stable numeric NPC ContentIds are tracked separately in issue #24."
   ]
 }
