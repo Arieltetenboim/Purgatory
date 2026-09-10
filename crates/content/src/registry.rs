@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::dialogue::NpcDialogueDefinition;
 use crate::domain::ContentDomain;
 use crate::equipment::{EquipmentDefinition, EquipmentPresentation};
 use crate::error::{ContentError, ValidationIssue};
@@ -21,6 +22,7 @@ pub struct ContentRegistry {
     equipment: BTreeMap<String, EquipmentDefinition>,
     equipment_presentation: BTreeMap<String, EquipmentPresentation>,
     abilities: BTreeMap<String, AbilityDefinition>,
+    npc_dialogues: BTreeMap<String, NpcDialogueDefinition>,
     map_id_by_content: HashMap<ContentId, MapId>,
     content_by_map_id: HashMap<MapId, ContentId>,
 }
@@ -38,6 +40,7 @@ impl ContentRegistry {
             + self.items.len()
             + self.equipment.len()
             + self.abilities.len()
+            + self.npc_dialogues.len()
     }
 
     #[must_use]
@@ -64,6 +67,22 @@ impl ContentRegistry {
     pub fn ability_by_id(&self, id: ContentId) -> Option<&AbilityDefinition> {
         let authored = self.labels.get(&id)?;
         self.abilities.get(authored)
+    }
+
+    #[must_use]
+    pub fn npc_dialogue_count(&self) -> usize {
+        self.npc_dialogues.len()
+    }
+
+    #[must_use]
+    pub fn npc_dialogue(&self, authored: &str) -> Option<&NpcDialogueDefinition> {
+        self.npc_dialogues.get(authored)
+    }
+
+    #[must_use]
+    pub fn npc_dialogue_by_id(&self, id: ContentId) -> Option<&NpcDialogueDefinition> {
+        let authored = self.labels.get(&id)?;
+        self.npc_dialogues.get(authored)
     }
 
     #[must_use]
@@ -176,6 +195,14 @@ impl ContentRegistry {
     }
 
     pub(crate) fn insert_entity(&mut self, def: EntityDefinition) -> Result<(), ContentError> {
+        if let Some(dialogue) = self.npc_dialogues.get(&def.authored_id)
+            && dialogue.content_id != def.content_id
+        {
+            return Err(ContentError::one(npc_entity_issue(
+                &def.authored_id,
+                "NPC entity and dialogue definitions must share the same ContentId",
+            )));
+        }
         self.intern(&def.authored_id, def.content_id, "entity")?;
         if self.entities.contains_key(&def.authored_id) {
             return Err(duplicate(&def.authored_id, "entity"));
@@ -271,6 +298,31 @@ impl ContentRegistry {
         }
         self.intern(&authored, def.id, "ability")?;
         self.abilities.insert(authored, def);
+        Ok(())
+    }
+
+    pub(crate) fn insert_npc_dialogue(
+        &mut self,
+        def: NpcDialogueDefinition,
+    ) -> Result<(), ContentError> {
+        if self.maps.contains_key(&def.authored_id)
+            || self.items.contains_key(&def.authored_id)
+            || self.equipment.contains_key(&def.authored_id)
+            || self.abilities.contains_key(&def.authored_id)
+            || self.npc_dialogues.contains_key(&def.authored_id)
+        {
+            return Err(duplicate(&def.authored_id, "npc_dialogue"));
+        }
+        if let Some(entity) = self.entities.get(&def.authored_id)
+            && entity.content_id != def.content_id
+        {
+            return Err(ContentError::one(npc_entity_issue(
+                &def.authored_id,
+                "NPC entity and dialogue definitions must share the same ContentId",
+            )));
+        }
+        self.intern(&def.authored_id, def.content_id, "npc_dialogue")?;
+        self.npc_dialogues.insert(def.authored_id.clone(), def);
         Ok(())
     }
 
@@ -506,6 +558,10 @@ fn item_equipment_issue(
     detail: impl std::fmt::Display,
 ) -> ValidationIssue {
     ValidationIssue::new("item", definition, field, detail.to_string())
+}
+
+fn npc_entity_issue(definition: &str, detail: impl std::fmt::Display) -> ValidationIssue {
+    ValidationIssue::new("npc_dialogue", definition, "id", detail.to_string())
 }
 
 #[cfg(test)]

@@ -1,11 +1,13 @@
 //! Filesystem JSON loader. Not used on the simulation tick.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
 use crate::ability::ABILITY_CONTENT_SCHEMA_VERSION;
+use crate::dialogue;
 use crate::domain::ContentDomain;
 use crate::equipment::{
     AnchorPoint, BoneTarget, CorrectionOffset, CoverageMode, EQUIPMENT_CONTENT_SCHEMA_VERSION,
@@ -19,7 +21,7 @@ use crate::schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
     SpawnPoint, TransitionRef,
 };
-use purgatory_common::{ContentId, validate_authored_id};
+use purgatory_common::{ContentId, allocated_id_for_label, validate_authored_id};
 use purgatory_simulation::{
     AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityTiming,
     EquipmentSlot, InteractableKind, PlatformKind, WorldBounds,
@@ -86,6 +88,11 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         Kind::Ability,
     );
     if mode == LoadMode::Full {
+        load_npc_authoring_tree(
+            &mut registry,
+            &mut issues,
+            &root.join("authoring").join("npcs"),
+        );
         load_dir(
             &mut registry,
             &mut issues,
@@ -106,6 +113,86 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
     }
     registry.finish()?;
     Ok(registry)
+}
+
+fn load_npc_authoring_tree(
+    registry: &mut ContentRegistry,
+    issues: &mut Vec<ValidationIssue>,
+    root: &Path,
+) {
+    let mut paths = Vec::new();
+    collect_json_paths(root, &mut paths, issues);
+    paths.sort();
+    let mut documents = Vec::new();
+    for path in paths {
+        let result = fs::read_to_string(&path)
+            .map_err(|error| ContentError::from_io(&path, &error))
+            .and_then(|text| dialogue::parse_raw(&path, &text));
+        match result {
+            Ok(document) => documents.push((path, document)),
+            Err(error) => issues.extend(error.issues),
+        }
+    }
+
+    let mut npc_beats = HashMap::new();
+    for (path, document) in &documents {
+        if npc_beats
+            .insert(document.authored_id().to_string(), document.beat_ids())
+            .is_some()
+        {
+            issues.push(ValidationIssue::new(
+                path.display().to_string(),
+                document.authored_id(),
+                "id",
+                "duplicate NPC authored id",
+            ));
+        }
+    }
+
+    for (path, document) in documents {
+        let content_id = allocated_id_for_label(document.authored_id());
+        let result = document
+            .validate_npc_references(&path, &npc_beats)
+            .and_then(|()| document.into_definition(&path, content_id))
+            .and_then(|definition| {
+                definition.map_or(Ok(()), |definition| {
+                    registry.insert_npc_dialogue(definition)
+                })
+            });
+        if let Err(error) = result {
+            issues.extend(error.issues);
+        }
+    }
+}
+
+fn collect_json_paths(dir: &Path, paths: &mut Vec<PathBuf>, issues: &mut Vec<ValidationIssue>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            issues.push(ValidationIssue::new(
+                dir.display().to_string(),
+                "-",
+                "io",
+                error.to_string(),
+            ));
+            return;
+        }
+    };
+    let mut entries: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_json_paths(&path, paths, issues);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            paths.push(path);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -915,6 +1002,226 @@ mod tests {
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("version");
         assert!(err.to_string().contains("unsupported schema"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    fn minimal_npc_json(beats: &str) -> String {
+        format!(
+            r#"{{
+                "schema_version": 1,
+                "id": "npc.welcome.traveler_stayed",
+                "interaction": {{ "beats": [{beats}] }}
+            }}"#
+        )
+    }
+
+    fn minimal_beat(id: &str, priority: i32) -> String {
+        format!(
+            r#"{{
+                "id": "{id}",
+                "priority": {priority},
+                "entry": true,
+                "pool": "mandatory",
+                "conditions": [],
+                "lines": [{{ "text": "Hello", "voice": "ignored.voice", "animation": "wave" }}],
+                "choices": []
+            }}"#
+        )
+    }
+
+    #[test]
+    fn workspace_pack_projects_traveler_dialogue_by_numeric_id() {
+        use crate::{DialogueAction, DialogueCondition, DialoguePool, DialogueSelectionRole};
+        use purgatory_common::{ContentKind, NPC_WELCOME_TRAVELER_STAYED};
+
+        let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
+        let traveler = registry
+            .npc_dialogue_by_id(NPC_WELCOME_TRAVELER_STAYED)
+            .expect("numeric Traveler dialogue");
+        assert_eq!(traveler.authored_id, "npc.welcome.traveler_stayed");
+        assert_eq!(traveler.content_id.kind(), Some(ContentKind::Npc));
+        assert_eq!(registry.npc_dialogue_count(), 1);
+
+        let intro = &traveler.beats[0];
+        assert_eq!(intro.id, "intro");
+        assert_eq!(intro.selection_role, DialogueSelectionRole::Entry);
+        assert_eq!(intro.priority, 100);
+        assert_eq!(intro.pool, DialoguePool::Mandatory);
+        assert!(matches!(
+            &intro.conditions[0],
+            DialogueCondition::NpcMet {
+                npc_authored,
+                equals: false
+            } if npc_authored == "npc.welcome.traveler_stayed"
+        ));
+        assert!(matches!(
+            &intro.choices[0].actions[0],
+            DialogueAction::MarkNpcMet { npc_authored }
+                if npc_authored == "npc.welcome.traveler_stayed"
+        ));
+        let next = intro.choices[0].next.expect("resolved continuation");
+        assert_eq!(traveler.beat(next).expect("beat").id, "intro_place");
+
+        let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
+        assert_eq!(shared.npc_dialogue_count(), 0);
+    }
+
+    #[test]
+    fn npc_projection_preserves_authored_order_and_drops_presentation_cues() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-npc-order-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let beats = format!("{},{}", minimal_beat("first", 5), minimal_beat("second", 5));
+        write_file(
+            &tmp.join("authoring/npcs/welcome"),
+            "traveler.json",
+            &minimal_npc_json(&beats),
+        );
+
+        let registry = load_registry(&tmp, LoadMode::Full).expect("valid NPC dialogue");
+        let traveler = registry
+            .npc_dialogue_by_id(purgatory_common::NPC_WELCOME_TRAVELER_STAYED)
+            .expect("Traveler");
+        assert_eq!(traveler.beats[0].id, "first");
+        assert_eq!(traveler.beats[1].id, "second");
+        assert_eq!(traveler.beats[0].lines[0].text, "Hello");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn broken_npc_continuation_fails_clearly() {
+        let tmp =
+            std::env::temp_dir().join(format!("purgatory-content-npc-next-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let beat = r#"{
+            "id": "intro",
+            "priority": 1,
+            "entry": true,
+            "conditions": [],
+            "lines": [{ "text": "Hello" }],
+            "choices": [{ "id": "go", "text": "Go", "next": "missing", "actions": [] }]
+        }"#;
+        write_file(
+            &tmp.join("authoring/npcs/welcome"),
+            "traveler.json",
+            &minimal_npc_json(beat),
+        );
+
+        let error = load_registry(&tmp, LoadMode::Full).expect_err("broken next");
+        assert!(
+            error
+                .to_string()
+                .contains("references missing beat 'missing'")
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unresolved_npc_reference_fails_clearly() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-npc-reference-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let beat = r#"{
+            "id": "intro",
+            "priority": 1,
+            "entry": true,
+            "conditions": [{ "npc_met": "npc.welcome.missing", "equals": false }],
+            "lines": [{ "text": "Hello" }],
+            "choices": []
+        }"#;
+        write_file(
+            &tmp.join("authoring/npcs/welcome"),
+            "traveler.json",
+            &minimal_npc_json(beat),
+        );
+
+        let error = load_registry(&tmp, LoadMode::Full).expect_err("unresolved NPC");
+        assert!(
+            error
+                .to_string()
+                .contains("references missing authored NPC 'npc.welcome.missing'")
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn duplicate_npc_beat_id_fails_clearly() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-npc-duplicate-beat-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let beats = format!("{},{}", minimal_beat("same", 2), minimal_beat("same", 1));
+        write_file(
+            &tmp.join("authoring/npcs/welcome"),
+            "traveler.json",
+            &minimal_npc_json(&beats),
+        );
+
+        let error = load_registry(&tmp, LoadMode::Full).expect_err("duplicate beat");
+        assert!(error.to_string().contains("duplicate beat id 'same'"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn duplicate_allocated_npc_definition_fails_clearly() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-npc-duplicate-definition-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let document = minimal_npc_json(&minimal_beat("intro", 1));
+        write_file(
+            &tmp.join("authoring/npcs/first"),
+            "traveler.json",
+            &document,
+        );
+        write_file(
+            &tmp.join("authoring/npcs/second"),
+            "traveler.json",
+            &document,
+        );
+
+        let error = load_registry(&tmp, LoadMode::Full).expect_err("duplicate NPC");
+        assert!(error.to_string().contains("duplicate ContentId"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn malformed_npc_condition_fails_clearly() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-npc-condition-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let beat = r#"{
+            "id": "intro",
+            "priority": 1,
+            "entry": true,
+            "conditions": [{
+                "fact": "welcome.ready",
+                "npc_met": "npc.welcome.traveler_stayed",
+                "equals": true
+            }],
+            "lines": [{ "text": "Hello" }],
+            "choices": []
+        }"#;
+        write_file(
+            &tmp.join("authoring/npcs/welcome"),
+            "traveler.json",
+            &minimal_npc_json(beat),
+        );
+
+        let error = load_registry(&tmp, LoadMode::Full).expect_err("malformed condition");
+        assert!(
+            error
+                .to_string()
+                .contains("exactly one supported typed check")
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 
