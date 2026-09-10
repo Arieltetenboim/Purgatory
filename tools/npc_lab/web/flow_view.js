@@ -9,7 +9,7 @@
   if (!workspaceBody || !tabs) return;
 
   const stateTab = [...tabs.querySelectorAll(".future-tab")].find(
-    (tab) => tab.dataset.surface === "state"
+    (candidate) => candidate.dataset.surface === "state"
   );
   const tab = document.createElement("button");
   tab.className = "future-tab";
@@ -35,6 +35,7 @@
           <div class="flow-legend">
             <span><i class="flow-dot"></i> ENTRY</span>
             <span><i class="flow-dot continuation"></i> CONTINUATION</span>
+            <span><i class="flow-loop-glyph">↺</i> LOOP</span>
           </div>
           <div id="flowSelected" class="flow-selected"></div>
         </div>
@@ -43,11 +44,11 @@
         <div id="flowCanvas" class="flow-canvas">
           <svg id="flowEdges" class="flow-edges" aria-hidden="true"></svg>
           <div class="flow-columns">
-            <section class="flow-lane">
+            <section class="flow-lane flow-entry-column">
               <div class="flow-lane-header"><span class="flow-lane-title">ENTRY</span><span id="flowEntryCount" class="flow-lane-count">0</span></div>
               <div id="flowEntryLane" class="flow-lane"></div>
             </section>
-            <section class="flow-lane">
+            <section class="flow-lane flow-continuation-column">
               <div class="flow-lane-header"><span class="flow-lane-title">CONTINUATION</span><span id="flowContinuationCount" class="flow-lane-count">0</span></div>
               <div id="flowContinuationLane" class="flow-lane"></div>
             </section>
@@ -69,10 +70,6 @@
     selected: byId("flowSelected"),
   };
 
-  function beatIndexById(id) {
-    return beatsOf().findIndex((beat) => beat?.id === id);
-  }
-
   function linksOf(beat) {
     const choices = Array.isArray(beat?.choices) ? beat.choices : [];
     return choices.map((choice) => ({
@@ -81,7 +78,50 @@
     }));
   }
 
-  function makeNode(beat, index, knownIds) {
+  function edgeKey(source, target) {
+    return `${source}\u0000${target}`;
+  }
+
+  function cycleEdges(beats) {
+    const knownIds = new Set(beats.map((beat) => beat?.id).filter(Boolean));
+    const adjacency = new Map();
+    for (const beat of beats) {
+      if (!beat?.id) continue;
+      adjacency.set(
+        beat.id,
+        linksOf(beat)
+          .map((link) => link.target)
+          .filter((target) => target && knownIds.has(target))
+      );
+    }
+
+    function reaches(start, goal) {
+      const pending = [start];
+      const seen = new Set();
+      while (pending.length) {
+        const current = pending.pop();
+        if (current === goal) return true;
+        if (seen.has(current)) continue;
+        seen.add(current);
+        for (const next of adjacency.get(current) || []) {
+          if (!seen.has(next)) pending.push(next);
+        }
+      }
+      return false;
+    }
+
+    const result = new Set();
+    for (const [source, targets] of adjacency) {
+      for (const target of targets) {
+        if (target === source || reaches(target, source)) {
+          result.add(edgeKey(source, target));
+        }
+      }
+    }
+    return result;
+  }
+
+  function makeNode(beat, index, knownIds, loopEdges) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `flow-node ${beat?.entry === true ? "entry" : "continuation"}`;
@@ -105,7 +145,11 @@
 
     const meta = document.createElement("div");
     meta.className = "flow-node-meta";
-    for (const label of [beat?.pool || "mandatory", `${Array.isArray(beat?.conditions) ? beat.conditions.length : 0} cond`, `${Array.isArray(beat?.choices) ? beat.choices.length : 0} choices`]) {
+    for (const label of [
+      beat?.pool || "mandatory",
+      `${Array.isArray(beat?.conditions) ? beat.conditions.length : 0} cond`,
+      `${Array.isArray(beat?.choices) ? beat.choices.length : 0} choices`,
+    ]) {
       const pill = document.createElement("span");
       pill.className = "flow-pill";
       pill.textContent = label;
@@ -132,6 +176,9 @@
         } else if (!knownIds.has(link.target)) {
           row.classList.add("missing");
           target.textContent = `${link.target} !`;
+        } else if (beat?.id && loopEdges.has(edgeKey(beat.id, link.target))) {
+          row.classList.add("loop");
+          target.textContent = `↺ LOOP → ${link.target}`;
         } else {
           target.textContent = `→ ${link.target}`;
         }
@@ -149,8 +196,32 @@
     return button;
   }
 
-  function drawEdges() {
+  function appendArrowMarker(id, className) {
+    const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+    marker.setAttribute("id", id);
+    marker.setAttribute("viewBox", "0 0 10 10");
+    marker.setAttribute("refX", "9");
+    marker.setAttribute("refY", "5");
+    marker.setAttribute("markerWidth", "6");
+    marker.setAttribute("markerHeight", "6");
+    marker.setAttribute("orient", "auto-start-reverse");
+    const arrow = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    arrow.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+    arrow.setAttribute("class", className);
+    marker.appendChild(arrow);
+    return marker;
+  }
+
+  function drawEdges(loopEdges = cycleEdges(beatsOf())) {
     ui.edges.replaceChildren();
+    const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+    defs.append(
+      appendArrowMarker("flowArrow", "flow-arrow"),
+      appendArrowMarker("flowArrowSelected", "flow-arrow-selected"),
+      appendArrowMarker("flowArrowLoop", "flow-arrow-loop")
+    );
+    ui.edges.appendChild(defs);
+
     const canvasRect = ui.canvas.getBoundingClientRect();
     const nodes = new Map(
       [...ui.canvas.querySelectorAll(".flow-node[data-beat-id]")]
@@ -171,15 +242,44 @@
         const target = nodes.get(link.target);
         if (!target) continue;
         const targetRect = target.getBoundingClientRect();
-
-        const sx = sourceRect.right - canvasRect.left + ui.canvas.scrollLeft;
-        const sy = sourceRect.top - canvasRect.top + ui.canvas.scrollTop + sourceRect.height / 2;
-        const tx = targetRect.left - canvasRect.left + ui.canvas.scrollLeft;
-        const ty = targetRect.top - canvasRect.top + ui.canvas.scrollTop + targetRect.height / 2;
-        const bend = Math.max(40, Math.abs(tx - sx) * 0.45);
+        const isLoop = loopEdges.has(edgeKey(beat.id, link.target));
+        const isSelected = beatsOf()[state.selectedBeatIndex]?.id === beat.id;
+        const sameLane = source.parentElement === target.parentElement;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", `M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`);
-        path.setAttribute("class", `flow-edge${beatIndexById(beat.id) === state.selectedBeatIndex ? " selected" : ""}`);
+
+        if (isLoop && sameLane) {
+          const entryLane = source.parentElement === ui.entryLane;
+          const sx = (entryLane ? sourceRect.left : sourceRect.right) - canvasRect.left + ui.canvas.scrollLeft;
+          const sy = sourceRect.top - canvasRect.top + ui.canvas.scrollTop + sourceRect.height / 2;
+          const tx = (entryLane ? targetRect.left : targetRect.right) - canvasRect.left + ui.canvas.scrollLeft;
+          const ty = targetRect.top - canvasRect.top + ui.canvas.scrollTop + targetRect.height / 2;
+          const outsideX = entryLane
+            ? Math.min(sx, tx) - 46
+            : Math.max(sx, tx) + 46;
+          path.setAttribute(
+            "d",
+            `M ${sx} ${sy} C ${outsideX} ${sy}, ${outsideX} ${ty}, ${tx} ${ty}`
+          );
+        } else {
+          const sx = sourceRect.right - canvasRect.left + ui.canvas.scrollLeft;
+          const sy = sourceRect.top - canvasRect.top + ui.canvas.scrollTop + sourceRect.height / 2;
+          const tx = targetRect.left - canvasRect.left + ui.canvas.scrollLeft;
+          const ty = targetRect.top - canvasRect.top + ui.canvas.scrollTop + targetRect.height / 2;
+          const bend = Math.max(40, Math.abs(tx - sx) * 0.45);
+          path.setAttribute(
+            "d",
+            `M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`
+          );
+        }
+
+        const classes = ["flow-edge"];
+        if (isLoop) classes.push("loop");
+        if (isSelected) classes.push("selected");
+        path.setAttribute("class", classes.join(" "));
+        path.setAttribute(
+          "marker-end",
+          `url(#${isLoop ? "flowArrowLoop" : isSelected ? "flowArrowSelected" : "flowArrow"})`
+        );
         ui.edges.appendChild(path);
       }
     }
@@ -190,12 +290,13 @@
     ui.continuationLane.replaceChildren();
     const beats = beatsOf();
     const knownIds = new Set(beats.map((beat) => beat?.id).filter(Boolean));
+    const loopEdges = cycleEdges(beats);
     let entries = 0;
     let continuations = 0;
     let missingTargets = 0;
 
     beats.forEach((beat, index) => {
-      const node = makeNode(beat, index, knownIds);
+      const node = makeNode(beat, index, knownIds, loopEdges);
       if (beat?.entry === true) {
         entries += 1;
         ui.entryLane.appendChild(node);
@@ -224,11 +325,11 @@
     ui.entryCount.textContent = String(entries);
     ui.continuationCount.textContent = String(continuations);
     ui.summary.textContent = state.documentValue
-      ? `${beats.length} beats · ${entries} ENTRY · ${continuations} CONTINUATION${missingTargets ? ` · ${missingTargets} missing target${missingTargets === 1 ? "" : "s"}` : ""}`
+      ? `${beats.length} beats · ${entries} ENTRY · ${continuations} CONTINUATION${loopEdges.size ? ` · ${loopEdges.size} loop link${loopEdges.size === 1 ? "" : "s"}` : ""}${missingTargets ? ` · ${missingTargets} missing target${missingTargets === 1 ? "" : "s"}` : ""}`
       : "Select an NPC.";
     const selected = selectedBeat();
     ui.selected.textContent = selected ? `Selected: ${selected.id || "(missing id)"}` : "";
-    requestAnimationFrame(drawEdges);
+    requestAnimationFrame(() => drawEdges(loopEdges));
   }
 
   function openFlow() {
@@ -255,8 +356,21 @@
 
   tab.addEventListener("click", openFlow);
   for (const other of document.querySelectorAll(".future-tab[data-surface]")) {
-    other.addEventListener("click", () => surface.classList.remove("active"));
+    other.addEventListener("click", () => {
+      surface.classList.remove("active");
+      tab.classList.remove("active");
+    });
   }
+  const testTab = [...tabs.querySelectorAll(".future-tab")].find(
+    (candidate) => candidate.textContent.trim() === "TEST"
+  );
+  if (testTab) {
+    testTab.addEventListener("click", () => {
+      surface.classList.remove("active");
+      tab.classList.remove("active");
+    });
+  }
+
   window.addEventListener("resize", () => {
     if (state.activeSurface === "flow") drawEdges();
   });
