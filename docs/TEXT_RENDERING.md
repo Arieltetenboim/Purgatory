@@ -70,3 +70,21 @@ run it with `cargo test -p purgatory-client renderer_repeated_text -- --ignored`
 The default suite tests the same preparation/cache path without requiring an
 adapter. Run both `cargo test -p purgatory-client renderer::text` and the explicit
 GPU test when changing this renderer.
+
+## Verification record
+
+For implementation commit `78dcc14`, the owner reported that the in-game manual
+checklist passed: the message appears only in Game, stays fixed during camera
+movement, remains centered through resize and minimize/restore, is independent
+of Render Scale, coexists with Debug, and disappears/reappears on disconnect and
+reconnect. This is owner-reported runtime evidence, not an automated visual test.
+The tested build configuration was not specified; separate visual confirmation
+of the `--no-default-features` build is not claimed.
+
+Automated verification passed: seven CPU unit tests, the explicitly run GPU test,
+workspace check/tests, workspace Clippy with warnings denied, content validation,
+and client check without default features. The canonical `./scripts/check.ps1`
+was run but is not green: its formatting step stops on pre-existing formatting in
+`crates/common/src/identity.rs` and `crates/common/src/lib.rs` from base commit
+`4d3e388`. Those files remain unchanged; subsequent gate commands were run
+separately. Manual acceptance does not resolve that quality-gate blocker.
