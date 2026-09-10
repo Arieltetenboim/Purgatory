@@ -29,16 +29,10 @@ jobs:
           key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Rust toolchain and components
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: 1.95.0
-          profile: minimal
-          components: rustfmt, clippy
-          override: true
+        run: rustup show
 
       - name: Make scripts executable
         run: chmod +x ./scripts/check.sh
 
       - name: Run PURGATORY canonical quality gate
         run: ./scripts/check.sh
-
