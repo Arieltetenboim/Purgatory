@@ -1,3 +1,8 @@
+const typographyStep = document.createElement("link");
+typographyStep.rel = "stylesheet";
+typographyStep.href = "/typography_step.css";
+document.head.appendChild(typographyStep);
+
 const POOL_OPTIONS = [
   ["mandatory", "MANDATORY"],
   ["once", "ONCE"],
