@@ -4,23 +4,50 @@ Status: design baseline for FORGE I content buildout
 
 ## Purpose
 
-Welcome is the player's first lived-in multiplayer settlement and first compact progression chapter. It should teach the player how the world works through ordinary village problems rather than explicit tutorial prompts.
+Welcome is the mandatory starting area for every new player and the first compact progression chapter. The player begins inside Living Welcome and cannot leave for the wider world until the required Welcome progression arc is completed.
+
+It should teach the player how the world works through ordinary village problems rather than explicit tutorial prompts.
 
 Target feel:
 
 - the settlement initially feels small, functional, safe enough, and temporary only in the background;
 - the player learns movement, combat, pickup/collection, equipment awareness, investigation, NPC relationships, and basic quest flow through useful work;
 - ordinary logistical problems slowly accumulate into evidence that something outside Welcome is wrong;
+- the player's access to the wider world is deliberately locked until the required Welcome arc is complete;
 - the player leaves on a reasonable, limited assignment rather than because an NPC announces a world-ending crisis;
-- later, the player can return to the same geographical area in a ruined/changed world state for narrative closure.
+- much later, the player may optionally return to the same geographical place in a ruined/changed state for side content and narrative closure.
 
-This document supersedes the earlier idea that Welcome is permanently unreachable after departure. The revised direction is: the original living Welcome chapter ends when the player leaves, but the location itself may be revisited later in a materially changed or ruined state.
+## Two Welcome states
+
+There are two distinct authored/world states of the same place.
+
+### Living Welcome — mandatory starting state
+
+Every player starts here.
+
+Living Welcome is a closed starting area: the player cannot enter the wider world until the required Welcome progression has been completed and the departure condition is satisfied.
+
+This is the tutorial/progression version of the area. It contains the village, its NPC relationships, local work, early combat, field excursions, the Old Watch Post thread, and the final escalation that earns the player permission/reason to leave.
+
+Not every optional conversation or side errand must be mandatory, but the core Welcome arc is mandatory and gates access to the wider world.
+
+### Ruined Welcome — later optional state
+
+After the player has completed Living Welcome and entered the wider world, Welcome later exists as a ruined/changed version of the same geographical place.
+
+Returning to Ruined Welcome is side content. It is not required to continue the main world progression and it is not the player's permanent hub.
+
+The purpose of Ruined Welcome is contrast, discovery, callbacks, new local gameplay, and closure around people and places the player knew at the beginning.
+
+This supersedes both earlier incorrect interpretations: Living Welcome is not optional, and Welcome is not permanently unreachable after departure.
 
 ## Pacing target
 
-The current design target remains approximately 1–2 hours for a player who engages with the main Welcome content.
+The current design target remains approximately 1–2 hours for a player who engages with the main Living Welcome content.
 
 Do not manufacture playtime through repeated `go out -> do one tiny objective -> return` loops. Prefer 3–4 meaningful excursions, each containing several compatible objectives.
+
+The required path should be substantial enough to prepare the player for the wider world, while optional conversations, exploration, and side errands can add extra time without becoming exit requirements.
 
 Exact travel time, enemy density, XP values, rewards, and combat difficulty remain unfrozen until the relevant gameplay/content systems are ready for tuning.
 
@@ -157,7 +184,7 @@ Character direction:
 
 The player should actively report the accumulated information. This is another opportunity to make dialogue reflect what the player actually discovered rather than giving NPCs omniscient knowledge.
 
-## Final Welcome assignment / transition to the main world
+## Final Welcome assignment / unlock to the wider world
 
 The Village Head's response should remain practical and limited.
 
@@ -168,7 +195,7 @@ Preferred direction:
 - ask whether the missing caravan passed their side or whether they know of road trouble;
 - the Village Head expects the player to return with an answer.
 
-This becomes the player's believable reason to leave Welcome and cross into the main world.
+This assignment is the narrative reason for departure and part of the required Living Welcome completion path. Until the required Welcome arc reaches its departure state, the wider world remains inaccessible to that new player.
 
 The character does not leave because they have been declared a chosen hero. They leave because, after a sequence of small useful jobs, they are now one of the people trusted to carry information beyond the settlement.
 
@@ -176,7 +203,7 @@ The older workshop-package concept should remain a local village quest and relat
 
 ## Departure state
 
-The living Welcome chapter ends when the player crosses into the main world on the Village Head assignment.
+The mandatory Living Welcome chapter ends when the required progression has been completed and the player crosses into the wider world on the Village Head assignment.
 
 The departure should preserve unresolved expectations:
 
@@ -185,11 +212,13 @@ The departure should preserve unresolved expectations:
 - the missing caravan remains a practical concern rather than fully explained catastrophe;
 - the player has enough competence and gear to survive the next chapter, but is still clearly early in progression.
 
+Once this transition happens, the game is no longer structurally centered on Welcome. The wider game can contain many maps, settlements, quests, and independent directions. Welcome becomes one small place in that larger world history.
+
 ## Later return — Ruined Welcome
 
-Revised design decision: Welcome is not permanently inaccessible.
+Ruined Welcome is the later, optional version of the same geographical area.
 
-At a later point in the main game, the player may return to the same geographical area, but not to the original safe Welcome state.
+The player may return to it after progressing in the wider world, but this return is side content rather than a continuation gate for the main world.
 
 The returned area should provide closure through contrast:
 
@@ -200,7 +229,7 @@ The returned area should provide closure through contrast:
 - objects and dialogue from the first chapter can be recontextualized rather than simply repeated;
 - the player should recognize places where they previously performed mundane work and understand what was lost or changed.
 
-This return is not intended to restore Welcome as the original beginner hub. It is a later world-state version of the location and should support narrative closure, discovery, and potentially new content.
+Ruined Welcome is not a restored beginner hub. It is later optional content in the wider world, using the player's memory of mandatory Living Welcome as emotional and narrative context.
 
 ## Closure opportunities
 
@@ -219,7 +248,7 @@ The emotional goal is recognition and consequence, not simply nostalgia.
 
 A likely high-level order is:
 
-1. arrive / orient within Welcome;
+1. every new player begins inside Living Welcome;
 2. meet core village NPCs and complete local package/social content;
 3. Gate Watchman first field excursion: combat + drops;
 4. second excursion: marker collection + investigation;
@@ -229,11 +258,12 @@ A likely high-level order is:
 8. enter Old Watch Post and recover the lantern after a stronger encounter;
 9. report the occupied post and other observations to Gate Watchman;
 10. escalate accumulated intelligence to Village Head;
-11. receive practical message/investigation assignment to the next settlement;
-12. leave Welcome and enter the main world;
-13. much later, return to the ruined/changed Welcome area for closure.
+11. receive the required practical message/investigation assignment;
+12. complete the Living Welcome departure condition and unlock/cross into the wider world;
+13. continue freely through the much larger world, which is not centered on Welcome;
+14. optionally, much later, return to Ruined Welcome for side content and closure.
 
-This is a progression baseline, not a requirement that every player interaction occur in exactly this linear order. Existing flexible dialogue principles should still allow sensible variation where state permits it.
+This is a progression baseline, not a requirement that every player interaction occur in exactly this linear order. Existing flexible dialogue principles should still allow sensible variation where state permits it. The core completion requirements can remain mandatory while individual conversations and side errands retain flexibility.
 
 ## Runtime / tooling boundary
 
@@ -246,7 +276,8 @@ Dialogue may request work and react to facts/items, but authoritative game syste
 - item drops and collection counts;
 - world-location discovery;
 - encounter completion;
-- area/world-state transitions;
+- Living Welcome completion and wider-world unlock;
+- Living Welcome / Ruined Welcome world-state selection;
 - rewards and equipment ownership;
 - persistence.
 
@@ -267,6 +298,6 @@ Do not lock these until their owning systems/content are ready:
 - Old Watch Post map/layout and mini-boss identity;
 - exact timing/cause/state of Welcome's destruction;
 - which NPCs survive, leave, disappear, or die;
-- exact trigger and timing for the player's later return.
+- exact trigger and timing for the player's later optional return to Ruined Welcome.
 
-The stable part is the progression shape and narrative function: ordinary useful work -> growing field competence -> accumulating evidence -> practical escalation -> departure -> later transformed return and closure.
+The stable progression shape is: mandatory Living Welcome -> ordinary useful work -> growing field competence -> accumulating evidence -> practical escalation -> wider-world unlock and departure. Ruined Welcome is a later optional world-state return for side content and closure.
