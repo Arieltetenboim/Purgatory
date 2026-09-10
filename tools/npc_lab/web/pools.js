@@ -55,6 +55,11 @@ validationErrors = function poolAwareValidationErrors(doc) {
   return errors;
 };
 
-const n6PreviewScript = document.createElement("script");
-n6PreviewScript.src = "/test_preview.js";
-document.body.appendChild(n6PreviewScript);
+const n7StateScript = document.createElement("script");
+n7StateScript.src = "/state_hardening.js";
+n7StateScript.addEventListener("load", () => {
+  const n6PreviewScript = document.createElement("script");
+  n6PreviewScript.src = "/test_preview.js";
+  document.body.appendChild(n6PreviewScript);
+});
+document.body.appendChild(n7StateScript);
