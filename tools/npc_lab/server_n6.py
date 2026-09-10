@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PURGATORY NPC Lab N7 local server with hardened authoring validation."""
+"""PURGATORY NPC Lab N9a local server with presentation-reference catalogs."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import catalog
 import selection
 import server
 
@@ -52,7 +53,10 @@ class NpcLabN6Handler(server.NpcLabHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
-            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N7-state-hardening"})
+            self._json_response({"ok": True, "tool": "npc-lab", "slice": "N9a-animation-cues"})
+            return
+        if parsed.path == "/api/catalog":
+            self._handle_catalog()
             return
         super().do_GET()
 
@@ -62,6 +66,14 @@ class NpcLabN6Handler(server.NpcLabHandler):
             self._handle_test_preview()
             return
         super().do_POST()
+
+    def _handle_catalog(self) -> None:
+        try:
+            kind = self._single_query_value("kind")
+            items = catalog.list_catalog(self.repo_root, kind)
+            self._json_response({"ok": True, "kind": kind, "items": items})
+        except (OSError, ValueError) as exc:
+            self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def _handle_test_preview(self) -> None:
         try:
@@ -124,7 +136,7 @@ class NpcLabN6Handler(server.NpcLabHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="PURGATORY NPC Lab N7 local server")
+    parser = argparse.ArgumentParser(description="PURGATORY NPC Lab N9a local server")
     parser.add_argument("--root", type=Path, required=True, help="PURGATORY repository root")
     parser.add_argument("--host", default=server.HOST)
     parser.add_argument("--port", type=int, default=server.DEFAULT_PORT)
@@ -147,7 +159,7 @@ def main() -> int:
 
     httpd = ThreadingHTTPServer((args.host, args.port), NpcLabN6Handler)
     url = f"http://{args.host}:{args.port}/"
-    print("PURGATORY NPC Lab N7 State Hardening")
+    print("PURGATORY NPC Lab N9a Animation Cues")
     print(f"Repository: {repo_root}")
     print(f"Authoring:  {authoring_root}")
     print(f"URL:        {url}")
