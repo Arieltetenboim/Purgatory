@@ -1,0 +1,316 @@
+{
+  "schema_version": 1,
+  "id": "npc.welcome.gate_watchman",
+  "design": {
+    "working_name": "Welcome Gate Watchman",
+    "display_name": null,
+    "role": "Road and gate watch for Welcome; notices arrivals, departures, road conditions, and expected caravan traffic",
+    "area": "welcome",
+    "tags": [
+      "gate",
+      "road",
+      "watch",
+      "caravan",
+      "welcome_core"
+    ],
+    "background": "He keeps watch at the road into Welcome. The job is not to control who may leave, but to notice who passes, whether the road is behaving normally, and when expected travelers fail to appear. Years of routine have made him attentive to small absences: no wheel noise, no dust, no messenger coming ahead of a delayed caravan.",
+    "personality": [
+      "patient",
+      "observant",
+      "dryly practical",
+      "slow to dramatize uncertainty",
+      "more comfortable with signs and routines than speculation"
+    ],
+    "speech_style": [
+      "short observational sentences",
+      "talks about what he can actually see or hear",
+      "rarely speculates beyond the evidence",
+      "uses understated humor",
+      "becomes noticeably more precise rather than more emotional when concerned"
+    ],
+    "gameplay_purposes": [
+      "establish the road out of Welcome as a real boundary without implementing a gate system",
+      "give the player basic road-safety flavor without tutorial exposition",
+      "provide a second perspective on the expected and delayed caravan",
+      "exercise item-equipped dialogue with the practice sword",
+      "serve as a recurring edge-of-settlement interaction point"
+    ],
+    "narrative_purposes": [
+      "make departures and arrivals part of ordinary village life",
+      "foreshadow danger through missing routine rather than prophecy",
+      "support the theme that absence becomes meaningful because people notice who should have returned",
+      "show Welcome as connected to a larger world through one watched road"
+    ]
+  },
+  "relationships": [
+    {
+      "working_label": "The Traveler Who Stayed",
+      "target_id": "npc.welcome.traveler_stayed",
+      "notes": "The inn often hears from arrivals after the watchman sees them on the road. They share practical information about travelers and caravan timing."
+    },
+    {
+      "working_label": "Workshop Craftsman",
+      "target_id": "npc.welcome.workshop_craftsperson",
+      "notes": "The watchman sometimes brings damaged road gear or small repairs to the workshop; their relationship is practical rather than close."
+    }
+  ],
+  "interaction": {
+    "beats": [
+      {
+        "id": "intro",
+        "title": "First meeting",
+        "priority": 100,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.gate_watchman",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "Heading out, coming in, or just standing where everyone does both?",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [
+          {
+            "id": "ask_road",
+            "text": "Anything I should know about the road?",
+            "next": "intro_road",
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.gate_watchman"
+              }
+            ]
+          },
+          {
+            "id": "ask_waiting",
+            "text": "Waiting for someone?",
+            "next": "intro_waiting",
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.gate_watchman"
+              }
+            ]
+          },
+          {
+            "id": "leave",
+            "text": "Just passing by.",
+            "next": null,
+            "actions": [
+              {
+                "mark_npc_met": "npc.welcome.gate_watchman"
+              }
+            ]
+          }
+        ],
+        "notes": "First meeting establishes the watchman's function without turning him into a gatekeeper or quest authority."
+      },
+      {
+        "id": "intro_road",
+        "title": "About the road",
+        "priority": 0,
+        "entry": false,
+        "pool": "once",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.gate_watchman",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Keep to the road. Shortcuts are mostly roads that haven't had enough funerals to earn a name yet.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "And if you mean to be gone long, tell someone. Not for permission. So we know where to start looking.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Road-safety flavor only. No travel restriction or tracking mechanic is implied."
+      },
+      {
+        "id": "intro_waiting",
+        "title": "Waiting for the caravan",
+        "priority": 0,
+        "entry": false,
+        "pool": "once",
+        "conditions": [],
+        "lines": [
+          {
+            "text": "Always waiting for someone. Today it's a caravan.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Usually I hear the wagons before I see them.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Works even before the explicit expected-caravan fact becomes relevant."
+      },
+      {
+        "id": "caravan_expected",
+        "title": "Caravan expected today",
+        "priority": 40,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.gate_watchman",
+            "equals": true
+          },
+          {
+            "fact": "welcome.caravan.important.expected",
+            "equals": true
+          },
+          {
+            "fact": "welcome.caravan.important.late",
+            "equals": false
+          }
+        ],
+        "lines": [
+          {
+            "text": "Caravan's due today. Nothing unusual in that.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "By afternoon, the road usually starts making noise before the village does.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Routine expectation. It should not read as obvious foreshadowing on first encounter."
+      },
+      {
+        "id": "caravan_late",
+        "title": "Caravan is late",
+        "priority": 80,
+        "entry": true,
+        "pool": "mandatory",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.gate_watchman",
+            "equals": true
+          },
+          {
+            "fact": "welcome.caravan.important.late",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "No dust. No bells. No runner ahead.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Could be a broken axle. Could be weather. I'd prefer one of those.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Concern is expressed through missing expected signs, not unexplained knowledge."
+      },
+      {
+        "id": "practice_sword",
+        "title": "Player is carrying the practice sword",
+        "priority": 20,
+        "entry": true,
+        "pool": "once",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.gate_watchman",
+            "equals": true
+          },
+          {
+            "item_equipped": "equipment.debug.practice_sword",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Practice blade. Sensible.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Better to learn what you don't know while the sword is still forgiving.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Uses the existing item_equipped condition only as presentation-aware dialogue. It grants no combat state or item."
+      },
+      {
+        "id": "lore_departures",
+        "title": "Keeping track of departures",
+        "priority": 5,
+        "entry": true,
+        "pool": "lore",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.gate_watchman",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "I used to count arrivals. After a while you learn to count departures too.",
+            "voice": null,
+            "animation": null
+          },
+          {
+            "text": "Makes it easier to notice when the numbers don't balance.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Optional thematic line; must never gate progression."
+      },
+      {
+        "id": "filler_road",
+        "title": "Normal road watch filler",
+        "priority": 1,
+        "entry": true,
+        "pool": "repeatable",
+        "conditions": [
+          {
+            "npc_met": "npc.welcome.gate_watchman",
+            "equals": true
+          }
+        ],
+        "lines": [
+          {
+            "text": "Quiet road. Best kind.",
+            "voice": null,
+            "animation": null
+          }
+        ],
+        "choices": [],
+        "notes": "Low-priority repeatable fallback."
+      }
+    ]
+  },
+  "notes": [
+    "The watchman does not control whether the player may leave Welcome. Gate/travel restrictions are not part of this authoring slice.",
+    "The important caravan state is shared with the Traveler and Shopkeeper content through welcome.caravan.important.expected and welcome.caravan.important.late.",
+    "The practice-sword beat is deliberately observational and uses the existing item_equipped condition without changing equipment or combat behavior.",
+    "The road's exact geography remains unfrozen; dialogue avoids naming landmarks, distances, or routes that would constrain later map design.",
+    "This NPC currently uses the legacy string NPC authoring ID because stable numeric NPC ContentIds are tracked separately in issue #24."
+  ]
+}
