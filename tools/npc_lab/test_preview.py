@@ -69,7 +69,7 @@ class NpcLabN6aPreviewTests(unittest.TestCase):
         new_state, next_beat = selection.advance_choice(
             doc, state, winner["id"], "take_package"
         )
-        self.assertIsNone(next_beat)
+        self.assertEqual(next_beat["id"], "take_package")
         self.assertIn("item.package", new_state["item_owned"])
         self.assertFalse(new_state["facts"]["welcome.workshop.package_at_inn"])
         self.assertIn(
