@@ -459,6 +459,8 @@ struct RfAbGpu {
 
 /// Client-only wgpu renderer. Not a reusable engine layer.
 pub struct Renderer {
+    text: super::text::TextRenderer,
+    text_demo: super::text::TextContent,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -778,7 +780,12 @@ impl Renderer {
             msaa_4x_supported
         );
 
+        let text = super::text::TextRenderer::new(&device, config.format)?;
         Ok(Self {
+            text,
+            text_demo: super::text::TextContent(String::from(
+                "PURGATORY — Text v0\nNative UI text online",
+            )),
             surface,
             device,
             queue,
@@ -973,6 +980,7 @@ impl Renderer {
     pub fn render(
         &mut self,
         world_quads: &[DrawQuad],
+        show_ui_text: bool,
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         if !is_usable_surface(self.config.width, self.config.height) {
@@ -983,7 +991,7 @@ impl Renderer {
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                let status = self.draw_surface_texture(texture, overlay);
+                let status = self.draw_surface_texture(texture, show_ui_text, overlay);
                 return match status {
                     FrameStatus::Drawn => FrameStatus::NeedsReconfigure,
                     other => other,
@@ -1003,12 +1011,13 @@ impl Renderer {
             }
         };
 
-        self.draw_surface_texture(surface_texture, overlay)
+        self.draw_surface_texture(surface_texture, show_ui_text, overlay)
     }
 
     fn draw_surface_texture(
         &mut self,
         surface_texture: wgpu::SurfaceTexture,
+        show_ui_text: bool,
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         self.ensure_world_target();
@@ -1123,6 +1132,20 @@ impl Renderer {
             self.blit_rf_ab_panels(&mut pass);
         }
 
+        if show_ui_text {
+            self.text.prepare(
+                &self.queue,
+                &self.text_demo,
+                super::text::TextStyle {
+                    font_size: 24.0,
+                    color: [0.85, 0.92, 1.0, 1.0],
+                    alignment: super::text::Alignment::Center,
+                },
+                [self.config.width as f32 * 0.5, 24.0],
+                [self.config.width, self.config.height],
+            );
+            self.text.draw(&mut encoder, &view);
+        }
         let extra = overlay(OverlayPass {
             device: &self.device,
             queue: &self.queue,

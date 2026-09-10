@@ -2230,7 +2230,7 @@ impl ClientApp {
                 let can_connect = self.lifecycle.can_connect();
                 let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
                 let login = &mut self.dev_login;
-                renderer.render(&quads, |pass| {
+                renderer.render(&quads, !on_connection, |pass| {
                     let Some(overlay) = overlay else {
                         return Vec::new();
                     };
@@ -2258,7 +2258,7 @@ impl ClientApp {
             #[cfg(not(feature = "dev-diagnostics"))]
             {
                 let _ = (&window, on_connection);
-                renderer.render(&quads, |_| Vec::new())
+                renderer.render(&quads, !on_connection, |_| Vec::new())
             }
         };
 

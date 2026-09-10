@@ -22,3 +22,4 @@ pub use gpu::{DrawQuad, FrameStatus, MAX_QUADS, Renderer, SpriteTextureId, World
 pub use parallax::{
     PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_quads, parallax_quads,
 };
+pub(crate) mod text;
