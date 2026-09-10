@@ -10,7 +10,7 @@ $HealthUrl = "${Url}api/health"
 
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 1
-    if ($health.ok -and $health.slice -eq "N6a-preview") {
+    if ($health.ok -and $health.slice -eq "N7-state-hardening") {
         Start-Process $Url | Out-Null
         exit 0
     }
@@ -22,7 +22,7 @@ catch {
     if ($_.Exception.Message -like "An older NPC Lab*") {
         throw
     }
-    # No running NPC Lab on this port; start N6a below.
+    # No running NPC Lab on this port; start the current server below.
 }
 
 $pythonExe = $null
