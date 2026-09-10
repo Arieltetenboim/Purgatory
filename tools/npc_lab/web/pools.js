@@ -63,6 +63,11 @@ n7StateScript.addEventListener("load", () => {
   n6PreviewScript.addEventListener("load", () => {
     const n8FlowScript = document.createElement("script");
     n8FlowScript.src = "/flow_view.js";
+    n8FlowScript.addEventListener("load", () => {
+      const n9aPresentationScript = document.createElement("script");
+      n9aPresentationScript.src = "/presentation_cues.js";
+      document.body.appendChild(n9aPresentationScript);
+    });
     document.body.appendChild(n8FlowScript);
   });
   document.body.appendChild(n6PreviewScript);
