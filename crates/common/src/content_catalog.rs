@@ -3,7 +3,7 @@
 //! This is the code-side companion to `content/CONTENT_ID_CATALOG.md`.
 //! Numbers are permanent once allocated. Labels are migration/search metadata only.
 
-use crate::{ContentId, ContentKind};
+use crate::ContentId;
 
 pub const ABILITY_BASIC_STRIKE: ContentId = ContentId::from_raw(40_001);
 pub const ABILITY_PRACTICE_SWORD_STRIKE: ContentId = ContentId::from_raw(40_002);
@@ -80,6 +80,7 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ContentKind;
 
     #[test]
     fn allocations_are_in_the_expected_blocks() {
