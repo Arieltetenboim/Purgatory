@@ -10,7 +10,7 @@ $HealthUrl = "${Url}api/health"
 
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 1
-    if ($health.ok -and $health.slice -eq "N7-state-hardening") {
+    if ($health.ok -and $health.slice -eq "N9a-animation-cues") {
         Start-Process $Url | Out-Null
         exit 0
     }
