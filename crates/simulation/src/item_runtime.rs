@@ -43,10 +43,17 @@ pub enum ItemRuntimeError {
     MissingWorldDropEntity(EntityId),
     WorldDropAlreadyClaimed(EntityId),
     InvalidPickupActor,
+    InvalidInventoryOwner,
     PickupTargetMissing(EntityId),
     PickupWrongAddress,
     PickupOutOfRange,
     InventoryFull(EntityId),
+    InsufficientInventoryQuantity {
+        owner: EntityId,
+        definition: ContentId,
+        requested: u32,
+        available: u32,
+    },
     ItemNotInInventory {
         owner: EntityId,
         item: ItemInstanceId,
@@ -225,6 +232,41 @@ impl ItemRuntimeState {
         };
         self.records.insert(id, record);
         self.world_drops.insert(world_drop_entity, id);
+        Ok(())
+    }
+
+    pub(crate) fn bind_inventory(
+        &mut self,
+        id: ItemInstanceId,
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+        owner: EntityId,
+        slot: u16,
+    ) -> Result<(), ItemRuntimeError> {
+        Self::validate_quantity(quantity, stack_limit)?;
+        if self.records.contains_key(&id) {
+            return Err(ItemRuntimeError::DuplicateInstance(id));
+        }
+        let slots = self
+            .inventories
+            .entry(owner)
+            .or_insert_with(|| vec![None; INVENTORY_CAPACITY]);
+        let Some(destination) = slots.get_mut(usize::from(slot)) else {
+            return Err(ItemRuntimeError::InventoryFull(owner));
+        };
+        if destination.is_some() {
+            return Err(ItemRuntimeError::InventoryFull(owner));
+        }
+        *destination = Some(id);
+        self.records.insert(
+            id,
+            ItemRecord {
+                definition,
+                quantity,
+                location: ItemLocation::Inventory { owner, slot },
+            },
+        );
         Ok(())
     }
 
@@ -411,6 +453,62 @@ impl ItemRuntimeState {
         let id = slots.get_mut(usize::from(slot))?.take()?;
         let record = self.records.remove(&id)?;
         Some((id, record))
+    }
+
+    pub(crate) fn remove_inventory_quantity(
+        &mut self,
+        owner: EntityId,
+        definition: ContentId,
+        quantity: u32,
+    ) -> Result<Vec<ItemInstanceId>, ItemRuntimeError> {
+        if quantity == 0 {
+            return Err(ItemRuntimeError::InvalidQuantity {
+                quantity,
+                stack_limit: u32::MAX,
+            });
+        }
+        let matching: Vec<(u16, ItemInstanceId, u32)> = self
+            .inventory_snapshot(owner)
+            .into_iter()
+            .filter_map(|(slot, id, record)| {
+                (record.definition == definition).then_some((slot, id, record.quantity))
+            })
+            .collect();
+        let available = matching
+            .iter()
+            .fold(0u32, |total, (_, _, amount)| total.saturating_add(*amount));
+        if available < quantity {
+            return Err(ItemRuntimeError::InsufficientInventoryQuantity {
+                owner,
+                definition,
+                requested: quantity,
+                available,
+            });
+        }
+
+        let mut remaining = quantity;
+        let mut destroyed = Vec::new();
+        for (slot, id, amount) in matching {
+            if remaining == 0 {
+                break;
+            }
+            if amount <= remaining {
+                remaining -= amount;
+                let removed = self
+                    .remove_inventory_item(owner, slot)
+                    .expect("preflight inventory record remains present");
+                debug_assert_eq!(removed.0, id);
+                destroyed.push(id);
+            } else {
+                self.records
+                    .get_mut(&id)
+                    .expect("preflight inventory record remains present")
+                    .quantity = amount - remaining;
+                remaining = 0;
+            }
+        }
+        debug_assert_eq!(remaining, 0);
+        Ok(destroyed)
     }
 }
 

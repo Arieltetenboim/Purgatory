@@ -37,6 +37,8 @@ use purgatory_simulation::{
 use super::dialogue::{
     ActiveDialogue, AdvanceResult, ChoiceResult, DialogueRuntime, RuntimeConditions,
 };
+use super::dialogue_actions::execute_dialogue_actions;
+use super::narrative::NarrativeRuntime;
 use super::persist::PersistenceHandle;
 use super::replication::{
     InterestFanoutIndex, ObserverReplicationState, PublishPolicyInput, ReplicationPipe,
@@ -63,6 +65,13 @@ const DEV_SPEED_MAX_HUNDREDTHS: u16 = 2_400;
 const DEV_JUMP_MIN_HUNDREDTHS: u16 = 100;
 const DEV_JUMP_MAX_HUNDREDTHS: u16 = 3_000;
 const DEV_SPAWNED_NPC_CAP: usize = 64;
+/// Transient N10 proof bootstrap documented by Welcome authoring. Phase 12 may
+/// replace this integration seed with persisted character narrative data.
+const WELCOME_NARRATIVE_INITIAL_FACTS: [(&str, bool); 3] = [
+    ("welcome.workshop.package_needed", true),
+    ("welcome.workshop.package_at_inn", true),
+    ("welcome.workshop.package_delivered", false),
+];
 const LIVE_COMBAT_CREATURE_TYPE_TOKEN: u32 = 9_000;
 const LIVE_COMBAT_CREATURE_AGGRO_RADIUS: f32 = 3.0;
 
@@ -400,6 +409,7 @@ pub struct GameplayOwner {
     world: World,
     registry: ContentRegistry,
     dialogues: DialogueRuntime,
+    narrative: NarrativeRuntime,
     bindings: HashMap<ConnectionId, PlayerBinding>,
     occupancy: HashMap<CharacterId, ConnectionId>,
     persist: Option<PersistenceHandle>,
@@ -942,6 +952,7 @@ impl GameplayOwner {
             world,
             registry,
             dialogues: DialogueRuntime::default(),
+            narrative: NarrativeRuntime::default(),
             bindings: HashMap::new(),
             occupancy: HashMap::new(),
             persist: None,
@@ -1238,6 +1249,10 @@ impl GameplayOwner {
             .world
             .set_health(entity, Health::full(PLAYER_HEALTH_MAX));
         let _ = self.world.grant_ability(entity, live_basic_strike_id());
+        self.narrative.initialize_actor(entity);
+        for (fact, value) in WELCOME_NARRATIVE_INITIAL_FACTS {
+            self.narrative.set_fact(entity, fact, value);
+        }
         self.bindings.insert(
             connection_id,
             PlayerBinding {
@@ -1335,6 +1350,7 @@ impl GameplayOwner {
     pub fn detach(&mut self, connection_id: ConnectionId) {
         if let Some(binding) = self.bindings.remove(&connection_id) {
             self.dialogues.forget_actor(binding.entity);
+            self.narrative.forget_actor(binding.entity);
             if let Some(character_id) = binding.character_id {
                 self.occupancy.remove(&character_id);
                 self.emit_save(&PersistentCharacterSnapshot {
@@ -2401,7 +2417,7 @@ impl GameplayOwner {
                     world: &self.world,
                     registry: &self.registry,
                     actor,
-                    dialogues: &self.dialogues,
+                    narrative: &self.narrative,
                 };
                 let beat_index = definition.select_entry(&conditions)?;
                 self.dialogues
@@ -2446,6 +2462,8 @@ impl GameplayOwner {
                 }
             }
             AdvanceResult::Complete(active) => {
+                self.narrative
+                    .mark_dialogue_heard(actor, active.npc_content_id, active.beat_index);
                 let _ = self.world.close_interaction(
                     actor,
                     purgatory_simulation::InteractionSessionId(active.session_id),
@@ -2484,13 +2502,37 @@ impl GameplayOwner {
             self.clear_dialogue(actor);
             return;
         };
-        let result = self.dialogues.choose(
+        let Some(plan) = self.dialogues.plan_choice(
             actor,
             request.session_id,
             purgatory_content::DialogueBeatIndex::from_raw(request.beat_index),
             request.choice_index,
             definition,
+        ) else {
+            return;
+        };
+        let action_outcome = match execute_dialogue_actions(
+            &plan.actions,
+            actor,
+            &self.registry,
+            &mut self.world,
+            &mut self.narrative,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                println!(
+                    "N10_DIALOGUE action rejected actor={actor} session={} beat={} choice={} error={error:?}",
+                    request.session_id, request.beat_index, request.choice_index
+                );
+                return;
+            }
+        };
+        self.narrative.mark_dialogue_heard(
+            actor,
+            plan.accepted.npc_content_id,
+            plan.accepted.beat_index,
         );
+        let result = self.dialogues.commit_choice(plan);
         match result {
             ChoiceResult::Continue {
                 accepted,
@@ -2538,6 +2580,9 @@ impl GameplayOwner {
                 }
             }
             ChoiceResult::Invalid => {}
+        }
+        if action_outcome.inventory_changed {
+            self.send_inventory_snapshot(connection_id);
         }
     }
 
@@ -5245,6 +5290,13 @@ mod tests {
             },
         });
         assert!(rx.try_recv().is_err(), "stale Beat must not select");
+        let actor = owner.entity_of(id).unwrap();
+        assert!(
+            !owner
+                .narrative
+                .npc_met(actor, "npc.welcome.traveler_stayed"),
+            "invalid choice intent must not dispatch authored actions"
+        );
 
         owner.apply_input(InputUpdate::DialogueChoose {
             connection_id: id,
@@ -5267,12 +5319,16 @@ mod tests {
             other => panic!("expected continuation DialogueLine, got {other:?}"),
         };
         assert_eq!(continuation.beat_index, 1);
-        let actor = owner.entity_of(id).unwrap();
-        assert!(owner.dialogues.has_heard(
+        assert!(owner.narrative.dialogue_heard(
             actor,
             ContentId::from_raw(20_001),
             purgatory_content::DialogueBeatIndex::from_raw(0)
         ));
+        assert!(
+            owner
+                .narrative
+                .npc_met(actor, "npc.welcome.traveler_stayed")
+        );
 
         owner.apply_input(InputUpdate::DialogueAdvance {
             connection_id: id,
@@ -5302,9 +5358,267 @@ mod tests {
             other => panic!("expected reopened DialogueLine, got {other:?}"),
         };
         assert_eq!(reopened_line.npc_content_id, first_line.npc_content_id);
-        assert_eq!(reopened_line.beat_index, first_line.beat_index);
-        assert_eq!(reopened_line.line_index, first_line.line_index);
+        assert_ne!(
+            reopened_line.beat_index, first_line.beat_index,
+            "Mark NPC Met must change the next eligible ENTRY beat"
+        );
         assert!(owner.bindings.get(&id).unwrap().input.ui_locked());
+    }
+
+    #[test]
+    fn traveler_workshop_package_flow_updates_authoritative_player_state() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        owner.attach(connection);
+        owner.bindings.get_mut(&connection).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(connection).unwrap();
+        let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
+        assert!(owner.set_player_x(connection, -17.8));
+
+        // Complete the higher-priority first meeting so the seeded package
+        // situation becomes the next eligible Traveler ENTRY beat.
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: connection,
+            target: wire_id(traveler),
+        });
+        let intro_session = match rx.try_recv().unwrap() {
+            ServerControl::Interact(ServerInteract::Opened { session_id, .. }) => session_id,
+            other => panic!("expected intro Opened, got {other:?}"),
+        };
+        let intro = match rx.try_recv().unwrap() {
+            ServerControl::DialogueLine(line) => line,
+            other => panic!("expected intro line, got {other:?}"),
+        };
+        let traveler_definition = owner
+            .registry
+            .npc_dialogue("npc.welcome.traveler_stayed")
+            .unwrap();
+        let intro_index = traveler_definition
+            .beats
+            .iter()
+            .position(|beat| beat.id == "intro")
+            .unwrap() as u32;
+        let leave_index = traveler_definition.beats[intro_index as usize]
+            .choices
+            .iter()
+            .position(|choice| choice.id == "leave")
+            .unwrap() as u32;
+        assert_eq!(intro.beat_index, intro_index);
+        owner.apply_input(InputUpdate::DialogueChoose {
+            connection_id: connection,
+            request: DialogueChoose {
+                session_id: intro_session,
+                beat_index: intro_index,
+                choice_index: leave_index,
+            },
+        });
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::DialogueChoiceAccepted(_)
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::Interact(ServerInteract::Closed { .. })
+        ));
+
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: connection,
+            target: wire_id(traveler),
+        });
+        let package_session = match rx.try_recv().unwrap() {
+            ServerControl::Interact(ServerInteract::Opened { session_id, .. }) => session_id,
+            other => panic!("expected package Opened, got {other:?}"),
+        };
+        let package_line = match rx.try_recv().unwrap() {
+            ServerControl::DialogueLine(line) => line,
+            other => panic!("expected package line, got {other:?}"),
+        };
+        let traveler_definition = owner
+            .registry
+            .npc_dialogue("npc.welcome.traveler_stayed")
+            .unwrap();
+        let package_index = traveler_definition
+            .beats
+            .iter()
+            .position(|beat| beat.id == "workshop_package_unknown")
+            .unwrap() as u32;
+        let take_index = traveler_definition.beats[package_index as usize]
+            .choices
+            .iter()
+            .position(|choice| choice.id == "take_package")
+            .unwrap() as u32;
+        let take_continuation_index = traveler_definition
+            .beats
+            .iter()
+            .position(|beat| beat.id == "take_package")
+            .unwrap() as u32;
+        assert_eq!(package_line.beat_index, package_index);
+
+        owner.apply_input(InputUpdate::DialogueChoose {
+            connection_id: connection,
+            request: DialogueChoose {
+                session_id: package_session,
+                beat_index: package_index,
+                choice_index: take_index,
+            },
+        });
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::DialogueChoiceAccepted(_)
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::DialogueLine(_)
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::Inventory(ServerInventory { ref entries }) if entries.len() == 1
+        ));
+        let package = owner.registry.item("item.package").unwrap();
+        assert!(
+            owner
+                .world
+                .inventory_snapshot(actor)
+                .iter()
+                .any(|(_, _, record)| {
+                    record.definition == package.content_id && record.quantity == 1
+                })
+        );
+        assert!(
+            !owner
+                .narrative
+                .fact(actor, "welcome.workshop.package_at_inn")
+        );
+        assert!(owner.narrative.dialogue_heard(
+            actor,
+            purgatory_common::NPC_WELCOME_TRAVELER_STAYED,
+            purgatory_content::DialogueBeatIndex::from_raw(package_index)
+        ));
+
+        // Closing during the authored continuation must not roll back the
+        // already accepted Give Item / Set Fact actions.
+        owner.apply_input(InputUpdate::InteractClose {
+            connection_id: connection,
+            session_id: package_session,
+        });
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::Interact(ServerInteract::Closed { .. })
+        ));
+        assert_eq!(owner.world.inventory_count(actor), 1);
+        assert!(!owner.narrative.dialogue_heard(
+            actor,
+            purgatory_common::NPC_WELCOME_TRAVELER_STAYED,
+            purgatory_content::DialogueBeatIndex::from_raw(take_continuation_index)
+        ));
+
+        let other_connection = ConnectionId::from_raw(2);
+        owner.attach(other_connection);
+        let other_actor = owner.entity_of(other_connection).unwrap();
+        assert!(
+            owner
+                .narrative
+                .fact(other_actor, "welcome.workshop.package_at_inn"),
+            "one player's accepted action must not leak into another player's state"
+        );
+        assert_eq!(owner.world.inventory_count(other_actor), 0);
+
+        owner.apply_input(InputUpdate::DevSpawnNpc {
+            connection_id: connection,
+            npc_content_id: purgatory_common::allocated_id_for_label(
+                "npc.welcome.workshop_craftsperson",
+            )
+            .unwrap(),
+        });
+        let workshop = *owner.dev_spawned_npcs.last().unwrap();
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: connection,
+            target: wire_id(workshop),
+        });
+        let workshop_session = match rx.try_recv().unwrap() {
+            ServerControl::Interact(ServerInteract::Opened { session_id, .. }) => session_id,
+            other => panic!("expected workshop Opened, got {other:?}"),
+        };
+        let workshop_line = match rx.try_recv().unwrap() {
+            ServerControl::DialogueLine(line) => line,
+            other => panic!("expected workshop line, got {other:?}"),
+        };
+        let workshop_definition = owner
+            .registry
+            .npc_dialogue("npc.welcome.workshop_craftsperson")
+            .unwrap();
+        let delivery_index = workshop_definition
+            .beats
+            .iter()
+            .position(|beat| beat.id == "package_delivery_first_meeting")
+            .unwrap() as u32;
+        let handover_index = workshop_definition.beats[delivery_index as usize]
+            .choices
+            .iter()
+            .position(|choice| choice.id == "hand_over_package")
+            .unwrap() as u32;
+        assert_eq!(workshop_line.beat_index, delivery_index);
+
+        owner.apply_input(InputUpdate::DialogueChoose {
+            connection_id: connection,
+            request: DialogueChoose {
+                session_id: workshop_session,
+                beat_index: delivery_index,
+                choice_index: handover_index,
+            },
+        });
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::DialogueChoiceAccepted(_)
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::Interact(ServerInteract::Closed { .. })
+        ));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::Inventory(ServerInventory { ref entries }) if entries.is_empty()
+        ));
+        assert_eq!(owner.world.inventory_count(actor), 0);
+        assert!(
+            owner
+                .narrative
+                .npc_met(actor, "npc.welcome.workshop_craftsperson")
+        );
+        assert!(
+            owner
+                .narrative
+                .fact(actor, "welcome.workshop.package_delivered")
+        );
+        assert!(
+            !owner
+                .narrative
+                .fact(actor, "welcome.workshop.package_needed")
+        );
+
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: connection,
+            target: wire_id(traveler),
+        });
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ServerControl::Interact(ServerInteract::Opened { .. })
+        ));
+        let post_delivery = match rx.try_recv().unwrap() {
+            ServerControl::DialogueLine(line) => line,
+            other => panic!("expected post-delivery Traveler line, got {other:?}"),
+        };
+        let post_delivery_beat = owner
+            .registry
+            .npc_dialogue("npc.welcome.traveler_stayed")
+            .and_then(|definition| {
+                definition.beat(purgatory_content::DialogueBeatIndex::from_raw(
+                    post_delivery.beat_index,
+                ))
+            })
+            .map(|beat| beat.id.as_str());
+        assert_eq!(post_delivery_beat, Some("lore_roofs"));
     }
 
     #[test]
