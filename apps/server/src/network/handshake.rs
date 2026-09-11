@@ -709,6 +709,38 @@ async fn serve_connection(live: LiveSession) {
                             }
                         }
                     }
+                    Ok(ClientControl::DevSpawnNpc(req)) => {
+                        println!(
+                            "DEV_NPC_SPAWN recv connection={id} npc={}",
+                            req.npc_content_id
+                        );
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx
+                                        .send_dev_spawn_npc(id, req.npc_content_id)
+                                        .await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Ok(ClientControl::Equip(req)) => {
                         match rate.note(Instant::now(), abuse_cfg) {
                             RateDecision::Disconnect => {

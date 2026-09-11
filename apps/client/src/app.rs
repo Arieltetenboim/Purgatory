@@ -2991,6 +2991,20 @@ impl ClientApp {
                         eprintln!("DEV_JUMP send failed");
                     }
                 }
+                DebugCommand::SpawnNpc(npc_content_id) => {
+                    if self.lifecycle.screen() == ClientScreen::Game
+                        && let Some(network) = &self.network
+                    {
+                        println!("DEV_NPC_SPAWN send npc={npc_content_id}");
+                        if network.try_send_dev_spawn_npc(npc_content_id) {
+                            if let Some(debug) = self.debug.as_mut() {
+                                debug.ui.note_dev_action_flash("NPC spawn request sent");
+                            }
+                        } else {
+                            eprintln!("DEV_NPC_SPAWN send failed");
+                        }
+                    }
+                }
                 DebugCommand::SetResolution(resolution) => {
                     if self.display.set_resolution(resolution).is_err() {
                         eprintln!(
@@ -3835,6 +3849,7 @@ impl ApplicationHandler for ClientApp {
                             surface_format: renderer.surface_format(),
                             max_texture_side: renderer.max_texture_dimension_2d() as usize,
                         },
+                        &self.registry,
                     );
                     let frontend = ConnectionFrontend::load(overlay.context());
                     self.debug = Some(overlay);

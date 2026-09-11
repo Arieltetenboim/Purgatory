@@ -14,7 +14,8 @@ use purgatory_common::{
 };
 use purgatory_content::{
     ContentRegistry, EquipmentAuthError, LoadMode, authorize_equip, default_content_root,
-    load_registry, map_plan, resolve_restore, runtime_placement, world_address_for_map,
+    entity_spawn_request, load_registry, map_plan, resolve_restore, runtime_placement,
+    world_address_for_map,
 };
 use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
 use purgatory_protocol::{
@@ -58,6 +59,7 @@ const DEV_SPEED_MIN_HUNDREDTHS: u16 = 50;
 const DEV_SPEED_MAX_HUNDREDTHS: u16 = 2_400;
 const DEV_JUMP_MIN_HUNDREDTHS: u16 = 100;
 const DEV_JUMP_MAX_HUNDREDTHS: u16 = 3_000;
+const DEV_SPAWNED_NPC_CAP: usize = 64;
 const LIVE_COMBAT_CREATURE_TYPE_TOKEN: u32 = 9_000;
 const LIVE_COMBAT_CREATURE_AGGRO_RADIUS: f32 = 3.0;
 
@@ -433,6 +435,9 @@ pub struct GameplayOwner {
     trace_snapshot: bool,
     runtime_probe: RuntimeProbe,
     proof_drop_spawned: bool,
+    /// Bounded bookkeeping for transient NPCs created by the DEV overlay.
+    /// `World` owns the entities; this list only enforces the tool cap.
+    dev_spawned_npcs: Vec<EntityId>,
     load_pressure: super::load_pressure::LoadPressure,
     /// Shared entity → Known-observer reverse index (6G.7B).
     interest_fanout: InterestFanoutIndex,
@@ -548,6 +553,10 @@ pub enum InputUpdate {
     DevSetJump {
         connection_id: ConnectionId,
         jump: Option<u16>,
+    },
+    DevSpawnNpc {
+        connection_id: ConnectionId,
+        npc_content_id: ContentId,
     },
     Equip {
         connection_id: ConnectionId,
@@ -766,6 +775,20 @@ impl GameplayTx {
             .is_ok()
     }
 
+    pub async fn send_dev_spawn_npc(
+        &self,
+        connection_id: ConnectionId,
+        npc_content_id: ContentId,
+    ) -> bool {
+        self.input
+            .send(InputUpdate::DevSpawnNpc {
+                connection_id,
+                npc_content_id,
+            })
+            .await
+            .is_ok()
+    }
+
     pub async fn send_equip(&self, connection_id: ConnectionId, request: EquipRequest) -> bool {
         self.input
             .send(InputUpdate::Equip {
@@ -935,6 +958,7 @@ impl GameplayOwner {
             trace_snapshot: false,
             runtime_probe: RuntimeProbe::from_env(),
             proof_drop_spawned: false,
+            dev_spawned_npcs: Vec::new(),
             load_pressure: super::load_pressure::LoadPressure::from_process_env(),
             interest_fanout: InterestFanoutIndex::new(),
             replication_fanout_accounting: ReplicationFanoutAccounting::default(),
@@ -1362,6 +1386,7 @@ impl GameplayOwner {
                 | InputUpdate::DevSetChannel { .. }
                 | InputUpdate::DevSetSpeed { .. }
                 | InputUpdate::DevSetJump { .. }
+                | InputUpdate::DevSpawnNpc { .. }
                 | InputUpdate::Equip { .. }
                 | InputUpdate::Unequip { .. }
                 | InputUpdate::DevPresentationOneShot { .. }
@@ -1399,6 +1424,10 @@ impl GameplayOwner {
                     connection_id,
                     jump,
                 } => self.handle_dev_set_jump(connection_id, jump),
+                InputUpdate::DevSpawnNpc {
+                    connection_id,
+                    npc_content_id,
+                } => self.handle_dev_spawn_npc(connection_id, npc_content_id),
                 InputUpdate::Equip {
                     connection_id,
                     request,
@@ -1486,6 +1515,7 @@ impl GameplayOwner {
             | InputUpdate::DevSetChannel { .. }
             | InputUpdate::DevSetSpeed { .. }
             | InputUpdate::DevSetJump { .. }
+            | InputUpdate::DevSpawnNpc { .. }
             | InputUpdate::Equip { .. }
             | InputUpdate::Unequip { .. }
             | InputUpdate::DevPresentationOneShot { .. }
@@ -1494,7 +1524,7 @@ impl GameplayOwner {
             | InputUpdate::AbilityActivate { .. }
             | InputUpdate::Pickup { .. } => {
                 unreachable!(
-                    "interaction/dialogue/portal/channel/speed/jump/equipment/oneshot/reset/ability/pickup handled above"
+                    "interaction/dialogue/portal/channel/speed/jump/dev-spawn/equipment/oneshot/reset/ability/pickup handled above"
                 )
             }
         }
@@ -2681,6 +2711,64 @@ impl GameplayOwner {
             ),
             _ => unreachable!("jump request and effective jump have matching presence"),
         }
+    }
+
+    fn handle_dev_spawn_npc(&mut self, connection_id: ConnectionId, npc_content_id: ContentId) {
+        let Some(actor) = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+        else {
+            println!("DEV_NPC_SPAWN reject connection={connection_id} reason=no_binding");
+            return;
+        };
+        let Some(address) = self.world.address_of(actor) else {
+            println!("DEV_NPC_SPAWN reject connection={connection_id} reason=no_address");
+            return;
+        };
+        let Some(position) = self.world.transform_of(actor).map(|value| value.position) else {
+            println!("DEV_NPC_SPAWN reject connection={connection_id} reason=no_transform");
+            return;
+        };
+        let spawnable = self
+            .registry
+            .entity_by_id(npc_content_id)
+            .is_some_and(|entity| {
+                entity.interactable == Some(purgatory_simulation::InteractableKind::Npc)
+            })
+            && self.registry.npc_dialogue_by_id(npc_content_id).is_some();
+        if !spawnable {
+            println!(
+                "DEV_NPC_SPAWN reject connection={connection_id} npc={npc_content_id} reason=not_spawnable_runtime_npc"
+            );
+            return;
+        }
+        if self.dev_spawned_npcs.len() >= DEV_SPAWNED_NPC_CAP {
+            println!(
+                "DEV_NPC_SPAWN reject connection={connection_id} npc={npc_content_id} reason=cap cap={DEV_SPAWNED_NPC_CAP}"
+            );
+            return;
+        }
+        let Ok(request) = entity_spawn_request(&self.registry, npc_content_id, address, position)
+        else {
+            println!(
+                "DEV_NPC_SPAWN reject connection={connection_id} npc={npc_content_id} reason=content_projection"
+            );
+            return;
+        };
+        let Some(entity) = self.world.spawn(request) else {
+            println!(
+                "DEV_NPC_SPAWN reject connection={connection_id} npc={npc_content_id} reason=world_spawn"
+            );
+            return;
+        };
+        self.dev_spawned_npcs.push(entity);
+        println!(
+            "DEV_NPC_SPAWN spawned connection={connection_id} actor={actor} entity={entity} npc={npc_content_id} address={address} position=({:.3},{:.3}) count={}",
+            position[0],
+            position[1],
+            self.dev_spawned_npcs.len()
+        );
     }
 
     fn handle_portal_activate(&mut self, connection_id: ConnectionId, target: WireEntityId) {
@@ -5035,10 +5123,24 @@ mod tests {
             connection_id: id,
             request: DialogueAdvance { session_id },
         });
+        let second_line = match rx.try_recv().expect("second authored line") {
+            ServerControl::DialogueLine(line) => line,
+            other => panic!("expected second DialogueLine, got {other:?}"),
+        };
+        assert_eq!(second_line.session_id, first_line.session_id);
+        assert_eq!(second_line.target, first_line.target);
+        assert_eq!(second_line.npc_content_id, first_line.npc_content_id);
+        assert_eq!(second_line.beat_index, first_line.beat_index);
+        assert_eq!(second_line.line_index, 1);
+
+        owner.apply_input(InputUpdate::DialogueAdvance {
+            connection_id: id,
+            request: DialogueAdvance { session_id },
+        });
         assert_eq!(
             rx.try_recv()
                 .expect("final line remains while choices wait"),
-            ServerControl::DialogueLine(first_line)
+            ServerControl::DialogueLine(second_line)
         );
 
         owner.apply_input(InputUpdate::InteractClose {
@@ -5077,6 +5179,73 @@ mod tests {
         assert_eq!(reopened_line.beat_index, first_line.beat_index);
         assert_eq!(reopened_line.line_index, first_line.line_index);
         assert!(owner.bindings.get(&id).unwrap().input.ui_locked());
+    }
+
+    #[test]
+    fn dev_spawn_npc_uses_authoritative_player_pose_and_stays_transient() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        assert!(owner.set_player_x(connection, -9.25));
+        let actor = owner.entity_of(connection).expect("bound actor");
+        let expected_address = owner.world().address_of(actor).expect("actor address");
+        let expected_position = owner
+            .world()
+            .transform_of(actor)
+            .expect("actor transform")
+            .position;
+
+        owner.apply_input(InputUpdate::DevSpawnNpc {
+            connection_id: connection,
+            npc_content_id: purgatory_common::NPC_WELCOME_TRAVELER_STAYED,
+        });
+
+        let spawned = *owner.dev_spawned_npcs.last().expect("DEV-spawned NPC");
+        assert_ne!(spawned, actor);
+        assert_eq!(owner.world().address_of(spawned), Some(expected_address));
+        assert_eq!(
+            owner
+                .world()
+                .transform_of(spawned)
+                .map(|value| value.position),
+            Some(expected_position)
+        );
+        assert_eq!(
+            owner.world().content_id_of(spawned),
+            Some(purgatory_common::NPC_WELCOME_TRAVELER_STAYED)
+        );
+        assert!(owner.world().persistent_id_of(spawned).is_none());
+        assert_eq!(
+            owner
+                .world()
+                .interactable_of(spawned)
+                .map(|value| value.kind),
+            Some(purgatory_simulation::InteractableKind::Npc)
+        );
+        assert!(
+            owner
+                .world()
+                .equipment_of(spawned)
+                .is_some_and(|state| state.is_empty())
+        );
+
+        owner.detach(connection);
+        assert!(
+            owner.world().contains(spawned),
+            "DEV NPC lifetime is server memory, not the requesting connection"
+        );
+    }
+
+    #[test]
+    fn dev_spawn_npc_rejects_non_npc_content() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        owner.apply_input(InputUpdate::DevSpawnNpc {
+            connection_id: connection,
+            npc_content_id: purgatory_common::ITEM_PRACTICE_SWORD,
+        });
+        assert!(owner.dev_spawned_npcs.is_empty());
     }
 
     #[test]

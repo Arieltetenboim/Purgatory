@@ -71,8 +71,8 @@ pub use framing::{
 };
 pub use intent::{IntentNet, move_axis_from_i8};
 pub use interact::{
-    DevSetChannel, DevSetJump, DevSetSpeed, InteractClose, InteractCloseReason, InteractOpen,
-    InteractRejectReason, PortalActivate, ServerInteract,
+    DEV_SPAWN_NPC_BYTES, DevSetChannel, DevSetJump, DevSetSpeed, DevSpawnNpc, InteractClose,
+    InteractCloseReason, InteractOpen, InteractRejectReason, PortalActivate, ServerInteract,
 };
 pub use inventory::{InventoryEntry, ServerInventory};
 pub use item::{
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 25);
+        assert_eq!(PROTOCOL_VERSION, 26);
     }
 
     #[test]

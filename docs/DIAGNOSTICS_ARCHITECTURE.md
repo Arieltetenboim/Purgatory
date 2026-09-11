@@ -295,11 +295,11 @@ Three kinds, not two:
 |---|---|---|
 | **Observation** (`DiagnosticsFrame`) | FPS, pose, RTT, replica counts, interp brackets | May receive a copy |
 | **Local view** (`ViewCommand`) | gizmo toggles, follow camera, skeleton draw | Client-only in D1–D3; later may be requested, never executed by the observer |
-| **Privileged command** (`DebugCommand`) | ResetPlayer, DevSetChannel, Equip, oneshot, impairment, time scale, jitter isolation, proof poses | Client executes. Observer must not apply them to a World |
+| **Privileged command** (`DebugCommand`) | ResetPlayer, DevSetChannel, SpawnNpc, Equip, oneshot, impairment, time scale, jitter isolation, proof poses | Client executes. Observer must not apply them to a World |
 
 `DebugAction` in simulation stays the World mutation enum (today: `ResetPlayer` only). Client `DebugCommand::ResetToSpawn` sends `DevResetPlayer` while in Game; offline it applies the local spawn path. `DebugCommand::ResetPlayer` reanchors prediction when a replica local entity is present. Temporary confirmations (Reset / Reanchor / Channel) are a center-screen ASCII toast for ~3 seconds and are not duplicated in the Debug window.
 
-Do not put `DebugCommand` on the gameplay protocol. Existing DEV envelopes (`DevSetChannel`, `DevPresentationOneShot`, Equip, `DevResetPlayer`) already exist; this track does not add more.
+Do not put `DebugCommand` itself on the gameplay protocol. Explicit DEV envelopes remain narrow requests. `DevSpawnNpc` carries only a stable NPC `ContentId`; the server resolves content, chooses the authoritative player pose and allocates the runtime `EntityId`. The Debug Overlay never mutates a World directly.
 
 ## Compact Debug UI (D2)
 
@@ -318,6 +318,7 @@ In-client egui. Default tab is **Debug**. Forensic tabs remain on the in-client 
 
 - Time scale 1.0 / 0.5 / 0.25
 - Reset to Spawn Point (always); Reanchor Prediction when a replica local entity is present
+- DEV NPC Spawner: select a projected runtime NPC and request a transient spawn at the server-authoritative player pose. The spawn is not map or persistence content and lasts until server shutdown.
 - Local pose: position, velocity, grounded, input X/down
 - Camera: following X/Y, dead-zone half-extents, Follow / Center On Player
 - Replica: known count, last seq, pred active / lead error

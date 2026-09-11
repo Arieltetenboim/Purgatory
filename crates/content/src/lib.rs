@@ -28,7 +28,9 @@ pub use equipment::{
     slot_allows_bone, validate_equipment_definition, validate_equipment_presentation,
 };
 pub use error::{ContentError, ValidationIssue};
-pub use instantiate::{geometry_plan, map_plan, spawn_point_position, world_address_for_map};
+pub use instantiate::{
+    entity_spawn_request, geometry_plan, map_plan, spawn_point_position, world_address_for_map,
+};
 pub use item::{
     ITEM_CONTENT_SCHEMA_VERSION, ItemDefinition, is_stackable, validate_item_definition,
 };
@@ -102,6 +104,35 @@ mod tests {
             "the legacy Dev Switch definition remains available but is not live"
         );
         assert!(world.iter().all(|id| world.persistent_id_of(id).is_none()));
+    }
+
+    #[test]
+    fn allocated_social_npc_builds_a_transient_humanoid_spawn_request() {
+        use purgatory_common::NPC_WELCOME_TRAVELER_STAYED;
+        use purgatory_simulation::{InteractableKind, WorldAddress};
+
+        let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
+        let position = [4.5, 2.25];
+        let request = entity_spawn_request(
+            &registry,
+            NPC_WELCOME_TRAVELER_STAYED,
+            WorldAddress::DEV,
+            position,
+        )
+        .expect("spawnable Traveler");
+
+        assert_eq!(request.address, WorldAddress::DEV);
+        assert_eq!(
+            request.transform.map(|value| value.position),
+            Some(position)
+        );
+        assert_eq!(request.content_id, Some(NPC_WELCOME_TRAVELER_STAYED));
+        assert!(request.persistent_id.is_none());
+        assert_eq!(
+            request.interactable.map(|value| value.kind),
+            Some(InteractableKind::Npc)
+        );
+        assert!(request.equipment.is_some_and(|state| state.is_empty()));
     }
 
     #[test]

@@ -1073,12 +1073,17 @@ mod tests {
         assert_eq!(traveler_entity.authored_id, traveler.authored_id);
         assert_eq!(traveler_entity.content_id, traveler.content_id);
         assert_eq!(registry.npc_dialogue_count(), 1);
+        let spawn_catalog: Vec<_> = registry.iter_npc_dialogue_presentations().collect();
+        assert_eq!(spawn_catalog.len(), 1);
+        assert_eq!(spawn_catalog[0].content_id, NPC_WELCOME_TRAVELER_STAYED);
 
         let intro = &traveler.beats[0];
         assert_eq!(intro.id, "intro");
         assert_eq!(intro.selection_role, DialogueSelectionRole::Entry);
         assert_eq!(intro.priority, 100);
         assert_eq!(intro.pool, DialoguePool::Mandatory);
+        assert_eq!(intro.lines.len(), 2);
+        assert_eq!(intro.lines[1].text, "Work? Somehow, there's always work.");
         assert!(matches!(
             &intro.conditions[0],
             DialogueCondition::NpcMet {

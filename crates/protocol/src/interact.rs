@@ -1,6 +1,11 @@
 //! Phase 6B interaction control envelopes. Event/change-driven, not per-tick.
 
+use purgatory_common::ContentId;
+
 use crate::snapshot::WireEntityId;
+
+/// Fixed payload bytes for [`DevSpawnNpc`] after the control discriminant.
+pub const DEV_SPAWN_NPC_BYTES: usize = 4;
 
 /// Client → server: request to open an interaction with `target`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +45,13 @@ pub struct DevSetSpeed {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DevSetJump {
     pub jump: Option<u16>,
+}
+
+/// DEV-only request to spawn one validated runtime NPC at the bound player's
+/// current authoritative position and `WorldAddress`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DevSpawnNpc {
+    pub npc_content_id: ContentId,
 }
 
 /// Authoritative reject reason. Unknown wire values are [`CodecError::InvalidValue`].

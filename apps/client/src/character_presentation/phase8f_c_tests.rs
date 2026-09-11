@@ -81,7 +81,7 @@ fn attachment_ids(plan: &[PlannedKind], bound: &[BoundAttachment]) -> Vec<String
 
 #[test]
 fn protocol_unchanged() {
-    assert_eq!(PROTOCOL_VERSION, 25);
+    assert_eq!(PROTOCOL_VERSION, 26);
 }
 
 #[test]

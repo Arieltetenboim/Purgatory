@@ -75,6 +75,7 @@ enum ClientGameplayMsg {
     DevSetChannel(u32),
     DevSetSpeed(Option<u16>),
     DevSetJump(Option<u16>),
+    DevSpawnNpc(purgatory_common::ContentId),
     #[allow(dead_code)]
     Equip(purgatory_protocol::EquipRequest),
     #[allow(dead_code)]
@@ -445,6 +446,12 @@ impl NetworkHandle {
     pub fn try_send_dev_set_jump(&self, jump: Option<u16>) -> bool {
         self.input
             .try_send(ClientGameplayMsg::DevSetJump(jump))
+            .is_ok()
+    }
+
+    pub fn try_send_dev_spawn_npc(&self, npc_content_id: purgatory_common::ContentId) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::DevSpawnNpc(npc_content_id))
             .is_ok()
     }
 
@@ -1037,6 +1044,9 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
         }
         ClientGameplayMsg::DevSetJump(jump) => {
             ClientControl::DevSetJump(purgatory_protocol::DevSetJump { jump })
+        }
+        ClientGameplayMsg::DevSpawnNpc(npc_content_id) => {
+            ClientControl::DevSpawnNpc(purgatory_protocol::DevSpawnNpc { npc_content_id })
         }
         ClientGameplayMsg::Equip(request) => ClientControl::Equip(request),
         ClientGameplayMsg::Unequip(request) => ClientControl::Unequip(request),

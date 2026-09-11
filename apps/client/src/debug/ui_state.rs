@@ -2,7 +2,7 @@
 
 use super::sections::DebugSectionMap;
 use crate::network::ImpairmentProfile;
-use purgatory_common::ItemInstanceId;
+use purgatory_common::{ContentId, ItemInstanceId};
 
 /// Skeleton Proof animation source. Default remains the A1 manual slider.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -53,6 +53,8 @@ pub struct DebugUiState {
     pub network_disconnect: bool,
     /// DEV overlay Channel request. Sent as server-authoritative DevSetChannel.
     pub request_channel: Option<u32>,
+    /// Selected stable NPC definition for the separate DEV spawn command.
+    pub selected_debug_npc: Option<ContentId>,
     /// DEV A5 presentation Attack oneshot request.
     pub request_presentation_attack: bool,
     /// DEV A5 presentation Hurt oneshot request.
@@ -180,6 +182,7 @@ impl Default for DebugUiState {
             network_connect: false,
             network_disconnect: false,
             request_channel: None,
+            selected_debug_npc: None,
             request_presentation_attack: false,
             request_presentation_hurt: false,
             last_observed_channel: None,

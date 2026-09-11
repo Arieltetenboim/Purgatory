@@ -70,7 +70,7 @@ fn plan_side(hidden_base: u16, attachments: &[BoundAttachment]) -> Vec<PlannedKi
 
 #[test]
 fn protocol_unchanged() {
-    assert_eq!(PROTOCOL_VERSION, 25);
+    assert_eq!(PROTOCOL_VERSION, 26);
 }
 
 #[test]

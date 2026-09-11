@@ -97,6 +97,14 @@ impl ContentRegistry {
         self.npc_dialogue_presentations.get(authored)
     }
 
+    /// Client-safe runtime NPC catalogue. Only numerically allocated NPCs
+    /// projected from validated authoring content appear here.
+    pub fn iter_npc_dialogue_presentations(
+        &self,
+    ) -> impl Iterator<Item = &NpcDialoguePresentation> {
+        self.npc_dialogue_presentations.values()
+    }
+
     #[must_use]
     pub fn label(&self, id: ContentId) -> Option<&str> {
         self.labels.get(&id).map(String::as_str)

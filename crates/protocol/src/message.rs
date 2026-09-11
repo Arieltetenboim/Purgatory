@@ -12,8 +12,8 @@ use crate::equipment::{
     EquipRequest, EquipmentRejectReason, ServerEquipment, UnequipRequest, slot_valid,
 };
 use crate::interact::{
-    DevSetChannel, DevSetJump, DevSetSpeed, InteractClose, InteractOpen, PortalActivate,
-    ServerInteract,
+    DevSetChannel, DevSetJump, DevSetSpeed, DevSpawnNpc, InteractClose, InteractOpen,
+    PortalActivate, ServerInteract,
 };
 use crate::inventory::{
     INVENTORY_CAPACITY, InventoryEntry, ServerInventory, decode_inventory_entry,
@@ -62,6 +62,7 @@ const TAG_PICKUP_REJECTED: u8 = 33;
 const TAG_INVENTORY_SNAPSHOT: u8 = 34;
 const TAG_DIALOGUE_ADVANCE: u8 = 35;
 const TAG_DIALOGUE_ACTIVE_LINE: u8 = 36;
+const TAG_DEV_SPAWN_NPC: u8 = 37;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,6 +282,8 @@ pub enum ClientControl {
     DevSetSpeed(DevSetSpeed),
     /// DEV overlay jump-speed request. Server validates and owns the result.
     DevSetJump(DevSetJump),
+    /// DEV overlay NPC spawn request. Server resolves content and owns placement.
+    DevSpawnNpc(DevSpawnNpc),
     Equip(EquipRequest),
     Unequip(UnequipRequest),
     /// DEV presentation Attack/Hurt oneshot request (protocol v13).
@@ -423,6 +426,16 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
                 }
                 None => out.push(0),
             }
+            Ok(out)
+        }
+        ClientControl::DevSpawnNpc(req) => {
+            if req.npc_content_id.kind() != Some(purgatory_common::ContentKind::Npc) {
+                return Err(CodecError::InvalidValue);
+            }
+            let npc_content_id = req.npc_content_id.raw().ok_or(CodecError::InvalidValue)?;
+            let mut out = Vec::with_capacity(1 + crate::DEV_SPAWN_NPC_BYTES);
+            out.push(TAG_DEV_SPAWN_NPC);
+            out.extend_from_slice(&npc_content_id.to_le_bytes());
             Ok(out)
         }
         ClientControl::Equip(req) => {
@@ -596,6 +609,15 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
                 _ => return Err(CodecError::InvalidValue),
             };
             Ok(ClientControl::DevSetJump(DevSetJump { jump }))
+        }
+        TAG_DEV_SPAWN_NPC => {
+            let (npc_content_id, rest) = read_u32(rest)?;
+            expect_empty(rest)?;
+            let npc_content_id = purgatory_common::ContentId::from_raw(npc_content_id);
+            if npc_content_id.kind() != Some(purgatory_common::ContentKind::Npc) {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(ClientControl::DevSpawnNpc(DevSpawnNpc { npc_content_id }))
         }
         TAG_EQUIP => {
             let (seq, rest) = read_u32(rest)?;
@@ -1538,6 +1560,26 @@ mod tests {
         assert_eq!(
             decode_client_control(&[TAG_DEV_SET_JUMP, 1, 0]),
             Err(CodecError::Truncated)
+        );
+    }
+
+    #[test]
+    fn dev_spawn_npc_roundtrip_and_rejects_non_npc_identity() {
+        let msg = ClientControl::DevSpawnNpc(DevSpawnNpc {
+            npc_content_id: purgatory_common::ContentId::from_raw(20_001),
+        });
+        let encoded = encode_client_control(&msg).unwrap();
+        assert_eq!(encoded, [TAG_DEV_SPAWN_NPC, 0x21, 0x4e, 0, 0]);
+        assert_eq!(decode_client_control(&encoded).unwrap(), msg);
+        assert_eq!(
+            encode_client_control(&ClientControl::DevSpawnNpc(DevSpawnNpc {
+                npc_content_id: purgatory_common::ContentId::from_raw(30_001),
+            })),
+            Err(CodecError::InvalidValue)
+        );
+        assert_eq!(
+            decode_client_control(&[TAG_DEV_SPAWN_NPC, 0x31, 0x75, 0, 0]),
+            Err(CodecError::InvalidValue)
         );
     }
 
