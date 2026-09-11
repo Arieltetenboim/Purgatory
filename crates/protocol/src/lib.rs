@@ -27,6 +27,7 @@
 mod ability;
 mod config;
 mod connection;
+mod dialogue;
 mod equipment;
 mod frame;
 mod framing;
@@ -49,6 +50,9 @@ pub use config::{
     MAX_GAMEPLAY_SNAPSHOT_BYTES, MAX_LABEL_BYTES, NetworkConfig, PING_INTERVAL, dev_socket_addr,
 };
 pub use connection::ConnectionId;
+pub use dialogue::{
+    DIALOGUE_ACTIVE_LINE_BYTES, DIALOGUE_ADVANCE_BYTES, DialogueAdvance, ServerDialogueLine,
+};
 pub use equipment::{
     EQUIP_REQUEST_BYTES, EQUIPMENT_ACCEPTED_BYTES, EQUIPMENT_DELTA_EQUIP_BYTES,
     EQUIPMENT_DELTA_UNEQUIP_BYTES, EQUIPMENT_FULL_ALL_OCCUPIED_BYTES, EQUIPMENT_FULL_EMPTY_BYTES,
@@ -67,8 +71,8 @@ pub use framing::{
 };
 pub use intent::{IntentNet, move_axis_from_i8};
 pub use interact::{
-    DevSetChannel, DevSetJump, DevSetSpeed, InteractClose, InteractCloseReason, InteractOpen,
-    InteractRejectReason, PortalActivate, ServerInteract,
+    DEV_SPAWN_NPC_BYTES, DevSetChannel, DevSetJump, DevSetSpeed, DevSpawnNpc, InteractClose,
+    InteractCloseReason, InteractOpen, InteractRejectReason, PortalActivate, ServerInteract,
 };
 pub use inventory::{InventoryEntry, ServerInventory};
 pub use item::{
@@ -113,7 +117,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 24);
+        assert_eq!(PROTOCOL_VERSION, 26);
     }
 
     #[test]

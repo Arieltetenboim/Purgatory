@@ -2,6 +2,7 @@
 
 use crate::error::{ContentError, ValidationIssue};
 use crate::registry::ContentRegistry;
+use crate::schema::EntityDefinition;
 use purgatory_common::{ContentId, WorldAddress};
 use purgatory_simulation::{
     EquipmentState, Interactable, InteractableKind, MapRuntimePlan, PlanPlatform, Platform,
@@ -59,22 +60,7 @@ pub fn map_plan(
                 "unresolved entity reference",
             ))
         })?;
-        let mut req = RuntimeSpawnRequest::transient_at(address)
-            .with_transform(Transform::from_position(place.position))
-            .with_content(ent.content_id);
-        if ent.visible {
-            req = req.visible();
-        }
-        if let Some(kind) = ent.interactable {
-            req = req.with_interactable(Interactable::new(kind));
-            if kind == InteractableKind::Npc {
-                // An equipment domain, even when empty, is the existing wire-visible
-                // humanoid presentation facet. Combat NPCs without this facet keep
-                // their sprite presentation.
-                req = req.with_equipment(EquipmentState::empty());
-            }
-        }
-        placements.push(req);
+        placements.push(spawn_request_for_entity(ent, address, place.position));
     }
     Ok(MapRuntimePlan {
         address,
@@ -83,6 +69,49 @@ pub fn map_plan(
         platforms,
         placements,
     })
+}
+
+/// Build one runtime entity from validated content at a caller-supplied
+/// authoritative address and position. This performs no disk I/O and does not
+/// assign persistence identity.
+pub fn entity_spawn_request(
+    registry: &ContentRegistry,
+    content_id: ContentId,
+    address: WorldAddress,
+    position: [f32; 2],
+) -> Result<RuntimeSpawnRequest, ContentError> {
+    let entity = registry.entity_by_id(content_id).ok_or_else(|| {
+        ContentError::one(ValidationIssue::new(
+            format!("content_id={content_id}"),
+            "-",
+            "entity",
+            "ContentId does not resolve to an entity definition",
+        ))
+    })?;
+    Ok(spawn_request_for_entity(entity, address, position))
+}
+
+fn spawn_request_for_entity(
+    entity: &EntityDefinition,
+    address: WorldAddress,
+    position: [f32; 2],
+) -> RuntimeSpawnRequest {
+    let mut request = RuntimeSpawnRequest::transient_at(address)
+        .with_transform(Transform::from_position(position))
+        .with_content(entity.content_id);
+    if entity.visible {
+        request = request.visible();
+    }
+    if let Some(kind) = entity.interactable {
+        request = request.with_interactable(Interactable::new(kind));
+        if kind == InteractableKind::Npc {
+            // An equipment domain, even when empty, is the existing wire-visible
+            // humanoid presentation facet. Combat NPCs without this facet keep
+            // their sprite presentation.
+            request = request.with_equipment(EquipmentState::empty());
+        }
+    }
+    request
 }
 
 /// Shared-geometry plan (no server placements). Client prediction uses this.

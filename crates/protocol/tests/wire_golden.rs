@@ -18,8 +18,8 @@
 //! followed by that many UTF-8 bytes. Field order is the declaration order.
 
 use purgatory_protocol::{
-    ClientControl, ConnectionId, DisconnectReason, DisconnectReasonCode, Hello, InputCommand,
-    InteractClose, InteractCloseReason, InteractOpen, InteractRejectReason,
+    ClientControl, ConnectionId, DevSpawnNpc, DisconnectReason, DisconnectReasonCode, Hello,
+    InputCommand, InteractClose, InteractCloseReason, InteractOpen, InteractRejectReason,
     MAX_CONTROL_MESSAGE_BYTES, MAX_GAMEPLAY_SNAPSHOT_BYTES, MoveAxis, PROTOCOL_VERSION,
     PlatformSupportId, PortalActivate, ReplicatedKind, ReplicationFrame, ReplicationRecord,
     ServerControl, ServerDatagram, ServerInteract, SnapshotEntity, WireEntityId, WorldSnapshot,
@@ -607,6 +607,26 @@ const GOLDEN_CONNECTION_ID: u64 = 0x1234;
 
 const GOLDEN_SEQUENCE: u32 = 0x0102_0304;
 
+/// Protocol v25 wire compatibility vector: advance the active dialogue.
+const DIALOGUE_ADVANCE_V25: &[u8] = &[
+    0x23, // DialogueAdvance
+    0x07, 0x00, 0x00, 0x00, // session_id = 7
+];
+
+/// Protocol v25 wire compatibility vector: authoritative active line identity.
+const DIALOGUE_LINE_V25: &[u8] = &[
+    0x24, // DialogueLine
+    0x07, 0x00, 0x00, 0x00, // session_id = 7
+    0x2A, 0x00, 0x00, 0x00, // target.index = 42
+    0x03, 0x00, 0x00, 0x00, // target.generation = 3
+    0x21, 0x4E, 0x00, 0x00, // npc_content_id = 20001
+    0x02, 0x00, 0x00, 0x00, // beat_index = 2
+    0x01, 0x00, 0x00, 0x00, // line_index = 1
+];
+
+/// Protocol v26 DEV NPC spawn request. Stable NPC ContentId 20,001.
+const DEV_SPAWN_NPC_V26: &[u8] = &[0x25, 0x21, 0x4e, 0x00, 0x00];
+
 fn hello_test_build() -> Hello {
     Hello {
         protocol_version: 1,
@@ -664,8 +684,56 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_24() {
-    assert_eq!(PROTOCOL_VERSION, 24);
+fn current_protocol_version_is_26() {
+    assert_eq!(PROTOCOL_VERSION, 26);
+}
+
+#[test]
+fn dev_spawn_npc_v26_matches_golden_bytes() {
+    let request = ClientControl::DevSpawnNpc(DevSpawnNpc {
+        npc_content_id: purgatory_common::ContentId::from_raw(20_001),
+    });
+    assert_eq!(
+        encode_client_control(&request).expect("encode"),
+        DEV_SPAWN_NPC_V26
+    );
+    assert_eq!(
+        decode_client_control(DEV_SPAWN_NPC_V26).expect("decode"),
+        request
+    );
+}
+
+#[test]
+fn dialogue_v25_matches_golden_bytes() {
+    let advance =
+        ClientControl::DialogueAdvance(purgatory_protocol::DialogueAdvance { session_id: 7 });
+    assert_eq!(
+        encode_client_control(&advance).expect("encode"),
+        DIALOGUE_ADVANCE_V25
+    );
+    assert_eq!(
+        decode_client_control(DIALOGUE_ADVANCE_V25).expect("decode"),
+        advance
+    );
+
+    let line = ServerControl::DialogueLine(purgatory_protocol::ServerDialogueLine {
+        session_id: 7,
+        target: WireEntityId {
+            index: 42,
+            generation: 3,
+        },
+        npc_content_id: purgatory_common::ContentId::from_raw(20_001),
+        beat_index: 2,
+        line_index: 1,
+    });
+    assert_eq!(
+        encode_server_control(&line).expect("encode"),
+        DIALOGUE_LINE_V25
+    );
+    assert_eq!(
+        decode_server_control(DIALOGUE_LINE_V25).expect("decode"),
+        line
+    );
 }
 
 #[test]

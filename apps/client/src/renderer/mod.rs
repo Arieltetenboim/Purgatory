@@ -2,6 +2,7 @@ mod camera;
 mod gpu;
 mod parallax;
 pub(crate) mod rf_diag;
+pub(crate) mod ui;
 
 #[allow(unused_imports)] // re-exported for tests / compact-stage callers
 pub use camera::DEFAULT_LOGICAL_HEIGHT;
@@ -22,3 +23,6 @@ pub use gpu::{DrawQuad, FrameStatus, MAX_QUADS, Renderer, SpriteTextureId, World
 pub use parallax::{
     PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_quads, parallax_quads,
 };
+pub(crate) use text::{Alignment as TextAlignment, TextBlock, TextContent, TextStyle};
+pub(crate) use ui::UiRect;
+pub(crate) mod text;

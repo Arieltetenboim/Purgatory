@@ -13,6 +13,7 @@ mod abuse;
 mod cert;
 mod config;
 mod connection_lifecycle;
+mod dialogue;
 mod endpoint;
 mod gameplay;
 mod handshake;

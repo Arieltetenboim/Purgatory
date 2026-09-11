@@ -24,6 +24,8 @@ pub enum DebugCommand {
     SetChannel(u32),
     SetMoveSpeed(Option<u16>),
     SetJumpSpeed(Option<u16>),
+    /// Request a server-authoritative transient NPC at the current player pose.
+    SpawnNpc(purgatory_common::ContentId),
     SetResolution(Resolution),
     SetRenderScale(RenderScale),
     SetWorldMsaa(WorldMsaa),

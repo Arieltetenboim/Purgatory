@@ -70,10 +70,12 @@ enum ClientGameplayMsg {
     HeldCancel,
     InteractOpen(purgatory_protocol::WireEntityId),
     InteractClose(u32),
+    DialogueAdvance(u32),
     PortalActivate(purgatory_protocol::WireEntityId),
     DevSetChannel(u32),
     DevSetSpeed(Option<u16>),
     DevSetJump(Option<u16>),
+    DevSpawnNpc(purgatory_common::ContentId),
     #[allow(dead_code)]
     Equip(purgatory_protocol::EquipRequest),
     #[allow(dead_code)]
@@ -200,6 +202,9 @@ impl EventSink {
                 NetworkEvent::RttUpdated { .. } => {}
                 NetworkEvent::Interact { attempt_id, event } => {
                     self.trace(&format!("attempt={attempt_id} Interact {event:?}"));
+                }
+                NetworkEvent::DialogueLine { attempt_id, event } => {
+                    self.trace(&format!("attempt={attempt_id} DialogueLine {event:?}"));
                 }
                 NetworkEvent::Equipment { attempt_id, event } => {
                     self.trace(&format!("attempt={attempt_id} Equipment {event:?}"));
@@ -414,6 +419,12 @@ impl NetworkHandle {
             .is_ok()
     }
 
+    pub fn try_send_dialogue_advance(&self, session_id: u32) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::DialogueAdvance(session_id))
+            .is_ok()
+    }
+
     pub fn try_send_portal_activate(&self, target: purgatory_protocol::WireEntityId) -> bool {
         self.input
             .try_send(ClientGameplayMsg::PortalActivate(target))
@@ -435,6 +446,12 @@ impl NetworkHandle {
     pub fn try_send_dev_set_jump(&self, jump: Option<u16>) -> bool {
         self.input
             .try_send(ClientGameplayMsg::DevSetJump(jump))
+            .is_ok()
+    }
+
+    pub fn try_send_dev_spawn_npc(&self, npc_content_id: purgatory_common::ContentId) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::DevSpawnNpc(npc_content_id))
             .is_ok()
     }
 
@@ -948,6 +965,13 @@ async fn handshake_and_live(
                 kind: NetworkFailureKind::UnexpectedMessage,
             });
         }
+        Ok(ServerControl::DialogueLine(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
         Ok(ServerControl::Equipment(_)) => {
             connection.close(0u32.into(), b"handshake");
             return Err(NetworkEvent::Disconnected {
@@ -1006,6 +1030,9 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
         ClientGameplayMsg::InteractClose(session_id) => {
             ClientControl::InteractClose(purgatory_protocol::InteractClose { session_id })
         }
+        ClientGameplayMsg::DialogueAdvance(session_id) => {
+            ClientControl::DialogueAdvance(purgatory_protocol::DialogueAdvance { session_id })
+        }
         ClientGameplayMsg::PortalActivate(target) => {
             ClientControl::PortalActivate(purgatory_protocol::PortalActivate { target })
         }
@@ -1017,6 +1044,9 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
         }
         ClientGameplayMsg::DevSetJump(jump) => {
             ClientControl::DevSetJump(purgatory_protocol::DevSetJump { jump })
+        }
+        ClientGameplayMsg::DevSpawnNpc(npc_content_id) => {
+            ClientControl::DevSpawnNpc(purgatory_protocol::DevSpawnNpc { npc_content_id })
         }
         ClientGameplayMsg::Equip(request) => ClientControl::Equip(request),
         ClientGameplayMsg::Unequip(request) => ClientControl::Unequip(request),
@@ -1198,6 +1228,14 @@ async fn live_loop(
                         events
                             .emit(
                                 NetworkEvent::Interact { attempt_id, event },
+                                control,
+                            )
+                            .await;
+                    }
+                    Ok(ServerControl::DialogueLine(event)) => {
+                        events
+                            .emit(
+                                NetworkEvent::DialogueLine { attempt_id, event },
                                 control,
                             )
                             .await;

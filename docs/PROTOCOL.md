@@ -40,9 +40,9 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 24` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 26` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
-v23 is an intentional incompatible bump: v1–v22 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
+v26 is an intentional incompatible bump: v1–v25 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
 Client Hello includes `protocol_version`. The server rejects mismatches with `DisconnectReasonCode::VersionMismatch`.
 
@@ -88,6 +88,19 @@ by `ContentId`.
 Protocol v24 adds `ReplicatedKind::Item` for visible Item-backed world drops.
 The existing Pickup request targets this replicated entity and the server
 continues to resolve ownership through the authoritative Item runtime.
+
+Protocol v25 adds reliable dialogue control without transporting authored
+text. `DialogueAdvance` (tag 35) carries only the authoritative interaction
+`session_id`. `DialogueLine` (tag 36) carries the session, target entity,
+numeric NPC `ContentId`, beat index, and line index. The client resolves the
+line through its validated presentation projection; selection and progression
+remain server-owned.
+
+Protocol v26 adds DEV-only `DevSpawnNpc` (tag 37). Its fixed payload is one
+numeric NPC `ContentId`. The request never carries a position, address, or
+runtime `EntityId`: the server resolves validated runtime content and copies
+the bound player's current authoritative transform and `WorldAddress`. The
+spawned entity has no `PersistentId` and exists only in server memory.
 
 ## Golden wire vectors
 
@@ -218,6 +231,9 @@ Client:
 - `DevSetJump` — tag **30**. DEV overlay only. Optional jump speed is encoded
   in hundredths of world units per second; the server clamps it for the bound
   player. Omitted speed restores canonical jump speed.
+- `DevSpawnNpc { npc_content_id: ContentId }` — tag **37**. DEV overlay only.
+  Server-authoritative transient NPC spawn at the bound player's current
+  position and `WorldAddress`; the client cannot choose either value.
 - `Equip { seq: u32, slot: u8, content_id: ContentId token }` — tag **18**. 14 bytes with tag (`1+4+1+8`). Slot is dense `0..=5` (Headwear…Weapon). No presentation fields.
 - `Unequip { seq: u32, slot: u8 }` — tag **19**. 6 bytes with tag.
 

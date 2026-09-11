@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use egui::{Context, ViewportId};
 use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use egui_winit::State;
+use purgatory_common::ContentId;
+use purgatory_content::ContentRegistry;
 use purgatory_protocol::ReplicatedHealth;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -35,6 +37,7 @@ use super::ui_state::{
 use crate::renderer::OverlayPass;
 
 const SEC_NOW_POSE: &str = "debug.pose";
+const SEC_NOW_NPC_SPAWN: &str = "debug.npc_spawn";
 const SEC_NOW_CAMERA: &str = "debug.camera";
 const SEC_NOW_REPLICA: &str = "debug.replica";
 const SEC_NOW_VIEW: &str = "debug.view";
@@ -95,6 +98,17 @@ enum DebugTab {
     Network,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NpcSpawnOption {
+    content_id: ContentId,
+    authored_id: String,
+}
+
+struct DebugOverlayResources<'a> {
+    history: &'a mut CollisionHistory,
+    npc_spawn_options: &'a [NpcSpawnOption],
+}
+
 /// Client-owned development overlay.
 pub struct DebugOverlay {
     visible: bool,
@@ -102,12 +116,13 @@ pub struct DebugOverlay {
     winit: State,
     renderer: EguiRenderer,
     tab: DebugTab,
+    npc_spawn_options: Vec<NpcSpawnOption>,
     pub ui: DebugUiState,
     pub collision_history: CollisionHistory,
 }
 
 impl DebugOverlay {
-    pub fn new(window: &Window, pass: OverlayInit<'_>) -> Self {
+    pub fn new(window: &Window, pass: OverlayInit<'_>, registry: &ContentRegistry) -> Self {
         let ctx = Context::default();
         ctx.set_embed_viewports(true);
         let winit = State::new(
@@ -120,13 +135,23 @@ impl DebugOverlay {
         );
         let renderer =
             EguiRenderer::new(pass.device, pass.surface_format, RendererOptions::default());
+        let npc_spawn_options: Vec<_> = registry
+            .iter_npc_dialogue_presentations()
+            .map(|npc| NpcSpawnOption {
+                content_id: npc.content_id,
+                authored_id: npc.authored_id.clone(),
+            })
+            .collect();
+        let mut ui = DebugUiState::from_env();
+        ui.selected_debug_npc = npc_spawn_options.first().map(|npc| npc.content_id);
         Self {
             visible: false,
             ctx,
             winit,
             renderer,
             tab: DebugTab::Debug,
-            ui: DebugUiState::from_env(),
+            npc_spawn_options,
+            ui,
             collision_history: CollisionHistory::default(),
         }
     }
@@ -169,10 +194,10 @@ impl DebugOverlay {
         visible: &mut bool,
         tab: &mut DebugTab,
         ui_state: &mut DebugUiState,
-        history: &mut CollisionHistory,
+        resources: DebugOverlayResources<'_>,
         actions: &mut Vec<DebugCommand>,
     ) {
-        draw_debug_window(ctx, frame, visible, tab, ui_state, history, actions);
+        draw_debug_window(ctx, frame, visible, tab, ui_state, resources, actions);
     }
 
     /// One egui frame: optional [`ConnectionFrontend::paint`] plus debug overlay.
@@ -205,6 +230,7 @@ impl DebugOverlay {
         let mut tab = self.tab;
         let mut ui_state = self.ui.clone();
         let history = &mut self.collision_history;
+        let npc_spawn_options = &self.npc_spawn_options;
         let mut connection = connection;
         let mut full_output = self.ctx.run_ui(raw_input, |egui_ctx| {
             if let Some(health) = gameplay_health {
@@ -226,7 +252,10 @@ impl DebugOverlay {
                     &mut visible,
                     &mut tab,
                     &mut ui_state,
-                    history,
+                    DebugOverlayResources {
+                        history,
+                        npc_spawn_options,
+                    },
                     &mut actions,
                 );
                 if ui_state.show_entity_labels {
@@ -354,6 +383,7 @@ pub fn is_debug_toggle_key(physical_key: PhysicalKey, pressed: bool, repeat: boo
 fn tab_section_ids(tab: DebugTab) -> &'static [&'static str] {
     match tab {
         DebugTab::Debug => &[
+            SEC_NOW_NPC_SPAWN,
             SEC_NOW_POSE,
             SEC_NOW_CAMERA,
             SEC_NOW_REPLICA,
@@ -728,9 +758,13 @@ fn draw_debug_window(
     visible: &mut bool,
     tab: &mut DebugTab,
     ui_state: &mut DebugUiState,
-    history: &mut CollisionHistory,
+    resources: DebugOverlayResources<'_>,
     actions: &mut Vec<DebugCommand>,
 ) {
+    let DebugOverlayResources {
+        history,
+        npc_spawn_options,
+    } = resources;
     egui::Window::new("PURGATORY DEBUG")
         .open(visible)
         .resizable(true)
@@ -767,7 +801,9 @@ fn draw_debug_window(
                 .show(ui, |ui| {
                     draw_expand_collapse(ui, &mut ui_state.sections, tab_section_ids(*tab));
                     match *tab {
-                        DebugTab::Debug => draw_now_tab(ui, frame, ui_state, actions),
+                        DebugTab::Debug => {
+                            draw_now_tab(ui, frame, ui_state, npc_spawn_options, actions)
+                        }
                         DebugTab::Runtime => draw_runtime_tab(ui, frame, ui_state),
                         DebugTab::Player => draw_player_tab(ui, frame, ui_state, actions),
                         DebugTab::Skeleton => draw_skeleton_tab(ui, frame, ui_state),
@@ -1036,15 +1072,70 @@ fn draw_display_section(
     }
 }
 
+fn draw_npc_spawner(
+    ui: &mut egui::Ui,
+    frame: &DiagnosticsFrame,
+    ui_state: &mut DebugUiState,
+    npc_spawn_options: &[NpcSpawnOption],
+    actions: &mut Vec<DebugCommand>,
+) {
+    let selected = ui_state
+        .selected_debug_npc
+        .and_then(|id| npc_spawn_options.iter().find(|npc| npc.content_id == id));
+    let selected_label = selected
+        .map(|npc| format!("{} [{}]", npc.authored_id, npc.content_id))
+        .unwrap_or_else(|| "No runtime NPCs".into());
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_NOW_NPC_SPAWN,
+        true,
+        "DEV NPC Spawner",
+        Some(&selected_label),
+    ) {
+        ui.indent(SEC_NOW_NPC_SPAWN, |ui| {
+            egui::ComboBox::from_id_salt("debug.npc_spawn.select")
+                .selected_text(&selected_label)
+                .show_ui(ui, |ui| {
+                    for npc in npc_spawn_options {
+                        ui.selectable_value(
+                            &mut ui_state.selected_debug_npc,
+                            Some(npc.content_id),
+                            format!("{} [{}]", npc.authored_id, npc.content_id),
+                        );
+                    }
+                });
+            let can_spawn = frame.network.lifecycle.connection_id.is_some()
+                && frame.physics.player.is_some()
+                && ui_state.selected_debug_npc.is_some();
+            if ui
+                .add_enabled(can_spawn, egui::Button::new("Spawn at Player"))
+                .on_hover_text(
+                    "Server resolves the NPC and uses the player's authoritative current position and WorldAddress",
+                )
+                .clicked()
+                && let Some(content_id) = ui_state.selected_debug_npc
+            {
+                actions.push(DebugCommand::SpawnNpc(content_id));
+            }
+            ui.small(
+                "Runtime NPC content only. Spawned entity is transient, not written to map content or persistence, and remains until server shutdown.",
+            );
+        });
+    }
+}
+
 fn draw_now_tab(
     ui: &mut egui::Ui,
     frame: &DiagnosticsFrame,
     ui_state: &mut DebugUiState,
+    npc_spawn_options: &[NpcSpawnOption],
     actions: &mut Vec<DebugCommand>,
 ) {
     draw_time_scale_buttons(ui, ui_state);
     ui.small("Scales wall elapsed into SimulationClock only. Tick rate stays 30 Hz.");
     draw_reset_action(ui, frame, actions);
+    draw_npc_spawner(ui, frame, ui_state, npc_spawn_options, actions);
     let pose_summary = frame.physics.player.map(|player| {
         format!(
             "({:.2}, {:.2}) {}",
@@ -3262,6 +3353,7 @@ mod tests {
         assert_eq!(
             tab_section_ids(DebugTab::Debug),
             &[
+                SEC_NOW_NPC_SPAWN,
                 SEC_NOW_POSE,
                 SEC_NOW_CAMERA,
                 SEC_NOW_REPLICA,

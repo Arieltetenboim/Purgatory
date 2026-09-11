@@ -19,6 +19,7 @@ default = ["dev-diagnostics"]
 dev-diagnostics = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 
 [dependencies]
+ab_glyph = "0.2.32"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 egui = { version = "0.36.1", optional = true }

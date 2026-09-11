@@ -584,6 +584,13 @@ The client hosts an in-window **development** overlay. It is not production game
 
 `DebugCommand::ResetToSpawn` is client-only as a request. When the client is in Game, it sends DEV `DevResetPlayer` (protocol v14); the server resets the bound actor with `World::reset_player_entity`. The client does not apply a local spawn while connected. Offline, it applies simulation `DebugAction::ResetPlayer` locally and centers the camera. EntityIds are not changed. **Reanchor Prediction** (`DebugCommand::ResetPlayer`) snaps client prediction to the replica. Confirmations are a center-screen toast (~3s) using ASCII text only.
 
+The DEV NPC Spawner follows the same authority boundary through its own narrow
+`DevSpawnNpc` envelope. The overlay selects a stable NPC `ContentId`; the server
+validates the runtime NPC definition, reads the bound player's authoritative
+`WorldAddress` and position, then asks the normal content/world spawn path to
+allocate a transient runtime entity. It does not edit map content, assign a
+`PersistentId`, or create a second dialogue, presentation, or simulation owner.
+
 ## Repository boundaries
 
 This directory is the project root. Do not nest another `PURGATORY/` directory.

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::dialogue::NpcDialogueDefinition;
+use crate::dialogue::{NpcDialogueDefinition, NpcDialoguePresentation};
 use crate::domain::ContentDomain;
 use crate::equipment::{EquipmentDefinition, EquipmentPresentation};
 use crate::error::{ContentError, ValidationIssue};
@@ -23,6 +23,7 @@ pub struct ContentRegistry {
     equipment_presentation: BTreeMap<String, EquipmentPresentation>,
     abilities: BTreeMap<String, AbilityDefinition>,
     npc_dialogues: BTreeMap<String, NpcDialogueDefinition>,
+    npc_dialogue_presentations: BTreeMap<String, NpcDialoguePresentation>,
     map_id_by_content: HashMap<ContentId, MapId>,
     content_by_map_id: HashMap<MapId, ContentId>,
 }
@@ -83,6 +84,25 @@ impl ContentRegistry {
     pub fn npc_dialogue_by_id(&self, id: ContentId) -> Option<&NpcDialogueDefinition> {
         let authored = self.labels.get(&id)?;
         self.npc_dialogues.get(authored)
+    }
+
+    /// Client-safe dialogue lines keyed by the same stable NPC identity. This
+    /// projection intentionally excludes authoritative conditions and actions.
+    #[must_use]
+    pub fn npc_dialogue_presentation_by_id(
+        &self,
+        id: ContentId,
+    ) -> Option<&NpcDialoguePresentation> {
+        let authored = self.labels.get(&id)?;
+        self.npc_dialogue_presentations.get(authored)
+    }
+
+    /// Client-safe runtime NPC catalogue. Only numerically allocated NPCs
+    /// projected from validated authoring content appear here.
+    pub fn iter_npc_dialogue_presentations(
+        &self,
+    ) -> impl Iterator<Item = &NpcDialoguePresentation> {
+        self.npc_dialogue_presentations.values()
     }
 
     #[must_use]
@@ -323,6 +343,26 @@ impl ContentRegistry {
         }
         self.intern(&def.authored_id, def.content_id, "npc_dialogue")?;
         self.npc_dialogues.insert(def.authored_id.clone(), def);
+        Ok(())
+    }
+
+    pub(crate) fn insert_npc_dialogue_presentation(
+        &mut self,
+        def: NpcDialoguePresentation,
+    ) -> Result<(), ContentError> {
+        self.intern(
+            &def.authored_id,
+            def.content_id,
+            "npc_dialogue_presentation",
+        )?;
+        if self
+            .npc_dialogue_presentations
+            .contains_key(&def.authored_id)
+        {
+            return Err(duplicate(&def.authored_id, "npc_dialogue_presentation"));
+        }
+        self.npc_dialogue_presentations
+            .insert(def.authored_id.clone(), def);
         Ok(())
     }
 

@@ -63,7 +63,7 @@ fn climb(equipment: EquipmentView) -> super::state::CharacterPresentationState {
 
 #[test]
 fn protocol_unchanged() {
-    assert_eq!(PROTOCOL_VERSION, 24);
+    assert_eq!(PROTOCOL_VERSION, 26);
 }
 
 #[test]
