@@ -18,9 +18,14 @@
 
 - One Beat is one NPC bubble. All authored `lines[]` are composed in order in
   that bubble and are not individual progression steps.
-- Choices appear above the local player. Arrow Up/Down changes the highlight,
-  `E` confirms it, and clicking a row selects and confirms that row.
-- After server acceptance, the selected player response remains for 0.5 seconds.
+- Simultaneous NPC and player bubbles are assigned adjacent horizontal columns,
+  so nearby speakers do not stack their bubbles on top of each other.
+- Choices appear on the local player's side. Every choice owns a separate
+  spaced row, text block, highlight, and matching mouse hit region. Arrow
+  Up/Down changes the highlight, `E` confirms it, and clicking a row selects
+  and confirms that row.
+- After server acceptance, the selected player response uses a distinct blue
+  player skin and remains visible for 1.0 second.
   Any already-received authoritative continuation is buffered locally until
   that presentation-only delay ends.
 - `ESC`, range/lifetime invalidation, and the existing InteractionSession remain

@@ -28,7 +28,7 @@ use crate::character_presentation::{
     from_remote_with_presentation, from_social_npc, immunity_flash_visible,
     presentation_debug_quads_with_assets,
 };
-use crate::choice_bubble::layout_choice_bubble;
+use crate::choice_bubble::layout_choice_bubble_in_column;
 #[cfg(feature = "dev-diagnostics")]
 use crate::debug::aoi_view::{
     band_label, bind_local_player_label_pose, classify_band, compact_world_space_label,
@@ -49,6 +49,7 @@ use crate::debug::{
     gameplay_receives_pointer, has_persistent_dev_warnings, is_debug_toggle, reset_action_flash,
     reset_player_uses_replica,
 };
+use crate::dialogue_bubble_layout::{BubbleColumn, dialogue_bubble_columns};
 use crate::dialogue_runtime::DialogueRuntime;
 #[cfg(feature = "dev-diagnostics")]
 use crate::display::collect_display_debug;
@@ -87,7 +88,7 @@ use crate::renderer::{
 #[cfg(feature = "dev-diagnostics")]
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
-use crate::speech_bubble::{layout_speech_bubble, layout_speech_bubble_with_offset};
+use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -2373,39 +2374,63 @@ impl ClientApp {
             let (width, height) = renderer.surface_size();
             constrained_pixel_viewport(width, height)
         });
-        let speech_bubble = if on_connection {
+        let local_player_pose = self.frame_local.presented;
+        let dialogue_target_world = if on_connection {
             None
         } else {
             self.dialogue_runtime.active().and_then(|dialogue| {
-                let text = self.dialogue_runtime.text(&self.registry)?;
-                let target = self.replica.get(dialogue.target)?;
-                Some(layout_speech_bubble(
-                    text,
-                    target.position,
-                    camera,
-                    viewport?,
-                ))
+                self.replica
+                    .get(dialogue.target)
+                    .map(|target| target.position)
             })
         };
+        let bubble_columns = match (local_player_pose, dialogue_target_world, viewport) {
+            (Some(player), Some(npc), Some(viewport)) => {
+                Some(dialogue_bubble_columns(player, npc, camera, viewport))
+            }
+            _ => None,
+        };
+        let speech_bubble = viewport.and_then(|viewport| {
+            let text = self.dialogue_runtime.text(&self.registry)?;
+            let target = dialogue_target_world?;
+            let column = bubble_columns
+                .map(|columns| columns.npc)
+                .unwrap_or_else(|| BubbleColumn::full(viewport));
+            Some(layout_speech_bubble_in_column(
+                text,
+                target,
+                camera,
+                viewport,
+                column,
+                SpeechBubbleSpeaker::Npc,
+            ))
+        });
         self.speech_bubble_hit = speech_bubble.as_ref().map(|bubble| bubble.hit_bounds);
-        let local_player_pose = self.frame_local.presented;
         let choice_bubble = viewport.and_then(|viewport| {
             let choices = self.dialogue_runtime.choices(&self.registry)?;
-            Some(layout_choice_bubble(
+            let column = bubble_columns
+                .map(|columns| columns.player)
+                .unwrap_or_else(|| BubbleColumn::full(viewport));
+            Some(layout_choice_bubble_in_column(
                 choices,
                 self.dialogue_runtime.selected_choice(),
                 local_player_pose?,
                 camera,
                 viewport,
+                column,
             ))
         });
         let player_response = viewport.and_then(|viewport| {
-            Some(layout_speech_bubble_with_offset(
+            let column = bubble_columns
+                .map(|columns| columns.player)
+                .unwrap_or_else(|| BubbleColumn::full(viewport));
+            Some(layout_speech_bubble_in_column(
                 self.dialogue_runtime.player_text()?,
                 local_player_pose?,
                 camera,
                 viewport,
-                132.0,
+                column,
+                SpeechBubbleSpeaker::Player,
             ))
         });
         self.choice_bubble_hits = choice_bubble
@@ -2420,7 +2445,7 @@ impl ClientApp {
         }
         if let Some(bubble) = choice_bubble {
             ui_rects.extend(bubble.rects);
-            ui_text.push(bubble.text);
+            ui_text.extend(bubble.texts);
         }
         if let Some(bubble) = player_response {
             ui_rects.extend(bubble.rects);

@@ -26,7 +26,7 @@ pub(crate) struct DialogueRuntime {
     accepted: Option<AcceptedChoice>,
 }
 
-const ACCEPTED_CHOICE_VISIBLE: Duration = Duration::from_millis(500);
+const ACCEPTED_CHOICE_VISIBLE: Duration = Duration::from_secs(1);
 
 struct AcceptedChoice {
     session_id: u32,
@@ -363,7 +363,7 @@ mod tests {
             .apply_line(continuation, interaction, &registry)
             .unwrap();
         assert_eq!(runtime.active().unwrap().beat_index, 0);
-        runtime.tick(Duration::from_millis(499));
+        runtime.tick(Duration::from_millis(999));
         assert_eq!(runtime.active().unwrap().beat_index, 0);
         runtime.tick(Duration::from_millis(1));
         assert_eq!(runtime.active().unwrap().beat_index, 2);
