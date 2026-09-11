@@ -51,7 +51,9 @@ pub use config::{
 };
 pub use connection::ConnectionId;
 pub use dialogue::{
-    DIALOGUE_ACTIVE_LINE_BYTES, DIALOGUE_ADVANCE_BYTES, DialogueAdvance, ServerDialogueLine,
+    DIALOGUE_ACTIVE_LINE_BYTES, DIALOGUE_ADVANCE_BYTES, DIALOGUE_CHOICE_ACCEPTED_BYTES,
+    DIALOGUE_CHOOSE_BYTES, DialogueAdvance, DialogueChoose, ServerDialogueChoiceAccepted,
+    ServerDialogueLine,
 };
 pub use equipment::{
     EQUIP_REQUEST_BYTES, EQUIPMENT_ACCEPTED_BYTES, EQUIPMENT_DELTA_EQUIP_BYTES,
@@ -117,7 +119,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 26);
+        assert_eq!(PROTOCOL_VERSION, 27);
     }
 
     #[test]

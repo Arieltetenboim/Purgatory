@@ -6,8 +6,10 @@ mod assets;
 mod camera_follow;
 mod character_assets;
 mod character_presentation;
+mod choice_bubble;
 #[cfg(feature = "dev-diagnostics")]
 mod debug;
+mod dialogue_bubble_layout;
 mod dialogue_runtime;
 mod display;
 #[cfg(feature = "dev-diagnostics")]

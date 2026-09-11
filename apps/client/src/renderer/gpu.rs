@@ -980,7 +980,7 @@ impl Renderer {
         &mut self,
         world_quads: &[DrawQuad],
         ui_rects: &[super::ui::UiRect],
-        ui_text: Option<&super::text::TextBlock>,
+        ui_text: &[super::text::TextBlock],
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         if !is_usable_surface(self.config.width, self.config.height) {
@@ -1018,7 +1018,7 @@ impl Renderer {
         &mut self,
         surface_texture: wgpu::SurfaceTexture,
         ui_rects: &[super::ui::UiRect],
-        ui_text: Option<&super::text::TextBlock>,
+        ui_text: &[super::text::TextBlock],
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         self.ensure_world_target();
@@ -1139,9 +1139,12 @@ impl Renderer {
             [self.config.width, self.config.height],
         );
         self.ui.draw(&mut encoder, &view);
-        if let Some(block) = ui_text {
-            self.text
-                .prepare_block(&self.queue, block, [self.config.width, self.config.height]);
+        if !ui_text.is_empty() {
+            self.text.prepare_blocks(
+                &self.queue,
+                ui_text,
+                [self.config.width, self.config.height],
+            );
             self.text.draw(&mut encoder, &view);
         } else {
             self.text.clear();

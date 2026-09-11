@@ -9,6 +9,9 @@ pub const ABILITY_BASIC_STRIKE: ContentId = ContentId::from_raw(40_001);
 pub const ABILITY_PRACTICE_SWORD_STRIKE: ContentId = ContentId::from_raw(40_002);
 
 pub const NPC_WELCOME_TRAVELER_STAYED: ContentId = ContentId::from_raw(20_001);
+pub const NPC_WELCOME_GATE_WATCHMAN: ContentId = ContentId::from_raw(20_002);
+pub const NPC_WELCOME_SHOPKEEPER: ContentId = ContentId::from_raw(20_003);
+pub const NPC_WELCOME_WORKSHOP_CRAFTSPERSON: ContentId = ContentId::from_raw(20_004);
 
 pub const MAP_FOOTNOTE: ContentId = ContentId::from_raw(50_001);
 pub const MAP_SECOND: ContentId = ContentId::from_raw(50_002);
@@ -37,6 +40,9 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
         "skill.basic.strike" => ABILITY_BASIC_STRIKE,
         "skill.debug.practice_sword_strike" => ABILITY_PRACTICE_SWORD_STRIKE,
         "npc.welcome.traveler_stayed" => NPC_WELCOME_TRAVELER_STAYED,
+        "npc.welcome.gate_watchman" => NPC_WELCOME_GATE_WATCHMAN,
+        "npc.welcome.shopkeeper" => NPC_WELCOME_SHOPKEEPER,
+        "npc.welcome.workshop_craftsperson" => NPC_WELCOME_WORKSHOP_CRAFTSPERSON,
         "map.dev.footnote" => MAP_FOOTNOTE,
         "map.dev.second" => MAP_SECOND,
         "equipment.debug.cloth_cap" => ITEM_CLOTH_CAP,
@@ -62,6 +68,9 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
         ABILITY_BASIC_STRIKE => "skill.basic.strike",
         ABILITY_PRACTICE_SWORD_STRIKE => "skill.debug.practice_sword_strike",
         NPC_WELCOME_TRAVELER_STAYED => "npc.welcome.traveler_stayed",
+        NPC_WELCOME_GATE_WATCHMAN => "npc.welcome.gate_watchman",
+        NPC_WELCOME_SHOPKEEPER => "npc.welcome.shopkeeper",
+        NPC_WELCOME_WORKSHOP_CRAFTSPERSON => "npc.welcome.workshop_craftsperson",
         MAP_FOOTNOTE => "map.dev.footnote",
         MAP_SECOND => "map.dev.second",
         ITEM_CLOTH_CAP => "equipment.debug.cloth_cap",
@@ -103,7 +112,14 @@ mod tests {
         for id in [ABILITY_BASIC_STRIKE, ABILITY_PRACTICE_SWORD_STRIKE] {
             assert_eq!(id.kind(), Some(ContentKind::Ability));
         }
-        assert_eq!(NPC_WELCOME_TRAVELER_STAYED.kind(), Some(ContentKind::Npc));
+        for id in [
+            NPC_WELCOME_TRAVELER_STAYED,
+            NPC_WELCOME_GATE_WATCHMAN,
+            NPC_WELCOME_SHOPKEEPER,
+            NPC_WELCOME_WORKSHOP_CRAFTSPERSON,
+        ] {
+            assert_eq!(id.kind(), Some(ContentKind::Npc));
+        }
         for id in [MAP_FOOTNOTE, MAP_SECOND] {
             assert_eq!(id.kind(), Some(ContentKind::Map));
         }
@@ -123,6 +139,9 @@ mod tests {
         for label in [
             "skill.basic.strike",
             "npc.welcome.traveler_stayed",
+            "npc.welcome.gate_watchman",
+            "npc.welcome.shopkeeper",
+            "npc.welcome.workshop_craftsperson",
             "map.dev.footnote",
             "equipment.debug.practice_sword",
             "entity.portal.to_second",

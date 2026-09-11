@@ -17,6 +17,7 @@ use purgatory_simulation::{TICK_DURATION, aoi_policy_rects};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::camera_follow::{CameraCommit, CameraFollow};
@@ -27,6 +28,7 @@ use crate::character_presentation::{
     from_remote_with_presentation, from_social_npc, immunity_flash_visible,
     presentation_debug_quads_with_assets,
 };
+use crate::choice_bubble::layout_choice_bubble_in_column;
 #[cfg(feature = "dev-diagnostics")]
 use crate::debug::aoi_view::{
     band_label, bind_local_player_label_pose, classify_band, compact_world_space_label,
@@ -47,6 +49,7 @@ use crate::debug::{
     gameplay_receives_pointer, has_persistent_dev_warnings, is_debug_toggle, reset_action_flash,
     reset_player_uses_replica,
 };
+use crate::dialogue_bubble_layout::{BubbleColumn, dialogue_bubble_columns};
 use crate::dialogue_runtime::DialogueRuntime;
 #[cfg(feature = "dev-diagnostics")]
 use crate::display::collect_display_debug;
@@ -75,7 +78,7 @@ use crate::prediction::{LocalPrediction, local_presentation_pose};
 #[cfg(feature = "dev-diagnostics")]
 use crate::renderer::rf_diag::{RfVertexProof, rf_probe_proof, rf_scene_quads};
 use crate::renderer::{
-    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, Renderer,
+    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, Renderer, TextBlock, UiRect,
     constrained_pixel_viewport, parallax_quads,
 };
 #[cfg(feature = "dev-diagnostics")]
@@ -85,7 +88,7 @@ use crate::renderer::{
 #[cfg(feature = "dev-diagnostics")]
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
-use crate::speech_bubble::layout_speech_bubble;
+use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -189,6 +192,8 @@ struct ClientApp {
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
     speech_bubble_hit: Option<crate::renderer::UiRect>,
+    choice_bubble_hits: Vec<crate::renderer::UiRect>,
+    choice_click_edge: Option<usize>,
     bubble_click_edge: bool,
     dialogue_advance_sent_this_frame: bool,
     trace_replica_apply: bool,
@@ -295,6 +300,8 @@ impl ClientApp {
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
             speech_bubble_hit: None,
+            choice_bubble_hits: Vec::new(),
+            choice_click_edge: None,
             bubble_click_edge: false,
             dialogue_advance_sent_this_frame: false,
             trace_replica_apply: false,
@@ -484,6 +491,14 @@ impl ClientApp {
                     }
                 }
             }
+            if let crate::network::state::NetworkEvent::DialogueChoiceAccepted { event, .. } =
+                &event
+                && let Err(reason) = self
+                    .dialogue_runtime
+                    .apply_choice_accepted(*event, &self.registry)
+            {
+                eprintln!("N10_DIALOGUE rejected choice acknowledgement: {reason:?}");
+            }
             if let crate::network::state::NetworkEvent::PresentationOneShot { event, .. } = &event {
                 println!("A5_ONESHOT client_recv {event:?}");
                 self.presentation_oneshots.apply_server_event(*event);
@@ -504,6 +519,8 @@ impl ClientApp {
         self.ui_runtime = UIRuntimeState::Idle;
         self.dialogue_runtime.clear();
         self.speech_bubble_hit = None;
+        self.choice_bubble_hits.clear();
+        self.choice_click_edge = None;
         self.bubble_click_edge = false;
         #[cfg(feature = "dev-diagnostics")]
         {
@@ -1332,9 +1349,39 @@ impl ClientApp {
         network.try_send_dialogue_advance(session_id)
     }
 
+    fn try_send_dialogue_choice(&mut self, request: purgatory_protocol::DialogueChoose) -> bool {
+        if self.dialogue_advance_sent_this_frame {
+            return false;
+        }
+        let Some(network) = self.network.as_ref() else {
+            return false;
+        };
+        self.dialogue_advance_sent_this_frame = true;
+        network.try_send_dialogue_choose(request)
+    }
+
     fn poll_bubble_click_request(&mut self) {
+        if let Some(index) = self.choice_click_edge.take() {
+            if self.lifecycle.gameplay_actions_allowed()
+                && !self.gameplay_input_locked()
+                && self.dialogue_runtime.select_choice(index, &self.registry)
+                && let Some(request) = self.dialogue_runtime.choice_request(&self.registry)
+            {
+                self.last_interact_request = format!(
+                    "DialogueChoose {}:{}:{}",
+                    request.session_id, request.beat_index, request.choice_index
+                );
+                if !self.try_send_dialogue_choice(request) {
+                    self.last_interact_result = "dialogue choice send failed".into();
+                }
+            }
+            return;
+        }
         let clicked = std::mem::take(&mut self.bubble_click_edge);
         if !clicked || !self.lifecycle.gameplay_actions_allowed() || self.gameplay_input_locked() {
+            return;
+        }
+        if self.dialogue_runtime.acceptance_pending() {
             return;
         }
         let UIRuntimeState::Active { session_id, .. } = self.ui_runtime else {
@@ -1379,6 +1426,9 @@ impl ClientApp {
                 return;
             }
             UIRuntimeState::Active { session_id, target } => {
+                if self.dialogue_runtime.acceptance_pending() {
+                    return;
+                }
                 if self
                     .dialogue_runtime
                     .active()
@@ -1387,9 +1437,19 @@ impl ClientApp {
                     if self.dialogue_advance_sent_this_frame {
                         return;
                     }
-                    self.last_interact_request = format!("DialogueAdvance {session_id}");
-                    if !self.try_send_dialogue_advance(session_id) {
-                        self.last_interact_result = "dialogue advance send failed".into();
+                    if let Some(request) = self.dialogue_runtime.choice_request(&self.registry) {
+                        self.last_interact_request = format!(
+                            "DialogueChoose {}:{}:{}",
+                            request.session_id, request.beat_index, request.choice_index
+                        );
+                        if !self.try_send_dialogue_choice(request) {
+                            self.last_interact_result = "dialogue choice send failed".into();
+                        }
+                    } else {
+                        self.last_interact_request = format!("DialogueAdvance {session_id}");
+                        if !self.try_send_dialogue_advance(session_id) {
+                            self.last_interact_result = "dialogue advance send failed".into();
+                        }
                     }
                     return;
                 }
@@ -1949,6 +2009,8 @@ impl ClientApp {
         let frame_dt = Instant::now()
             .saturating_duration_since(self.last_instant)
             .as_secs_f32();
+        self.dialogue_runtime
+            .tick(Duration::from_secs_f32(frame_dt.max(0.0)));
         let fade_dt = frame_dt;
         #[cfg(feature = "dev-diagnostics")]
         self.resolve_selected_animation_sample_t(frame_dt);
@@ -2308,28 +2370,87 @@ impl ClientApp {
             quads.push(fade);
         }
 
-        let speech_bubble = if on_connection {
+        let viewport = self.renderer.as_ref().and_then(|renderer| {
+            let (width, height) = renderer.surface_size();
+            constrained_pixel_viewport(width, height)
+        });
+        let local_player_pose = self.frame_local.presented;
+        let dialogue_target_world = if on_connection {
             None
         } else {
             self.dialogue_runtime.active().and_then(|dialogue| {
-                let text = self.dialogue_runtime.text(&self.registry)?;
-                let target = self.replica.get(dialogue.target)?;
-                let (width, height) = self.renderer.as_ref()?.surface_size();
-                let viewport = constrained_pixel_viewport(width, height)?;
-                Some(layout_speech_bubble(
-                    text,
-                    target.position,
-                    camera,
-                    viewport,
-                ))
+                self.replica
+                    .get(dialogue.target)
+                    .map(|target| target.position)
             })
         };
+        let bubble_columns = match (local_player_pose, dialogue_target_world, viewport) {
+            (Some(player), Some(npc), Some(viewport)) => {
+                Some(dialogue_bubble_columns(player, npc, camera, viewport))
+            }
+            _ => None,
+        };
+        let speech_bubble = viewport.and_then(|viewport| {
+            let text = self.dialogue_runtime.text(&self.registry)?;
+            let target = dialogue_target_world?;
+            let column = bubble_columns
+                .map(|columns| columns.npc)
+                .unwrap_or_else(|| BubbleColumn::full(viewport));
+            Some(layout_speech_bubble_in_column(
+                text,
+                target,
+                camera,
+                viewport,
+                column,
+                SpeechBubbleSpeaker::Npc,
+            ))
+        });
         self.speech_bubble_hit = speech_bubble.as_ref().map(|bubble| bubble.hit_bounds);
-        let ui_rects = speech_bubble
+        let choice_bubble = viewport.and_then(|viewport| {
+            let choices = self.dialogue_runtime.choices(&self.registry)?;
+            let column = bubble_columns
+                .map(|columns| columns.player)
+                .unwrap_or_else(|| BubbleColumn::full(viewport));
+            Some(layout_choice_bubble_in_column(
+                choices,
+                self.dialogue_runtime.selected_choice(),
+                local_player_pose?,
+                camera,
+                viewport,
+                column,
+            ))
+        });
+        let player_response = viewport.and_then(|viewport| {
+            let column = bubble_columns
+                .map(|columns| columns.player)
+                .unwrap_or_else(|| BubbleColumn::full(viewport));
+            Some(layout_speech_bubble_in_column(
+                self.dialogue_runtime.player_text()?,
+                local_player_pose?,
+                camera,
+                viewport,
+                column,
+                SpeechBubbleSpeaker::Player,
+            ))
+        });
+        self.choice_bubble_hits = choice_bubble
             .as_ref()
-            .map(|bubble| bubble.rects.as_slice())
+            .map(|bubble| bubble.choice_hits.clone())
             .unwrap_or_default();
-        let ui_text = speech_bubble.as_ref().map(|bubble| &bubble.text);
+        let mut ui_rects: Vec<UiRect> = Vec::new();
+        let mut ui_text: Vec<TextBlock> = Vec::new();
+        if let Some(bubble) = speech_bubble {
+            ui_rects.extend(bubble.rects);
+            ui_text.push(bubble.text);
+        }
+        if let Some(bubble) = choice_bubble {
+            ui_rects.extend(bubble.rects);
+            ui_text.extend(bubble.texts);
+        }
+        if let Some(bubble) = player_response {
+            ui_rects.extend(bubble.rects);
+            ui_text.push(bubble.text);
+        }
 
         let Some(window) = self.window.clone() else {
             return;
@@ -2374,7 +2495,7 @@ impl ClientApp {
                 let can_connect = self.lifecycle.can_connect();
                 let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
                 let login = &mut self.dev_login;
-                renderer.render(&quads, ui_rects, ui_text, |pass| {
+                renderer.render(&quads, &ui_rects, &ui_text, |pass| {
                     let Some(overlay) = overlay else {
                         return Vec::new();
                     };
@@ -2402,7 +2523,7 @@ impl ClientApp {
             #[cfg(not(feature = "dev-diagnostics"))]
             {
                 let _ = (&window, on_connection);
-                renderer.render(&quads, ui_rects, ui_text, |_| Vec::new())
+                renderer.render(&quads, &ui_rects, &ui_text, |_| Vec::new())
             }
         };
 
@@ -3966,9 +4087,25 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let receives = true;
                 if self.lifecycle.gameplay_actions_allowed() && receives {
+                    let dialogue_navigation = event.state == ElementState::Pressed
+                        && !event.repeat
+                        && self.dialogue_runtime.choices(&self.registry).is_some()
+                        && match event.physical_key {
+                            PhysicalKey::Code(KeyCode::ArrowUp) => {
+                                self.dialogue_runtime.select_next(&self.registry, -1)
+                            }
+                            PhysicalKey::Code(KeyCode::ArrowDown) => {
+                                self.dialogue_runtime.select_next(&self.registry, 1)
+                            }
+                            _ => false,
+                        };
                     // Latch ActionState only. Intent is emitted on the sim tick
                     // that consumes the same PlayerInput as prediction.
-                    self.actions.apply_key_event(&event);
+                    if !dialogue_navigation {
+                        self.actions.apply_key_event(&event);
+                    } else {
+                        window.request_redraw();
+                    }
                 }
             }
             WindowEvent::Focused(focused) => {
@@ -4003,13 +4140,22 @@ impl ApplicationHandler for ClientApp {
                     && gameplay_mouse
                     && state == ElementState::Pressed
                     && button == MouseButton::Left
-                    && self.cursor_position.is_some_and(|cursor| {
-                        self.speech_bubble_hit
-                            .is_some_and(|bounds| bounds.contains(cursor))
-                    })
+                    && let Some(cursor) = self.cursor_position
                 {
-                    self.bubble_click_edge = true;
-                    window.request_redraw();
+                    if let Some(index) = self
+                        .choice_bubble_hits
+                        .iter()
+                        .position(|bounds| bounds.contains(cursor))
+                    {
+                        self.choice_click_edge = Some(index);
+                        window.request_redraw();
+                    } else if self
+                        .speech_bubble_hit
+                        .is_some_and(|bounds| bounds.contains(cursor))
+                    {
+                        self.bubble_click_edge = true;
+                        window.request_redraw();
+                    }
                 }
             }
             WindowEvent::MouseWheel { .. } => {}

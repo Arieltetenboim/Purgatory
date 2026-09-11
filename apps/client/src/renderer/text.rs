@@ -364,21 +364,29 @@ impl TextRenderer {
         self.upload_and_store(queue, layout)
     }
 
-    pub(crate) fn prepare_block(
+    pub(crate) fn prepare_blocks(
         &mut self,
         queue: &wgpu::Queue,
-        block: &TextBlock,
+        blocks: &[TextBlock],
         viewport: [u32; 2],
-    ) -> TextMetrics {
-        let layout = TextLayout::with_max_width(
-            &block.content,
-            block.style,
-            block.anchor,
-            viewport,
-            block.max_width,
-            &mut self.atlas,
-        );
-        self.upload_and_store(queue, layout)
+    ) {
+        let mut vertices = Vec::new();
+        for block in blocks {
+            let layout = TextLayout::with_max_width(
+                &block.content,
+                block.style,
+                block.anchor,
+                viewport,
+                block.max_width,
+                &mut self.atlas,
+            );
+            let remaining = MAX_GLYPHS * 6 - vertices.len().min(MAX_GLYPHS * 6);
+            vertices.extend(layout.vertices.into_iter().take(remaining));
+            if vertices.len() == MAX_GLYPHS * 6 {
+                break;
+            }
+        }
+        self.upload_vertices(queue, &vertices);
     }
 
     pub(crate) fn clear(&mut self) {
@@ -386,6 +394,11 @@ impl TextRenderer {
     }
 
     fn upload_and_store(&mut self, queue: &wgpu::Queue, layout: TextLayout) -> TextMetrics {
+        self.upload_vertices(queue, &layout.vertices);
+        layout.metrics
+    }
+
+    fn upload_vertices(&mut self, queue: &wgpu::Queue, vertices: &[Vertex]) {
         for (cell, pixels) in self.atlas.pending.drain(..) {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -412,11 +425,10 @@ impl TextRenderer {
             );
             self.uploads += 1;
         }
-        self.count = layout.vertices.len() as u32;
+        self.count = vertices.len() as u32;
         if self.count > 0 {
-            queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&layout.vertices));
+            queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(vertices));
         }
-        layout.metrics
     }
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
         if self.count == 0 {

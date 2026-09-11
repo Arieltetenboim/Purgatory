@@ -1072,18 +1072,29 @@ mod tests {
             .expect("numeric Traveler entity");
         assert_eq!(traveler_entity.authored_id, traveler.authored_id);
         assert_eq!(traveler_entity.content_id, traveler.content_id);
-        assert_eq!(registry.npc_dialogue_count(), 1);
+        assert_eq!(registry.npc_dialogue_count(), 4);
         let spawn_catalog: Vec<_> = registry.iter_npc_dialogue_presentations().collect();
-        assert_eq!(spawn_catalog.len(), 1);
-        assert_eq!(spawn_catalog[0].content_id, NPC_WELCOME_TRAVELER_STAYED);
+        assert_eq!(spawn_catalog.len(), 4);
+        assert!(
+            spawn_catalog
+                .iter()
+                .any(|npc| npc.content_id == NPC_WELCOME_TRAVELER_STAYED)
+        );
+        for npc in &spawn_catalog {
+            let entity = registry
+                .entity_by_id(npc.content_id)
+                .expect("every DEV-spawnable authored NPC has an entity definition");
+            assert_eq!(entity.authored_id, npc.authored_id);
+            assert_eq!(entity.content_id, npc.content_id);
+        }
 
         let intro = &traveler.beats[0];
         assert_eq!(intro.id, "intro");
         assert_eq!(intro.selection_role, DialogueSelectionRole::Entry);
         assert_eq!(intro.priority, 100);
         assert_eq!(intro.pool, DialoguePool::Mandatory);
-        assert_eq!(intro.lines.len(), 2);
-        assert_eq!(intro.lines[1].text, "Work? Somehow, there's always work.");
+        assert_eq!(intro.lines.len(), 1);
+        assert!(intro.lines[0].text.ends_with("there's always work."));
         assert!(matches!(
             &intro.conditions[0],
             DialogueCondition::NpcMet {
@@ -1106,11 +1117,20 @@ mod tests {
             .expect("client-safe Traveler lines");
         assert_eq!(
             presentation
-                .line(crate::DialogueBeatIndex::from_raw(0), 0)
-                .expect("intro line")
-                .text,
+                .beat(crate::DialogueBeatIndex::from_raw(0))
+                .expect("intro beat")
+                .display_text,
             intro.lines[0].text
         );
+        let intro_presentation = presentation
+            .beat(crate::DialogueBeatIndex::from_raw(0))
+            .expect("intro presentation");
+        assert_eq!(intro_presentation.choices.len(), 3);
+        assert_eq!(intro_presentation.choices[0].text, "What's here?");
+        let lore = presentation
+            .beat(crate::DialogueBeatIndex::from_raw(8))
+            .expect("multi-line lore Beat");
+        assert!(lore.display_text.contains("\n\n"));
     }
 
     #[test]

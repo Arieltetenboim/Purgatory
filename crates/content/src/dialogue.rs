@@ -63,8 +63,8 @@ pub trait DialogueConditionState {
     fn item_equipped(&self, item_authored: &str) -> bool;
 }
 
-/// Client-safe line projection. Conditions, pools, choices and actions remain
-/// in [`NpcDialogueDefinition`] and are never required by presentation.
+/// Client-safe Beat projection. Choice labels are present; conditions, pools,
+/// continuation, and actions remain exclusively in [`NpcDialogueDefinition`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NpcDialoguePresentation {
     pub content_id: ContentId,
@@ -74,11 +74,8 @@ pub struct NpcDialoguePresentation {
 
 impl NpcDialoguePresentation {
     #[must_use]
-    pub fn line(&self, beat: DialogueBeatIndex, line_index: u32) -> Option<&DialogueLine> {
-        self.beats
-            .get(beat.as_usize())?
-            .lines
-            .get(usize::try_from(line_index).ok()?)
+    pub fn beat(&self, beat: DialogueBeatIndex) -> Option<&DialoguePresentationBeat> {
+        self.beats.get(beat.as_usize())
     }
 }
 
@@ -92,6 +89,19 @@ impl From<&NpcDialogueDefinition> for NpcDialoguePresentation {
                 .iter()
                 .map(|beat| DialoguePresentationBeat {
                     lines: beat.lines.clone(),
+                    choices: beat
+                        .choices
+                        .iter()
+                        .map(|choice| DialoguePresentationChoice {
+                            text: choice.text.clone(),
+                        })
+                        .collect(),
+                    display_text: beat
+                        .lines
+                        .iter()
+                        .map(|line| line.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n\n"),
                 })
                 .collect(),
         }
@@ -101,10 +111,20 @@ impl From<&NpcDialogueDefinition> for NpcDialoguePresentation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DialoguePresentationBeat {
     pub lines: Vec<DialogueLine>,
+    /// Client-safe choice labels only. Continuation and actions stay server-side.
+    pub choices: Vec<DialoguePresentationChoice>,
+    /// Precomposed once during content loading. A Beat is the visible and
+    /// progressive unit; authored lines remain available for later cues.
+    pub display_text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialoguePresentationChoice {
+    pub text: String,
 }
 
 /// Compact resolved index into an NPC definition's authored beat order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct DialogueBeatIndex(u32);
 
 impl DialogueBeatIndex {
@@ -1074,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn client_projection_contains_lines_only() {
+    fn client_projection_composes_one_display_string_per_beat() {
         let definition = definition(vec![beat(
             "intro",
             DialogueSelectionRole::Entry,
@@ -1083,17 +1103,10 @@ mod tests {
             Vec::new(),
         )]);
         let presentation = NpcDialoguePresentation::from(&definition);
-        assert_eq!(
-            presentation
-                .line(DialogueBeatIndex::from_raw(0), 0)
-                .unwrap()
-                .text,
-            "intro"
-        );
-        assert!(
-            presentation
-                .line(DialogueBeatIndex::from_raw(0), 1)
-                .is_none()
-        );
+        let beat = presentation
+            .beat(DialogueBeatIndex::from_raw(0))
+            .expect("projected beat");
+        assert_eq!(beat.display_text, "intro");
+        assert_eq!(beat.lines[0].text, "intro");
     }
 }

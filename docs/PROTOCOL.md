@@ -40,7 +40,7 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 26` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 27` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
 v26 is an intentional incompatible bump: v1–v25 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
@@ -101,6 +101,14 @@ numeric NPC `ContentId`. The request never carries a position, address, or
 runtime `EntityId`: the server resolves validated runtime content and copies
 the bound player's current authoritative transform and `WorldAddress`. The
 spawned entity has no `PersistentId` and exists only in server memory.
+
+Protocol v27 adds `DialogueChoose` (tag 38) and
+`DialogueChoiceAccepted` (tag 39). The client sends only the active session,
+Beat index, and choice index. The server validates all three, records Beat
+completion in transient dialogue state, and follows authored `choice.next`.
+Text, actions, and next-Beat authority never come from the client. The v25
+active-line envelope remains wire-compatible; N10 now uses its zero line index
+as a Beat presentation anchor and composes all authored `lines[]` in that Beat.
 
 ## Golden wire vectors
 
@@ -234,6 +242,8 @@ Client:
 - `DevSpawnNpc { npc_content_id: ContentId }` — tag **37**. DEV overlay only.
   Server-authoritative transient NPC spawn at the bound player's current
   position and `WorldAddress`; the client cannot choose either value.
+- `DialogueChoose { session_id, beat_index, choice_index }` — tag **38**.
+  Semantic choice intent only; the server validates and owns continuation.
 - `Equip { seq: u32, slot: u8, content_id: ContentId token }` — tag **18**. 14 bytes with tag (`1+4+1+8`). Slot is dense `0..=5` (Headwear…Weapon). No presentation fields.
 - `Unequip { seq: u32, slot: u8 }` — tag **19**. 6 bytes with tag.
 

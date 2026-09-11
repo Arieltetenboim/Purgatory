@@ -119,20 +119,22 @@ ENTRY selection follows the currently proven NPC Lab semantics:
 
 Explicit `choice.next` transitions follow the authored continuation directly; they do not rerun ENTRY selection unless the current path ends and a future interaction begins.
 
-### Lines
+### Beats and lines
 
-NPC lines are shown **one line at a time**.
+One authored **Beat** is one NPC bubble and one progression unit. Its nonempty
+`lines[]` are composed in authored order inside that bubble; they are not
+separate advance steps.
 
 For N10:
 
 - text appears fully immediately;
-- click on the NPC speech bubble advances to the next line;
-- `E` also advances the current NPC line;
+- click on the NPC speech bubble advances/completes the current Beat;
+- `E` also advances/completes the current Beat;
 - future typewriter text is explicitly deferred.
 
-When the final NPC line has choices, the last NPC bubble remains visible while choices appear.
+When the current Beat has choices, its NPC bubble remains visible while choices appear.
 
-When a beat has no choices, advancing past its final line completes the beat and ends/follows only whatever behavior the authored contract explicitly supports. Do not invent an implicit quest transition.
+When a Beat has no choices, advancing completes it and ends/follows only whatever behavior the authored contract explicitly supports. Do not invent an implicit quest transition.
 
 ## 7. Player choices
 
@@ -343,19 +345,19 @@ Gate: normal client sees humanoid NPC, approaches it, presses `E`, and receives 
 
 ### N10c — Dialogue session + NPC bubble
 
-Goal: authoritative ENTRY selection and line progression become visible.
+Goal: authoritative ENTRY selection and Beat progression become visible.
 
 Includes:
 
 - player-relative dialogue session state linked to InteractionSession;
 - initial ENTRY selection from authoritative player state;
 - NPC world-space speech bubble;
-- click / `E` line progression;
+- click / `E` Beat progression;
 - movement input lock and mouse UI mode;
 - general ESC close path;
 - cancellation semantics with no accidental Heard consumption.
 
-Gate: Traveler conversation opens, shows authored lines one at a time, can be cancelled/reopened safely, and movement is locked only while active.
+Gate: Traveler conversation opens, shows one authored Beat per bubble, can be cancelled/reopened safely, and movement is locked only while active.
 
 ### N10d — Choices + continuation
 
@@ -416,7 +418,7 @@ Humanoid Social NPC in Idle
   -> E
   -> movement locked + mouse usable
   -> NPC speech bubble
-  -> click or E through lines
+  -> click or E through Beats
   -> choices remain above player while NPC question remains visible
   -> mouse OR Up/Down + E selection
   -> selected player response shown briefly

@@ -7,7 +7,9 @@ use crate::ability::{
     ABILITY_ACTIVATE_INDEPENDENT_BYTES, ABILITY_ACTIVATE_SELECTED_BYTES, AbilityActivateRequest,
     AbilityCommandReject, ServerAbility,
 };
-use crate::dialogue::{DialogueAdvance, ServerDialogueLine};
+use crate::dialogue::{
+    DialogueAdvance, DialogueChoose, ServerDialogueChoiceAccepted, ServerDialogueLine,
+};
 use crate::equipment::{
     EquipRequest, EquipmentRejectReason, ServerEquipment, UnequipRequest, slot_valid,
 };
@@ -63,6 +65,8 @@ const TAG_INVENTORY_SNAPSHOT: u8 = 34;
 const TAG_DIALOGUE_ADVANCE: u8 = 35;
 const TAG_DIALOGUE_ACTIVE_LINE: u8 = 36;
 const TAG_DEV_SPAWN_NPC: u8 = 37;
+const TAG_DIALOGUE_CHOOSE: u8 = 38;
+const TAG_DIALOGUE_CHOICE_ACCEPTED: u8 = 39;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -275,6 +279,7 @@ pub enum ClientControl {
     InteractOpen(InteractOpen),
     InteractClose(InteractClose),
     DialogueAdvance(DialogueAdvance),
+    DialogueChoose(DialogueChoose),
     PortalActivate(PortalActivate),
     /// DEV overlay Channel request. Server validates and owns WorldAddress.
     DevSetChannel(DevSetChannel),
@@ -305,6 +310,7 @@ pub enum ServerControl {
     Disconnect(DisconnectReason),
     Interact(ServerInteract),
     DialogueLine(ServerDialogueLine),
+    DialogueChoiceAccepted(ServerDialogueChoiceAccepted),
     Equipment(ServerEquipment),
     /// Authoritative presentation oneshot start/clear (protocol v13).
     PresentationOneShot(ServerPresentationOneShot),
@@ -390,6 +396,17 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             let mut out = Vec::with_capacity(1 + 4);
             out.push(TAG_DIALOGUE_ADVANCE);
             out.extend_from_slice(&advance.session_id.to_le_bytes());
+            Ok(out)
+        }
+        ClientControl::DialogueChoose(choice) => {
+            if choice.session_id == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            let mut out = Vec::with_capacity(1 + crate::DIALOGUE_CHOOSE_BYTES);
+            out.push(TAG_DIALOGUE_CHOOSE);
+            out.extend_from_slice(&choice.session_id.to_le_bytes());
+            out.extend_from_slice(&choice.beat_index.to_le_bytes());
+            out.extend_from_slice(&choice.choice_index.to_le_bytes());
             Ok(out)
         }
         ClientControl::PortalActivate(activate) => {
@@ -550,6 +567,20 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
                 session_id,
             }))
         }
+        TAG_DIALOGUE_CHOOSE => {
+            let (session_id, rest) = read_u32(rest)?;
+            let (beat_index, rest) = read_u32(rest)?;
+            let (choice_index, rest) = read_u32(rest)?;
+            expect_empty(rest)?;
+            if session_id == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(ClientControl::DialogueChoose(DialogueChoose {
+                session_id,
+                beat_index,
+                choice_index,
+            }))
+        }
         TAG_PORTAL_ACTIVATE => {
             let (target, rest) = read_wire_entity(rest)?;
             expect_empty(rest)?;
@@ -706,6 +737,17 @@ pub fn encode_server_control(msg: &ServerControl) -> Result<Vec<u8>, CodecError>
         }
         ServerControl::Interact(event) => encode_server_interact(event),
         ServerControl::DialogueLine(event) => encode_server_dialogue_line(*event),
+        ServerControl::DialogueChoiceAccepted(event) => {
+            if event.session_id == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            let mut out = Vec::with_capacity(1 + crate::DIALOGUE_CHOICE_ACCEPTED_BYTES);
+            out.push(TAG_DIALOGUE_CHOICE_ACCEPTED);
+            out.extend_from_slice(&event.session_id.to_le_bytes());
+            out.extend_from_slice(&event.beat_index.to_le_bytes());
+            out.extend_from_slice(&event.choice_index.to_le_bytes());
+            Ok(out)
+        }
         ServerControl::Equipment(event) => encode_server_equipment(event),
         ServerControl::PresentationOneShot(event) => Ok(encode_server_presentation_oneshot(event)),
         ServerControl::Ability(event) => encode_server_ability(event),
@@ -747,6 +789,22 @@ pub fn decode_server_control(bytes: &[u8]) -> Result<ServerControl, CodecError> 
         TAG_DIALOGUE_ACTIVE_LINE => Ok(ServerControl::DialogueLine(decode_server_dialogue_line(
             rest,
         )?)),
+        TAG_DIALOGUE_CHOICE_ACCEPTED => {
+            let (session_id, rest) = read_u32(rest)?;
+            let (beat_index, rest) = read_u32(rest)?;
+            let (choice_index, rest) = read_u32(rest)?;
+            expect_empty(rest)?;
+            if session_id == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(ServerControl::DialogueChoiceAccepted(
+                ServerDialogueChoiceAccepted {
+                    session_id,
+                    beat_index,
+                    choice_index,
+                },
+            ))
+        }
         TAG_EQUIPMENT_ACCEPTED | TAG_EQUIPMENT_REJECTED => Ok(ServerControl::Equipment(
             decode_server_equipment(tag, rest)?,
         )),
@@ -1499,6 +1557,26 @@ mod tests {
     }
 
     #[test]
+    fn dialogue_choice_roundtrips_and_rejects_invalid_sessions() {
+        let msg = ClientControl::DialogueChoose(DialogueChoose {
+            session_id: 7,
+            beat_index: 2,
+            choice_index: 1,
+        });
+        let encoded = encode_client_control(&msg).unwrap();
+        assert_eq!(encoded[0], TAG_DIALOGUE_CHOOSE);
+        assert_eq!(decode_client_control(&encoded).unwrap(), msg);
+        assert_eq!(
+            encode_client_control(&ClientControl::DialogueChoose(DialogueChoose {
+                session_id: 0,
+                beat_index: 0,
+                choice_index: 0,
+            })),
+            Err(CodecError::InvalidValue)
+        );
+    }
+
+    #[test]
     fn portal_activate_roundtrip() {
         let msg = ClientControl::PortalActivate(PortalActivate {
             target: WireEntityId {
@@ -1646,6 +1724,18 @@ mod tests {
             encode_server_control(&invalid),
             Err(CodecError::InvalidValue)
         );
+    }
+
+    #[test]
+    fn dialogue_choice_accepted_roundtrips() {
+        let msg = ServerControl::DialogueChoiceAccepted(ServerDialogueChoiceAccepted {
+            session_id: 7,
+            beat_index: 2,
+            choice_index: 1,
+        });
+        let encoded = encode_server_control(&msg).unwrap();
+        assert_eq!(encoded[0], TAG_DIALOGUE_CHOICE_ACCEPTED);
+        assert_eq!(decode_server_control(&encoded).unwrap(), msg);
     }
 
     #[test]

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "npc.welcome.workshop_craftsperson",
+  "debug_name": "Workshop Craftsman",
+  "visible": true,
+  "interactable": "npc"
+}

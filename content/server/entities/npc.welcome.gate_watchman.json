@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "npc.welcome.gate_watchman",
+  "debug_name": "Welcome Gate Watchman",
+  "visible": true,
+  "interactable": "npc"
+}
