@@ -99,6 +99,22 @@ pub fn from_social_npc(motion: SocialNpcMotion, held_facing: Facing) -> Characte
     }
 }
 
+/// Client-local dialogue override. This changes only the observing client's
+/// presentation state and never mutates replica or server-owned NPC facing.
+#[must_use]
+pub fn apply_local_dialogue_facing(
+    mut state: CharacterPresentationState,
+    npc_x: f32,
+    player_x: f32,
+) -> CharacterPresentationState {
+    state.facing = if player_x < npc_x {
+        Facing::Left
+    } else {
+        Facing::Right
+    };
+    state
+}
+
 fn build_character_presentation(
     motion: MotionSample,
     held_facing: Facing,

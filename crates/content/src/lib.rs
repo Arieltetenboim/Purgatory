@@ -16,8 +16,8 @@ pub use ability::ABILITY_CONTENT_SCHEMA_VERSION;
 pub use dialogue::{
     DialogueAction, DialogueBeat, DialogueBeatIndex, DialogueChoice, DialogueCondition,
     DialogueConditionState, DialogueLine, DialoguePool, DialoguePresentationBeat,
-    DialoguePresentationChoice, DialogueSelectionRole, NPC_DIALOGUE_SCHEMA_VERSION,
-    NpcDialogueDefinition, NpcDialoguePresentation,
+    DialoguePresentationChoice, DialoguePresentationLine, DialogueSelectionRole,
+    NPC_DIALOGUE_SCHEMA_VERSION, NpcDialogueDefinition, NpcDialoguePresentation,
 };
 pub use domain::ContentDomain;
 pub use equipment::{

@@ -16,6 +16,7 @@ use crate::ui_runtime::UIRuntimeState;
 pub(crate) enum DialogueProjectionError {
     InteractionMismatch,
     UnknownBeat,
+    UnknownLine,
 }
 
 #[derive(Default)]
@@ -24,6 +25,16 @@ pub(crate) struct DialogueRuntime {
     pending: Option<ServerDialogueLine>,
     selected_choice: usize,
     accepted: Option<AcceptedChoice>,
+    presentation_revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DialoguePresentationCue<'a> {
+    pub target: WireEntityId,
+    /// Changes whenever a new semantic line becomes visible, including when
+    /// the authored animation id is reused by consecutive Beats.
+    pub revision: u64,
+    pub animation: Option<&'a str>,
 }
 
 const ACCEPTED_CHOICE_VISIBLE: Duration = Duration::from_secs(1);
@@ -63,12 +74,16 @@ impl DialogueRuntime {
         ) {
             return Err(DialogueProjectionError::InteractionMismatch);
         }
-        let resolved = registry
+        let resolved_beat = registry
             .npc_dialogue_presentation_by_id(line.npc_content_id)
             .and_then(|definition| definition.beat(DialogueBeatIndex::from_raw(line.beat_index)));
-        if resolved.is_none() {
+        let Some(resolved_beat) = resolved_beat else {
             self.active = None;
             return Err(DialogueProjectionError::UnknownBeat);
+        };
+        if resolved_beat.lines.get(line.line_index as usize).is_none() {
+            self.active = None;
+            return Err(DialogueProjectionError::UnknownLine);
         }
         if self
             .accepted
@@ -77,7 +92,7 @@ impl DialogueRuntime {
         {
             self.pending = Some(line);
         } else {
-            self.active = Some(line);
+            self.activate_line(line);
             self.pending = None;
             self.selected_choice = 0;
         }
@@ -160,6 +175,24 @@ impl DialogueRuntime {
     }
 
     #[must_use]
+    pub(crate) fn presentation_cue<'a>(
+        &self,
+        registry: &'a ContentRegistry,
+    ) -> Option<DialoguePresentationCue<'a>> {
+        let active = self.active?;
+        let line = registry
+            .npc_dialogue_presentation_by_id(active.npc_content_id)?
+            .beat(DialogueBeatIndex::from_raw(active.beat_index))?
+            .lines
+            .get(active.line_index as usize)?;
+        Some(DialoguePresentationCue {
+            target: active.target,
+            revision: self.presentation_revision,
+            animation: line.animation.as_deref(),
+        })
+    }
+
+    #[must_use]
     pub(crate) fn choices<'a>(
         &self,
         registry: &'a ContentRegistry,
@@ -233,9 +266,16 @@ impl DialogueRuntime {
         }
         self.accepted = None;
         if let Some(next) = self.pending.take() {
-            self.active = Some(next);
+            self.activate_line(next);
             self.selected_choice = 0;
         }
+    }
+
+    fn activate_line(&mut self, line: ServerDialogueLine) {
+        if self.active != Some(line) {
+            self.presentation_revision = self.presentation_revision.wrapping_add(1);
+        }
+        self.active = Some(line);
     }
 }
 
@@ -309,6 +349,20 @@ mod tests {
             ),
             Err(DialogueProjectionError::UnknownBeat)
         );
+
+        line.beat_index = 0;
+        line.line_index = 99;
+        assert_eq!(
+            runtime.apply_line(
+                line,
+                UIRuntimeState::Active {
+                    session_id: line.session_id,
+                    target: line.target,
+                },
+                &registry,
+            ),
+            Err(DialogueProjectionError::UnknownLine)
+        );
     }
 
     #[test]
@@ -340,6 +394,8 @@ mod tests {
         };
         let mut runtime = DialogueRuntime::default();
         runtime.apply_line(line, interaction, &registry).unwrap();
+        let first_cue = runtime.presentation_cue(&registry).unwrap();
+        assert_eq!(first_cue.animation, Some("dialogue_talk"));
         assert_eq!(runtime.choices(&registry).unwrap().len(), 3);
         assert!(runtime.select_next(&registry, 1));
         assert_eq!(runtime.choice_request(&registry).unwrap().choice_index, 1);
@@ -365,8 +421,57 @@ mod tests {
         assert_eq!(runtime.active().unwrap().beat_index, 0);
         runtime.tick(Duration::from_millis(999));
         assert_eq!(runtime.active().unwrap().beat_index, 0);
+        assert_eq!(runtime.presentation_cue(&registry).unwrap(), first_cue);
         runtime.tick(Duration::from_millis(1));
         assert_eq!(runtime.active().unwrap().beat_index, 2);
         assert_eq!(runtime.player_text(), None);
+        let continuation_cue = runtime.presentation_cue(&registry).unwrap();
+        assert!(continuation_cue.revision > first_cue.revision);
+        assert_eq!(continuation_cue.animation, None);
+    }
+
+    #[test]
+    fn two_clients_keep_distinct_lines_for_the_same_npc_target() {
+        let registry = load_registry(&default_content_root(), LoadMode::Shared).expect("content");
+        let first = traveler_line();
+        let second = ServerDialogueLine {
+            session_id: 8,
+            beat_index: 1,
+            ..first
+        };
+        let mut client_a = DialogueRuntime::default();
+        let mut client_b = DialogueRuntime::default();
+        client_a
+            .apply_line(
+                first,
+                UIRuntimeState::Active {
+                    session_id: first.session_id,
+                    target: first.target,
+                },
+                &registry,
+            )
+            .unwrap();
+        client_b
+            .apply_line(
+                second,
+                UIRuntimeState::Active {
+                    session_id: second.session_id,
+                    target: second.target,
+                },
+                &registry,
+            )
+            .unwrap();
+
+        assert_ne!(client_a.text(&registry), client_b.text(&registry));
+        assert_eq!(
+            client_a.presentation_cue(&registry).unwrap().animation,
+            Some("dialogue_talk")
+        );
+        assert_eq!(
+            client_b.presentation_cue(&registry).unwrap().animation,
+            None
+        );
+        client_a.clear();
+        assert!(client_b.is_active());
     }
 }

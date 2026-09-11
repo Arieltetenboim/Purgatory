@@ -308,6 +308,18 @@ mod tests {
         let actor_a = EntityId::from_raw(1, 1);
         let actor_b = EntityId::from_raw(2, 1);
         let target = EntityId::from_raw(3, 1);
+        let mut definition = definition(false);
+        definition.beats.push(DialogueBeat {
+            id: "other_entry".into(),
+            selection_role: DialogueSelectionRole::Entry,
+            priority: 0,
+            pool: DialoguePool::Mandatory,
+            conditions: vec![],
+            lines: vec![DialogueLine {
+                text: "different player state".into(),
+            }],
+            choices: vec![],
+        });
         let mut runtime = DialogueRuntime::default();
         runtime.begin(
             actor_a,
@@ -321,14 +333,18 @@ mod tests {
             8,
             target,
             ContentId::from_raw(20_001),
-            DialogueBeatIndex::from_raw(0),
+            DialogueBeatIndex::from_raw(1),
         );
 
         assert!(matches!(
-            runtime.advance(actor_a, 7, &definition(false)),
+            runtime.advance(actor_a, 7, &definition),
             AdvanceResult::Complete(_)
         ));
         assert_eq!(runtime.active(actor_b).unwrap().session_id, 8);
+        assert_eq!(
+            runtime.active(actor_b).unwrap().beat_index,
+            DialogueBeatIndex::from_raw(1)
+        );
     }
 
     #[test]

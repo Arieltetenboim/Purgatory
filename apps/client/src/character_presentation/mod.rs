@@ -27,16 +27,20 @@ mod state;
 
 pub(crate) use adapters::{
     LocalMotion, RemoteMotion, SocialNpcMotion, apply_climb_back_overlay,
-    equipment_view_from_replica, from_local_with_presentation, from_remote_with_presentation,
-    from_social_npc,
+    apply_local_dialogue_facing, equipment_view_from_replica, from_local_with_presentation,
+    from_remote_with_presentation, from_social_npc,
 };
-pub(crate) use collection::{CharacterPresentationSet, PresentationEntityKey};
+pub(crate) use collection::{
+    CharacterPresentationSet, DialogueAnimationRequest, PresentationEntityKey,
+};
 pub(crate) use debug_visual::presentation_debug_quads_with_assets;
 pub(crate) use oneshot_table::PresentationOneShotTable;
-pub(crate) use state::{PresentationActivity, PresentationView, immunity_flash_visible};
+pub(crate) use state::{Facing, PresentationActivity, PresentationView, immunity_flash_visible};
 
 #[cfg(test)]
 mod n10b_tests;
+#[cfg(test)]
+mod n10f_tests;
 #[cfg(test)]
 mod phase8e_tests;
 #[cfg(test)]

@@ -155,10 +155,10 @@ fn load_npc_authoring_tree(
         let content_id = allocated_id_for_label(document.authored_id());
         let result = document
             .validate_npc_references(&path, &npc_beats)
-            .and_then(|()| document.into_definition(&path, content_id))
-            .and_then(|definition| {
-                definition.map_or(Ok(()), |definition| {
-                    registry.insert_npc_dialogue_presentation((&definition).into())?;
+            .and_then(|()| document.into_definitions(&path, content_id))
+            .and_then(|definitions| {
+                definitions.map_or(Ok(()), |(definition, presentation)| {
+                    registry.insert_npc_dialogue_presentation(presentation)?;
                     if mode == LoadMode::Full {
                         registry.insert_npc_dialogue(definition)?;
                     }
@@ -1125,6 +1125,10 @@ mod tests {
         let intro_presentation = presentation
             .beat(crate::DialogueBeatIndex::from_raw(0))
             .expect("intro presentation");
+        assert_eq!(
+            intro_presentation.lines[0].animation.as_deref(),
+            Some("dialogue_talk")
+        );
         assert_eq!(intro_presentation.choices.len(), 3);
         assert_eq!(intro_presentation.choices[0].text, "What's here?");
         let lore = presentation
@@ -1162,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn npc_projection_preserves_authored_order_and_drops_presentation_cues() {
+    fn npc_projection_separates_gameplay_from_client_presentation_cues() {
         let tmp = std::env::temp_dir().join(format!(
             "purgatory-content-npc-order-{}",
             std::process::id()
@@ -1182,6 +1186,13 @@ mod tests {
         assert_eq!(traveler.beats[0].id, "first");
         assert_eq!(traveler.beats[1].id, "second");
         assert_eq!(traveler.beats[0].lines[0].text, "Hello");
+        let presentation = registry
+            .npc_dialogue_presentation_by_id(purgatory_common::NPC_WELCOME_TRAVELER_STAYED)
+            .expect("Traveler presentation");
+        assert_eq!(
+            presentation.beats[0].lines[0].animation.as_deref(),
+            Some("wave")
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 
