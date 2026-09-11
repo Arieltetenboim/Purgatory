@@ -175,6 +175,9 @@ impl ClientLifecycle {
             NetworkEvent::DialogueLine { event, .. } => {
                 self.emit_log(&format!("DialogueLine {event:?}"));
             }
+            NetworkEvent::DialogueChoiceAccepted { event, .. } => {
+                self.emit_log(&format!("DialogueChoiceAccepted {event:?}"));
+            }
             NetworkEvent::Equipment { event, .. } => {
                 self.emit_log(&format!("Equipment {event:?}"));
             }
@@ -223,7 +226,9 @@ impl ClientLifecycle {
             NetworkEvent::RttUpdated { .. } => {
                 matches!(state, ConnectionState::Connected)
             }
-            NetworkEvent::Interact { .. } | NetworkEvent::DialogueLine { .. } => {
+            NetworkEvent::Interact { .. }
+            | NetworkEvent::DialogueLine { .. }
+            | NetworkEvent::DialogueChoiceAccepted { .. } => {
                 matches!(state, ConnectionState::Connected)
             }
             NetworkEvent::Equipment { .. }

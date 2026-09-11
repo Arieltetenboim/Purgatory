@@ -180,6 +180,10 @@ impl BotSession {
                 self.state = SessionState::Failed;
                 Err("unexpected dialogue line during handshake".into())
             }
+            ServerControl::DialogueChoiceAccepted(_) => {
+                self.state = SessionState::Failed;
+                Err("unexpected dialogue choice during handshake".into())
+            }
             ServerControl::Equipment(_) => {
                 self.state = SessionState::Failed;
                 Err("unexpected equipment during handshake".into())
@@ -330,6 +334,7 @@ impl BotSession {
             ServerControl::Welcome(_)
             | ServerControl::Interact(_)
             | ServerControl::DialogueLine(_)
+            | ServerControl::DialogueChoiceAccepted(_)
             | ServerControl::Equipment(_)
             | ServerControl::PresentationOneShot(_)
             | ServerControl::Ability(_)

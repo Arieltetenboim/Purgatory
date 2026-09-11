@@ -627,6 +627,20 @@ const DIALOGUE_LINE_V25: &[u8] = &[
 /// Protocol v26 DEV NPC spawn request. Stable NPC ContentId 20,001.
 const DEV_SPAWN_NPC_V26: &[u8] = &[0x25, 0x21, 0x4e, 0x00, 0x00];
 
+const DIALOGUE_CHOOSE_V27: &[u8] = &[
+    0x26, // DialogueChoose
+    0x07, 0x00, 0x00, 0x00, // session_id = 7
+    0x02, 0x00, 0x00, 0x00, // beat_index = 2
+    0x01, 0x00, 0x00, 0x00, // choice_index = 1
+];
+
+const DIALOGUE_CHOICE_ACCEPTED_V27: &[u8] = &[
+    0x27, // DialogueChoiceAccepted
+    0x07, 0x00, 0x00, 0x00, // session_id = 7
+    0x02, 0x00, 0x00, 0x00, // beat_index = 2
+    0x01, 0x00, 0x00, 0x00, // choice_index = 1
+];
+
 fn hello_test_build() -> Hello {
     Hello {
         protocol_version: 1,
@@ -684,8 +698,8 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_26() {
-    assert_eq!(PROTOCOL_VERSION, 26);
+fn current_protocol_version_is_27() {
+    assert_eq!(PROTOCOL_VERSION, 27);
 }
 
 #[test]
@@ -700,6 +714,37 @@ fn dev_spawn_npc_v26_matches_golden_bytes() {
     assert_eq!(
         decode_client_control(DEV_SPAWN_NPC_V26).expect("decode"),
         request
+    );
+}
+
+#[test]
+fn dialogue_choice_v27_matches_golden_bytes() {
+    let request = ClientControl::DialogueChoose(purgatory_protocol::DialogueChoose {
+        session_id: 7,
+        beat_index: 2,
+        choice_index: 1,
+    });
+    assert_eq!(
+        encode_client_control(&request).expect("encode"),
+        DIALOGUE_CHOOSE_V27
+    );
+    assert_eq!(
+        decode_client_control(DIALOGUE_CHOOSE_V27).expect("decode"),
+        request
+    );
+    let accepted =
+        ServerControl::DialogueChoiceAccepted(purgatory_protocol::ServerDialogueChoiceAccepted {
+            session_id: 7,
+            beat_index: 2,
+            choice_index: 1,
+        });
+    assert_eq!(
+        encode_server_control(&accepted).expect("encode"),
+        DIALOGUE_CHOICE_ACCEPTED_V27
+    );
+    assert_eq!(
+        decode_server_control(DIALOGUE_CHOICE_ACCEPTED_V27).expect("decode"),
+        accepted
     );
 }
 

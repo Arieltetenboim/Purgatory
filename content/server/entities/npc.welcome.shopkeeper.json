@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "id": "npc.welcome.shopkeeper",
+  "debug_name": "Welcome Shopkeeper",
+  "visible": true,
+  "interactable": "npc"
+}

@@ -9,6 +9,8 @@ use crate::snapshot::WireEntityId;
 
 pub const DIALOGUE_ADVANCE_BYTES: usize = 4;
 pub const DIALOGUE_ACTIVE_LINE_BYTES: usize = 4 + 8 + 4 + 4 + 4;
+pub const DIALOGUE_CHOOSE_BYTES: usize = 4 + 4 + 4;
+pub const DIALOGUE_CHOICE_ACCEPTED_BYTES: usize = 4 + 4 + 4;
 
 /// Client → server: advance the dialogue associated with this interaction
 /// session. The server validates ownership and current progression.
@@ -17,9 +19,19 @@ pub struct DialogueAdvance {
     pub session_id: u32,
 }
 
-/// Server → client: semantic identity of the currently visible NPC line.
-/// The client resolves presentation text from its client-safe content
-/// projection.
+/// Client → server: select one choice from the current authored Beat. The
+/// server validates session, Beat and choice and owns the continuation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogueChoose {
+    pub session_id: u32,
+    pub beat_index: u32,
+    pub choice_index: u32,
+}
+
+/// Server → client: semantic identity of the currently visible NPC Beat.
+/// `line_index` is retained for v25 wire compatibility and is zero in the
+/// Beat-based runtime. The client resolves presentation text from its
+/// client-safe content projection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServerDialogueLine {
     pub session_id: u32,
@@ -27,4 +39,13 @@ pub struct ServerDialogueLine {
     pub npc_content_id: ContentId,
     pub beat_index: u32,
     pub line_index: u32,
+}
+
+/// Server → client: acknowledgement of the accepted authored player response.
+/// The ordered active-Beat event that follows, if any, remains authoritative.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServerDialogueChoiceAccepted {
+    pub session_id: u32,
+    pub beat_index: u32,
+    pub choice_index: u32,
 }

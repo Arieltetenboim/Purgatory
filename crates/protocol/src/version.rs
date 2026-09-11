@@ -36,8 +36,10 @@
 /// envelopes (tags 35–36). Text remains client-side presentation content.
 /// Protocol v26 adds DEV-only `DevSpawnNpc` (tag 37), carrying stable NPC
 /// `ContentId`; the server owns lookup, address, position and runtime identity.
+/// Protocol v27 adds authored choice intent/acceptance (tags 38–39). The client
+/// sends only session/Beat/choice indexes; the server owns continuation.
 /// Historical golden vectors remain frozen.
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;

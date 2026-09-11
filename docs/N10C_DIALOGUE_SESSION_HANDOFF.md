@@ -21,7 +21,7 @@ Branch: `forge/n10c-dialogue-session-bubble`
 N10c keeps three systems separate:
 
 1. The server dialogue runtime owns authoritative ENTRY selection and per-player
-   line progression tied to the existing `InteractionSession`.
+   Beat progression tied to the existing `InteractionSession`.
 2. The client dialogue projection validates semantic line identity and resolves
    readable content from the typed shared `ContentRegistry`.
 3. `SpeechBubble` owns presentation geometry, world anchoring, viewport clamping,
@@ -35,7 +35,7 @@ authority.
 ## Implemented N10c trace
 
 ```text
-E -> InteractionSession -> server ENTRY selection -> protocol line identity
+E -> InteractionSession -> server ENTRY selection -> protocol Beat identity
   -> client typed-content lookup -> SpeechBubble -> Text v0
 ```
 
@@ -44,17 +44,19 @@ E -> InteractionSession -> server ENTRY selection -> protocol line identity
 - Narrative facts, NPC-met state, Dialogue Heard mutation, actions, and
   persistence remain deferred. Item/equipment conditions read their existing
   authoritative owners.
-- Reliable protocol v25 adds `DialogueAdvance { session_id }` and an active-line
+- Reliable protocol v25 adds `DialogueAdvance { session_id }` and an active-Beat
   event containing only session, target, NPC `ContentId`, beat index, and line
-  index. Authored text and arbitrary actions are not accepted from the client.
-- The local client resolves the line from shared typed content, displays one NPC
+  index. Its retained line index is the zero compatibility anchor. Authored text
+  and arbitrary actions are not accepted from the client.
+- The local client resolves the Beat from shared typed content, composes its
+  authored `lines[]` once during loading, displays one NPC
   bubble, and clears it on interaction close, session mismatch, screen change, or
   target disappearance.
-- `E` or a click inside the bubble advances. `ESC` uses the general
+- `E` or a click inside the bubble advances the Beat. `ESC` uses the general
   `InteractionSession` close path.
 - Dialogue movement input is neutralized on client prediction and authoritative
   server consumption without zeroing external physics velocity.
-- A final line with authored choices remains visible. Choice rendering and
+- A Beat with authored choices remains visible. Choice rendering and
   selection are N10d and are not implemented here.
 
 ## Acceptance verification

@@ -59,5 +59,6 @@ No authored catalog definitions allocated yet.
 | ID | Label | Status |
 | ---: | --- | --- |
 | `20001` | `npc.welcome.traveler_stayed` | active |
-
-Additional NPC Lab string IDs remain unallocated until they enter the runtime pack deliberately.
+| `20002` | `npc.welcome.gate_watchman` | active |
+| `20003` | `npc.welcome.shopkeeper` | active |
+| `20004` | `npc.welcome.workshop_craftsperson` | active |

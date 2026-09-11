@@ -20,10 +20,11 @@ use purgatory_content::{
 use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
 use purgatory_protocol::{
     AbilityActivateRequest, AbilityCommandReject, ConnectionId, DEV_CHANNEL_MAX, DialogueAdvance,
-    EquipRequest, EquipmentRejectReason, InputCommand, InteractCloseReason, InteractRejectReason,
-    InventoryEntry, MoveAxis, PickupRejectReason, PickupRequest, ServerAbility, ServerControl,
-    ServerDialogueLine, ServerEquipment, ServerInteract, ServerInventory, ServerItem,
-    ServerPresentationOneShot, UnequipRequest, WireEntityId,
+    DialogueChoose, EquipRequest, EquipmentRejectReason, InputCommand, InteractCloseReason,
+    InteractRejectReason, InventoryEntry, MoveAxis, PickupRejectReason, PickupRequest,
+    ServerAbility, ServerControl, ServerDialogueChoiceAccepted, ServerDialogueLine,
+    ServerEquipment, ServerInteract, ServerInventory, ServerItem, ServerPresentationOneShot,
+    UnequipRequest, WireEntityId,
 };
 use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, Cadence,
@@ -33,7 +34,9 @@ use purgatory_simulation::{
     ScheduleOwner, SimulationTick, Transform, WorkLane, World, validate_command_preamble,
 };
 
-use super::dialogue::{ActiveDialogue, AdvanceResult, DialogueRuntime, RuntimeConditions};
+use super::dialogue::{
+    ActiveDialogue, AdvanceResult, ChoiceResult, DialogueRuntime, RuntimeConditions,
+};
 use super::persist::PersistenceHandle;
 use super::replication::{
     InterestFanoutIndex, ObserverReplicationState, PublishPolicyInput, ReplicationPipe,
@@ -73,7 +76,9 @@ fn dialogue_line(active: ActiveDialogue) -> ServerDialogueLine {
         target: super::snapshot::to_wire_id(active.target),
         npc_content_id: active.npc_content_id,
         beat_index: active.beat_index.raw(),
-        line_index: active.line_index,
+        // Protocol v25 carried line identity. Runtime progression is now
+        // Beat-based; zero remains the compatible presentation anchor.
+        line_index: 0,
     }
 }
 
@@ -538,6 +543,10 @@ pub enum InputUpdate {
         connection_id: ConnectionId,
         request: DialogueAdvance,
     },
+    DialogueChoose {
+        connection_id: ConnectionId,
+        request: DialogueChoose,
+    },
     PortalActivate {
         connection_id: ConnectionId,
         target: WireEntityId,
@@ -720,6 +729,20 @@ impl GameplayTx {
     ) -> bool {
         self.input
             .send(InputUpdate::DialogueAdvance {
+                connection_id,
+                request,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_dialogue_choose(
+        &self,
+        connection_id: ConnectionId,
+        request: DialogueChoose,
+    ) -> bool {
+        self.input
+            .send(InputUpdate::DialogueChoose {
                 connection_id,
                 request,
             })
@@ -1311,7 +1334,7 @@ impl GameplayOwner {
 
     pub fn detach(&mut self, connection_id: ConnectionId) {
         if let Some(binding) = self.bindings.remove(&connection_id) {
-            self.dialogues.remove(binding.entity);
+            self.dialogues.forget_actor(binding.entity);
             if let Some(character_id) = binding.character_id {
                 self.occupancy.remove(&character_id);
                 self.emit_save(&PersistentCharacterSnapshot {
@@ -1382,6 +1405,7 @@ impl GameplayOwner {
             InputUpdate::InteractOpen { .. }
                 | InputUpdate::InteractClose { .. }
                 | InputUpdate::DialogueAdvance { .. }
+                | InputUpdate::DialogueChoose { .. }
                 | InputUpdate::PortalActivate { .. }
                 | InputUpdate::DevSetChannel { .. }
                 | InputUpdate::DevSetSpeed { .. }
@@ -1408,6 +1432,10 @@ impl GameplayOwner {
                     connection_id,
                     request,
                 } => self.handle_dialogue_advance(connection_id, request),
+                InputUpdate::DialogueChoose {
+                    connection_id,
+                    request,
+                } => self.handle_dialogue_choice(connection_id, request),
                 InputUpdate::PortalActivate {
                     connection_id,
                     target,
@@ -1511,6 +1539,7 @@ impl GameplayOwner {
             InputUpdate::InteractOpen { .. }
             | InputUpdate::InteractClose { .. }
             | InputUpdate::DialogueAdvance { .. }
+            | InputUpdate::DialogueChoose { .. }
             | InputUpdate::PortalActivate { .. }
             | InputUpdate::DevSetChannel { .. }
             | InputUpdate::DevSetSpeed { .. }
@@ -2372,6 +2401,7 @@ impl GameplayOwner {
                     world: &self.world,
                     registry: &self.registry,
                     actor,
+                    dialogues: &self.dialogues,
                 };
                 let beat_index = definition.select_entry(&conditions)?;
                 self.dialogues
@@ -2410,7 +2440,7 @@ impl GameplayOwner {
             .dialogues
             .advance(actor, request.session_id, definition);
         match result {
-            AdvanceResult::Line(active) | AdvanceResult::WaitingForChoice(active) => {
+            AdvanceResult::WaitingForChoice(active) => {
                 if let Some(tx) = tx {
                     let _ = tx.try_send(ServerControl::DialogueLine(dialogue_line(active)));
                 }
@@ -2429,6 +2459,85 @@ impl GameplayOwner {
                 }
             }
             AdvanceResult::Invalid => {}
+        }
+    }
+
+    fn handle_dialogue_choice(&mut self, connection_id: ConnectionId, request: DialogueChoose) {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return;
+        };
+        let actor = binding.entity;
+        let tx = binding.interact.clone();
+        let Some(session) = self.world.interaction_session_of(actor) else {
+            return;
+        };
+        if session.id.get() != request.session_id {
+            return;
+        }
+        let Some(active) = self.dialogues.active(actor) else {
+            return;
+        };
+        if active.session_id != request.session_id || active.target != session.target {
+            return;
+        }
+        let Some(definition) = self.registry.npc_dialogue_by_id(active.npc_content_id) else {
+            self.clear_dialogue(actor);
+            return;
+        };
+        let result = self.dialogues.choose(
+            actor,
+            request.session_id,
+            purgatory_content::DialogueBeatIndex::from_raw(request.beat_index),
+            request.choice_index,
+            definition,
+        );
+        match result {
+            ChoiceResult::Continue {
+                accepted,
+                choice_index,
+                next,
+            } => {
+                if let Some(tx) = tx {
+                    let _ = tx.try_send(ServerControl::DialogueChoiceAccepted(
+                        ServerDialogueChoiceAccepted {
+                            session_id: accepted.session_id,
+                            beat_index: accepted.beat_index.raw(),
+                            choice_index,
+                        },
+                    ));
+                    let _ = tx.try_send(ServerControl::DialogueLine(dialogue_line(next)));
+                }
+            }
+            ChoiceResult::Complete {
+                accepted,
+                choice_index,
+            } => {
+                if let Some(tx) = tx {
+                    let _ = tx.try_send(ServerControl::DialogueChoiceAccepted(
+                        ServerDialogueChoiceAccepted {
+                            session_id: accepted.session_id,
+                            beat_index: accepted.beat_index.raw(),
+                            choice_index,
+                        },
+                    ));
+                    let _ = self.world.close_interaction(
+                        actor,
+                        purgatory_simulation::InteractionSessionId(accepted.session_id),
+                    );
+                    self.clear_dialogue(actor);
+                    let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
+                        session_id: accepted.session_id,
+                        reason: InteractCloseReason::Requested,
+                    }));
+                } else {
+                    let _ = self.world.close_interaction(
+                        actor,
+                        purgatory_simulation::InteractionSessionId(accepted.session_id),
+                    );
+                    self.clear_dialogue(actor);
+                }
+            }
+            ChoiceResult::Invalid => {}
         }
     }
 
@@ -2935,9 +3044,7 @@ impl GameplayOwner {
     }
 
     fn clear_dialogue(&mut self, actor: EntityId) {
-        if self.dialogues.remove(actor).is_none() {
-            return;
-        }
+        self.dialogues.remove(actor);
         if let Some(binding) = self.bindings.values_mut().find(|b| b.entity == actor) {
             binding.input.unlock_ui();
         }
@@ -5085,7 +5192,7 @@ mod tests {
     }
 
     #[test]
-    fn social_npc_e_interaction_opens() {
+    fn social_npc_choice_follows_authored_continuation() {
         let mut owner = GameplayOwner::new();
         let id = ConnectionId::from_raw(1);
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
@@ -5123,29 +5230,53 @@ mod tests {
             connection_id: id,
             request: DialogueAdvance { session_id },
         });
-        let second_line = match rx.try_recv().expect("second authored line") {
+        let waiting_beat = match rx.try_recv().expect("beat remains while choices wait") {
             ServerControl::DialogueLine(line) => line,
-            other => panic!("expected second DialogueLine, got {other:?}"),
+            other => panic!("expected DialogueLine, got {other:?}"),
         };
-        assert_eq!(second_line.session_id, first_line.session_id);
-        assert_eq!(second_line.target, first_line.target);
-        assert_eq!(second_line.npc_content_id, first_line.npc_content_id);
-        assert_eq!(second_line.beat_index, first_line.beat_index);
-        assert_eq!(second_line.line_index, 1);
+        assert_eq!(waiting_beat, first_line);
+
+        owner.apply_input(InputUpdate::DialogueChoose {
+            connection_id: id,
+            request: DialogueChoose {
+                session_id,
+                beat_index: 99,
+                choice_index: 0,
+            },
+        });
+        assert!(rx.try_recv().is_err(), "stale Beat must not select");
+
+        owner.apply_input(InputUpdate::DialogueChoose {
+            connection_id: id,
+            request: DialogueChoose {
+                session_id,
+                beat_index: 0,
+                choice_index: 0,
+            },
+        });
+        assert_eq!(
+            rx.try_recv().expect("choice accepted"),
+            ServerControl::DialogueChoiceAccepted(ServerDialogueChoiceAccepted {
+                session_id,
+                beat_index: 0,
+                choice_index: 0,
+            })
+        );
+        let continuation = match rx.try_recv().expect("authored continuation") {
+            ServerControl::DialogueLine(line) => line,
+            other => panic!("expected continuation DialogueLine, got {other:?}"),
+        };
+        assert_eq!(continuation.beat_index, 1);
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.dialogues.has_heard(
+            actor,
+            ContentId::from_raw(20_001),
+            purgatory_content::DialogueBeatIndex::from_raw(0)
+        ));
 
         owner.apply_input(InputUpdate::DialogueAdvance {
             connection_id: id,
             request: DialogueAdvance { session_id },
-        });
-        assert_eq!(
-            rx.try_recv()
-                .expect("final line remains while choices wait"),
-            ServerControl::DialogueLine(second_line)
-        );
-
-        owner.apply_input(InputUpdate::InteractClose {
-            connection_id: id,
-            session_id,
         });
         assert!(matches!(
             rx.try_recv().expect("closed"),
@@ -5155,12 +5286,7 @@ mod tests {
             }) if closed == session_id
         ));
         assert!(!owner.bindings.get(&id).unwrap().input.ui_locked());
-        assert!(
-            owner
-                .dialogues
-                .active(owner.entity_of(id).unwrap())
-                .is_none()
-        );
+        assert!(owner.dialogues.active(actor).is_none());
 
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,

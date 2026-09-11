@@ -38,6 +38,17 @@ pub(crate) fn layout_speech_bubble(
     camera: Camera,
     viewport: PixelViewport,
 ) -> SpeechBubbleLayout {
+    layout_speech_bubble_with_offset(content, target_world, camera, viewport, 0.0)
+}
+
+#[must_use]
+pub(crate) fn layout_speech_bubble_with_offset(
+    content: &str,
+    target_world: [f32; 2],
+    camera: Camera,
+    viewport: PixelViewport,
+    upward_offset_px: f32,
+) -> SpeechBubbleLayout {
     let target_px = viewport
         .ndc_to_px(camera.world_to_ndc([target_world[0], target_world[1] + WORLD_ANCHOR_Y]));
     let safe_width = (viewport.width as f32 - SAFE_MARGIN_PX * 2.0).max(1.0);
@@ -50,7 +61,8 @@ pub(crate) fn layout_speech_bubble(
     let max_y =
         viewport.y as f32 + viewport.height as f32 - SAFE_MARGIN_PX - height - TAIL_HEIGHT_PX;
     let panel_x = (target_px[0] - width * 0.5).clamp(min_x, max_x.max(min_x));
-    let panel_y = (target_px[1] - height - TAIL_HEIGHT_PX - 18.0).clamp(min_y, max_y.max(min_y));
+    let panel_y = (target_px[1] - height - TAIL_HEIGHT_PX - 18.0 - upward_offset_px.max(0.0))
+        .clamp(min_y, max_y.max(min_y));
     let panel_min = [panel_x, panel_y];
     let panel_max = [panel_x + width, panel_y + height];
     let tail_x = target_px[0].clamp(panel_min[0] + TAIL_WIDTH_PX, panel_max[0] - TAIL_WIDTH_PX);
