@@ -459,6 +459,8 @@ struct RfAbGpu {
 
 /// Client-only wgpu renderer. Not a reusable engine layer.
 pub struct Renderer {
+    text: super::text::TextRenderer,
+    ui: super::ui::UiRenderer,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -778,7 +780,11 @@ impl Renderer {
             msaa_4x_supported
         );
 
+        let text = super::text::TextRenderer::new(&device, config.format)?;
+        let ui = super::ui::UiRenderer::new(&device, config.format);
         Ok(Self {
+            text,
+            ui,
             surface,
             device,
             queue,
@@ -973,6 +979,8 @@ impl Renderer {
     pub fn render(
         &mut self,
         world_quads: &[DrawQuad],
+        ui_rects: &[super::ui::UiRect],
+        ui_text: Option<&super::text::TextBlock>,
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         if !is_usable_surface(self.config.width, self.config.height) {
@@ -983,7 +991,7 @@ impl Renderer {
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                let status = self.draw_surface_texture(texture, overlay);
+                let status = self.draw_surface_texture(texture, ui_rects, ui_text, overlay);
                 return match status {
                     FrameStatus::Drawn => FrameStatus::NeedsReconfigure,
                     other => other,
@@ -1003,12 +1011,14 @@ impl Renderer {
             }
         };
 
-        self.draw_surface_texture(surface_texture, overlay)
+        self.draw_surface_texture(surface_texture, ui_rects, ui_text, overlay)
     }
 
     fn draw_surface_texture(
         &mut self,
         surface_texture: wgpu::SurfaceTexture,
+        ui_rects: &[super::ui::UiRect],
+        ui_text: Option<&super::text::TextBlock>,
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         self.ensure_world_target();
@@ -1123,6 +1133,19 @@ impl Renderer {
             self.blit_rf_ab_panels(&mut pass);
         }
 
+        self.ui.prepare(
+            &self.queue,
+            ui_rects,
+            [self.config.width, self.config.height],
+        );
+        self.ui.draw(&mut encoder, &view);
+        if let Some(block) = ui_text {
+            self.text
+                .prepare_block(&self.queue, block, [self.config.width, self.config.height]);
+            self.text.draw(&mut encoder, &view);
+        } else {
+            self.text.clear();
+        }
         let extra = overlay(OverlayPass {
             device: &self.device,
             queue: &self.queue,

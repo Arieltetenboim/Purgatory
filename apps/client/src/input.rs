@@ -18,6 +18,7 @@ pub enum Action {
     MoveDown,
     Jump,
     Interact,
+    Escape,
     ActivatePortal,
     BasicStrike,
 }
@@ -31,6 +32,7 @@ pub struct ActionState {
     jump_held: bool,
     jump_edge: bool,
     interact_edge: bool,
+    escape_edge: bool,
     portal_edge: bool,
     portal_held: bool,
     ability_edge: bool,
@@ -84,6 +86,11 @@ impl ActionState {
                 }
                 if pressed {
                     self.interact_edge = true;
+                }
+            }
+            Action::Escape => {
+                if !repeat && pressed {
+                    self.escape_edge = true;
                 }
             }
             Action::ActivatePortal => {
@@ -153,6 +160,7 @@ impl ActionState {
         self.jump_held = false;
         self.jump_edge = false;
         self.interact_edge = false;
+        self.escape_edge = false;
         self.portal_edge = false;
         self.portal_held = false;
         self.ability_edge = false;
@@ -168,11 +176,26 @@ impl ActionState {
         self.ability_edge = false;
     }
 
+    /// Drop gameplay actions suppressed by an active dialogue while retaining
+    /// the dialogue advance (`E`) and general UI escape (`Esc`) edges.
+    pub fn discard_dialogue_gameplay_edges(&mut self) {
+        self.jump_edge = false;
+        self.portal_edge = false;
+        self.ability_edge = false;
+    }
+
     /// Edge-triggered interact. Not movement. Not authoritative eligibility.
     #[must_use]
     pub fn consume_interact_edge(&mut self) -> bool {
         let edge = self.interact_edge;
         self.interact_edge = false;
+        edge
+    }
+
+    #[must_use]
+    pub fn consume_escape_edge(&mut self) -> bool {
+        let edge = self.escape_edge;
+        self.escape_edge = false;
         edge
     }
 
@@ -236,6 +259,7 @@ pub fn map_key(code: KeyCode) -> Option<Action> {
         KeyCode::KeyS | KeyCode::ArrowDown => Some(Action::MoveDown),
         KeyCode::Space => Some(Action::Jump),
         KeyCode::KeyE => Some(Action::Interact),
+        KeyCode::Escape => Some(Action::Escape),
         KeyCode::KeyJ => Some(Action::BasicStrike),
         KeyCode::ArrowUp => Some(Action::ActivatePortal),
         _ => None,
@@ -256,6 +280,7 @@ mod tests {
         assert_eq!(map_key(KeyCode::ArrowDown), Some(Action::MoveDown));
         assert_eq!(map_key(KeyCode::Space), Some(Action::Jump));
         assert_eq!(map_key(KeyCode::KeyE), Some(Action::Interact));
+        assert_eq!(map_key(KeyCode::Escape), Some(Action::Escape));
         assert_eq!(map_key(KeyCode::KeyJ), Some(Action::BasicStrike));
         assert_eq!(map_key(KeyCode::ArrowUp), Some(Action::ActivatePortal));
         assert_eq!(map_key(KeyCode::KeyW), None);
@@ -286,6 +311,23 @@ mod tests {
         assert!(!state.consume_ability_edge());
         state.set_action(Action::BasicStrike, true, false);
         assert!(state.consume_ability_edge());
+    }
+
+    #[test]
+    fn dialogue_lock_keeps_advance_and_escape_but_drops_gameplay_edges() {
+        let mut state = ActionState::default();
+        state.set_action(Action::Jump, true, false);
+        state.set_action(Action::Interact, true, false);
+        state.set_action(Action::Escape, true, false);
+        state.set_action(Action::ActivatePortal, true, false);
+        state.set_action(Action::BasicStrike, true, false);
+        state.discard_dialogue_gameplay_edges();
+
+        assert!(!state.consume_tick_input().jump_pressed);
+        assert!(state.consume_interact_edge());
+        assert!(state.consume_escape_edge());
+        assert!(!state.consume_portal_edge());
+        assert!(!state.consume_ability_edge());
     }
 
     #[test]

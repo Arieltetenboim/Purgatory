@@ -15,8 +15,9 @@ mod schema;
 pub use ability::ABILITY_CONTENT_SCHEMA_VERSION;
 pub use dialogue::{
     DialogueAction, DialogueBeat, DialogueBeatIndex, DialogueChoice, DialogueCondition,
-    DialogueLine, DialoguePool, DialogueSelectionRole, NPC_DIALOGUE_SCHEMA_VERSION,
-    NpcDialogueDefinition,
+    DialogueConditionState, DialogueLine, DialoguePool, DialoguePresentationBeat,
+    DialogueSelectionRole, NPC_DIALOGUE_SCHEMA_VERSION, NpcDialogueDefinition,
+    NpcDialoguePresentation,
 };
 pub use domain::ContentDomain;
 pub use equipment::{

@@ -8,6 +8,7 @@ mod character_assets;
 mod character_presentation;
 #[cfg(feature = "dev-diagnostics")]
 mod debug;
+mod dialogue_runtime;
 mod display;
 #[cfg(feature = "dev-diagnostics")]
 mod frontend;
@@ -26,6 +27,7 @@ mod prediction;
 mod renderer;
 mod replica;
 mod skeleton_debug;
+mod speech_bubble;
 mod ui_runtime;
 
 use tracing_subscriber::EnvFilter;

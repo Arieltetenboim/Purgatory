@@ -18,11 +18,11 @@ use purgatory_content::{
 };
 use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
 use purgatory_protocol::{
-    AbilityActivateRequest, AbilityCommandReject, ConnectionId, DEV_CHANNEL_MAX, EquipRequest,
-    EquipmentRejectReason, InputCommand, InteractCloseReason, InteractRejectReason, InventoryEntry,
-    MoveAxis, PickupRejectReason, PickupRequest, ServerAbility, ServerControl, ServerEquipment,
-    ServerInteract, ServerInventory, ServerItem, ServerPresentationOneShot, UnequipRequest,
-    WireEntityId,
+    AbilityActivateRequest, AbilityCommandReject, ConnectionId, DEV_CHANNEL_MAX, DialogueAdvance,
+    EquipRequest, EquipmentRejectReason, InputCommand, InteractCloseReason, InteractRejectReason,
+    InventoryEntry, MoveAxis, PickupRejectReason, PickupRequest, ServerAbility, ServerControl,
+    ServerDialogueLine, ServerEquipment, ServerInteract, ServerInventory, ServerItem,
+    ServerPresentationOneShot, UnequipRequest, WireEntityId,
 };
 use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, Cadence,
@@ -32,6 +32,7 @@ use purgatory_simulation::{
     ScheduleOwner, SimulationTick, Transform, WorkLane, World, validate_command_preamble,
 };
 
+use super::dialogue::{ActiveDialogue, AdvanceResult, DialogueRuntime, RuntimeConditions};
 use super::persist::PersistenceHandle;
 use super::replication::{
     InterestFanoutIndex, ObserverReplicationState, PublishPolicyInput, ReplicationPipe,
@@ -62,6 +63,16 @@ const LIVE_COMBAT_CREATURE_AGGRO_RADIUS: f32 = 3.0;
 
 fn live_basic_strike_id() -> ContentId {
     ContentId::from_authored("skill.basic.strike").expect("authored basic strike id")
+}
+
+fn dialogue_line(active: ActiveDialogue) -> ServerDialogueLine {
+    ServerDialogueLine {
+        session_id: active.session_id,
+        target: super::snapshot::to_wire_id(active.target),
+        npc_content_id: active.npc_content_id,
+        beat_index: active.beat_index.raw(),
+        line_index: active.line_index,
+    }
 }
 
 fn map_ability_reject(reason: AbilityRejectReason) -> AbilityCommandReject {
@@ -139,6 +150,7 @@ pub struct SessionInput {
     pub late_collapse_max_batch: u16,
     pub held_cancel_count: u64,
     gate: InputGate,
+    ui_locked: bool,
 }
 
 impl Default for SessionInput {
@@ -162,6 +174,7 @@ impl SessionInput {
             late_collapse_max_batch: 0,
             held_cancel_count: 0,
             gate: InputGate::Open,
+            ui_locked: false,
         }
     }
 
@@ -222,6 +235,7 @@ impl SessionInput {
         self.move_axis = MoveAxis::Neutral;
         self.down_held = false;
         self.gate = InputGate::Open;
+        self.ui_locked = false;
         Some(self.input_epoch)
     }
 
@@ -245,6 +259,32 @@ impl SessionInput {
         self.gate.reason()
     }
 
+    /// Dialogue/UI input lock. Unlike transition gates, this neutralizes new
+    /// player intent without zeroing authoritative physics velocity.
+    pub fn lock_ui(&mut self) {
+        self.queue.clear();
+        self.move_axis = MoveAxis::Neutral;
+        self.down_held = false;
+        self.last_acknowledged_seq = self.last_received_seq;
+        self.unmatched_continuation_ticks = 0;
+        self.ui_locked = true;
+    }
+
+    pub fn unlock_ui(&mut self) {
+        self.queue.clear();
+        self.move_axis = MoveAxis::Neutral;
+        self.down_held = false;
+        self.last_acknowledged_seq = self.last_received_seq;
+        self.unmatched_continuation_ticks = 0;
+        self.ui_locked = false;
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub fn ui_locked(&self) -> bool {
+        self.ui_locked
+    }
+
     /// Ack queued commands as idle. Do not adopt their held movement.
     fn ack_queued_as_idle(&mut self) {
         while let Some(cmd) = self.queue.pop_front() {
@@ -258,6 +298,10 @@ impl SessionInput {
     /// One player simulation step's input. Does not run physics.
     #[must_use]
     pub fn take_for_tick(&mut self) -> PlayerInput {
+        if self.ui_locked {
+            self.ack_queued_as_idle();
+            return PlayerInput::idle();
+        }
         if self.gate.is_locked() {
             self.ack_queued_as_idle();
             self.gate.tick();
@@ -348,6 +392,7 @@ pub struct PlayerBinding {
 pub struct GameplayOwner {
     world: World,
     registry: ContentRegistry,
+    dialogues: DialogueRuntime,
     bindings: HashMap<ConnectionId, PlayerBinding>,
     occupancy: HashMap<CharacterId, ConnectionId>,
     persist: Option<PersistenceHandle>,
@@ -483,6 +528,10 @@ pub enum InputUpdate {
     InteractClose {
         connection_id: ConnectionId,
         session_id: u32,
+    },
+    DialogueAdvance {
+        connection_id: ConnectionId,
+        request: DialogueAdvance,
     },
     PortalActivate {
         connection_id: ConnectionId,
@@ -650,6 +699,20 @@ impl GameplayTx {
             .send(InputUpdate::InteractClose {
                 connection_id,
                 session_id,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_dialogue_advance(
+        &self,
+        connection_id: ConnectionId,
+        request: DialogueAdvance,
+    ) -> bool {
+        self.input
+            .send(InputUpdate::DialogueAdvance {
+                connection_id,
+                request,
             })
             .await
             .is_ok()
@@ -832,6 +895,7 @@ impl GameplayOwner {
         Self {
             world,
             registry,
+            dialogues: DialogueRuntime::default(),
             bindings: HashMap::new(),
             occupancy: HashMap::new(),
             persist: None,
@@ -1223,6 +1287,7 @@ impl GameplayOwner {
 
     pub fn detach(&mut self, connection_id: ConnectionId) {
         if let Some(binding) = self.bindings.remove(&connection_id) {
+            self.dialogues.remove(binding.entity);
             if let Some(character_id) = binding.character_id {
                 self.occupancy.remove(&character_id);
                 self.emit_save(&PersistentCharacterSnapshot {
@@ -1292,6 +1357,7 @@ impl GameplayOwner {
             update,
             InputUpdate::InteractOpen { .. }
                 | InputUpdate::InteractClose { .. }
+                | InputUpdate::DialogueAdvance { .. }
                 | InputUpdate::PortalActivate { .. }
                 | InputUpdate::DevSetChannel { .. }
                 | InputUpdate::DevSetSpeed { .. }
@@ -1313,6 +1379,10 @@ impl GameplayOwner {
                     connection_id,
                     session_id,
                 } => self.handle_interact_close(connection_id, session_id),
+                InputUpdate::DialogueAdvance {
+                    connection_id,
+                    request,
+                } => self.handle_dialogue_advance(connection_id, request),
                 InputUpdate::PortalActivate {
                     connection_id,
                     target,
@@ -1411,6 +1481,7 @@ impl GameplayOwner {
             }
             InputUpdate::InteractOpen { .. }
             | InputUpdate::InteractClose { .. }
+            | InputUpdate::DialogueAdvance { .. }
             | InputUpdate::PortalActivate { .. }
             | InputUpdate::DevSetChannel { .. }
             | InputUpdate::DevSetSpeed { .. }
@@ -1423,7 +1494,7 @@ impl GameplayOwner {
             | InputUpdate::AbilityActivate { .. }
             | InputUpdate::Pickup { .. } => {
                 unreachable!(
-                    "interact/portal/channel/speed/jump/equipment/oneshot/reset/ability/pickup handled above"
+                    "interaction/dialogue/portal/channel/speed/jump/equipment/oneshot/reset/ability/pickup handled above"
                 )
             }
         }
@@ -2166,42 +2237,168 @@ impl GameplayOwner {
             }
         };
         let target_id = super::snapshot::from_wire_id(target);
-        let event = match self.world.try_open_interaction(actor, target_id) {
+        let session = match self.world.try_open_interaction(actor, target_id) {
             Ok(session) => {
                 println!(
                     "6B_INTERACT validate opened actor={actor} target={target} session={}",
                     session.id.get()
                 );
-                if session.state == purgatory_simulation::InteractionSessionState::Updated {
-                    ServerInteract::Updated {
-                        session_id: session.id.get(),
-                        target,
-                    }
-                } else {
-                    ServerInteract::Opened {
-                        session_id: session.id.get(),
-                        target,
-                    }
-                }
+                session
             }
             Err(reason) => {
                 println!(
                     "6B_INTERACT validate {} actor={actor} target={target}",
                     interact_reject_trace(reason)
                 );
-                ServerInteract::Rejected {
+                let event = ServerInteract::Rejected {
                     target,
                     reason: map_reject(reason),
+                };
+                println!("6B_INTERACT response {event:?}");
+                if let Some(tx) = interact_tx {
+                    let _ = tx.try_send(ServerControl::Interact(event));
                 }
+                return;
+            }
+        };
+
+        if self.dialogues.active(actor).is_some_and(|dialogue| {
+            dialogue.session_id != session.id.get() || dialogue.target != target_id
+        }) {
+            self.clear_dialogue(actor);
+        }
+
+        let is_social_npc = self
+            .world
+            .interactable_of(target_id)
+            .is_some_and(|interactable| {
+                interactable.kind == purgatory_simulation::InteractableKind::Npc
+            });
+        let dialogue_line = if is_social_npc {
+            match self.begin_or_resume_dialogue(actor, session.id.get(), target_id) {
+                Some(line) => Some(line),
+                None => {
+                    let _ = self.world.close_interaction(actor, session.id);
+                    self.clear_dialogue(actor);
+                    let event = ServerInteract::Rejected {
+                        target,
+                        reason: InteractRejectReason::Unavailable,
+                    };
+                    println!("N10_DIALOGUE rejected actor={actor} target={target} reason=no_entry");
+                    if let Some(tx) = interact_tx {
+                        let _ = tx.try_send(ServerControl::Interact(event));
+                    }
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
+        let event = if session.state == purgatory_simulation::InteractionSessionState::Updated {
+            ServerInteract::Updated {
+                session_id: session.id.get(),
+                target,
+            }
+        } else {
+            ServerInteract::Opened {
+                session_id: session.id.get(),
+                target,
             }
         };
         println!("6B_INTERACT response {event:?}");
-        if let Some(tx) = interact_tx {
+        if let Some(tx) = &interact_tx {
             if tx.try_send(ServerControl::Interact(event)).is_err() {
                 println!("6B_INTERACT response dropped (interact channel full or closed)");
             }
         } else {
             println!("6B_INTERACT response dropped (no interact channel)");
+        }
+        if let (Some(tx), Some(line)) = (interact_tx, dialogue_line)
+            && tx.try_send(ServerControl::DialogueLine(line)).is_err()
+        {
+            println!("N10_DIALOGUE line dropped (interact channel full or closed)");
+        }
+    }
+
+    fn begin_or_resume_dialogue(
+        &mut self,
+        actor: EntityId,
+        session_id: u32,
+        target: EntityId,
+    ) -> Option<ServerDialogueLine> {
+        let npc_content_id = self.world.content_id_of(target)?;
+        let definition = self.registry.npc_dialogue_by_id(npc_content_id)?;
+        let active = match self.dialogues.active(actor) {
+            Some(active)
+                if active.session_id == session_id
+                    && active.target == target
+                    && active.npc_content_id == npc_content_id =>
+            {
+                active
+            }
+            _ => {
+                let conditions = RuntimeConditions {
+                    world: &self.world,
+                    registry: &self.registry,
+                    actor,
+                };
+                let beat_index = definition.select_entry(&conditions)?;
+                self.dialogues
+                    .begin(actor, session_id, target, npc_content_id, beat_index)
+            }
+        };
+        if let Some(binding) = self.bindings.values_mut().find(|b| b.entity == actor) {
+            binding.input.lock_ui();
+        }
+        Some(dialogue_line(active))
+    }
+
+    fn handle_dialogue_advance(&mut self, connection_id: ConnectionId, request: DialogueAdvance) {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return;
+        };
+        let actor = binding.entity;
+        let tx = binding.interact.clone();
+        let Some(session) = self.world.interaction_session_of(actor) else {
+            return;
+        };
+        if session.id.get() != request.session_id {
+            return;
+        }
+        let Some(active) = self.dialogues.active(actor) else {
+            return;
+        };
+        if active.session_id != request.session_id || active.target != session.target {
+            return;
+        }
+        let Some(definition) = self.registry.npc_dialogue_by_id(active.npc_content_id) else {
+            self.clear_dialogue(actor);
+            return;
+        };
+        let result = self
+            .dialogues
+            .advance(actor, request.session_id, definition);
+        match result {
+            AdvanceResult::Line(active) | AdvanceResult::WaitingForChoice(active) => {
+                if let Some(tx) = tx {
+                    let _ = tx.try_send(ServerControl::DialogueLine(dialogue_line(active)));
+                }
+            }
+            AdvanceResult::Complete(active) => {
+                let _ = self.world.close_interaction(
+                    actor,
+                    purgatory_simulation::InteractionSessionId(active.session_id),
+                );
+                self.clear_dialogue(actor);
+                if let Some(tx) = tx {
+                    let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
+                        session_id: active.session_id,
+                        reason: InteractCloseReason::Requested,
+                    }));
+                }
+            }
+            AdvanceResult::Invalid => {}
         }
     }
 
@@ -2374,6 +2571,9 @@ impl GameplayOwner {
         if !self.world.set_address(actor, dest) {
             println!("6D_CHANNEL reject actor={actor} dest={dest} reason=set_address");
             return;
+        }
+        if existing.is_some() {
+            self.clear_dialogue(actor);
         }
         if let (Some(tx), Some(session)) = (interact_tx, existing) {
             let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
@@ -2573,6 +2773,9 @@ impl GameplayOwner {
                     "6C_PORTAL accepted actor={actor} dest_map={} dest_portal={} dest_entity={dest_portal} addr {addr_before} -> {addr_after} pose=({:.2},{:.2}) dest_pose=({:.2},{:.2}) epoch {epoch_before} -> {epoch_after} reentry_lock=on",
                     tr.map_authored, tr.portal_authored, pose[0], pose[1], dest_pos[0], dest_pos[1]
                 );
+                if existing.is_some() {
+                    self.clear_dialogue(actor);
+                }
                 if let (Some(tx), Some(session)) = (interact_tx, existing) {
                     let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
                         session_id: session.id.get(),
@@ -2622,10 +2825,13 @@ impl GameplayOwner {
             actor,
             purgatory_simulation::InteractionSessionId(session_id),
         ) {
-            Ok(session) => ServerInteract::Closed {
-                session_id: session.id.get(),
-                reason: InteractCloseReason::Requested,
-            },
+            Ok(session) => {
+                self.clear_dialogue(actor);
+                ServerInteract::Closed {
+                    session_id: session.id.get(),
+                    reason: InteractCloseReason::Requested,
+                }
+            }
             Err(_) => ServerInteract::Rejected {
                 target: WireEntityId {
                     index: 0,
@@ -2640,6 +2846,15 @@ impl GameplayOwner {
         }
     }
 
+    fn clear_dialogue(&mut self, actor: EntityId) {
+        if self.dialogues.remove(actor).is_none() {
+            return;
+        }
+        if let Some(binding) = self.bindings.values_mut().find(|b| b.entity == actor) {
+            binding.input.unlock_ui();
+        }
+    }
+
     fn emit_closed(
         &mut self,
         closed: Vec<(
@@ -2648,6 +2863,7 @@ impl GameplayOwner {
         )>,
     ) {
         for (session, reason) in closed {
+            self.clear_dialogue(session.actor);
             let Some(tx) = self
                 .bindings
                 .values()
@@ -3141,6 +3357,24 @@ mod tests {
         );
         assert_eq!(s.queued_len(), 1);
         assert_eq!(s.move_axis, MoveAxis::Neutral);
+    }
+
+    #[test]
+    fn dialogue_ui_lock_neutralizes_input_without_transition_gate() {
+        let mut s = SessionInput::new();
+        assert_eq!(
+            s.apply(cmd(1, MoveAxis::Right, true, false)),
+            SeqDecision::Accept
+        );
+        s.lock_ui();
+        assert!(s.ui_locked());
+        assert!(!s.input_gated(), "UI lock must not zero physics velocity");
+        assert_eq!(s.take_for_tick(), PlayerInput::idle());
+        assert_eq!(s.last_acknowledged(), 1);
+
+        s.unlock_ui();
+        assert!(!s.ui_locked());
+        assert!(!s.input_gated());
     }
 
     #[test]
@@ -3936,6 +4170,13 @@ mod tests {
             ServerControl::Interact(ServerInteract::Opened { session_id, .. }) => session_id,
             other => panic!("expected Opened, got {other:?}"),
         };
+        if owner.dialogues.active(actor).is_some() {
+            assert!(matches!(
+                rx.try_recv().expect("dialogue line"),
+                ServerControl::DialogueLine(_)
+            ));
+            assert!(owner.bindings.get(&id).unwrap().input.ui_locked());
+        }
         assert!(owner.world().interaction_session_of(actor).is_some());
         owner.apply_input(InputUpdate::DevSetChannel {
             connection_id: id,
@@ -3951,6 +4192,8 @@ mod tests {
             owner.world().interaction_session_of(actor).is_none(),
             "world-bound session must close on Channel change"
         );
+        assert!(owner.dialogues.active(actor).is_none());
+        assert!(!owner.bindings.get(&id).unwrap().input.ui_locked());
         match rx.try_recv().expect("closed") {
             ServerControl::Interact(ServerInteract::Closed { session_id, reason }) => {
                 assert_eq!(session_id, opened);
@@ -4766,10 +5009,74 @@ mod tests {
             connection_id: id,
             target: wire_id(traveler),
         });
-        match rx.try_recv().expect("response") {
-            ServerControl::Interact(ServerInteract::Opened { .. }) => {}
+        let session_id = match rx.try_recv().expect("response") {
+            ServerControl::Interact(ServerInteract::Opened { session_id, .. }) => session_id,
             other => panic!("expected Opened, got {other:?}"),
-        }
+        };
+        let first_line = match rx.try_recv().expect("dialogue line") {
+            ServerControl::DialogueLine(line) => line,
+            other => panic!("expected DialogueLine, got {other:?}"),
+        };
+        assert_eq!(first_line.session_id, session_id);
+        assert_eq!(first_line.target, wire_id(traveler));
+        assert_eq!(first_line.npc_content_id, ContentId::from_raw(20_001));
+        assert_eq!((first_line.beat_index, first_line.line_index), (0, 0));
+        assert!(owner.bindings.get(&id).unwrap().input.ui_locked());
+
+        owner.apply_input(InputUpdate::DialogueAdvance {
+            connection_id: id,
+            request: DialogueAdvance {
+                session_id: session_id.saturating_add(1),
+            },
+        });
+        assert!(rx.try_recv().is_err(), "stale session must not advance");
+
+        owner.apply_input(InputUpdate::DialogueAdvance {
+            connection_id: id,
+            request: DialogueAdvance { session_id },
+        });
+        assert_eq!(
+            rx.try_recv()
+                .expect("final line remains while choices wait"),
+            ServerControl::DialogueLine(first_line)
+        );
+
+        owner.apply_input(InputUpdate::InteractClose {
+            connection_id: id,
+            session_id,
+        });
+        assert!(matches!(
+            rx.try_recv().expect("closed"),
+            ServerControl::Interact(ServerInteract::Closed {
+                session_id: closed,
+                ..
+            }) if closed == session_id
+        ));
+        assert!(!owner.bindings.get(&id).unwrap().input.ui_locked());
+        assert!(
+            owner
+                .dialogues
+                .active(owner.entity_of(id).unwrap())
+                .is_none()
+        );
+
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(traveler),
+        });
+        let reopened_session = match rx.try_recv().expect("reopened") {
+            ServerControl::Interact(ServerInteract::Opened { session_id, .. }) => session_id,
+            other => panic!("expected reopened interaction, got {other:?}"),
+        };
+        assert_ne!(reopened_session, session_id);
+        let reopened_line = match rx.try_recv().expect("reopened dialogue line") {
+            ServerControl::DialogueLine(line) => line,
+            other => panic!("expected reopened DialogueLine, got {other:?}"),
+        };
+        assert_eq!(reopened_line.npc_content_id, first_line.npc_content_id);
+        assert_eq!(reopened_line.beat_index, first_line.beat_index);
+        assert_eq!(reopened_line.line_index, first_line.line_index);
+        assert!(owner.bindings.get(&id).unwrap().input.ui_locked());
     }
 
     #[test]
@@ -4791,6 +5098,46 @@ mod tests {
             }
             other => panic!("expected OutOfRange, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn replacing_dialogue_with_generic_interaction_releases_ui_lock() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
+        assert!(owner.set_player_x(id, -17.8));
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(traveler),
+        });
+        assert!(matches!(
+            rx.try_recv().expect("opened"),
+            ServerControl::Interact(ServerInteract::Opened { .. })
+        ));
+        assert!(matches!(
+            rx.try_recv().expect("dialogue"),
+            ServerControl::DialogueLine(_)
+        ));
+
+        let chest = find_content(&owner, "entity.interactable.chest");
+        assert!(owner.set_player_x(id, -7.4));
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(chest),
+        });
+        assert!(matches!(
+            rx.try_recv().expect("generic interaction"),
+            ServerControl::Interact(
+                ServerInteract::Opened { target, .. }
+                    | ServerInteract::Updated { target, .. }
+            ) if target == wire_id(chest)
+        ));
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.dialogues.active(actor).is_none());
+        assert!(!owner.bindings.get(&id).unwrap().input.ui_locked());
     }
 
     #[test]

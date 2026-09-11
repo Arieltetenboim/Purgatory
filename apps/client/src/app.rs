@@ -15,9 +15,7 @@ use purgatory_simulation::{
 #[cfg(feature = "dev-diagnostics")]
 use purgatory_simulation::{TICK_DURATION, aoi_policy_rects};
 use winit::application::ApplicationHandler;
-#[cfg(feature = "dev-diagnostics")]
-use winit::event::ElementState;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
@@ -49,6 +47,7 @@ use crate::debug::{
     gameplay_receives_pointer, has_persistent_dev_warnings, is_debug_toggle, reset_action_flash,
     reset_player_uses_replica,
 };
+use crate::dialogue_runtime::DialogueRuntime;
 #[cfg(feature = "dev-diagnostics")]
 use crate::display::collect_display_debug;
 use crate::display::{DisplayController, SurfaceResizeAction, WindowFlush};
@@ -76,7 +75,8 @@ use crate::prediction::{LocalPrediction, local_presentation_pose};
 #[cfg(feature = "dev-diagnostics")]
 use crate::renderer::rf_diag::{RfVertexProof, rf_probe_proof, rf_scene_quads};
 use crate::renderer::{
-    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, Renderer, parallax_quads,
+    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, Renderer,
+    constrained_pixel_viewport, parallax_quads,
 };
 #[cfg(feature = "dev-diagnostics")]
 use crate::renderer::{
@@ -85,6 +85,7 @@ use crate::renderer::{
 #[cfg(feature = "dev-diagnostics")]
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
+use crate::speech_bubble::layout_speech_bubble;
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -185,6 +186,11 @@ struct ClientApp {
     #[cfg(feature = "dev-diagnostics")]
     impairment_seed: u64,
     ui_runtime: UIRuntimeState,
+    dialogue_runtime: DialogueRuntime,
+    cursor_position: Option<[f32; 2]>,
+    speech_bubble_hit: Option<crate::renderer::UiRect>,
+    bubble_click_edge: bool,
+    dialogue_advance_sent_this_frame: bool,
     trace_replica_apply: bool,
     trace_scene: bool,
     trace_malformed: bool,
@@ -286,6 +292,11 @@ impl ClientApp {
             #[cfg(feature = "dev-diagnostics")]
             impairment_seed: NetworkImpairmentConfig::from_env().seed,
             ui_runtime: UIRuntimeState::Idle,
+            dialogue_runtime: DialogueRuntime::default(),
+            cursor_position: None,
+            speech_bubble_hit: None,
+            bubble_click_edge: false,
+            dialogue_advance_sent_this_frame: false,
             trace_replica_apply: false,
             trace_scene: false,
             trace_malformed: false,
@@ -449,10 +460,29 @@ impl ClientApp {
             if let crate::network::state::NetworkEvent::Interact { event, .. } = &event {
                 let before = self.ui_runtime.to_string();
                 println!("6B_INTERACT client_recv {event:?}");
+                self.dialogue_runtime.apply_interact(*event);
                 self.ui_runtime.apply_server(*event);
                 self.note_interact_runtime();
                 self.last_interact_result = interact_result_label(*event);
                 println!("6B_INTERACT ui_state {before} -> {}", self.ui_runtime);
+            }
+            if let crate::network::state::NetworkEvent::DialogueLine { event, .. } = &event {
+                match self
+                    .dialogue_runtime
+                    .apply_line(*event, self.ui_runtime, &self.registry)
+                {
+                    Ok(()) => println!(
+                        "N10_DIALOGUE client_line session={} npc={} beat={} line={} text={:?}",
+                        event.session_id,
+                        event.npc_content_id,
+                        event.beat_index,
+                        event.line_index,
+                        self.dialogue_runtime.text(&self.registry)
+                    ),
+                    Err(reason) => {
+                        eprintln!("N10_DIALOGUE rejected client projection: {reason:?}")
+                    }
+                }
             }
             if let crate::network::state::NetworkEvent::PresentationOneShot { event, .. } = &event {
                 println!("A5_ONESHOT client_recv {event:?}");
@@ -460,6 +490,8 @@ impl ClientApp {
             }
             self.lifecycle.apply(event);
         }
+        self.dialogue_runtime
+            .clear_if_target_missing(|target| self.replica.get(target).is_some());
         if self.lifecycle.screen() != before {
             self.on_screen_changed();
         }
@@ -470,6 +502,9 @@ impl ClientApp {
         self.last_input = PlayerInput::idle();
         self.intent.reset();
         self.ui_runtime = UIRuntimeState::Idle;
+        self.dialogue_runtime.clear();
+        self.speech_bubble_hit = None;
+        self.bubble_click_edge = false;
         #[cfg(feature = "dev-diagnostics")]
         {
             self.last_interact_kind = None;
@@ -1224,6 +1259,9 @@ impl ClientApp {
                 player.velocity = [0.0, 0.0];
             }
             PlayerInput::idle()
+        } else if self.dialogue_runtime.is_active() {
+            self.actions.discard_dialogue_gameplay_edges();
+            PlayerInput::idle()
         } else {
             self.actions.consume_tick_input()
         }
@@ -1255,6 +1293,65 @@ impl ClientApp {
         let _ = network.try_send_input(command);
     }
 
+    /// General UI escape. Dialogue uses the existing InteractionSession close
+    /// request; there is no dialogue-specific cancellation channel.
+    fn poll_escape_request(&mut self) {
+        if !self.actions.consume_escape_edge()
+            || !self.lifecycle.gameplay_actions_allowed()
+            || self.gameplay_input_locked()
+        {
+            return;
+        }
+        let UIRuntimeState::Active { session_id, target } = self.ui_runtime else {
+            return;
+        };
+        if self.network.is_none() {
+            return;
+        }
+        self.last_interact_request = format!("EscapeClose {session_id}");
+        self.ui_runtime.begin_close(session_id, target);
+        self.note_interact_runtime();
+        if !self
+            .network
+            .as_ref()
+            .expect("checked")
+            .try_send_interact_close(session_id)
+        {
+            self.last_interact_result = "escape close send failed".into();
+        }
+    }
+
+    fn try_send_dialogue_advance(&mut self, session_id: u32) -> bool {
+        if self.dialogue_advance_sent_this_frame {
+            return false;
+        }
+        let Some(network) = self.network.as_ref() else {
+            return false;
+        };
+        self.dialogue_advance_sent_this_frame = true;
+        network.try_send_dialogue_advance(session_id)
+    }
+
+    fn poll_bubble_click_request(&mut self) {
+        let clicked = std::mem::take(&mut self.bubble_click_edge);
+        if !clicked || !self.lifecycle.gameplay_actions_allowed() || self.gameplay_input_locked() {
+            return;
+        }
+        let UIRuntimeState::Active { session_id, .. } = self.ui_runtime else {
+            return;
+        };
+        if self
+            .dialogue_runtime
+            .active()
+            .is_some_and(|dialogue| dialogue.session_id == session_id)
+        {
+            self.last_interact_request = format!("DialogueClick {session_id}");
+            if !self.try_send_dialogue_advance(session_id) {
+                self.last_interact_result = "dialogue click send failed".into();
+            }
+        }
+    }
+
     fn poll_interact_request(&mut self) {
         if !self.actions.consume_interact_edge() {
             return;
@@ -1282,6 +1379,20 @@ impl ClientApp {
                 return;
             }
             UIRuntimeState::Active { session_id, target } => {
+                if self
+                    .dialogue_runtime
+                    .active()
+                    .is_some_and(|dialogue| dialogue.session_id == session_id)
+                {
+                    if self.dialogue_advance_sent_this_frame {
+                        return;
+                    }
+                    self.last_interact_request = format!("DialogueAdvance {session_id}");
+                    if !self.try_send_dialogue_advance(session_id) {
+                        self.last_interact_result = "dialogue advance send failed".into();
+                    }
+                    return;
+                }
                 self.last_interact_request = format!("Close {session_id}");
                 self.ui_runtime.begin_close(session_id, target);
                 self.note_interact_runtime();
@@ -1374,6 +1485,9 @@ impl ClientApp {
         if self.gameplay_input_locked() {
             return;
         }
+        if self.dialogue_runtime.is_active() {
+            return;
+        }
         if self.network.is_none() {
             return;
         }
@@ -1414,6 +1528,10 @@ impl ClientApp {
         }
         if self.gameplay_input_locked() {
             println!("6C_PORTAL up_ignored reason=input_gated");
+            return;
+        }
+        if self.dialogue_runtime.is_active() {
+            println!("6C_PORTAL up_ignored reason=dialogue_active");
             return;
         }
         if !self.map_fade.is_idle() {
@@ -1821,6 +1939,7 @@ impl ClientApp {
     }
 
     fn handle_frame(&mut self, event_loop: &ActiveEventLoop) {
+        self.dialogue_advance_sent_this_frame = false;
         self.reconciled_this_frame = false;
         self.network_frames_this_frame = 0;
         self.last_ticks_executed = 0;
@@ -1873,6 +1992,8 @@ impl ClientApp {
                 self.map_fade.kind()
             );
         }
+        self.poll_escape_request();
+        self.poll_bubble_click_request();
         self.poll_interact_request();
         self.poll_portal_request();
         self.poll_ability_request();
@@ -2187,6 +2308,29 @@ impl ClientApp {
             quads.push(fade);
         }
 
+        let speech_bubble = if on_connection {
+            None
+        } else {
+            self.dialogue_runtime.active().and_then(|dialogue| {
+                let text = self.dialogue_runtime.text(&self.registry)?;
+                let target = self.replica.get(dialogue.target)?;
+                let (width, height) = self.renderer.as_ref()?.surface_size();
+                let viewport = constrained_pixel_viewport(width, height)?;
+                Some(layout_speech_bubble(
+                    text,
+                    target.position,
+                    camera,
+                    viewport,
+                ))
+            })
+        };
+        self.speech_bubble_hit = speech_bubble.as_ref().map(|bubble| bubble.hit_bounds);
+        let ui_rects = speech_bubble
+            .as_ref()
+            .map(|bubble| bubble.rects.as_slice())
+            .unwrap_or_default();
+        let ui_text = speech_bubble.as_ref().map(|bubble| &bubble.text);
+
         let Some(window) = self.window.clone() else {
             return;
         };
@@ -2230,7 +2374,7 @@ impl ClientApp {
                 let can_connect = self.lifecycle.can_connect();
                 let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
                 let login = &mut self.dev_login;
-                renderer.render(&quads, |pass| {
+                renderer.render(&quads, ui_rects, ui_text, |pass| {
                     let Some(overlay) = overlay else {
                         return Vec::new();
                     };
@@ -2258,7 +2402,7 @@ impl ClientApp {
             #[cfg(not(feature = "dev-diagnostics"))]
             {
                 let _ = (&window, on_connection);
-                renderer.render(&quads, |_| Vec::new())
+                renderer.render(&quads, ui_rects, ui_text, |_| Vec::new())
             }
         };
 
@@ -3820,15 +3964,40 @@ impl ApplicationHandler for ClientApp {
                     self.on_focus_loss_input();
                 }
             }
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseInput { .. }
-            | WindowEvent::MouseWheel { .. } => {
+            WindowEvent::CursorMoved { position, .. } => {
                 #[cfg(feature = "dev-diagnostics")]
-                let _gameplay_mouse = gameplay_receives_pointer(
+                let gameplay_mouse = gameplay_receives_pointer(
                     self.debug_overlay_visible(),
                     self.debug.as_ref().is_some_and(DebugOverlay::wants_pointer),
                 );
+                #[cfg(not(feature = "dev-diagnostics"))]
+                let gameplay_mouse = true;
+                if self.lifecycle.gameplay_actions_allowed() && gameplay_mouse {
+                    self.cursor_position = Some([position.x as f32, position.y as f32]);
+                }
             }
+            WindowEvent::MouseInput { state, button, .. } => {
+                #[cfg(feature = "dev-diagnostics")]
+                let gameplay_mouse = gameplay_receives_pointer(
+                    self.debug_overlay_visible(),
+                    self.debug.as_ref().is_some_and(DebugOverlay::wants_pointer),
+                );
+                #[cfg(not(feature = "dev-diagnostics"))]
+                let gameplay_mouse = true;
+                if self.lifecycle.gameplay_actions_allowed()
+                    && gameplay_mouse
+                    && state == ElementState::Pressed
+                    && button == MouseButton::Left
+                    && self.cursor_position.is_some_and(|cursor| {
+                        self.speech_bubble_hit
+                            .is_some_and(|bounds| bounds.contains(cursor))
+                    })
+                {
+                    self.bubble_click_edge = true;
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::MouseWheel { .. } => {}
             WindowEvent::RedrawRequested => {
                 self.handle_frame(event_loop);
             }

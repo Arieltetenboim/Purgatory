@@ -89,6 +89,13 @@ Protocol v24 adds `ReplicatedKind::Item` for visible Item-backed world drops.
 The existing Pickup request targets this replicated entity and the server
 continues to resolve ownership through the authoritative Item runtime.
 
+Protocol v25 adds reliable dialogue control without transporting authored
+text. `DialogueAdvance` (tag 35) carries only the authoritative interaction
+`session_id`. `DialogueLine` (tag 36) carries the session, target entity,
+numeric NPC `ContentId`, beat index, and line index. The client resolves the
+line through its validated presentation projection; selection and progression
+remain server-owned.
+
 ## Golden wire vectors
 
 Protocol v1 vectors in `crates/protocol/tests/wire_golden.rs` are **frozen and unchanged**. They still encode `protocol_version = 1` so accidental v1 drift fails.

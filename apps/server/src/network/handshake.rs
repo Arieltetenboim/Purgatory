@@ -563,6 +563,32 @@ async fn serve_connection(live: LiveSession) {
                             }
                         }
                     }
+                    Ok(ClientControl::DialogueAdvance(request)) => {
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx.send_dialogue_advance(id, request).await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Ok(ClientControl::PortalActivate(activate)) => {
                         println!(
                             "6C_PORTAL recv PortalActivate connection={id} target={}",

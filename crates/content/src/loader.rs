@@ -87,12 +87,13 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         ContentDomain::Shared,
         Kind::Ability,
     );
+    load_npc_authoring_tree(
+        &mut registry,
+        &mut issues,
+        &root.join("authoring").join("npcs"),
+        mode,
+    );
     if mode == LoadMode::Full {
-        load_npc_authoring_tree(
-            &mut registry,
-            &mut issues,
-            &root.join("authoring").join("npcs"),
-        );
         load_dir(
             &mut registry,
             &mut issues,
@@ -119,6 +120,7 @@ fn load_npc_authoring_tree(
     registry: &mut ContentRegistry,
     issues: &mut Vec<ValidationIssue>,
     root: &Path,
+    mode: LoadMode,
 ) {
     let mut paths = Vec::new();
     collect_json_paths(root, &mut paths, issues);
@@ -156,7 +158,11 @@ fn load_npc_authoring_tree(
             .and_then(|()| document.into_definition(&path, content_id))
             .and_then(|definition| {
                 definition.map_or(Ok(()), |definition| {
-                    registry.insert_npc_dialogue(definition)
+                    registry.insert_npc_dialogue_presentation((&definition).into())?;
+                    if mode == LoadMode::Full {
+                        registry.insert_npc_dialogue(definition)?;
+                    }
+                    Ok(())
                 })
             });
         if let Err(error) = result {
@@ -1090,6 +1096,16 @@ mod tests {
 
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
         assert_eq!(shared.npc_dialogue_count(), 0);
+        let presentation = shared
+            .npc_dialogue_presentation_by_id(NPC_WELCOME_TRAVELER_STAYED)
+            .expect("client-safe Traveler lines");
+        assert_eq!(
+            presentation
+                .line(crate::DialogueBeatIndex::from_raw(0), 0)
+                .expect("intro line")
+                .text,
+            intro.lines[0].text
+        );
     }
 
     #[test]

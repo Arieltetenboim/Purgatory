@@ -7,6 +7,7 @@ use crate::ability::{
     ABILITY_ACTIVATE_INDEPENDENT_BYTES, ABILITY_ACTIVATE_SELECTED_BYTES, AbilityActivateRequest,
     AbilityCommandReject, ServerAbility,
 };
+use crate::dialogue::{DialogueAdvance, ServerDialogueLine};
 use crate::equipment::{
     EquipRequest, EquipmentRejectReason, ServerEquipment, UnequipRequest, slot_valid,
 };
@@ -59,6 +60,8 @@ const TAG_PICKUP: u8 = 31;
 const TAG_PICKUP_ACCEPTED: u8 = 32;
 const TAG_PICKUP_REJECTED: u8 = 33;
 const TAG_INVENTORY_SNAPSHOT: u8 = 34;
+const TAG_DIALOGUE_ADVANCE: u8 = 35;
+const TAG_DIALOGUE_ACTIVE_LINE: u8 = 36;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -270,6 +273,7 @@ pub enum ClientControl {
     HeldCancel,
     InteractOpen(InteractOpen),
     InteractClose(InteractClose),
+    DialogueAdvance(DialogueAdvance),
     PortalActivate(PortalActivate),
     /// DEV overlay Channel request. Server validates and owns WorldAddress.
     DevSetChannel(DevSetChannel),
@@ -297,6 +301,7 @@ pub enum ServerControl {
     Welcome(Welcome),
     Disconnect(DisconnectReason),
     Interact(ServerInteract),
+    DialogueLine(ServerDialogueLine),
     Equipment(ServerEquipment),
     /// Authoritative presentation oneshot start/clear (protocol v13).
     PresentationOneShot(ServerPresentationOneShot),
@@ -373,6 +378,15 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             let mut out = Vec::with_capacity(1 + 4);
             out.push(TAG_INTERACT_CLOSE);
             out.extend_from_slice(&close.session_id.to_le_bytes());
+            Ok(out)
+        }
+        ClientControl::DialogueAdvance(advance) => {
+            if advance.session_id == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            let mut out = Vec::with_capacity(1 + 4);
+            out.push(TAG_DIALOGUE_ADVANCE);
+            out.extend_from_slice(&advance.session_id.to_le_bytes());
             Ok(out)
         }
         ClientControl::PortalActivate(activate) => {
@@ -512,6 +526,16 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
             let (session_id, rest) = read_u32(rest)?;
             expect_empty(rest)?;
             Ok(ClientControl::InteractClose(InteractClose { session_id }))
+        }
+        TAG_DIALOGUE_ADVANCE => {
+            let (session_id, rest) = read_u32(rest)?;
+            expect_empty(rest)?;
+            if session_id == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(ClientControl::DialogueAdvance(DialogueAdvance {
+                session_id,
+            }))
         }
         TAG_PORTAL_ACTIVATE => {
             let (target, rest) = read_wire_entity(rest)?;
@@ -659,6 +683,7 @@ pub fn encode_server_control(msg: &ServerControl) -> Result<Vec<u8>, CodecError>
             Ok(out)
         }
         ServerControl::Interact(event) => encode_server_interact(event),
+        ServerControl::DialogueLine(event) => encode_server_dialogue_line(*event),
         ServerControl::Equipment(event) => encode_server_equipment(event),
         ServerControl::PresentationOneShot(event) => Ok(encode_server_presentation_oneshot(event)),
         ServerControl::Ability(event) => encode_server_ability(event),
@@ -697,6 +722,9 @@ pub fn decode_server_control(bytes: &[u8]) -> Result<ServerControl, CodecError> 
         | TAG_INTERACT_REJECTED
         | TAG_INTERACT_UPDATED
         | TAG_INTERACT_CLOSED => Ok(ServerControl::Interact(decode_server_interact(tag, rest)?)),
+        TAG_DIALOGUE_ACTIVE_LINE => Ok(ServerControl::DialogueLine(decode_server_dialogue_line(
+            rest,
+        )?)),
         TAG_EQUIPMENT_ACCEPTED | TAG_EQUIPMENT_REJECTED => Ok(ServerControl::Equipment(
             decode_server_equipment(tag, rest)?,
         )),
@@ -844,6 +872,43 @@ fn decode_server_interact(tag: u8, rest: &[u8]) -> Result<ServerInteract, CodecE
         }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
+}
+
+fn encode_server_dialogue_line(event: ServerDialogueLine) -> Result<Vec<u8>, CodecError> {
+    if event.session_id == 0
+        || event.npc_content_id.kind() != Some(purgatory_common::ContentKind::Npc)
+    {
+        return Err(CodecError::InvalidValue);
+    }
+    let npc_content_id = event.npc_content_id.raw().ok_or(CodecError::InvalidValue)?;
+    let mut out = Vec::with_capacity(1 + crate::DIALOGUE_ACTIVE_LINE_BYTES);
+    out.push(TAG_DIALOGUE_ACTIVE_LINE);
+    out.extend_from_slice(&event.session_id.to_le_bytes());
+    write_wire_entity(&mut out, event.target);
+    out.extend_from_slice(&npc_content_id.to_le_bytes());
+    out.extend_from_slice(&event.beat_index.to_le_bytes());
+    out.extend_from_slice(&event.line_index.to_le_bytes());
+    Ok(out)
+}
+
+fn decode_server_dialogue_line(rest: &[u8]) -> Result<ServerDialogueLine, CodecError> {
+    let (session_id, rest) = read_u32(rest)?;
+    let (target, rest) = read_wire_entity(rest)?;
+    let (npc_content_id, rest) = read_u32(rest)?;
+    let (beat_index, rest) = read_u32(rest)?;
+    let (line_index, rest) = read_u32(rest)?;
+    expect_empty(rest)?;
+    let npc_content_id = purgatory_common::ContentId::from_raw(npc_content_id);
+    if session_id == 0 || npc_content_id.kind() != Some(purgatory_common::ContentKind::Npc) {
+        return Err(CodecError::InvalidValue);
+    }
+    Ok(ServerDialogueLine {
+        session_id,
+        target,
+        npc_content_id,
+        beat_index,
+        line_index,
+    })
 }
 
 fn encode_server_equipment(event: &ServerEquipment) -> Result<Vec<u8>, CodecError> {
@@ -1389,6 +1454,29 @@ mod tests {
     }
 
     #[test]
+    fn dialogue_advance_roundtrip_and_rejects_invalid_sessions() {
+        let msg = ClientControl::DialogueAdvance(DialogueAdvance { session_id: 7 });
+        let encoded = encode_client_control(&msg).unwrap();
+        assert_eq!(encoded, [TAG_DIALOGUE_ADVANCE, 7, 0, 0, 0]);
+        assert_eq!(decode_client_control(&encoded).unwrap(), msg);
+
+        assert_eq!(
+            encode_client_control(&ClientControl::DialogueAdvance(DialogueAdvance {
+                session_id: 0,
+            })),
+            Err(CodecError::InvalidValue)
+        );
+        assert_eq!(
+            decode_client_control(&[TAG_DIALOGUE_ADVANCE, 0, 0, 0, 0]),
+            Err(CodecError::InvalidValue)
+        );
+        assert_eq!(
+            decode_client_control(&[TAG_DIALOGUE_ADVANCE, 7, 0, 0]),
+            Err(CodecError::Truncated)
+        );
+    }
+
+    #[test]
     fn portal_activate_roundtrip() {
         let msg = ClientControl::PortalActivate(PortalActivate {
             target: WireEntityId {
@@ -1484,6 +1572,38 @@ mod tests {
         });
         let encoded = encode_server_control(&msg).unwrap();
         assert_eq!(decode_server_control(&encoded).unwrap(), msg);
+    }
+
+    #[test]
+    fn dialogue_line_roundtrip_and_rejects_non_npc_identity() {
+        let msg = ServerControl::DialogueLine(ServerDialogueLine {
+            session_id: 7,
+            target: WireEntityId {
+                index: 42,
+                generation: 3,
+            },
+            npc_content_id: purgatory_common::ContentId::from_raw(20_001),
+            beat_index: 2,
+            line_index: 1,
+        });
+        let encoded = encode_server_control(&msg).unwrap();
+        assert_eq!(encoded[0], TAG_DIALOGUE_ACTIVE_LINE);
+        assert_eq!(decode_server_control(&encoded).unwrap(), msg);
+
+        let invalid = ServerControl::DialogueLine(ServerDialogueLine {
+            session_id: 7,
+            target: WireEntityId {
+                index: 42,
+                generation: 3,
+            },
+            npc_content_id: purgatory_common::ContentId::from_raw(1),
+            beat_index: 0,
+            line_index: 0,
+        });
+        assert_eq!(
+            encode_server_control(&invalid),
+            Err(CodecError::InvalidValue)
+        );
     }
 
     #[test]

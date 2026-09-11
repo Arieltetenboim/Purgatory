@@ -109,6 +109,10 @@ pub enum NetworkEvent {
         attempt_id: ConnectionAttemptId,
         event: purgatory_protocol::ServerInteract,
     },
+    DialogueLine {
+        attempt_id: ConnectionAttemptId,
+        event: purgatory_protocol::ServerDialogueLine,
+    },
     Equipment {
         attempt_id: ConnectionAttemptId,
         event: purgatory_protocol::ServerEquipment,
@@ -142,6 +146,7 @@ impl NetworkEvent {
             | Self::Disconnected { attempt_id, .. }
             | Self::RttUpdated { attempt_id, .. }
             | Self::Interact { attempt_id, .. }
+            | Self::DialogueLine { attempt_id, .. }
             | Self::Equipment { attempt_id, .. }
             | Self::Item { attempt_id, .. }
             | Self::Inventory { attempt_id, .. }
@@ -382,6 +387,7 @@ impl NetworkView {
                 self.counters.telemetry_events = self.counters.telemetry_events.saturating_add(1);
             }
             NetworkEvent::Interact { .. } => {}
+            NetworkEvent::DialogueLine { .. } => {}
             NetworkEvent::Equipment { .. } => {}
             NetworkEvent::Item { .. } => {}
             NetworkEvent::Inventory { event, .. } => {

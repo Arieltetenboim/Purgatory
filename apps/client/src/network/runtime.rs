@@ -70,6 +70,7 @@ enum ClientGameplayMsg {
     HeldCancel,
     InteractOpen(purgatory_protocol::WireEntityId),
     InteractClose(u32),
+    DialogueAdvance(u32),
     PortalActivate(purgatory_protocol::WireEntityId),
     DevSetChannel(u32),
     DevSetSpeed(Option<u16>),
@@ -200,6 +201,9 @@ impl EventSink {
                 NetworkEvent::RttUpdated { .. } => {}
                 NetworkEvent::Interact { attempt_id, event } => {
                     self.trace(&format!("attempt={attempt_id} Interact {event:?}"));
+                }
+                NetworkEvent::DialogueLine { attempt_id, event } => {
+                    self.trace(&format!("attempt={attempt_id} DialogueLine {event:?}"));
                 }
                 NetworkEvent::Equipment { attempt_id, event } => {
                     self.trace(&format!("attempt={attempt_id} Equipment {event:?}"));
@@ -411,6 +415,12 @@ impl NetworkHandle {
     pub fn try_send_interact_close(&self, session_id: u32) -> bool {
         self.input
             .try_send(ClientGameplayMsg::InteractClose(session_id))
+            .is_ok()
+    }
+
+    pub fn try_send_dialogue_advance(&self, session_id: u32) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::DialogueAdvance(session_id))
             .is_ok()
     }
 
@@ -948,6 +958,13 @@ async fn handshake_and_live(
                 kind: NetworkFailureKind::UnexpectedMessage,
             });
         }
+        Ok(ServerControl::DialogueLine(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
         Ok(ServerControl::Equipment(_)) => {
             connection.close(0u32.into(), b"handshake");
             return Err(NetworkEvent::Disconnected {
@@ -1005,6 +1022,9 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
         }
         ClientGameplayMsg::InteractClose(session_id) => {
             ClientControl::InteractClose(purgatory_protocol::InteractClose { session_id })
+        }
+        ClientGameplayMsg::DialogueAdvance(session_id) => {
+            ClientControl::DialogueAdvance(purgatory_protocol::DialogueAdvance { session_id })
         }
         ClientGameplayMsg::PortalActivate(target) => {
             ClientControl::PortalActivate(purgatory_protocol::PortalActivate { target })
@@ -1198,6 +1218,14 @@ async fn live_loop(
                         events
                             .emit(
                                 NetworkEvent::Interact { attempt_id, event },
+                                control,
+                            )
+                            .await;
+                    }
+                    Ok(ServerControl::DialogueLine(event)) => {
+                        events
+                            .emit(
+                                NetworkEvent::DialogueLine { attempt_id, event },
                                 control,
                             )
                             .await;

@@ -172,6 +172,9 @@ impl ClientLifecycle {
             NetworkEvent::Interact { event, .. } => {
                 self.emit_log(&format!("Interact {event:?}"));
             }
+            NetworkEvent::DialogueLine { event, .. } => {
+                self.emit_log(&format!("DialogueLine {event:?}"));
+            }
             NetworkEvent::Equipment { event, .. } => {
                 self.emit_log(&format!("Equipment {event:?}"));
             }
@@ -220,7 +223,7 @@ impl ClientLifecycle {
             NetworkEvent::RttUpdated { .. } => {
                 matches!(state, ConnectionState::Connected)
             }
-            NetworkEvent::Interact { .. } => {
+            NetworkEvent::Interact { .. } | NetworkEvent::DialogueLine { .. } => {
                 matches!(state, ConnectionState::Connected)
             }
             NetworkEvent::Equipment { .. }
