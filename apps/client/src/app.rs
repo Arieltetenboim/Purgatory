@@ -4115,22 +4115,21 @@ impl ApplicationHandler for ClientApp {
                     && gameplay_mouse
                     && state == ElementState::Pressed
                     && button == MouseButton::Left
+                    && let Some(cursor) = self.cursor_position
                 {
-                    if let Some(cursor) = self.cursor_position {
-                        if let Some(index) = self
-                            .choice_bubble_hits
-                            .iter()
-                            .position(|bounds| bounds.contains(cursor))
-                        {
-                            self.choice_click_edge = Some(index);
-                            window.request_redraw();
-                        } else if self
-                            .speech_bubble_hit
-                            .is_some_and(|bounds| bounds.contains(cursor))
-                        {
-                            self.bubble_click_edge = true;
-                            window.request_redraw();
-                        }
+                    if let Some(index) = self
+                        .choice_bubble_hits
+                        .iter()
+                        .position(|bounds| bounds.contains(cursor))
+                    {
+                        self.choice_click_edge = Some(index);
+                        window.request_redraw();
+                    } else if self
+                        .speech_bubble_hit
+                        .is_some_and(|bounds| bounds.contains(cursor))
+                    {
+                        self.bubble_click_edge = true;
+                        window.request_redraw();
                     }
                 }
             }
