@@ -591,25 +591,10 @@ Owner Phase 0 clarifications:
 
 ## Gate FORGE N10 — NPC Dialogue Runtime
 
-- Status: **N10a-N10f implemented; normal-path manual proof accepted
-  2026-09-12.** N10e PR #43 and stacked N10f PR #45 remain open, so this is
-  not a merged closeout.
-- Command/test evidence: `cargo test -p purgatory-content` (74 passed);
-  `cargo test -p purgatory-client --no-default-features` (597 passed, 3
-  ignored); `cargo test -p purgatory-client` (664 passed, 3 ignored);
-  `cargo test -p purgatory-server` (266 passed, 9 ignored); NPC Lab (48
-  passed); content validator OK; affected-package Clippy passed; server + bot
-  client check passed.
-- Manual evidence: authored Beat/choice flow, adjacent player/NPC bubbles,
-  per-choice highlighting/hit regions, 1.0-second selected player response,
-  distinct player bubble skin, DEV spawning of allocated Welcome NPCs,
-  local-only facing/animation, multiplayer isolation and the per-player
-  15-tick reopen guard were accepted in the normal client/server runtime.
-- Known blockers/gaps: the official workspace gate still stops on pre-existing
-  rustfmt drift in `crates/common/src/identity.rs` and
-  `crates/common/src/lib.rs`. Player/target death does not yet close dialogue;
-  this design-contract gap is explicitly documented and excluded from GREEN
-  proof until implemented and tested.
+- Status: **N10a-N10f merged; normal-path manual proof accepted 2026-09-12.** PR #43 (N10e) and PR #45 (N10f) are merged into `master`.
+- Command/test evidence: `cargo test -p purgatory-content` (74 passed); `cargo test -p purgatory-client --no-default-features` (597 passed, 3 ignored); `cargo test -p purgatory-client` (664 passed, 3 ignored); `cargo test -p purgatory-server` (266 passed, 9 ignored); NPC Lab (48 passed); content validator OK; affected-package Clippy passed; server + bot client check passed. The later repository hygiene pass restored the canonical Linux quality gate; GitHub Quality Gate run #95 completed GREEN on Ubuntu 24.04 with formatting, workspace check, workspace Clippy `-D warnings`, workspace tests, and content validation passing.
+- Manual evidence: authored Beat/choice flow, adjacent player/NPC bubbles, per-choice highlighting/hit regions, 1.0-second selected player response, distinct player bubble skin, DEV spawning of allocated Welcome NPCs, local-only facing/animation, multiplayer isolation and the per-player 15-tick reopen guard were accepted in the normal client/server runtime.
+- Remaining functional gap: player/target death does not yet close dialogue. This design-contract gap remains explicit follow-up work and is not claimed as passing behavior.
 - Contract: [`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
 
 ## Later gates
