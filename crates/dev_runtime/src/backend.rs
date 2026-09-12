@@ -37,7 +37,7 @@ pub trait ProcessBackend {
     fn run_capture(&mut self, spec: SpawnSpec) -> Result<CapturedOutput, String>;
     /// Visible console (quality gate / analyze). Detached from Hub lifetime.
     fn spawn_visible(&mut self, spec: SpawnSpec) -> Result<u32, String>;
-    /// Kill All only: cargo.exe whose command line contains this workspace root.
+    /// Kill All only: cargo process whose command line contains this workspace root.
     fn kill_workspace_cargo(&mut self, root: &Path) -> usize;
 }
 
@@ -299,8 +299,11 @@ fn spawn_pump(
         .ok();
 }
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+#[cfg(windows)]
 const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
 fn apply_session_flags(cmd: &mut Command) {
@@ -372,17 +375,9 @@ fn kill_process_tree(pid: u32) {
 }
 
 fn pid_alive_external(pid: u32) -> bool {
-    #[cfg(windows)]
-    {
-        discover_pid_exists(pid)
-    }
-    #[cfg(not(windows))]
-    {
-        Path::new(&format!("/proc/{pid}")).exists()
-    }
+    discover_pid_exists(pid)
 }
 
-#[cfg(windows)]
 fn discover_pid_exists(pid: u32) -> bool {
     use sysinfo::{Pid, ProcessesToUpdate, System};
     let mut sys = System::new();
@@ -390,7 +385,6 @@ fn discover_pid_exists(pid: u32) -> bool {
     sys.process(Pid::from_u32(pid)).is_some()
 }
 
-#[cfg(windows)]
 fn discover_workspace_cargo(root: &Path) -> Vec<u32> {
     use sysinfo::{ProcessesToUpdate, System};
     let root_needle = root.to_string_lossy().to_lowercase();
@@ -419,16 +413,9 @@ fn discover_workspace_cargo(root: &Path) -> Vec<u32> {
     out
 }
 
-#[cfg(not(windows))]
-fn discover_workspace_cargo(_root: &Path) -> Vec<u32> {
-    Vec::new()
-}
-
-#[cfg(windows)]
 fn discover_under_target(stem: &str, target_prefix: &Path) -> Vec<DiscoveredProcess> {
     use sysinfo::{ProcessesToUpdate, System};
     let want = exe_name(stem);
-    let prefix = target_prefix.to_string_lossy().to_lowercase();
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
     let mut out = Vec::new();
@@ -438,8 +425,7 @@ fn discover_under_target(stem: &str, target_prefix: &Path) -> Vec<DiscoveredProc
             continue;
         }
         let Some(exe) = proc.exe() else { continue };
-        let path_s = exe.to_string_lossy().to_lowercase();
-        if !path_s.starts_with(&prefix) {
+        if !exe.starts_with(target_prefix) {
             continue;
         }
         out.push(DiscoveredProcess {
@@ -448,11 +434,6 @@ fn discover_under_target(stem: &str, target_prefix: &Path) -> Vec<DiscoveredProc
         });
     }
     out
-}
-
-#[cfg(not(windows))]
-fn discover_under_target(_stem: &str, _target_prefix: &Path) -> Vec<DiscoveredProcess> {
-    Vec::new()
 }
 
 /// Test double. Spawned PIDs are synthetic; discovery is injected.
