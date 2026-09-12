@@ -1,16 +1,12 @@
 # NPC Dialogue Runtime
 
-Status: current implementation and ownership contract for N10a-N10f.
-
-This document describes the tree on `forge/n10f-local-dialogue-presentation`.
-N10a-N10d are merged. N10e is PR #43 and N10f is the stacked PR #45; their
-normal client/server proof was accepted on 2026-09-12, but they are not yet on
-`master`.
+Status: **N10a-N10f complete, merged to `master`, and manually accepted on 2026-09-12.** This is the current implementation and ownership contract for the NPC dialogue runtime.
 
 The earlier design rationale remains in
 [`NPC_DIALOGUE_RUNTIME_DESIGN.md`](NPC_DIALOGUE_RUNTIME_DESIGN.md). The slice
-handoffs are implementation evidence; this document is the current system
-reference.
+plans/handoffs are historical implementation evidence; this document is the
+current system reference. Remaining N-track work is recorded in
+[`ROADMAP.md`](ROADMAP.md) and is not part of unfinished N10 implementation.
 
 ## 1. Scope and terminology
 
@@ -596,6 +592,10 @@ for bubble placement, mouse hits, facing, animation and isolation.
 
 ## 19. Manual acceptance proof
 
+The normal N10 proof was accepted on 2026-09-12. The accepted proof covered the authored dialogue/choice flow, authoritative Traveler/Workshop state and item actions, close-range non-overlapping bubble layout, DEV NPC spawning, two-client isolation, local-only facing/animation, and the per-player reopen cooldown.
+
+The repeatable manual procedure remains:
+
 1. Start the normal server and two clients in the same world address.
 2. Approach the placed Traveler and press `E`.
 3. Verify the complete authored Beat appears in one NPC bubble and movement
@@ -618,8 +618,8 @@ for bubble placement, mouse hits, facing, animation and isolation.
 11. Move out of range or change world address and verify the incomplete Beat is
     not marked Heard.
 
-Death closure is excluded from GREEN proof until the known gap in section 17
-is fixed and covered.
+Death closure remains a separate follow-up because the known gap in section 17
+has not yet been implemented.
 
 ## 20. Deliberately deferred
 
