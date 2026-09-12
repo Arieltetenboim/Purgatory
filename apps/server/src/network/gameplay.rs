@@ -31,7 +31,8 @@ use purgatory_simulation::{
     CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X, Health,
     InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError, P0, P0_POSITION,
     PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest,
-    ScheduleOwner, SimulationTick, Transform, WorkLane, World, validate_command_preamble,
+    ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
+    validate_command_preamble,
 };
 
 use super::dialogue::{
@@ -65,6 +66,9 @@ const DEV_SPEED_MAX_HUNDREDTHS: u16 = 2_400;
 const DEV_JUMP_MIN_HUNDREDTHS: u16 = 100;
 const DEV_JUMP_MAX_HUNDREDTHS: u16 = 3_000;
 const DEV_SPAWNED_NPC_CAP: usize = 64;
+/// Prevent rapid close/reopen churn without making one player's dialogue lock
+/// the NPC for other players. The authoritative server runs at 30 Hz.
+const DIALOGUE_REOPEN_COOLDOWN_TICKS: u64 = TICK_RATE_HZ as u64 / 2;
 /// Transient N10 proof bootstrap documented by Welcome authoring. Phase 12 may
 /// replace this integration seed with persisted character narrative data.
 const WELCOME_NARRATIVE_INITIAL_FACTS: [(&str, bool); 3] = [
@@ -402,6 +406,7 @@ pub struct PlayerBinding {
     last_ability_result: Option<ServerAbility>,
     last_pickup_seq: Option<u32>,
     last_pickup_result: Option<ServerItem>,
+    dialogue_reopen_after_tick: u64,
 }
 
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
@@ -1270,6 +1275,7 @@ impl GameplayOwner {
                 last_ability_result: None,
                 last_pickup_seq: None,
                 last_pickup_result: None,
+                dialogue_reopen_after_tick: 0,
             },
         );
         self.player_entity_spawned = self.player_entity_spawned.saturating_add(1);
@@ -2312,6 +2318,38 @@ impl GameplayOwner {
             }
         };
         let target_id = super::snapshot::from_wire_id(target);
+        let is_social_npc = self
+            .world
+            .interactable_of(target_id)
+            .is_some_and(|interactable| {
+                interactable.kind == purgatory_simulation::InteractableKind::Npc
+            });
+        if is_social_npc
+            && self
+                .bindings
+                .get(&connection_id)
+                .is_some_and(|binding| self.ticks < binding.dialogue_reopen_after_tick)
+        {
+            let remaining_ticks = self
+                .bindings
+                .get(&connection_id)
+                .map(|binding| {
+                    binding
+                        .dialogue_reopen_after_tick
+                        .saturating_sub(self.ticks)
+                })
+                .unwrap_or_default();
+            println!(
+                "N10_DIALOGUE rejected actor={actor} target={target} reason=reopen_cooldown remaining_ticks={remaining_ticks}"
+            );
+            if let Some(tx) = interact_tx {
+                let _ = tx.try_send(ServerControl::Interact(ServerInteract::Rejected {
+                    target,
+                    reason: InteractRejectReason::Unavailable,
+                }));
+            }
+            return;
+        }
         let session = match self.world.try_open_interaction(actor, target_id) {
             Ok(session) => {
                 println!(
@@ -2343,12 +2381,6 @@ impl GameplayOwner {
             self.clear_dialogue(actor);
         }
 
-        let is_social_npc = self
-            .world
-            .interactable_of(target_id)
-            .is_some_and(|interactable| {
-                interactable.kind == purgatory_simulation::InteractableKind::Npc
-            });
         let dialogue_line = if is_social_npc {
             match self.begin_or_resume_dialogue(actor, session.id.get(), target_id) {
                 Some(line) => Some(line),
@@ -2468,7 +2500,7 @@ impl GameplayOwner {
                     actor,
                     purgatory_simulation::InteractionSessionId(active.session_id),
                 );
-                self.clear_dialogue(actor);
+                self.finish_dialogue(actor);
                 if let Some(tx) = tx {
                     let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
                         session_id: active.session_id,
@@ -2566,7 +2598,7 @@ impl GameplayOwner {
                         actor,
                         purgatory_simulation::InteractionSessionId(accepted.session_id),
                     );
-                    self.clear_dialogue(actor);
+                    self.finish_dialogue(actor);
                     let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
                         session_id: accepted.session_id,
                         reason: InteractCloseReason::Requested,
@@ -2576,7 +2608,7 @@ impl GameplayOwner {
                         actor,
                         purgatory_simulation::InteractionSessionId(accepted.session_id),
                     );
-                    self.clear_dialogue(actor);
+                    self.finish_dialogue(actor);
                 }
             }
             ChoiceResult::Invalid => {}
@@ -3068,7 +3100,7 @@ impl GameplayOwner {
             purgatory_simulation::InteractionSessionId(session_id),
         ) {
             Ok(session) => {
-                self.clear_dialogue(actor);
+                self.finish_dialogue(actor);
                 ServerInteract::Closed {
                     session_id: session.id.get(),
                     reason: InteractCloseReason::Requested,
@@ -3095,6 +3127,22 @@ impl GameplayOwner {
         }
     }
 
+    fn finish_dialogue(&mut self, actor: EntityId) {
+        if self.dialogues.active(actor).is_none() {
+            self.clear_dialogue(actor);
+            return;
+        }
+        let reopen_after_tick = self.ticks.saturating_add(DIALOGUE_REOPEN_COOLDOWN_TICKS);
+        self.clear_dialogue(actor);
+        if let Some(binding) = self
+            .bindings
+            .values_mut()
+            .find(|binding| binding.entity == actor)
+        {
+            binding.dialogue_reopen_after_tick = reopen_after_tick;
+        }
+    }
+
     fn emit_closed(
         &mut self,
         closed: Vec<(
@@ -3103,7 +3151,7 @@ impl GameplayOwner {
         )>,
     ) {
         for (session, reason) in closed {
-            self.clear_dialogue(session.actor);
+            self.finish_dialogue(session.actor);
             let Some(tx) = self
                 .bindings
                 .values()
@@ -3564,6 +3612,13 @@ mod tests {
             .max(purgatory_simulation::membership_transition_input_lock_ticks())
             .saturating_add(1);
         for _ in 0..n {
+            owner.simulate_tick(dt);
+        }
+    }
+
+    fn expire_dialogue_reopen_cooldown(owner: &mut GameplayOwner) {
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        for _ in 0..DIALOGUE_REOPEN_COOLDOWN_TICKS {
             owner.simulate_tick(dt);
         }
     }
@@ -5344,6 +5399,7 @@ mod tests {
         assert!(!owner.bindings.get(&id).unwrap().input.ui_locked());
         assert!(owner.dialogues.active(actor).is_none());
 
+        expire_dialogue_reopen_cooldown(&mut owner);
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(traveler),
@@ -5363,6 +5419,101 @@ mod tests {
             "Mark NPC Met must change the next eligible ENTRY beat"
         );
         assert!(owner.bindings.get(&id).unwrap().input.ui_locked());
+    }
+
+    #[test]
+    fn dialogue_reopen_cooldown_is_per_player_and_tick_bounded() {
+        let mut owner = GameplayOwner::new();
+        let player_a = ConnectionId::from_raw(1);
+        let player_b = ConnectionId::from_raw(2);
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::channel(8);
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::channel(8);
+        owner.attach(player_a);
+        owner.attach(player_b);
+        owner.bindings.get_mut(&player_a).unwrap().interact = Some(tx_a);
+        owner.bindings.get_mut(&player_b).unwrap().interact = Some(tx_b);
+        let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
+        assert!(owner.set_player_x(player_a, -17.8));
+        assert!(owner.set_player_x(player_b, -17.8));
+
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: player_a,
+            target: wire_id(traveler),
+        });
+        let first_session = match rx_a.try_recv().expect("player A opened") {
+            ServerControl::Interact(ServerInteract::Opened { session_id, .. }) => session_id,
+            other => panic!("expected player A Opened, got {other:?}"),
+        };
+        assert!(matches!(
+            rx_a.try_recv().expect("player A dialogue"),
+            ServerControl::DialogueLine(_)
+        ));
+        owner.apply_input(InputUpdate::InteractClose {
+            connection_id: player_a,
+            session_id: first_session,
+        });
+        assert!(matches!(
+            rx_a.try_recv().expect("player A closed"),
+            ServerControl::Interact(ServerInteract::Closed { .. })
+        ));
+
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: player_a,
+            target: wire_id(traveler),
+        });
+        assert!(matches!(
+            rx_a.try_recv().expect("cooldown rejection"),
+            ServerControl::Interact(ServerInteract::Rejected {
+                reason: InteractRejectReason::Unavailable,
+                ..
+            })
+        ));
+        let actor_a = owner.entity_of(player_a).unwrap();
+        assert!(owner.world().interaction_session_of(actor_a).is_none());
+
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: player_b,
+            target: wire_id(traveler),
+        });
+        assert!(matches!(
+            rx_b.try_recv().expect("player B is independent"),
+            ServerControl::Interact(ServerInteract::Opened { .. })
+        ));
+        assert!(matches!(
+            rx_b.try_recv().expect("player B dialogue"),
+            ServerControl::DialogueLine(_)
+        ));
+
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        for _ in 0..DIALOGUE_REOPEN_COOLDOWN_TICKS.saturating_sub(1) {
+            owner.simulate_tick(dt);
+        }
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: player_a,
+            target: wire_id(traveler),
+        });
+        assert!(matches!(
+            rx_a.try_recv().expect("last cooldown tick rejection"),
+            ServerControl::Interact(ServerInteract::Rejected {
+                reason: InteractRejectReason::Unavailable,
+                ..
+            })
+        ));
+
+        owner.simulate_tick(dt);
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: player_a,
+            target: wire_id(traveler),
+        });
+        let reopened_session = match rx_a.try_recv().expect("cooldown expired") {
+            ServerControl::Interact(ServerInteract::Opened { session_id, .. }) => session_id,
+            other => panic!("expected player A reopen, got {other:?}"),
+        };
+        assert_ne!(reopened_session, first_session);
+        assert!(matches!(
+            rx_a.try_recv().expect("reopened dialogue"),
+            ServerControl::DialogueLine(_)
+        ));
     }
 
     #[test]
@@ -5422,6 +5573,7 @@ mod tests {
             ServerControl::Interact(ServerInteract::Closed { .. })
         ));
 
+        expire_dialogue_reopen_cooldown(&mut owner);
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: connection,
             target: wire_id(traveler),
@@ -5512,6 +5664,7 @@ mod tests {
             purgatory_common::NPC_WELCOME_TRAVELER_STAYED,
             purgatory_content::DialogueBeatIndex::from_raw(take_continuation_index)
         ));
+        expire_dialogue_reopen_cooldown(&mut owner);
 
         let other_connection = ConnectionId::from_raw(2);
         owner.attach(other_connection);
@@ -5597,6 +5750,7 @@ mod tests {
                 .fact(actor, "welcome.workshop.package_needed")
         );
 
+        expire_dialogue_reopen_cooldown(&mut owner);
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: connection,
             target: wire_id(traveler),

@@ -1,6 +1,8 @@
 # NPC Dialogue Presentation Runtime Contract
 
-Status: N9 authoring contract; N10 runtime projection is deferred.
+Status: N9 authoring contract plus implemented N10 client projection. The
+current Text v0, bubble, facing and animation ownership is documented in
+[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
 
 ## Purpose
 
@@ -33,11 +35,12 @@ Rules:
 
 The catalog API is intentionally generic. Additional authoring references such as Items should reuse the same repository-backed catalog primitive rather than introducing one endpoint or hand-maintained list per domain. JSON-backed domains should resolve their canonical authored `id` from the content file rather than deriving identity from filenames.
 
-## N10 — runtime projection
+## N10 — implemented runtime projection
 
-N10 must project authoritative dialogue state into client presentation without making presentation assets authoritative gameplay data.
+N10 projects authoritative dialogue state into client presentation without
+making presentation assets authoritative gameplay data.
 
-Target path:
+Implemented path:
 
 ```text
 authoritative dialogue progression
@@ -56,7 +59,9 @@ Required fallback behavior:
 - failed animation playback -> continue dialogue;
 - gameplay truth never waits for animation completion unless a future explicit gameplay contract is designed for that purpose.
 
-N10 must reuse the existing animation parsing/playback/presentation path. It must not create a parallel NPC-only skeletal animation runtime merely for dialogue cues.
+N10 reuses the existing animation parsing/playback/presentation path. It does
+not create a parallel NPC-only skeletal animation runtime merely for dialogue
+cues.
 
 ## Voice follow-up
 

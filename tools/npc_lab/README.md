@@ -1,6 +1,8 @@
 # NPC Lab
 
-Status: **FORGE N6b - player-facing Test Preview + compact selection diagnostics; pending local verification.**
+Status: current local NPC authoring/test tool. N10 consumes its canonical JSON
+through the separate typed runtime projection documented in
+[`docs/NPC_DIALOGUE_RUNTIME.md`](../../docs/NPC_DIALOGUE_RUNTIME.md).
 
 NPC Lab is a local Web authoring tool for PURGATORY NPC content. Repository JSON remains the source of truth.
 
@@ -103,4 +105,6 @@ For each tested state:
 - synthetic item mutation remains boolean ownership; Give/Remove Item currently supports quantity 1 only;
 - `rare` automatic cadence remains intentionally undefined;
 - raw-JSON Pool labels are still not mirrored by the legacy Python save validator;
-- runtime/N10, persistence and final game-client dialogue visuals are out of scope.
+- NPC Lab does not execute or own the N10 game runtime. Persistence and final
+  game-client dialogue art remain out of scope; the game consumes saved JSON
+  through `purgatory-content` rather than through the Lab Web server.

@@ -1,6 +1,6 @@
 //! Visible-character presentation set. Replica world is the visibility source.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use purgatory_animation::{
     A4_TRANSITION_DURATION, AnimationClip, AnimationPlayer, DepthPose, a1_head_rotation_clip,
@@ -10,6 +10,8 @@ use purgatory_animation::{
 };
 use purgatory_content::ContentRegistry;
 use purgatory_skeleton::{LocalPose, ROOT, WorldPose, evaluate, humanoid_v0};
+
+use crate::dialogue_animation::DialogueAnimationCatalog;
 
 use super::bone_map::BoneTargetMap;
 use super::resolve::{BoundAttachment, MissingPresentation, resolve_equipment};
@@ -22,6 +24,24 @@ use super::state::{CharacterPresentationState, EquipmentView, Facing, Presentati
 pub struct PresentationEntityKey {
     pub index: u32,
     pub generation: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogueAnimationRequest<'a> {
+    pub revision: u64,
+    pub authored_id: &'a str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActiveDialogueAnimation {
+    revision: u64,
+    authored_id: String,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedDialogueAnimation<'a> {
+    request: DialogueAnimationRequest<'a>,
+    clip: &'a AnimationClip,
 }
 
 impl PresentationEntityKey {
@@ -67,6 +87,7 @@ pub struct CharacterPresentationEntry {
     missing: Vec<MissingPresentation>,
     hidden_base: u16,
     playback_activity: PresentationActivity,
+    dialogue_animation: Option<ActiveDialogueAnimation>,
     player: AnimationPlayer,
     selected_sample_t: f32,
     transitioning: bool,
@@ -114,6 +135,13 @@ impl CharacterPresentationEntry {
     }
 
     #[must_use]
+    pub fn dialogue_animation_id(&self) -> Option<&str> {
+        self.dialogue_animation
+            .as_ref()
+            .map(|animation| animation.authored_id.as_str())
+    }
+
+    #[must_use]
     pub fn selected_sample_t(&self) -> f32 {
         self.selected_sample_t
     }
@@ -145,6 +173,8 @@ pub struct CharacterPresentationSet {
     epoch: u64,
     resolve_count: u64,
     entries: HashMap<PresentationEntityKey, CharacterPresentationEntry>,
+    dialogue_animations: DialogueAnimationCatalog,
+    reported_missing_dialogue_animations: HashSet<String>,
 }
 
 impl Default for CharacterPresentationSet {
@@ -162,6 +192,16 @@ impl CharacterPresentationSet {
             epoch: 0,
             resolve_count: 0,
             entries: HashMap::new(),
+            dialogue_animations: DialogueAnimationCatalog::default(),
+            reported_missing_dialogue_animations: HashSet::new(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn with_dialogue_animations(dialogue_animations: DialogueAnimationCatalog) -> Self {
+        Self {
+            dialogue_animations,
+            ..Self::new()
         }
     }
 
@@ -243,15 +283,51 @@ impl CharacterPresentationSet {
         registry: &ContentRegistry,
         frame_dt: f32,
     ) {
+        self.sync_with_dialogue(
+            items.into_iter().map(|(key, state)| (key, state, None)),
+            registry,
+            frame_dt,
+        );
+    }
+
+    /// N10f: apply optional client-local animation clips to selected visible
+    /// characters while retaining the ordinary activity as fallback.
+    pub fn sync_with_dialogue<'a>(
+        &mut self,
+        items: impl IntoIterator<
+            Item = (
+                PresentationEntityKey,
+                CharacterPresentationState,
+                Option<DialogueAnimationRequest<'a>>,
+            ),
+        >,
+        registry: &ContentRegistry,
+        frame_dt: f32,
+    ) {
         self.epoch = self.epoch.wrapping_add(1);
         let epoch = self.epoch;
         let def = humanoid_v0();
         let bone_map = self.bone_map;
-        for (key, state) in items {
+        for (key, state, dialogue_request) in items {
+            let dialogue_animation = dialogue_request.and_then(|request| {
+                let Some(clip) = self.dialogue_animations.clip(request.authored_id) else {
+                    if self
+                        .reported_missing_dialogue_animations
+                        .insert(request.authored_id.to_owned())
+                    {
+                        eprintln!(
+                            "N10_DIALOGUE animation '{}' unavailable; using ordinary NPC presentation",
+                            request.authored_id
+                        );
+                    }
+                    return None;
+                };
+                Some(ResolvedDialogueAnimation { request, clip })
+            });
             let mut did_resolve = false;
             match self.entries.get_mut(&key) {
                 Some(entry) => {
-                    present_entry(entry, state, frame_dt);
+                    present_entry(entry, state, dialogue_animation, frame_dt);
                     entry.epoch = epoch;
                     if entry.equipment_key != state.equipment {
                         apply_resolve(entry, bone_map, registry, state.equipment);
@@ -262,7 +338,9 @@ impl CharacterPresentationSet {
                     let mut player = AnimationPlayer::new();
                     player.set_playing(true);
                     let playback = state.activity;
-                    let clip = clip_for_playback_activity(playback);
+                    let clip = dialogue_animation
+                        .map(|animation| animation.clip)
+                        .unwrap_or_else(|| clip_for_playback_activity(playback));
                     let _ = player.advance(frame_dt, clip);
                     let selected_sample_t = player.sample_time(clip);
                     let mut local = LocalPose::from_bind(def);
@@ -312,6 +390,12 @@ impl CharacterPresentationSet {
                             missing: resolved.missing,
                             hidden_base: resolved.hidden_base,
                             playback_activity: playback,
+                            dialogue_animation: dialogue_animation.map(|animation| {
+                                ActiveDialogueAnimation {
+                                    revision: animation.request.revision,
+                                    authored_id: animation.request.authored_id.to_owned(),
+                                }
+                            }),
                             player,
                             selected_sample_t,
                             transitioning: false,
@@ -336,11 +420,16 @@ impl CharacterPresentationSet {
 fn present_entry(
     entry: &mut CharacterPresentationEntry,
     state: CharacterPresentationState,
+    dialogue_animation: Option<ResolvedDialogueAnimation<'_>>,
     frame_dt: f32,
 ) {
     let def = humanoid_v0();
     let next = state.activity;
-    if next != entry.playback_activity {
+    let next_dialogue_animation = dialogue_animation.map(|animation| ActiveDialogueAnimation {
+        revision: animation.request.revision,
+        authored_id: animation.request.authored_id.to_owned(),
+    });
+    if next != entry.playback_activity || next_dialogue_animation != entry.dialogue_animation {
         // Interruptible: capture currently presented pose (may be mid-blend).
         entry
             .transition_from
@@ -350,10 +439,13 @@ fn present_entry(
         entry.transition_elapsed = 0.0;
         entry.transitioning = true;
         entry.playback_activity = next;
+        entry.dialogue_animation = next_dialogue_animation;
         entry.player.reset();
     }
 
-    let clip = clip_for_playback_activity(entry.playback_activity);
+    let clip = dialogue_animation
+        .map(|animation| animation.clip)
+        .unwrap_or_else(|| clip_for_playback_activity(entry.playback_activity));
     let _ = entry.player.advance(frame_dt, clip);
     entry.selected_sample_t = entry.player.sample_time(clip);
 

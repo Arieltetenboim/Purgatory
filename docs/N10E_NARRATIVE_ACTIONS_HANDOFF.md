@@ -1,7 +1,8 @@
 # N10e — Narrative state and authoritative actions handoff
 
-Status: implemented; automated verification is required, followed by the
-normal networked manual proof. N10f has not started.
+Status: implemented and manually verified on PR #43. N10f is implemented in
+the stacked PR #45. The current combined system reference is
+[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
 
 ## Implemented ownership
 

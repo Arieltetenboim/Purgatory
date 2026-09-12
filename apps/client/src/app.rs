@@ -22,11 +22,11 @@ use winit::window::{Window, WindowId};
 
 use crate::camera_follow::{CameraCommit, CameraFollow};
 use crate::character_presentation::{
-    CharacterPresentationSet, LocalMotion, PresentationActivity, PresentationEntityKey,
-    PresentationOneShotTable, PresentationView, RemoteMotion, SocialNpcMotion,
-    apply_climb_back_overlay, equipment_view_from_replica, from_local_with_presentation,
-    from_remote_with_presentation, from_social_npc, immunity_flash_visible,
-    presentation_debug_quads_with_assets,
+    CharacterPresentationSet, DialogueAnimationRequest, Facing, LocalMotion, PresentationActivity,
+    PresentationEntityKey, PresentationOneShotTable, PresentationView, RemoteMotion,
+    SocialNpcMotion, apply_climb_back_overlay, apply_local_dialogue_facing,
+    equipment_view_from_replica, from_local_with_presentation, from_remote_with_presentation,
+    from_social_npc, immunity_flash_visible, presentation_debug_quads_with_assets,
 };
 use crate::choice_bubble::layout_choice_bubble_in_column;
 #[cfg(feature = "dev-diagnostics")]
@@ -49,6 +49,7 @@ use crate::debug::{
     gameplay_receives_pointer, has_persistent_dev_warnings, is_debug_toggle, reset_action_flash,
     reset_player_uses_replica,
 };
+use crate::dialogue_animation::DialogueAnimationCatalog;
 use crate::dialogue_bubble_layout::{BubbleColumn, dialogue_bubble_columns};
 use crate::dialogue_runtime::DialogueRuntime;
 #[cfg(feature = "dev-diagnostics")]
@@ -146,11 +147,16 @@ struct FrozenPresentation {
 }
 
 pub fn run() -> Result<(), String> {
-    let registry = load_registry(&default_content_root(), LoadMode::Shared)
+    let content_root = default_content_root();
+    let registry = load_registry(&content_root, LoadMode::Shared)
         .map_err(|err| format!("PURGATORY client content invalid:\n{err}"))?;
+    let dialogue_animations = DialogueAnimationCatalog::load(&content_root);
+    for issue in dialogue_animations.issues() {
+        eprintln!("N10_DIALOGUE animation fallback: {issue}");
+    }
     let event_loop = EventLoop::new().map_err(|err| format!("event loop: {err}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = ClientApp::new(registry)?;
+    let mut app = ClientApp::new(registry, dialogue_animations)?;
     event_loop
         .run_app(&mut app)
         .map_err(|err| format!("run app: {err}"))?;
@@ -254,7 +260,10 @@ struct ClientApp {
 }
 
 impl ClientApp {
-    fn new(registry: ContentRegistry) -> Result<Self, String> {
+    fn new(
+        registry: ContentRegistry,
+        dialogue_animations: DialogueAnimationCatalog,
+    ) -> Result<Self, String> {
         let mut asset_runtime = crate::asset_runtime::AssetRuntime::new();
         crate::headwear_proof::register_assets(&mut asset_runtime)?;
         let character_visual_pack =
@@ -333,7 +342,7 @@ impl ClientApp {
             #[cfg(feature = "dev-diagnostics")]
             last_jitter_mode: CameraJitterMode::Normal,
             skeleton: crate::skeleton_debug::HumanoidDebug::new(),
-            characters: CharacterPresentationSet::new(),
+            characters: CharacterPresentationSet::with_dialogue_animations(dialogue_animations),
             presentation_oneshots: PresentationOneShotTable::new(),
             npc_sheet,
             npc_players: HashMap::new(),
@@ -603,6 +612,11 @@ impl ClientApp {
 
     fn refresh_character_presentation(&mut self, frame_dt: f32) {
         let local_id = self.replica.local_player();
+        let local_player_pose = self
+            .frame_local
+            .presented
+            .or_else(|| self.replica.local_entity().map(|entity| entity.position));
+        let dialogue_cue = self.dialogue_runtime.presentation_cue(&self.registry);
         let server_tick = self.replica.last_server_tick();
         self.presentation_oneshots.expire(server_tick);
         let characters: Vec<_> = self
@@ -637,7 +651,13 @@ impl ClientApp {
             let mut state = if is_humanoid_social_npc(&entity) {
                 let (pose, _) =
                     interpolated_or_replica_pose(&interp_poses, entity.entity_id, entity.position);
-                from_social_npc(SocialNpcMotion { pose, equipment }, held)
+                let mut state = from_social_npc(SocialNpcMotion { pose, equipment }, Facing::Right);
+                if dialogue_cue.is_some_and(|cue| cue.target == entity.entity_id)
+                    && let Some(player) = local_player_pose
+                {
+                    state = apply_local_dialogue_facing(state, pose[0], player[0]);
+                }
+                state
             } else if Some(entity.entity_id) == local_id {
                 // Velocity and grounded must come from the same source. Pairing
                 // predicted velocity with lagged replica.local_grounded kept
@@ -678,9 +698,18 @@ impl ClientApp {
             if entity.kind == ReplicatedKind::Player && climb_back && oneshot.is_none() && !dead {
                 state = apply_climb_back_overlay(state, true);
             }
-            items.push((key, state));
+            let dialogue_animation = dialogue_cue
+                .filter(|cue| cue.target == entity.entity_id)
+                .and_then(|cue| {
+                    cue.animation.map(|authored_id| DialogueAnimationRequest {
+                        revision: cue.revision,
+                        authored_id,
+                    })
+                });
+            items.push((key, state, dialogue_animation));
         }
-        self.characters.sync(items, &self.registry, frame_dt);
+        self.characters
+            .sync_with_dialogue(items, &self.registry, frame_dt);
     }
 
     /// Apply Proof UI playback requests, advance A2 player at most once, resolve one sample `t`.

@@ -72,7 +72,7 @@
           {
             "text": "If you're looking for food, there is some. A bed — maybe. Work? Somehow, there's always work.",
             "voice": null,
-            "animation": null
+            "animation": "dialogue_talk"
           }
         ],
         "choices": [

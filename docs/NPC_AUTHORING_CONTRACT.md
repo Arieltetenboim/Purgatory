@@ -1,6 +1,10 @@
 # NPC Authoring Contract
 
-Status: FORGE N0 authoring contract
+Status: historical FORGE N0 authoring foundation. The canonical JSON remains
+current, but statements below about runtime features being “later” or “not
+implemented” describe the N0 boundary at the time it was written. The current
+typed schema, selection/actions and runtime projection are documented in
+[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
 
 ## Purpose
 
@@ -19,7 +23,10 @@ NPC Lab (local Web UI, later)
 
 The repository JSON document is the source of truth. NPC Lab must not own NPC content in a private database.
 
-The N0 files are **not scanned by the current runtime content loader**. Runtime integration belongs to N10 and must be re-sliced after the authored model is proven on several real NPCs.
+N10 now scans these files through the current runtime content loader. It
+validates all documents and projects numerically allocated NPCs into separate
+authoritative and client-safe typed definitions. The original N0 design
+boundary is retained below as historical rationale.
 
 ## Identity
 

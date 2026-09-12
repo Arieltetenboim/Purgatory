@@ -63,8 +63,9 @@ pub trait DialogueConditionState {
     fn item_equipped(&self, item_authored: &str) -> bool;
 }
 
-/// Client-safe Beat projection. Choice labels are present; conditions, pools,
-/// continuation, and actions remain exclusively in [`NpcDialogueDefinition`].
+/// Client-safe Beat projection. Text and optional presentation cues are
+/// present; conditions, pools, continuation, and actions remain exclusively
+/// in [`NpcDialogueDefinition`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NpcDialoguePresentation {
     pub content_id: ContentId,
@@ -79,43 +80,21 @@ impl NpcDialoguePresentation {
     }
 }
 
-impl From<&NpcDialogueDefinition> for NpcDialoguePresentation {
-    fn from(definition: &NpcDialogueDefinition) -> Self {
-        Self {
-            content_id: definition.content_id,
-            authored_id: definition.authored_id.clone(),
-            beats: definition
-                .beats
-                .iter()
-                .map(|beat| DialoguePresentationBeat {
-                    lines: beat.lines.clone(),
-                    choices: beat
-                        .choices
-                        .iter()
-                        .map(|choice| DialoguePresentationChoice {
-                            text: choice.text.clone(),
-                        })
-                        .collect(),
-                    display_text: beat
-                        .lines
-                        .iter()
-                        .map(|line| line.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n\n"),
-                })
-                .collect(),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DialoguePresentationBeat {
-    pub lines: Vec<DialogueLine>,
+    pub lines: Vec<DialoguePresentationLine>,
     /// Client-safe choice labels only. Continuation and actions stay server-side.
     pub choices: Vec<DialoguePresentationChoice>,
     /// Precomposed once during content loading. A Beat is the visible and
     /// progressive unit; authored lines remain available for later cues.
     pub display_text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialoguePresentationLine {
+    pub text: String,
+    /// Logical animation asset id resolved only by client presentation.
+    pub animation: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -355,11 +334,11 @@ impl RawNpcDialogue {
         Ok(())
     }
 
-    pub(crate) fn into_definition(
+    pub(crate) fn into_definitions(
         self,
         path: &Path,
         content_id: Option<ContentId>,
-    ) -> Result<Option<NpcDialogueDefinition>, ContentError> {
+    ) -> Result<Option<(NpcDialogueDefinition, NpcDialoguePresentation)>, ContentError> {
         if self.schema_version != NPC_DIALOGUE_SCHEMA_VERSION {
             return Err(issue(
                 path,
@@ -405,22 +384,31 @@ impl RawNpcDialogue {
             }
         }
 
-        let beats = self
+        let resolved_beats = self
             .interaction
             .beats
             .into_iter()
             .enumerate()
             .map(|(index, beat)| beat.into_definition(path, &self.id, index, &beat_indices))
             .collect::<Result<Vec<_>, _>>()?;
+        let (beats, presentation_beats) = resolved_beats.into_iter().unzip();
 
         let Some(content_id) = content_id else {
             return Ok(None);
         };
-        Ok(Some(NpcDialogueDefinition {
-            content_id,
-            authored_id: self.id,
-            beats,
-        }))
+        let authored_id = self.id;
+        Ok(Some((
+            NpcDialogueDefinition {
+                content_id,
+                authored_id: authored_id.clone(),
+                beats,
+            },
+            NpcDialoguePresentation {
+                content_id,
+                authored_id,
+                beats: presentation_beats,
+            },
+        )))
     }
 }
 
@@ -456,7 +444,7 @@ impl RawBeat {
         npc: &str,
         beat_index: usize,
         beat_indices: &HashMap<String, DialogueBeatIndex>,
-    ) -> Result<DialogueBeat, ContentError> {
+    ) -> Result<(DialogueBeat, DialoguePresentationBeat), ContentError> {
         let pool = match self.pool.as_deref().unwrap_or("mandatory") {
             "mandatory" => DialoguePool::Mandatory,
             "once" => DialoguePool::Once,
@@ -495,12 +483,13 @@ impl RawBeat {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let lines = self
+        let resolved_lines = self
             .lines
             .into_iter()
             .enumerate()
             .map(|(index, line)| line.into_definition(path, npc, beat_index, index))
             .collect::<Result<Vec<_>, _>>()?;
+        let (lines, presentation_lines): (Vec<_>, Vec<_>) = resolved_lines.into_iter().unzip();
 
         let mut choice_ids = HashSet::new();
         let choices = self
@@ -522,19 +511,37 @@ impl RawBeat {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(DialogueBeat {
-            id: self.id,
-            selection_role: if self.entry {
-                DialogueSelectionRole::Entry
-            } else {
-                DialogueSelectionRole::Continuation
+        let presentation_choices = choices
+            .iter()
+            .map(|choice| DialoguePresentationChoice {
+                text: choice.text.clone(),
+            })
+            .collect();
+        let display_text = presentation_lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Ok((
+            DialogueBeat {
+                id: self.id,
+                selection_role: if self.entry {
+                    DialogueSelectionRole::Entry
+                } else {
+                    DialogueSelectionRole::Continuation
+                },
+                priority: self.priority,
+                pool,
+                conditions,
+                lines,
+                choices,
             },
-            priority: self.priority,
-            pool,
-            conditions,
-            lines,
-            choices,
-        })
+            DialoguePresentationBeat {
+                lines: presentation_lines,
+                choices: presentation_choices,
+                display_text,
+            },
+        ))
     }
 }
 
@@ -544,8 +551,8 @@ struct RawLine {
     text: String,
     #[serde(default, rename = "voice")]
     _voice: Option<IgnoredAny>,
-    #[serde(default, rename = "animation")]
-    _animation: Option<IgnoredAny>,
+    #[serde(default)]
+    animation: Option<String>,
 }
 
 impl RawLine {
@@ -555,7 +562,7 @@ impl RawLine {
         npc: &str,
         beat_index: usize,
         line_index: usize,
-    ) -> Result<DialogueLine, ContentError> {
+    ) -> Result<(DialogueLine, DialoguePresentationLine), ContentError> {
         if self.text.trim().is_empty() {
             return Err(issue(
                 path,
@@ -564,7 +571,23 @@ impl RawLine {
                 "dialogue line text must not be empty",
             ));
         }
-        Ok(DialogueLine { text: self.text })
+        if self
+            .animation
+            .as_ref()
+            .is_some_and(|animation| animation.trim().is_empty())
+        {
+            return Err(issue(
+                path,
+                npc,
+                format!("interaction.beats[{beat_index}].lines[{line_index}].animation"),
+                "animation id must not be empty",
+            ));
+        }
+        let presentation = DialoguePresentationLine {
+            text: self.text.clone(),
+            animation: self.animation,
+        };
+        Ok((DialogueLine { text: self.text }, presentation))
     }
 }
 
@@ -1094,19 +1117,37 @@ mod tests {
     }
 
     #[test]
-    fn client_projection_composes_one_display_string_per_beat() {
-        let definition = definition(vec![beat(
-            "intro",
-            DialogueSelectionRole::Entry,
-            1,
-            DialoguePool::Mandatory,
-            Vec::new(),
-        )]);
-        let presentation = NpcDialoguePresentation::from(&definition);
+    fn client_projection_preserves_cues_without_adding_them_to_gameplay_lines() {
+        let path = Path::new("npc.welcome.test.json");
+        let raw = parse_raw(
+            path,
+            r#"{
+                "schema_version": 1,
+                "id": "npc.welcome.test",
+                "interaction": { "beats": [{
+                    "id": "intro",
+                    "priority": 1,
+                    "entry": true,
+                    "conditions": [],
+                    "lines": [
+                        { "text": "hello", "animation": "dialogue_talk" },
+                        { "text": "again", "animation": null }
+                    ],
+                    "choices": []
+                }] }
+            }"#,
+        )
+        .expect("raw dialogue");
+        let (definition, presentation) = raw
+            .into_definitions(path, Some(ContentId::from_raw(20_001)))
+            .expect("valid projection")
+            .expect("allocated NPC");
         let beat = presentation
             .beat(DialogueBeatIndex::from_raw(0))
             .expect("projected beat");
-        assert_eq!(beat.display_text, "intro");
-        assert_eq!(beat.lines[0].text, "intro");
+        assert_eq!(beat.display_text, "hello\n\nagain");
+        assert_eq!(beat.lines[0].animation.as_deref(), Some("dialogue_talk"));
+        assert_eq!(beat.lines[1].animation, None);
+        assert_eq!(definition.beats[0].lines[0].text, "hello");
     }
 }

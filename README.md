@@ -10,7 +10,7 @@ This README is intentionally small. It is the project entry point, not the proje
 
 - **Phase:** `11.closeout` — Phase 11 Item Loop complete
 - **Next:** Phase 12 — Character Continuity
-- **Protocol:** v24
+- **Protocol:** v27
 - **Simulation:** server authoritative
 - **Client:** native `winit` + `wgpu`
 - **Networking:** QUIC via Quinn
@@ -119,6 +119,7 @@ The detailed validation policy and extended network/load gates live in the docs 
 | [`docs/TEST_GATES.md`](docs/TEST_GATES.md) | Validation and test gates |
 | [`docs/PERFORMANCE_BUDGETS.md`](docs/PERFORMANCE_BUDGETS.md) | Performance budgets |
 | [`docs/CONTENT_PIPELINE.md`](docs/CONTENT_PIPELINE.md) | Content pipeline |
+| [`docs/NPC_DIALOGUE_RUNTIME.md`](docs/NPC_DIALOGUE_RUNTIME.md) | Current NPC dialogue runtime, ownership and operation |
 | [`docs/CHARACTER_ANIMATION_ARCHITECTURE.md`](docs/CHARACTER_ANIMATION_ARCHITECTURE.md) | Character animation architecture |
 | [`docs/dev-tools/README.md`](docs/dev-tools/README.md) | Developer tooling details |
 

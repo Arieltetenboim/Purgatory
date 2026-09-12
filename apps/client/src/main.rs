@@ -9,6 +9,7 @@ mod character_presentation;
 mod choice_bubble;
 #[cfg(feature = "dev-diagnostics")]
 mod debug;
+mod dialogue_animation;
 mod dialogue_bubble_layout;
 mod dialogue_runtime;
 mod display;
