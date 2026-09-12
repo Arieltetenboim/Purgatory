@@ -27,35 +27,51 @@ rot 1.20 0.05 Linear
 endtrack
 
 track upper_arm_front
-rot 0.00 0.72 Linear
-rot 0.30 0.78 Linear
-rot 0.60 0.72 Linear
-rot 0.90 0.66 Linear
-rot 1.20 0.72 Linear
+rot 0.00 0.82 Linear
+rot 0.30 0.88 Linear
+rot 0.60 0.82 Linear
+rot 0.90 0.76 Linear
+rot 1.20 0.82 Linear
 endtrack
 
 track lower_arm_front
-rot 0.00 1.10 Linear
-rot 0.30 1.16 Linear
-rot 0.60 1.10 Linear
-rot 0.90 1.04 Linear
-rot 1.20 1.10 Linear
+rot 0.00 1.00 Linear
+rot 0.30 1.06 Linear
+rot 0.60 1.00 Linear
+rot 0.90 0.94 Linear
+rot 1.20 1.00 Linear
+endtrack
+
+track hand_front
+rot 0.00 -0.10 Linear
+rot 0.30 -0.06 Linear
+rot 0.60 -0.10 Linear
+rot 0.90 -0.14 Linear
+rot 1.20 -0.10 Linear
 endtrack
 
 track upper_arm_back
-rot 0.00 -0.48 Linear
-rot 0.30 -0.54 Linear
-rot 0.60 -0.48 Linear
-rot 0.90 -0.42 Linear
-rot 1.20 -0.48 Linear
+rot 0.00 0.28 Linear
+rot 0.30 0.34 Linear
+rot 0.60 0.28 Linear
+rot 0.90 0.22 Linear
+rot 1.20 0.28 Linear
 endtrack
 
 track lower_arm_back
-rot 0.00 1.28 Linear
-rot 0.30 1.34 Linear
-rot 0.60 1.28 Linear
-rot 0.90 1.22 Linear
-rot 1.20 1.28 Linear
+rot 0.00 1.42 Linear
+rot 0.30 1.48 Linear
+rot 0.60 1.42 Linear
+rot 0.90 1.36 Linear
+rot 1.20 1.42 Linear
+endtrack
+
+track hand_back
+rot 0.00 -0.16 Linear
+rot 0.30 -0.12 Linear
+rot 0.60 -0.16 Linear
+rot 0.90 -0.20 Linear
+rot 1.20 -0.16 Linear
 endtrack
 
 track upper_leg_front
