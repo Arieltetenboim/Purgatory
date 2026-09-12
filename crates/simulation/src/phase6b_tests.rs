@@ -1,6 +1,7 @@
 //! Phase 6B authoritative interaction.
 
 use crate::fixtures::RuntimeFixtures;
+use crate::health::Health;
 use crate::spawn::RuntimeSpawnRequest;
 use crate::{
     INTERACT_RANGE, Interactable, InteractableKind, InteractionCloseReason, InteractionReject,
@@ -181,6 +182,52 @@ fn walking_out_of_range_closes_on_maintain() {
     assert_eq!(closed.len(), 1);
     assert_eq!(closed[0].1, InteractionCloseReason::OutOfRange);
     assert!(world.interaction_session_of(actor).is_none());
+}
+
+#[test]
+fn dead_actor_closes_interaction_on_maintain_and_cannot_reopen() {
+    let mut world = World::new();
+    let (actor, target) = actor_and_near(&mut world);
+    assert!(world.set_health(actor, Health::full(20.0)));
+    world.try_open_interaction(actor, target).unwrap();
+
+    assert!(world.set_health(
+        actor,
+        Health {
+            current: 0.0,
+            max: 20.0,
+        },
+    ));
+    let closed = world.maintain_interaction_sessions();
+    assert_eq!(closed.len(), 1);
+    assert!(world.interaction_session_of(actor).is_none());
+    assert_eq!(
+        world.try_open_interaction(actor, target),
+        Err(InteractionReject::Unavailable)
+    );
+}
+
+#[test]
+fn dead_target_closes_interaction_on_maintain_and_cannot_reopen() {
+    let mut world = World::new();
+    let (actor, target) = actor_and_near(&mut world);
+    assert!(world.set_health(target, Health::full(20.0)));
+    world.try_open_interaction(actor, target).unwrap();
+
+    assert!(world.set_health(
+        target,
+        Health {
+            current: 0.0,
+            max: 20.0,
+        },
+    ));
+    let closed = world.maintain_interaction_sessions();
+    assert_eq!(closed.len(), 1);
+    assert!(world.interaction_session_of(actor).is_none());
+    assert_eq!(
+        world.try_open_interaction(actor, target),
+        Err(InteractionReject::Unavailable)
+    );
 }
 
 #[test]
