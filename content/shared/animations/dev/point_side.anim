@@ -1,0 +1,52 @@
+schema_version 1
+duration 0.65
+loop Once
+
+track upper_arm_front
+rot 0.00 0.00 Linear
+rot 0.12 -0.18 Linear
+rot 0.42 1.46 Linear
+rot 0.65 1.50 Linear
+endtrack
+
+track lower_arm_front
+rot 0.00 0.00 Linear
+rot 0.12 0.18 Linear
+rot 0.42 0.08 Linear
+rot 0.65 0.02 Linear
+endtrack
+
+track hand_front
+rot 0.00 0.00 Linear
+rot 0.42 -0.04 Linear
+rot 0.65 0.00 Linear
+endtrack
+
+track upper_arm_back
+rot 0.00 0.00 Linear
+rot 0.12 0.10 Linear
+rot 0.42 -0.20 Linear
+rot 0.65 -0.16 Linear
+endtrack
+
+track lower_arm_back
+rot 0.00 0.00 Linear
+rot 0.42 0.28 Linear
+rot 0.65 0.24 Linear
+endtrack
+
+track torso
+rot 0.00 0.00 Linear
+rot 0.12 -0.04 Linear
+rot 0.42 0.10 Linear
+rot 0.65 0.12 Linear
+endtrack
+
+track head
+rot 0.00 0.00 Linear
+rot 0.42 -0.06 Linear
+rot 0.65 -0.08 Linear
+endtrack
+
+markers
+endmarkers
