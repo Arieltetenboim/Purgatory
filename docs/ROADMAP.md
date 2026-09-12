@@ -9,7 +9,8 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **ERA II — Combat & First Playable Loop**
 - **Phase 11 — Item Loop: complete + closeout**
 - **Root `PHASE`: `11.closeout`**
-- **Current slice: Phase 11 closeout**
+- **Active parallel track:** FORGE N — NPC authoring/runtime; N10a-N10f complete and merged
+- **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
 - **Protocol: v27**
 
 ---
@@ -89,12 +90,16 @@ Further Phase 12+ slicing should be added only when the current design is agreed
 
 These tracks can progress beside the gameplay roadmap. They are deliberately separated so tools and visual-content work do not accidentally reopen gameplay phases.
 
-## FORGE N10 — NPC Dialogue Runtime
+## FORGE N — NPC Authoring & Runtime
 
-N10 integrates the NPC Lab authoring model into the normal server-authoritative
-game runtime. It is a parallel FORGE track and does not change the root
-`PHASE`. The current system contract is
-[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
+The N track now has two proven layers:
+
+- **NPC Lab N0-N6b:** authoring, typed conditions/actions, pools, synthetic Test Bench, player-facing preview and compact selection diagnostics are implemented and locally verified.
+- **Runtime N10a-N10f:** the authored model is integrated into the normal server-authoritative game runtime. N10 is complete and merged to `master`.
+
+The current runtime contract is [`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md). Earlier design and slice handoff documents remain historical implementation evidence and should not be used as current-status sources.
+
+### N10 — NPC Dialogue Runtime — complete
 
 | Slice | Name | Status |
 |---|---|---|
@@ -102,13 +107,24 @@ game runtime. It is a parallel FORGE track and does not change the root
 | N10b | Social NPC + Humanoid Idle | complete + merged |
 | N10c | Dialogue Session + NPC Bubble | complete + merged |
 | N10d | Choices + Continuation | complete + merged |
-| N10e | Narrative State + Authoritative Actions | implemented + manually verified; PR #43 open |
-| N10f | Local Presentation + Multiplayer Isolation | implemented + manually verified; stacked PR #45 open |
+| N10e | Narrative State + Authoritative Actions | complete + merged + manually verified |
+| N10f | Local Presentation + Multiplayer Isolation | complete + merged + manually verified |
 
-N10f also contains the server-authoritative per-player dialogue reopen guard.
-Narrative persistence, final UI art, voice, localization and the documented
-death-close gap remain follow-up work; they are not silently absorbed into
-N10.
+N10f includes the server-authoritative per-player dialogue reopen guard. The normal dialogue flow, authoritative actions, multiplayer isolation, local-only facing/animation and reopen cooldown were accepted manually on 2026-09-12.
+
+### N track — remaining work
+
+These are follow-ups, not unfinished N10 slices:
+
+- close active dialogue when the player or target NPC dies; the current interaction validator does not yet treat Health/death as an invalidation condition;
+- persist per-player narrative facts, NPC Met and Dialogue Heard when Character Continuity / Phase 12 resumes;
+- N7 Behavior & Activity only after real NPC content proves a stable vocabulary;
+- N8 broader Presentation authoring bridge where future NPCs need additional reusable presentation references beyond the proven dialogue cue path;
+- N9 Voice authoring/runtime only when the content workflow actually needs it;
+- define rare-pool cadence only when real authored content requires it;
+- later polish: final bubble art/responsive layout, richer text/localization, controller navigation, schedules, shops and other NPC systems as separate scoped work.
+
+Do not build a generic quest manager, scripting engine, behavior framework or voice pipeline merely to advance the N numbering.
 
 ## ART-R — Character ART Integration v1
 

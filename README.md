@@ -9,14 +9,15 @@ This README is intentionally small. It is the project entry point, not the proje
 ## Current
 
 - **Phase:** `11.closeout` — Phase 11 Item Loop complete
-- **Next:** Phase 12 — Character Continuity
+- **Active parallel work:** FORGE N — NPC authoring/runtime; N10a-N10f complete and merged
+- **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
 - **Protocol:** v27
 - **Simulation:** server authoritative
 - **Client:** native `winit` + `wgpu`
 - **Networking:** QUIC via Quinn
 - **Language:** Rust stable, edition 2024
 
-The root [`PHASE`](PHASE) file is the exact current phase marker.
+The root [`PHASE`](PHASE) file is the exact gameplay-phase marker. Parallel FORGE/tooling work does not move it unless explicitly promoted into the main gameplay sequence.
 
 ## Run
 
@@ -110,8 +111,8 @@ The detailed validation policy and extended network/load gates live in the docs 
 
 | Document | Purpose |
 |---|---|
-| [`PHASE`](PHASE) | Exact current development phase |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Development roadmap and phase history |
+| [`PHASE`](PHASE) | Exact current gameplay phase |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Development roadmap and active parallel tracks |
 | [`docs/PROJECT_ENGINEERING_NOTES.md`](docs/PROJECT_ENGINEERING_NOTES.md) | Engineering context, manual observations, rejected hypotheses, tool constraints and deferred polish |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Architecture Decision Records (ADRs) and frozen decisions |
