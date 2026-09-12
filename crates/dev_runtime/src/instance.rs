@@ -13,15 +13,14 @@ impl WorkspaceLock {
         let dir = paths.dev_log_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let path = dir.join("hub.lock");
-        let mut opts = OpenOptions::new();
-        opts.create(true).read(true).write(true);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            opts.share_mode(0);
-        }
-        let file = opts
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
             .open(&path)
+            .map_err(|e| format!("open {}: {e}", path.display()))?;
+        file.try_lock()
             .map_err(|_| "Another Developer Hub is already open for this workspace.".to_string())?;
         Ok(Self { _file: file })
     }
