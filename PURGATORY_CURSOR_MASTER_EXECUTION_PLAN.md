@@ -954,13 +954,16 @@ Create:
 ## MonsterDefinition
 Initial fields:
 - id,
-- display_name,
-- max_health,
-- move_speed,
-- collider,
-- presentation_id,
-- behavior_id,
-- loot_table_id optional.
+- debug_name,
+- health_max,
+- movement_speed,
+- half_extents,
+- one closed, runtime-supported behavior profile with its required parameters.
+
+Add presentation, ability-loadout, loot-table, and placement references only
+with the scoped runtime/content consumer that validates and uses them. Do not
+reserve inert JSON fields. Current contract:
+`docs/MONSTER_AUTHORING_RUNTIME.md`.
 
 ## ItemDefinition
 - id,

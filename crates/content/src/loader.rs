@@ -16,6 +16,10 @@ use crate::equipment::{
 };
 use crate::error::{ContentError, ValidationIssue};
 use crate::item::{ITEM_CONTENT_SCHEMA_VERSION, ItemDefinition, validate_item_definition};
+use crate::monster::{
+    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition,
+    validate_monster_definition,
+};
 use crate::registry::ContentRegistry;
 use crate::schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
@@ -94,6 +98,13 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         mode,
     );
     if mode == LoadMode::Full {
+        load_dir(
+            &mut registry,
+            &mut issues,
+            &root.join("definitions").join("monsters"),
+            ContentDomain::ServerOnly,
+            Kind::Monster,
+        );
         load_dir(
             &mut registry,
             &mut issues,
@@ -210,6 +221,7 @@ enum Kind {
     Equipment,
     EquipmentPresentation,
     Ability,
+    Monster,
 }
 
 fn load_dir(
@@ -297,6 +309,11 @@ fn load_file(
             let authored = raw.id.clone();
             let def = raw.into_def(path)?;
             registry.insert_ability(authored, def)
+        }
+        Kind::Monster => {
+            let raw: RawMonster = parse(path, &text)?;
+            let def = raw.into_def(path)?;
+            registry.insert_monster(def)
         }
     }
 }
@@ -549,6 +566,83 @@ struct RawAbilityEffect {
     kind: String,
     #[serde(default)]
     amount: Option<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMonster {
+    schema_version: u32,
+    id: String,
+    debug_name: String,
+    health_max: f32,
+    half_extents: [f32; 2],
+    movement_speed: f32,
+    behavior: RawMonsterBehavior,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMonsterBehavior {
+    kind: String,
+    acquisition_radius: f32,
+    home_leash_radius: f32,
+}
+
+impl RawMonster {
+    fn into_def(self, path: &Path) -> Result<MonsterDefinition, ContentError> {
+        if self.schema_version != MONSTER_CONTENT_SCHEMA_VERSION {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "schema_version",
+                format!(
+                    "unsupported monster schema version {} (want {})",
+                    self.schema_version, MONSTER_CONTENT_SCHEMA_VERSION
+                ),
+            ));
+        }
+        check_authored(path, &self.id)?;
+        let content_id = allocated_id_for_label(&self.id).ok_or_else(|| {
+            ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "id",
+                "monster requires a numeric ContentId allocation",
+            )
+        })?;
+        if content_id.kind() != Some(ContentKind::Monster) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "id",
+                "monster ContentId must be allocated in the Monster block",
+            ));
+        }
+        let behavior = match self.behavior.kind.as_str() {
+            "chase_contact" => MonsterBehavior::ChaseContact,
+            other => {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    &self.id,
+                    "behavior.kind",
+                    format!("unknown monster behavior '{other}'"),
+                ));
+            }
+        };
+        let def = MonsterDefinition {
+            content_id,
+            authored_id: self.id,
+            debug_name: self.debug_name,
+            health_max: self.health_max,
+            half_extents: self.half_extents,
+            movement_speed: self.movement_speed,
+            behavior,
+            acquisition_radius: self.behavior.acquisition_radius,
+            home_leash_radius: self.behavior.home_leash_radius,
+        };
+        validate_monster_definition(&def)?;
+        Ok(def)
+    }
 }
 
 impl RawAbility {
@@ -1371,6 +1465,13 @@ mod tests {
         let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
         assert!(registry.map_count() >= 2);
         assert!(registry.entity_count() >= 4);
+        assert_eq!(registry.monster_count(), 1);
+        let red_slime = registry
+            .monster_by_id(purgatory_common::MONSTER_RED_SLIME)
+            .expect("allocated Red Slime definition");
+        assert_eq!(red_slime.authored_id, "monster.slime.red");
+        assert_eq!(red_slime.behavior, MonsterBehavior::ChaseContact);
+        assert_eq!(red_slime.health_max, 20.0);
         let map_a = registry
             .map(purgatory_common::MAP_FOOTNOTE_AUTHORED)
             .expect("A");
@@ -1407,6 +1508,11 @@ mod tests {
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
         assert_eq!(shared.map_count(), 2);
         assert_eq!(shared.entity_count(), 0);
+        assert_eq!(
+            shared.monster_count(),
+            0,
+            "monster gameplay data is server-only"
+        );
         assert!(shared.item_count() >= 11);
         assert!(shared.item("item.package").is_some());
         assert!(
@@ -1444,6 +1550,35 @@ mod tests {
             .equipment_presentation("equipment.debug.unadorned")
             .expect("empty attachments");
         assert!(unadorned.attachments.is_empty());
+    }
+
+    #[test]
+    fn monster_without_numeric_allocation_fails_clearly() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-monster-allocation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("definitions/monsters"),
+            "monster.test.unallocated.json",
+            r#"{
+                "schema_version": 1,
+                "id": "monster.test.unallocated",
+                "debug_name": "Unallocated",
+                "health_max": 10.0,
+                "half_extents": [0.4, 0.6],
+                "movement_speed": 1.0,
+                "behavior": {
+                    "kind": "chase_contact",
+                    "acquisition_radius": 2.0,
+                    "home_leash_radius": 3.0
+                }
+            }"#,
+        );
+        let error = load_registry(&tmp, LoadMode::Full).expect_err("unallocated monster");
+        assert!(error.to_string().contains("numeric ContentId allocation"));
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

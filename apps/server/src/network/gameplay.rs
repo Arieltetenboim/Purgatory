@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use purgatory_common::{
     ChannelId, CharacterId, ContentId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
-    RestoreIntent, WorldAddress,
+    MONSTER_RED_SLIME, RestoreIntent, WorldAddress,
 };
 use purgatory_content::{
     ContentRegistry, EquipmentAuthError, LoadMode, authorize_equip, default_content_root,
@@ -30,8 +30,8 @@ use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, Cadence,
     CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X, Health,
     InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError, P0, P0_POSITION,
-    PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest,
-    ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
+    NpcRuntimeConfig, PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind,
+    RuntimeSpawnRequest, ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
     validate_command_preamble,
 };
 
@@ -77,7 +77,6 @@ const WELCOME_NARRATIVE_INITIAL_FACTS: [(&str, bool); 3] = [
     ("welcome.workshop.package_delivered", false),
 ];
 const LIVE_COMBAT_CREATURE_TYPE_TOKEN: u32 = 9_000;
-const LIVE_COMBAT_CREATURE_AGGRO_RADIUS: f32 = 3.0;
 
 fn live_basic_strike_id() -> ContentId {
     ContentId::from_authored("skill.basic.strike").expect("authored basic strike id")
@@ -1316,13 +1315,16 @@ impl GameplayOwner {
     }
 
     fn ensure_live_combat_creature(&mut self) {
-        if self.world.iter().any(|id| {
-            self.world
-                .npc_of(id)
-                .is_some_and(|npc| npc.type_token == LIVE_COMBAT_CREATURE_TYPE_TOKEN)
-        }) {
+        if self
+            .world
+            .iter()
+            .any(|id| self.world.content_id_of(id) == Some(MONSTER_RED_SLIME))
+        {
             return;
         }
+        let Some(definition) = self.registry.monster_by_id(MONSTER_RED_SLIME).cloned() else {
+            return;
+        };
         let address = self.map_a_address();
         let Some(floor) = self
             .world
@@ -1331,20 +1333,26 @@ impl GameplayOwner {
         else {
             return;
         };
-        let (_, player_state) =
-            PlayerState::standing_on_at(floor.id, floor.top_surface(), FOOTNOTE_SPAWN_X);
-        let player_y = floor.top_surface() + player_state.half_extents[1];
+        let creature_y = floor.top_surface() + definition.half_extents[1];
         let now = SimulationTick::from_count(self.ticks);
-        let Some(creature) = self.world.spawn(World::npc_spawn_request(
+        let runtime_config = NpcRuntimeConfig {
+            movement_speed: definition.movement_speed,
+            half_extents: definition.half_extents,
+            ..NpcRuntimeConfig::default()
+        };
+        let request = World::npc_spawn_request_with_runtime_config(
             address,
-            [FOOTNOTE_SPAWN_X + 6.0, player_y],
+            [FOOTNOTE_SPAWN_X + 6.0, creature_y],
             LIVE_COMBAT_CREATURE_TYPE_TOKEN,
-            LIVE_COMBAT_CREATURE_AGGRO_RADIUS,
+            definition.home_leash_radius,
             9,
             now,
             true,
-            purgatory_simulation::NPC_HEALTH_MAX,
-        )) else {
+            definition.health_max,
+            runtime_config,
+        )
+        .with_content(definition.content_id);
+        let Some(creature) = self.world.spawn(request) else {
             return;
         };
         if let Some(mut npc) = self.world.npc_of(creature) {
@@ -1694,8 +1702,11 @@ impl GameplayOwner {
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
-        self.world
-            .tick_npcs_with_approach(dt, Some((LIVE_COMBAT_CREATURE_AGGRO_RADIUS, 0.8, 1.2)));
+        let authored_approach = self
+            .registry
+            .monster_by_id(MONSTER_RED_SLIME)
+            .map(|definition| (definition.acquisition_radius, 0.8, 1.2));
+        self.world.tick_npcs_with_approach(dt, authored_approach);
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
         sample.npc_activity += npc_t0.elapsed();
 
@@ -6589,6 +6600,22 @@ mod tests {
             .filter(|&entity| owner.world().npc_of(entity).is_some())
             .collect();
         assert_eq!(creatures.len(), 1);
+        assert_eq!(
+            owner.world().content_id_of(creatures[0]),
+            Some(MONSTER_RED_SLIME)
+        );
+        let definition = owner
+            .registry
+            .monster_by_id(MONSTER_RED_SLIME)
+            .expect("Red Slime definition");
+        assert_eq!(
+            owner.world().health_of(creatures[0]),
+            Some(Health::full(definition.health_max))
+        );
+        assert_eq!(
+            owner.world().npc_of(creatures[0]).unwrap().runtime_config.movement_speed,
+            definition.movement_speed
+        );
         assert!(
             !owner
                 .world()
@@ -6668,8 +6695,18 @@ mod tests {
             .expect("respawned creature");
         assert_ne!(respawned, creature);
         assert_eq!(
+            owner.world().content_id_of(respawned),
+            Some(MONSTER_RED_SLIME),
+            "scheduled respawn must preserve authored monster identity"
+        );
+        let health_max = owner
+            .registry
+            .monster_by_id(MONSTER_RED_SLIME)
+            .expect("Red Slime definition")
+            .health_max;
+        assert_eq!(
             owner.world().health_of(respawned).unwrap().current,
-            purgatory_simulation::NPC_HEALTH_MAX
+            health_max
         );
 
         // Creature -> player: place the live player in range and let the

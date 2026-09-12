@@ -8,6 +8,7 @@ mod error;
 mod instantiate;
 mod item;
 mod loader;
+mod monster;
 mod registry;
 mod restore;
 mod schema;
@@ -35,6 +36,10 @@ pub use item::{
     ITEM_CONTENT_SCHEMA_VERSION, ItemDefinition, is_stackable, validate_item_definition,
 };
 pub use loader::{LoadMode, default_content_root, load_registry};
+pub use monster::{
+    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition,
+    validate_monster_definition,
+};
 pub use registry::ContentRegistry;
 pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement};
 pub use schema::{
