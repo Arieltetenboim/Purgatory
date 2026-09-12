@@ -22,6 +22,9 @@ Human-editable JSON lives under `/content`:
 - `shared/equipment_presentation/` — client presentation for the same `ContentId` (`attachments[]`)
 - `shared/abilities/` — gameplay ability JSON (`AbilityDefinition`; schema_version 1). Loaded in Shared and Full modes.
 - `shared/animations/dev/` — A6/A7 v1 `.anim` presentation clips (token text, not JSON). Optional `depth` keys (A7.1 `depth_angle`; omitted = 0). Authored in Animation Lab. Runtime still compiles them in via `include_str!`.
+- `authoring/npcs/` — canonical NPC Lab JSON. Recursively validated in Shared
+  and Full modes; projected into client-safe dialogue presentation in both and
+  authoritative dialogue definitions in Full mode.
 - `server/entities/` — server-only entities (interactables, portals with `transition: { map, portal }`)
 - `server/placements/` — server-only placement lists keyed by map authored id
 - `definitions/monsters/` — reserved authoring scaffolding; currently empty and not scanned by the content loader. No authored monster definitions are active yet.
@@ -69,9 +72,17 @@ The quality gate runs it after `cargo test`. Invalid content must be detected be
 - Engine source changes are required only when content introduces genuinely new behavior.
 - Simple stat changes must not require rebuilding Rust once live/dev reload exists and is safe.
 
-The current NPC runtime is not content-backed: spawn parameters and workload presets
-remain owned by simulation/server runtime code. Do not infer a monster schema from the
-empty `definitions/monsters/` directory.
+The Social NPC dialogue runtime is content-backed. Canonical
+`authoring/npcs/**/*.json` documents are validated and projected into typed
+`NpcDialogueDefinition` and `NpcDialoguePresentation` registries keyed by the
+same numeric NPC `ContentId` as the matching server entity facet. Shared mode
+exposes only client-safe Beat text, choice labels and animation cues; Full mode
+also exposes authoritative conditions, pools, continuations and actions. See
+[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
+
+Combat-NPC spawn parameters and workload presets remain owned by
+simulation/server runtime code. Do not infer a monster schema from the empty
+`definitions/monsters/` directory.
 
 Portal links are content data: `transition: { "map": "<dest map authored id>", "portal": "<dest portal entity authored id>" }`. Arrival is at the linked portal, not the map's generic spawn. The destination entity does not need a reverse `transition` (one-way portals).
 

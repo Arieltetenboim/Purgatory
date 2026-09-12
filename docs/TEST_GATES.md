@@ -589,6 +589,29 @@ Owner Phase 0 clarifications:
 - Date: 2026-09-07
 - Notes: Manual normal client/server proof passed: visible real world Item drop; `E` pickup; owned Inventory Item; DEV selection by real `ItemInstanceId`; equip and sword presentation; equipment-granted attack ability; unequip returning the same Item to Inventory; and removal of the equipment-derived ability. Production Inventory UI, Phase 12 persistence, advanced stacking, trading, currency, and economy remain deferred. Temporary/dev presentation or diagnostics rough edges do not reopen Phase 11. Report: [`docs/PHASE_11_CLOSEOUT_REPORT.md`](PHASE_11_CLOSEOUT_REPORT.md).
 
+## Gate FORGE N10 — NPC Dialogue Runtime
+
+- Status: **N10a-N10f implemented; normal-path manual proof accepted
+  2026-09-12.** N10e PR #43 and stacked N10f PR #45 remain open, so this is
+  not a merged closeout.
+- Command/test evidence: `cargo test -p purgatory-content` (74 passed);
+  `cargo test -p purgatory-client --no-default-features` (597 passed, 3
+  ignored); `cargo test -p purgatory-client` (664 passed, 3 ignored);
+  `cargo test -p purgatory-server` (266 passed, 9 ignored); NPC Lab (48
+  passed); content validator OK; affected-package Clippy passed; server + bot
+  client check passed.
+- Manual evidence: authored Beat/choice flow, adjacent player/NPC bubbles,
+  per-choice highlighting/hit regions, 1.0-second selected player response,
+  distinct player bubble skin, DEV spawning of allocated Welcome NPCs,
+  local-only facing/animation, multiplayer isolation and the per-player
+  15-tick reopen guard were accepted in the normal client/server runtime.
+- Known blockers/gaps: the official workspace gate still stops on pre-existing
+  rustfmt drift in `crates/common/src/identity.rs` and
+  `crates/common/src/lib.rs`. Player/target death does not yet close dialogue;
+  this design-contract gap is explicitly documented and excluded from GREEN
+  proof until implemented and tested.
+- Contract: [`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
+
 ## Later gates
 
 Legacy Gate 7 (client reconciliation / input replay) already shipped as Phase 5.5. Legacy Gates 8–17 follow superseded numbering and are **not** the post-6G sequence.

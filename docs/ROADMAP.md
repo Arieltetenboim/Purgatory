@@ -10,7 +10,7 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **Phase 11 — Item Loop: complete + closeout**
 - **Root `PHASE`: `11.closeout`**
 - **Current slice: Phase 11 closeout**
-- **Protocol: v24**
+- **Protocol: v27**
 
 ---
 
@@ -88,6 +88,27 @@ Further Phase 12+ slicing should be added only when the current design is agreed
 # Parallel character / presentation tracks
 
 These tracks can progress beside the gameplay roadmap. They are deliberately separated so tools and visual-content work do not accidentally reopen gameplay phases.
+
+## FORGE N10 — NPC Dialogue Runtime
+
+N10 integrates the NPC Lab authoring model into the normal server-authoritative
+game runtime. It is a parallel FORGE track and does not change the root
+`PHASE`. The current system contract is
+[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
+
+| Slice | Name | Status |
+|---|---|---|
+| N10a | Runtime Content + Identity | complete + merged |
+| N10b | Social NPC + Humanoid Idle | complete + merged |
+| N10c | Dialogue Session + NPC Bubble | complete + merged |
+| N10d | Choices + Continuation | complete + merged |
+| N10e | Narrative State + Authoritative Actions | implemented + manually verified; PR #43 open |
+| N10f | Local Presentation + Multiplayer Isolation | implemented + manually verified; stacked PR #45 open |
+
+N10f also contains the server-authoritative per-player dialogue reopen guard.
+Narrative persistence, final UI art, voice, localization and the documented
+death-close gap remain follow-up work; they are not silently absorbed into
+N10.
 
 ## ART-R — Character ART Integration v1
 

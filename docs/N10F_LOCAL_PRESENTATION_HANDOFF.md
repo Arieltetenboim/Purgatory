@@ -1,7 +1,8 @@
 # N10f — Local dialogue presentation and multiplayer handoff
 
-Status: implemented on a stacked branch above N10e. Automated verification is
-required, followed by the normal two-client networked proof.
+Status: implemented on a stacked branch above N10e; automated and normal
+networked manual verification accepted. The current combined system reference
+is [`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
 
 ## Implemented ownership
 
@@ -52,5 +53,6 @@ intentionally memory-only.
 - Narrative persistence remains deferred with Phase 12.
 - No shared authoritative NPC pose, dialogue-presentation replication, voice
   runtime, or parallel animation system was added.
-- N10 is ready for its final manual networked acceptance proof after N10e and
-  this stacked N10f branch are reviewed in order.
+- N10e/N10f remain open stacked PRs and must be reviewed/merged in order. The
+  current death-close contract gap is recorded in the combined runtime
+  document rather than hidden by the successful normal-path proof.

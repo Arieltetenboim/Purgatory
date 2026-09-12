@@ -1,6 +1,6 @@
 # Protocol
 
-Current protocol version is **24**. The historical phase summary below
+Current protocol version is **27**. The historical phase summary below
 retains its original version references.
 
 Phase 5.2 adds **authoritative gameplay replication**. Protocol version is **15**. The client sends per-tick `InputCommand` values identified by `(input_epoch, sequence)`. Phase 5.3 is client-only remote interpolation. Phase 5.4 is client-only local prediction. Phase 5.5 adds acknowledgement, continuation debt, late-collapse compaction, and local restore+replay. Phase 5.6 adds a **development-only** network impairment lab (delay/stall/HOL on the existing reliable streams). Phase 5.7 adds off-protocol localhost load metrics and raises the mechanical entity decode bound to 256. Phase 6.0 adds runtime/replication **contracts**; 6A composition; **6B** adds reliable interaction control envelopes and optional `ReplicatedKind::Interactable`; **6C** adds observer `WorldAddress`, `ReplicatedKind::Portal`, and `PortalActivate`. **6D** replaces full `WorldSnapshot` on the gameplay uni stream with `ReplicationFrame` (Enter/Update/Leave) and server interest-policy AOI, then adds DEV-only `DevSetChannel` (tag 17) so a Channel change is an authoritative `WorldAddress` boundary. **6E** adds DEV `Hello.dev_login` (temporary lookup identity) and `DisconnectReasonCode::AlreadyConnected`. Phase **6F** adds server-side runtime services without a protocol bump. Phase **7.2** adds `ReplicatedKind::Npc` (kind `4`) so visible Generics/NPCs Enter AOI on the wire (ADR-0054). Protocol **v12** adds equipment request envelopes and an optional equipment domain on Enter/Update. Protocol **v13** adds DEV presentation Attack/Hurt oneshot control envelopes (tags 22/23); Enter/Update snapshot layout is unchanged. Historical v1–v12 Hello/Welcome and earlier snapshot goldens stay frozen. Health on v8+ frames proves multi-domain deltas; 7.2 uses Health as a workload mutation domain. Phase **9A** locks ability authority (client requests ability id + targeting; server applies `AbilityEffect`) without adding wire tags. Phase **9B** executes `skill.basic.strike` in simulation only. Protocol **v15** adds ability activation envelopes (tags 25–27).
@@ -230,6 +230,8 @@ Client:
 
 - `InteractOpen { target: WireEntityId }` — tag 9
 - `InteractClose { session_id: u32 }` — tag 10
+- `DialogueAdvance { session_id: u32 }` — tag **35**. Advances/completes the
+  active authoritative Beat only; it cannot name text, actions or a next Beat.
 - `PortalActivate { target: WireEntityId }` — tag 15. Edge-triggered portal travel. Not `InteractOpen`. `E` must not use this path.
 - `DevSetChannel { channel: u32 }` — tag 17. DEV overlay only. Server-authoritative Channel request. Not a Portal, not a reconnect, and not client WorldAddress mutation. Channel values above `DEV_CHANNEL_MAX` are ignored (not a disconnect).
 - `DevResetPlayer` — tag **24**. DEV overlay only. Tag-only. Server-authoritative spawn reset of the bound player. Not a client teleport.
@@ -278,6 +280,22 @@ Server (`ServerControl::Interact`):
 - Rejected — tag 12 — target + reason (`TargetMissing`, `StaleId`, `WrongAddress`, `OutOfRange`, `NotInteractable`, `Unavailable`, `InvalidSession`)
 - Updated — tag 13 — `session_id` + target
 - Closed — tag 14 — `session_id` + reason (`Requested`, `TargetGone`, `AddressChanged`, `OutOfRange`, `Disconnected`). `AddressChanged` closes this **world-bound** `InteractionSession` when actor/target is no longer WorldAddress-compatible. It is not a generic “close every player-related session” signal (ADR-0040: WorldAddress boundary ≠ social identity boundary).
+
+Server dialogue control:
+
+- `DialogueLine` — tag **36** — active session, target, NPC `ContentId`, Beat
+  index and compatibility line index. The current Beat-based runtime sends
+  line index zero and the client resolves text locally.
+- `DialogueChoiceAccepted` — tag **39** — accepted session, Beat and choice
+  indexes. Any following `DialogueLine` remains authoritative and ordered on
+  the same reliable stream.
+
+After a live dialogue closes, a per-player 15-tick server guard rejects early
+Social NPC reopen attempts with the existing `Unavailable` interaction reason.
+It creates no `InteractionSession`, does not block another player and does not
+apply to non-dialogue interactables. This is server behavior, not a new wire
+message or client-authoritative timer. See
+[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
 
 Load bots only need the version bump; they do not send interact.
 

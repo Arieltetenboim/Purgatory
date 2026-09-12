@@ -1,6 +1,9 @@
 # N10 — NPC Dialogue Runtime Design
 
-Status: **design contract; implementation not started**
+Status: **implemented design contract for N10a-N10f**. This file preserves the
+design rationale and slice gates. The current implementation/ownership
+reference, including deliberate deviations and remaining gaps, is
+[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
 
 Purpose: project the proven NPC Lab authoring model into the authoritative game runtime without creating a parallel interaction, animation, inventory, or quest system.
 
@@ -150,7 +153,8 @@ Input support:
 After a choice is authoritatively accepted:
 
 1. the choice bubble collapses to the selected player line;
-2. the selected text remains above the player for approximately **0.5 s**;
+2. the selected text remains above the player for **1.0 s** (the initial
+   0.5-second proof timing was doubled after visual review);
 3. the next NPC response/continuation is then shown.
 
 This ~0.5 s delay is presentation timing only. Gameplay mutations associated with the accepted choice do not wait for the visual delay.
@@ -368,7 +372,7 @@ Includes:
 - player bubble above local player;
 - mouse selection and Up/Down + `E` navigation;
 - server validates choice against active session/beat;
-- accepted player line remains ~0.5 s locally;
+- accepted player line remains 1.0 s locally;
 - explicit `next` continuation;
 - current beat Heard completion at accepted choice.
 
@@ -410,7 +414,10 @@ Gate: two clients can concurrently speak to one Social NPC at different dialogue
 
 ## 18. Final N10 manual acceptance
 
-N10 is GREEN when the user can prove the following in the normal networked client:
+The implemented N10 path is ready for the following normal networked proof.
+The current death-close gap documented in
+[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md) remains excluded until it
+is wired and tested:
 
 ```text
 Humanoid Social NPC in Idle

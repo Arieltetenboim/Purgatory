@@ -1,6 +1,9 @@
 # N10 Runtime Implementation Plan
 
-Status: implementation plan derived from `NPC_DIALOGUE_RUNTIME_DESIGN.md`; no engine changes in this branch.
+Status: historical implementation plan. N10a-N10f are implemented on the
+current stacked N10 branches; see
+[`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md) for the live system
+contract, verified behavior and remaining gaps.
 
 ## Scope rule
 
