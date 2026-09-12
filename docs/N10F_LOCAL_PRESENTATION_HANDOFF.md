@@ -20,6 +20,9 @@ required, followed by the normal two-client networked proof.
   ordinary activity when a cue is null, missing, or invalid.
 - Server gameplay definitions continue to omit presentation-only animation
   cues. The client-safe projection preserves each line's optional cue.
+- Closing a dialogue arms a server-authoritative, per-player 15-tick reopen
+  cooldown. Early Social NPC opens are rejected without creating a session;
+  other players and non-dialogue interactables remain unaffected.
 - `dialogue_talk.anim` and Traveler's first intro Beat provide the initial
   authored proof. The lookup and playback path is generic and contains no
   Traveler-specific branching.
@@ -40,6 +43,9 @@ intentionally memory-only.
    progression, facing, and animation must remain unchanged.
 6. Exercise a Beat with a null cue and confirm ordinary Idle presentation is
    used without interrupting dialogue progression.
+7. Close a dialogue and immediately press `E` again. It must remain closed;
+   after roughly half a second, a fresh press must open it normally. Confirm a
+   second player can still open dialogue during the first player's cooldown.
 
 ## Deferred
 
