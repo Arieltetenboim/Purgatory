@@ -58,9 +58,7 @@ impl ContentId {
     /// Canonical stable numeric catalog constructor.
     #[must_use]
     pub const fn from_raw(raw: u32) -> Self {
-        Self {
-            token: raw as u64,
-        }
+        Self { token: raw as u64 }
     }
 
     /// Numeric value when this ID fits the stable u32 catalog representation.
@@ -372,13 +370,25 @@ mod tests {
 
     #[test]
     fn content_domain_blocks_are_exact_and_reserved_space_is_unclassified() {
-        assert_eq!(ContentId::from_raw(10_000).kind(), Some(ContentKind::Monster));
-        assert_eq!(ContentId::from_raw(19_999).kind(), Some(ContentKind::Monster));
+        assert_eq!(
+            ContentId::from_raw(10_000).kind(),
+            Some(ContentKind::Monster)
+        );
+        assert_eq!(
+            ContentId::from_raw(19_999).kind(),
+            Some(ContentKind::Monster)
+        );
         assert_eq!(ContentId::from_raw(20_000).kind(), Some(ContentKind::Npc));
         assert_eq!(ContentId::from_raw(30_000).kind(), Some(ContentKind::Item));
-        assert_eq!(ContentId::from_raw(40_000).kind(), Some(ContentKind::Ability));
+        assert_eq!(
+            ContentId::from_raw(40_000).kind(),
+            Some(ContentKind::Ability)
+        );
         assert_eq!(ContentId::from_raw(50_000).kind(), Some(ContentKind::Map));
-        assert_eq!(ContentId::from_raw(60_000).kind(), Some(ContentKind::WorldObject));
+        assert_eq!(
+            ContentId::from_raw(60_000).kind(),
+            Some(ContentKind::WorldObject)
+        );
         assert_eq!(ContentId::from_raw(9_999).kind(), None);
         assert_eq!(ContentId::from_raw(70_000).kind(), None);
     }
