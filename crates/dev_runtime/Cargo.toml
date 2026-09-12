@@ -11,8 +11,6 @@ description = "Headless Developer Hub orchestration (process lifecycle, probe, l
 purgatory-common = { path = "../common" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-
-[target.'cfg(windows)'.dependencies]
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 
 [lints]
