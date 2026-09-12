@@ -37,8 +37,7 @@ pub use item::{
 };
 pub use loader::{LoadMode, default_content_root, load_registry};
 pub use monster::{
-    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition,
-    validate_monster_definition,
+    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
 };
 pub use registry::ContentRegistry;
 pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement};

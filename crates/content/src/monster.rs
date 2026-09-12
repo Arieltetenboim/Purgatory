@@ -37,7 +37,11 @@ pub fn validate_monster_definition(def: &MonsterDefinition) -> Result<(), Conten
         ));
     }
     if def.debug_name.trim().is_empty() {
-        issues.push(monster_issue(&def.authored_id, "debug_name", "must not be empty"));
+        issues.push(monster_issue(
+            &def.authored_id,
+            "debug_name",
+            "must not be empty",
+        ));
     }
     positive_finite(&mut issues, def, "health_max", def.health_max);
     positive_finite(&mut issues, def, "half_extents[0]", def.half_extents[0]);
@@ -84,11 +88,7 @@ fn positive_finite(
     }
 }
 
-fn monster_issue(
-    definition: &str,
-    field: &str,
-    detail: impl std::fmt::Display,
-) -> ValidationIssue {
+fn monster_issue(definition: &str, field: &str, detail: impl std::fmt::Display) -> ValidationIssue {
     ValidationIssue::new("monster", definition, field, detail.to_string())
 }
 

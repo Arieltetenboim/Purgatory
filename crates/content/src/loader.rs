@@ -17,8 +17,7 @@ use crate::equipment::{
 use crate::error::{ContentError, ValidationIssue};
 use crate::item::{ITEM_CONTENT_SCHEMA_VERSION, ItemDefinition, validate_item_definition};
 use crate::monster::{
-    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition,
-    validate_monster_definition,
+    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
 };
 use crate::registry::ContentRegistry;
 use crate::schema::{

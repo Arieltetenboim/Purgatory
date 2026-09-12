@@ -29,8 +29,8 @@ use purgatory_protocol::{
 use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, Cadence,
     CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X, Health,
-    InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError, P0, P0_POSITION,
-    NpcRuntimeConfig, PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind,
+    InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError, NpcRuntimeConfig,
+    P0, P0_POSITION, PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind,
     RuntimeSpawnRequest, ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
     validate_command_preamble,
 };
@@ -6613,7 +6613,12 @@ mod tests {
             Some(Health::full(definition.health_max))
         );
         assert_eq!(
-            owner.world().npc_of(creatures[0]).unwrap().runtime_config.movement_speed,
+            owner
+                .world()
+                .npc_of(creatures[0])
+                .unwrap()
+                .runtime_config
+                .movement_speed,
             definition.movement_speed
         );
         assert!(
