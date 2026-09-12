@@ -748,6 +748,50 @@ impl World {
         self.item_runtime.remove_inventory_item(owner, slot)
     }
 
+    /// Mint a new canonical item instance directly into an active player's
+    /// inventory. Dialogue and future reward systems use this owner API rather
+    /// than writing inventory tables themselves.
+    pub fn grant_inventory_item(
+        &mut self,
+        owner: EntityId,
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+    ) -> Result<(ItemInstanceId, u16), ItemRuntimeError> {
+        let Some(owner_data) = self.slot_live(owner) else {
+            return Err(ItemRuntimeError::InvalidInventoryOwner);
+        };
+        if owner_data.player.is_none() || owner_data.lifecycle != EntityLifecycle::Active {
+            return Err(ItemRuntimeError::InvalidInventoryOwner);
+        }
+        let Some(slot) = self.item_runtime.first_inventory_slot(owner) else {
+            return Err(ItemRuntimeError::InventoryFull(owner));
+        };
+        let id = self.mint_item_instance_id();
+        self.item_runtime
+            .bind_inventory(id, definition, quantity, stack_limit, owner, slot)?;
+        Ok((id, slot))
+    }
+
+    /// Remove an authored quantity from matching inventory stacks in stable
+    /// slot order. The mutation is preflighted, so insufficient ownership does
+    /// not partially consume items.
+    pub fn remove_inventory_definition(
+        &mut self,
+        owner: EntityId,
+        definition: ContentId,
+        quantity: u32,
+    ) -> Result<Vec<ItemInstanceId>, ItemRuntimeError> {
+        let Some(owner_data) = self.slot_live(owner) else {
+            return Err(ItemRuntimeError::InvalidInventoryOwner);
+        };
+        if owner_data.player.is_none() || owner_data.lifecycle != EntityLifecycle::Active {
+            return Err(ItemRuntimeError::InvalidInventoryOwner);
+        }
+        self.item_runtime
+            .remove_inventory_quantity(owner, definition, quantity)
+    }
+
     /// Atomically move a validated world drop into the first free inventory slot.
     ///
     /// The target is only an ephemeral manifestation. The item instance is

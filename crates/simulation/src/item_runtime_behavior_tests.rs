@@ -329,3 +329,53 @@ fn inventory_move_and_remove_preserve_canonical_instance_identity() {
     assert!(world.item_record(item).is_none());
     assert_eq!(world.inventory_count(actor), 0);
 }
+
+#[test]
+fn authoritative_grant_and_quantity_removal_use_inventory_owner() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let definition = content(201);
+
+    let (first, first_slot) = world
+        .grant_inventory_item(actor, definition, 3, 5)
+        .expect("first grant");
+    let (second, second_slot) = world
+        .grant_inventory_item(actor, definition, 2, 5)
+        .expect("second grant");
+    assert_eq!((first_slot, second_slot), (0, 1));
+
+    let destroyed = world
+        .remove_inventory_definition(actor, definition, 4)
+        .expect("remove across stacks");
+    assert_eq!(destroyed, vec![first]);
+    assert!(world.item_record(first).is_none());
+    assert_eq!(
+        world.item_record(second).map(|record| record.quantity),
+        Some(1)
+    );
+    assert_eq!(world.inventory_count(actor), 1);
+}
+
+#[test]
+fn insufficient_definition_quantity_does_not_partially_remove_inventory() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let definition = content(202);
+    let (item, _) = world
+        .grant_inventory_item(actor, definition, 2, 5)
+        .expect("grant");
+
+    assert_eq!(
+        world.remove_inventory_definition(actor, definition, 3),
+        Err(ItemRuntimeError::InsufficientInventoryQuantity {
+            owner: actor,
+            definition,
+            requested: 3,
+            available: 2,
+        })
+    );
+    assert_eq!(
+        world.item_record(item).map(|record| record.quantity),
+        Some(2)
+    );
+}

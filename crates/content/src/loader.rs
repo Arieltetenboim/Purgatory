@@ -1244,6 +1244,41 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_dialogue_item_reference_fails_clearly() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-dialogue-item-reference-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let beat = r#"{
+            "id": "intro",
+            "priority": 1,
+            "entry": true,
+            "conditions": [{ "item_owned": "item.missing", "equals": false }],
+            "lines": [{ "text": "Hello" }],
+            "choices": [{
+                "id": "take",
+                "text": "Take it",
+                "next": null,
+                "actions": [{ "give_item": { "item": "item.missing", "quantity": 1 } }]
+            }]
+        }"#;
+        write_file(
+            &tmp.join("authoring/npcs/welcome"),
+            "traveler.json",
+            &minimal_npc_json(beat),
+        );
+
+        let error = load_registry(&tmp, LoadMode::Full).expect_err("unresolved item");
+        assert!(
+            error
+                .to_string()
+                .contains("unresolved item reference 'item.missing'")
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn duplicate_npc_beat_id_fails_clearly() {
         let tmp = std::env::temp_dir().join(format!(
             "purgatory-content-npc-duplicate-beat-{}",
@@ -1361,7 +1396,14 @@ mod tests {
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
         assert_eq!(shared.map_count(), 2);
         assert_eq!(shared.entity_count(), 0);
-        assert!(shared.item_count() >= 8);
+        assert!(shared.item_count() >= 11);
+        assert!(shared.item("item.package").is_some());
+        assert!(
+            shared
+                .item("item.welcome.road_marker_cloth_bundle")
+                .is_some()
+        );
+        assert!(shared.item("item.welcome.watch_signal_lantern").is_some());
         assert!(shared.equipment_count() >= 8);
         assert!(shared.ability_count() >= 1);
         assert!(shared.ability("skill.basic.strike").is_some());

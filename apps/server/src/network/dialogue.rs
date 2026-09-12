@@ -3,13 +3,16 @@
 //! This module owns dialogue state only. Interaction validity and lifetime
 //! remain in `World::InteractionSession`; presentation remains client-owned.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use purgatory_common::ContentId;
 use purgatory_content::{
-    ContentRegistry, DialogueBeatIndex, DialogueConditionState, NpcDialogueDefinition,
+    ContentRegistry, DialogueAction, DialogueBeatIndex, DialogueConditionState,
+    NpcDialogueDefinition,
 };
 use purgatory_simulation::{EntityId, EquipmentSlot, World};
+
+use super::narrative::NarrativeRuntime;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ActiveDialogue {
@@ -41,10 +44,17 @@ pub(crate) enum ChoiceResult {
     Invalid,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ChoicePlan {
+    pub accepted: ActiveDialogue,
+    pub choice_index: u32,
+    pub next: Option<ActiveDialogue>,
+    pub actions: Vec<DialogueAction>,
+}
+
 #[derive(Default)]
 pub(crate) struct DialogueRuntime {
     active_by_actor: HashMap<EntityId, ActiveDialogue>,
-    heard_by_actor: HashSet<(EntityId, ContentId, DialogueBeatIndex)>,
 }
 
 impl DialogueRuntime {
@@ -78,12 +88,10 @@ impl DialogueRuntime {
 
     pub(crate) fn forget_actor(&mut self, actor: EntityId) {
         self.active_by_actor.remove(&actor);
-        self.heard_by_actor
-            .retain(|(heard_actor, _, _)| *heard_actor != actor);
     }
 
     pub(crate) fn advance(
-        &mut self,
+        &self,
         actor: EntityId,
         session_id: u32,
         definition: &NpcDialogueDefinition,
@@ -98,8 +106,6 @@ impl DialogueRuntime {
             return AdvanceResult::Invalid;
         };
         if beat.choices.is_empty() {
-            self.heard_by_actor
-                .insert((actor, definition.content_id, active.beat_index));
             AdvanceResult::Complete(active)
         } else {
             // A Beat with choices waits for an explicit, validated choice.
@@ -107,79 +113,71 @@ impl DialogueRuntime {
         }
     }
 
-    pub(crate) fn choose(
-        &mut self,
+    pub(crate) fn plan_choice(
+        &self,
         actor: EntityId,
         session_id: u32,
         beat_index: DialogueBeatIndex,
         choice_index: u32,
         definition: &NpcDialogueDefinition,
-    ) -> ChoiceResult {
-        let Some(active) = self.active_by_actor.get(&actor).copied() else {
-            return ChoiceResult::Invalid;
-        };
+    ) -> Option<ChoicePlan> {
+        let active = self.active_by_actor.get(&actor).copied()?;
         if active.session_id != session_id
             || active.npc_content_id != definition.content_id
             || active.beat_index != beat_index
         {
-            return ChoiceResult::Invalid;
+            return None;
         }
-        let Some(choice) = definition
+        let choice = definition
             .beat(active.beat_index)
-            .and_then(|beat| beat.choices.get(choice_index as usize))
-        else {
-            return ChoiceResult::Invalid;
-        };
-        self.heard_by_actor
-            .insert((actor, definition.content_id, active.beat_index));
-        let Some(next_index) = choice.next else {
-            self.active_by_actor.remove(&actor);
-            return ChoiceResult::Complete {
-                accepted: active,
-                choice_index,
-            };
-        };
-        let next = ActiveDialogue {
-            beat_index: next_index,
-            ..active
-        };
-        self.active_by_actor.insert(actor, next);
-        ChoiceResult::Continue {
+            .and_then(|beat| beat.choices.get(choice_index as usize))?;
+        Some(ChoicePlan {
             accepted: active,
             choice_index,
-            next,
-        }
+            next: choice.next.map(|beat_index| ActiveDialogue {
+                beat_index,
+                ..active
+            }),
+            actions: choice.actions.clone(),
+        })
     }
 
-    #[must_use]
-    pub(crate) fn has_heard(
-        &self,
-        actor: EntityId,
-        npc_content_id: ContentId,
-        beat_index: DialogueBeatIndex,
-    ) -> bool {
-        self.heard_by_actor
-            .contains(&(actor, npc_content_id, beat_index))
+    pub(crate) fn commit_choice(&mut self, plan: ChoicePlan) -> ChoiceResult {
+        if self.active(plan.accepted.actor) != Some(plan.accepted) {
+            return ChoiceResult::Invalid;
+        }
+        let Some(next) = plan.next else {
+            self.active_by_actor.remove(&plan.accepted.actor);
+            return ChoiceResult::Complete {
+                accepted: plan.accepted,
+                choice_index: plan.choice_index,
+            };
+        };
+        self.active_by_actor.insert(plan.accepted.actor, next);
+        ChoiceResult::Continue {
+            accepted: plan.accepted,
+            choice_index: plan.choice_index,
+            next,
+        }
     }
 }
 
 /// Current authoritative state adapter for the proven NPC Lab selector.
-/// Narrative facts and NPC Met remain false until their N10e owner exists.
-/// N10d owns transient per-player Heard completion for selection semantics.
+/// This adapter reads each condition from its existing authoritative owner.
 pub(crate) struct RuntimeConditions<'a> {
     pub world: &'a World,
     pub registry: &'a ContentRegistry,
     pub actor: EntityId,
-    pub dialogues: &'a DialogueRuntime,
+    pub narrative: &'a NarrativeRuntime,
 }
 
 impl DialogueConditionState for RuntimeConditions<'_> {
-    fn fact(&self, _fact: &str) -> bool {
-        false
+    fn fact(&self, fact: &str) -> bool {
+        self.narrative.fact(self.actor, fact)
     }
 
-    fn npc_met(&self, _npc_authored: &str) -> bool {
-        false
+    fn npc_met(&self, npc_authored: &str) -> bool {
+        self.narrative.npc_met(self.actor, npc_authored)
     }
 
     fn dialogue_heard(&self, npc_authored: &str, beat_id: &str) -> bool {
@@ -192,7 +190,7 @@ impl DialogueConditionState for RuntimeConditions<'_> {
         let Ok(index) = u32::try_from(index) else {
             return false;
         };
-        self.dialogues.has_heard(
+        self.narrative.dialogue_heard(
             self.actor,
             definition.content_id,
             DialogueBeatIndex::from_raw(index),
@@ -231,7 +229,8 @@ impl DialogueConditionState for RuntimeConditions<'_> {
 mod tests {
     use super::*;
     use purgatory_content::{
-        DialogueBeat, DialogueLine, DialoguePool, DialogueSelectionRole, NpcDialogueDefinition,
+        DialogueBeat, DialogueLine, DialoguePool, DialogueSelectionRole, LoadMode,
+        NpcDialogueDefinition, default_content_root, load_registry,
     };
 
     fn definition(choices: bool) -> NpcDialogueDefinition {
@@ -333,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn choice_validates_current_beat_marks_heard_and_follows_authored_next() {
+    fn choice_is_planned_without_mutation_then_committed_to_authored_next() {
         let actor = EntityId::from_raw(1, 1);
         let target = EntityId::from_raw(2, 1);
         let mut definition = definition(true);
@@ -357,11 +356,20 @@ mod tests {
             definition.content_id,
             DialogueBeatIndex::from_raw(0),
         );
-        assert_eq!(
-            runtime.choose(actor, 7, DialogueBeatIndex::from_raw(9), 0, &definition),
-            ChoiceResult::Invalid
+        assert!(
+            runtime
+                .plan_choice(actor, 7, DialogueBeatIndex::from_raw(9), 0, &definition)
+                .is_none()
         );
-        let result = runtime.choose(actor, 7, DialogueBeatIndex::from_raw(0), 0, &definition);
+        let plan = runtime
+            .plan_choice(actor, 7, DialogueBeatIndex::from_raw(0), 0, &definition)
+            .expect("valid choice plan");
+        assert_eq!(
+            runtime.active(actor).map(|active| active.beat_index),
+            Some(DialogueBeatIndex::from_raw(0)),
+            "planning must not consume dialogue state before actions succeed"
+        );
+        let result = runtime.commit_choice(plan);
         assert!(matches!(
             result,
             ChoiceResult::Continue {
@@ -369,6 +377,49 @@ mod tests {
                 ..
             } if beat_index == DialogueBeatIndex::from_raw(1)
         ));
-        assert!(runtime.has_heard(actor, definition.content_id, DialogueBeatIndex::from_raw(0)));
+    }
+
+    #[test]
+    fn runtime_conditions_read_narrative_inventory_and_equipment_owners() {
+        let registry = load_registry(&default_content_root(), LoadMode::Full).unwrap();
+        let mut world = World::dev_stage();
+        let actor = world.player_id().unwrap();
+        let mut narrative = NarrativeRuntime::default();
+        narrative.initialize_actor(actor);
+        narrative.set_fact(actor, "fact.test.enabled", true);
+        narrative.mark_npc_met(actor, "npc.welcome.gate_watchman");
+        narrative.mark_dialogue_heard(
+            actor,
+            ContentId::from_raw(20_001),
+            DialogueBeatIndex::from_raw(0),
+        );
+        let sword = registry.item("equipment.debug.practice_sword").unwrap();
+        let (item, _) = world
+            .grant_inventory_item(actor, sword.content_id, 1, sword.stack_limit)
+            .unwrap();
+
+        let conditions = RuntimeConditions {
+            world: &world,
+            registry: &registry,
+            actor,
+            narrative: &narrative,
+        };
+        assert!(conditions.fact("fact.test.enabled"));
+        assert!(conditions.npc_met("npc.welcome.gate_watchman"));
+        assert!(conditions.dialogue_heard("npc.welcome.traveler_stayed", "intro"));
+        assert!(conditions.item_owned("equipment.debug.practice_sword"));
+        assert!(!conditions.item_equipped("equipment.debug.practice_sword"));
+
+        world
+            .equip_item(actor, item, EquipmentSlot::Weapon)
+            .unwrap();
+        let conditions = RuntimeConditions {
+            world: &world,
+            registry: &registry,
+            actor,
+            narrative: &narrative,
+        };
+        assert!(!conditions.item_owned("equipment.debug.practice_sword"));
+        assert!(conditions.item_equipped("equipment.debug.practice_sword"));
     }
 }

@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::dialogue::{NpcDialogueDefinition, NpcDialoguePresentation};
+use crate::dialogue::{
+    DialogueAction, DialogueCondition, NpcDialogueDefinition, NpcDialoguePresentation,
+};
 use crate::domain::ContentDomain;
 use crate::equipment::{EquipmentDefinition, EquipmentPresentation};
 use crate::error::{ContentError, ValidationIssue};
@@ -580,6 +582,74 @@ impl ContentRegistry {
                 Some(_) => {}
             }
         }
+        for dialogue in self.npc_dialogues.values() {
+            for (beat_index, beat) in dialogue.beats.iter().enumerate() {
+                for (condition_index, condition) in beat.conditions.iter().enumerate() {
+                    let item_authored = match condition {
+                        DialogueCondition::ItemOwned { item_authored, .. }
+                        | DialogueCondition::ItemEquipped { item_authored, .. } => {
+                            Some(item_authored)
+                        }
+                        DialogueCondition::Fact { .. }
+                        | DialogueCondition::NpcMet { .. }
+                        | DialogueCondition::DialogueHeard { .. } => None,
+                    };
+                    if let Some(item_authored) = item_authored
+                        && !self.items.contains_key(item_authored)
+                    {
+                        issues.push(dialogue_item_issue(
+                            &dialogue.authored_id,
+                            format!("beats[{beat_index}].conditions[{condition_index}]"),
+                            item_authored,
+                        ));
+                    }
+                }
+                for (choice_index, choice) in beat.choices.iter().enumerate() {
+                    for (action_index, action) in choice.actions.iter().enumerate() {
+                        let (item_authored, quantity) = match action {
+                            DialogueAction::GiveItem {
+                                item_authored,
+                                quantity,
+                            }
+                            | DialogueAction::RemoveItem {
+                                item_authored,
+                                quantity,
+                            } => (Some(item_authored), Some(*quantity)),
+                            DialogueAction::SetFact { .. } | DialogueAction::MarkNpcMet { .. } => {
+                                (None, None)
+                            }
+                        };
+                        let Some(item_authored) = item_authored else {
+                            continue;
+                        };
+                        let field = format!(
+                            "beats[{beat_index}].choices[{choice_index}].actions[{action_index}]"
+                        );
+                        let Some(item) = self.items.get(item_authored) else {
+                            issues.push(dialogue_item_issue(
+                                &dialogue.authored_id,
+                                field,
+                                item_authored,
+                            ));
+                            continue;
+                        };
+                        if matches!(action, DialogueAction::GiveItem { .. })
+                            && quantity.is_some_and(|quantity| quantity > item.stack_limit)
+                        {
+                            issues.push(ValidationIssue::new(
+                                "npc_dialogue",
+                                &dialogue.authored_id,
+                                field,
+                                format!(
+                                    "Give Item quantity exceeds '{}' stack_limit {}",
+                                    item.authored_id, item.stack_limit
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         if issues.is_empty() {
             Ok(())
         } else {
@@ -602,6 +672,19 @@ fn item_equipment_issue(
 
 fn npc_entity_issue(definition: &str, detail: impl std::fmt::Display) -> ValidationIssue {
     ValidationIssue::new("npc_dialogue", definition, "id", detail.to_string())
+}
+
+fn dialogue_item_issue(
+    definition: &str,
+    field: impl std::fmt::Display,
+    item_authored: &str,
+) -> ValidationIssue {
+    ValidationIssue::new(
+        "npc_dialogue",
+        definition,
+        field.to_string(),
+        format!("unresolved item reference '{item_authored}'"),
+    )
 }
 
 #[cfg(test)]
