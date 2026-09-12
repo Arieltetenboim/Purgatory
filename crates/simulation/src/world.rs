@@ -1437,6 +1437,9 @@ impl World {
         if actor_data.player.is_none() || actor_data.lifecycle != EntityLifecycle::Active {
             return Err(InteractionReject::Unavailable);
         }
+        if actor_data.health.is_some_and(Health::is_dead) {
+            return Err(InteractionReject::Unavailable);
+        }
         let actor_pos = actor_data
             .transform
             .ok_or(InteractionReject::Unavailable)?
@@ -1447,6 +1450,9 @@ impl World {
             None => return Err(self.classify_missing(target)),
         };
         if target_data.lifecycle != EntityLifecycle::Active {
+            return Err(InteractionReject::Unavailable);
+        }
+        if target_data.health.is_some_and(Health::is_dead) {
             return Err(InteractionReject::Unavailable);
         }
         if target_data.interactable.is_none() {
