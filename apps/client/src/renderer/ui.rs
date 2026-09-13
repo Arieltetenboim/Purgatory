@@ -9,7 +9,9 @@ use bytemuck::{Pod, Zeroable};
 use super::gpu::SpriteTextureId;
 
 const MAX_UI_RECTS: usize = 64;
-const MAX_UI_TEXTURED_RECTS: usize = 64;
+// Window chrome + a full 5x7 slot grid + one item icon per slot remain within
+// this fixed submission budget.
+const MAX_UI_TEXTURED_RECTS: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct UiRect {

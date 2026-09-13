@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "ui.slot.inventory",
+  "texture": "inventory_slot.png",
+  "size_units": [40.0, 40.0]
+}

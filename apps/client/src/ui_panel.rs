@@ -22,12 +22,19 @@ const CLOSE_BUTTON_TEXTURE_FILE: &str = "BTN_quit.png";
 const TAB_PNG: &[u8] = include_bytes!("../../../Graphic/ui/inventory_tab.png");
 const TAB_METADATA: &str = include_str!("../../../Graphic/ui/inventory_tab.ui.json");
 const TAB_TEXTURE_FILE: &str = "inventory_tab.png";
+const SLOT_PNG: &[u8] = include_bytes!("../../../Graphic/ui/inventory_slot.png");
+const SLOT_METADATA: &str = include_str!("../../../Graphic/ui/inventory_slot.ui.json");
+const SLOT_TEXTURE_FILE: &str = "inventory_slot.png";
 const NORMAL_SIZE_UNITS: [f32; 2] = [300.0, 440.0];
 const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 12.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
-const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Use", "Mats", "Tools", "Misc"];
+const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 8.0;
+const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Cons.", "Mats", "Tools", "Misc"];
+const INVENTORY_SLOT_COLUMNS: usize = 5;
+const INVENTORY_SLOT_ROWS: usize = 7;
+const INVENTORY_SLOT_GAP_UNITS: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ProofPanelMode {
@@ -192,6 +199,15 @@ struct UiTabMetadata {
     horizontal_text_padding_units: f32,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UiSlotMetadata {
+    schema_version: u32,
+    id: String,
+    texture: String,
+    size_units: [f32; 2],
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PanelAsset {
     texture: SpriteTextureId,
@@ -229,6 +245,12 @@ pub(crate) struct UiTabAssets {
     height_units: f32,
     font_size_units: f32,
     horizontal_text_padding_units: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiSlotAssets {
+    texture: SpriteTextureId,
+    size_units: [f32; 2],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -529,6 +551,63 @@ impl UiTabAssets {
     }
 }
 
+impl UiSlotAssets {
+    pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
+        let metadata: UiSlotMetadata = serde_json::from_str(SLOT_METADATA)
+            .map_err(|error| format!("parse UI slot metadata: {error}"))?;
+        let (texture, source_size_px) = register_metadata_texture(
+            assets,
+            &metadata.id,
+            &metadata.texture,
+            SLOT_TEXTURE_FILE,
+            SLOT_PNG,
+            "slot",
+        )?;
+        validate_slot_metadata(&metadata, source_size_px)?;
+        Ok(Self {
+            texture,
+            size_units: metadata.size_units,
+        })
+    }
+
+    fn frame(
+        self,
+        grid: UiSlotGrid,
+        origin: [f32; 2],
+        pixels_per_unit: f32,
+    ) -> Result<Vec<UiTexturedRect>, String> {
+        validate_pixels_per_unit(pixels_per_unit)?;
+        grid.validate()?;
+        if !origin.into_iter().all(f32::is_finite) {
+            return Err("UI slot-grid origin must be finite".to_string());
+        }
+
+        let slot_size = [
+            self.size_units[0] * pixels_per_unit,
+            self.size_units[1] * pixels_per_unit,
+        ];
+        let gap = grid.gap_units * pixels_per_unit;
+        let mut textured_rects = Vec::with_capacity(grid.slot_count());
+        for row in 0..grid.rows {
+            for column in 0..grid.columns {
+                let min = [
+                    origin[0] + column as f32 * (slot_size[0] + gap),
+                    origin[1] + row as f32 * (slot_size[1] + gap),
+                ];
+                textured_rects.push(UiTexturedRect {
+                    min,
+                    max: [min[0] + slot_size[0], min[1] + slot_size[1]],
+                    texture: self.texture,
+                    uv_min: [0.0, 0.0],
+                    uv_max: [1.0, 1.0],
+                    tint: [1.0; 4],
+                });
+            }
+        }
+        Ok(textured_rects)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct UiTabs {
     selected_index: usize,
@@ -574,10 +653,65 @@ pub(crate) struct UiTabsFrame {
     pub(crate) texts: Vec<TextBlock>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct UiSlotGrid {
+    columns: usize,
+    rows: usize,
+    gap_units: f32,
+}
+
+impl UiSlotGrid {
+    const fn new(columns: usize, rows: usize, gap_units: f32) -> Self {
+        Self {
+            columns,
+            rows,
+            gap_units,
+        }
+    }
+
+    fn validate(self) -> Result<(), String> {
+        if self.columns == 0 || self.rows == 0 || !finite_non_negative(self.gap_units) {
+            return Err(
+                "UI slot grid requires rows/columns and a finite non-negative gap".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    fn slot_count(self) -> usize {
+        self.columns.saturating_mul(self.rows)
+    }
+
+    fn logical_size(self, assets: UiSlotAssets) -> Result<[f32; 2], String> {
+        self.validate()?;
+        Ok([
+            self.columns as f32 * assets.size_units[0]
+                + self.columns.saturating_sub(1) as f32 * self.gap_units,
+            self.rows as f32 * assets.size_units[1]
+                + self.rows.saturating_sub(1) as f32 * self.gap_units,
+        ])
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InventoryWindow {
     chrome: ProofPanelWindow,
     tabs: UiTabs,
+    slots: UiSlotGrid,
+}
+
+impl Default for InventoryWindow {
+    fn default() -> Self {
+        Self {
+            chrome: ProofPanelWindow::default(),
+            tabs: UiTabs::default(),
+            slots: UiSlotGrid::new(
+                INVENTORY_SLOT_COLUMNS,
+                INVENTORY_SLOT_ROWS,
+                INVENTORY_SLOT_GAP_UNITS,
+            ),
+        }
+    }
 }
 
 impl InventoryWindow {
@@ -597,6 +731,7 @@ impl InventoryWindow {
         &mut self,
         window_assets: UiWindowAssets,
         tab_assets: UiTabAssets,
+        slot_assets: UiSlotAssets,
         viewport: PixelViewport,
         pixels_per_unit: f32,
         cursor: Option<[f32; 2]>,
@@ -623,8 +758,18 @@ impl InventoryWindow {
             pixels_per_unit,
             cursor,
         )?;
+        let slot_origin = inventory_slot_origin(
+            window_assets,
+            slot_assets,
+            self.slots,
+            layout,
+            tab_bounds,
+            pixels_per_unit,
+        )?;
+        let slot_rects = slot_assets.frame(self.slots, slot_origin, pixels_per_unit)?;
         let mut textured_rects = window_frame.textured_rects;
         textured_rects.extend(tab_frame.textured_rects);
+        textured_rects.extend(slot_rects);
         let mut texts = Vec::with_capacity(1 + tab_frame.texts.len());
         texts.push(window_frame.title);
         texts.extend(tab_frame.texts);
@@ -708,6 +853,39 @@ fn inventory_tab_bounds(
         return Err("inventory window is too small for its tab strip".to_string());
     }
     Ok(bounds)
+}
+
+fn inventory_slot_origin(
+    window_assets: UiWindowAssets,
+    slot_assets: UiSlotAssets,
+    grid: UiSlotGrid,
+    layout: UiWindowLayout,
+    tab_bounds: ScreenRect,
+    pixels_per_unit: f32,
+) -> Result<[f32; 2], String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let grid_size = grid.logical_size(slot_assets)?;
+    let content_min_x =
+        layout.window.min[0] + window_assets.panel.border_units.left * pixels_per_unit;
+    let content_max_x =
+        layout.window.max[0] - window_assets.panel.border_units.right * pixels_per_unit;
+    let origin = [
+        content_min_x
+            + ((content_max_x - content_min_x) / pixels_per_unit - grid_size[0])
+                * 0.5
+                * pixels_per_unit,
+        tab_bounds.max[1] + INVENTORY_SLOT_TOP_GAP_UNITS * pixels_per_unit,
+    ];
+    let max = [
+        origin[0] + grid_size[0] * pixels_per_unit,
+        origin[1] + grid_size[1] * pixels_per_unit,
+    ];
+    let content_max_y =
+        layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit;
+    if origin[0] < content_min_x || max[0] > content_max_x || max[1] > content_max_y {
+        return Err("inventory window is too small for its slot grid".to_string());
+    }
+    Ok(origin)
 }
 
 fn tab_rect(bounds: ScreenRect, index: usize, count: usize) -> ScreenRect {
@@ -891,6 +1069,24 @@ fn validate_tab_metadata(metadata: &UiTabMetadata, source_size_px: [u32; 2]) -> 
     {
         return Err(format!(
             "UI tab {} units must be finite with positive caps/height/font and non-negative padding",
+            metadata.id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_slot_metadata(
+    metadata: &UiSlotMetadata,
+    source_size_px: [u32; 2],
+) -> Result<(), String> {
+    validate_schema_and_id(metadata.schema_version, &metadata.id, "slot")?;
+    if source_size_px.contains(&0)
+        || source_size_px[0] != source_size_px[1]
+        || !metadata.size_units.into_iter().all(finite_positive)
+        || metadata.size_units[0] != metadata.size_units[1]
+    {
+        return Err(format!(
+            "UI slot {} texture and logical size must be positive squares",
             metadata.id
         ));
     }
@@ -1302,6 +1498,10 @@ mod tests {
         UiTabAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
     }
 
+    fn embedded_slot_assets() -> UiSlotAssets {
+        UiSlotAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
+    }
+
     fn viewport() -> PixelViewport {
         PixelViewport {
             x: 0,
@@ -1363,6 +1563,18 @@ mod tests {
     }
 
     #[test]
+    fn embedded_slot_metadata_parses_as_transparent_square() {
+        let mut runtime = AssetRuntime::new();
+        let assets = UiSlotAssets::load_embedded(&mut runtime).unwrap();
+        let image = &runtime.resource(assets.texture).unwrap().image;
+        assert_eq!([image.width(), image.height()], [256, 256]);
+        assert_eq!(assets.size_units, [40.0, 40.0]);
+        assert_eq!(runtime.resource_count(), 1);
+        assert_eq!(image.get_pixel(0, 0).0[3], 0);
+        assert!(image.get_pixel(128, 128).0[3] > 0);
+    }
+
+    #[test]
     fn tabs_component_accepts_arbitrary_text_labels() {
         let assets = embedded_tab_assets();
         let tabs = UiTabs::default();
@@ -1390,6 +1602,7 @@ mod tests {
     fn inventory_window_composes_five_tabs_and_changes_selection_on_click_release() {
         let window_assets = embedded_assets();
         let tab_assets = embedded_tab_assets();
+        let slot_assets = embedded_slot_assets();
         let mut inventory = InventoryWindow::default();
         assert!(inventory.apply_key(
             PhysicalKey::Code(KeyCode::KeyI),
@@ -1397,17 +1610,30 @@ mod tests {
             false
         ));
         let frame = inventory
-            .frame(window_assets, tab_assets, viewport(), 1.0, None)
+            .frame(
+                window_assets,
+                tab_assets,
+                slot_assets,
+                viewport(),
+                1.0,
+                None,
+            )
             .unwrap()
             .unwrap();
-        assert_eq!(frame.textured_rects.len(), 28);
+        assert_eq!(frame.textured_rects.len(), 63);
         assert_eq!(frame.texts.len(), 6);
         assert_eq!(frame.texts[0].content.0, "Item Inventory");
         assert_eq!(frame.texts[1].content.0, "Equip");
-        assert_eq!(frame.texts[2].content.0, "Use");
+        assert_eq!(frame.texts[2].content.0, "Cons.");
         assert_eq!(frame.texts[3].content.0, "Mats");
         assert_eq!(frame.texts[4].content.0, "Tools");
         assert_eq!(frame.texts[5].content.0, "Misc");
+
+        let slots = &frame.textured_rects[28..];
+        assert_eq!(slots.len(), INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS);
+        assert!(slots.iter().all(|slot| slot.size() == [40.0, 40.0]));
+        assert_eq!(slots[1].min[0] - slots[0].max[0], 4.0);
+        assert_eq!(slots[INVENTORY_SLOT_COLUMNS].min[1] - slots[0].max[1], 4.0);
 
         let layout = window_assets
             .layout(&mut inventory.chrome, viewport(), 1.0)
