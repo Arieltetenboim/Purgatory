@@ -33,6 +33,7 @@ const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 19.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_TAB_SEPARATOR_HEIGHT_UNITS: f32 = 2.0;
+const INVENTORY_GRID_SIDE_PADDING_UNITS: f32 = 4.0;
 const INVENTORY_GRID_BOTTOM_PADDING_UNITS: f32 = 2.0;
 const INVENTORY_FOOTER_RESERVED_UNITS: f32 = 28.0;
 const INVENTORY_CURRENCY_VERTICAL_INSET_UNITS: f32 = 4.0;
@@ -957,15 +958,20 @@ fn inventory_grid_chrome(
         ],
     };
     let background = ScreenRect {
-        min: [tab_bounds.min[0], separator.max[1]],
+        min: [
+            slot_origin[0] - INVENTORY_GRID_SIDE_PADDING_UNITS * pixels_per_unit,
+            separator.max[1],
+        ],
         max: [
-            tab_bounds.max[0],
+            slot_origin[0] + (grid_size[0] + INVENTORY_GRID_SIDE_PADDING_UNITS) * pixels_per_unit,
             slot_origin[1] + (grid_size[1] + INVENTORY_GRID_BOTTOM_PADDING_UNITS) * pixels_per_unit,
         ],
     };
     let content_max_y =
         layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit;
     if separator.max[1] > slot_origin[1]
+        || background.min[0] < tab_bounds.min[0]
+        || background.max[0] > tab_bounds.max[0]
         || background.width() <= 0.0
         || background.height() <= 0.0
         || background.max[1] > content_max_y
@@ -1906,7 +1912,12 @@ mod tests {
         assert_eq!(separator.tint, INVENTORY_TAB_SEPARATOR_TINT);
         assert_eq!(separator.min, [bounds.min[0], bounds.max[1]]);
         assert_eq!(separator.size(), [bounds.width(), 2.0]);
-        assert_eq!(background.min, [bounds.min[0], separator.max[1]]);
+        assert_eq!(background.min[1], separator.max[1]);
+        assert_eq!(slots[0].min[0] - background.min[0], 4.0);
+        assert_eq!(
+            background.max[0] - slots[INVENTORY_SLOT_COLUMNS - 1].max[0],
+            4.0
+        );
         assert_eq!(slots[0].min[1] - background.min[1], 2.0);
         assert_eq!(background.max[1] - slots.last().unwrap().max[1], 2.0);
         assert_eq!(slots[0].min[0] - bounds.min[0], 9.0);
