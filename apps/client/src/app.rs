@@ -54,7 +54,9 @@ use crate::dialogue_bubble_layout::{BubbleColumn, dialogue_bubble_columns};
 use crate::dialogue_runtime::DialogueRuntime;
 #[cfg(feature = "dev-diagnostics")]
 use crate::display::collect_display_debug;
-use crate::display::{DisplayController, SurfaceResizeAction, WindowFlush};
+use crate::display::{
+    DisplayController, SurfaceResizeAction, WindowFlush, effective_pixels_per_point,
+};
 #[cfg(feature = "dev-diagnostics")]
 use crate::frontend::ConnectionFrontend;
 use crate::input::{ActionState, IntentNet};
@@ -90,6 +92,7 @@ use crate::renderer::{
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
+use crate::ui_panel::{ProofPanelMode, UiPanelAsset};
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -195,6 +198,8 @@ struct ClientApp {
     #[cfg(feature = "dev-diagnostics")]
     impairment_seed: u64,
     ui_runtime: UIRuntimeState,
+    ui_panel_asset: UiPanelAsset,
+    proof_panel_mode: ProofPanelMode,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
     speech_bubble_hit: Option<crate::renderer::UiRect>,
@@ -271,6 +276,8 @@ impl ClientApp {
                 .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
         let npc_sheet = SpriteSheet::red_slime(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY red slime sprite error: {error}"))?;
+        let ui_panel_asset = UiPanelAsset::load_embedded(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI panel asset error: {error}"))?;
         Ok(Self {
             window: None,
             renderer: None,
@@ -306,6 +313,8 @@ impl ClientApp {
             #[cfg(feature = "dev-diagnostics")]
             impairment_seed: NetworkImpairmentConfig::from_env().seed,
             ui_runtime: UIRuntimeState::Idle,
+            ui_panel_asset,
+            proof_panel_mode: ProofPanelMode::Hidden,
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
             speech_bubble_hit: None,
@@ -2484,6 +2493,21 @@ impl ClientApp {
         let Some(window) = self.window.clone() else {
             return;
         };
+        let ui_textured_rects = if on_connection {
+            Vec::new()
+        } else {
+            viewport
+                .map(|viewport| {
+                    let pixels_per_unit = effective_pixels_per_point(
+                        window.scale_factor() as f32,
+                        self.display.settings().ui_scale,
+                    );
+                    self.ui_panel_asset
+                        .proof_regions(self.proof_panel_mode, viewport, pixels_per_unit)
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        };
         #[cfg(feature = "dev-diagnostics")]
         let demand = self.diagnostics_demand();
         #[cfg(feature = "dev-diagnostics")]
@@ -2524,7 +2548,7 @@ impl ClientApp {
                 let can_connect = self.lifecycle.can_connect();
                 let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
                 let login = &mut self.dev_login;
-                renderer.render(&quads, &ui_rects, &ui_text, |pass| {
+                renderer.render(&quads, &ui_textured_rects, &ui_rects, &ui_text, |pass| {
                     let Some(overlay) = overlay else {
                         return Vec::new();
                     };
@@ -2552,7 +2576,9 @@ impl ClientApp {
             #[cfg(not(feature = "dev-diagnostics"))]
             {
                 let _ = (&window, on_connection);
-                renderer.render(&quads, &ui_rects, &ui_text, |_| Vec::new())
+                renderer.render(&quads, &ui_textured_rects, &ui_rects, &ui_text, |_| {
+                    Vec::new()
+                })
             }
         };
 
@@ -4116,6 +4142,14 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let receives = true;
                 if self.lifecycle.gameplay_actions_allowed() && receives {
+                    if self.proof_panel_mode.apply_key(
+                        event.physical_key,
+                        event.state,
+                        event.repeat,
+                    ) {
+                        window.request_redraw();
+                        return;
+                    }
                     let dialogue_navigation = event.state == ElementState::Pressed
                         && !event.repeat
                         && self.dialogue_runtime.choices(&self.registry).is_some()

@@ -31,6 +31,7 @@ mod renderer;
 mod replica;
 mod skeleton_debug;
 mod speech_bubble;
+mod ui_panel;
 mod ui_runtime;
 
 use tracing_subscriber::EnvFilter;

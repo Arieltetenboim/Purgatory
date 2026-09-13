@@ -781,7 +781,7 @@ impl Renderer {
         );
 
         let text = super::text::TextRenderer::new(&device, config.format)?;
-        let ui = super::ui::UiRenderer::new(&device, config.format);
+        let ui = super::ui::UiRenderer::new(&device, config.format, &sprite_bind_group_layout);
         Ok(Self {
             text,
             ui,
@@ -979,6 +979,7 @@ impl Renderer {
     pub fn render(
         &mut self,
         world_quads: &[DrawQuad],
+        ui_textured_rects: &[super::ui::UiTexturedRect],
         ui_rects: &[super::ui::UiRect],
         ui_text: &[super::text::TextBlock],
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
@@ -991,7 +992,13 @@ impl Renderer {
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                let status = self.draw_surface_texture(texture, ui_rects, ui_text, overlay);
+                let status = self.draw_surface_texture(
+                    texture,
+                    ui_textured_rects,
+                    ui_rects,
+                    ui_text,
+                    overlay,
+                );
                 return match status {
                     FrameStatus::Drawn => FrameStatus::NeedsReconfigure,
                     other => other,
@@ -1011,12 +1018,19 @@ impl Renderer {
             }
         };
 
-        self.draw_surface_texture(surface_texture, ui_rects, ui_text, overlay)
+        self.draw_surface_texture(
+            surface_texture,
+            ui_textured_rects,
+            ui_rects,
+            ui_text,
+            overlay,
+        )
     }
 
     fn draw_surface_texture(
         &mut self,
         surface_texture: wgpu::SurfaceTexture,
+        ui_textured_rects: &[super::ui::UiTexturedRect],
         ui_rects: &[super::ui::UiRect],
         ui_text: &[super::text::TextBlock],
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
@@ -1136,8 +1150,16 @@ impl Renderer {
         self.ui.prepare(
             &self.queue,
             ui_rects,
+            ui_textured_rects,
             [self.config.width, self.config.height],
         );
+        let sprite_textures = &self.sprite_textures;
+        self.ui.draw_textured(&mut encoder, &view, |texture| {
+            sprite_textures
+                .iter()
+                .find(|sprite| sprite.id == texture)
+                .map(|sprite| &sprite.ui_bind_group)
+        });
         self.ui.draw(&mut encoder, &view);
         if !ui_text.is_empty() {
             self.text.prepare_blocks(
@@ -1395,7 +1417,9 @@ struct SpriteTextureGpu {
     id: SpriteTextureId,
     _texture: wgpu::Texture,
     _sampler: wgpu::Sampler,
+    _ui_sampler: wgpu::Sampler,
     bind_group: wgpu::BindGroup,
+    ui_bind_group: wgpu::BindGroup,
 }
 
 fn create_sprite_texture(
@@ -1449,6 +1473,16 @@ fn create_sprite_texture(
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
+    let ui_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("purgatory-sprite-ui-linear"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("purgatory-sprite-bg"),
         layout,
@@ -1463,11 +1497,27 @@ fn create_sprite_texture(
             },
         ],
     });
+    let ui_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("purgatory-sprite-ui-bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&ui_sampler),
+            },
+        ],
+    });
     Ok(SpriteTextureGpu {
         id,
         _texture: texture,
         _sampler: sampler,
+        _ui_sampler: ui_sampler,
         bind_group,
+        ui_bind_group,
     })
 }
 

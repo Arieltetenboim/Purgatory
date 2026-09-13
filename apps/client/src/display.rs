@@ -346,7 +346,7 @@ pub fn classify_framebuffer_resize(
     }
 }
 
-/// egui `pixels_per_point` = OS scale factor × user UI scale.
+/// UI pixels per logical presentation unit = OS scale factor × user UI scale.
 #[must_use]
 pub fn effective_pixels_per_point(os_scale_factor: f32, ui_scale: UiScale) -> f32 {
     let ppp = os_scale_factor * ui_scale.get();
