@@ -9,6 +9,7 @@ use crate::domain::ContentDomain;
 use crate::equipment::{EquipmentDefinition, EquipmentPresentation};
 use crate::error::{ContentError, ValidationIssue};
 use crate::item::ItemDefinition;
+use crate::monster::{MonsterDefinition, validate_monster_definition};
 use crate::schema::{EntityDefinition, MapDefinition, Placement, RestorePolicy};
 use purgatory_common::{ContentId, MAP_FOOTNOTE_AUTHORED, MapId};
 use purgatory_simulation::AbilityDefinition;
@@ -24,6 +25,7 @@ pub struct ContentRegistry {
     equipment: BTreeMap<String, EquipmentDefinition>,
     equipment_presentation: BTreeMap<String, EquipmentPresentation>,
     abilities: BTreeMap<String, AbilityDefinition>,
+    monsters: BTreeMap<String, MonsterDefinition>,
     npc_dialogues: BTreeMap<String, NpcDialogueDefinition>,
     npc_dialogue_presentations: BTreeMap<String, NpcDialoguePresentation>,
     map_id_by_content: HashMap<ContentId, MapId>,
@@ -43,6 +45,7 @@ impl ContentRegistry {
             + self.items.len()
             + self.equipment.len()
             + self.abilities.len()
+            + self.monsters.len()
             + self.npc_dialogues.len()
     }
 
@@ -70,6 +73,26 @@ impl ContentRegistry {
     pub fn ability_by_id(&self, id: ContentId) -> Option<&AbilityDefinition> {
         let authored = self.labels.get(&id)?;
         self.abilities.get(authored)
+    }
+
+    #[must_use]
+    pub fn monster_count(&self) -> usize {
+        self.monsters.len()
+    }
+
+    #[must_use]
+    pub fn monster(&self, authored: &str) -> Option<&MonsterDefinition> {
+        self.monsters.get(authored)
+    }
+
+    #[must_use]
+    pub fn monster_by_id(&self, id: ContentId) -> Option<&MonsterDefinition> {
+        let authored = self.labels.get(&id)?;
+        self.monsters.get(authored)
+    }
+
+    pub fn iter_monsters(&self) -> impl Iterator<Item = &MonsterDefinition> {
+        self.monsters.values()
     }
 
     #[must_use]
@@ -320,6 +343,22 @@ impl ContentRegistry {
         }
         self.intern(&authored, def.id, "ability")?;
         self.abilities.insert(authored, def);
+        Ok(())
+    }
+
+    pub(crate) fn insert_monster(&mut self, def: MonsterDefinition) -> Result<(), ContentError> {
+        if self.entities.contains_key(&def.authored_id)
+            || self.maps.contains_key(&def.authored_id)
+            || self.items.contains_key(&def.authored_id)
+            || self.equipment.contains_key(&def.authored_id)
+            || self.abilities.contains_key(&def.authored_id)
+            || self.monsters.contains_key(&def.authored_id)
+        {
+            return Err(duplicate(&def.authored_id, "monster"));
+        }
+        validate_monster_definition(&def)?;
+        self.intern(&def.authored_id, def.content_id, "monster")?;
+        self.monsters.insert(def.authored_id.clone(), def);
         Ok(())
     }
 

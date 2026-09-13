@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "monster.slime.red",
+  "debug_name": "Red Slime",
+  "health_max": 20.0,
+  "half_extents": [0.4, 0.6],
+  "movement_speed": 2.0,
+  "behavior": {
+    "kind": "chase_contact",
+    "acquisition_radius": 3.0,
+    "home_leash_radius": 3.0
+  }
+}

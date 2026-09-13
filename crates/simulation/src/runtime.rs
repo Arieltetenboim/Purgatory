@@ -1325,6 +1325,7 @@ impl World {
         let type_token = npc.type_token;
         let seed = npc.rng_state;
         let runtime_config = npc.runtime_config;
+        let content_id = self.content_id_of(id);
         let address = self.address_of(id).unwrap_or(WorldAddress::DEV);
         let _ = self.set_npc(id, npc);
         self.runtime_stats.deaths_total = self.runtime_stats.deaths_total.saturating_add(1);
@@ -1342,7 +1343,7 @@ impl World {
         let despawn_due = self.tick.saturating_add_ticks(delay);
         let _ = self.schedule_despawn(id, despawn_due, WorkLane::Deferred);
         let respawn_due = self.tick.saturating_add_ticks(delay.saturating_add(1));
-        let req = Self::npc_spawn_request_with_runtime_config(
+        let mut req = Self::npc_spawn_request_with_runtime_config(
             address,
             home,
             type_token,
@@ -1353,6 +1354,9 @@ impl World {
             health_max,
             runtime_config,
         );
+        if let Some(content_id) = content_id {
+            req = req.with_content(content_id);
+        }
         if self
             .schedule_spawn(req, respawn_due, ScheduleOwner::World, WorkLane::Deferred)
             .is_some()
