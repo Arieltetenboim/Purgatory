@@ -16,5 +16,6 @@
   },
   "height_units": 26.0,
   "font_size_units": 12.0,
-  "horizontal_text_padding_units": 4.0
+  "horizontal_text_padding_units": 4.0,
+  "gap_units": 1.0
 }

@@ -32,7 +32,12 @@ const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 8.0;
 const INVENTORY_FOOTER_RESERVED_UNITS: f32 = 28.0;
+const INVENTORY_CURRENCY_VERTICAL_INSET_UNITS: f32 = 4.0;
+const CURRENCY_FONT_SIZE_UNITS: f32 = 11.0;
+const TAB_EMBOLDEN_OFFSET_UNITS: f32 = 0.35;
 const TAB_TEXT_COLOR: [f32; 4] = [0.03, 0.045, 0.07, 1.0];
+const GOLD_TEXT_COLOR: [f32; 4] = [0.48, 0.3, 0.035, 1.0];
+const SILVER_TEXT_COLOR: [f32; 4] = [0.2, 0.27, 0.36, 1.0];
 const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Cons.", "Mats", "Tools", "Misc"];
 const INVENTORY_SLOT_COLUMNS: usize = 5;
 const INVENTORY_SLOT_ROWS: usize = 7;
@@ -199,6 +204,7 @@ struct UiTabMetadata {
     height_units: f32,
     font_size_units: f32,
     horizontal_text_padding_units: f32,
+    gap_units: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,6 +253,7 @@ pub(crate) struct UiTabAssets {
     height_units: f32,
     font_size_units: f32,
     horizontal_text_padding_units: f32,
+    gap_units: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -480,6 +487,7 @@ impl UiTabAssets {
             height_units: metadata.height_units,
             font_size_units: metadata.font_size_units,
             horizontal_text_padding_units: metadata.horizontal_text_padding_units,
+            gap_units: metadata.gap_units,
         })
     }
 
@@ -496,9 +504,15 @@ impl UiTabAssets {
             return Err("UI tabs require at least one label".to_string());
         }
         let mut textured_rects = Vec::with_capacity(labels.len() * 3);
-        let mut texts = Vec::with_capacity(labels.len());
+        let mut texts = Vec::with_capacity(labels.len() * 2);
+        let mut emboldened_texts = Vec::with_capacity(labels.len());
         for (index, label) in labels.iter().enumerate() {
-            let hit_rect = tab_rect(bounds, index, labels.len());
+            let hit_rect = tab_rect(
+                bounds,
+                index,
+                labels.len(),
+                self.gap_units * pixels_per_unit,
+            );
             let hovered = cursor.is_some_and(|cursor| hit_rect.contains(cursor));
             let pressed = hovered && tabs.pressed_index == Some(index);
             let selected = tabs.selected_index() == index;
@@ -528,28 +542,49 @@ impl UiTabAssets {
             )?);
 
             let font_size = self.font_size_units * pixels_per_unit;
-            texts.push(TextBlock {
-                content: TextContent((*label).to_string()),
-                style: TextStyle {
-                    font_size,
-                    color: TAB_TEXT_COLOR,
-                    alignment: TextAlignment::Center,
-                },
-                anchor: [
-                    (draw_rect.min[0] + draw_rect.max[0]) * 0.5,
-                    draw_rect.min[1] + ((draw_rect.height() - font_size) * 0.5).max(0.0),
-                ],
-                max_width: Some(
-                    (draw_rect.width()
-                        - self.horizontal_text_padding_units * 2.0 * pixels_per_unit)
-                        .max(1.0),
-                ),
-            });
+            let center_x = (draw_rect.min[0] + draw_rect.max[0]) * 0.5;
+            let anchor_y = draw_rect.min[1] + ((draw_rect.height() - font_size) * 0.5).max(0.0);
+            let max_width = Some(
+                (draw_rect.width() - self.horizontal_text_padding_units * 2.0 * pixels_per_unit)
+                    .max(1.0),
+            );
+            let embolden_offset = TAB_EMBOLDEN_OFFSET_UNITS * pixels_per_unit;
+            texts.push(tab_text_block(
+                label,
+                font_size,
+                [center_x - embolden_offset, anchor_y],
+                max_width,
+            ));
+            emboldened_texts.push(tab_text_block(
+                label,
+                font_size,
+                [center_x + embolden_offset, anchor_y],
+                max_width,
+            ));
         }
+        texts.extend(emboldened_texts);
         Ok(UiTabsFrame {
             textured_rects,
             texts,
         })
+    }
+}
+
+fn tab_text_block(
+    label: &str,
+    font_size: f32,
+    anchor: [f32; 2],
+    max_width: Option<f32>,
+) -> TextBlock {
+    TextBlock {
+        content: TextContent(label.to_string()),
+        style: TextStyle {
+            font_size,
+            color: TAB_TEXT_COLOR,
+            alignment: TextAlignment::Center,
+        },
+        anchor,
+        max_width,
     }
 }
 
@@ -627,17 +662,24 @@ impl UiTabs {
         cursor: Option<[f32; 2]>,
         bounds: ScreenRect,
         tab_count: usize,
+        gap: f32,
     ) -> bool {
+        if !finite_non_negative(gap) {
+            self.pressed_index = None;
+            return false;
+        }
         match state {
             ElementState::Pressed => {
-                self.pressed_index = cursor.and_then(|cursor| tab_at(bounds, tab_count, cursor));
+                self.pressed_index =
+                    cursor.and_then(|cursor| tab_at(bounds, tab_count, gap, cursor));
                 self.pressed_index.is_some()
             }
             ElementState::Released => {
                 let Some(pressed) = self.pressed_index.take() else {
                     return false;
                 };
-                if cursor.and_then(|cursor| tab_at(bounds, tab_count, cursor)) == Some(pressed) {
+                if cursor.and_then(|cursor| tab_at(bounds, tab_count, gap, cursor)) == Some(pressed)
+                {
                     self.selected_index = pressed;
                 }
                 true
@@ -653,6 +695,49 @@ impl UiTabs {
 pub(crate) struct UiTabsFrame {
     pub(crate) textured_rects: Vec<UiTexturedRect>,
     pub(crate) texts: Vec<TextBlock>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct UiCurrencyDisplay {
+    gold: u64,
+    silver: u64,
+}
+
+impl UiCurrencyDisplay {
+    fn frame(self, bounds: ScreenRect, pixels_per_unit: f32) -> Result<Vec<TextBlock>, String> {
+        validate_pixels_per_unit(pixels_per_unit)?;
+        if !bounds.min.into_iter().chain(bounds.max).all(f32::is_finite)
+            || bounds.width() <= 0.0
+            || bounds.height() < CURRENCY_FONT_SIZE_UNITS * pixels_per_unit
+        {
+            return Err("inventory currency bounds are too small".to_string());
+        }
+        let font_size = CURRENCY_FONT_SIZE_UNITS * pixels_per_unit;
+        let anchor_y = bounds.min[1] + ((bounds.height() - font_size) * 0.5).max(0.0);
+        let column_width = bounds.width() * 0.5;
+        Ok(vec![
+            TextBlock {
+                content: TextContent(format!("Gold: {}", self.gold)),
+                style: TextStyle {
+                    font_size,
+                    color: GOLD_TEXT_COLOR,
+                    alignment: TextAlignment::Center,
+                },
+                anchor: [bounds.min[0] + column_width * 0.5, anchor_y],
+                max_width: Some(column_width),
+            },
+            TextBlock {
+                content: TextContent(format!("Silver: {}", self.silver)),
+                style: TextStyle {
+                    font_size,
+                    color: SILVER_TEXT_COLOR,
+                    alignment: TextAlignment::Center,
+                },
+                anchor: [bounds.min[0] + column_width * 1.5, anchor_y],
+                max_width: Some(column_width),
+            },
+        ])
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -700,6 +785,7 @@ pub(crate) struct InventoryWindow {
     chrome: ProofPanelWindow,
     tabs: UiTabs,
     slots: UiSlotGrid,
+    currency: UiCurrencyDisplay,
 }
 
 impl Default for InventoryWindow {
@@ -712,6 +798,7 @@ impl Default for InventoryWindow {
                 INVENTORY_SLOT_ROWS,
                 INVENTORY_SLOT_GAP_UNITS,
             ),
+            currency: UiCurrencyDisplay::default(),
         }
     }
 }
@@ -769,12 +856,22 @@ impl InventoryWindow {
             pixels_per_unit,
         )?;
         let slot_rects = slot_assets.frame(self.slots, slot_origin, pixels_per_unit)?;
+        let currency_bounds = inventory_currency_bounds(
+            window_assets,
+            slot_assets,
+            self.slots,
+            layout,
+            slot_origin,
+            pixels_per_unit,
+        )?;
+        let currency_texts = self.currency.frame(currency_bounds, pixels_per_unit)?;
         let mut textured_rects = window_frame.textured_rects;
         textured_rects.extend(tab_frame.textured_rects);
         textured_rects.extend(slot_rects);
-        let mut texts = Vec::with_capacity(1 + tab_frame.texts.len());
+        let mut texts = Vec::with_capacity(1 + tab_frame.texts.len() + currency_texts.len());
         texts.push(window_frame.title);
         texts.extend(tab_frame.texts);
+        texts.extend(currency_texts);
         Ok(Some(InventoryWindowFrame {
             textured_rects,
             texts,
@@ -806,9 +903,13 @@ impl InventoryWindow {
         };
         if let Ok(tab_bounds) =
             inventory_tab_bounds(window_assets, tab_assets, layout, pixels_per_unit)
-            && self
-                .tabs
-                .apply_pointer_button(state, cursor, tab_bounds, INVENTORY_TAB_LABELS.len())
+            && self.tabs.apply_pointer_button(
+                state,
+                cursor,
+                tab_bounds,
+                INVENTORY_TAB_LABELS.len(),
+                tab_assets.gap_units * pixels_per_unit,
+            )
         {
             return true;
         }
@@ -820,6 +921,35 @@ impl InventoryWindow {
         self.chrome.cancel_pointer_interaction();
         self.tabs.cancel_pointer_interaction();
     }
+}
+
+fn inventory_currency_bounds(
+    window_assets: UiWindowAssets,
+    slot_assets: UiSlotAssets,
+    grid: UiSlotGrid,
+    layout: UiWindowLayout,
+    slot_origin: [f32; 2],
+    pixels_per_unit: f32,
+) -> Result<ScreenRect, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let grid_size = grid.logical_size(slot_assets)?;
+    let inset = INVENTORY_CURRENCY_VERTICAL_INSET_UNITS * pixels_per_unit;
+    let bounds = ScreenRect {
+        min: [
+            layout.window.min[0] + window_assets.panel.border_units.left * pixels_per_unit,
+            slot_origin[1] + grid_size[1] * pixels_per_unit + inset,
+        ],
+        max: [
+            layout.window.max[0] - window_assets.panel.border_units.right * pixels_per_unit,
+            layout.window.max[1]
+                - window_assets.panel.border_units.bottom * pixels_per_unit
+                - inset,
+        ],
+    };
+    if bounds.width() <= 0.0 || bounds.height() < CURRENCY_FONT_SIZE_UNITS * pixels_per_unit {
+        return Err("inventory window is too small for its currency row".to_string());
+    }
+    Ok(bounds)
 }
 
 pub(crate) struct InventoryWindowFrame {
@@ -845,10 +975,12 @@ fn inventory_tab_bounds(
             min_y + tab_assets.height_units * pixels_per_unit,
         ],
     };
-    if bounds.width()
-        <= (tab_assets.cap_units.left + tab_assets.cap_units.right)
-            * INVENTORY_TAB_LABELS.len() as f32
-            * pixels_per_unit
+    let tab_count = INVENTORY_TAB_LABELS.len();
+    let minimum_width = ((tab_assets.cap_units.left + tab_assets.cap_units.right)
+        * tab_count as f32
+        + tab_assets.gap_units * tab_count.saturating_sub(1) as f32)
+        * pixels_per_unit;
+    if bounds.width() <= minimum_width
         || bounds.max[1]
             >= layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit
     {
@@ -891,27 +1023,27 @@ fn inventory_slot_origin(
     Ok(origin)
 }
 
-fn tab_rect(bounds: ScreenRect, index: usize, count: usize) -> ScreenRect {
-    let width = bounds.width() / count as f32;
+fn tab_rect(bounds: ScreenRect, index: usize, count: usize, gap: f32) -> ScreenRect {
+    let width = (bounds.width() - gap * count.saturating_sub(1) as f32) / count as f32;
+    let min_x = bounds.min[0] + index as f32 * (width + gap);
     ScreenRect {
-        min: [bounds.min[0] + index as f32 * width, bounds.min[1]],
+        min: [min_x, bounds.min[1]],
         max: [
             if index + 1 == count {
                 bounds.max[0]
             } else {
-                bounds.min[0] + (index + 1) as f32 * width
+                min_x + width
             },
             bounds.max[1],
         ],
     }
 }
 
-fn tab_at(bounds: ScreenRect, count: usize, cursor: [f32; 2]) -> Option<usize> {
+fn tab_at(bounds: ScreenRect, count: usize, gap: f32, cursor: [f32; 2]) -> Option<usize> {
     if count == 0 || !bounds.contains(cursor) {
         return None;
     }
-    let index = ((cursor[0] - bounds.min[0]) / (bounds.width() / count as f32)).floor();
-    Some((index as usize).min(count - 1))
+    (0..count).find(|&index| tab_rect(bounds, index, count, gap).contains(cursor))
 }
 
 fn register_metadata_texture(
@@ -1069,6 +1201,7 @@ fn validate_tab_metadata(metadata: &UiTabMetadata, source_size_px: [u32; 2]) -> 
     .into_iter()
     .all(finite_positive)
         || !finite_non_negative(metadata.horizontal_text_padding_units)
+        || !finite_non_negative(metadata.gap_units)
     {
         return Err(format!(
             "UI tab {} units must be finite with positive caps/height/font and non-negative padding",
@@ -1555,6 +1688,7 @@ mod tests {
         assert_eq!(assets.slice_px.left, 96);
         assert_eq!(assets.height_units, 26.0);
         assert_eq!(assets.font_size_units, 12.0);
+        assert_eq!(assets.gap_units, 1.0);
         assert_eq!(runtime.resource_count(), 1);
         assert_eq!(
             runtime
@@ -1596,9 +1730,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(frame.textured_rects.len(), 6);
-        assert_eq!(frame.texts.len(), 2);
+        assert_eq!(frame.texts.len(), 4);
         assert_eq!(frame.texts[0].content.0, "First");
         assert_eq!(frame.texts[1].content.0, "Second");
+        assert_eq!(frame.texts[2].content.0, "First");
+        assert_eq!(frame.texts[3].content.0, "Second");
+        assert!(
+            ((frame.texts[2].anchor[0] - frame.texts[0].anchor[0]) - 0.7).abs()
+                < f32::EPSILON * 32.0
+        );
+        assert_eq!(
+            frame.textured_rects[3].min[0] - frame.textured_rects[2].max[0],
+            1.0
+        );
         assert_eq!(frame.textured_rects[0].uv_min[0], 0.5);
         assert_eq!(frame.textured_rects[3].uv_min[0], 0.0);
     }
@@ -1626,13 +1770,17 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(frame.textured_rects.len(), 63);
-        assert_eq!(frame.texts.len(), 6);
+        assert_eq!(frame.texts.len(), 13);
         assert_eq!(frame.texts[0].content.0, "Item Inventory");
         assert_eq!(frame.texts[1].content.0, "Equip");
         assert_eq!(frame.texts[2].content.0, "Cons.");
         assert_eq!(frame.texts[3].content.0, "Mats");
         assert_eq!(frame.texts[4].content.0, "Tools");
         assert_eq!(frame.texts[5].content.0, "Misc");
+        assert_eq!(frame.texts[6].content.0, "Equip");
+        assert_eq!(frame.texts[10].content.0, "Misc");
+        assert_eq!(frame.texts[11].content.0, "Gold: 0");
+        assert_eq!(frame.texts[12].content.0, "Silver: 0");
 
         let slots = &frame.textured_rects[28..];
         assert_eq!(slots.len(), INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS);
@@ -1646,13 +1794,25 @@ mod tests {
             .unwrap();
         let content_max_y = layout.window.max[1] - window_assets.panel.border_units.bottom;
         assert_eq!(content_max_y - slots.last().unwrap().max[1], 30.0);
+        let currency_bounds = inventory_currency_bounds(
+            window_assets,
+            slot_assets,
+            inventory.slots,
+            layout,
+            slots[0].min,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(currency_bounds.min[1] - slots.last().unwrap().max[1], 4.0);
+        assert_eq!(content_max_y - currency_bounds.max[1], 4.0);
 
         let layout = window_assets
             .layout(&mut inventory.chrome, viewport(), 1.0)
             .unwrap()
             .unwrap();
         let bounds = inventory_tab_bounds(window_assets, tab_assets, layout, 1.0).unwrap();
-        let materials = tab_rect(bounds, 2, INVENTORY_TAB_LABELS.len());
+        let tab_gap = tab_assets.gap_units;
+        let materials = tab_rect(bounds, 2, INVENTORY_TAB_LABELS.len(), tab_gap);
         let cursor = [
             (materials.min[0] + materials.max[0]) * 0.5,
             (materials.min[1] + materials.max[1]) * 0.5,
@@ -1674,6 +1834,49 @@ mod tests {
             1.0
         ));
         assert_eq!(inventory.tabs.selected_index, 2);
+
+        let equip = tab_rect(bounds, 0, INVENTORY_TAB_LABELS.len(), tab_gap);
+        let consumables = tab_rect(bounds, 1, INVENTORY_TAB_LABELS.len(), tab_gap);
+        let gap_cursor = [
+            (equip.max[0] + consumables.min[0]) * 0.5,
+            (bounds.min[1] + bounds.max[1]) * 0.5,
+        ];
+        assert_eq!(
+            tab_at(bounds, INVENTORY_TAB_LABELS.len(), tab_gap, gap_cursor),
+            None
+        );
+        assert!(inventory.apply_pointer_button(
+            window_assets,
+            tab_assets,
+            ElementState::Pressed,
+            Some(gap_cursor),
+            viewport(),
+            1.0
+        ));
+        assert_eq!(inventory.tabs.pressed_index, None);
+        assert_eq!(inventory.tabs.selected_index, 2);
+    }
+
+    #[test]
+    fn currency_display_formats_runtime_gold_and_silver_values() {
+        let texts = UiCurrencyDisplay {
+            gold: 12,
+            silver: 34,
+        }
+        .frame(
+            ScreenRect {
+                min: [10.0, 20.0],
+                max: [210.0, 42.0],
+            },
+            1.0,
+        )
+        .unwrap();
+
+        assert_eq!(texts.len(), 2);
+        assert_eq!(texts[0].content.0, "Gold: 12");
+        assert_eq!(texts[1].content.0, "Silver: 34");
+        assert_eq!(texts[0].anchor[0], 60.0);
+        assert_eq!(texts[1].anchor[0], 160.0);
     }
 
     #[test]
