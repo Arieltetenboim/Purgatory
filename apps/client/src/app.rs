@@ -81,18 +81,16 @@ use crate::prediction::{LocalPrediction, local_presentation_pose};
 #[cfg(feature = "dev-diagnostics")]
 use crate::renderer::rf_diag::{RfVertexProof, rf_probe_proof, rf_scene_quads};
 use crate::renderer::{
-    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, Renderer, TextBlock, UiRect,
-    constrained_pixel_viewport, parallax_quads,
+    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, PixelViewport, Renderer,
+    TextBlock, UiRect, constrained_pixel_viewport, parallax_quads,
 };
 #[cfg(feature = "dev-diagnostics")]
-use crate::renderer::{
-    PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, PixelViewport, parallax_debug_quads,
-};
+use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_quads};
 #[cfg(feature = "dev-diagnostics")]
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
-use crate::ui_panel::{ProofPanelMode, UiPanelAsset};
+use crate::ui_panel::{ProofPanelWindow, UiWindowAssets};
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -198,8 +196,8 @@ struct ClientApp {
     #[cfg(feature = "dev-diagnostics")]
     impairment_seed: u64,
     ui_runtime: UIRuntimeState,
-    ui_panel_asset: UiPanelAsset,
-    proof_panel_mode: ProofPanelMode,
+    ui_window_assets: UiWindowAssets,
+    proof_panel_window: ProofPanelWindow,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
     speech_bubble_hit: Option<crate::renderer::UiRect>,
@@ -276,8 +274,8 @@ impl ClientApp {
                 .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
         let npc_sheet = SpriteSheet::red_slime(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY red slime sprite error: {error}"))?;
-        let ui_panel_asset = UiPanelAsset::load_embedded(&mut asset_runtime)
-            .map_err(|error| format!("PURGATORY UI panel asset error: {error}"))?;
+        let ui_window_assets = UiWindowAssets::load_embedded(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI window asset error: {error}"))?;
         Ok(Self {
             window: None,
             renderer: None,
@@ -313,8 +311,8 @@ impl ClientApp {
             #[cfg(feature = "dev-diagnostics")]
             impairment_seed: NetworkImpairmentConfig::from_env().seed,
             ui_runtime: UIRuntimeState::Idle,
-            ui_panel_asset,
-            proof_panel_mode: ProofPanelMode::Hidden,
+            ui_window_assets,
+            proof_panel_window: ProofPanelWindow::default(),
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
             speech_bubble_hit: None,
@@ -535,6 +533,7 @@ impl ClientApp {
         self.last_input = PlayerInput::idle();
         self.intent.reset();
         self.ui_runtime = UIRuntimeState::Idle;
+        self.proof_panel_window.cancel_pointer_interaction();
         self.dialogue_runtime.clear();
         self.speech_bubble_hit = None;
         self.choice_bubble_hits.clear();
@@ -2002,6 +2001,18 @@ impl ClientApp {
         }
     }
 
+    fn production_ui_metrics(&self) -> Option<(PixelViewport, f32)> {
+        let renderer = self.renderer.as_ref()?;
+        let window = self.window.as_ref()?;
+        let (width, height) = renderer.surface_size();
+        let viewport = constrained_pixel_viewport(width, height)?;
+        let pixels_per_unit = effective_pixels_per_point(
+            window.scale_factor() as f32,
+            self.display.settings().ui_scale,
+        );
+        Some((viewport, pixels_per_unit))
+    }
+
     fn flush_display_requests(&mut self) {
         let Some(window) = self.window.clone() else {
             return;
@@ -2493,21 +2504,23 @@ impl ClientApp {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let ui_textured_rects = if on_connection {
-            Vec::new()
-        } else {
-            viewport
-                .map(|viewport| {
-                    let pixels_per_unit = effective_pixels_per_point(
-                        window.scale_factor() as f32,
-                        self.display.settings().ui_scale,
-                    );
-                    self.ui_panel_asset
-                        .proof_regions(self.proof_panel_mode, viewport, pixels_per_unit)
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default()
-        };
+        let mut ui_textured_rects = Vec::new();
+        if !on_connection && let Some(viewport) = viewport {
+            let pixels_per_unit = effective_pixels_per_point(
+                window.scale_factor() as f32,
+                self.display.settings().ui_scale,
+            );
+            if let Ok(Some(frame)) = self.ui_window_assets.proof_frame(
+                &mut self.proof_panel_window,
+                "Panel",
+                viewport,
+                pixels_per_unit,
+                self.cursor_position,
+            ) {
+                ui_textured_rects = frame.textured_rects;
+                ui_text.push(frame.title);
+            }
+        }
         #[cfg(feature = "dev-diagnostics")]
         let demand = self.diagnostics_demand();
         #[cfg(feature = "dev-diagnostics")]
@@ -4142,7 +4155,7 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let receives = true;
                 if self.lifecycle.gameplay_actions_allowed() && receives {
-                    if self.proof_panel_mode.apply_key(
+                    if self.proof_panel_window.apply_key(
                         event.physical_key,
                         event.state,
                         event.repeat,
@@ -4177,6 +4190,7 @@ impl ApplicationHandler for ClientApp {
                     // Clear held input and push Neutral immediately.
                     self.actions.release_on_focus_loss();
                     self.on_focus_loss_input();
+                    self.proof_panel_window.cancel_pointer_interaction();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -4188,8 +4202,20 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let gameplay_mouse = true;
                 if self.lifecycle.gameplay_actions_allowed() && gameplay_mouse {
-                    self.cursor_position = Some([position.x as f32, position.y as f32]);
+                    let cursor = [position.x as f32, position.y as f32];
+                    self.cursor_position = Some(cursor);
+                    if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
+                        && self
+                            .proof_panel_window
+                            .pointer_moved(cursor, viewport, pixels_per_unit)
+                    {
+                        window.request_redraw();
+                    }
                 }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor_position = None;
+                window.request_redraw();
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 #[cfg(feature = "dev-diagnostics")]
@@ -4199,12 +4225,33 @@ impl ApplicationHandler for ClientApp {
                 );
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let gameplay_mouse = true;
+                if (!self.lifecycle.gameplay_actions_allowed() || !gameplay_mouse)
+                    && button == MouseButton::Left
+                {
+                    self.proof_panel_window.cancel_pointer_interaction();
+                }
                 if self.lifecycle.gameplay_actions_allowed()
                     && gameplay_mouse
-                    && state == ElementState::Pressed
                     && button == MouseButton::Left
-                    && let Some(cursor) = self.cursor_position
                 {
+                    if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
+                        && self.proof_panel_window.apply_pointer_button(
+                            self.ui_window_assets,
+                            state,
+                            self.cursor_position,
+                            viewport,
+                            pixels_per_unit,
+                        )
+                    {
+                        window.request_redraw();
+                        return;
+                    }
+                    if state != ElementState::Pressed {
+                        return;
+                    }
+                    let Some(cursor) = self.cursor_position else {
+                        return;
+                    };
                     if let Some(index) = self
                         .choice_bubble_hits
                         .iter()

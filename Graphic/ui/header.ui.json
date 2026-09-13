@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "ui.header.blue",
+  "texture": "header2.png",
+  "slice_px": {
+    "left": 140,
+    "right": 140
+  },
+  "cap_units": {
+    "left": 28.0,
+    "right": 28.0
+  },
+  "height_units": 30.0,
+  "inset_units": {
+    "left": 6.0,
+    "right": 6.0,
+    "top": 6.0
+  }
+}

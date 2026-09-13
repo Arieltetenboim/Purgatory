@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "ui.button.close",
+  "texture": "BTN_quit.png",
+  "states": {
+    "normal": { "x": 0, "y": 0, "width": 500, "height": 500 },
+    "hover": { "x": 500, "y": 0, "width": 500, "height": 500 },
+    "pressed": { "x": 1000, "y": 0, "width": 500, "height": 500 }
+  },
+  "size_units": [24.0, 24.0],
+  "right_inset_units": 5.0
+}
