@@ -25,11 +25,11 @@ const TAB_TEXTURE_FILE: &str = "inventory_tab.png";
 const SLOT_PNG: &[u8] = include_bytes!("../../../Graphic/ui/inventory_slot.png");
 const SLOT_METADATA: &str = include_str!("../../../Graphic/ui/inventory_slot.ui.json");
 const SLOT_TEXTURE_FILE: &str = "inventory_slot.png";
-const NORMAL_SIZE_UNITS: [f32; 2] = [274.0, 440.0];
+const NORMAL_SIZE_UNITS: [f32; 2] = [282.0, 440.0];
 const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 12.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
-const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 19.0;
+const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 23.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_TAB_SEPARATOR_HEIGHT_UNITS: f32 = 2.0;
@@ -1900,10 +1900,10 @@ mod tests {
             .unwrap()
             .unwrap();
         let bounds = inventory_tab_bounds(window_assets, tab_assets, layout, 1.0).unwrap();
-        assert_eq!(layout.window.width(), 274.0);
+        assert_eq!(layout.window.width(), 282.0);
         assert_eq!(bounds.width(), 236.0);
-        assert_eq!(bounds.min[0] - layout.window.min[0], 19.0);
-        assert_eq!(layout.window.max[0] - bounds.max[0], 19.0);
+        assert_eq!(bounds.min[0] - layout.window.min[0], 23.0);
+        assert_eq!(layout.window.max[0] - bounds.max[0], 23.0);
         let background = frame.textured_rects[13];
         let separator = frame.textured_rects[14];
         assert_eq!(background.texture, window_assets.panel.texture);
@@ -2053,7 +2053,7 @@ mod tests {
         assert_eq!(frame.textured_rects.len(), 13);
         assert_eq!(frame.textured_rects[0].size(), [32.0, 32.0]);
         assert_eq!(frame.textured_rects[9].size(), [28.0, 30.0]);
-        assert_eq!(frame.textured_rects[10].size(), [184.0, 30.0]);
+        assert_eq!(frame.textured_rects[10].size(), [192.0, 30.0]);
         assert_eq!(frame.textured_rects[11].size(), [28.0, 30.0]);
         assert_eq!(frame.textured_rects[12].size(), [19.0, 19.0]);
         assert_eq!(frame.textured_rects[12].uv_min, [0.0, 0.0]);
@@ -2091,7 +2091,7 @@ mod tests {
             normal.textured_rects[11].size(),
             double.textured_rects[11].size()
         );
-        assert_eq!(double.textured_rects[10].size(), [458.0, 30.0]);
+        assert_eq!(double.textured_rects[10].size(), [474.0, 30.0]);
     }
 
     #[test]
@@ -2196,7 +2196,7 @@ mod tests {
         assert!(window.pointer_moved([-100.0, 100.0], viewport(), 1.0));
         assert_eq!(window.top_left_units, Some([0.0, 84.0]));
         assert!(window.pointer_moved([2000.0, 1000.0], viewport(), 1.0));
-        assert_eq!(window.top_left_units, Some([1006.0, 280.0]));
+        assert_eq!(window.top_left_units, Some([998.0, 280.0]));
         assert!(window.apply_pointer_button(
             assets,
             ElementState::Released,
