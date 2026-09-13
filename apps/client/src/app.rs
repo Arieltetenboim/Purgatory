@@ -90,7 +90,10 @@ use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
-use crate::ui_panel::{InventoryWindow, UiSlotAssets, UiTabAssets, UiWindowAssets};
+use crate::ui_panel::{
+    InventoryWindow, InventoryWindowFrameInput, UiItemIconAssets, UiSlotAssets, UiTabAssets,
+    UiWindowAssets,
+};
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -199,6 +202,7 @@ struct ClientApp {
     ui_window_assets: UiWindowAssets,
     ui_tab_assets: UiTabAssets,
     ui_slot_assets: UiSlotAssets,
+    ui_item_icon_assets: UiItemIconAssets,
     inventory_window: InventoryWindow,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
@@ -282,6 +286,8 @@ impl ClientApp {
             .map_err(|error| format!("PURGATORY UI tab asset error: {error}"))?;
         let ui_slot_assets = UiSlotAssets::load_embedded(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI slot asset error: {error}"))?;
+        let ui_item_icon_assets = UiItemIconAssets::load_placeholder(&mut asset_runtime, &registry)
+            .map_err(|error| format!("PURGATORY UI item icon error: {error}"))?;
         Ok(Self {
             window: None,
             renderer: None,
@@ -320,6 +326,7 @@ impl ClientApp {
             ui_window_assets,
             ui_tab_assets,
             ui_slot_assets,
+            ui_item_icon_assets,
             inventory_window: InventoryWindow::default(),
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
@@ -2518,14 +2525,17 @@ impl ClientApp {
                 window.scale_factor() as f32,
                 self.display.settings().ui_scale,
             );
-            if let Ok(Some(frame)) = self.inventory_window.frame(
-                self.ui_window_assets,
-                self.ui_tab_assets,
-                self.ui_slot_assets,
+            if let Ok(Some(frame)) = self.inventory_window.frame(InventoryWindowFrameInput {
+                window_assets: self.ui_window_assets,
+                tab_assets: self.ui_tab_assets,
+                slot_assets: self.ui_slot_assets,
+                item_icon_assets: &self.ui_item_icon_assets,
+                entries: &self.lifecycle.view().inventory,
+                registry: &self.registry,
                 viewport,
                 pixels_per_unit,
-                self.cursor_position,
-            ) {
+                cursor: self.cursor_position,
+            }) {
                 ui_textured_rects = frame.textured_rects;
                 ui_text.extend(frame.texts);
             }

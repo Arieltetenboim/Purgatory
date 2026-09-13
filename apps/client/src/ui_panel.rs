@@ -1,10 +1,15 @@
 //! Authored panel/window chrome and the local production-UI proof.
 
+use std::collections::HashMap;
+
+use purgatory_common::ContentId;
+use purgatory_content::{ContentRegistry, ItemCategory};
+use purgatory_protocol::InventoryEntry;
 use serde::Deserialize;
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-use crate::asset_runtime::AssetRuntime;
+use crate::asset_runtime::{AssetRuntime, ResolvedVisual};
 use crate::renderer::{
     PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle,
     UiTexturedRect,
@@ -48,6 +53,19 @@ const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Cons.", "Mats", "Tools", "Mis
 const INVENTORY_SLOT_COLUMNS: usize = 5;
 const INVENTORY_SLOT_ROWS: usize = 7;
 const INVENTORY_SLOT_GAP_UNITS: f32 = 2.0;
+const INVENTORY_ICON_INSET_UNITS: f32 = 4.0;
+const INVENTORY_QUANTITY_FONT_SIZE_UNITS: f32 = 11.0;
+const INVENTORY_QUANTITY_INSET_UNITS: f32 = 3.0;
+const INVENTORY_QUANTITY_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
+const ITEM_PLACEHOLDER_VISUAL_KEY: &str = "item.placeholder";
+const ITEM_PLACEHOLDER_SIZE_PX: u32 = 32;
+const INVENTORY_TAB_CATEGORIES: [ItemCategory; 5] = [
+    ItemCategory::Equipment,
+    ItemCategory::Consumable,
+    ItemCategory::Material,
+    ItemCategory::Tool,
+    ItemCategory::Misc,
+];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ProofPanelMode {
@@ -266,6 +284,20 @@ pub(crate) struct UiTabAssets {
 pub(crate) struct UiSlotAssets {
     texture: SpriteTextureId,
     size_units: [f32; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct UiItemIconVisual {
+    texture: SpriteTextureId,
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+    dimensions_px: [u32; 2],
+}
+
+#[derive(Debug)]
+pub(crate) struct UiItemIconAssets {
+    fallback: UiItemIconVisual,
+    by_definition: HashMap<ContentId, UiItemIconVisual>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -651,6 +683,97 @@ impl UiSlotAssets {
     }
 }
 
+impl UiItemIconAssets {
+    pub(crate) fn load_placeholder(
+        assets: &mut AssetRuntime,
+        registry: &ContentRegistry,
+    ) -> Result<Self, String> {
+        let texture = assets.register_image(
+            "ui.inventory.item.placeholder",
+            placeholder_item_icon_image(),
+        )?;
+        let resolved = ResolvedVisual {
+            texture,
+            rect_px: [0, 0, ITEM_PLACEHOLDER_SIZE_PX, ITEM_PLACEHOLDER_SIZE_PX],
+            uv: [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+            pivot_px: [0.0, 0.0],
+            dimensions_px: [ITEM_PLACEHOLDER_SIZE_PX, ITEM_PLACEHOLDER_SIZE_PX],
+            pixels_per_unit: 1.0,
+        };
+        assets.register_visual(ITEM_PLACEHOLDER_VISUAL_KEY, resolved)?;
+        let fallback = ui_item_icon_visual(resolved);
+        let mut by_definition = HashMap::new();
+        for presentation in registry.iter_item_presentations() {
+            match assets.visual(&presentation.icon).copied() {
+                Some(visual) => {
+                    by_definition.insert(presentation.content_id, ui_item_icon_visual(visual));
+                }
+                None => eprintln!(
+                    "PURGATORY item icon fallback: definition='{}' missing visual='{}'",
+                    presentation.authored_id, presentation.icon
+                ),
+            }
+        }
+        Ok(Self {
+            fallback,
+            by_definition,
+        })
+    }
+
+    fn resolve(&self, definition: ContentId) -> UiItemIconVisual {
+        self.by_definition
+            .get(&definition)
+            .copied()
+            .unwrap_or(self.fallback)
+    }
+}
+
+fn ui_item_icon_visual(visual: ResolvedVisual) -> UiItemIconVisual {
+    UiItemIconVisual {
+        texture: visual.texture,
+        uv_min: visual.uv[3],
+        uv_max: visual.uv[1],
+        dimensions_px: visual.dimensions_px,
+    }
+}
+
+fn placeholder_item_icon_image() -> image::RgbaImage {
+    let mut image = image::RgbaImage::new(ITEM_PLACEHOLDER_SIZE_PX, ITEM_PLACEHOLDER_SIZE_PX);
+    let center = (ITEM_PLACEHOLDER_SIZE_PX / 2) as i32;
+    for y in 3..ITEM_PLACEHOLDER_SIZE_PX - 3 {
+        for x in 3..ITEM_PLACEHOLDER_SIZE_PX - 3 {
+            let distance = (x as i32 - center).abs() + (y as i32 - center).abs();
+            if distance <= 13 {
+                let color = if distance >= 11 {
+                    image::Rgba([55, 72, 94, 255])
+                } else {
+                    image::Rgba([226, 214, 177, 255])
+                };
+                image.put_pixel(x, y, color);
+            }
+        }
+    }
+    const QUESTION_MARK: [&str; 7] = [
+        "01110", "10001", "00001", "00110", "00100", "00000", "00100",
+    ];
+    for (row, pixels) in QUESTION_MARK.iter().enumerate() {
+        for (column, pixel) in pixels.bytes().enumerate() {
+            if pixel == b'1' {
+                for offset_y in 0..2 {
+                    for offset_x in 0..2 {
+                        image.put_pixel(
+                            11 + column as u32 * 2 + offset_x,
+                            8 + row as u32 * 2 + offset_y,
+                            image::Rgba([38, 48, 64, 255]),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    image
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct UiTabs {
     selected_index: usize,
@@ -809,6 +932,18 @@ impl Default for InventoryWindow {
     }
 }
 
+pub(crate) struct InventoryWindowFrameInput<'a> {
+    pub(crate) window_assets: UiWindowAssets,
+    pub(crate) tab_assets: UiTabAssets,
+    pub(crate) slot_assets: UiSlotAssets,
+    pub(crate) item_icon_assets: &'a UiItemIconAssets,
+    pub(crate) entries: &'a [InventoryEntry],
+    pub(crate) registry: &'a ContentRegistry,
+    pub(crate) viewport: PixelViewport,
+    pub(crate) pixels_per_unit: f32,
+    pub(crate) cursor: Option<[f32; 2]>,
+}
+
 impl InventoryWindow {
     pub(crate) fn apply_key(
         &mut self,
@@ -824,13 +959,19 @@ impl InventoryWindow {
 
     pub(crate) fn frame(
         &mut self,
-        window_assets: UiWindowAssets,
-        tab_assets: UiTabAssets,
-        slot_assets: UiSlotAssets,
-        viewport: PixelViewport,
-        pixels_per_unit: f32,
-        cursor: Option<[f32; 2]>,
+        input: InventoryWindowFrameInput<'_>,
     ) -> Result<Option<InventoryWindowFrame>, String> {
+        let InventoryWindowFrameInput {
+            window_assets,
+            tab_assets,
+            slot_assets,
+            item_icon_assets,
+            entries,
+            registry,
+            viewport,
+            pixels_per_unit,
+            cursor,
+        } = input;
         let Some(layout) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)?
         else {
             return Ok(None);
@@ -862,6 +1003,14 @@ impl InventoryWindow {
             pixels_per_unit,
         )?;
         let slot_rects = slot_assets.frame(self.slots, slot_origin, pixels_per_unit)?;
+        let item_frame = inventory_items_frame(
+            registry,
+            item_icon_assets,
+            entries,
+            INVENTORY_TAB_CATEGORIES[self.tabs.selected_index()],
+            &slot_rects,
+            pixels_per_unit,
+        )?;
         let grid_chrome = inventory_grid_chrome(
             window_assets,
             slot_assets,
@@ -884,10 +1033,14 @@ impl InventoryWindow {
         textured_rects.extend(grid_chrome);
         textured_rects.extend(tab_frame.textured_rects);
         textured_rects.extend(slot_rects);
-        let mut texts = Vec::with_capacity(1 + tab_frame.texts.len() + currency_texts.len());
+        textured_rects.extend(item_frame.textured_rects);
+        let mut texts = Vec::with_capacity(
+            1 + tab_frame.texts.len() + currency_texts.len() + item_frame.texts.len(),
+        );
         texts.push(window_frame.title);
         texts.extend(tab_frame.texts);
         texts.extend(currency_texts);
+        texts.extend(item_frame.texts);
         Ok(Some(InventoryWindowFrame {
             textured_rects,
             texts,
@@ -937,6 +1090,100 @@ impl InventoryWindow {
         self.chrome.cancel_pointer_interaction();
         self.tabs.cancel_pointer_interaction();
     }
+}
+
+struct UiInventoryItemsFrame {
+    textured_rects: Vec<UiTexturedRect>,
+    texts: Vec<TextBlock>,
+}
+
+fn inventory_items_frame(
+    registry: &ContentRegistry,
+    item_icon_assets: &UiItemIconAssets,
+    entries: &[InventoryEntry],
+    category: ItemCategory,
+    slots: &[UiTexturedRect],
+    pixels_per_unit: f32,
+) -> Result<UiInventoryItemsFrame, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let mut visible: Vec<&InventoryEntry> = entries
+        .iter()
+        .filter(|entry| {
+            registry
+                .item_by_id(entry.definition)
+                .map(|definition| definition.category)
+                .unwrap_or(ItemCategory::Misc)
+                == category
+        })
+        .collect();
+    visible.sort_by_key(|entry| entry.slot);
+    visible.truncate(slots.len());
+
+    let mut textured_rects = Vec::with_capacity(visible.len());
+    let mut texts = Vec::new();
+    for (entry, slot) in visible.into_iter().zip(slots.iter().copied()) {
+        let icon = item_icon_assets.resolve(entry.definition);
+        let icon_bounds = fit_item_icon(slot, icon.dimensions_px, pixels_per_unit)?;
+        textured_rects.push(UiTexturedRect {
+            min: icon_bounds.min,
+            max: icon_bounds.max,
+            texture: icon.texture,
+            uv_min: icon.uv_min,
+            uv_max: icon.uv_max,
+            tint: [1.0; 4],
+        });
+        if entry.quantity > 1 {
+            let font_size = INVENTORY_QUANTITY_FONT_SIZE_UNITS * pixels_per_unit;
+            let inset = INVENTORY_QUANTITY_INSET_UNITS * pixels_per_unit;
+            texts.push(TextBlock {
+                content: TextContent(entry.quantity.to_string()),
+                style: TextStyle {
+                    font_size,
+                    color: INVENTORY_QUANTITY_COLOR,
+                    alignment: TextAlignment::Right,
+                },
+                anchor: [slot.max[0] - inset, slot.max[1] - font_size - inset],
+                max_width: Some((slot.max[0] - slot.min[0] - inset * 2.0).max(1.0)),
+            });
+        }
+    }
+    Ok(UiInventoryItemsFrame {
+        textured_rects,
+        texts,
+    })
+}
+
+fn fit_item_icon(
+    slot: UiTexturedRect,
+    dimensions_px: [u32; 2],
+    pixels_per_unit: f32,
+) -> Result<ScreenRect, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    if dimensions_px.contains(&0) {
+        return Err("inventory item icon dimensions must be non-zero".to_string());
+    }
+    let inset = INVENTORY_ICON_INSET_UNITS * pixels_per_unit;
+    let available = [
+        slot.max[0] - slot.min[0] - inset * 2.0,
+        slot.max[1] - slot.min[1] - inset * 2.0,
+    ];
+    if available[0] <= 0.0 || available[1] <= 0.0 {
+        return Err("inventory slot is too small for an item icon".to_string());
+    }
+    let scale =
+        (available[0] / dimensions_px[0] as f32).min(available[1] / dimensions_px[1] as f32);
+    let size = [
+        dimensions_px[0] as f32 * scale,
+        dimensions_px[1] as f32 * scale,
+    ];
+    let min = [
+        slot.min[0] + (slot.max[0] - slot.min[0] - size[0]) * 0.5,
+        slot.min[1] + (slot.max[1] - slot.min[1] - size[1]) * 0.5,
+    ];
+    Ok(ScreenRect {
+        min,
+        max: [min[0] + size[0], min[1] + size[1]],
+    })
 }
 
 fn inventory_grid_chrome(
@@ -1711,6 +1958,18 @@ fn assemble_horizontal_three_slice_region(
 mod tests {
     use super::*;
 
+    fn inventory_registry() -> ContentRegistry {
+        purgatory_content::load_registry(
+            &purgatory_content::default_content_root(),
+            purgatory_content::LoadMode::Shared,
+        )
+        .unwrap()
+    }
+
+    fn placeholder_item_icons(registry: &ContentRegistry) -> UiItemIconAssets {
+        UiItemIconAssets::load_placeholder(&mut AssetRuntime::new(), registry).unwrap()
+    }
+
     fn embedded_assets() -> UiWindowAssets {
         UiWindowAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
     }
@@ -1840,6 +2099,8 @@ mod tests {
         let window_assets = embedded_assets();
         let tab_assets = embedded_tab_assets();
         let slot_assets = embedded_slot_assets();
+        let registry = inventory_registry();
+        let item_icons = placeholder_item_icons(&registry);
         let mut inventory = InventoryWindow::default();
         assert!(inventory.apply_key(
             PhysicalKey::Code(KeyCode::KeyI),
@@ -1847,14 +2108,17 @@ mod tests {
             false
         ));
         let frame = inventory
-            .frame(
+            .frame(InventoryWindowFrameInput {
                 window_assets,
                 tab_assets,
                 slot_assets,
-                viewport(),
-                1.0,
-                None,
-            )
+                item_icon_assets: &item_icons,
+                entries: &[],
+                registry: &registry,
+                viewport: viewport(),
+                pixels_per_unit: 1.0,
+                cursor: None,
+            })
             .unwrap()
             .unwrap();
         assert_eq!(frame.textured_rects.len(), 65);
@@ -1969,6 +2233,111 @@ mod tests {
         ));
         assert_eq!(inventory.tabs.pressed_index, None);
         assert_eq!(inventory.tabs.selected_index, 2);
+    }
+
+    #[test]
+    fn inventory_items_filter_by_tab_and_stack_quantity_overlays_the_first_slot() {
+        let window_assets = embedded_assets();
+        let tab_assets = embedded_tab_assets();
+        let slot_assets = embedded_slot_assets();
+        let registry = inventory_registry();
+        let item_icons = placeholder_item_icons(&registry);
+        let sword = ContentId::from_authored("equipment.debug.practice_sword").unwrap();
+        let potion = ContentId::from_authored("item.debug.small_potion").unwrap();
+        let entries = [
+            InventoryEntry {
+                slot: 9,
+                item_instance_id: purgatory_common::ItemInstanceId::from_raw(2),
+                definition: potion,
+                quantity: 12,
+            },
+            InventoryEntry {
+                slot: 3,
+                item_instance_id: purgatory_common::ItemInstanceId::from_raw(1),
+                definition: sword,
+                quantity: 1,
+            },
+        ];
+        let mut inventory = InventoryWindow::default();
+        assert!(inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+
+        let equip = inventory
+            .frame(InventoryWindowFrameInput {
+                window_assets,
+                tab_assets,
+                slot_assets,
+                item_icon_assets: &item_icons,
+                entries: &entries,
+                registry: &registry,
+                viewport: viewport(),
+                pixels_per_unit: 1.0,
+                cursor: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(equip.textured_rects.len(), 66);
+        assert_eq!(equip.texts.len(), 13);
+        let first_slot = equip.textured_rects[30];
+        let sword_icon = equip.textured_rects[65];
+        assert_eq!(sword_icon.texture, item_icons.resolve(sword).texture);
+        assert_eq!(sword_icon.min[0] - first_slot.min[0], 4.0);
+        assert_eq!(first_slot.max[0] - sword_icon.max[0], 4.0);
+
+        inventory.tabs.selected_index = 1;
+        let consumables = inventory
+            .frame(InventoryWindowFrameInput {
+                window_assets,
+                tab_assets,
+                slot_assets,
+                item_icon_assets: &item_icons,
+                entries: &entries,
+                registry: &registry,
+                viewport: viewport(),
+                pixels_per_unit: 1.0,
+                cursor: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(consumables.textured_rects.len(), 66);
+        assert_eq!(
+            consumables.textured_rects[65].texture,
+            item_icons.resolve(potion).texture
+        );
+        assert_eq!(consumables.texts.len(), 14);
+        assert_eq!(consumables.texts[13].content.0, "12");
+        assert_eq!(consumables.texts[13].style.alignment, TextAlignment::Right);
+    }
+
+    #[test]
+    fn unknown_inventory_definition_uses_placeholder_in_misc() {
+        let registry = inventory_registry();
+        let item_icons = placeholder_item_icons(&registry);
+        let unknown = ContentId::from_authored("item.unknown.client_mismatch").unwrap();
+        let entries = [InventoryEntry {
+            slot: 0,
+            item_instance_id: purgatory_common::ItemInstanceId::from_raw(1),
+            definition: unknown,
+            quantity: 1,
+        }];
+        let slots = embedded_slot_assets()
+            .frame(UiSlotGrid::new(1, 1, 0.0), [10.0, 20.0], 1.0)
+            .unwrap();
+        let frame = inventory_items_frame(
+            &registry,
+            &item_icons,
+            &entries,
+            ItemCategory::Misc,
+            &slots,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(frame.textured_rects.len(), 1);
+        assert_eq!(frame.textured_rects[0].texture, item_icons.fallback.texture);
+        assert!(frame.texts.is_empty());
     }
 
     #[test]

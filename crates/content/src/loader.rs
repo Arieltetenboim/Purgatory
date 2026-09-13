@@ -15,7 +15,10 @@ use crate::equipment::{
     validate_equipment_definition,
 };
 use crate::error::{ContentError, ValidationIssue};
-use crate::item::{ITEM_CONTENT_SCHEMA_VERSION, ItemDefinition, validate_item_definition};
+use crate::item::{
+    ITEM_CONTENT_SCHEMA_VERSION, ITEM_PRESENTATION_SCHEMA_VERSION, ItemCategory, ItemDefinition,
+    ItemPresentation, validate_item_definition, validate_item_presentation,
+};
 use crate::registry::ContentRegistry;
 use crate::schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
@@ -65,6 +68,13 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         &root.join("shared").join("items"),
         ContentDomain::Shared,
         Kind::Item,
+    );
+    load_dir(
+        &mut registry,
+        &mut issues,
+        &root.join("shared").join("item_presentation"),
+        ContentDomain::Shared,
+        Kind::ItemPresentation,
     );
     load_dir(
         &mut registry,
@@ -207,6 +217,7 @@ enum Kind {
     Map,
     Placements,
     Item,
+    ItemPresentation,
     Equipment,
     EquipmentPresentation,
     Ability,
@@ -282,6 +293,11 @@ fn load_file(
             let def = raw.into_def(path, domain)?;
             registry.insert_item(def)
         }
+        Kind::ItemPresentation => {
+            let raw: RawItemPresentation = parse(path, &text)?;
+            let def = raw.into_def(path)?;
+            registry.insert_item_presentation(def)
+        }
         Kind::Equipment => {
             let raw: RawEquipment = parse(path, &text)?;
             let def = raw.into_def(path, domain)?;
@@ -340,6 +356,24 @@ fn check_item_schema(path: &Path, version: u32, def: &str) -> Result<(), Content
             "schema_version",
             format!(
                 "unsupported item schema version {version} (want {ITEM_CONTENT_SCHEMA_VERSION})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn check_item_presentation_schema(
+    path: &Path,
+    version: u32,
+    def: &str,
+) -> Result<(), ContentError> {
+    if version != ITEM_PRESENTATION_SCHEMA_VERSION {
+        return Err(ContentError::from_path(
+            path.to_path_buf(),
+            def,
+            "schema_version",
+            format!(
+                "unsupported item presentation schema version {version} (want {ITEM_PRESENTATION_SCHEMA_VERSION})"
             ),
         ));
     }
@@ -465,7 +499,16 @@ struct RawEquipment {
 struct RawItem {
     schema_version: u32,
     id: String,
+    category: String,
     stack_limit: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawItemPresentation {
+    schema_version: u32,
+    id: String,
+    icon: String,
 }
 
 #[derive(Deserialize)]
@@ -681,13 +724,36 @@ impl RawItem {
     fn into_def(self, path: &Path, domain: ContentDomain) -> Result<ItemDefinition, ContentError> {
         check_item_schema(path, self.schema_version, &self.id)?;
         check_authored(path, &self.id)?;
+        let category = ItemCategory::parse(&self.category).ok_or_else(|| {
+            ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "category",
+                format!("rule=schema: unknown item category '{}'", self.category),
+            )
+        })?;
         let def = ItemDefinition {
             content_id: ContentId::from_authored(&self.id).expect("validated"),
             authored_id: self.id,
             domain,
+            category,
             stack_limit: self.stack_limit,
         };
         validate_item_definition(&def)?;
+        Ok(def)
+    }
+}
+
+impl RawItemPresentation {
+    fn into_def(self, path: &Path) -> Result<ItemPresentation, ContentError> {
+        check_item_presentation_schema(path, self.schema_version, &self.id)?;
+        check_authored(path, &self.id)?;
+        let def = ItemPresentation {
+            content_id: ContentId::from_authored(&self.id).expect("validated"),
+            authored_id: self.id,
+            icon: self.icon,
+        };
+        validate_item_presentation(&def)?;
         Ok(def)
     }
 }
@@ -1486,12 +1552,13 @@ mod tests {
         write_file(
             &tmp.join("shared/items"),
             "item.debug.token.json",
-            r#"{"schema_version":1,"id":"item.debug.token","stack_limit":20}"#,
+            r#"{"schema_version":2,"id":"item.debug.token","category":"consumable","stack_limit":20}"#,
         );
         let registry = load_registry(&tmp, LoadMode::Shared).expect("valid item");
         let id = ContentId::from_authored("item.debug.token").unwrap();
         let item = registry.item_by_id(id).expect("lookup by ContentId");
         assert_eq!(item.authored_id, "item.debug.token");
+        assert_eq!(item.category, ItemCategory::Consumable);
         assert_eq!(item.stack_limit, 20);
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -1503,10 +1570,73 @@ mod tests {
         write_file(
             &tmp.join("shared/items"),
             "item.debug.zero.json",
-            r#"{"schema_version":1,"id":"item.debug.zero","stack_limit":0}"#,
+            r#"{"schema_version":2,"id":"item.debug.zero","category":"misc","stack_limit":0}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("zero stack limit");
         assert!(err.to_string().contains("stack_limit"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unknown_item_category_is_rejected() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-item-category-bad-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/items"),
+            "item.debug.quest.json",
+            r#"{"schema_version":2,"id":"item.debug.quest","category":"quest","stack_limit":1}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("unknown category");
+        assert!(err.to_string().contains("unknown item category 'quest'"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn item_presentation_resolves_by_the_item_content_id() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-item-presentation-ok-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/items"),
+            "item.debug.icon.json",
+            r#"{"schema_version":2,"id":"item.debug.icon","category":"misc","stack_limit":1}"#,
+        );
+        write_file(
+            &tmp.join("shared/item_presentation"),
+            "item.debug.icon.json",
+            r#"{"schema_version":1,"id":"item.debug.icon","icon":"item.placeholder"}"#,
+        );
+        let registry = load_registry(&tmp, LoadMode::Shared).expect("valid presentation");
+        let id = ContentId::from_authored("item.debug.icon").unwrap();
+        assert_eq!(
+            registry.item_presentation_by_id(id).unwrap().icon,
+            "item.placeholder"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn item_presentation_without_item_definition_fails() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-item-presentation-orphan-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/item_presentation"),
+            "item.debug.orphan.json",
+            r#"{"schema_version":1,"id":"item.debug.orphan","icon":"item.placeholder"}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("orphan presentation");
+        assert!(
+            err.to_string()
+                .contains("item presentation has no matching item definition")
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -1529,6 +1659,31 @@ mod tests {
     }
 
     #[test]
+    fn equipment_item_requires_the_equipment_category() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-item-equipment-category-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/items"),
+            "equipment.debug.misc_cap.json",
+            r#"{"schema_version":2,"id":"equipment.debug.misc_cap","category":"misc","stack_limit":1}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.misc_cap.json",
+            r#"{"schema_version":1,"id":"equipment.debug.misc_cap","equipment_slot":"headwear"}"#,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("wrong category");
+        assert!(
+            err.to_string()
+                .contains("equipment item must use category 'equipment'")
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn matching_item_and_equipment_content_is_accepted() {
         let tmp = std::env::temp_dir().join(format!(
             "purgatory-item-equipment-ok-{}",
@@ -1538,7 +1693,7 @@ mod tests {
         write_file(
             &tmp.join("shared/items"),
             "equipment.debug.cap.json",
-            r#"{"schema_version":1,"id":"equipment.debug.cap","stack_limit":1}"#,
+            r#"{"schema_version":2,"id":"equipment.debug.cap","category":"equipment","stack_limit":1}"#,
         );
         write_file(
             &tmp.join("shared/equipment"),

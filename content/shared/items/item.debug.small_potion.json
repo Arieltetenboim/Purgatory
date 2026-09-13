@@ -1,0 +1,6 @@
+{
+  "schema_version": 2,
+  "id": "item.debug.small_potion",
+  "category": "consumable",
+  "stack_limit": 20
+}

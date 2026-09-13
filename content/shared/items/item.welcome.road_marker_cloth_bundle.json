@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "item.welcome.road_marker_cloth_bundle",
+  "category": "misc",
   "stack_limit": 1
 }
