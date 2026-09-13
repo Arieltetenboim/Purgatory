@@ -22,12 +22,12 @@ const CLOSE_BUTTON_TEXTURE_FILE: &str = "BTN_quit.png";
 const TAB_PNG: &[u8] = include_bytes!("../../../Graphic/ui/inventory_tab.png");
 const TAB_METADATA: &str = include_str!("../../../Graphic/ui/inventory_tab.ui.json");
 const TAB_TEXTURE_FILE: &str = "inventory_tab.png";
-const NORMAL_SIZE_UNITS: [f32; 2] = [420.0, 300.0];
+const NORMAL_SIZE_UNITS: [f32; 2] = [300.0, 440.0];
 const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 12.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
-const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Consumables", "Materials", "Tools", "Misc"];
+const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Use", "Mats", "Tools", "Misc"];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ProofPanelMode {
@@ -607,7 +607,7 @@ impl InventoryWindow {
         };
         let Some(window_frame) = window_assets.proof_frame(
             &mut self.chrome,
-            "Inventory",
+            "Item Inventory",
             viewport,
             pixels_per_unit,
             cursor,
@@ -1346,9 +1346,9 @@ mod tests {
     fn embedded_tab_metadata_parses_and_matches_two_state_sheet() {
         let mut runtime = AssetRuntime::new();
         let assets = UiTabAssets::load_embedded(&mut runtime).unwrap();
-        assert_eq!(assets.source_size_px, [2048, 160]);
-        assert_eq!(assets.states.normal.width, 1024);
-        assert_eq!(assets.states.selected.x, 1024);
+        assert_eq!(assets.source_size_px, [1632, 220]);
+        assert_eq!(assets.states.normal.width, 816);
+        assert_eq!(assets.states.selected.x, 816);
         assert_eq!(assets.slice_px.left, 96);
         assert_eq!(runtime.resource_count(), 1);
         assert_eq!(
@@ -1402,8 +1402,10 @@ mod tests {
             .unwrap();
         assert_eq!(frame.textured_rects.len(), 28);
         assert_eq!(frame.texts.len(), 6);
-        assert_eq!(frame.texts[0].content.0, "Inventory");
+        assert_eq!(frame.texts[0].content.0, "Item Inventory");
         assert_eq!(frame.texts[1].content.0, "Equip");
+        assert_eq!(frame.texts[2].content.0, "Use");
+        assert_eq!(frame.texts[3].content.0, "Mats");
         assert_eq!(frame.texts[4].content.0, "Tools");
         assert_eq!(frame.texts[5].content.0, "Misc");
 
@@ -1496,7 +1498,7 @@ mod tests {
         assert_eq!(frame.textured_rects.len(), 13);
         assert_eq!(frame.textured_rects[0].size(), [32.0, 32.0]);
         assert_eq!(frame.textured_rects[9].size(), [28.0, 30.0]);
-        assert_eq!(frame.textured_rects[10].size(), [330.0, 30.0]);
+        assert_eq!(frame.textured_rects[10].size(), [210.0, 30.0]);
         assert_eq!(frame.textured_rects[11].size(), [28.0, 30.0]);
         assert_eq!(frame.textured_rects[12].size(), [19.0, 19.0]);
         assert_eq!(frame.textured_rects[12].uv_min, [0.0, 0.0]);
@@ -1534,7 +1536,7 @@ mod tests {
             normal.textured_rects[11].size(),
             double.textured_rects[11].size()
         );
-        assert_eq!(double.textured_rects[10].size(), [750.0, 30.0]);
+        assert_eq!(double.textured_rects[10].size(), [510.0, 30.0]);
     }
 
     #[test]
@@ -1639,7 +1641,7 @@ mod tests {
         assert!(window.pointer_moved([-100.0, 100.0], viewport(), 1.0));
         assert_eq!(window.top_left_units, Some([0.0, 84.0]));
         assert!(window.pointer_moved([2000.0, 1000.0], viewport(), 1.0));
-        assert_eq!(window.top_left_units, Some([860.0, 420.0]));
+        assert_eq!(window.top_left_units, Some([980.0, 280.0]));
         assert!(window.apply_pointer_button(
             assets,
             ElementState::Released,
