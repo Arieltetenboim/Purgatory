@@ -7,6 +7,6 @@
     "hover": { "x": 500, "y": 0, "width": 500, "height": 500 },
     "pressed": { "x": 1000, "y": 0, "width": 500, "height": 500 }
   },
-  "size_units": [24.0, 24.0],
+  "size_units": [19.0, 19.0],
   "right_inset_units": 5.0
 }

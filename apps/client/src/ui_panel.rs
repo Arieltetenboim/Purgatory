@@ -13,9 +13,9 @@ use crate::renderer::{
 const PANEL_PNG: &[u8] = include_bytes!("../../../Graphic/ui/panel.png");
 const PANEL_METADATA: &str = include_str!("../../../Graphic/ui/panel.ui.json");
 const PANEL_TEXTURE_FILE: &str = "panel.png";
-const HEADER_PNG: &[u8] = include_bytes!("../../../Graphic/ui/header2.png");
+const HEADER_PNG: &[u8] = include_bytes!("../../../Graphic/ui/header.png");
 const HEADER_METADATA: &str = include_str!("../../../Graphic/ui/header.ui.json");
-const HEADER_TEXTURE_FILE: &str = "header2.png";
+const HEADER_TEXTURE_FILE: &str = "header.png";
 const CLOSE_BUTTON_PNG: &[u8] = include_bytes!("../../../Graphic/ui/BTN_quit.png");
 const CLOSE_BUTTON_METADATA: &str = include_str!("../../../Graphic/ui/BTN_quit.ui.json");
 const CLOSE_BUTTON_TEXTURE_FILE: &str = "BTN_quit.png";
@@ -974,9 +974,9 @@ mod tests {
         assert_eq!(frame.textured_rects.len(), 13);
         assert_eq!(frame.textured_rects[0].size(), [32.0, 32.0]);
         assert_eq!(frame.textured_rects[9].size(), [28.0, 30.0]);
-        assert_eq!(frame.textured_rects[10].size(), [252.0, 30.0]);
+        assert_eq!(frame.textured_rects[10].size(), [230.0, 30.0]);
         assert_eq!(frame.textured_rects[11].size(), [28.0, 30.0]);
-        assert_eq!(frame.textured_rects[12].size(), [24.0, 24.0]);
+        assert_eq!(frame.textured_rects[12].size(), [19.0, 19.0]);
         assert_eq!(frame.textured_rects[12].uv_min, [0.0, 0.0]);
         assert_eq!(frame.textured_rects[12].uv_max, [1.0 / 3.0, 1.0]);
         assert_eq!(frame.title.content.0, "Inventory");
@@ -1012,7 +1012,7 @@ mod tests {
             normal.textured_rects[11].size(),
             double.textured_rects[11].size()
         );
-        assert_eq!(double.textured_rects[10].size(), [572.0, 30.0]);
+        assert_eq!(double.textured_rects[10].size(), [550.0, 30.0]);
     }
 
     #[test]

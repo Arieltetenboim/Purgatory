@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "id": "ui.header.blue",
-  "texture": "header2.png",
+  "id": "ui.header.base",
+  "texture": "header.png",
   "slice_px": {
     "left": 140,
     "right": 140
@@ -12,8 +12,8 @@
   },
   "height_units": 30.0,
   "inset_units": {
-    "left": 6.0,
-    "right": 6.0,
+    "left": 17.0,
+    "right": 17.0,
     "top": 6.0
   }
 }
