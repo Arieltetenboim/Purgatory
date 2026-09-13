@@ -90,7 +90,7 @@ use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
-use crate::ui_panel::{ProofPanelWindow, UiWindowAssets};
+use crate::ui_panel::{InventoryWindow, UiTabAssets, UiWindowAssets};
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -197,7 +197,8 @@ struct ClientApp {
     impairment_seed: u64,
     ui_runtime: UIRuntimeState,
     ui_window_assets: UiWindowAssets,
-    proof_panel_window: ProofPanelWindow,
+    ui_tab_assets: UiTabAssets,
+    inventory_window: InventoryWindow,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
     speech_bubble_hit: Option<crate::renderer::UiRect>,
@@ -276,6 +277,8 @@ impl ClientApp {
             .map_err(|error| format!("PURGATORY red slime sprite error: {error}"))?;
         let ui_window_assets = UiWindowAssets::load_embedded(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI window asset error: {error}"))?;
+        let ui_tab_assets = UiTabAssets::load_embedded(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI tab asset error: {error}"))?;
         Ok(Self {
             window: None,
             renderer: None,
@@ -312,7 +315,8 @@ impl ClientApp {
             impairment_seed: NetworkImpairmentConfig::from_env().seed,
             ui_runtime: UIRuntimeState::Idle,
             ui_window_assets,
-            proof_panel_window: ProofPanelWindow::default(),
+            ui_tab_assets,
+            inventory_window: InventoryWindow::default(),
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
             speech_bubble_hit: None,
@@ -533,7 +537,7 @@ impl ClientApp {
         self.last_input = PlayerInput::idle();
         self.intent.reset();
         self.ui_runtime = UIRuntimeState::Idle;
-        self.proof_panel_window.cancel_pointer_interaction();
+        self.inventory_window.cancel_pointer_interaction();
         self.dialogue_runtime.clear();
         self.speech_bubble_hit = None;
         self.choice_bubble_hits.clear();
@@ -2510,15 +2514,15 @@ impl ClientApp {
                 window.scale_factor() as f32,
                 self.display.settings().ui_scale,
             );
-            if let Ok(Some(frame)) = self.ui_window_assets.proof_frame(
-                &mut self.proof_panel_window,
-                "Panel",
+            if let Ok(Some(frame)) = self.inventory_window.frame(
+                self.ui_window_assets,
+                self.ui_tab_assets,
                 viewport,
                 pixels_per_unit,
                 self.cursor_position,
             ) {
                 ui_textured_rects = frame.textured_rects;
-                ui_text.push(frame.title);
+                ui_text.extend(frame.texts);
             }
         }
         #[cfg(feature = "dev-diagnostics")]
@@ -4155,7 +4159,7 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let receives = true;
                 if self.lifecycle.gameplay_actions_allowed() && receives {
-                    if self.proof_panel_window.apply_key(
+                    if self.inventory_window.apply_key(
                         event.physical_key,
                         event.state,
                         event.repeat,
@@ -4190,7 +4194,7 @@ impl ApplicationHandler for ClientApp {
                     // Clear held input and push Neutral immediately.
                     self.actions.release_on_focus_loss();
                     self.on_focus_loss_input();
-                    self.proof_panel_window.cancel_pointer_interaction();
+                    self.inventory_window.cancel_pointer_interaction();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -4206,7 +4210,7 @@ impl ApplicationHandler for ClientApp {
                     self.cursor_position = Some(cursor);
                     if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
                         && self
-                            .proof_panel_window
+                            .inventory_window
                             .pointer_moved(cursor, viewport, pixels_per_unit)
                     {
                         window.request_redraw();
@@ -4228,15 +4232,16 @@ impl ApplicationHandler for ClientApp {
                 if (!self.lifecycle.gameplay_actions_allowed() || !gameplay_mouse)
                     && button == MouseButton::Left
                 {
-                    self.proof_panel_window.cancel_pointer_interaction();
+                    self.inventory_window.cancel_pointer_interaction();
                 }
                 if self.lifecycle.gameplay_actions_allowed()
                     && gameplay_mouse
                     && button == MouseButton::Left
                 {
                     if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
-                        && self.proof_panel_window.apply_pointer_button(
+                        && self.inventory_window.apply_pointer_button(
                             self.ui_window_assets,
+                            self.ui_tab_assets,
                             state,
                             self.cursor_position,
                             viewport,

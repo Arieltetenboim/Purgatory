@@ -19,10 +19,15 @@ const HEADER_TEXTURE_FILE: &str = "header.png";
 const CLOSE_BUTTON_PNG: &[u8] = include_bytes!("../../../Graphic/ui/BTN_quit.png");
 const CLOSE_BUTTON_METADATA: &str = include_str!("../../../Graphic/ui/BTN_quit.ui.json");
 const CLOSE_BUTTON_TEXTURE_FILE: &str = "BTN_quit.png";
-const NORMAL_SIZE_UNITS: [f32; 2] = [320.0, 240.0];
+const TAB_PNG: &[u8] = include_bytes!("../../../Graphic/ui/inventory_tab.png");
+const TAB_METADATA: &str = include_str!("../../../Graphic/ui/inventory_tab.ui.json");
+const TAB_TEXTURE_FILE: &str = "inventory_tab.png";
+const NORMAL_SIZE_UNITS: [f32; 2] = [420.0, 300.0];
 const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 12.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
+const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
+const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Consumables", "Materials", "Tools", "Misc"];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ProofPanelMode {
@@ -166,6 +171,27 @@ struct UiCloseButtonMetadata {
     right_inset_units: f32,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct TabStates {
+    normal: SourceRectPx,
+    selected: SourceRectPx,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UiTabMetadata {
+    schema_version: u32,
+    id: String,
+    texture: String,
+    states: TabStates,
+    slice_px: HorizontalInsetsPx,
+    cap_units: HorizontalCapsUnits,
+    height_units: f32,
+    font_size_units: f32,
+    horizontal_text_padding_units: f32,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PanelAsset {
     texture: SpriteTextureId,
@@ -191,6 +217,18 @@ struct CloseButtonAsset {
     states: CloseButtonStates,
     size_units: [f32; 2],
     right_inset_units: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiTabAssets {
+    texture: SpriteTextureId,
+    source_size_px: [u32; 2],
+    states: TabStates,
+    slice_px: HorizontalInsetsPx,
+    cap_units: HorizontalCapsUnits,
+    height_units: f32,
+    font_size_units: f32,
+    horizontal_text_padding_units: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -396,6 +434,305 @@ impl UiWindowAssets {
     }
 }
 
+impl UiTabAssets {
+    pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
+        let metadata: UiTabMetadata = serde_json::from_str(TAB_METADATA)
+            .map_err(|error| format!("parse UI tab metadata: {error}"))?;
+        let (texture, source_size_px) = register_metadata_texture(
+            assets,
+            &metadata.id,
+            &metadata.texture,
+            TAB_TEXTURE_FILE,
+            TAB_PNG,
+            "tab",
+        )?;
+        validate_tab_metadata(&metadata, source_size_px)?;
+        Ok(Self {
+            texture,
+            source_size_px,
+            states: metadata.states,
+            slice_px: metadata.slice_px,
+            cap_units: metadata.cap_units,
+            height_units: metadata.height_units,
+            font_size_units: metadata.font_size_units,
+            horizontal_text_padding_units: metadata.horizontal_text_padding_units,
+        })
+    }
+
+    pub(crate) fn frame(
+        self,
+        tabs: &UiTabs,
+        labels: &[&str],
+        bounds: ScreenRect,
+        pixels_per_unit: f32,
+        cursor: Option<[f32; 2]>,
+    ) -> Result<UiTabsFrame, String> {
+        validate_pixels_per_unit(pixels_per_unit)?;
+        if labels.is_empty() {
+            return Err("UI tabs require at least one label".to_string());
+        }
+        let mut textured_rects = Vec::with_capacity(labels.len() * 3);
+        let mut texts = Vec::with_capacity(labels.len());
+        for (index, label) in labels.iter().enumerate() {
+            let hit_rect = tab_rect(bounds, index, labels.len());
+            let hovered = cursor.is_some_and(|cursor| hit_rect.contains(cursor));
+            let pressed = hovered && tabs.pressed_index == Some(index);
+            let selected = tabs.selected_index() == index;
+            let source = if selected {
+                self.states.selected
+            } else {
+                self.states.normal
+            };
+            let mut draw_rect = hit_rect;
+            if pressed {
+                draw_rect.min[1] += pixels_per_unit;
+                draw_rect.max[1] += pixels_per_unit;
+            }
+            let tint = if selected || hovered {
+                [1.0; 4]
+            } else {
+                [0.92, 0.94, 0.98, 1.0]
+            };
+            textured_rects.extend(assemble_horizontal_three_slice_region(
+                draw_rect,
+                self.texture,
+                self.source_size_px,
+                source,
+                self.slice_px,
+                self.cap_units.scaled(pixels_per_unit),
+                tint,
+            )?);
+
+            let font_size = self.font_size_units * pixels_per_unit;
+            texts.push(TextBlock {
+                content: TextContent((*label).to_string()),
+                style: TextStyle {
+                    font_size,
+                    color: [0.08, 0.11, 0.16, 1.0],
+                    alignment: TextAlignment::Center,
+                },
+                anchor: [
+                    (draw_rect.min[0] + draw_rect.max[0]) * 0.5,
+                    draw_rect.min[1] + ((draw_rect.height() - font_size) * 0.5).max(0.0),
+                ],
+                max_width: Some(
+                    (draw_rect.width()
+                        - self.horizontal_text_padding_units * 2.0 * pixels_per_unit)
+                        .max(1.0),
+                ),
+            });
+        }
+        Ok(UiTabsFrame {
+            textured_rects,
+            texts,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct UiTabs {
+    selected_index: usize,
+    pressed_index: Option<usize>,
+}
+
+impl UiTabs {
+    pub(crate) fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    pub(crate) fn apply_pointer_button(
+        &mut self,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        bounds: ScreenRect,
+        tab_count: usize,
+    ) -> bool {
+        match state {
+            ElementState::Pressed => {
+                self.pressed_index = cursor.and_then(|cursor| tab_at(bounds, tab_count, cursor));
+                self.pressed_index.is_some()
+            }
+            ElementState::Released => {
+                let Some(pressed) = self.pressed_index.take() else {
+                    return false;
+                };
+                if cursor.and_then(|cursor| tab_at(bounds, tab_count, cursor)) == Some(pressed) {
+                    self.selected_index = pressed;
+                }
+                true
+            }
+        }
+    }
+
+    pub(crate) fn cancel_pointer_interaction(&mut self) {
+        self.pressed_index = None;
+    }
+}
+
+pub(crate) struct UiTabsFrame {
+    pub(crate) textured_rects: Vec<UiTexturedRect>,
+    pub(crate) texts: Vec<TextBlock>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct InventoryWindow {
+    chrome: ProofPanelWindow,
+    tabs: UiTabs,
+}
+
+impl InventoryWindow {
+    pub(crate) fn apply_key(
+        &mut self,
+        physical_key: PhysicalKey,
+        state: ElementState,
+        repeat: bool,
+    ) -> bool {
+        if physical_key != PhysicalKey::Code(KeyCode::KeyI) {
+            return false;
+        }
+        self.chrome.apply_key(physical_key, state, repeat)
+    }
+
+    pub(crate) fn frame(
+        &mut self,
+        window_assets: UiWindowAssets,
+        tab_assets: UiTabAssets,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+        cursor: Option<[f32; 2]>,
+    ) -> Result<Option<InventoryWindowFrame>, String> {
+        let Some(layout) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)?
+        else {
+            return Ok(None);
+        };
+        let Some(window_frame) = window_assets.proof_frame(
+            &mut self.chrome,
+            "Inventory",
+            viewport,
+            pixels_per_unit,
+            cursor,
+        )?
+        else {
+            return Ok(None);
+        };
+        let tab_bounds = inventory_tab_bounds(window_assets, tab_assets, layout, pixels_per_unit)?;
+        let tab_frame = tab_assets.frame(
+            &self.tabs,
+            &INVENTORY_TAB_LABELS,
+            tab_bounds,
+            pixels_per_unit,
+            cursor,
+        )?;
+        let mut textured_rects = window_frame.textured_rects;
+        textured_rects.extend(tab_frame.textured_rects);
+        let mut texts = Vec::with_capacity(1 + tab_frame.texts.len());
+        texts.push(window_frame.title);
+        texts.extend(tab_frame.texts);
+        Ok(Some(InventoryWindowFrame {
+            textured_rects,
+            texts,
+        }))
+    }
+
+    pub(crate) fn pointer_moved(
+        &mut self,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        self.chrome.pointer_moved(cursor, viewport, pixels_per_unit)
+    }
+
+    pub(crate) fn apply_pointer_button(
+        &mut self,
+        window_assets: UiWindowAssets,
+        tab_assets: UiTabAssets,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        let Ok(Some(layout)) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)
+        else {
+            self.cancel_pointer_interaction();
+            return false;
+        };
+        if let Ok(tab_bounds) =
+            inventory_tab_bounds(window_assets, tab_assets, layout, pixels_per_unit)
+            && self
+                .tabs
+                .apply_pointer_button(state, cursor, tab_bounds, INVENTORY_TAB_LABELS.len())
+        {
+            return true;
+        }
+        self.chrome
+            .apply_pointer_button(window_assets, state, cursor, viewport, pixels_per_unit)
+    }
+
+    pub(crate) fn cancel_pointer_interaction(&mut self) {
+        self.chrome.cancel_pointer_interaction();
+        self.tabs.cancel_pointer_interaction();
+    }
+}
+
+pub(crate) struct InventoryWindowFrame {
+    pub(crate) textured_rects: Vec<UiTexturedRect>,
+    pub(crate) texts: Vec<TextBlock>,
+}
+
+fn inventory_tab_bounds(
+    window_assets: UiWindowAssets,
+    tab_assets: UiTabAssets,
+    layout: UiWindowLayout,
+    pixels_per_unit: f32,
+) -> Result<ScreenRect, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let min_y = layout.header.max[1] + INVENTORY_TAB_TOP_GAP_UNITS * pixels_per_unit;
+    let bounds = ScreenRect {
+        min: [
+            layout.window.min[0] + window_assets.panel.border_units.left * pixels_per_unit,
+            min_y,
+        ],
+        max: [
+            layout.window.max[0] - window_assets.panel.border_units.right * pixels_per_unit,
+            min_y + tab_assets.height_units * pixels_per_unit,
+        ],
+    };
+    if bounds.width()
+        <= (tab_assets.cap_units.left + tab_assets.cap_units.right)
+            * INVENTORY_TAB_LABELS.len() as f32
+            * pixels_per_unit
+        || bounds.max[1]
+            >= layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit
+    {
+        return Err("inventory window is too small for its tab strip".to_string());
+    }
+    Ok(bounds)
+}
+
+fn tab_rect(bounds: ScreenRect, index: usize, count: usize) -> ScreenRect {
+    let width = bounds.width() / count as f32;
+    ScreenRect {
+        min: [bounds.min[0] + index as f32 * width, bounds.min[1]],
+        max: [
+            if index + 1 == count {
+                bounds.max[0]
+            } else {
+                bounds.min[0] + (index + 1) as f32 * width
+            },
+            bounds.max[1],
+        ],
+    }
+}
+
+fn tab_at(bounds: ScreenRect, count: usize, cursor: [f32; 2]) -> Option<usize> {
+    if count == 0 || !bounds.contains(cursor) {
+        return None;
+    }
+    let index = ((cursor[0] - bounds.min[0]) / (bounds.width() / count as f32)).floor();
+    Some((index as usize).min(count - 1))
+}
+
 fn register_metadata_texture(
     assets: &mut AssetRuntime,
     id: &str,
@@ -516,6 +853,44 @@ fn validate_close_button_metadata(
     {
         return Err(format!(
             "UI close button {} size must be positive and inset non-negative",
+            metadata.id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_tab_metadata(metadata: &UiTabMetadata, source_size_px: [u32; 2]) -> Result<(), String> {
+    validate_schema_and_id(metadata.schema_version, &metadata.id, "tab")?;
+    let states = [metadata.states.normal, metadata.states.selected];
+    if source_size_px.contains(&0)
+        || !states
+            .into_iter()
+            .all(|rect| source_rect_fits(rect, source_size_px))
+        || metadata.states.normal.width != metadata.states.selected.width
+        || metadata.states.normal.height != metadata.states.selected.height
+        || metadata
+            .slice_px
+            .left
+            .saturating_add(metadata.slice_px.right)
+            >= metadata.states.normal.width
+    {
+        return Err(format!(
+            "UI tab {} contains invalid state or slice geometry for texture {}x{}",
+            metadata.id, source_size_px[0], source_size_px[1]
+        ));
+    }
+    if ![
+        metadata.cap_units.left,
+        metadata.cap_units.right,
+        metadata.height_units,
+        metadata.font_size_units,
+    ]
+    .into_iter()
+    .all(finite_positive)
+        || !finite_non_negative(metadata.horizontal_text_padding_units)
+    {
+        return Err(format!(
+            "UI tab {} units must be finite with positive caps/height/font and non-negative padding",
             metadata.id
         ));
     }
@@ -735,9 +1110,9 @@ struct UiWindowLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct ScreenRect {
-    min: [f32; 2],
-    max: [f32; 2],
+pub(crate) struct ScreenRect {
+    pub(crate) min: [f32; 2],
+    pub(crate) max: [f32; 2],
 }
 
 impl ScreenRect {
@@ -846,6 +1221,31 @@ fn assemble_horizontal_three_slice(
     caps: HorizontalCapsUnits,
     tint: [f32; 4],
 ) -> Result<Vec<UiTexturedRect>, String> {
+    assemble_horizontal_three_slice_region(
+        destination,
+        texture,
+        source_size_px,
+        SourceRectPx {
+            x: 0,
+            y: 0,
+            width: source_size_px[0],
+            height: source_size_px[1],
+        },
+        source,
+        caps,
+        tint,
+    )
+}
+
+fn assemble_horizontal_three_slice_region(
+    destination: ScreenRect,
+    texture: SpriteTextureId,
+    texture_size_px: [u32; 2],
+    source_rect: SourceRectPx,
+    source: HorizontalInsetsPx,
+    caps: HorizontalCapsUnits,
+    tint: [f32; 4],
+) -> Result<Vec<UiTexturedRect>, String> {
     if !destination
         .min
         .into_iter()
@@ -853,14 +1253,16 @@ fn assemble_horizontal_three_slice(
         .all(f32::is_finite)
         || destination.width() <= caps.left + caps.right
         || destination.height() <= 0.0
+        || !source_rect_fits(source_rect, texture_size_px)
+        || source.left.saturating_add(source.right) >= source_rect.width
     {
-        return Err("UI header target is invalid or smaller than its caps".to_string());
+        return Err("UI horizontal 3-slice target or source geometry is invalid".to_string());
     }
     let source_x = [
-        0.0,
-        source.left as f32,
-        (source_size_px[0] - source.right) as f32,
-        source_size_px[0] as f32,
+        source_rect.x as f32,
+        (source_rect.x + source.left) as f32,
+        (source_rect.x + source_rect.width - source.right) as f32,
+        (source_rect.x + source_rect.width) as f32,
     ];
     let destination_x = [
         destination.min[0],
@@ -868,15 +1270,20 @@ fn assemble_horizontal_three_slice(
         destination.max[0] - caps.right,
         destination.max[0],
     ];
-    let source_width = source_size_px[0] as f32;
+    let source_width = texture_size_px[0] as f32;
+    let source_height = texture_size_px[1] as f32;
+    let source_y = [
+        source_rect.y as f32 / source_height,
+        (source_rect.y + source_rect.height) as f32 / source_height,
+    ];
     let mut regions = Vec::with_capacity(3);
     for column in 0..3 {
         regions.push(UiTexturedRect {
             min: [destination_x[column], destination.min[1]],
             max: [destination_x[column + 1], destination.max[1]],
             texture,
-            uv_min: [source_x[column] / source_width, 0.0],
-            uv_max: [source_x[column + 1] / source_width, 1.0],
+            uv_min: [source_x[column] / source_width, source_y[0]],
+            uv_max: [source_x[column + 1] / source_width, source_y[1]],
             tint,
         });
     }
@@ -889,6 +1296,10 @@ mod tests {
 
     fn embedded_assets() -> UiWindowAssets {
         UiWindowAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
+    }
+
+    fn embedded_tab_assets() -> UiTabAssets {
+        UiTabAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
     }
 
     fn viewport() -> PixelViewport {
@@ -929,6 +1340,117 @@ mod tests {
                 .0[3],
             0
         );
+    }
+
+    #[test]
+    fn embedded_tab_metadata_parses_and_matches_two_state_sheet() {
+        let mut runtime = AssetRuntime::new();
+        let assets = UiTabAssets::load_embedded(&mut runtime).unwrap();
+        assert_eq!(assets.source_size_px, [2048, 160]);
+        assert_eq!(assets.states.normal.width, 1024);
+        assert_eq!(assets.states.selected.x, 1024);
+        assert_eq!(assets.slice_px.left, 96);
+        assert_eq!(runtime.resource_count(), 1);
+        assert_eq!(
+            runtime
+                .resource(assets.texture)
+                .unwrap()
+                .image
+                .get_pixel(0, 0)
+                .0[3],
+            0
+        );
+    }
+
+    #[test]
+    fn tabs_component_accepts_arbitrary_text_labels() {
+        let assets = embedded_tab_assets();
+        let tabs = UiTabs::default();
+        let frame = assets
+            .frame(
+                &tabs,
+                &["First", "Second"],
+                ScreenRect {
+                    min: [10.0, 20.0],
+                    max: [210.0, 44.0],
+                },
+                1.0,
+                None,
+            )
+            .unwrap();
+        assert_eq!(frame.textured_rects.len(), 6);
+        assert_eq!(frame.texts.len(), 2);
+        assert_eq!(frame.texts[0].content.0, "First");
+        assert_eq!(frame.texts[1].content.0, "Second");
+        assert_eq!(frame.textured_rects[0].uv_min[0], 0.5);
+        assert_eq!(frame.textured_rects[3].uv_min[0], 0.0);
+    }
+
+    #[test]
+    fn inventory_window_composes_five_tabs_and_changes_selection_on_click_release() {
+        let window_assets = embedded_assets();
+        let tab_assets = embedded_tab_assets();
+        let mut inventory = InventoryWindow::default();
+        assert!(inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        let frame = inventory
+            .frame(window_assets, tab_assets, viewport(), 1.0, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.textured_rects.len(), 28);
+        assert_eq!(frame.texts.len(), 6);
+        assert_eq!(frame.texts[0].content.0, "Inventory");
+        assert_eq!(frame.texts[1].content.0, "Equip");
+        assert_eq!(frame.texts[4].content.0, "Tools");
+        assert_eq!(frame.texts[5].content.0, "Misc");
+
+        let layout = window_assets
+            .layout(&mut inventory.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap();
+        let bounds = inventory_tab_bounds(window_assets, tab_assets, layout, 1.0).unwrap();
+        let materials = tab_rect(bounds, 2, INVENTORY_TAB_LABELS.len());
+        let cursor = [
+            (materials.min[0] + materials.max[0]) * 0.5,
+            (materials.min[1] + materials.max[1]) * 0.5,
+        ];
+        assert!(inventory.apply_pointer_button(
+            window_assets,
+            tab_assets,
+            ElementState::Pressed,
+            Some(cursor),
+            viewport(),
+            1.0
+        ));
+        assert!(inventory.apply_pointer_button(
+            window_assets,
+            tab_assets,
+            ElementState::Released,
+            Some(cursor),
+            viewport(),
+            1.0
+        ));
+        assert_eq!(inventory.tabs.selected_index, 2);
+    }
+
+    #[test]
+    fn inventory_window_owns_i_but_not_the_old_double_size_proof_key() {
+        let mut inventory = InventoryWindow::default();
+        assert!(!inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false
+        ));
+        assert_eq!(inventory.chrome.mode, ProofPanelMode::Hidden);
+        assert!(inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        assert_eq!(inventory.chrome.mode, ProofPanelMode::Normal);
     }
 
     #[test]
@@ -974,7 +1496,7 @@ mod tests {
         assert_eq!(frame.textured_rects.len(), 13);
         assert_eq!(frame.textured_rects[0].size(), [32.0, 32.0]);
         assert_eq!(frame.textured_rects[9].size(), [28.0, 30.0]);
-        assert_eq!(frame.textured_rects[10].size(), [230.0, 30.0]);
+        assert_eq!(frame.textured_rects[10].size(), [330.0, 30.0]);
         assert_eq!(frame.textured_rects[11].size(), [28.0, 30.0]);
         assert_eq!(frame.textured_rects[12].size(), [19.0, 19.0]);
         assert_eq!(frame.textured_rects[12].uv_min, [0.0, 0.0]);
@@ -1012,7 +1534,7 @@ mod tests {
             normal.textured_rects[11].size(),
             double.textured_rects[11].size()
         );
-        assert_eq!(double.textured_rects[10].size(), [550.0, 30.0]);
+        assert_eq!(double.textured_rects[10].size(), [750.0, 30.0]);
     }
 
     #[test]
@@ -1117,7 +1639,7 @@ mod tests {
         assert!(window.pointer_moved([-100.0, 100.0], viewport(), 1.0));
         assert_eq!(window.top_left_units, Some([0.0, 84.0]));
         assert!(window.pointer_moved([2000.0, 1000.0], viewport(), 1.0));
-        assert_eq!(window.top_left_units, Some([960.0, 480.0]));
+        assert_eq!(window.top_left_units, Some([860.0, 420.0]));
         assert!(window.apply_pointer_button(
             assets,
             ElementState::Released,
