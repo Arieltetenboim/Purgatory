@@ -30,7 +30,9 @@ const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 12.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
-const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 8.0;
+const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 4.0;
+const INVENTORY_TAB_SEPARATOR_HEIGHT_UNITS: f32 = 2.0;
+const INVENTORY_GRID_BOTTOM_PADDING_UNITS: f32 = 2.0;
 const INVENTORY_FOOTER_RESERVED_UNITS: f32 = 28.0;
 const INVENTORY_CURRENCY_VERTICAL_INSET_UNITS: f32 = 4.0;
 const CURRENCY_FONT_SIZE_UNITS: f32 = 11.0;
@@ -38,10 +40,12 @@ const TAB_EMBOLDEN_OFFSET_UNITS: f32 = 0.35;
 const TAB_TEXT_COLOR: [f32; 4] = [0.03, 0.045, 0.07, 1.0];
 const GOLD_TEXT_COLOR: [f32; 4] = [0.48, 0.3, 0.035, 1.0];
 const SILVER_TEXT_COLOR: [f32; 4] = [0.2, 0.27, 0.36, 1.0];
+const INVENTORY_GRID_BACKGROUND_TINT: [f32; 4] = [0.88, 0.9, 0.92, 1.0];
+const INVENTORY_TAB_SEPARATOR_TINT: [f32; 4] = [0.73, 0.18, 0.17, 1.0];
 const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Cons.", "Mats", "Tools", "Misc"];
 const INVENTORY_SLOT_COLUMNS: usize = 5;
 const INVENTORY_SLOT_ROWS: usize = 7;
-const INVENTORY_SLOT_GAP_UNITS: f32 = 3.0;
+const INVENTORY_SLOT_GAP_UNITS: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ProofPanelMode {
@@ -856,6 +860,15 @@ impl InventoryWindow {
             pixels_per_unit,
         )?;
         let slot_rects = slot_assets.frame(self.slots, slot_origin, pixels_per_unit)?;
+        let grid_chrome = inventory_grid_chrome(
+            window_assets,
+            slot_assets,
+            self.slots,
+            layout,
+            tab_bounds,
+            slot_origin,
+            pixels_per_unit,
+        )?;
         let currency_bounds = inventory_currency_bounds(
             window_assets,
             slot_assets,
@@ -866,6 +879,7 @@ impl InventoryWindow {
         )?;
         let currency_texts = self.currency.frame(currency_bounds, pixels_per_unit)?;
         let mut textured_rects = window_frame.textured_rects;
+        textured_rects.extend(grid_chrome);
         textured_rects.extend(tab_frame.textured_rects);
         textured_rects.extend(slot_rects);
         let mut texts = Vec::with_capacity(1 + tab_frame.texts.len() + currency_texts.len());
@@ -920,6 +934,72 @@ impl InventoryWindow {
     pub(crate) fn cancel_pointer_interaction(&mut self) {
         self.chrome.cancel_pointer_interaction();
         self.tabs.cancel_pointer_interaction();
+    }
+}
+
+fn inventory_grid_chrome(
+    window_assets: UiWindowAssets,
+    slot_assets: UiSlotAssets,
+    grid: UiSlotGrid,
+    layout: UiWindowLayout,
+    tab_bounds: ScreenRect,
+    slot_origin: [f32; 2],
+    pixels_per_unit: f32,
+) -> Result<[UiTexturedRect; 2], String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let grid_size = grid.logical_size(slot_assets)?;
+    let separator = ScreenRect {
+        min: [tab_bounds.min[0], tab_bounds.max[1]],
+        max: [
+            tab_bounds.max[0],
+            tab_bounds.max[1] + INVENTORY_TAB_SEPARATOR_HEIGHT_UNITS * pixels_per_unit,
+        ],
+    };
+    let background = ScreenRect {
+        min: [tab_bounds.min[0], separator.max[1]],
+        max: [
+            tab_bounds.max[0],
+            slot_origin[1] + (grid_size[1] + INVENTORY_GRID_BOTTOM_PADDING_UNITS) * pixels_per_unit,
+        ],
+    };
+    let content_max_y =
+        layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit;
+    if separator.max[1] > slot_origin[1]
+        || background.width() <= 0.0
+        || background.height() <= 0.0
+        || background.max[1] > content_max_y
+    {
+        return Err("inventory grid chrome does not fit inside the panel content".to_string());
+    }
+    Ok([
+        panel_center_fill(
+            window_assets.panel,
+            background,
+            INVENTORY_GRID_BACKGROUND_TINT,
+        ),
+        panel_center_fill(window_assets.panel, separator, INVENTORY_TAB_SEPARATOR_TINT),
+    ])
+}
+
+fn panel_center_fill(panel: PanelAsset, bounds: ScreenRect, tint: [f32; 4]) -> UiTexturedRect {
+    let sample_size = [
+        panel.source_size_px[0].min(4),
+        panel.source_size_px[1].min(4),
+    ];
+    let source = SourceRectPx {
+        x: (panel.source_size_px[0] - sample_size[0]) / 2,
+        y: (panel.source_size_px[1] - sample_size[1]) / 2,
+        width: sample_size[0],
+        height: sample_size[1],
+    };
+    let (uv_min, uv_max) = source.uv_bounds(panel.source_size_px);
+    UiTexturedRect {
+        min: bounds.min,
+        max: bounds.max,
+        texture: panel.texture,
+        uv_min,
+        uv_max,
+        tint,
     }
 }
 
@@ -1710,7 +1790,7 @@ mod tests {
         let assets = UiSlotAssets::load_embedded(&mut runtime).unwrap();
         let image = &runtime.resource(assets.texture).unwrap().image;
         assert_eq!([image.width(), image.height()], [256, 256]);
-        assert_eq!(assets.size_units, [41.0, 41.0]);
+        assert_eq!(assets.size_units, [42.0, 42.0]);
         assert_eq!(runtime.resource_count(), 1);
         assert_eq!(image.get_pixel(0, 0).0[3], 0);
         assert!(image.get_pixel(128, 128).0[3] > 0);
@@ -1772,7 +1852,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(frame.textured_rects.len(), 63);
+        assert_eq!(frame.textured_rects.len(), 65);
         assert_eq!(frame.texts.len(), 13);
         assert_eq!(frame.texts[0].content.0, "Item Inventory");
         assert_eq!(frame.texts[1].content.0, "Equip");
@@ -1785,18 +1865,19 @@ mod tests {
         assert_eq!(frame.texts[11].content.0, "Gold: 0");
         assert_eq!(frame.texts[12].content.0, "Silver: 0");
 
-        let slots = &frame.textured_rects[28..];
+        let slot_count = INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS;
+        let slots = &frame.textured_rects[frame.textured_rects.len() - slot_count..];
         assert_eq!(slots.len(), INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS);
-        assert!(slots.iter().all(|slot| slot.size() == [41.0, 41.0]));
-        assert_eq!(slots[1].min[0] - slots[0].max[0], 3.0);
-        assert_eq!(slots[INVENTORY_SLOT_COLUMNS].min[1] - slots[0].max[1], 3.0);
+        assert!(slots.iter().all(|slot| slot.size() == [42.0, 42.0]));
+        assert_eq!(slots[1].min[0] - slots[0].max[0], 2.0);
+        assert_eq!(slots[INVENTORY_SLOT_COLUMNS].min[1] - slots[0].max[1], 2.0);
 
         let layout = window_assets
             .layout(&mut inventory.chrome, viewport(), 1.0)
             .unwrap()
             .unwrap();
         let content_max_y = layout.window.max[1] - window_assets.panel.border_units.bottom;
-        assert_eq!(content_max_y - slots.last().unwrap().max[1], 29.0);
+        assert_eq!(content_max_y - slots.last().unwrap().max[1], 32.0);
         let currency_bounds = inventory_currency_bounds(
             window_assets,
             slot_assets,
@@ -1814,6 +1895,22 @@ mod tests {
             .unwrap()
             .unwrap();
         let bounds = inventory_tab_bounds(window_assets, tab_assets, layout, 1.0).unwrap();
+        let background = frame.textured_rects[13];
+        let separator = frame.textured_rects[14];
+        assert_eq!(background.texture, window_assets.panel.texture);
+        assert_eq!(separator.texture, window_assets.panel.texture);
+        assert_eq!(background.tint, INVENTORY_GRID_BACKGROUND_TINT);
+        assert_eq!(separator.tint, INVENTORY_TAB_SEPARATOR_TINT);
+        assert_eq!(separator.min, [bounds.min[0], bounds.max[1]]);
+        assert_eq!(separator.size(), [bounds.width(), 2.0]);
+        assert_eq!(background.min, [bounds.min[0], separator.max[1]]);
+        assert_eq!(slots[0].min[1] - background.min[1], 2.0);
+        assert_eq!(background.max[1] - slots.last().unwrap().max[1], 2.0);
+        assert_eq!(slots[0].min[0] - bounds.min[0], 9.0);
+        assert_eq!(
+            bounds.max[0] - slots[INVENTORY_SLOT_COLUMNS - 1].max[0],
+            9.0
+        );
         let tab_gap = tab_assets.gap_units;
         let materials = tab_rect(bounds, 2, INVENTORY_TAB_LABELS.len(), tab_gap);
         let cursor = [
