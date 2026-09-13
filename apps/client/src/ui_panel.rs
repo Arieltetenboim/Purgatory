@@ -41,7 +41,7 @@ const SILVER_TEXT_COLOR: [f32; 4] = [0.2, 0.27, 0.36, 1.0];
 const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Cons.", "Mats", "Tools", "Misc"];
 const INVENTORY_SLOT_COLUMNS: usize = 5;
 const INVENTORY_SLOT_ROWS: usize = 7;
-const INVENTORY_SLOT_GAP_UNITS: f32 = 4.0;
+const INVENTORY_SLOT_GAP_UNITS: f32 = 3.0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ProofPanelMode {
@@ -1683,9 +1683,12 @@ mod tests {
         let mut runtime = AssetRuntime::new();
         let assets = UiTabAssets::load_embedded(&mut runtime).unwrap();
         assert_eq!(assets.source_size_px, [1632, 220]);
-        assert_eq!(assets.states.normal.width, 816);
-        assert_eq!(assets.states.selected.x, 816);
-        assert_eq!(assets.slice_px.left, 96);
+        assert_eq!(assets.states.normal.x, 13);
+        assert_eq!(assets.states.normal.width, 790);
+        assert_eq!(assets.states.selected.x, 829);
+        assert_eq!(assets.states.selected.width, 790);
+        assert_eq!(assets.slice_px.left, 83);
+        assert_eq!(assets.slice_px.right, 83);
         assert_eq!(assets.height_units, 26.0);
         assert_eq!(assets.font_size_units, 12.0);
         assert_eq!(assets.gap_units, 1.0);
@@ -1707,7 +1710,7 @@ mod tests {
         let assets = UiSlotAssets::load_embedded(&mut runtime).unwrap();
         let image = &runtime.resource(assets.texture).unwrap().image;
         assert_eq!([image.width(), image.height()], [256, 256]);
-        assert_eq!(assets.size_units, [40.0, 40.0]);
+        assert_eq!(assets.size_units, [41.0, 41.0]);
         assert_eq!(runtime.resource_count(), 1);
         assert_eq!(image.get_pixel(0, 0).0[3], 0);
         assert!(image.get_pixel(128, 128).0[3] > 0);
@@ -1743,8 +1746,8 @@ mod tests {
             frame.textured_rects[3].min[0] - frame.textured_rects[2].max[0],
             1.0
         );
-        assert_eq!(frame.textured_rects[0].uv_min[0], 0.5);
-        assert_eq!(frame.textured_rects[3].uv_min[0], 0.0);
+        assert_eq!(frame.textured_rects[0].uv_min[0], 829.0 / 1632.0);
+        assert_eq!(frame.textured_rects[3].uv_min[0], 13.0 / 1632.0);
     }
 
     #[test]
@@ -1784,16 +1787,16 @@ mod tests {
 
         let slots = &frame.textured_rects[28..];
         assert_eq!(slots.len(), INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS);
-        assert!(slots.iter().all(|slot| slot.size() == [40.0, 40.0]));
-        assert_eq!(slots[1].min[0] - slots[0].max[0], 4.0);
-        assert_eq!(slots[INVENTORY_SLOT_COLUMNS].min[1] - slots[0].max[1], 4.0);
+        assert!(slots.iter().all(|slot| slot.size() == [41.0, 41.0]));
+        assert_eq!(slots[1].min[0] - slots[0].max[0], 3.0);
+        assert_eq!(slots[INVENTORY_SLOT_COLUMNS].min[1] - slots[0].max[1], 3.0);
 
         let layout = window_assets
             .layout(&mut inventory.chrome, viewport(), 1.0)
             .unwrap()
             .unwrap();
         let content_max_y = layout.window.max[1] - window_assets.panel.border_units.bottom;
-        assert_eq!(content_max_y - slots.last().unwrap().max[1], 30.0);
+        assert_eq!(content_max_y - slots.last().unwrap().max[1], 29.0);
         let currency_bounds = inventory_currency_bounds(
             window_assets,
             slot_assets,

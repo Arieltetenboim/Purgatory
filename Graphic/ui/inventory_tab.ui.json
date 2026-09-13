@@ -3,12 +3,12 @@
   "id": "ui.tab.inventory",
   "texture": "inventory_tab.png",
   "states": {
-    "normal": { "x": 0, "y": 0, "width": 816, "height": 220 },
-    "selected": { "x": 816, "y": 0, "width": 816, "height": 220 }
+    "normal": { "x": 13, "y": 0, "width": 790, "height": 220 },
+    "selected": { "x": 829, "y": 0, "width": 790, "height": 220 }
   },
   "slice_px": {
-    "left": 96,
-    "right": 96
+    "left": 83,
+    "right": 83
   },
   "cap_units": {
     "left": 12.0,
