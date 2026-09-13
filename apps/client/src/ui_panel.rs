@@ -31,6 +31,8 @@ const TITLE_LEFT_INSET_UNITS: f32 = 12.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 8.0;
+const INVENTORY_FOOTER_RESERVED_UNITS: f32 = 28.0;
+const TAB_TEXT_COLOR: [f32; 4] = [0.03, 0.045, 0.07, 1.0];
 const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Cons.", "Mats", "Tools", "Misc"];
 const INVENTORY_SLOT_COLUMNS: usize = 5;
 const INVENTORY_SLOT_ROWS: usize = 7;
@@ -530,7 +532,7 @@ impl UiTabAssets {
                 content: TextContent((*label).to_string()),
                 style: TextStyle {
                     font_size,
-                    color: [0.08, 0.11, 0.16, 1.0],
+                    color: TAB_TEXT_COLOR,
                     alignment: TextAlignment::Center,
                 },
                 anchor: [
@@ -882,7 +884,8 @@ fn inventory_slot_origin(
     ];
     let content_max_y =
         layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit;
-    if origin[0] < content_min_x || max[0] > content_max_x || max[1] > content_max_y {
+    let grid_max_y = content_max_y - INVENTORY_FOOTER_RESERVED_UNITS * pixels_per_unit;
+    if origin[0] < content_min_x || max[0] > content_max_x || max[1] > grid_max_y {
         return Err("inventory window is too small for its slot grid".to_string());
     }
     Ok(origin)
@@ -1550,6 +1553,8 @@ mod tests {
         assert_eq!(assets.states.normal.width, 816);
         assert_eq!(assets.states.selected.x, 816);
         assert_eq!(assets.slice_px.left, 96);
+        assert_eq!(assets.height_units, 26.0);
+        assert_eq!(assets.font_size_units, 12.0);
         assert_eq!(runtime.resource_count(), 1);
         assert_eq!(
             runtime
@@ -1634,6 +1639,13 @@ mod tests {
         assert!(slots.iter().all(|slot| slot.size() == [40.0, 40.0]));
         assert_eq!(slots[1].min[0] - slots[0].max[0], 4.0);
         assert_eq!(slots[INVENTORY_SLOT_COLUMNS].min[1] - slots[0].max[1], 4.0);
+
+        let layout = window_assets
+            .layout(&mut inventory.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap();
+        let content_max_y = layout.window.max[1] - window_assets.panel.border_units.bottom;
+        assert_eq!(content_max_y - slots.last().unwrap().max[1], 30.0);
 
         let layout = window_assets
             .layout(&mut inventory.chrome, viewport(), 1.0)
