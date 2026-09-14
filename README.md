@@ -10,6 +10,7 @@ This README is intentionally small. It is the project entry point, not the proje
 
 - **Phase:** `11.closeout` — Phase 11 Item Loop complete
 - **Active parallel work:** FORGE N — NPC authoring/runtime; N10a-N10f complete and merged
+- **Production UI:** Inventory window read-only foundation complete
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
 - **Protocol:** v27
 - **Simulation:** server authoritative
