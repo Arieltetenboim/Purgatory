@@ -22,22 +22,17 @@ jobs:
           from pathlib import Path
           p = Path('apps/server/src/network/gameplay.rs')
           text = p.read_text(encoding='utf-8')
-          old_entries = '''            ("equipment.debug.practice_sword", 1, -0.75),
-            ("item.debug.small_potion", 3, -2.0),
-            ("item.debug.iron_scrap", 7, -3.25),
-            ("item.debug.repair_hammer", 1, -4.5),
-            ("item.package", 1, -5.75),'''
-          new_entries = '''            ("equipment.debug.practice_sword", 1, -2.5),
-            ("item.debug.small_potion", 3, -1.25),
-            ("item.debug.iron_scrap", 7, 0.0),
-            ("item.debug.repair_hammer", 1, 1.25),
-            ("item.package", 1, 2.5),'''
-          assert text.count(old_entries) == 1
-          text = text.replace(old_entries, new_entries, 1)
-          old_spawn = '[position[0] + x_offset, position[1] + 0.75],'
-          new_spawn = '[x_offset, position[1] + 0.75],'
-          assert text.count(old_spawn) == 1
-          text = text.replace(old_spawn, new_spawn, 1)
+          replacements = [
+              ('("equipment.debug.practice_sword", 1, -0.75)', '("equipment.debug.practice_sword", 1, -2.5)'),
+              ('("item.debug.small_potion", 3, -2.0)', '("item.debug.small_potion", 3, -1.25)'),
+              ('("item.debug.iron_scrap", 7, -3.25)', '("item.debug.iron_scrap", 7, 0.0)'),
+              ('("item.debug.repair_hammer", 1, -4.5)', '("item.debug.repair_hammer", 1, 1.25)'),
+              ('("item.package", 1, -5.75)', '("item.package", 1, 2.5)'),
+              ('[position[0] + x_offset, position[1] + 0.75]', '[x_offset, position[1] + 0.75]'),
+          ]
+          for old, new in replacements:
+              assert text.count(old) == 1, (old, text.count(old))
+              text = text.replace(old, new, 1)
           p.write_text(text, encoding='utf-8')
           PY
           git diff --check
