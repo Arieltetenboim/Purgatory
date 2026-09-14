@@ -1,0 +1,6 @@
+{
+  "schema_version": 2,
+  "id": "item.debug.iron_scrap",
+  "category": "material",
+  "stack_limit": 20
+}
