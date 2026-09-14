@@ -589,6 +589,15 @@ Owner Phase 0 clarifications:
 - Date: 2026-09-07
 - Notes: Manual normal client/server proof passed: visible real world Item drop; `E` pickup; owned Inventory Item; DEV selection by real `ItemInstanceId`; equip and sword presentation; equipment-granted attack ability; unequip returning the same Item to Inventory; and removal of the equipment-derived ability. Production Inventory UI, Phase 12 persistence, advanced stacking, trading, currency, and economy remain deferred. Temporary/dev presentation or diagnostics rough edges do not reopen Phase 11. Report: [`docs/PHASE_11_CLOSEOUT_REPORT.md`](PHASE_11_CLOSEOUT_REPORT.md).
 
+## Gate Production UI I1 — Inventory window foundation
+
+- Status: **complete (GREEN) 2026-09-14; merge candidate.** This parallel presentation foundation does not reopen Phase 11 and does not start Phase 12.
+- Command/test evidence: `cargo test -p purgatory-content --quiet` (80 passed); `cargo test -p purgatory-client ui_panel -- --nocapture` (17 passed); `./scripts/check.sh` GREEN; ignored GPU UI tests (2 passed).
+- Manual evidence: owner confirmed the draggable panel/header/close interaction and final compact Inventory layout; the real practice sword appears in the Equipment tab.
+- Proven scope: reusable panel/header/close/tabs/slot-grid presentation; category-filtered read-only projection of owner-private authoritative Inventory entries; quantity labels; safe placeholder icon; reserved Gold/Silver footer presentation.
+- Deferred/non-authoritative scope: item interaction, bags/capacity policy, currency balances, persistence, shops/trading, and economy. The footer values are presentation placeholders until GitHub Issue #56 establishes an authoritative currency domain.
+- Follow-up boundaries: GitHub Issues #51–#57. Issue #52 precedes item interaction; Issue #54 precedes a second production window. These follow-ups do not block merging the current read-only foundation.
+
 ## Gate FORGE N10 — NPC Dialogue Runtime
 
 - Status: **N10a-N10f merged; normal-path manual proof accepted 2026-09-12.** PR #43 (N10e) and PR #45 (N10f) are merged into `master`.
