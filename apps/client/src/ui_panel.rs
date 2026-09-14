@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use purgatory_common::ContentId;
+use purgatory_common::{ContentId, ItemInstanceId};
 use purgatory_content::{ContentRegistry, ItemCategory};
 use purgatory_protocol::InventoryEntry;
 use serde::Deserialize;
@@ -57,6 +57,17 @@ const INVENTORY_ICON_INSET_UNITS: f32 = 4.0;
 const INVENTORY_QUANTITY_FONT_SIZE_UNITS: f32 = 11.0;
 const INVENTORY_QUANTITY_INSET_UNITS: f32 = 3.0;
 const INVENTORY_QUANTITY_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
+const INVENTORY_SLOT_HOVER_TINT: [f32; 4] = [0.9, 0.96, 1.0, 1.0];
+const INVENTORY_SLOT_SELECTED_TINT: [f32; 4] = [1.0, 0.9, 0.68, 1.0];
+const INVENTORY_TOOLTIP_WIDTH_UNITS: f32 = 218.0;
+const INVENTORY_TOOLTIP_HEIGHT_UNITS: f32 = 48.0;
+const INVENTORY_TOOLTIP_OFFSET_UNITS: f32 = 10.0;
+const INVENTORY_TOOLTIP_PADDING_UNITS: f32 = 7.0;
+const INVENTORY_TOOLTIP_FONT_SIZE_UNITS: f32 = 11.0;
+const INVENTORY_TOOLTIP_LINE_GAP_UNITS: f32 = 4.0;
+const INVENTORY_TOOLTIP_BACKGROUND_TINT: [f32; 4] = [0.93, 0.94, 0.95, 0.98];
+const INVENTORY_TOOLTIP_TITLE_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
+const INVENTORY_TOOLTIP_DETAIL_COLOR: [f32; 4] = [0.16, 0.21, 0.28, 1.0];
 const ITEM_PLACEHOLDER_VISUAL_KEY: &str = "item.placeholder";
 const ITEM_PLACEHOLDER_SIZE_PX: u32 = 32;
 const INVENTORY_TAB_CATEGORIES: [ItemCategory; 5] = [
@@ -915,6 +926,10 @@ pub(crate) struct InventoryWindow {
     tabs: UiTabs,
     slots: UiSlotGrid,
     currency: UiCurrencyDisplay,
+    selected_item: Option<ItemInstanceId>,
+    pressed_item: Option<ItemInstanceId>,
+    slot_hit_regions: Vec<ScreenRect>,
+    item_hit_regions: Vec<(ScreenRect, ItemInstanceId)>,
 }
 
 impl Default for InventoryWindow {
@@ -928,6 +943,10 @@ impl Default for InventoryWindow {
                 INVENTORY_SLOT_GAP_UNITS,
             ),
             currency: UiCurrencyDisplay::default(),
+            selected_item: None,
+            pressed_item: None,
+            slot_hit_regions: Vec::new(),
+            item_hit_regions: Vec::new(),
         }
     }
 }
@@ -974,6 +993,8 @@ impl InventoryWindow {
         } = input;
         let Some(layout) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)?
         else {
+            self.slot_hit_regions.clear();
+            self.item_hit_regions.clear();
             return Ok(None);
         };
         let Some(window_frame) = window_assets.proof_frame(
@@ -984,6 +1005,8 @@ impl InventoryWindow {
             cursor,
         )?
         else {
+            self.slot_hit_regions.clear();
+            self.item_hit_regions.clear();
             return Ok(None);
         };
         let tab_bounds = inventory_tab_bounds(window_assets, tab_assets, layout, pixels_per_unit)?;
@@ -1002,15 +1025,59 @@ impl InventoryWindow {
             tab_bounds,
             pixels_per_unit,
         )?;
-        let slot_rects = slot_assets.frame(self.slots, slot_origin, pixels_per_unit)?;
+        let mut slot_rects = slot_assets.frame(self.slots, slot_origin, pixels_per_unit)?;
+        let category = INVENTORY_TAB_CATEGORIES[self.tabs.selected_index()];
+        let visible = visible_inventory_entries(registry, entries, category, slot_rects.len());
+        self.slot_hit_regions = slot_rects
+            .iter()
+            .map(|slot| ScreenRect {
+                min: slot.min,
+                max: slot.max,
+            })
+            .collect();
+        self.item_hit_regions = visible
+            .iter()
+            .zip(self.slot_hit_regions.iter().copied())
+            .map(|(entry, bounds)| (bounds, entry.item_instance_id))
+            .collect();
+        if self
+            .selected_item
+            .is_some_and(|selected| !entries.iter().any(|entry| entry.item_instance_id == selected))
+        {
+            self.selected_item = None;
+        }
+        let hovered_item = cursor.and_then(|cursor| self.item_at(cursor));
+        for (index, slot) in slot_rects.iter_mut().enumerate() {
+            let item = self.item_hit_regions.get(index).map(|(_, item)| *item);
+            slot.tint = if item.is_some() && item == self.selected_item {
+                INVENTORY_SLOT_SELECTED_TINT
+            } else if item.is_some() && item == hovered_item {
+                INVENTORY_SLOT_HOVER_TINT
+            } else {
+                [1.0; 4]
+            };
+        }
         let item_frame = inventory_items_frame(
             registry,
             item_icon_assets,
             entries,
-            INVENTORY_TAB_CATEGORIES[self.tabs.selected_index()],
+            category,
             &slot_rects,
             pixels_per_unit,
         )?;
+        let tooltip = hovered_item
+            .and_then(|item| entries.iter().find(|entry| entry.item_instance_id == item))
+            .map(|entry| {
+                inventory_tooltip_frame(
+                    window_assets,
+                    registry,
+                    entry,
+                    cursor.expect("hovered item requires cursor"),
+                    viewport,
+                    pixels_per_unit,
+                )
+            })
+            .transpose()?;
         let grid_chrome = inventory_grid_chrome(
             window_assets,
             slot_assets,
@@ -1034,13 +1101,21 @@ impl InventoryWindow {
         textured_rects.extend(tab_frame.textured_rects);
         textured_rects.extend(slot_rects);
         textured_rects.extend(item_frame.textured_rects);
+        let tooltip_text_count = tooltip.as_ref().map_or(0, |tooltip| tooltip.texts.len());
         let mut texts = Vec::with_capacity(
-            1 + tab_frame.texts.len() + currency_texts.len() + item_frame.texts.len(),
+            1 + tab_frame.texts.len()
+                + currency_texts.len()
+                + item_frame.texts.len()
+                + tooltip_text_count,
         );
         texts.push(window_frame.title);
         texts.extend(tab_frame.texts);
         texts.extend(currency_texts);
         texts.extend(item_frame.texts);
+        if let Some(tooltip) = tooltip {
+            textured_rects.push(tooltip.background);
+            texts.extend(tooltip.texts);
+        }
         Ok(Some(InventoryWindowFrame {
             textured_rects,
             texts,
@@ -1070,6 +1145,7 @@ impl InventoryWindow {
             self.cancel_pointer_interaction();
             return false;
         };
+        let selected_tab_before = self.tabs.selected_index();
         if let Ok(tab_bounds) =
             inventory_tab_bounds(window_assets, tab_assets, layout, pixels_per_unit)
             && self.tabs.apply_pointer_button(
@@ -1080,8 +1156,42 @@ impl InventoryWindow {
                 tab_assets.gap_units * pixels_per_unit,
             )
         {
+            self.pressed_item = None;
+            if state == ElementState::Released && self.tabs.selected_index() != selected_tab_before {
+                self.selected_item = None;
+            }
             return true;
         }
+
+        let hit_item = cursor.and_then(|cursor| self.item_at(cursor));
+        let hit_slot = cursor.is_some_and(|cursor| {
+            self.slot_hit_regions
+                .iter()
+                .copied()
+                .any(|slot| slot.contains(cursor))
+        });
+        match state {
+            ElementState::Pressed if hit_slot => {
+                self.pressed_item = hit_item;
+                if hit_item.is_none() {
+                    self.selected_item = None;
+                }
+                return true;
+            }
+            ElementState::Released => {
+                if let Some(pressed) = self.pressed_item.take() {
+                    if hit_item == Some(pressed) {
+                        self.selected_item = Some(pressed);
+                    }
+                    return true;
+                }
+                if hit_slot {
+                    return true;
+                }
+            }
+            ElementState::Pressed => {}
+        }
+
         self.chrome
             .apply_pointer_button(window_assets, state, cursor, viewport, pixels_per_unit)
     }
@@ -1089,6 +1199,13 @@ impl InventoryWindow {
     pub(crate) fn cancel_pointer_interaction(&mut self) {
         self.chrome.cancel_pointer_interaction();
         self.tabs.cancel_pointer_interaction();
+        self.pressed_item = None;
+    }
+
+    fn item_at(&self, cursor: [f32; 2]) -> Option<ItemInstanceId> {
+        self.item_hit_regions
+            .iter()
+            .find_map(|(bounds, item)| bounds.contains(cursor).then_some(*item))
     }
 }
 
@@ -1097,15 +1214,17 @@ struct UiInventoryItemsFrame {
     texts: Vec<TextBlock>,
 }
 
-fn inventory_items_frame(
+struct UiInventoryTooltipFrame {
+    background: UiTexturedRect,
+    texts: Vec<TextBlock>,
+}
+
+fn visible_inventory_entries<'a>(
     registry: &ContentRegistry,
-    item_icon_assets: &UiItemIconAssets,
-    entries: &[InventoryEntry],
+    entries: &'a [InventoryEntry],
     category: ItemCategory,
-    slots: &[UiTexturedRect],
-    pixels_per_unit: f32,
-) -> Result<UiInventoryItemsFrame, String> {
-    validate_pixels_per_unit(pixels_per_unit)?;
+    capacity: usize,
+) -> Vec<&'a InventoryEntry> {
     let mut visible: Vec<&InventoryEntry> = entries
         .iter()
         .filter(|entry| {
@@ -1117,7 +1236,20 @@ fn inventory_items_frame(
         })
         .collect();
     visible.sort_by_key(|entry| entry.slot);
-    visible.truncate(slots.len());
+    visible.truncate(capacity);
+    visible
+}
+
+fn inventory_items_frame(
+    registry: &ContentRegistry,
+    item_icon_assets: &UiItemIconAssets,
+    entries: &[InventoryEntry],
+    category: ItemCategory,
+    slots: &[UiTexturedRect],
+    pixels_per_unit: f32,
+) -> Result<UiInventoryItemsFrame, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let visible = visible_inventory_entries(registry, entries, category, slots.len());
 
     let mut textured_rects = Vec::with_capacity(visible.len());
     let mut texts = Vec::new();
@@ -1150,6 +1282,92 @@ fn inventory_items_frame(
     Ok(UiInventoryItemsFrame {
         textured_rects,
         texts,
+    })
+}
+
+fn inventory_tooltip_frame(
+    window_assets: UiWindowAssets,
+    registry: &ContentRegistry,
+    entry: &InventoryEntry,
+    cursor: [f32; 2],
+    viewport: PixelViewport,
+    pixels_per_unit: f32,
+) -> Result<UiInventoryTooltipFrame, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let width = INVENTORY_TOOLTIP_WIDTH_UNITS * pixels_per_unit;
+    let height = INVENTORY_TOOLTIP_HEIGHT_UNITS * pixels_per_unit;
+    let offset = INVENTORY_TOOLTIP_OFFSET_UNITS * pixels_per_unit;
+    let viewport_min = [viewport.x as f32, viewport.y as f32];
+    let viewport_max = [
+        viewport.x as f32 + viewport.width as f32,
+        viewport.y as f32 + viewport.height as f32,
+    ];
+    let mut min = [cursor[0] + offset, cursor[1] + offset];
+    if min[0] + width > viewport_max[0] {
+        min[0] = (cursor[0] - offset - width).max(viewport_min[0]);
+    }
+    if min[1] + height > viewport_max[1] {
+        min[1] = (cursor[1] - offset - height).max(viewport_min[1]);
+    }
+    min[0] = min[0].clamp(viewport_min[0], (viewport_max[0] - width).max(viewport_min[0]));
+    min[1] = min[1].clamp(viewport_min[1], (viewport_max[1] - height).max(viewport_min[1]));
+    let bounds = ScreenRect {
+        min,
+        max: [min[0] + width, min[1] + height],
+    };
+    let padding = INVENTORY_TOOLTIP_PADDING_UNITS * pixels_per_unit;
+    let font_size = INVENTORY_TOOLTIP_FONT_SIZE_UNITS * pixels_per_unit;
+    let line_gap = INVENTORY_TOOLTIP_LINE_GAP_UNITS * pixels_per_unit;
+    let text_width = (width - padding * 2.0).max(1.0);
+    let (title, detail) = if let Some(definition) = registry.item_by_id(entry.definition) {
+        (
+            definition.authored_id.clone(),
+            format!(
+                "{} · Qty {} · Stack {}",
+                definition.category.as_str(),
+                entry.quantity,
+                definition.stack_limit
+            ),
+        )
+    } else {
+        (
+            "Unknown item".to_string(),
+            format!("misc · Qty {} · definition unavailable", entry.quantity),
+        )
+    };
+    let title_anchor = [bounds.min[0] + padding, bounds.min[1] + padding];
+    let detail_anchor = [
+        title_anchor[0],
+        title_anchor[1] + font_size + line_gap,
+    ];
+    Ok(UiInventoryTooltipFrame {
+        background: panel_center_fill(
+            window_assets.panel,
+            bounds,
+            INVENTORY_TOOLTIP_BACKGROUND_TINT,
+        ),
+        texts: vec![
+            TextBlock {
+                content: TextContent(title),
+                style: TextStyle {
+                    font_size,
+                    color: INVENTORY_TOOLTIP_TITLE_COLOR,
+                    alignment: TextAlignment::Left,
+                },
+                anchor: title_anchor,
+                max_width: Some(text_width),
+            },
+            TextBlock {
+                content: TextContent(detail),
+                style: TextStyle {
+                    font_size,
+                    color: INVENTORY_TOOLTIP_DETAIL_COLOR,
+                    alignment: TextAlignment::Left,
+                },
+                anchor: detail_anchor,
+                max_width: Some(text_width),
+            },
+        ],
     })
 }
 
@@ -2310,6 +2528,95 @@ mod tests {
         assert_eq!(consumables.texts.len(), 14);
         assert_eq!(consumables.texts[13].content.0, "12");
         assert_eq!(consumables.texts[13].style.alignment, TextAlignment::Right);
+    }
+
+    #[test]
+    fn inventory_item_hover_tooltip_and_click_selection_share_visible_slot_mapping() {
+        let window_assets = embedded_assets();
+        let tab_assets = embedded_tab_assets();
+        let slot_assets = embedded_slot_assets();
+        let registry = inventory_registry();
+        let item_icons = placeholder_item_icons(&registry);
+        let sword = ContentId::from_authored("equipment.debug.practice_sword").unwrap();
+        let sword_item = ItemInstanceId::from_raw(41);
+        let entries = [InventoryEntry {
+            slot: 7,
+            item_instance_id: sword_item,
+            definition: sword,
+            quantity: 1,
+        }];
+        let mut inventory = InventoryWindow::default();
+        assert!(inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        inventory
+            .frame(InventoryWindowFrameInput {
+                window_assets,
+                tab_assets,
+                slot_assets,
+                item_icon_assets: &item_icons,
+                entries: &entries,
+                registry: &registry,
+                viewport: viewport(),
+                pixels_per_unit: 1.0,
+                cursor: None,
+            })
+            .unwrap()
+            .unwrap();
+        let first_hit = inventory.item_hit_regions[0].0;
+        let cursor = [
+            (first_hit.min[0] + first_hit.max[0]) * 0.5,
+            (first_hit.min[1] + first_hit.max[1]) * 0.5,
+        ];
+        assert!(inventory.apply_pointer_button(
+            window_assets,
+            tab_assets,
+            ElementState::Pressed,
+            Some(cursor),
+            viewport(),
+            1.0,
+        ));
+        assert_eq!(inventory.selected_item, None);
+        assert!(inventory.apply_pointer_button(
+            window_assets,
+            tab_assets,
+            ElementState::Released,
+            Some(cursor),
+            viewport(),
+            1.0,
+        ));
+        assert_eq!(inventory.selected_item, Some(sword_item));
+
+        let frame = inventory
+            .frame(InventoryWindowFrameInput {
+                window_assets,
+                tab_assets,
+                slot_assets,
+                item_icon_assets: &item_icons,
+                entries: &entries,
+                registry: &registry,
+                viewport: viewport(),
+                pixels_per_unit: 1.0,
+                cursor: Some(cursor),
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.textured_rects[30].tint, INVENTORY_SLOT_SELECTED_TINT);
+        assert_eq!(frame.textured_rects.len(), 67, "one icon + tooltip background");
+        assert_eq!(frame.texts.len(), 15, "title/tabs/currency + two tooltip lines");
+        assert!(
+            frame
+                .texts
+                .iter()
+                .any(|text| text.content.0 == "equipment.debug.practice_sword")
+        );
+        assert!(frame.texts.iter().any(|text| {
+            text.content.0.contains("equipment")
+                && text.content.0.contains("Qty 1")
+                && text.content.0.contains("Stack 1")
+        }));
     }
 
     #[test]
