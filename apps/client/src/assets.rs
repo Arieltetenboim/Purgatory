@@ -11,7 +11,7 @@ pub fn connection_logo_path() -> PathBuf {
 }
 
 /// Single embedded Text v0 font; license accompanies the asset.
-pub const UI_FONT: &[u8] = include_bytes!("../assets/fonts/Hack-Regular.ttf");
+pub const UI_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSans-Bold.ttf");
 
 #[cfg(test)]
 mod tests {
