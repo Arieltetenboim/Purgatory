@@ -1323,7 +1323,7 @@ fn inventory_tooltip_frame(
         (
             definition.authored_id.clone(),
             format!(
-                "{} · Qty {} · Stack {}",
+                "{} | Qty {} | Stack {}",
                 definition.category.as_str(),
                 entry.quantity,
                 definition.stack_limit
@@ -1332,7 +1332,7 @@ fn inventory_tooltip_frame(
     } else {
         (
             "Unknown item".to_string(),
-            format!("misc · Qty {} · definition unavailable", entry.quantity),
+            format!("misc | Qty {} | definition unavailable", entry.quantity),
         )
     };
     let title_anchor = [bounds.min[0] + padding, bounds.min[1] + padding];
