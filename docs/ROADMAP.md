@@ -10,6 +10,7 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **Phase 11 — Item Loop: complete + closeout**
 - **Root `PHASE`: `11.closeout`**
 - **Active parallel track:** FORGE N — NPC authoring/runtime; N10a-N10f complete and merged
+- **Completed parallel presentation foundation:** Production UI I1 — read-only Inventory window
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
 - **Protocol: v27**
 
@@ -69,10 +70,15 @@ Phase 10 is closed. Known presentation rough edges belong to the later polish pa
 
 Goal: establish the first complete item loop without redesigning the already-proven Character Presentation / Equipment foundation.
 
-Phase 11 is closed. The closeout report records the successful normal
-client/server runtime proof and the intentionally deferred Inventory UI,
-persistence, advanced stacking, trading, currency, and economy work:
+Phase 11 is closed. At closeout, the report recorded the successful normal
+client/server runtime proof and deferred production Inventory UI, persistence,
+advanced stacking, trading, currency, and economy work:
 [`PHASE_11_CLOSEOUT_REPORT.md`](PHASE_11_CLOSEOUT_REPORT.md).
+
+The later parallel **Production UI I1** foundation implements the first read-only
+Inventory window without reopening Phase 11 or starting Phase 12. Currency
+authority, item interaction, bags/capacity policy, and persistence remain
+deferred.
 
 ## 12 — Character Continuity — planned
 
@@ -89,6 +95,14 @@ Further Phase 12+ slicing should be added only when the current design is agreed
 # Parallel character / presentation tracks
 
 These tracks can progress beside the gameplay roadmap. They are deliberately separated so tools and visual-content work do not accidentally reopen gameplay phases.
+
+## Production UI I1 — Inventory window foundation
+
+- **Status:** complete; read-only foundation accepted for merge.
+- **Implemented scope:** production 9-slice panel, reusable header and close-button interaction, draggable window, reusable text tabs, inset slot grid, category-filtered projection of the owner's authoritative Inventory entries, quantity labels, placeholder item icon resolution, and reserved currency-footer presentation.
+- **Authority boundary:** opening, closing, dragging, and tab selection are client-local presentation state. Item ownership and quantities remain server-authoritative owner-private state.
+- **Explicit non-goals:** item use/equip/drag/drop interaction, bags and capacity policy, authoritative currency, persistence, shops/trading, and economy tuning.
+- **Tracked follow-up:** renderer ordering, visible-cell identity, icon assets, modular extraction, diagnostics/budgets, currency, and future storage policy are split into GitHub Issues #51–#57. Issue #52 must be resolved before adding inventory item interaction; Issue #54 should be resolved before adding a second production window.
 
 ## FORGE N — NPC Authoring & Runtime
 
