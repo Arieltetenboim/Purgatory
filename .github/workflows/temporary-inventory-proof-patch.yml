@@ -1,0 +1,166 @@
+name: Temporary Inventory Proof Patch
+
+on:
+  push:
+    branches:
+      - ui/inventory-tabs
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply exact targeted patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          ui_path = Path("apps/client/src/ui_panel.rs")
+          ui = ui_path.read_text(encoding="utf-8")
+          replacements = [
+              ('"{} · Qty {} · Stack {}"', '"{} | Qty {} | Stack {}"'),
+              ('format!("misc · Qty {} · definition unavailable", entry.quantity)',
+               'format!("misc | Qty {} | definition unavailable", entry.quantity)'),
+          ]
+          for old, new in replacements:
+              count = ui.count(old)
+              assert count == 1, f"expected one UI match for {old!r}, got {count}"
+              ui = ui.replace(old, new, 1)
+          ui_path.write_text(ui, encoding="utf-8")
+
+          gameplay_path = Path("apps/server/src/network/gameplay.rs")
+          gameplay = gameplay_path.read_text(encoding="utf-8")
+          old = '''    fn spawn_phase_11e_proof_drop(&mut self) {
+              if self.proof_drop_spawned {
+                  return;
+              }
+              let Some((&connection_id, binding)) = self.bindings.iter().next() else {
+                  return;
+              };
+              let entity = binding.entity;
+              let Some(address) = self.world.address_of(entity) else {
+                  return;
+              };
+              let Some(position) = self.world.transform_of(entity).map(|t| t.position) else {
+                  return;
+              };
+              let proof_item = ContentId::from_authored("equipment.debug.practice_sword")
+                  .expect("valid Phase 11E proof item");
+              self.world
+                  .spawn_world_drop_item(
+                      address,
+                      [position[0] + 1.25, position[1] + 0.75],
+                      proof_item,
+                      1,
+                      1,
+                  )
+                  .expect("Phase 11E proof item drop");
+              self.proof_drop_spawned = true;
+              println!("11E proof Item drop spawned for connection={connection_id}");
+          }
+          '''
+          new = '''    fn spawn_phase_11e_proof_drop(&mut self) {
+              if self.proof_drop_spawned {
+                  return;
+              }
+              let Some((&connection_id, binding)) = self.bindings.iter().next() else {
+                  return;
+              };
+              let entity = binding.entity;
+              let Some(address) = self.world.address_of(entity) else {
+                  return;
+              };
+              let Some(position) = self.world.transform_of(entity).map(|t| t.position) else {
+                  return;
+              };
+              const PROOF_DROPS: [(&str, u32, f32); 5] = [
+                  ("equipment.debug.practice_sword", 1, -0.75),
+                  ("item.debug.small_potion", 3, -2.0),
+                  ("item.debug.iron_scrap", 7, -3.25),
+                  ("item.debug.repair_hammer", 1, -4.5),
+                  ("item.package", 1, -5.75),
+              ];
+              for (authored_id, quantity, x_offset) in PROOF_DROPS {
+                  let (definition, stack_limit) = {
+                      let item = self
+                          .registry
+                          .item(authored_id)
+                          .unwrap_or_else(|| panic!("missing Phase 11E proof item {authored_id}"));
+                      (item.content_id, item.stack_limit)
+                  };
+                  self.world
+                      .spawn_world_drop_item(
+                          address,
+                          [position[0] + x_offset, position[1] + 0.75],
+                          definition,
+                          quantity,
+                          stack_limit,
+                      )
+                      .unwrap_or_else(|error| {
+                          panic!("Phase 11E proof item drop {authored_id}: {error:?}")
+                      });
+              }
+              self.proof_drop_spawned = true;
+              println!(
+                  "11E proof Item drops spawned for connection={connection_id} count={}",
+                  PROOF_DROPS.len()
+              );
+          }
+          '''
+          count = gameplay.count(old)
+          assert count == 1, f"expected one gameplay bootstrap match, got {count}"
+          gameplay = gameplay.replace(old, new, 1)
+          gameplay_path.write_text(gameplay, encoding="utf-8")
+          PY
+
+      - name: Verify authored proof quantities
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          expected = {
+              "equipment.debug.practice_sword": 1,
+              "item.debug.small_potion": 3,
+              "item.debug.iron_scrap": 7,
+              "item.debug.repair_hammer": 1,
+              "item.package": 1,
+          }
+          for authored_id, quantity in expected.items():
+              path = Path("content/shared/items") / f"{authored_id}.json"
+              data = json.loads(path.read_text(encoding="utf-8"))
+              assert data["id"] == authored_id
+              assert 0 < quantity <= data["stack_limit"], (authored_id, quantity, data["stack_limit"])
+          PY
+
+      - name: Check patch whitespace
+        run: git diff --check
+
+      - name: Check server
+        run: cargo check -p purgatory-server
+
+      - name: Test authoritative pickup path
+        run: cargo test -p purgatory-simulation pickup
+
+      - name: Test inventory tooltip interaction
+        run: cargo test -p purgatory-client inventory_item_hover_tooltip_and_click_selection_share_visible_slot_mapping
+
+      - name: Check client
+        run: cargo check -p purgatory-client
+
+      - name: Commit clean final patch
+        run: |
+          rm .github/workflows/temporary-inventory-proof-patch.yml
+          git diff --check
+          git config user.name "purgatory-actions"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/client/src/ui_panel.rs apps/server/src/network/gameplay.rs .github/workflows/temporary-inventory-proof-patch.yml
+          git commit -m "Complete inventory multi-category pickup proof"
+          git push origin HEAD:ui/inventory-tabs
