@@ -1757,11 +1757,11 @@ impl GameplayOwner {
             return;
         };
         const PROOF_DROPS: [(&str, u32, f32); 5] = [
-            ("equipment.debug.practice_sword", 1, -0.75),
-            ("item.debug.small_potion", 3, -2.0),
-            ("item.debug.iron_scrap", 7, -3.25),
-            ("item.debug.repair_hammer", 1, -4.5),
-            ("item.package", 1, -5.75),
+            ("equipment.debug.practice_sword", 1, -2.5),
+            ("item.debug.small_potion", 3, -1.25),
+            ("item.debug.iron_scrap", 7, 0.0),
+            ("item.debug.repair_hammer", 1, 1.25),
+            ("item.package", 1, 2.5),
         ];
         for (authored_id, quantity, x_offset) in PROOF_DROPS {
             let (definition, stack_limit) = {
@@ -1774,7 +1774,7 @@ impl GameplayOwner {
             self.world
                 .spawn_world_drop_item(
                     address,
-                    [position[0] + x_offset, position[1] + 0.75],
+                    [x_offset, position[1] + 0.75],
                     definition,
                     quantity,
                     stack_limit,
