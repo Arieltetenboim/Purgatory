@@ -20,11 +20,11 @@ use purgatory_content::{
 use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
 use purgatory_protocol::{
     AbilityActivateRequest, AbilityCommandReject, ConnectionId, DEV_CHANNEL_MAX, DialogueAdvance,
-    DialogueChoose, EquipRequest, EquipmentRejectReason, InputCommand, InteractCloseReason,
-    InteractRejectReason, InventoryEntry, MoveAxis, PickupRejectReason, PickupRequest,
-    ServerAbility, ServerControl, ServerDialogueChoiceAccepted, ServerDialogueLine,
-    ServerEquipment, ServerInteract, ServerInventory, ServerItem, ServerPresentationOneShot,
-    UnequipRequest, WireEntityId,
+    DialogueChoose, DropRejectReason, DropRequest, EquipRequest, EquipmentRejectReason,
+    InputCommand, InteractCloseReason, InteractRejectReason, InventoryEntry, MoveAxis,
+    PickupRejectReason, PickupRequest, ServerAbility, ServerControl, ServerDialogueChoiceAccepted,
+    ServerDialogueLine, ServerEquipment, ServerInteract, ServerInventory, ServerItem,
+    ServerPresentationOneShot, UnequipRequest, WireEntityId,
 };
 use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, Cadence,
@@ -406,6 +406,8 @@ pub struct PlayerBinding {
     last_ability_result: Option<ServerAbility>,
     last_pickup_seq: Option<u32>,
     last_pickup_result: Option<ServerItem>,
+    last_drop_seq: Option<u32>,
+    last_drop_result: Option<ServerItem>,
     dialogue_reopen_after_tick: u64,
 }
 
@@ -607,6 +609,10 @@ pub enum InputUpdate {
     Pickup {
         connection_id: ConnectionId,
         request: PickupRequest,
+    },
+    Drop {
+        connection_id: ConnectionId,
+        request: DropRequest,
     },
 }
 
@@ -892,6 +898,16 @@ impl GameplayTx {
     pub async fn send_pickup(&self, connection_id: ConnectionId, request: PickupRequest) -> bool {
         self.input
             .send(InputUpdate::Pickup {
+                connection_id,
+                request,
+            })
+            .await
+            .is_ok()
+    }
+
+    pub async fn send_drop(&self, connection_id: ConnectionId, request: DropRequest) -> bool {
+        self.input
+            .send(InputUpdate::Drop {
                 connection_id,
                 request,
             })
@@ -1275,6 +1291,8 @@ impl GameplayOwner {
                 last_ability_result: None,
                 last_pickup_seq: None,
                 last_pickup_result: None,
+                last_drop_seq: None,
+                last_drop_result: None,
                 dialogue_reopen_after_tick: 0,
             },
         );
@@ -1440,6 +1458,7 @@ impl GameplayOwner {
                 | InputUpdate::Respawn { .. }
                 | InputUpdate::AbilityActivate { .. }
                 | InputUpdate::Pickup { .. }
+                | InputUpdate::Drop { .. }
         ) {
             match update {
                 InputUpdate::InteractOpen {
@@ -1502,6 +1521,10 @@ impl GameplayOwner {
                     connection_id,
                     request,
                 } => self.handle_pickup(connection_id, request),
+                InputUpdate::Drop {
+                    connection_id,
+                    request,
+                } => self.handle_drop(connection_id, request),
                 _ => {}
             }
             return SeqDecision::Accept;
@@ -1573,9 +1596,10 @@ impl GameplayOwner {
             | InputUpdate::DevResetPlayer { .. }
             | InputUpdate::Respawn { .. }
             | InputUpdate::AbilityActivate { .. }
-            | InputUpdate::Pickup { .. } => {
+            | InputUpdate::Pickup { .. }
+            | InputUpdate::Drop { .. } => {
                 unreachable!(
-                    "interaction/dialogue/portal/channel/speed/jump/dev-spawn/equipment/oneshot/reset/ability/pickup handled above"
+                    "interaction/dialogue/portal/channel/speed/jump/dev-spawn/equipment/oneshot/reset/ability/pickup/drop handled above"
                 )
             }
         }
@@ -2192,6 +2216,61 @@ impl GameplayOwner {
         }
     }
 
+    fn handle_drop(&mut self, connection_id: ConnectionId, request: DropRequest) {
+        let interact_tx = self
+            .bindings
+            .get(&connection_id)
+            .and_then(|binding| binding.interact.clone());
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return;
+        };
+        match SessionInput::classify(binding.last_drop_seq, request.seq) {
+            SeqDecision::Duplicate => {
+                if let Some(event) = binding.last_drop_result {
+                    Self::send_pickup_result(interact_tx.as_ref(), event);
+                }
+                return;
+            }
+            SeqDecision::Stale => {
+                Self::send_pickup_result(
+                    interact_tx.as_ref(),
+                    ServerItem::DropRejected {
+                        seq: request.seq,
+                        reason: DropRejectReason::StaleRequest,
+                    },
+                );
+                return;
+            }
+            SeqDecision::Gap | SeqDecision::Overflow | SeqDecision::OldEpoch => {
+                Self::send_pickup_result(
+                    interact_tx.as_ref(),
+                    ServerItem::DropRejected {
+                        seq: request.seq,
+                        reason: DropRejectReason::InvalidRequest,
+                    },
+                );
+                return;
+            }
+            SeqDecision::Accept => {}
+        }
+
+        let event = match self.apply_drop(connection_id, request.item_instance_id) {
+            Ok(()) => ServerItem::DropAccepted { seq: request.seq },
+            Err(reason) => ServerItem::DropRejected {
+                seq: request.seq,
+                reason,
+            },
+        };
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.last_drop_seq = Some(request.seq);
+            binding.last_drop_result = Some(event);
+        }
+        Self::send_pickup_result(interact_tx.as_ref(), event);
+        if matches!(event, ServerItem::DropAccepted { .. }) {
+            self.send_inventory_snapshot(connection_id);
+        }
+    }
+
     fn apply_pickup(
         &mut self,
         connection_id: ConnectionId,
@@ -2210,6 +2289,24 @@ impl GameplayOwner {
                 ItemRuntimeError::PickupOutOfRange => PickupRejectReason::OutOfRange,
                 ItemRuntimeError::InventoryFull(_) => PickupRejectReason::InventoryFull,
                 _ => PickupRejectReason::InvalidRequest,
+            })
+    }
+
+    fn apply_drop(
+        &mut self,
+        connection_id: ConnectionId,
+        item_instance_id: purgatory_common::ItemInstanceId,
+    ) -> Result<(), DropRejectReason> {
+        let actor = self
+            .command_actor(connection_id, CommandClass::Drop)
+            .map_err(|_| DropRejectReason::StateBlocked)?;
+        self.world
+            .drop_inventory_item(actor, item_instance_id)
+            .map(|_| ())
+            .map_err(|reason| match reason {
+                ItemRuntimeError::ItemNotInInventory { .. } => DropRejectReason::ItemNotInInventory,
+                ItemRuntimeError::InvalidPickupActor => DropRejectReason::StateBlocked,
+                _ => DropRejectReason::InvalidRequest,
             })
     }
 
@@ -6267,6 +6364,90 @@ mod tests {
             .pickup_world_drop(actor, entity)
             .expect("item pickup");
         item
+    }
+
+    fn recv_item(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerItem {
+        match rx.try_recv().expect("item result") {
+            ServerControl::Item(event) => event,
+            other => panic!("expected Item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drop_accepts_owned_item_and_duplicate_is_idempotent() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        assert_eq!(recv_item(&mut rx), ServerItem::DropAccepted { seq: 1 });
+        let _ = rx.try_recv().expect("fresh inventory snapshot");
+        let world_drop = owner
+            .world()
+            .world_drop_entity_for_item(item)
+            .expect("accepted item becomes a world drop");
+        assert!(!owner.world().inventory_contains(actor, item));
+
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        assert_eq!(recv_item(&mut rx), ServerItem::DropAccepted { seq: 1 });
+        assert!(rx.try_recv().is_err(), "duplicate must not send a snapshot");
+        assert_eq!(
+            owner.world().world_drop_entity_for_item(item),
+            Some(world_drop),
+            "duplicate must not create a second world drop"
+        );
+    }
+
+    #[test]
+    fn drop_rejects_unowned_item_without_mutation() {
+        let mut owner = GameplayOwner::new();
+        let first = ConnectionId::from_raw(1);
+        let second = ConnectionId::from_raw(2);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(first);
+        owner.attach(second);
+        owner.bindings.get_mut(&first).unwrap().interact = Some(tx);
+        let first_actor = owner.entity_of(first).unwrap();
+        let second_actor = owner.entity_of(second).unwrap();
+        let item = owned_debug_sword(&mut owner, second_actor);
+        let inventory_before = owner.world().inventory_count(second_actor);
+
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: first,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        assert_eq!(
+            recv_item(&mut rx),
+            ServerItem::DropRejected {
+                seq: 1,
+                reason: DropRejectReason::ItemNotInInventory,
+            }
+        );
+        assert_eq!(
+            owner.world().inventory_count(second_actor),
+            inventory_before
+        );
+        assert!(owner.world().world_drop_entity_for_item(item).is_none());
+        assert!(!owner.world().inventory_contains(first_actor, item));
     }
 
     fn recv_equipment(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerEquipment {
