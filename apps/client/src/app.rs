@@ -91,8 +91,9 @@ use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
 use crate::ui_panel::{
+    DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrameInput,
     InventoryWindow, InventoryWindowFrameInput, UiItemIconAssets, UiSlotAssets, UiTabAssets,
-    UiWindowAssets,
+    UiWindowAssets, resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
 
@@ -204,6 +205,7 @@ struct ClientApp {
     ui_slot_assets: UiSlotAssets,
     ui_item_icon_assets: UiItemIconAssets,
     inventory_window: InventoryWindow,
+    equipment_window: EquipmentWindow,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
     speech_bubble_hit: Option<crate::renderer::UiRect>,
@@ -251,10 +253,10 @@ struct ClientApp {
     /// One resolved animation sample `t` for the current frame.
     #[cfg(feature = "dev-diagnostics")]
     selected_animation_sample_t: f32,
-    #[cfg(feature = "dev-diagnostics")]
     equipment_seq: u32,
     ability_seq: u32,
     pickup_seq: u32,
+    drop_seq: u32,
     display: DisplayController,
     dev_login: String,
     /// Shipping: auto-connect once when the window is ready on Connection.
@@ -328,6 +330,7 @@ impl ClientApp {
             ui_slot_assets,
             ui_item_icon_assets,
             inventory_window: InventoryWindow::default(),
+            equipment_window: EquipmentWindow::default(),
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
             speech_bubble_hit: None,
@@ -372,10 +375,10 @@ impl ClientApp {
             animation_player: purgatory_animation::AnimationPlayer::new(),
             #[cfg(feature = "dev-diagnostics")]
             selected_animation_sample_t: 0.0,
-            #[cfg(feature = "dev-diagnostics")]
             equipment_seq: 0,
             ability_seq: 0,
             pickup_seq: 0,
+            drop_seq: 0,
             display: DisplayController::new(),
             dev_login: purgatory_common::DEFAULT_DEV_LOGIN.to_string(),
             #[cfg(not(feature = "dev-diagnostics"))]
@@ -562,6 +565,8 @@ impl ClientApp {
         }
         self.last_interact_request.clear();
         self.last_interact_result.clear();
+        self.inventory_window.cancel_pointer_interaction();
+        self.equipment_window.cancel_pointer_interaction();
         if self.lifecycle.screen() != ClientScreen::Game {
             if let Some(network) = &mut self.network {
                 let _ = network.poll_frames();
@@ -574,12 +579,10 @@ impl ClientApp {
             self.characters.clear();
             self.npc_players.clear();
             self.presentation_oneshots.clear();
-            #[cfg(feature = "dev-diagnostics")]
-            {
-                self.equipment_seq = 0;
-            }
+            self.equipment_seq = 0;
             self.ability_seq = 0;
             self.pickup_seq = 0;
+            self.drop_seq = 0;
             self.frame_local = FrameLocalPose::default();
             self.last_observer = None;
             self.frozen_presentation = None;
@@ -769,10 +772,69 @@ impl ClientApp {
         }
     }
 
-    #[cfg(feature = "dev-diagnostics")]
     fn next_equipment_seq(&mut self) -> u32 {
         self.equipment_seq = self.equipment_seq.saturating_add(1);
         self.equipment_seq
+    }
+
+    fn next_drop_seq(&mut self) -> u32 {
+        self.drop_seq = self.drop_seq.saturating_add(1);
+        self.drop_seq
+    }
+
+    fn resolve_equipment_drag(&mut self, source: DragSource, cursor: Option<[f32; 2]>) {
+        let Some(cursor) = cursor else {
+            return;
+        };
+        let destination = if self.equipment_window.slot_at(cursor).is_some() {
+            DragDestination::Equipment(self.equipment_window.slot_at(cursor).unwrap_or(0))
+        } else if self.inventory_window.contains_slot(cursor) {
+            DragDestination::Inventory
+        } else {
+            DragDestination::Outside
+        };
+        let inventory_equipment_slot = match source {
+            DragSource::Inventory(item_instance_id) => self
+                .lifecycle
+                .view()
+                .inventory
+                .iter()
+                .find(|entry| entry.item_instance_id == item_instance_id)
+                .and_then(|entry| self.registry.equipment_by_id(entry.definition))
+                .map(|definition| definition.slot as u8),
+            DragSource::Equipped(_) => None,
+        };
+        match resolve_drag(source, destination, inventory_equipment_slot) {
+            DragResolution::Equip {
+                item_instance_id,
+                slot,
+            } => {
+                let seq = self.next_equipment_seq();
+                let _ = self.network.as_ref().is_some_and(|network| {
+                    network.try_send_equip(purgatory_protocol::EquipRequest {
+                        seq,
+                        slot,
+                        item_instance_id,
+                    })
+                });
+            }
+            DragResolution::Unequip { slot } => {
+                let seq = self.next_equipment_seq();
+                let _ = self.network.as_ref().is_some_and(|network| {
+                    network.try_send_unequip(purgatory_protocol::UnequipRequest { seq, slot })
+                });
+            }
+            DragResolution::Drop { item_instance_id } => {
+                let seq = self.next_drop_seq();
+                let _ = self.network.as_ref().is_some_and(|network| {
+                    network.try_send_drop(purgatory_protocol::DropRequest {
+                        seq,
+                        item_instance_id,
+                    })
+                });
+            }
+            DragResolution::Noop => {}
+        }
     }
 
     #[cfg(feature = "dev-diagnostics")]
@@ -2536,7 +2598,23 @@ impl ClientApp {
                 pixels_per_unit,
                 cursor: self.cursor_position,
             }) {
-                ui_textured_rects = frame.textured_rects;
+                ui_textured_rects.extend(frame.textured_rects);
+                ui_text.extend(frame.texts);
+            }
+            let equipment = self
+                .replica
+                .local_entity()
+                .and_then(|entity| entity.equipment);
+            if let Ok(Some(frame)) = self.equipment_window.frame(EquipmentWindowFrameInput {
+                window_assets: self.ui_window_assets,
+                slot_assets: self.ui_slot_assets,
+                item_icon_assets: &self.ui_item_icon_assets,
+                equipment,
+                viewport,
+                pixels_per_unit,
+                cursor: self.cursor_position,
+            }) {
+                ui_textured_rects.extend(frame.textured_rects);
                 ui_text.extend(frame.texts);
             }
         }
@@ -4174,11 +4252,31 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let receives = true;
                 if self.lifecycle.gameplay_actions_allowed() && receives {
-                    if self.inventory_window.apply_key(
+                    let inventory_key = self.inventory_window.apply_key(
                         event.physical_key,
                         event.state,
                         event.repeat,
-                    ) {
+                    );
+                    let equipment_key = self.equipment_window.apply_key(
+                        event.physical_key,
+                        event.state,
+                        event.repeat,
+                    );
+                    if inventory_key || equipment_key {
+                        if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
+                            && event.physical_key == PhysicalKey::Code(KeyCode::KeyI)
+                        {
+                            self.inventory_window.arrange_side_by_side(
+                                viewport,
+                                pixels_per_unit,
+                                false,
+                            );
+                            self.equipment_window.arrange_side_by_side(
+                                viewport,
+                                pixels_per_unit,
+                                true,
+                            );
+                        }
                         window.request_redraw();
                         return;
                     }
@@ -4224,9 +4322,14 @@ impl ApplicationHandler for ClientApp {
                     let cursor = [position.x as f32, position.y as f32];
                     self.cursor_position = Some(cursor);
                     if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
-                        && self
+                        && (self
                             .inventory_window
                             .pointer_moved(cursor, viewport, pixels_per_unit)
+                            || self.equipment_window.pointer_moved(
+                                cursor,
+                                viewport,
+                                pixels_per_unit,
+                            ))
                     {
                         window.request_redraw();
                     }
@@ -4248,20 +4351,45 @@ impl ApplicationHandler for ClientApp {
                     && button == MouseButton::Left
                 {
                     self.inventory_window.cancel_pointer_interaction();
+                    self.equipment_window.cancel_pointer_interaction();
                 }
                 if self.lifecycle.gameplay_actions_allowed()
                     && gameplay_mouse
                     && button == MouseButton::Left
                 {
                     if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
-                        && self.inventory_window.apply_pointer_button(
-                            self.ui_window_assets,
-                            self.ui_tab_assets,
-                            state,
-                            self.cursor_position,
-                            viewport,
-                            pixels_per_unit,
-                        )
+                        && {
+                            let inventory_handled = self.inventory_window.apply_pointer_button(
+                                self.ui_window_assets,
+                                self.ui_tab_assets,
+                                state,
+                                self.cursor_position,
+                                viewport,
+                                pixels_per_unit,
+                            );
+                            let equipment_handled = self.equipment_window.apply_pointer_button(
+                                self.ui_window_assets,
+                                state,
+                                self.cursor_position,
+                                viewport,
+                                pixels_per_unit,
+                            );
+                            if state == ElementState::Released {
+                                if let Some(item) = self.inventory_window.take_completed_drag() {
+                                    self.resolve_equipment_drag(
+                                        DragSource::Inventory(item),
+                                        self.cursor_position,
+                                    );
+                                }
+                                if let Some(slot) = self.equipment_window.take_completed_drag() {
+                                    self.resolve_equipment_drag(
+                                        DragSource::Equipped(slot),
+                                        self.cursor_position,
+                                    );
+                                }
+                            }
+                            inventory_handled || equipment_handled
+                        }
                     {
                         window.request_redraw();
                         return;

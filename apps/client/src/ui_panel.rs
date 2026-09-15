@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use purgatory_common::{ContentId, ItemInstanceId};
 use purgatory_content::{ContentRegistry, ItemCategory};
-use purgatory_protocol::InventoryEntry;
+use purgatory_protocol::{InventoryEntry, ReplicatedEquipment};
+use purgatory_simulation::EquipmentSlot;
 use serde::Deserialize;
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -57,6 +58,14 @@ const INVENTORY_ICON_INSET_UNITS: f32 = 4.0;
 const INVENTORY_QUANTITY_FONT_SIZE_UNITS: f32 = 12.0;
 const INVENTORY_QUANTITY_INSET_UNITS: f32 = 3.0;
 const INVENTORY_QUANTITY_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
+const EQUIPMENT_SLOT_COLUMNS: usize = 2;
+const EQUIPMENT_SLOT_ROWS: usize = 3;
+const EQUIPMENT_SLOT_GAP_UNITS: f32 = 12.0;
+const EQUIPMENT_LABEL_FONT_SIZE_UNITS: f32 = 10.0;
+const EQUIPMENT_LABEL_GAP_UNITS: f32 = 3.0;
+const EQUIPMENT_LABEL_COLOR: [f32; 4] = [0.08, 0.11, 0.16, 1.0];
+const EQUIPMENT_SLOT_LABELS: [&str; EquipmentSlot::COUNT] =
+    ["Headwear", "Bodywear", "Pants", "Gloves", "Boots", "Weapon"];
 const INVENTORY_SLOT_HOVER_TINT: [f32; 4] = [0.9, 0.96, 1.0, 1.0];
 const INVENTORY_SLOT_SELECTED_TINT: [f32; 4] = [1.0, 0.9, 0.68, 1.0];
 const INVENTORY_TOOLTIP_WIDTH_UNITS: f32 = 218.0;
@@ -928,6 +937,7 @@ pub(crate) struct InventoryWindow {
     currency: UiCurrencyDisplay,
     selected_item: Option<ItemInstanceId>,
     pressed_item: Option<ItemInstanceId>,
+    completed_drag: Option<ItemInstanceId>,
     slot_hit_regions: Vec<ScreenRect>,
     item_hit_regions: Vec<(ScreenRect, ItemInstanceId)>,
 }
@@ -945,6 +955,7 @@ impl Default for InventoryWindow {
             currency: UiCurrencyDisplay::default(),
             selected_item: None,
             pressed_item: None,
+            completed_drag: None,
             slot_hit_regions: Vec::new(),
             item_hit_regions: Vec::new(),
         }
@@ -974,6 +985,16 @@ impl InventoryWindow {
             return false;
         }
         self.chrome.apply_key(physical_key, state, repeat)
+    }
+
+    pub(crate) fn arrange_side_by_side(
+        &mut self,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+        right: bool,
+    ) {
+        self.chrome
+            .set_side_by_side_position(viewport, pixels_per_unit, right);
     }
 
     pub(crate) fn frame(
@@ -1040,10 +1061,11 @@ impl InventoryWindow {
             .zip(self.slot_hit_regions.iter().copied())
             .map(|(entry, bounds)| (bounds, entry.item_instance_id))
             .collect();
-        if self
-            .selected_item
-            .is_some_and(|selected| !entries.iter().any(|entry| entry.item_instance_id == selected))
-        {
+        if self.selected_item.is_some_and(|selected| {
+            !entries
+                .iter()
+                .any(|entry| entry.item_instance_id == selected)
+        }) {
             self.selected_item = None;
         }
         let hovered_item = cursor.and_then(|cursor| self.item_at(cursor));
@@ -1157,7 +1179,8 @@ impl InventoryWindow {
             )
         {
             self.pressed_item = None;
-            if state == ElementState::Released && self.tabs.selected_index() != selected_tab_before {
+            if state == ElementState::Released && self.tabs.selected_index() != selected_tab_before
+            {
                 self.selected_item = None;
             }
             return true;
@@ -1182,6 +1205,8 @@ impl InventoryWindow {
                 if let Some(pressed) = self.pressed_item.take() {
                     if hit_item == Some(pressed) {
                         self.selected_item = Some(pressed);
+                    } else {
+                        self.completed_drag = Some(pressed);
                     }
                     return true;
                 }
@@ -1200,6 +1225,17 @@ impl InventoryWindow {
         self.chrome.cancel_pointer_interaction();
         self.tabs.cancel_pointer_interaction();
         self.pressed_item = None;
+        self.completed_drag = None;
+    }
+
+    pub(crate) fn take_completed_drag(&mut self) -> Option<ItemInstanceId> {
+        self.completed_drag.take()
+    }
+
+    pub(crate) fn contains_slot(&self, cursor: [f32; 2]) -> bool {
+        self.slot_hit_regions
+            .iter()
+            .any(|bounds| bounds.contains(cursor))
     }
 
     fn item_at(&self, cursor: [f32; 2]) -> Option<ItemInstanceId> {
@@ -1207,6 +1243,279 @@ impl InventoryWindow {
             .iter()
             .find_map(|(bounds, item)| bounds.contains(cursor).then_some(*item))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DragSource {
+    Inventory(ItemInstanceId),
+    Equipped(u8),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DragDestination {
+    Inventory,
+    Equipment(u8),
+    Outside,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DragResolution {
+    Equip {
+        item_instance_id: ItemInstanceId,
+        slot: u8,
+    },
+    Unequip {
+        slot: u8,
+    },
+    Drop {
+        item_instance_id: ItemInstanceId,
+    },
+    Noop,
+}
+
+pub(crate) fn resolve_drag(
+    source: DragSource,
+    destination: DragDestination,
+    inventory_equipment_slot: Option<u8>,
+) -> DragResolution {
+    match (source, destination) {
+        (DragSource::Inventory(item_instance_id), DragDestination::Equipment(slot))
+            if inventory_equipment_slot == Some(slot) =>
+        {
+            DragResolution::Equip {
+                item_instance_id,
+                slot,
+            }
+        }
+        (DragSource::Equipped(slot), DragDestination::Inventory) => {
+            DragResolution::Unequip { slot }
+        }
+        (DragSource::Inventory(item_instance_id), DragDestination::Outside) => {
+            DragResolution::Drop { item_instance_id }
+        }
+        _ => DragResolution::Noop,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EquipmentWindow {
+    chrome: ProofPanelWindow,
+    slots: UiSlotGrid,
+    slot_hit_regions: Vec<ScreenRect>,
+    occupied_slots: [Option<ContentId>; EquipmentSlot::COUNT],
+    pressed_slot: Option<u8>,
+    completed_drag: Option<u8>,
+}
+
+pub(crate) struct EquipmentWindowFrameInput<'a> {
+    pub(crate) window_assets: UiWindowAssets,
+    pub(crate) slot_assets: UiSlotAssets,
+    pub(crate) item_icon_assets: &'a UiItemIconAssets,
+    pub(crate) equipment: Option<ReplicatedEquipment>,
+    pub(crate) viewport: PixelViewport,
+    pub(crate) pixels_per_unit: f32,
+    pub(crate) cursor: Option<[f32; 2]>,
+}
+
+impl Default for EquipmentWindow {
+    fn default() -> Self {
+        Self {
+            chrome: ProofPanelWindow::default(),
+            slots: UiSlotGrid::new(
+                EQUIPMENT_SLOT_COLUMNS,
+                EQUIPMENT_SLOT_ROWS,
+                EQUIPMENT_SLOT_GAP_UNITS,
+            ),
+            slot_hit_regions: Vec::new(),
+            occupied_slots: [None; EquipmentSlot::COUNT],
+            pressed_slot: None,
+            completed_drag: None,
+        }
+    }
+}
+
+impl EquipmentWindow {
+    pub(crate) fn apply_key(
+        &mut self,
+        physical_key: PhysicalKey,
+        state: ElementState,
+        repeat: bool,
+    ) -> bool {
+        if physical_key != PhysicalKey::Code(KeyCode::KeyI) {
+            return false;
+        }
+        self.chrome.apply_key(physical_key, state, repeat)
+    }
+
+    pub(crate) fn arrange_side_by_side(
+        &mut self,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+        right: bool,
+    ) {
+        self.chrome
+            .set_side_by_side_position(viewport, pixels_per_unit, right);
+    }
+
+    pub(crate) fn frame(
+        &mut self,
+        input: EquipmentWindowFrameInput<'_>,
+    ) -> Result<Option<EquipmentWindowFrame>, String> {
+        let EquipmentWindowFrameInput {
+            window_assets,
+            slot_assets,
+            item_icon_assets,
+            equipment,
+            viewport,
+            pixels_per_unit,
+            cursor,
+        } = input;
+        let Some(layout) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)?
+        else {
+            self.slot_hit_regions.clear();
+            return Ok(None);
+        };
+        let Some(window_frame) = window_assets.proof_frame(
+            &mut self.chrome,
+            "Equipment",
+            viewport,
+            pixels_per_unit,
+            cursor,
+        )?
+        else {
+            self.slot_hit_regions.clear();
+            return Ok(None);
+        };
+        let origin = equipment_slot_origin(
+            window_assets,
+            slot_assets,
+            self.slots,
+            layout,
+            pixels_per_unit,
+        )?;
+        let mut slot_rects = slot_assets.frame(self.slots, origin, pixels_per_unit)?;
+        self.slot_hit_regions = slot_rects
+            .iter()
+            .map(|slot| ScreenRect {
+                min: slot.min,
+                max: slot.max,
+            })
+            .collect();
+        self.occupied_slots =
+            std::array::from_fn(|index| equipment.and_then(|state| state.get(index as u8)));
+        for (index, slot) in slot_rects.iter_mut().enumerate() {
+            slot.tint = if cursor.is_some_and(|point| {
+                self.slot_hit_regions
+                    .get(index)
+                    .is_some_and(|bounds| bounds.contains(point))
+            }) {
+                INVENTORY_SLOT_HOVER_TINT
+            } else {
+                [1.0; 4]
+            };
+        }
+        let item_frame = equipment_items_frame(
+            item_icon_assets,
+            &self.occupied_slots,
+            &slot_rects,
+            pixels_per_unit,
+        )?;
+        let label_font_size = EQUIPMENT_LABEL_FONT_SIZE_UNITS * pixels_per_unit;
+        let labels: Vec<_> = slot_rects
+            .iter()
+            .zip(EQUIPMENT_SLOT_LABELS)
+            .map(|(slot, label)| TextBlock {
+                content: TextContent(label.to_string()),
+                style: TextStyle {
+                    font_size: label_font_size,
+                    color: EQUIPMENT_LABEL_COLOR,
+                    alignment: TextAlignment::Center,
+                },
+                anchor: [
+                    (slot.min[0] + slot.max[0]) * 0.5,
+                    slot.max[1] + EQUIPMENT_LABEL_GAP_UNITS * pixels_per_unit,
+                ],
+                max_width: Some(slot.max[0] - slot.min[0]),
+            })
+            .collect();
+        let mut textured_rects = window_frame.textured_rects;
+        textured_rects.extend(slot_rects);
+        textured_rects.extend(item_frame.textured_rects);
+        let mut texts = vec![window_frame.title];
+        texts.extend(labels);
+        texts.extend(item_frame.texts);
+        Ok(Some(EquipmentWindowFrame {
+            textured_rects,
+            texts,
+        }))
+    }
+
+    pub(crate) fn apply_pointer_button(
+        &mut self,
+        window_assets: UiWindowAssets,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        let Ok(Some(layout)) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)
+        else {
+            self.cancel_pointer_interaction();
+            return false;
+        };
+        let hit_slot = cursor.and_then(|point| self.slot_at(point));
+        match state {
+            ElementState::Pressed if hit_slot.is_some() => {
+                self.pressed_slot =
+                    hit_slot.filter(|slot| self.occupied_slots[usize::from(*slot)].is_some());
+                return true;
+            }
+            ElementState::Released => {
+                if let Some(slot) = self.pressed_slot.take() {
+                    self.completed_drag = Some(slot);
+                    return true;
+                }
+                if hit_slot.is_some() {
+                    return true;
+                }
+            }
+            ElementState::Pressed => {}
+        }
+        self.chrome
+            .apply_pointer_button(window_assets, state, cursor, viewport, pixels_per_unit)
+            || layout.window.contains(cursor.unwrap_or([-1.0, -1.0]))
+    }
+
+    pub(crate) fn pointer_moved(
+        &mut self,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        self.chrome.pointer_moved(cursor, viewport, pixels_per_unit)
+    }
+
+    pub(crate) fn cancel_pointer_interaction(&mut self) {
+        self.chrome.cancel_pointer_interaction();
+        self.pressed_slot = None;
+        self.completed_drag = None;
+    }
+
+    pub(crate) fn take_completed_drag(&mut self) -> Option<u8> {
+        self.completed_drag.take()
+    }
+
+    pub(crate) fn slot_at(&self, cursor: [f32; 2]) -> Option<u8> {
+        self.slot_hit_regions
+            .iter()
+            .position(|bounds| bounds.contains(cursor))
+            .and_then(|index| u8::try_from(index).ok())
+    }
+}
+
+pub(crate) struct EquipmentWindowFrame {
+    pub(crate) textured_rects: Vec<UiTexturedRect>,
+    pub(crate) texts: Vec<TextBlock>,
 }
 
 struct UiInventoryItemsFrame {
@@ -1285,6 +1594,40 @@ fn inventory_items_frame(
     })
 }
 
+struct UiEquipmentItemsFrame {
+    textured_rects: Vec<UiTexturedRect>,
+    texts: Vec<TextBlock>,
+}
+
+fn equipment_items_frame(
+    item_icon_assets: &UiItemIconAssets,
+    occupied_slots: &[Option<ContentId>; EquipmentSlot::COUNT],
+    slots: &[UiTexturedRect],
+    pixels_per_unit: f32,
+) -> Result<UiEquipmentItemsFrame, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let mut textured_rects = Vec::new();
+    for (definition, slot) in occupied_slots.iter().zip(slots.iter().copied()) {
+        let Some(definition) = definition else {
+            continue;
+        };
+        let icon = item_icon_assets.resolve(*definition);
+        let icon_bounds = fit_item_icon(slot, icon.dimensions_px, pixels_per_unit)?;
+        textured_rects.push(UiTexturedRect {
+            min: icon_bounds.min,
+            max: icon_bounds.max,
+            texture: icon.texture,
+            uv_min: icon.uv_min,
+            uv_max: icon.uv_max,
+            tint: [1.0; 4],
+        });
+    }
+    Ok(UiEquipmentItemsFrame {
+        textured_rects,
+        texts: Vec::new(),
+    })
+}
+
 fn inventory_tooltip_frame(
     window_assets: UiWindowAssets,
     registry: &ContentRegistry,
@@ -1309,8 +1652,14 @@ fn inventory_tooltip_frame(
     if min[1] + height > viewport_max[1] {
         min[1] = (cursor[1] - offset - height).max(viewport_min[1]);
     }
-    min[0] = min[0].clamp(viewport_min[0], (viewport_max[0] - width).max(viewport_min[0]));
-    min[1] = min[1].clamp(viewport_min[1], (viewport_max[1] - height).max(viewport_min[1]));
+    min[0] = min[0].clamp(
+        viewport_min[0],
+        (viewport_max[0] - width).max(viewport_min[0]),
+    );
+    min[1] = min[1].clamp(
+        viewport_min[1],
+        (viewport_max[1] - height).max(viewport_min[1]),
+    );
     let bounds = ScreenRect {
         min,
         max: [min[0] + width, min[1] + height],
@@ -1336,10 +1685,7 @@ fn inventory_tooltip_frame(
         )
     };
     let title_anchor = [bounds.min[0] + padding, bounds.min[1] + padding];
-    let detail_anchor = [
-        title_anchor[0],
-        title_anchor[1] + font_size + line_gap,
-    ];
+    let detail_anchor = [title_anchor[0], title_anchor[1] + font_size + line_gap];
     Ok(UiInventoryTooltipFrame {
         background: panel_center_fill(
             window_assets.panel,
@@ -1569,6 +1915,38 @@ fn inventory_slot_origin(
     let grid_max_y = content_max_y - INVENTORY_FOOTER_RESERVED_UNITS * pixels_per_unit;
     if origin[0] < content_min_x || max[0] > content_max_x || max[1] > grid_max_y {
         return Err("inventory window is too small for its slot grid".to_string());
+    }
+    Ok(origin)
+}
+
+fn equipment_slot_origin(
+    window_assets: UiWindowAssets,
+    slot_assets: UiSlotAssets,
+    grid: UiSlotGrid,
+    layout: UiWindowLayout,
+    pixels_per_unit: f32,
+) -> Result<[f32; 2], String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let grid_size = grid.logical_size(slot_assets)?;
+    let content_min_x = layout.window.min[0] + INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
+    let content_max_x = layout.window.max[0] - INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
+    let origin = [
+        content_min_x
+            + ((content_max_x - content_min_x) / pixels_per_unit - grid_size[0])
+                * 0.5
+                * pixels_per_unit,
+        layout.header.max[1] + 18.0 * pixels_per_unit,
+    ];
+    let max_y = origin[1]
+        + (grid_size[1] + EQUIPMENT_LABEL_GAP_UNITS + EQUIPMENT_LABEL_FONT_SIZE_UNITS)
+            * pixels_per_unit;
+    let content_max_y =
+        layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit;
+    if origin[0] < content_min_x
+        || origin[0] + grid_size[0] * pixels_per_unit > content_max_x
+        || max_y > content_max_y
+    {
+        return Err("equipment slots do not fit inside the panel content".to_string());
     }
     Ok(origin)
 }
@@ -1846,6 +2224,26 @@ pub(crate) struct ProofPanelWindow {
 }
 
 impl ProofPanelWindow {
+    fn set_side_by_side_position(
+        &mut self,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+        right: bool,
+    ) {
+        if validate_pixels_per_unit(pixels_per_unit).is_err() {
+            return;
+        }
+        let viewport_width = viewport.width as f32 / pixels_per_unit;
+        let gap = 12.0;
+        let x = if right {
+            viewport_width - NORMAL_SIZE_UNITS[0]
+        } else {
+            0.0
+        };
+        let x = if right { (x - gap).max(0.0) } else { gap };
+        self.top_left_units = Some([x, 0.0]);
+    }
+
     /// Applies one physical-key event. Returns true only when this proof owns it.
     pub(crate) fn apply_key(
         &mut self,
@@ -2604,8 +3002,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(frame.textured_rects[30].tint, INVENTORY_SLOT_SELECTED_TINT);
-        assert_eq!(frame.textured_rects.len(), 67, "one icon + tooltip background");
-        assert_eq!(frame.texts.len(), 15, "title/tabs/currency + two tooltip lines");
+        assert_eq!(
+            frame.textured_rects.len(),
+            67,
+            "one icon + tooltip background"
+        );
+        assert_eq!(
+            frame.texts.len(),
+            15,
+            "title/tabs/currency + two tooltip lines"
+        );
         assert!(
             frame
                 .texts
@@ -2684,6 +3090,69 @@ mod tests {
             false
         ));
         assert_eq!(inventory.chrome.mode, ProofPanelMode::Normal);
+    }
+
+    #[test]
+    fn drag_resolution_accepts_only_matching_equipment_slots() {
+        let item = ItemInstanceId::from_raw(7);
+        assert_eq!(
+            resolve_drag(
+                DragSource::Inventory(item),
+                DragDestination::Equipment(5),
+                Some(5)
+            ),
+            DragResolution::Equip {
+                item_instance_id: item,
+                slot: 5
+            }
+        );
+        assert_eq!(
+            resolve_drag(
+                DragSource::Inventory(item),
+                DragDestination::Equipment(4),
+                Some(5)
+            ),
+            DragResolution::Noop
+        );
+        assert_eq!(
+            resolve_drag(
+                DragSource::Inventory(item),
+                DragDestination::Equipment(5),
+                None
+            ),
+            DragResolution::Noop
+        );
+    }
+
+    #[test]
+    fn drag_resolution_handles_unequip_drop_and_no_ops_without_mutation() {
+        let item = ItemInstanceId::from_raw(8);
+        assert_eq!(
+            resolve_drag(DragSource::Equipped(2), DragDestination::Inventory, None),
+            DragResolution::Unequip { slot: 2 }
+        );
+        assert_eq!(
+            resolve_drag(
+                DragSource::Inventory(item),
+                DragDestination::Outside,
+                Some(0)
+            ),
+            DragResolution::Drop {
+                item_instance_id: item
+            }
+        );
+        assert_eq!(
+            resolve_drag(
+                DragSource::Inventory(item),
+                DragDestination::Inventory,
+                Some(0)
+            ),
+            DragResolution::Noop
+        );
+        assert_eq!(
+            resolve_drag(DragSource::Equipped(1), DragDestination::Equipment(3), None),
+            DragResolution::Noop
+        );
     }
 
     #[test]
