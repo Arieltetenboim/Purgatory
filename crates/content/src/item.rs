@@ -53,6 +53,7 @@ pub struct ItemDefinition {
     pub domain: ContentDomain,
     pub category: ItemCategory,
     pub stack_limit: u32,
+    pub drop_requires_confirmation: bool,
 }
 
 /// Client-safe icon selection for the same [`ContentId`].
@@ -142,6 +143,7 @@ mod tests {
             domain: ContentDomain::Shared,
             category: ItemCategory::Misc,
             stack_limit,
+            drop_requires_confirmation: false,
         }
     }
 

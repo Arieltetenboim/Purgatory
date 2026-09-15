@@ -871,6 +871,7 @@ mod tests {
             domain: ContentDomain::Shared,
             category: ItemCategory::Equipment,
             stack_limit: 1,
+            drop_requires_confirmation: true,
         })
         .unwrap();
         let err = reg

@@ -90,7 +90,7 @@ use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
-use crate::ui_dialog::MessageDialog;
+use crate::ui_dialog::{DialogAction, DialogButton, MessageDialog, MessageDialogRequest};
 use crate::ui_panel::{
     DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrameInput,
     InventoryWindow, InventoryWindowFrameInput, UiItemIconAssets, UiSlotAssets, UiTabAssets,
@@ -141,6 +141,33 @@ fn resolve_item_double_click(
             resolve_drag(DragSource::Equipped(slot), DragDestination::Inventory, None)
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DropDispatch {
+    Immediate,
+    AwaitConfirmation,
+    Ignored,
+}
+
+fn drop_dispatch(requires_confirmation: Option<bool>, modal_active: bool) -> DropDispatch {
+    if modal_active {
+        DropDispatch::Ignored
+    } else {
+        match requires_confirmation {
+            Some(true) => DropDispatch::AwaitConfirmation,
+            Some(false) => DropDispatch::Immediate,
+            None => DropDispatch::Ignored,
+        }
+    }
+}
+
+fn resolve_pending_drop(
+    pending: &mut Option<purgatory_common::ItemInstanceId>,
+    action: DialogAction,
+) -> Option<purgatory_common::ItemInstanceId> {
+    let item = pending.take();
+    (action == DialogAction::Confirm).then_some(item).flatten()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -243,6 +270,7 @@ struct ClientApp {
     inventory_window: InventoryWindow,
     equipment_window: EquipmentWindow,
     message_dialog: MessageDialog,
+    pending_drop: Option<purgatory_common::ItemInstanceId>,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
     last_item_click: Option<(ItemClickTarget, Instant)>,
@@ -370,6 +398,7 @@ impl ClientApp {
             inventory_window: InventoryWindow::default(),
             equipment_window: EquipmentWindow::default(),
             message_dialog: MessageDialog::default(),
+            pending_drop: None,
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
             last_item_click: None,
@@ -845,15 +874,67 @@ impl ClientApp {
                 });
             }
             DragResolution::Drop { item_instance_id } => {
-                let seq = self.next_drop_seq();
-                let _ = self.network.as_ref().is_some_and(|network| {
-                    network.try_send_drop(purgatory_protocol::DropRequest {
-                        seq,
-                        item_instance_id,
-                    })
-                });
+                let requires_confirmation = self
+                    .lifecycle
+                    .view()
+                    .inventory
+                    .iter()
+                    .find(|entry| entry.item_instance_id == item_instance_id)
+                    .and_then(|entry| self.registry.item_by_id(entry.definition))
+                    .map(|item| item.drop_requires_confirmation);
+                match drop_dispatch(requires_confirmation, self.message_dialog.is_active()) {
+                    DropDispatch::AwaitConfirmation => {
+                        self.open_drop_confirmation(item_instance_id)
+                    }
+                    DropDispatch::Immediate => self.send_drop(item_instance_id),
+                    DropDispatch::Ignored => {}
+                }
             }
             DragResolution::Noop => {}
+        }
+    }
+
+    fn send_drop(&mut self, item_instance_id: purgatory_common::ItemInstanceId) {
+        let seq = self.next_drop_seq();
+        let _ = self.network.as_ref().is_some_and(|network| {
+            network.try_send_drop(purgatory_protocol::DropRequest {
+                seq,
+                item_instance_id,
+            })
+        });
+    }
+
+    fn open_drop_confirmation(&mut self, item_instance_id: purgatory_common::ItemInstanceId) {
+        if !matches!(
+            drop_dispatch(Some(true), self.message_dialog.is_active()),
+            DropDispatch::AwaitConfirmation
+        ) || self.pending_drop.is_some()
+        {
+            return;
+        }
+        let opened = self.message_dialog.open(MessageDialogRequest {
+            id: u64::from(self.drop_seq).saturating_add(1),
+            title: "Drop Item".into(),
+            body: "Are you sure you want to drop this item?".into(),
+            buttons: vec![
+                DialogButton::new("Cancel", DialogAction::Cancel),
+                DialogButton::new("Drop", DialogAction::Confirm),
+            ],
+            default_action: Some(DialogAction::Confirm),
+            cancel_action: Some(DialogAction::Cancel),
+        });
+        if opened {
+            self.pending_drop = Some(item_instance_id);
+        }
+    }
+
+    fn resolve_drop_dialog(&mut self) {
+        let Some(result) = self.message_dialog.take_result() else {
+            return;
+        };
+        if let Some(item_instance_id) = resolve_pending_drop(&mut self.pending_drop, result.action)
+        {
+            self.send_drop(item_instance_id);
         }
     }
 
@@ -2198,6 +2279,7 @@ impl ClientApp {
         self.network_frames_this_frame = 0;
         self.last_ticks_executed = 0;
         self.poll_network();
+        self.resolve_drop_dialog();
         // Canonical client frame wall delta (same span historically used as fade_dt).
         // Prefer this over fade-named values for animation; do not pre-multiply speed.
         let frame_dt = Instant::now()
@@ -4622,6 +4704,47 @@ mod tests {
             DragResolution::Drop {
                 item_instance_id: item
             }
+        );
+    }
+
+    #[test]
+    fn protected_drop_waits_for_confirmation_and_modal_is_not_replaced() {
+        assert_eq!(
+            super::drop_dispatch(Some(true), false),
+            super::DropDispatch::AwaitConfirmation
+        );
+        assert_eq!(
+            super::drop_dispatch(Some(true), true),
+            super::DropDispatch::Ignored
+        );
+    }
+
+    #[test]
+    fn cancel_drop_sends_nothing_and_confirm_resolves_once() {
+        let item = ItemInstanceId::from_raw(9);
+        let mut pending = Some(item);
+        assert_eq!(
+            super::resolve_pending_drop(&mut pending, super::DialogAction::Cancel),
+            None
+        );
+        assert_eq!(pending, None);
+
+        pending = Some(item);
+        assert_eq!(
+            super::resolve_pending_drop(&mut pending, super::DialogAction::Confirm),
+            Some(item)
+        );
+        assert_eq!(
+            super::resolve_pending_drop(&mut pending, super::DialogAction::Confirm),
+            None
+        );
+    }
+
+    #[test]
+    fn unprotected_drop_remains_immediate() {
+        assert_eq!(
+            super::drop_dispatch(Some(false), false),
+            super::DropDispatch::Immediate
         );
     }
 

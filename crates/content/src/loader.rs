@@ -501,6 +501,8 @@ struct RawItem {
     id: String,
     category: String,
     stack_limit: u32,
+    #[serde(default)]
+    drop_requires_confirmation: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -738,6 +740,9 @@ impl RawItem {
             domain,
             category,
             stack_limit: self.stack_limit,
+            drop_requires_confirmation: self
+                .drop_requires_confirmation
+                .unwrap_or(matches!(category, ItemCategory::Equipment)),
         };
         validate_item_definition(&def)?;
         Ok(def)
@@ -1560,6 +1565,68 @@ mod tests {
         assert_eq!(item.authored_id, "item.debug.token");
         assert_eq!(item.category, ItemCategory::Consumable);
         assert_eq!(item.stack_limit, 20);
+        assert!(!item.drop_requires_confirmation);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn item_drop_confirmation_defaults_by_category_and_accepts_overrides() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-item-drop-confirmation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/items"),
+            "equipment.debug.default.json",
+            r#"{"schema_version":2,"id":"equipment.debug.default","category":"equipment","stack_limit":1}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.default.json",
+            r#"{"schema_version":1,"id":"equipment.debug.default","equipment_slot":"headwear"}"#,
+        );
+        write_file(
+            &tmp.join("shared/items"),
+            "item.debug.default.json",
+            r#"{"schema_version":2,"id":"item.debug.default","category":"misc","stack_limit":1}"#,
+        );
+        write_file(
+            &tmp.join("shared/items"),
+            "equipment.debug.override.json",
+            r#"{"schema_version":2,"id":"equipment.debug.override","category":"equipment","stack_limit":1,"drop_requires_confirmation":false}"#,
+        );
+        write_file(
+            &tmp.join("shared/equipment"),
+            "equipment.debug.override.json",
+            r#"{"schema_version":1,"id":"equipment.debug.override","equipment_slot":"headwear"}"#,
+        );
+        write_file(
+            &tmp.join("shared/items"),
+            "item.debug.override.json",
+            r#"{"schema_version":2,"id":"item.debug.override","category":"misc","stack_limit":1,"drop_requires_confirmation":true}"#,
+        );
+        let registry = load_registry(&tmp, LoadMode::Shared).expect("valid item policies");
+        assert!(
+            registry
+                .item("equipment.debug.default")
+                .is_some_and(|item| item.drop_requires_confirmation)
+        );
+        assert!(
+            registry
+                .item("item.debug.default")
+                .is_some_and(|item| !item.drop_requires_confirmation)
+        );
+        assert!(
+            registry
+                .item("equipment.debug.override")
+                .is_some_and(|item| !item.drop_requires_confirmation)
+        );
+        assert!(
+            registry
+                .item("item.debug.override")
+                .is_some_and(|item| item.drop_requires_confirmation)
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 
