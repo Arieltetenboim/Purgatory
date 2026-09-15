@@ -211,7 +211,7 @@ impl HorizontalCapsUnits {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct SourceRectPx {
     x: u32,
@@ -2370,11 +2370,10 @@ fn validate_atlas_metadata(
     if windows
         .iter()
         .any(|rect| !source_rect_fits(*rect, source_size_px))
-        || windows
-            .windows(2)
-            .any(|pair| pair[0].width != pair[1].width || pair[0].height != pair[1].height)
-        || metadata.window_slice_px.left + metadata.window_slice_px.right >= windows[0].width
-        || metadata.window_slice_px.top + metadata.window_slice_px.bottom >= windows[0].height
+        || windows.iter().any(|rect| {
+            metadata.window_slice_px.left + metadata.window_slice_px.right >= rect.width
+                || metadata.window_slice_px.top + metadata.window_slice_px.bottom >= rect.height
+        })
         || ![
             metadata.window_border_units.left,
             metadata.window_border_units.right,
@@ -3006,15 +3005,53 @@ mod tests {
         assert_eq!(
             assets.panel().source_rect,
             SourceRectPx {
-                x: 0,
-                y: 0,
+                x: 8,
+                y: 61,
                 width: 256,
-                height: 384
+                height: 356
             }
         );
         assert_eq!(assets.close_button.source_size_px, [1536, 1024]);
-        assert_eq!(assets.panel().slice_px.left, 32);
-        assert_eq!(assets.panel().slice_px.top, 64);
+        assert_eq!(assets.panel().slice_px.left, 16);
+        assert_eq!(assets.panel().slice_px.top, 58);
+        assert_eq!(assets.panel().border_units, DestinationBorders {
+            left: 16.0,
+            right: 16.0,
+            top: 38.0,
+            bottom: 16.0,
+        });
+        let image = &runtime.resource(assets.panel().texture).unwrap().image;
+        for style in PanelStyle::ALL {
+            let panel = assets.with_panel_style(style).panel();
+            let rect = panel.source_rect;
+            let alpha_bounds = image
+                .enumerate_pixels()
+                .filter(|(x, y, pixel)| {
+                    *x >= rect.x
+                        && *x < rect.x + rect.width
+                        && *y >= rect.y
+                        && *y < rect.y + rect.height
+                        && pixel.0[3] > 0
+                })
+                .fold(None, |bounds: Option<[u32; 4]>, (x, y, _)| {
+                    Some(match bounds {
+                        Some([min_x, min_y, max_x, max_y]) => [
+                            min_x.min(x),
+                            min_y.min(y),
+                            max_x.max(x),
+                            max_y.max(y),
+                        ],
+                        None => [x, y, x, y],
+                    })
+                })
+                .expect("window artwork");
+            assert!(alpha_bounds[1] <= rect.y + 1);
+            assert!(alpha_bounds[3] + 1 >= rect.y + rect.height);
+        }
+        assert_eq!(
+            assets.icons.regions.iter().collect::<std::collections::HashSet<_>>().len(),
+            25
+        );
         assert_eq!(runtime.resource_count(), 1);
         assert_eq!(
             runtime
@@ -3038,8 +3075,8 @@ mod tests {
                 assert_eq!(panel.source_size_px, base.source_size_px);
                 assert_eq!(panel.slice_px, base.slice_px);
                 assert_eq!(panel.border_units, base.border_units);
-                assert_eq!(panel.source_rect.width, base.source_rect.width);
-                assert_eq!(panel.source_rect.height, base.source_rect.height);
+                assert!(panel.source_rect.width >= 249);
+                assert!(panel.source_rect.height >= 353);
                 panel.texture
             })
             .collect();
@@ -3057,9 +3094,9 @@ mod tests {
     fn button_states_use_explicit_sheet_regions_and_preserve_three_slice_caps() {
         let button = embedded_button_assets();
         assert_eq!(button.source_size_px, [1536, 1024]);
-        assert_eq!(button.variants[0].normal.y, 384);
-        assert_eq!(button.variants[0].hover.y, 448);
-        assert_eq!(button.variants[0].pressed.y, 512);
+        assert_eq!(button.variants[0].normal.y, 448);
+        assert_eq!(button.variants[0].hover.y, 536);
+        assert_eq!(button.variants[0].pressed.y, 624);
         assert_eq!(button.height_units, 32.0);
         for state in [
             UiButtonState::Normal,
@@ -3254,7 +3291,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let content_max_y = layout.window.max[1] - window_assets.panel().border_units.bottom;
-        assert_eq!(content_max_y - slots.last().unwrap().max[1], 30.0);
+        assert_eq!(content_max_y - slots.last().unwrap().max[1], 46.0);
         let currency_bounds = inventory_currency_bounds(
             window_assets,
             slot_assets,
@@ -3874,17 +3911,40 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(frame.textured_rects.len(), 10);
-        assert_eq!(frame.textured_rects[0].size(), [32.0, 64.0]);
+        assert_eq!(frame.textured_rects[0].size(), [16.0, 38.0]);
         assert_eq!(frame.textured_rects[9].size(), [19.0, 19.0]);
         assert_eq!(
             frame.textured_rects[9].uv_min,
-            [1408.0 / 1536.0, 384.0 / 1024.0]
+            [1400.0 / 1536.0, 448.0 / 1024.0]
         );
         assert_eq!(
             frame.textured_rects[9].uv_max,
-            [1536.0 / 1536.0, 448.0 / 1024.0]
+            [1512.0 / 1536.0, 536.0 / 1024.0]
         );
         assert_eq!(frame.title.content.0, "Inventory");
+    }
+
+    #[test]
+    fn integrated_nine_slice_keeps_header_and_corners_fixed() {
+        let assets = embedded_assets();
+        let mut equipment = ProofPanelWindow::with_size([250.0, 300.0]);
+        equipment.mode = ProofPanelMode::Normal;
+        let equipment_frame = assets
+            .proof_frame(&mut equipment, "Equipment", viewport(), 1.0, None)
+            .unwrap()
+            .unwrap();
+        let mut dialog = ProofPanelWindow::with_size([400.0, 180.0]);
+        dialog.mode = ProofPanelMode::Normal;
+        let dialog_frame = assets
+            .proof_frame(&mut dialog, "Dialog", viewport(), 1.0, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(equipment_frame.textured_rects[0].size(), [16.0, 38.0]);
+        assert_eq!(dialog_frame.textured_rects[0].size(), [16.0, 38.0]);
+        assert_eq!(equipment_frame.textured_rects[4].size(), [218.0, 246.0]);
+        assert_eq!(dialog_frame.textured_rects[4].size(), [368.0, 126.0]);
+        assert_eq!(equipment_frame.textured_rects[8].size(), [16.0, 16.0]);
+        assert_eq!(dialog_frame.textured_rects[8].size(), [16.0, 16.0]);
     }
 
     #[test]
@@ -3937,11 +3997,11 @@ mod tests {
         assert_eq!(equipment_frame.textured_rects[10].texture, atlas);
         assert_eq!(
             inventory_frame.textured_rects[10].uv_min,
-            [0.0, 768.0 / 1024.0]
+            [13.0 / 1536.0, 768.0 / 1024.0]
         );
         assert_eq!(
             equipment_frame.textured_rects[10].uv_min,
-            [128.0 / 1536.0, 896.0 / 1024.0]
+            [129.0 / 1536.0, 864.0 / 1024.0]
         );
     }
 
@@ -3963,7 +4023,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             hover.textured_rects[9].uv_min,
-            [1408.0 / 1536.0, 448.0 / 1024.0]
+            [1400.0 / 1536.0, 536.0 / 1024.0]
         );
         let before = layout.close_button;
         assert!(window.apply_pointer_button(
@@ -3979,7 +4039,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             pressed.textured_rects[9].uv_min,
-            [1408.0 / 1536.0, 512.0 / 1024.0]
+            [1400.0 / 1536.0, 624.0 / 1024.0]
         );
         assert_eq!(
             assets

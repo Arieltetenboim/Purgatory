@@ -4,92 +4,92 @@
   "texture": "ATLAS.png",
   "dimensions_px": [1536, 1024],
   "windows": {
-    "base": { "x": 0, "y": 0, "width": 256, "height": 384 },
-    "blue": { "x": 256, "y": 0, "width": 256, "height": 384 },
-    "brown": { "x": 512, "y": 0, "width": 256, "height": 384 },
-    "dark1": { "x": 768, "y": 0, "width": 256, "height": 384 },
-    "dark2": { "x": 1024, "y": 0, "width": 256, "height": 384 },
-    "light1": { "x": 1280, "y": 0, "width": 256, "height": 384 }
+    "base": { "x": 8, "y": 61, "width": 256, "height": 356 },
+    "blue": { "x": 255, "y": 61, "width": 266, "height": 359 },
+    "brown": { "x": 511, "y": 61, "width": 266, "height": 355 },
+    "dark1": { "x": 767, "y": 61, "width": 266, "height": 353 },
+    "dark2": { "x": 1023, "y": 61, "width": 266, "height": 355 },
+    "light1": { "x": 1279, "y": 61, "width": 249, "height": 356 }
   },
   "window_slice_px": {
-    "left": 32,
-    "right": 32,
-    "top": 64,
-    "bottom": 32
+    "left": 16,
+    "right": 16,
+    "top": 58,
+    "bottom": 16
   },
   "window_border_units": {
-    "left": 32.0,
-    "right": 32.0,
-    "top": 64.0,
-    "bottom": 32.0
+    "left": 16.0,
+    "right": 16.0,
+    "top": 38.0,
+    "bottom": 16.0
   },
   "buttons": {
     "base": {
-      "normal": { "x": 0, "y": 384, "width": 256, "height": 64 },
-      "hover": { "x": 0, "y": 448, "width": 256, "height": 64 },
-      "pressed": { "x": 0, "y": 512, "width": 256, "height": 64 }
+      "normal": { "x": 8, "y": 448, "width": 224, "height": 88 },
+      "hover": { "x": 8, "y": 536, "width": 224, "height": 88 },
+      "pressed": { "x": 8, "y": 624, "width": 224, "height": 88 }
     },
     "blue": {
-      "normal": { "x": 256, "y": 384, "width": 256, "height": 64 },
-      "hover": { "x": 256, "y": 448, "width": 256, "height": 64 },
-      "pressed": { "x": 256, "y": 512, "width": 256, "height": 64 }
+      "normal": { "x": 228, "y": 448, "width": 226, "height": 88 },
+      "hover": { "x": 228, "y": 536, "width": 226, "height": 88 },
+      "pressed": { "x": 228, "y": 624, "width": 226, "height": 88 }
     },
     "brown": {
-      "normal": { "x": 512, "y": 384, "width": 256, "height": 64 },
-      "hover": { "x": 512, "y": 448, "width": 256, "height": 64 },
-      "pressed": { "x": 512, "y": 512, "width": 256, "height": 64 }
+      "normal": { "x": 449, "y": 448, "width": 217, "height": 88 },
+      "hover": { "x": 449, "y": 536, "width": 217, "height": 88 },
+      "pressed": { "x": 449, "y": 624, "width": 217, "height": 88 }
     },
     "dark1": {
-      "normal": { "x": 768, "y": 384, "width": 256, "height": 64 },
-      "hover": { "x": 768, "y": 448, "width": 256, "height": 64 },
-      "pressed": { "x": 768, "y": 512, "width": 256, "height": 64 }
+      "normal": { "x": 663, "y": 448, "width": 225, "height": 88 },
+      "hover": { "x": 663, "y": 536, "width": 225, "height": 88 },
+      "pressed": { "x": 663, "y": 624, "width": 225, "height": 88 }
     },
     "dark2": {
-      "normal": { "x": 1024, "y": 384, "width": 256, "height": 64 },
-      "hover": { "x": 1024, "y": 448, "width": 256, "height": 64 },
-      "pressed": { "x": 1024, "y": 512, "width": 256, "height": 64 }
+      "normal": { "x": 886, "y": 448, "width": 228, "height": 88 },
+      "hover": { "x": 886, "y": 536, "width": 228, "height": 88 },
+      "pressed": { "x": 886, "y": 624, "width": 228, "height": 88 }
     },
     "light1": {
-      "normal": { "x": 1280, "y": 384, "width": 256, "height": 64 },
-      "hover": { "x": 1280, "y": 448, "width": 256, "height": 64 },
-      "pressed": { "x": 1280, "y": 512, "width": 256, "height": 64 }
+      "normal": { "x": 1105, "y": 448, "width": 233, "height": 88 },
+      "hover": { "x": 1105, "y": 536, "width": 233, "height": 88 },
+      "pressed": { "x": 1105, "y": 624, "width": 233, "height": 88 }
     }
   },
-  "button_slice_px": { "left": 32, "right": 32 },
+  "button_slice_px": { "left": 24, "right": 24 },
   "button_cap_units": { "left": 8.0, "right": 8.0 },
   "button_height_units": 32.0,
   "close_button": {
-    "normal": { "x": 1408, "y": 384, "width": 128, "height": 64 },
-    "hover": { "x": 1408, "y": 448, "width": 128, "height": 64 },
-    "pressed": { "x": 1408, "y": 512, "width": 128, "height": 64 }
+    "normal": { "x": 1400, "y": 448, "width": 112, "height": 88 },
+    "hover": { "x": 1400, "y": 536, "width": 112, "height": 88 },
+    "pressed": { "x": 1400, "y": 624, "width": 112, "height": 88 }
   },
   "close_size_units": [19.0, 19.0],
   "close_right_inset_units": 5.0,
   "icons": {
-    "bag": { "x": 0, "y": 768, "width": 128, "height": 128 },
-    "chest": { "x": 128, "y": 768, "width": 128, "height": 128 },
-    "coin": { "x": 256, "y": 768, "width": 128, "height": 128 },
-    "star": { "x": 384, "y": 768, "width": 128, "height": 128 },
-    "heart": { "x": 512, "y": 768, "width": 128, "height": 128 },
-    "plus": { "x": 640, "y": 768, "width": 128, "height": 128 },
-    "potion_red": { "x": 768, "y": 768, "width": 128, "height": 128 },
-    "potion_blue": { "x": 896, "y": 768, "width": 128, "height": 128 },
-    "map": { "x": 1024, "y": 768, "width": 128, "height": 128 },
-    "gear": { "x": 1152, "y": 768, "width": 128, "height": 128 },
-    "home": { "x": 1280, "y": 768, "width": 128, "height": 128 },
-    "sword": { "x": 1408, "y": 768, "width": 128, "height": 128 },
-    "shield": { "x": 0, "y": 896, "width": 128, "height": 128 },
-    "helmet": { "x": 128, "y": 896, "width": 128, "height": 128 },
-    "magnifier": { "x": 256, "y": 896, "width": 128, "height": 128 },
-    "exclamation": { "x": 384, "y": 896, "width": 128, "height": 128 },
-    "question": { "x": 512, "y": 896, "width": 128, "height": 128 },
-    "minus": { "x": 640, "y": 896, "width": 128, "height": 128 },
-    "arrow_up": { "x": 768, "y": 896, "width": 128, "height": 128 },
-    "arrow_down": { "x": 896, "y": 896, "width": 128, "height": 128 },
-    "group": { "x": 1024, "y": 896, "width": 128, "height": 128 },
-    "speech": { "x": 1152, "y": 896, "width": 128, "height": 128 },
-    "flag": { "x": 1280, "y": 896, "width": 128, "height": 128 },
-    "key": { "x": 1280, "y": 896, "width": 128, "height": 128 },
-    "door": { "x": 1408, "y": 896, "width": 128, "height": 128 }
+    "bag": { "x": 13, "y": 768, "width": 118, "height": 70 },
+    "chest": { "x": 141, "y": 768, "width": 113, "height": 70 },
+    "coin": { "x": 270, "y": 768, "width": 92, "height": 70 },
+    "star": { "x": 383, "y": 768, "width": 97, "height": 68 },
+    "heart": { "x": 501, "y": 768, "width": 110, "height": 64 },
+    "plus": { "x": 621, "y": 768, "width": 101, "height": 66 },
+    "potion_red": { "x": 751, "y": 768, "width": 97, "height": 80 },
+    "potion_blue": { "x": 879, "y": 768, "width": 97, "height": 81 },
+    "map": { "x": 1005, "y": 768, "width": 103, "height": 81 },
+    "gear": { "x": 1137, "y": 768, "width": 112, "height": 71 },
+    "home": { "x": 1265, "y": 768, "width": 109, "height": 76 },
+    "sword": { "x": 1390, "y": 768, "width": 101, "height": 66 },
+    "shield": { "x": 14, "y": 861, "width": 101, "height": 99 },
+    "helmet": { "x": 129, "y": 864, "width": 98, "height": 96 },
+    "magnifier": { "x": 239, "y": 861, "width": 109, "height": 99 },
+    "exclamation": { "x": 367, "y": 863, "width": 51, "height": 100 },
+    "question": { "x": 457, "y": 862, "width": 73, "height": 100 },
+    "minus": { "x": 546, "y": 854, "width": 113, "height": 106 },
+    "arrow_up": { "x": 677, "y": 857, "width": 99, "height": 104 },
+    "arrow_down": { "x": 796, "y": 850, "width": 101, "height": 108 },
+    "group": { "x": 910, "y": 860, "width": 100, "height": 104 },
+    "speech": { "x": 1020, "y": 856, "width": 117, "height": 108 },
+    "flag": { "x": 1149, "y": 856, "width": 100, "height": 109 },
+    "key": { "x": 1261, "y": 864, "width": 100, "height": 103 },
+    "door": { "x": 1385, "y": 849, "width": 105, "height": 127 }
   }
 }
