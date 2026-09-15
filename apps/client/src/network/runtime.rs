@@ -83,6 +83,8 @@ enum ClientGameplayMsg {
     Unequip(purgatory_protocol::UnequipRequest),
     #[allow(dead_code)]
     Pickup(purgatory_protocol::PickupRequest),
+    #[allow(dead_code)]
+    Drop(purgatory_protocol::DropRequest),
     DevPresentationOneShot(u8),
     DevResetPlayer,
     Respawn,
@@ -485,6 +487,13 @@ impl NetworkHandle {
     pub fn try_send_pickup(&self, request: purgatory_protocol::PickupRequest) -> bool {
         self.input
             .try_send(ClientGameplayMsg::Pickup(request))
+            .is_ok()
+    }
+
+    #[allow(dead_code)]
+    pub fn try_send_drop(&self, request: purgatory_protocol::DropRequest) -> bool {
+        self.input
+            .try_send(ClientGameplayMsg::Drop(request))
             .is_ok()
     }
 
@@ -1071,6 +1080,7 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
         ClientGameplayMsg::Equip(request) => ClientControl::Equip(request),
         ClientGameplayMsg::Unequip(request) => ClientControl::Unequip(request),
         ClientGameplayMsg::Pickup(request) => ClientControl::Pickup(request),
+        ClientGameplayMsg::Drop(request) => ClientControl::Drop(request),
         ClientGameplayMsg::DevPresentationOneShot(kind) => {
             ClientControl::DevPresentationOneShot(purgatory_protocol::DevPresentationOneShot {
                 kind,
