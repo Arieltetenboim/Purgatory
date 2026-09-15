@@ -92,7 +92,6 @@ enum ProofPanelMode {
     #[default]
     Hidden,
     Normal,
-    Double,
 }
 
 impl ProofPanelMode {
@@ -100,7 +99,6 @@ impl ProofPanelMode {
         match self {
             Self::Hidden => None,
             Self::Normal => Some(NORMAL_SIZE_UNITS),
-            Self::Double => Some([NORMAL_SIZE_UNITS[0] * 2.0, NORMAL_SIZE_UNITS[1] * 2.0]),
         }
     }
 }
@@ -1272,6 +1270,20 @@ impl InventoryWindow {
             .any(|bounds| bounds.contains(cursor))
     }
 
+    pub(crate) fn close_button_at(
+        &mut self,
+        window_assets: UiWindowAssets,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        window_assets
+            .layout(&mut self.chrome, viewport, pixels_per_unit)
+            .ok()
+            .flatten()
+            .is_some_and(|layout| layout.close_button.contains(cursor))
+    }
+
     fn item_at(&self, cursor: [f32; 2]) -> Option<ItemInstanceId> {
         self.item_hit_regions
             .iter()
@@ -1377,10 +1389,11 @@ impl EquipmentWindow {
         state: ElementState,
         repeat: bool,
     ) -> bool {
-        if physical_key != PhysicalKey::Code(KeyCode::KeyI) {
+        if physical_key != PhysicalKey::Code(KeyCode::KeyO) {
             return false;
         }
-        self.chrome.apply_key(physical_key, state, repeat)
+        self.chrome
+            .apply_key(PhysicalKey::Code(KeyCode::KeyI), state, repeat)
     }
 
     pub(crate) fn arrange_side_by_side(
@@ -1555,6 +1568,20 @@ impl EquipmentWindow {
             .iter()
             .position(|bounds| bounds.contains(cursor))
             .and_then(|index| u8::try_from(index).ok())
+    }
+
+    pub(crate) fn close_button_at(
+        &mut self,
+        window_assets: UiWindowAssets,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        window_assets
+            .layout(&mut self.chrome, viewport, pixels_per_unit)
+            .ok()
+            .flatten()
+            .is_some_and(|layout| layout.close_button.contains(cursor))
     }
 }
 
@@ -2305,8 +2332,6 @@ impl ProofPanelWindow {
         self.mode = match code {
             KeyCode::KeyI if self.mode == ProofPanelMode::Normal => ProofPanelMode::Hidden,
             KeyCode::KeyI => ProofPanelMode::Normal,
-            KeyCode::KeyO if self.mode == ProofPanelMode::Double => ProofPanelMode::Hidden,
-            KeyCode::KeyO => ProofPanelMode::Double,
             _ => return false,
         };
         // Keyboard open/size changes begin centered, matching the original
@@ -3146,6 +3171,116 @@ mod tests {
     }
 
     #[test]
+    fn inventory_and_equipment_hotkeys_and_close_buttons_are_independent() {
+        let assets = embedded_assets();
+        let mut inventory = InventoryWindow::default();
+        let mut equipment = EquipmentWindow::default();
+
+        assert!(inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        assert_eq!(inventory.chrome.mode, ProofPanelMode::Normal);
+        assert_eq!(equipment.chrome.mode, ProofPanelMode::Hidden);
+
+        assert!(equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false
+        ));
+        assert_eq!(inventory.chrome.mode, ProofPanelMode::Normal);
+        assert_eq!(equipment.chrome.mode, ProofPanelMode::Normal);
+        assert_eq!(
+            assets
+                .layout(&mut equipment.chrome, viewport(), 1.0)
+                .unwrap()
+                .unwrap()
+                .window
+                .width(),
+            NORMAL_SIZE_UNITS[0]
+        );
+
+        assert!(inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        assert_eq!(inventory.chrome.mode, ProofPanelMode::Hidden);
+        assert_eq!(equipment.chrome.mode, ProofPanelMode::Normal);
+        assert!(equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false
+        ));
+        assert_eq!(inventory.chrome.mode, ProofPanelMode::Hidden);
+        assert_eq!(equipment.chrome.mode, ProofPanelMode::Hidden);
+        assert!(inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        assert!(equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false
+        ));
+
+        let inventory_close = assets
+            .layout(&mut inventory.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap()
+            .close_button
+            .min;
+        assert!(inventory.apply_pointer_button(
+            assets,
+            embedded_tab_assets(),
+            ElementState::Pressed,
+            Some(inventory_close),
+            viewport(),
+            1.0,
+        ));
+        assert!(inventory.apply_pointer_button(
+            assets,
+            embedded_tab_assets(),
+            ElementState::Released,
+            Some(inventory_close),
+            viewport(),
+            1.0,
+        ));
+        assert_eq!(inventory.chrome.mode, ProofPanelMode::Hidden);
+        assert_eq!(equipment.chrome.mode, ProofPanelMode::Normal);
+
+        assert!(inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        let equipment_close = assets
+            .layout(&mut equipment.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap()
+            .close_button
+            .min;
+        assert!(equipment.apply_pointer_button(
+            assets,
+            ElementState::Pressed,
+            Some(equipment_close),
+            viewport(),
+            1.0,
+        ));
+        assert!(equipment.apply_pointer_button(
+            assets,
+            ElementState::Released,
+            Some(equipment_close),
+            viewport(),
+            1.0,
+        ));
+        assert_eq!(inventory.chrome.mode, ProofPanelMode::Normal);
+        assert_eq!(equipment.chrome.mode, ProofPanelMode::Hidden);
+    }
+
+    #[test]
     fn equipment_same_slot_release_is_click_and_elsewhere_is_drag() {
         let window_assets = embedded_assets();
         let mut equipment = EquipmentWindow::default();
@@ -3314,39 +3449,6 @@ mod tests {
     }
 
     #[test]
-    fn header_caps_and_panel_corners_remain_constant_at_double_size() {
-        let assets = embedded_assets();
-        let mut normal = normal_window();
-        let normal = assets
-            .proof_frame(&mut normal, "Panel", viewport(), 1.0, None)
-            .unwrap()
-            .unwrap();
-        let mut double = ProofPanelWindow::default();
-        double.apply_key(
-            PhysicalKey::Code(KeyCode::KeyO),
-            ElementState::Pressed,
-            false,
-        );
-        let double = assets
-            .proof_frame(&mut double, "Panel", viewport(), 1.0, None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            normal.textured_rects[0].size(),
-            double.textured_rects[0].size()
-        );
-        assert_eq!(
-            normal.textured_rects[9].size(),
-            double.textured_rects[9].size()
-        );
-        assert_eq!(
-            normal.textured_rects[11].size(),
-            double.textured_rects[11].size()
-        );
-        assert_eq!(double.textured_rects[10].size(), [474.0, 30.0]);
-    }
-
-    #[test]
     fn close_button_visual_tracks_hover_and_press_without_moving_hit_bounds() {
         let assets = embedded_assets();
         let mut window = normal_window();
@@ -3503,18 +3605,6 @@ mod tests {
             false
         ));
         assert_eq!(window.mode, ProofPanelMode::Normal);
-        assert!(window.apply_key(
-            PhysicalKey::Code(KeyCode::KeyO),
-            ElementState::Pressed,
-            false
-        ));
-        assert_eq!(window.mode, ProofPanelMode::Double);
-        assert!(window.apply_key(
-            PhysicalKey::Code(KeyCode::KeyO),
-            ElementState::Pressed,
-            false
-        ));
-        assert_eq!(window.mode, ProofPanelMode::Hidden);
         assert!(!window.apply_key(
             PhysicalKey::Code(KeyCode::KeyP),
             ElementState::Pressed,

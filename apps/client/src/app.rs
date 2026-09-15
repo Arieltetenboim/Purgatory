@@ -4428,15 +4428,19 @@ impl ApplicationHandler for ClientApp {
                         event.state,
                         event.repeat,
                     );
-                    if inventory_key || equipment_key {
-                        if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
-                            && event.physical_key == PhysicalKey::Code(KeyCode::KeyI)
-                        {
+                    if inventory_key {
+                        if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() {
                             self.inventory_window.arrange_side_by_side(
                                 viewport,
                                 pixels_per_unit,
                                 false,
                             );
+                        }
+                        window.request_redraw();
+                        return;
+                    }
+                    if equipment_key {
+                        if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() {
                             self.equipment_window.arrange_side_by_side(
                                 viewport,
                                 pixels_per_unit,
@@ -4540,21 +4544,63 @@ impl ApplicationHandler for ClientApp {
                 {
                     if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
                         && {
-                            let inventory_handled = self.inventory_window.apply_pointer_button(
-                                self.ui_window_assets,
-                                self.ui_tab_assets,
-                                state,
-                                self.cursor_position,
-                                viewport,
-                                pixels_per_unit,
-                            );
-                            let equipment_handled = self.equipment_window.apply_pointer_button(
-                                self.ui_window_assets,
-                                state,
-                                self.cursor_position,
-                                viewport,
-                                pixels_per_unit,
-                            );
+                            let close_inventory = state == ElementState::Pressed
+                                && self.cursor_position.is_some_and(|cursor| {
+                                    self.inventory_window.close_button_at(
+                                        self.ui_window_assets,
+                                        cursor,
+                                        viewport,
+                                        pixels_per_unit,
+                                    )
+                                });
+                            let close_equipment = state == ElementState::Pressed
+                                && !close_inventory
+                                && self.cursor_position.is_some_and(|cursor| {
+                                    self.equipment_window.close_button_at(
+                                        self.ui_window_assets,
+                                        cursor,
+                                        viewport,
+                                        pixels_per_unit,
+                                    )
+                                });
+                            let inventory_handled = if close_inventory || close_equipment {
+                                close_inventory
+                                    && self.inventory_window.apply_pointer_button(
+                                        self.ui_window_assets,
+                                        self.ui_tab_assets,
+                                        state,
+                                        self.cursor_position,
+                                        viewport,
+                                        pixels_per_unit,
+                                    )
+                            } else {
+                                self.inventory_window.apply_pointer_button(
+                                    self.ui_window_assets,
+                                    self.ui_tab_assets,
+                                    state,
+                                    self.cursor_position,
+                                    viewport,
+                                    pixels_per_unit,
+                                )
+                            };
+                            let equipment_handled = if close_inventory || close_equipment {
+                                close_equipment
+                                    && self.equipment_window.apply_pointer_button(
+                                        self.ui_window_assets,
+                                        state,
+                                        self.cursor_position,
+                                        viewport,
+                                        pixels_per_unit,
+                                    )
+                            } else {
+                                self.equipment_window.apply_pointer_button(
+                                    self.ui_window_assets,
+                                    state,
+                                    self.cursor_position,
+                                    viewport,
+                                    pixels_per_unit,
+                                )
+                            };
                             if state == ElementState::Released {
                                 if let Some(item) = self.inventory_window.take_completed_drag() {
                                     self.last_item_click = None;
