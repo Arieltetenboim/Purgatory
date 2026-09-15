@@ -2,6 +2,7 @@
 
 use super::sections::DebugSectionMap;
 use crate::network::ImpairmentProfile;
+use crate::ui_panel::PanelStyle;
 use purgatory_common::{ContentId, ItemInstanceId};
 
 /// Skeleton Proof animation source. Default remains the A1 manual slider.
@@ -27,6 +28,8 @@ impl AnimationProofMode {
 /// Presentation / harness toggles controlled by the debug overlay.
 #[derive(Clone, Debug)]
 pub struct DebugUiState {
+    /// Temporary presentation selector for the production panel proof.
+    pub panel_style: PanelStyle,
     pub time_scale: f32,
     pub camera_follow: bool,
     pub center_on_player: bool,
@@ -164,6 +167,7 @@ pub struct DebugUiState {
 impl Default for DebugUiState {
     fn default() -> Self {
         Self {
+            panel_style: PanelStyle::default(),
             time_scale: 1.0,
             camera_follow: true,
             center_on_player: false,

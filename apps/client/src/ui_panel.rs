@@ -17,6 +17,11 @@ use crate::renderer::{
 };
 
 const PANEL_PNG: &[u8] = include_bytes!("../../../Graphic/ui/panel.png");
+const PANEL_BLUE_PNG: &[u8] = include_bytes!("../../../Graphic/ui/panelblue.png");
+const PANEL_BROWN_PNG: &[u8] = include_bytes!("../../../Graphic/ui/panelbrown.png");
+const PANEL_DARK1_PNG: &[u8] = include_bytes!("../../../Graphic/ui/paneldark1.png");
+const PANEL_DARK2_PNG: &[u8] = include_bytes!("../../../Graphic/ui/paneldark2.png");
+const PANEL_LIGHT1_PNG: &[u8] = include_bytes!("../../../Graphic/ui/panellight1.png");
 const PANEL_METADATA: &str = include_str!("../../../Graphic/ui/panel.ui.json");
 const PANEL_TEXTURE_FILE: &str = "panel.png";
 const HEADER_PNG: &[u8] = include_bytes!("../../../Graphic/ui/header.png");
@@ -31,7 +36,9 @@ const TAB_TEXTURE_FILE: &str = "inventory_tab.png";
 const SLOT_PNG: &[u8] = include_bytes!("../../../Graphic/ui/inventory_slot.png");
 const SLOT_METADATA: &str = include_str!("../../../Graphic/ui/inventory_slot.ui.json");
 const SLOT_TEXTURE_FILE: &str = "inventory_slot.png";
-const NORMAL_SIZE_UNITS: [f32; 2] = [282.0, 440.0];
+const OK_BUTTON_PNG: &[u8] = include_bytes!("../../../Graphic/ui/btn_ok.png");
+const OK_BUTTON_METADATA: &str = include_str!("../../../Graphic/ui/btn_ok.ui.json");
+const OK_BUTTON_TEXTURE_FILE: &str = "btn_ok.png";
 const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 12.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
@@ -60,7 +67,7 @@ const INVENTORY_QUANTITY_INSET_UNITS: f32 = 3.0;
 const INVENTORY_QUANTITY_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
 const EQUIPMENT_SLOT_COLUMNS: usize = 2;
 const EQUIPMENT_SLOT_ROWS: usize = 3;
-const EQUIPMENT_SLOT_GAP_UNITS: f32 = 12.0;
+const EQUIPMENT_SLOT_GAP_UNITS: f32 = 20.0;
 const EQUIPMENT_LABEL_FONT_SIZE_UNITS: f32 = 10.0;
 const EQUIPMENT_LABEL_GAP_UNITS: f32 = 3.0;
 const EQUIPMENT_LABEL_COLOR: [f32; 4] = [0.08, 0.11, 0.16, 1.0];
@@ -96,10 +103,43 @@ enum ProofPanelMode {
 }
 
 impl ProofPanelMode {
-    fn logical_size(self) -> Option<[f32; 2]> {
+    fn logical_size(self, size_units: [f32; 2]) -> Option<[f32; 2]> {
         match self {
             Self::Hidden => None,
-            Self::Normal => Some(NORMAL_SIZE_UNITS),
+            Self::Normal => Some(size_units),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum PanelStyle {
+    #[default]
+    Base,
+    Blue,
+    Brown,
+    Dark1,
+    Dark2,
+    Light1,
+}
+
+impl PanelStyle {
+    pub(crate) const ALL: [Self; 6] = [
+        Self::Base,
+        Self::Blue,
+        Self::Brown,
+        Self::Dark1,
+        Self::Dark2,
+        Self::Light1,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Base => "Base",
+            Self::Blue => "Blue",
+            Self::Brown => "Brown",
+            Self::Dark1 => "Dark 1",
+            Self::Dark2 => "Dark 2",
+            Self::Light1 => "Light 1",
         }
     }
 }
@@ -259,12 +299,43 @@ struct UiSlotMetadata {
     size_units: [f32; 2],
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ButtonStates {
+    normal: SourceRectPx,
+    hover: SourceRectPx,
+    pressed: SourceRectPx,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UiButtonMetadata {
+    schema_version: u32,
+    id: String,
+    texture: String,
+    states: ButtonStates,
+    slice_px: HorizontalInsetsPx,
+    cap_units: HorizontalCapsUnits,
+    height_units: f32,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct PanelAsset {
     texture: SpriteTextureId,
     source_size_px: [u32; 2],
     slice_px: SourceInsets,
     border_units: DestinationBorders,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PanelVariants {
+    assets: [PanelAsset; 6],
+}
+
+impl PanelVariants {
+    fn selected(self, style: PanelStyle) -> PanelAsset {
+        self.assets[style as usize]
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -305,6 +376,23 @@ pub(crate) struct UiSlotAssets {
     size_units: [f32; 2],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UiButtonState {
+    Normal,
+    Hover,
+    Pressed,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiButtonAssets {
+    texture: SpriteTextureId,
+    source_size_px: [u32; 2],
+    states: ButtonStates,
+    slice_px: HorizontalInsetsPx,
+    cap_units: HorizontalCapsUnits,
+    pub(crate) height_units: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct UiItemIconVisual {
     texture: SpriteTextureId,
@@ -321,30 +409,49 @@ pub(crate) struct UiItemIconAssets {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UiWindowAssets {
-    panel: PanelAsset,
+    panels: PanelVariants,
     header: HeaderAsset,
     close_button: CloseButtonAsset,
+    panel_style: PanelStyle,
 }
 
 impl UiWindowAssets {
     pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
         let panel_metadata: UiPanelMetadata = serde_json::from_str(PANEL_METADATA)
             .map_err(|error| format!("parse UI panel metadata: {error}"))?;
-        let (panel_texture, panel_source_size) = register_metadata_texture(
-            assets,
-            &panel_metadata.id,
-            &panel_metadata.texture,
-            PANEL_TEXTURE_FILE,
-            PANEL_PNG,
-            "panel",
-        )?;
-        validate_panel_metadata(&panel_metadata, panel_source_size)?;
-        let panel = PanelAsset {
-            texture: panel_texture,
-            source_size_px: panel_source_size,
-            slice_px: panel_metadata.slice_px,
-            border_units: panel_metadata.border_units,
-        };
+        if panel_metadata.texture != PANEL_TEXTURE_FILE {
+            return Err(format!(
+                "UI panel metadata names unexpected base texture {:?}",
+                panel_metadata.texture
+            ));
+        }
+        let panel_sources = [
+            (PANEL_TEXTURE_FILE, PANEL_PNG),
+            ("panelblue.png", PANEL_BLUE_PNG),
+            ("panelbrown.png", PANEL_BROWN_PNG),
+            ("paneldark1.png", PANEL_DARK1_PNG),
+            ("paneldark2.png", PANEL_DARK2_PNG),
+            ("panellight1.png", PANEL_LIGHT1_PNG),
+        ];
+        let mut panels = Vec::with_capacity(panel_sources.len());
+        for (index, (file, png)) in panel_sources.into_iter().enumerate() {
+            let (texture, source_size_px) = register_metadata_texture(
+                assets,
+                &format!("{}.{}", panel_metadata.id, index),
+                &panel_metadata.texture,
+                PANEL_TEXTURE_FILE,
+                png,
+                "panel",
+            )?;
+            validate_panel_metadata(&panel_metadata, source_size_px)?;
+            panels.push(PanelAsset {
+                texture,
+                source_size_px,
+                slice_px: panel_metadata.slice_px,
+                border_units: panel_metadata.border_units,
+            });
+            debug_assert_eq!(index, panels.len() - 1);
+        }
 
         let header_metadata: UiHeaderMetadata = serde_json::from_str(HEADER_METADATA)
             .map_err(|error| format!("parse UI header metadata: {error}"))?;
@@ -386,10 +493,24 @@ impl UiWindowAssets {
         };
 
         Ok(Self {
-            panel,
+            panels: PanelVariants {
+                assets: panels
+                    .try_into()
+                    .map_err(|_| "UI panel variants are incomplete".to_string())?,
+            },
             header,
             close_button,
+            panel_style: PanelStyle::default(),
         })
+    }
+
+    pub(crate) fn with_panel_style(mut self, style: PanelStyle) -> Self {
+        self.panel_style = style;
+        self
+    }
+
+    fn panel(self) -> PanelAsset {
+        self.panels.selected(self.panel_style)
     }
 
     pub(crate) fn proof_frame(
@@ -403,12 +524,13 @@ impl UiWindowAssets {
         let Some(layout) = self.layout(window, viewport, pixels_per_unit)? else {
             return Ok(None);
         };
+        let panel = self.panels.selected(self.panel_style);
         let mut textured_rects = assemble_nine_slice(
             layout.window,
-            self.panel.texture,
-            self.panel.source_size_px,
-            self.panel.slice_px,
-            self.panel.border_units.scaled(pixels_per_unit),
+            panel.texture,
+            panel.source_size_px,
+            panel.slice_px,
+            panel.border_units.scaled(pixels_per_unit),
             [1.0; 4],
         )?;
         textured_rects.extend(assemble_horizontal_three_slice(
@@ -470,6 +592,7 @@ impl UiWindowAssets {
     ) -> Result<Option<UiMessageChrome>, String> {
         let mut window = ProofPanelWindow {
             mode: ProofPanelMode::Normal,
+            size_units: [400.0, 180.0],
             ..ProofPanelWindow::default()
         };
         let Some(layout) = self.layout(&mut window, viewport, pixels_per_unit)? else {
@@ -494,7 +617,7 @@ impl UiWindowAssets {
         pixels_per_unit: f32,
     ) -> Result<Option<UiWindowLayout>, String> {
         validate_pixels_per_unit(pixels_per_unit)?;
-        let Some(window_size_units) = window.mode.logical_size() else {
+        let Some(window_size_units) = window.mode.logical_size(window.size_units) else {
             return Ok(None);
         };
         let viewport_size_units = [
@@ -725,6 +848,53 @@ impl UiSlotAssets {
             }
         }
         Ok(textured_rects)
+    }
+}
+
+impl UiButtonAssets {
+    pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
+        let metadata: UiButtonMetadata = serde_json::from_str(OK_BUTTON_METADATA)
+            .map_err(|error| format!("parse UI button metadata: {error}"))?;
+        let (texture, source_size_px) = register_metadata_texture(
+            assets,
+            &metadata.id,
+            &metadata.texture,
+            OK_BUTTON_TEXTURE_FILE,
+            OK_BUTTON_PNG,
+            "button",
+        )?;
+        validate_button_metadata(&metadata, source_size_px)?;
+        Ok(Self {
+            texture,
+            source_size_px,
+            states: metadata.states,
+            slice_px: metadata.slice_px,
+            cap_units: metadata.cap_units,
+            height_units: metadata.height_units,
+        })
+    }
+
+    pub(crate) fn frame(
+        self,
+        bounds: ScreenRect,
+        state: UiButtonState,
+        pixels_per_unit: f32,
+    ) -> Result<Vec<UiTexturedRect>, String> {
+        validate_pixels_per_unit(pixels_per_unit)?;
+        let source = match state {
+            UiButtonState::Normal => self.states.normal,
+            UiButtonState::Hover => self.states.hover,
+            UiButtonState::Pressed => self.states.pressed,
+        };
+        assemble_horizontal_three_slice_region(
+            bounds,
+            self.texture,
+            self.source_size_px,
+            source,
+            self.slice_px,
+            self.cap_units.scaled(pixels_per_unit),
+            [1.0; 4],
+        )
     }
 }
 
@@ -1418,7 +1588,7 @@ pub(crate) struct EquipmentWindowFrameInput<'a> {
 impl Default for EquipmentWindow {
     fn default() -> Self {
         Self {
-            chrome: ProofPanelWindow::default(),
+            chrome: ProofPanelWindow::with_size([250.0, 300.0]),
             slots: UiSlotGrid::new(
                 EQUIPMENT_SLOT_COLUMNS,
                 EQUIPMENT_SLOT_ROWS,
@@ -1896,7 +2066,7 @@ fn inventory_tooltip_frame(
     let detail_anchor = [title_anchor[0], title_anchor[1] + font_size + line_gap];
     Ok(UiInventoryTooltipFrame {
         background: panel_center_fill(
-            window_assets.panel,
+            window_assets.panel(),
             bounds,
             INVENTORY_TOOLTIP_BACKGROUND_TINT,
         ),
@@ -1987,7 +2157,7 @@ fn inventory_grid_chrome(
         ],
     };
     let content_max_y =
-        layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit;
+        layout.window.max[1] - window_assets.panel().border_units.bottom * pixels_per_unit;
     if separator.max[1] > slot_origin[1]
         || background.min[0] < tab_bounds.min[0]
         || background.max[0] > tab_bounds.max[0]
@@ -1999,11 +2169,15 @@ fn inventory_grid_chrome(
     }
     Ok([
         panel_center_fill(
-            window_assets.panel,
+            window_assets.panel(),
             background,
             INVENTORY_GRID_BACKGROUND_TINT,
         ),
-        panel_center_fill(window_assets.panel, separator, INVENTORY_TAB_SEPARATOR_TINT),
+        panel_center_fill(
+            window_assets.panel(),
+            separator,
+            INVENTORY_TAB_SEPARATOR_TINT,
+        ),
     ])
 }
 
@@ -2048,7 +2222,7 @@ fn inventory_currency_bounds(
         max: [
             layout.window.max[0] - INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
             layout.window.max[1]
-                - window_assets.panel.border_units.bottom * pixels_per_unit
+                - window_assets.panel().border_units.bottom * pixels_per_unit
                 - inset,
         ],
     };
@@ -2088,7 +2262,7 @@ fn inventory_tab_bounds(
         * pixels_per_unit;
     if bounds.width() <= minimum_width
         || bounds.max[1]
-            >= layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit
+            >= layout.window.max[1] - window_assets.panel().border_units.bottom * pixels_per_unit
     {
         return Err("inventory window is too small for its tab strip".to_string());
     }
@@ -2119,7 +2293,7 @@ fn inventory_slot_origin(
         origin[1] + grid_size[1] * pixels_per_unit,
     ];
     let content_max_y =
-        layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit;
+        layout.window.max[1] - window_assets.panel().border_units.bottom * pixels_per_unit;
     let grid_max_y = content_max_y - INVENTORY_FOOTER_RESERVED_UNITS * pixels_per_unit;
     if origin[0] < content_min_x || max[0] > content_max_x || max[1] > grid_max_y {
         return Err("inventory window is too small for its slot grid".to_string());
@@ -2138,18 +2312,21 @@ fn equipment_slot_origin(
     let grid_size = grid.logical_size(slot_assets)?;
     let content_min_x = layout.window.min[0] + INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
     let content_max_x = layout.window.max[0] - INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
+    let content_min_y = layout.header.max[1] + 8.0 * pixels_per_unit;
+    let content_max_y =
+        layout.window.max[1] - window_assets.panel().border_units.bottom * pixels_per_unit;
+    let group_height = (grid_size[1] + EQUIPMENT_LABEL_GAP_UNITS + EQUIPMENT_LABEL_FONT_SIZE_UNITS)
+        * pixels_per_unit;
     let origin = [
         content_min_x
             + ((content_max_x - content_min_x) / pixels_per_unit - grid_size[0])
                 * 0.5
                 * pixels_per_unit,
-        layout.header.max[1] + 18.0 * pixels_per_unit,
+        content_min_y + (content_max_y - content_min_y - group_height).max(0.0) * 0.5,
     ];
     let max_y = origin[1]
         + (grid_size[1] + EQUIPMENT_LABEL_GAP_UNITS + EQUIPMENT_LABEL_FONT_SIZE_UNITS)
             * pixels_per_unit;
-    let content_max_y =
-        layout.window.max[1] - window_assets.panel.border_units.bottom * pixels_per_unit;
     if origin[0] < content_min_x
         || origin[0] + grid_size[0] * pixels_per_unit > content_max_x
         || max_y > content_max_y
@@ -2365,6 +2542,52 @@ fn validate_slot_metadata(
     Ok(())
 }
 
+fn validate_button_metadata(
+    metadata: &UiButtonMetadata,
+    source_size_px: [u32; 2],
+) -> Result<(), String> {
+    validate_schema_and_id(metadata.schema_version, &metadata.id, "button")?;
+    if source_size_px.contains(&0)
+        || ![
+            metadata.states.normal,
+            metadata.states.hover,
+            metadata.states.pressed,
+        ]
+        .into_iter()
+        .all(|rect| source_rect_fits(rect, source_size_px))
+        || ![metadata.slice_px.left, metadata.slice_px.right]
+            .into_iter()
+            .all(|inset| inset < metadata.states.normal.width)
+        || metadata
+            .slice_px
+            .left
+            .saturating_add(metadata.slice_px.right)
+            >= metadata.states.normal.width
+        || !finite_positive(metadata.height_units)
+        || !finite_positive(metadata.cap_units.left)
+        || !finite_positive(metadata.cap_units.right)
+    {
+        return Err(format!(
+            "UI button {} contains invalid state or slice geometry for texture {}x{}",
+            metadata.id, source_size_px[0], source_size_px[1]
+        ));
+    }
+    if ![
+        metadata.states.normal.height,
+        metadata.states.hover.height,
+        metadata.states.pressed.height,
+    ]
+    .into_iter()
+    .all(|height| height > 0)
+    {
+        return Err(format!(
+            "UI button {} state heights must be positive",
+            metadata.id
+        ));
+    }
+    Ok(())
+}
+
 fn validate_schema_and_id(schema_version: u32, id: &str, kind: &str) -> Result<(), String> {
     if schema_version != 1 {
         return Err(format!(
@@ -2423,15 +2646,31 @@ enum CloseButtonVisual {
     Pressed,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ProofPanelWindow {
     mode: ProofPanelMode,
+    size_units: [f32; 2],
     /// Relative to the gameplay viewport in logical UI units.
     top_left_units: Option<[f32; 2]>,
     interaction: PointerInteraction,
 }
 
+impl Default for ProofPanelWindow {
+    fn default() -> Self {
+        Self::with_size([282.0, 440.0])
+    }
+}
+
 impl ProofPanelWindow {
+    fn with_size(size_units: [f32; 2]) -> Self {
+        Self {
+            mode: ProofPanelMode::Hidden,
+            size_units,
+            top_left_units: None,
+            interaction: PointerInteraction::None,
+        }
+    }
+
     fn set_side_by_side_position(
         &mut self,
         viewport: PixelViewport,
@@ -2444,7 +2683,7 @@ impl ProofPanelWindow {
         let viewport_width = viewport.width as f32 / pixels_per_unit;
         let gap = 12.0;
         let x = if right {
-            viewport_width - NORMAL_SIZE_UNITS[0]
+            viewport_width - self.size_units[0]
         } else {
             0.0
         };
@@ -2486,7 +2725,7 @@ impl ProofPanelWindow {
         let PointerInteraction::Drag { grab_offset_units } = self.interaction else {
             return false;
         };
-        let Some(window_size_units) = self.mode.logical_size() else {
+        let Some(window_size_units) = self.mode.logical_size(self.size_units) else {
             self.interaction = PointerInteraction::None;
             return false;
         };
@@ -2802,6 +3041,10 @@ mod tests {
         UiWindowAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
     }
 
+    fn embedded_button_assets() -> UiButtonAssets {
+        UiButtonAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
+    }
+
     fn embedded_tab_assets() -> UiTabAssets {
         UiTabAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
     }
@@ -2833,12 +3076,12 @@ mod tests {
     fn embedded_metadata_parses_and_validates_against_decoded_textures() {
         let mut runtime = AssetRuntime::new();
         let assets = UiWindowAssets::load_embedded(&mut runtime).unwrap();
-        assert_eq!(assets.panel.source_size_px, [1254, 1254]);
+        assert_eq!(assets.panel().source_size_px, [1254, 1254]);
         assert_eq!(assets.header.source_size_px, [2072, 139]);
         assert_eq!(assets.close_button.source_size_px, [1500, 500]);
-        assert_eq!(assets.panel.slice_px.left, 128);
+        assert_eq!(assets.panel().slice_px.left, 128);
         assert_eq!(assets.header.slice_px.left, 140);
-        assert_eq!(runtime.resource_count(), 3);
+        assert_eq!(runtime.resource_count(), 8);
         assert_eq!(
             runtime
                 .resource(assets.close_button.texture)
@@ -2847,6 +3090,107 @@ mod tests {
                 .get_pixel(0, 0)
                 .0[3],
             0
+        );
+    }
+
+    #[test]
+    fn panel_variants_share_metadata_geometry_and_have_distinct_textures() {
+        let assets = embedded_assets();
+        let base = assets.panel();
+        let textures: Vec<_> = PanelStyle::ALL
+            .into_iter()
+            .map(|style| {
+                let panel = assets.with_panel_style(style).panel();
+                assert_eq!(panel.source_size_px, base.source_size_px);
+                assert_eq!(panel.slice_px, base.slice_px);
+                assert_eq!(panel.border_units, base.border_units);
+                panel.texture
+            })
+            .collect();
+        assert_eq!(textures.len(), 6);
+        assert_eq!(
+            textures
+                .windows(2)
+                .filter(|pair| pair[0] != pair[1])
+                .count(),
+            5
+        );
+    }
+
+    #[test]
+    fn button_states_use_explicit_sheet_regions_and_preserve_three_slice_caps() {
+        let button = embedded_button_assets();
+        assert_eq!(button.source_size_px, [1536, 1024]);
+        assert_eq!(button.states.normal.y, 256);
+        assert_eq!(button.states.hover.y, 448);
+        assert_eq!(button.states.pressed.y, 640);
+        assert_eq!(button.height_units, 32.0);
+        for state in [
+            UiButtonState::Normal,
+            UiButtonState::Hover,
+            UiButtonState::Pressed,
+        ] {
+            let regions = button
+                .frame(
+                    ScreenRect {
+                        min: [10.0, 20.0],
+                        max: [210.0, 52.0],
+                    },
+                    state,
+                    1.0,
+                )
+                .unwrap();
+            assert_eq!(regions.len(), 3);
+            assert_eq!(regions[0].size(), [8.0, 32.0]);
+            assert_eq!(regions[2].size(), [8.0, 32.0]);
+            assert_eq!(regions[1].size(), [184.0, 32.0]);
+        }
+    }
+
+    #[test]
+    fn inventory_equipment_and_message_windows_resolve_individual_sizes() {
+        let assets = embedded_assets();
+        let mut inventory = InventoryWindow::default();
+        let mut equipment = EquipmentWindow::default();
+        inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false,
+        );
+        equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false,
+        );
+        let inventory_layout = assets
+            .layout(&mut inventory.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            [
+                inventory_layout.window.width(),
+                inventory_layout.window.height()
+            ],
+            [282.0, 440.0]
+        );
+        let equipment_layout = assets
+            .layout(&mut equipment.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            [
+                equipment_layout.window.width(),
+                equipment_layout.window.height()
+            ],
+            [250.0, 300.0]
+        );
+        let message = assets
+            .message_chrome("Message", viewport(), 1.0, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            [message.window.width(), message.window.height()],
+            [400.0, 180.0]
         );
     }
 
@@ -2973,7 +3317,7 @@ mod tests {
             .layout(&mut inventory.chrome, viewport(), 1.0)
             .unwrap()
             .unwrap();
-        let content_max_y = layout.window.max[1] - window_assets.panel.border_units.bottom;
+        let content_max_y = layout.window.max[1] - window_assets.panel().border_units.bottom;
         assert_eq!(content_max_y - slots.last().unwrap().max[1], 32.0);
         let currency_bounds = inventory_currency_bounds(
             window_assets,
@@ -2998,8 +3342,8 @@ mod tests {
         assert_eq!(layout.window.max[0] - bounds.max[0], 23.0);
         let background = frame.textured_rects[13];
         let separator = frame.textured_rects[14];
-        assert_eq!(background.texture, window_assets.panel.texture);
-        assert_eq!(separator.texture, window_assets.panel.texture);
+        assert_eq!(background.texture, window_assets.panel().texture);
+        assert_eq!(separator.texture, window_assets.panel().texture);
         assert_eq!(background.tint, INVENTORY_GRID_BACKGROUND_TINT);
         assert_eq!(separator.tint, INVENTORY_TAB_SEPARATOR_TINT);
         assert_eq!(separator.min, [bounds.min[0], bounds.max[1]]);
@@ -3335,7 +3679,7 @@ mod tests {
                 .unwrap()
                 .window
                 .width(),
-            NORMAL_SIZE_UNITS[0]
+            250.0
         );
 
         assert!(inventory.apply_key(
@@ -3446,7 +3790,7 @@ mod tests {
         equipment.pointer_moved(
             [cursor[0] + ITEM_DRAG_THRESHOLD_PX - 1.0, cursor[1]],
             viewport(),
-            1.0
+            1.0,
         );
         assert!(!equipment.is_dragging());
         assert!(equipment.apply_pointer_button(

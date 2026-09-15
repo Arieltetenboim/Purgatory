@@ -897,6 +897,18 @@ fn draw_display_section(
                 "Window size, render scale, and camera FOV are independent. World renders to an offscreen target at Render Scale, then linear-filters into the locked 16:9 gameplay rect. UI stays at native output resolution. Nearest-neighbor remains a future pixel-art option.",
             );
             ui.separator();
+            ui.label("Panel style:");
+            ui.horizontal_wrapped(|ui| {
+                for style in crate::ui_panel::PanelStyle::ALL {
+                    if ui
+                        .selectable_label(ui_state.panel_style == style, style.label())
+                        .clicked()
+                    {
+                        ui_state.panel_style = style;
+                    }
+                }
+            });
+            ui.separator();
             ui.label("Resolution:");
             ui.horizontal_wrapped(|ui| {
                 for preset in RESOLUTION_PRESETS {

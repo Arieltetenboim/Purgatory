@@ -3,19 +3,15 @@
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-use crate::renderer::{PixelViewport, TextAlignment, TextBlock, TextContent, TextStyle, UiRect};
-use crate::ui_panel::{ScreenRect, UiMessageChrome, UiWindowAssets};
+use crate::renderer::{PixelViewport, TextAlignment, TextBlock, TextContent, TextStyle};
+use crate::ui_panel::{ScreenRect, UiButtonAssets, UiButtonState, UiMessageChrome, UiWindowAssets};
 
 const BODY_FONT_SIZE: f32 = 14.0;
 const BUTTON_FONT_SIZE: f32 = 13.0;
-const SIDE_INSET: f32 = 22.0;
-const BODY_TOP: f32 = 54.0;
-const BUTTON_BOTTOM: f32 = 20.0;
-const BUTTON_HEIGHT: f32 = 30.0;
+const SIDE_INSET: f32 = 24.0;
+const BODY_TOP: f32 = 52.0;
+const BUTTON_BOTTOM: f32 = 12.0;
 const BUTTON_GAP: f32 = 8.0;
-const BUTTON_NORMAL: [f32; 4] = [0.78, 0.83, 0.9, 1.0];
-const BUTTON_HOVER: [f32; 4] = [0.9, 0.95, 1.0, 1.0];
-const BUTTON_PRESSED: [f32; 4] = [0.62, 0.7, 0.82, 1.0];
 
 #[allow(dead_code)] // Custom actions are consumed by future callers without UI callbacks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,6 +177,7 @@ impl MessageDialog {
     pub(crate) fn frame(
         &mut self,
         assets: UiWindowAssets,
+        button_assets: UiButtonAssets,
         viewport: PixelViewport,
         pixels_per_unit: f32,
         cursor: Option<[f32; 2]>,
@@ -208,8 +205,8 @@ impl MessageDialog {
             - BUTTON_GAP * pixels_per_unit * (request.buttons.len() - 1) as f32)
             / request.buttons.len() as f32)
             .max(1.0);
-        let button_y =
-            window.max[1] - BUTTON_BOTTOM * pixels_per_unit - BUTTON_HEIGHT * pixels_per_unit;
+        let button_height = button_assets.height_units * pixels_per_unit;
+        let button_y = window.max[1] - BUTTON_BOTTOM * pixels_per_unit - button_height;
         self.button_bounds = request
             .buttons
             .iter()
@@ -220,12 +217,12 @@ impl MessageDialog {
                     + index as f32 * (button_width + BUTTON_GAP * pixels_per_unit);
                 ScreenRect {
                     min: [x, button_y],
-                    max: [x + button_width, button_y + BUTTON_HEIGHT * pixels_per_unit],
+                    max: [x + button_width, button_y + button_height],
                 }
             })
             .collect();
         self.close_button = Some(close_button);
-        let mut rects = Vec::with_capacity(request.buttons.len());
+        let mut textured_rects = chrome.textured_rects;
         let mut texts = vec![
             chrome.title,
             TextBlock {
@@ -242,18 +239,14 @@ impl MessageDialog {
         for (index, button) in request.buttons.iter().enumerate() {
             let bounds = self.button_bounds[index];
             let hovered = cursor.is_some_and(|point| bounds.contains(point));
-            let color = if self.pressed_button == Some(index) && hovered {
-                BUTTON_PRESSED
+            let state = if self.pressed_button == Some(index) && hovered {
+                UiButtonState::Pressed
             } else if hovered {
-                BUTTON_HOVER
+                UiButtonState::Hover
             } else {
-                BUTTON_NORMAL
+                UiButtonState::Normal
             };
-            rects.push(UiRect {
-                min: bounds.min,
-                max: bounds.max,
-                color,
-            });
+            textured_rects.extend(button_assets.frame(bounds, state, pixels_per_unit)?);
             texts.push(TextBlock {
                 content: TextContent(button.label.clone()),
                 style: TextStyle {
@@ -269,8 +262,7 @@ impl MessageDialog {
             });
         }
         Ok(Some(MessageDialogFrame {
-            textured_rects: chrome.textured_rects,
-            rects,
+            textured_rects,
             texts,
         }))
     }
@@ -290,7 +282,6 @@ impl MessageDialog {
 
 pub(crate) struct MessageDialogFrame {
     pub(crate) textured_rects: Vec<crate::renderer::UiTexturedRect>,
-    pub(crate) rects: Vec<UiRect>,
     pub(crate) texts: Vec<TextBlock>,
 }
 

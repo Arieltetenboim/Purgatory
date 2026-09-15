@@ -93,8 +93,8 @@ use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
 use crate::ui_dialog::{DialogAction, DialogButton, MessageDialog, MessageDialogRequest};
 use crate::ui_panel::{
     DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrameInput,
-    InventoryWindow, InventoryWindowFrameInput, UiItemIconAssets, UiSlotAssets, UiTabAssets,
-    UiWindowAssets, resolve_drag,
+    InventoryWindow, InventoryWindowFrameInput, PanelStyle, UiButtonAssets, UiItemIconAssets,
+    UiSlotAssets, UiTabAssets, UiWindowAssets, resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
 
@@ -264,6 +264,7 @@ struct ClientApp {
     impairment_seed: u64,
     ui_runtime: UIRuntimeState,
     ui_window_assets: UiWindowAssets,
+    ui_button_assets: UiButtonAssets,
     ui_tab_assets: UiTabAssets,
     ui_slot_assets: UiSlotAssets,
     ui_item_icon_assets: UiItemIconAssets,
@@ -350,6 +351,8 @@ impl ClientApp {
             .map_err(|error| format!("PURGATORY red slime sprite error: {error}"))?;
         let ui_window_assets = UiWindowAssets::load_embedded(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI window asset error: {error}"))?;
+        let ui_button_assets = UiButtonAssets::load_embedded(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI button asset error: {error}"))?;
         let ui_tab_assets = UiTabAssets::load_embedded(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI tab asset error: {error}"))?;
         let ui_slot_assets = UiSlotAssets::load_embedded(&mut asset_runtime)
@@ -392,6 +395,7 @@ impl ClientApp {
             impairment_seed: NetworkImpairmentConfig::from_env().seed,
             ui_runtime: UIRuntimeState::Idle,
             ui_window_assets,
+            ui_button_assets,
             ui_tab_assets,
             ui_slot_assets,
             ui_item_icon_assets,
@@ -2755,8 +2759,17 @@ impl ClientApp {
                 window.scale_factor() as f32,
                 self.display.settings().ui_scale,
             );
+            #[cfg(feature = "dev-diagnostics")]
+            let panel_style = self
+                .debug
+                .as_ref()
+                .map(|debug| debug.ui.panel_style)
+                .unwrap_or(PanelStyle::default());
+            #[cfg(not(feature = "dev-diagnostics"))]
+            let panel_style = PanelStyle::default();
+            let window_assets = self.ui_window_assets.with_panel_style(panel_style);
             if let Ok(Some(frame)) = self.inventory_window.frame(InventoryWindowFrameInput {
-                window_assets: self.ui_window_assets,
+                window_assets,
                 tab_assets: self.ui_tab_assets,
                 slot_assets: self.ui_slot_assets,
                 item_icon_assets: &self.ui_item_icon_assets,
@@ -2774,7 +2787,7 @@ impl ClientApp {
                 .local_entity()
                 .and_then(|entity| entity.equipment);
             if let Ok(Some(frame)) = self.equipment_window.frame(EquipmentWindowFrameInput {
-                window_assets: self.ui_window_assets,
+                window_assets,
                 slot_assets: self.ui_slot_assets,
                 item_icon_assets: &self.ui_item_icon_assets,
                 equipment,
@@ -2786,13 +2799,13 @@ impl ClientApp {
                 ui_text.extend(frame.texts);
             }
             if let Ok(Some(frame)) = self.message_dialog.frame(
-                self.ui_window_assets,
+                window_assets,
+                self.ui_button_assets,
                 viewport,
                 pixels_per_unit,
                 self.cursor_position,
             ) {
                 ui_textured_rects.extend(frame.textured_rects);
-                ui_rects.extend(frame.rects);
                 ui_text.extend(frame.texts);
             }
         }
