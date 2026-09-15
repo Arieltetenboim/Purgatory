@@ -938,6 +938,7 @@ pub(crate) struct InventoryWindow {
     selected_item: Option<ItemInstanceId>,
     pressed_item: Option<ItemInstanceId>,
     completed_drag: Option<ItemInstanceId>,
+    completed_click: Option<ItemInstanceId>,
     slot_hit_regions: Vec<ScreenRect>,
     item_hit_regions: Vec<(ScreenRect, ItemInstanceId)>,
 }
@@ -956,6 +957,7 @@ impl Default for InventoryWindow {
             selected_item: None,
             pressed_item: None,
             completed_drag: None,
+            completed_click: None,
             slot_hit_regions: Vec::new(),
             item_hit_regions: Vec::new(),
         }
@@ -1205,6 +1207,7 @@ impl InventoryWindow {
                 if let Some(pressed) = self.pressed_item.take() {
                     if hit_item == Some(pressed) {
                         self.selected_item = Some(pressed);
+                        self.completed_click = Some(pressed);
                     } else {
                         self.completed_drag = Some(pressed);
                     }
@@ -1226,10 +1229,15 @@ impl InventoryWindow {
         self.tabs.cancel_pointer_interaction();
         self.pressed_item = None;
         self.completed_drag = None;
+        self.completed_click = None;
     }
 
     pub(crate) fn take_completed_drag(&mut self) -> Option<ItemInstanceId> {
         self.completed_drag.take()
+    }
+
+    pub(crate) fn take_completed_click(&mut self) -> Option<ItemInstanceId> {
+        self.completed_click.take()
     }
 
     pub(crate) fn contains_slot(&self, cursor: [f32; 2]) -> bool {
@@ -1305,6 +1313,7 @@ pub(crate) struct EquipmentWindow {
     occupied_slots: [Option<ContentId>; EquipmentSlot::COUNT],
     pressed_slot: Option<u8>,
     completed_drag: Option<u8>,
+    completed_click: Option<u8>,
 }
 
 pub(crate) struct EquipmentWindowFrameInput<'a> {
@@ -1330,6 +1339,7 @@ impl Default for EquipmentWindow {
             occupied_slots: [None; EquipmentSlot::COUNT],
             pressed_slot: None,
             completed_drag: None,
+            completed_click: None,
         }
     }
 }
@@ -1472,7 +1482,11 @@ impl EquipmentWindow {
             }
             ElementState::Released => {
                 if let Some(slot) = self.pressed_slot.take() {
-                    self.completed_drag = Some(slot);
+                    if hit_slot == Some(slot) {
+                        self.completed_click = Some(slot);
+                    } else {
+                        self.completed_drag = Some(slot);
+                    }
                     return true;
                 }
                 if hit_slot.is_some() {
@@ -1499,10 +1513,15 @@ impl EquipmentWindow {
         self.chrome.cancel_pointer_interaction();
         self.pressed_slot = None;
         self.completed_drag = None;
+        self.completed_click = None;
     }
 
     pub(crate) fn take_completed_drag(&mut self) -> Option<u8> {
         self.completed_drag.take()
+    }
+
+    pub(crate) fn take_completed_click(&mut self) -> Option<u8> {
+        self.completed_click.take()
     }
 
     pub(crate) fn slot_at(&self, cursor: [f32; 2]) -> Option<u8> {
@@ -2986,6 +3005,8 @@ mod tests {
             1.0,
         ));
         assert_eq!(inventory.selected_item, Some(sword_item));
+        assert_eq!(inventory.take_completed_click(), Some(sword_item));
+        assert_eq!(inventory.take_completed_drag(), None);
 
         let frame = inventory
             .frame(InventoryWindowFrameInput {
@@ -3090,6 +3111,60 @@ mod tests {
             false
         ));
         assert_eq!(inventory.chrome.mode, ProofPanelMode::Normal);
+    }
+
+    #[test]
+    fn equipment_same_slot_release_is_click_and_elsewhere_is_drag() {
+        let window_assets = embedded_assets();
+        let mut equipment = EquipmentWindow::default();
+        equipment.chrome = normal_window();
+        let layout = window_assets
+            .layout(&mut equipment.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap();
+        let bounds = ScreenRect {
+            min: [layout.window.min[0] + 30.0, layout.window.min[1] + 60.0],
+            max: [layout.window.min[0] + 70.0, layout.window.min[1] + 100.0],
+        };
+        equipment.slot_hit_regions = vec![bounds];
+        equipment.occupied_slots[0] = Some(ContentId::from_token(1));
+        let cursor = [
+            (bounds.min[0] + bounds.max[0]) * 0.5,
+            (bounds.min[1] + bounds.max[1]) * 0.5,
+        ];
+        assert!(equipment.apply_pointer_button(
+            window_assets,
+            ElementState::Pressed,
+            Some(cursor),
+            viewport(),
+            1.0
+        ));
+        assert!(equipment.apply_pointer_button(
+            window_assets,
+            ElementState::Released,
+            Some(cursor),
+            viewport(),
+            1.0
+        ));
+        assert_eq!(equipment.take_completed_click(), Some(0));
+        assert_eq!(equipment.take_completed_drag(), None);
+
+        assert!(equipment.apply_pointer_button(
+            window_assets,
+            ElementState::Pressed,
+            Some(cursor),
+            viewport(),
+            1.0
+        ));
+        assert!(equipment.apply_pointer_button(
+            window_assets,
+            ElementState::Released,
+            Some([bounds.max[0] + 20.0, bounds.max[1] + 20.0]),
+            viewport(),
+            1.0
+        ));
+        assert_eq!(equipment.take_completed_click(), None);
+        assert_eq!(equipment.take_completed_drag(), Some(0));
     }
 
     #[test]

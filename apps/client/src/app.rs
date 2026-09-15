@@ -106,6 +106,43 @@ const PORTAL_COLOR: [f32; 4] = [0.32, 0.92, 0.78, 1.0];
 const NPC_DEAD_COLOR: [f32; 4] = [0.38, 0.16, 0.18, 1.0];
 const NPC_RESPAWN_COLOR: [f32; 4] = [0.25, 0.95, 0.62, 1.0];
 const NPC_STATE_INDICATOR_COLOR: [f32; 4] = [1.0, 0.93, 0.35, 1.0];
+const ITEM_DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ItemClickTarget {
+    Inventory(purgatory_common::ItemInstanceId),
+    Equipped(u8),
+}
+
+fn is_item_double_click(
+    previous: Option<(ItemClickTarget, Instant)>,
+    target: ItemClickTarget,
+    now: Instant,
+) -> bool {
+    previous.is_some_and(|(previous, when)| {
+        previous == target && now.duration_since(when) <= ITEM_DOUBLE_CLICK_INTERVAL
+    })
+}
+
+fn resolve_item_double_click(
+    target: ItemClickTarget,
+    inventory_equipment_slot: Option<u8>,
+) -> DragResolution {
+    match target {
+        ItemClickTarget::Inventory(item_instance_id) => resolve_drag(
+            DragSource::Inventory(item_instance_id),
+            inventory_equipment_slot
+                .map(DragDestination::Equipment)
+                .unwrap_or(DragDestination::Inventory),
+            inventory_equipment_slot,
+        ),
+        ItemClickTarget::Equipped(slot) => resolve_drag(
+            DragSource::Equipped(slot),
+            DragDestination::Inventory,
+            None,
+        ),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NpcVisualCue {
@@ -208,6 +245,7 @@ struct ClientApp {
     equipment_window: EquipmentWindow,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
+    last_item_click: Option<(ItemClickTarget, Instant)>,
     speech_bubble_hit: Option<crate::renderer::UiRect>,
     choice_bubble_hits: Vec<crate::renderer::UiRect>,
     choice_click_edge: Option<usize>,
@@ -333,6 +371,7 @@ impl ClientApp {
             equipment_window: EquipmentWindow::default(),
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
+            last_item_click: None,
             speech_bubble_hit: None,
             choice_bubble_hits: Vec::new(),
             choice_click_edge: None,
@@ -567,6 +606,7 @@ impl ClientApp {
         self.last_interact_result.clear();
         self.inventory_window.cancel_pointer_interaction();
         self.equipment_window.cancel_pointer_interaction();
+        self.last_item_click = None;
         if self.lifecycle.screen() != ClientScreen::Game {
             if let Some(network) = &mut self.network {
                 let _ = network.poll_frames();
@@ -782,29 +822,8 @@ impl ClientApp {
         self.drop_seq
     }
 
-    fn resolve_equipment_drag(&mut self, source: DragSource, cursor: Option<[f32; 2]>) {
-        let Some(cursor) = cursor else {
-            return;
-        };
-        let destination = if self.equipment_window.slot_at(cursor).is_some() {
-            DragDestination::Equipment(self.equipment_window.slot_at(cursor).unwrap_or(0))
-        } else if self.inventory_window.contains_slot(cursor) {
-            DragDestination::Inventory
-        } else {
-            DragDestination::Outside
-        };
-        let inventory_equipment_slot = match source {
-            DragSource::Inventory(item_instance_id) => self
-                .lifecycle
-                .view()
-                .inventory
-                .iter()
-                .find(|entry| entry.item_instance_id == item_instance_id)
-                .and_then(|entry| self.registry.equipment_by_id(entry.definition))
-                .map(|definition| definition.slot as u8),
-            DragSource::Equipped(_) => None,
-        };
-        match resolve_drag(source, destination, inventory_equipment_slot) {
+    fn dispatch_drag_resolution(&mut self, resolution: DragResolution) {
+        match resolution {
             DragResolution::Equip {
                 item_instance_id,
                 slot,
@@ -834,6 +853,58 @@ impl ClientApp {
                 });
             }
             DragResolution::Noop => {}
+        }
+    }
+
+    fn resolve_equipment_drag(&mut self, source: DragSource, cursor: Option<[f32; 2]>) {
+        let Some(cursor) = cursor else {
+            return;
+        };
+        let destination = if self.equipment_window.slot_at(cursor).is_some() {
+            DragDestination::Equipment(self.equipment_window.slot_at(cursor).unwrap_or(0))
+        } else if self.inventory_window.contains_slot(cursor) {
+            DragDestination::Inventory
+        } else {
+            DragDestination::Outside
+        };
+        let inventory_equipment_slot = match source {
+            DragSource::Inventory(item_instance_id) => self
+                .lifecycle
+                .view()
+                .inventory
+                .iter()
+                .find(|entry| entry.item_instance_id == item_instance_id)
+                .and_then(|entry| self.registry.equipment_by_id(entry.definition))
+                .map(|definition| definition.slot as u8),
+            DragSource::Equipped(_) => None,
+        };
+        self.dispatch_drag_resolution(resolve_drag(
+            source,
+            destination,
+            inventory_equipment_slot,
+        ));
+    }
+
+    fn handle_item_click(&mut self, target: ItemClickTarget) {
+        let now = Instant::now();
+        let is_double = is_item_double_click(self.last_item_click, target, now);
+        self.last_item_click = (!is_double).then_some((target, now));
+        if is_double {
+            let inventory_equipment_slot = match target {
+                ItemClickTarget::Inventory(item_instance_id) => self
+                    .lifecycle
+                    .view()
+                    .inventory
+                    .iter()
+                    .find(|entry| entry.item_instance_id == item_instance_id)
+                    .and_then(|entry| self.registry.equipment_by_id(entry.definition))
+                    .map(|definition| definition.slot as u8),
+                ItemClickTarget::Equipped(_) => None,
+            };
+            self.dispatch_drag_resolution(resolve_item_double_click(
+                target,
+                inventory_equipment_slot,
+            ));
         }
     }
 
@@ -4376,16 +4447,24 @@ impl ApplicationHandler for ClientApp {
                             );
                             if state == ElementState::Released {
                                 if let Some(item) = self.inventory_window.take_completed_drag() {
+                                    self.last_item_click = None;
                                     self.resolve_equipment_drag(
                                         DragSource::Inventory(item),
                                         self.cursor_position,
                                     );
                                 }
                                 if let Some(slot) = self.equipment_window.take_completed_drag() {
+                                    self.last_item_click = None;
                                     self.resolve_equipment_drag(
                                         DragSource::Equipped(slot),
                                         self.cursor_position,
                                     );
+                                }
+                                if let Some(item) = self.inventory_window.take_completed_click() {
+                                    self.handle_item_click(ItemClickTarget::Inventory(item));
+                                }
+                                if let Some(slot) = self.equipment_window.take_completed_click() {
+                                    self.handle_item_click(ItemClickTarget::Equipped(slot));
                                 }
                             }
                             inventory_handled || equipment_handled
@@ -4450,10 +4529,12 @@ fn rebase_wall_clock(last_instant: &mut Instant, now: Instant) {
 mod tests {
     use crate::platform::{DEV_WINDOW_HEIGHT, DEV_WINDOW_WIDTH};
     use crate::renderer::{Camera, DEFAULT_LOGICAL_HEIGHT, is_usable_surface};
+    use crate::ui_panel::{DragDestination, DragResolution, DragSource};
+    use purgatory_common::ItemInstanceId;
     use purgatory_simulation::{
         FootnoteConfig, PlayerInput, SimulationClock, TICK_DURATION, World,
     };
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn workspace_crates_are_linked() {
@@ -4461,6 +4542,62 @@ mod tests {
         assert!(!purgatory_protocol::version().is_empty());
         assert!(!purgatory_content::version().is_empty());
         assert!(!purgatory_simulation::version().is_empty());
+    }
+
+    #[test]
+    fn item_click_requires_same_target_inside_bounded_interval() {
+        let first = Instant::now();
+        let item = super::ItemClickTarget::Inventory(ItemInstanceId::from_raw(1));
+        let other = super::ItemClickTarget::Inventory(ItemInstanceId::from_raw(2));
+        assert!(!super::is_item_double_click(None, item, first));
+        assert!(super::is_item_double_click(
+            Some((item, first)),
+            item,
+            first + Duration::from_millis(400)
+        ));
+        assert!(!super::is_item_double_click(
+            Some((item, first)),
+            item,
+            first + Duration::from_millis(401)
+        ));
+        assert!(!super::is_item_double_click(
+            Some((item, first)),
+            other,
+            first + Duration::from_millis(100)
+        ));
+    }
+
+    #[test]
+    fn item_double_click_resolution_only_equipments_and_unequips() {
+        let item = ItemInstanceId::from_raw(3);
+        assert_eq!(
+            super::resolve_item_double_click(
+                super::ItemClickTarget::Inventory(item),
+                Some(5)
+            ),
+            DragResolution::Equip {
+                item_instance_id: item,
+                slot: 5
+            }
+        );
+        assert_eq!(
+            super::resolve_item_double_click(super::ItemClickTarget::Equipped(5), None),
+            DragResolution::Unequip { slot: 5 }
+        );
+        assert_eq!(
+            super::resolve_item_double_click(super::ItemClickTarget::Inventory(item), None),
+            DragResolution::Noop
+        );
+        assert_eq!(
+            super::resolve_drag(
+                DragSource::Inventory(item),
+                DragDestination::Outside,
+                Some(5)
+            ),
+            DragResolution::Drop {
+                item_instance_id: item
+            }
+        );
     }
 
     #[test]
