@@ -520,3 +520,130 @@ fn inventory_to_world_drop_rejects_equipped_item_without_mutation() {
         })
     );
 }
+
+#[test]
+fn dropping_an_inventory_item_creates_live_manifestation_at_actor_pose() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("primary player");
+    let (item, _slot) = world
+        .grant_inventory_item(actor, content(300), 5, 10)
+        .expect("grant inventory item");
+    let record_count_before = world.item_record_count();
+    let actor_address = world.address_of(actor).expect("actor address");
+    let actor_position = world
+        .transform_of(actor)
+        .expect("actor transform")
+        .position;
+
+    let entity = world
+        .drop_inventory_item(actor, item)
+        .expect("drop inventory item");
+
+    assert!(world.contains(entity), "manifestation is live");
+    assert_eq!(world.address_of(entity), Some(actor_address));
+    assert_eq!(
+        world.transform_of(entity).map(|t| t.position),
+        Some(actor_position)
+    );
+    assert_eq!(world.item_instance_at_world_drop(entity), Some(item));
+    assert_eq!(world.world_drop_entity_for_item(item), Some(entity));
+    assert_eq!(
+        world.item_record_count(),
+        record_count_before,
+        "no second canonical record minted"
+    );
+    let record = world.item_record(item).expect("canonical record");
+    assert_eq!(record.definition, content(300));
+    assert_eq!(record.quantity, 5);
+    assert_eq!(record.location, ItemLocation::WorldDrop(entity));
+    assert_eq!(world.inventory_count(actor), 0, "source inventory emptied");
+    assert!(!world.inventory_contains(actor, item));
+}
+
+#[test]
+fn drop_and_pickup_round_trip_preserves_instance_identity() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("primary player");
+    let (item, _slot) = world
+        .grant_inventory_item(actor, content(310), 7, 10)
+        .expect("grant inventory item");
+
+    let entity = world
+        .drop_inventory_item(actor, item)
+        .expect("drop inventory item");
+
+    let (moved, slot) = world
+        .pickup_world_drop(actor, entity)
+        .expect("pick up dropped item");
+    assert_eq!(moved, item, "same ItemInstanceId survives the round trip");
+    assert_eq!(world.inventory_item(actor, slot), Some(item));
+    assert!(world.inventory_contains(actor, item));
+    assert!(world.item_instance_at_world_drop(entity).is_none());
+    assert!(world.world_drop_entity_for_item(item).is_none());
+    let record = world.item_record(item).expect("canonical record");
+    assert_eq!(record.definition, content(310));
+    assert_eq!(record.quantity, 7);
+    assert_eq!(
+        record.location,
+        ItemLocation::Inventory { owner: actor, slot }
+    );
+}
+
+#[test]
+fn dropping_unowned_item_is_rejected_without_spawn_or_mutation() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("primary player");
+    let (drop_item, drop_entity) =
+        world
+            .spawn_world_drop_item(WorldAddress::DEV, [0.0, 1.0], content(320), 3, 10)
+            .expect("spawn world drop item");
+    let record_count_before = world.item_record_count();
+    let len_before = world.len();
+
+    let err = world
+        .drop_inventory_item(actor, drop_item)
+        .expect_err("unowned item rejected");
+    assert_eq!(
+        err,
+        ItemRuntimeError::ItemNotInInventory {
+            owner: actor,
+            item: drop_item
+        }
+    );
+    assert_eq!(world.len(), len_before, "no manifestation spawned");
+    assert_eq!(world.item_record_count(), record_count_before);
+    assert_eq!(world.item_instance_at_world_drop(drop_entity), Some(drop_item));
+    assert_eq!(world.world_drop_entity_for_item(drop_item), Some(drop_entity));
+    assert_eq!(world.inventory_count(actor), 0);
+}
+
+#[test]
+fn dropping_equipped_item_is_rejected_without_spawn_or_mutation() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("primary player");
+    let (item, _slot) = world
+        .grant_inventory_item(actor, content(340), 2, 10)
+        .expect("grant inventory item");
+    world
+        .equip_item(actor, item, EquipmentSlot::Weapon)
+        .expect("equip item");
+    let len_before = world.len();
+
+    let err = world
+        .drop_inventory_item(actor, item)
+        .expect_err("equipped item rejected");
+    assert_eq!(
+        err,
+        ItemRuntimeError::ItemNotInInventory { owner: actor, item }
+    );
+    assert_eq!(world.len(), len_before, "no manifestation spawned");
+    assert_eq!(world.inventory_count(actor), 0);
+    let record = world.item_record(item).expect("canonical record");
+    assert_eq!(
+        record.location,
+        ItemLocation::Equipped {
+            owner: actor,
+            slot: EquipmentSlot::Weapon
+        }
+    );
+}
