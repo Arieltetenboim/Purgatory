@@ -31,6 +31,7 @@ mod renderer;
 mod replica;
 mod skeleton_debug;
 mod speech_bubble;
+mod ui_dialog;
 mod ui_panel;
 mod ui_runtime;
 

@@ -462,6 +462,32 @@ impl UiWindowAssets {
         }))
     }
 
+    pub(crate) fn message_chrome(
+        self,
+        title: &str,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+        cursor: Option<[f32; 2]>,
+    ) -> Result<Option<UiMessageChrome>, String> {
+        let mut window = ProofPanelWindow {
+            mode: ProofPanelMode::Normal,
+            ..ProofPanelWindow::default()
+        };
+        let Some(layout) = self.layout(&mut window, viewport, pixels_per_unit)? else {
+            return Ok(None);
+        };
+        let Some(frame) =
+            self.proof_frame(&mut window, title, viewport, pixels_per_unit, cursor)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(UiMessageChrome {
+            frame,
+            window: layout.window,
+            close_button: layout.close_button,
+        }))
+    }
+
     fn layout(
         self,
         window: &mut ProofPanelWindow,
@@ -2401,6 +2427,12 @@ pub(crate) struct UiWindowFrame {
     pub(crate) title: TextBlock,
 }
 
+pub(crate) struct UiMessageChrome {
+    pub(crate) frame: UiWindowFrame,
+    pub(crate) window: ScreenRect,
+    pub(crate) close_button: ScreenRect,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct UiWindowLayout {
     window: ScreenRect,
@@ -2415,15 +2447,15 @@ pub(crate) struct ScreenRect {
 }
 
 impl ScreenRect {
-    fn width(self) -> f32 {
+    pub(crate) fn width(self) -> f32 {
         self.max[0] - self.min[0]
     }
 
-    fn height(self) -> f32 {
+    pub(crate) fn height(self) -> f32 {
         self.max[1] - self.min[1]
     }
 
-    fn contains(self, point: [f32; 2]) -> bool {
+    pub(crate) fn contains(self, point: [f32; 2]) -> bool {
         point[0] >= self.min[0]
             && point[0] <= self.max[0]
             && point[1] >= self.min[1]

@@ -90,6 +90,7 @@ use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
+use crate::ui_dialog::MessageDialog;
 use crate::ui_panel::{
     DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrameInput,
     InventoryWindow, InventoryWindowFrameInput, UiItemIconAssets, UiSlotAssets, UiTabAssets,
@@ -136,11 +137,9 @@ fn resolve_item_double_click(
                 .unwrap_or(DragDestination::Inventory),
             inventory_equipment_slot,
         ),
-        ItemClickTarget::Equipped(slot) => resolve_drag(
-            DragSource::Equipped(slot),
-            DragDestination::Inventory,
-            None,
-        ),
+        ItemClickTarget::Equipped(slot) => {
+            resolve_drag(DragSource::Equipped(slot), DragDestination::Inventory, None)
+        }
     }
 }
 
@@ -243,6 +242,7 @@ struct ClientApp {
     ui_item_icon_assets: UiItemIconAssets,
     inventory_window: InventoryWindow,
     equipment_window: EquipmentWindow,
+    message_dialog: MessageDialog,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
     last_item_click: Option<(ItemClickTarget, Instant)>,
@@ -369,6 +369,7 @@ impl ClientApp {
             ui_item_icon_assets,
             inventory_window: InventoryWindow::default(),
             equipment_window: EquipmentWindow::default(),
+            message_dialog: MessageDialog::default(),
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
             last_item_click: None,
@@ -878,11 +879,7 @@ impl ClientApp {
                 .map(|definition| definition.slot as u8),
             DragSource::Equipped(_) => None,
         };
-        self.dispatch_drag_resolution(resolve_drag(
-            source,
-            destination,
-            inventory_equipment_slot,
-        ));
+        self.dispatch_drag_resolution(resolve_drag(source, destination, inventory_equipment_slot));
     }
 
     fn handle_item_click(&mut self, target: ItemClickTarget) {
@@ -2688,6 +2685,16 @@ impl ClientApp {
                 ui_textured_rects.extend(frame.textured_rects);
                 ui_text.extend(frame.texts);
             }
+            if let Ok(Some(frame)) = self.message_dialog.frame(
+                self.ui_window_assets,
+                viewport,
+                pixels_per_unit,
+                self.cursor_position,
+            ) {
+                ui_textured_rects.extend(frame.textured_rects);
+                ui_rects.extend(frame.rects);
+                ui_text.extend(frame.texts);
+            }
         }
         #[cfg(feature = "dev-diagnostics")]
         let demand = self.diagnostics_demand();
@@ -4309,6 +4316,12 @@ impl ApplicationHandler for ClientApp {
                 window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if self.message_dialog.is_active() {
+                    self.message_dialog
+                        .apply_key(event.physical_key, event.state, event.repeat);
+                    window.request_redraw();
+                    return;
+                }
                 #[cfg(feature = "dev-diagnostics")]
                 let text_like = self
                     .debug
@@ -4382,6 +4395,13 @@ impl ApplicationHandler for ClientApp {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                if self.message_dialog.is_active() {
+                    self.cursor_position = Some([position.x as f32, position.y as f32]);
+                    self.message_dialog
+                        .pointer_moved([position.x as f32, position.y as f32]);
+                    window.request_redraw();
+                    return;
+                }
                 #[cfg(feature = "dev-diagnostics")]
                 let gameplay_mouse = gameplay_receives_pointer(
                     self.debug_overlay_visible(),
@@ -4411,6 +4431,14 @@ impl ApplicationHandler for ClientApp {
                 window.request_redraw();
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if self.message_dialog.is_active() {
+                    if button == MouseButton::Left {
+                        self.message_dialog
+                            .apply_pointer_button(state, self.cursor_position);
+                    }
+                    window.request_redraw();
+                    return;
+                }
                 #[cfg(feature = "dev-diagnostics")]
                 let gameplay_mouse = gameplay_receives_pointer(
                     self.debug_overlay_visible(),
@@ -4571,10 +4599,7 @@ mod tests {
     fn item_double_click_resolution_only_equipments_and_unequips() {
         let item = ItemInstanceId::from_raw(3);
         assert_eq!(
-            super::resolve_item_double_click(
-                super::ItemClickTarget::Inventory(item),
-                Some(5)
-            ),
+            super::resolve_item_double_click(super::ItemClickTarget::Inventory(item), Some(5)),
             DragResolution::Equip {
                 item_instance_id: item,
                 slot: 5
