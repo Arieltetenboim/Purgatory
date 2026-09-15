@@ -186,6 +186,15 @@ impl DestinationBorders {
             bottom: self.bottom * scale,
         }
     }
+
+    fn clamped_to_source(self, source: SourceInsets) -> Self {
+        Self {
+            left: self.left.min(source.left as f32),
+            right: self.right.min(source.right as f32),
+            top: self.top.min(source.top as f32),
+            bottom: self.bottom.min(source.bottom as f32),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -207,6 +216,13 @@ impl HorizontalCapsUnits {
         Self {
             left: self.left * scale,
             right: self.right * scale,
+        }
+    }
+
+    fn clamped_to_source(self, source: HorizontalInsetsPx) -> Self {
+        Self {
+            left: self.left.min(source.left as f32),
+            right: self.right.min(source.right as f32),
         }
     }
 }
@@ -479,7 +495,10 @@ impl UiWindowAssets {
             panel.source_size_px,
             panel.source_rect,
             panel.slice_px,
-            panel.border_units.scaled(pixels_per_unit),
+            panel
+                .border_units
+                .scaled(pixels_per_unit)
+                .clamped_to_source(panel.slice_px),
             [1.0; 4],
         )?;
 
@@ -503,7 +522,9 @@ impl UiWindowAssets {
                 .position(|name| *name == icon)
                 .map(|index| self.icons.regions[index])
                 .ok_or_else(|| format!("UI atlas icon {icon} is missing"))?;
-            let icon_size = 20.0 * pixels_per_unit;
+            let icon_size = (20.0 * pixels_per_unit)
+                .min(source.width as f32)
+                .min(source.height as f32);
             let icon_min = [
                 layout.header.min[0] + 7.0 * pixels_per_unit,
                 layout.header.min[1] + 7.0 * pixels_per_unit,
@@ -611,8 +632,22 @@ impl UiWindowAssets {
             ],
         };
         let button_size = [
-            self.close_button.size_units[0] * pixels_per_unit,
-            self.close_button.size_units[1] * pixels_per_unit,
+            (self.close_button.size_units[0] * pixels_per_unit).min(
+                self.close_button
+                    .states
+                    .normal
+                    .width
+                    .min(self.close_button.states.hover.width)
+                    .min(self.close_button.states.pressed.width) as f32,
+            ),
+            (self.close_button.size_units[1] * pixels_per_unit).min(
+                self.close_button
+                    .states
+                    .normal
+                    .height
+                    .min(self.close_button.states.hover.height)
+                    .min(self.close_button.states.pressed.height) as f32,
+            ),
         ];
         let close_max_x = header.max[0] - self.close_button.right_inset_units * pixels_per_unit;
         let close_min_y = header.min[1] + ((header.height() - button_size[1]) * 0.5).max(0.0);
@@ -703,7 +738,9 @@ impl UiTabAssets {
                 self.source_size_px,
                 source,
                 self.slice_px,
-                self.cap_units.scaled(pixels_per_unit),
+                self.cap_units
+                    .scaled(pixels_per_unit)
+                    .clamped_to_source(self.slice_px),
                 tint,
             )?);
 
@@ -860,7 +897,9 @@ impl UiButtonAssets {
             self.source_size_px,
             source,
             self.slice_px,
-            self.cap_units.scaled(pixels_per_unit),
+            self.cap_units
+                .scaled(pixels_per_unit)
+                .clamped_to_source(self.slice_px),
             [1.0; 4],
         )
     }
@@ -2370,6 +2409,9 @@ fn validate_atlas_metadata(
     if windows
         .iter()
         .any(|rect| !source_rect_fits(*rect, source_size_px))
+        || windows
+            .windows(2)
+            .any(|pair| source_rects_overlap(pair[0], pair[1]))
         || windows.iter().any(|rect| {
             metadata.window_slice_px.left + metadata.window_slice_px.right >= rect.width
                 || metadata.window_slice_px.top + metadata.window_slice_px.bottom >= rect.height
@@ -2397,7 +2439,10 @@ fn validate_atlas_metadata(
             .all(|rect| source_rect_fits(rect, source_size_px))
             || !regions
                 .windows(2)
-                .all(|pair| pair[0].width == pair[1].width && pair[0].height == pair[1].height)
+                .all(|pair| pair[0].width == pair[1].width && pair[0].x == pair[1].x)
+            || regions
+                .windows(2)
+                .any(|pair| source_rects_overlap(pair[0], pair[1]))
             || metadata.button_slice_px.left + metadata.button_slice_px.right >= states.normal.width
         {
             return Err(format!("UI atlas button variant {name} is invalid"));
@@ -2414,6 +2459,16 @@ fn validate_atlas_metadata(
         || !finite_non_negative(metadata.close_right_inset_units)
     {
         return Err("UI atlas close-button metadata is invalid".to_string());
+    }
+    if [
+        metadata.close_button.normal,
+        metadata.close_button.hover,
+        metadata.close_button.pressed,
+    ]
+    .windows(2)
+    .any(|pair| source_rects_overlap(pair[0], pair[1]))
+    {
+        return Err("UI atlas close-button states overlap".to_string());
     }
     if metadata.icons.len() != 25
         || metadata
@@ -2506,6 +2561,13 @@ fn source_rect_fits(rect: SourceRectPx, source_size_px: [u32; 2]) -> bool {
             .y
             .checked_add(rect.height)
             .is_some_and(|y| y <= source_size_px[1])
+}
+
+fn source_rects_overlap(left: SourceRectPx, right: SourceRectPx) -> bool {
+    left.x < right.x.saturating_add(right.width)
+        && right.x < left.x.saturating_add(left.width)
+        && left.y < right.y.saturating_add(right.height)
+        && right.y < left.y.saturating_add(left.height)
 }
 
 fn finite_positive(value: f32) -> bool {
@@ -3007,7 +3069,7 @@ mod tests {
             SourceRectPx {
                 x: 8,
                 y: 61,
-                width: 256,
+                width: 263,
                 height: 356
             }
         );
@@ -3096,7 +3158,8 @@ mod tests {
         assert_eq!(button.source_size_px, [1536, 1024]);
         assert_eq!(button.variants[0].normal.y, 448);
         assert_eq!(button.variants[0].hover.y, 536);
-        assert_eq!(button.variants[0].pressed.y, 624);
+        assert_eq!(button.variants[0].hover.height, 72);
+        assert_eq!(button.variants[0].pressed.y, 608);
         assert_eq!(button.height_units, 32.0);
         for state in [
             UiButtonState::Normal,
@@ -3118,6 +3181,75 @@ mod tests {
             assert_eq!(regions[2].size(), [8.0, 32.0]);
             assert_eq!(regions[1].size(), [184.0, 32.0]);
         }
+    }
+
+    #[test]
+    fn atlas_fixed_chrome_never_upscales_at_supported_ui_scales() {
+        let assets = embedded_assets();
+        let mut window = normal_window();
+        for pixels_per_unit in [1.0, 1.5, 2.0, 3.0] {
+            let frame = assets
+                .proof_frame(&mut window, "Panel", viewport(), pixels_per_unit, None)
+                .unwrap()
+                .unwrap();
+            let panel = assets.panel();
+            for index in [0, 2, 6, 8] {
+                let region = frame.textured_rects[index];
+                assert!(
+                    region.max[0] - region.min[0]
+                        <= panel.slice_px.left.max(panel.slice_px.right) as f32
+                );
+                assert!(
+                    region.max[1] - region.min[1]
+                        <= panel.slice_px.top.max(panel.slice_px.bottom) as f32
+                );
+            }
+            let close = frame.textured_rects[9];
+            let close_source = assets.close_button.states.normal;
+            assert!(close.max[0] - close.min[0] <= close_source.width as f32);
+            assert!(close.max[1] - close.min[1] <= close_source.height as f32);
+        }
+
+        let button = embedded_button_assets();
+        for pixels_per_unit in [1.0, 1.5, 2.0, 3.0] {
+            let regions = button
+                .frame(
+                    ScreenRect {
+                        min: [10.0, 20.0],
+                        max: [410.0, 52.0],
+                    },
+                    UiButtonState::Normal,
+                    pixels_per_unit,
+                )
+                .unwrap();
+            assert!(regions[0].max[0] - regions[0].min[0] <= button.slice_px.left as f32);
+            assert!(regions[2].max[0] - regions[2].min[0] <= button.slice_px.right as f32);
+        }
+    }
+
+    #[test]
+    fn atlas_source_partitions_are_disjoint() {
+        let assets = embedded_assets();
+        let panels: Vec<_> = PanelStyle::ALL
+            .into_iter()
+            .map(|style| assets.with_panel_style(style).panel().source_rect)
+            .collect();
+        assert!(
+            panels
+                .windows(2)
+                .all(|pair| !source_rects_overlap(pair[0], pair[1]))
+        );
+
+        let button = embedded_button_assets();
+        for states in button.variants {
+            assert!(!source_rects_overlap(states.normal, states.hover));
+            assert!(!source_rects_overlap(states.hover, states.pressed));
+            assert!(!source_rects_overlap(states.normal, states.pressed));
+        }
+        let close = assets.close_button.states;
+        assert!(!source_rects_overlap(close.normal, close.hover));
+        assert!(!source_rects_overlap(close.hover, close.pressed));
+        assert!(!source_rects_overlap(close.normal, close.pressed));
     }
 
     #[test]
@@ -4039,7 +4171,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             pressed.textured_rects[9].uv_min,
-            [1400.0 / 1536.0, 624.0 / 1024.0]
+            [1400.0 / 1536.0, 608.0 / 1024.0]
         );
         assert_eq!(
             assets

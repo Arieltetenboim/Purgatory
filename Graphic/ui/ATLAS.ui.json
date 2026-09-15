@@ -4,11 +4,11 @@
   "texture": "ATLAS.png",
   "dimensions_px": [1536, 1024],
   "windows": {
-    "base": { "x": 8, "y": 61, "width": 256, "height": 356 },
-    "blue": { "x": 255, "y": 61, "width": 266, "height": 359 },
-    "brown": { "x": 511, "y": 61, "width": 266, "height": 355 },
-    "dark1": { "x": 767, "y": 61, "width": 266, "height": 353 },
-    "dark2": { "x": 1023, "y": 61, "width": 266, "height": 355 },
+    "base": { "x": 8, "y": 61, "width": 263, "height": 356 },
+    "blue": { "x": 271, "y": 61, "width": 253, "height": 359 },
+    "brown": { "x": 524, "y": 61, "width": 251, "height": 355 },
+    "dark1": { "x": 775, "y": 61, "width": 249, "height": 353 },
+    "dark2": { "x": 1024, "y": 61, "width": 255, "height": 355 },
     "light1": { "x": 1279, "y": 61, "width": 249, "height": 356 }
   },
   "window_slice_px": {
@@ -25,34 +25,34 @@
   },
   "buttons": {
     "base": {
-      "normal": { "x": 8, "y": 448, "width": 224, "height": 88 },
-      "hover": { "x": 8, "y": 536, "width": 224, "height": 88 },
-      "pressed": { "x": 8, "y": 624, "width": 224, "height": 88 }
+      "normal": { "x": 8, "y": 448, "width": 220, "height": 88 },
+      "hover": { "x": 8, "y": 536, "width": 220, "height": 72 },
+      "pressed": { "x": 8, "y": 608, "width": 220, "height": 88 }
     },
     "blue": {
-      "normal": { "x": 228, "y": 448, "width": 226, "height": 88 },
-      "hover": { "x": 228, "y": 536, "width": 226, "height": 88 },
-      "pressed": { "x": 228, "y": 624, "width": 226, "height": 88 }
+      "normal": { "x": 228, "y": 448, "width": 221, "height": 88 },
+      "hover": { "x": 228, "y": 536, "width": 221, "height": 72 },
+      "pressed": { "x": 228, "y": 608, "width": 221, "height": 88 }
     },
     "brown": {
-      "normal": { "x": 449, "y": 448, "width": 217, "height": 88 },
-      "hover": { "x": 449, "y": 536, "width": 217, "height": 88 },
-      "pressed": { "x": 449, "y": 624, "width": 217, "height": 88 }
+      "normal": { "x": 449, "y": 448, "width": 214, "height": 88 },
+      "hover": { "x": 449, "y": 536, "width": 214, "height": 72 },
+      "pressed": { "x": 449, "y": 608, "width": 214, "height": 88 }
     },
     "dark1": {
-      "normal": { "x": 663, "y": 448, "width": 225, "height": 88 },
-      "hover": { "x": 663, "y": 536, "width": 225, "height": 88 },
-      "pressed": { "x": 663, "y": 624, "width": 225, "height": 88 }
+      "normal": { "x": 663, "y": 448, "width": 223, "height": 88 },
+      "hover": { "x": 663, "y": 536, "width": 223, "height": 72 },
+      "pressed": { "x": 663, "y": 608, "width": 223, "height": 88 }
     },
     "dark2": {
-      "normal": { "x": 886, "y": 448, "width": 228, "height": 88 },
-      "hover": { "x": 886, "y": 536, "width": 228, "height": 88 },
-      "pressed": { "x": 886, "y": 624, "width": 228, "height": 88 }
+      "normal": { "x": 886, "y": 448, "width": 219, "height": 88 },
+      "hover": { "x": 886, "y": 536, "width": 219, "height": 72 },
+      "pressed": { "x": 886, "y": 608, "width": 219, "height": 88 }
     },
     "light1": {
-      "normal": { "x": 1105, "y": 448, "width": 233, "height": 88 },
-      "hover": { "x": 1105, "y": 536, "width": 233, "height": 88 },
-      "pressed": { "x": 1105, "y": 624, "width": 233, "height": 88 }
+      "normal": { "x": 1105, "y": 448, "width": 235, "height": 88 },
+      "hover": { "x": 1105, "y": 536, "width": 235, "height": 72 },
+      "pressed": { "x": 1105, "y": 608, "width": 235, "height": 88 }
     }
   },
   "button_slice_px": { "left": 24, "right": 24 },
@@ -60,8 +60,8 @@
   "button_height_units": 32.0,
   "close_button": {
     "normal": { "x": 1400, "y": 448, "width": 112, "height": 88 },
-    "hover": { "x": 1400, "y": 536, "width": 112, "height": 88 },
-    "pressed": { "x": 1400, "y": 624, "width": 112, "height": 88 }
+    "hover": { "x": 1400, "y": 536, "width": 112, "height": 72 },
+    "pressed": { "x": 1400, "y": 608, "width": 112, "height": 88 }
   },
   "close_size_units": [19.0, 19.0],
   "close_right_inset_units": 5.0,
