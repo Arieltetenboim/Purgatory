@@ -1,5 +1,8 @@
 //! Phase 11B1 item runtime canonical-state and world-drop invariants.
 
+use crate::EntityId;
+use crate::equipment::EquipmentSlot;
+use crate::item_runtime::ItemRuntimeState;
 use crate::{
     ContentId, INVENTORY_CAPACITY, ItemLocation, ItemRuntimeError, RuntimeSpawnRequest, Transform,
     World, WorldAddress,
@@ -377,5 +380,143 @@ fn insufficient_definition_quantity_does_not_partially_remove_inventory() {
     assert_eq!(
         world.item_record(item).map(|record| record.quantity),
         Some(2)
+    );
+}
+
+#[test]
+fn inventory_to_world_drop_preserves_instance_identity_and_quantity() {
+    let mut runtime = ItemRuntimeState::default();
+    let owner = EntityId::from_raw(1, 1);
+    let entity = EntityId::from_raw(2, 1);
+    let item = ItemInstanceId::from_raw(900);
+    runtime
+        .bind_inventory(item, content(20), 4, 10, owner, 0)
+        .expect("bind inventory");
+
+    runtime
+        .move_inventory_to_world_drop(owner, item, entity, true)
+        .expect("relocate to world drop");
+
+    assert_eq!(runtime.len(), 1);
+    let record = runtime.record(item).expect("canonical record");
+    assert_eq!(record.definition, content(20));
+    assert_eq!(record.quantity, 4);
+    assert_eq!(record.location, ItemLocation::WorldDrop(entity));
+    assert_eq!(runtime.world_drop_item(entity), Some(item));
+    assert_eq!(runtime.world_drop_entity_for_item(item), Some(entity));
+    assert_eq!(runtime.inventory_slot(owner, 0), None);
+    assert_eq!(runtime.inventory_count(owner), 0);
+}
+
+#[test]
+fn inventory_to_world_drop_rejects_wrong_owner_without_mutation() {
+    let mut runtime = ItemRuntimeState::default();
+    let owner = EntityId::from_raw(1, 1);
+    let other = EntityId::from_raw(3, 1);
+    let entity = EntityId::from_raw(2, 1);
+    let item = ItemInstanceId::from_raw(901);
+    runtime
+        .bind_inventory(item, content(21), 2, 10, owner, 0)
+        .expect("bind inventory");
+
+    let err = runtime
+        .move_inventory_to_world_drop(other, item, entity, true)
+        .expect_err("foreign owner rejected");
+    assert_eq!(
+        err,
+        ItemRuntimeError::ItemNotInInventory { owner: other, item }
+    );
+    assert_eq!(runtime.inventory_slot(owner, 0), Some(item));
+    assert_eq!(runtime.inventory_count(owner), 1);
+    assert_eq!(runtime.world_drop_item(entity), None);
+    assert_eq!(runtime.world_drop_entity_for_item(item), None);
+}
+
+#[test]
+fn inventory_to_world_drop_rejects_absent_item_without_mutation() {
+    let mut runtime = ItemRuntimeState::default();
+    let owner = EntityId::from_raw(1, 1);
+    let entity = EntityId::from_raw(2, 1);
+    let missing = ItemInstanceId::from_raw(902);
+
+    let err = runtime
+        .move_inventory_to_world_drop(owner, missing, entity, true)
+        .expect_err("absent item rejected");
+    assert_eq!(
+        err,
+        ItemRuntimeError::ItemNotInInventory {
+            owner,
+            item: missing
+        }
+    );
+    assert_eq!(runtime.len(), 0);
+    assert_eq!(runtime.world_drop_item(entity), None);
+}
+
+#[test]
+fn inventory_to_world_drop_rejects_missing_manifestation_without_mutation() {
+    let mut runtime = ItemRuntimeState::default();
+    let owner = EntityId::from_raw(1, 1);
+    let ghost = EntityId::from_raw(9, 9);
+    let item = ItemInstanceId::from_raw(903);
+    runtime
+        .bind_inventory(item, content(22), 1, 10, owner, 0)
+        .expect("bind inventory");
+
+    let err = runtime
+        .move_inventory_to_world_drop(owner, item, ghost, false)
+        .expect_err("missing manifestation rejected");
+    assert_eq!(err, ItemRuntimeError::MissingWorldDropEntity(ghost));
+    assert_eq!(runtime.inventory_slot(owner, 0), Some(item));
+    assert_eq!(runtime.inventory_count(owner), 1);
+}
+
+#[test]
+fn inventory_to_world_drop_rejects_already_claimed_manifestation_without_mutation() {
+    let mut runtime = ItemRuntimeState::default();
+    let owner = EntityId::from_raw(1, 1);
+    let entity = EntityId::from_raw(2, 1);
+    let claimed = ItemInstanceId::from_raw(910);
+    let item = ItemInstanceId::from_raw(904);
+    runtime
+        .bind_world_drop(claimed, content(23), 1, 5, entity, true)
+        .expect("claim manifestation");
+    runtime
+        .bind_inventory(item, content(24), 1, 10, owner, 0)
+        .expect("bind inventory");
+
+    let err = runtime
+        .move_inventory_to_world_drop(owner, item, entity, true)
+        .expect_err("claimed manifestation rejected");
+    assert_eq!(err, ItemRuntimeError::WorldDropAlreadyClaimed(entity));
+    assert_eq!(runtime.world_drop_item(entity), Some(claimed));
+    assert_eq!(runtime.inventory_slot(owner, 0), Some(item));
+}
+
+#[test]
+fn inventory_to_world_drop_rejects_equipped_item_without_mutation() {
+    let mut runtime = ItemRuntimeState::default();
+    let owner = EntityId::from_raw(1, 1);
+    let entity = EntityId::from_raw(2, 1);
+    let item = ItemInstanceId::from_raw(905);
+    runtime
+        .bind_inventory(item, content(25), 1, 10, owner, 0)
+        .expect("bind inventory");
+    runtime
+        .move_inventory_to_equipment(owner, item, EquipmentSlot::Weapon)
+        .expect("equip item");
+
+    let err = runtime
+        .move_inventory_to_world_drop(owner, item, entity, true)
+        .expect_err("equipped item rejected");
+    assert_eq!(err, ItemRuntimeError::ItemNotInInventory { owner, item });
+    assert_eq!(runtime.inventory_count(owner), 0);
+    assert_eq!(runtime.world_drop_item(entity), None);
+    assert_eq!(
+        runtime.record(item).map(|record| record.location),
+        Some(ItemLocation::Equipped {
+            owner,
+            slot: EquipmentSlot::Weapon
+        })
     );
 }

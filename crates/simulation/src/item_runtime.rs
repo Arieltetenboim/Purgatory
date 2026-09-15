@@ -444,6 +444,40 @@ impl ItemRuntimeState {
         Ok(item)
     }
 
+    pub(crate) fn move_inventory_to_world_drop(
+        &mut self,
+        owner: EntityId,
+        item: ItemInstanceId,
+        world_drop_entity: EntityId,
+        entity_exists: bool,
+    ) -> Result<(), ItemRuntimeError> {
+        let slots = self
+            .inventories
+            .get(&owner)
+            .ok_or(ItemRuntimeError::ItemNotInInventory { owner, item })?;
+        let source = slots
+            .iter()
+            .position(|candidate| *candidate == Some(item))
+            .ok_or(ItemRuntimeError::ItemNotInInventory { owner, item })?;
+        if !entity_exists {
+            return Err(ItemRuntimeError::MissingWorldDropEntity(world_drop_entity));
+        }
+        if self.world_drops.contains_key(&world_drop_entity) {
+            return Err(ItemRuntimeError::WorldDropAlreadyClaimed(world_drop_entity));
+        }
+        let slots = self
+            .inventories
+            .get_mut(&owner)
+            .expect("inventory presence checked above");
+        slots[source] = None;
+        self.world_drops.insert(world_drop_entity, item);
+        let record = self
+            .records
+            .get_mut(&item)
+            .expect("inventory item has a canonical record");
+        record.location = ItemLocation::WorldDrop(world_drop_entity);
+        Ok(())
+    }
     pub(crate) fn remove_inventory_item(
         &mut self,
         owner: EntityId,
