@@ -2073,6 +2073,9 @@ impl GameplayOwner {
             binding.last_equipment_result = Some(event);
         }
         Self::send_equipment_result(interact_tx.as_ref(), event);
+        if matches!(event, ServerEquipment::Accepted { .. }) {
+            self.send_inventory_snapshot(connection_id);
+        }
     }
 
     fn send_ability_result(
@@ -6457,6 +6460,15 @@ mod tests {
         }
     }
 
+    fn recv_inventory(
+        rx: &mut tokio::sync::mpsc::Receiver<ServerControl>,
+    ) -> ServerInventory {
+        match rx.try_recv().expect("inventory snapshot") {
+            ServerControl::Inventory(snapshot) => snapshot,
+            other => panic!("expected Inventory, got {other:?}"),
+        }
+    }
+
     #[test]
     fn equip_creates_domain_and_duplicate_seq_does_not_redirty() {
         let mut owner = GameplayOwner::new();
@@ -6483,6 +6495,14 @@ mod tests {
             owner.world().equipment_slot(actor, EquipmentSlot::Weapon),
             Some(debug_sword())
         );
+        let snapshot = recv_inventory(&mut rx);
+        assert!(
+            !snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.item_instance_id == item),
+            "equipped item must not remain in inventory snapshot"
+        );
         let _ = owner.world_mut().consume_dirty(actor);
         let revs = owner.world().domain_revs_of(actor).unwrap().equipment;
         let duplicate_item = owned_debug_sword(&mut owner, actor);
@@ -6498,6 +6518,7 @@ mod tests {
             recv_equipment(&mut rx),
             ServerEquipment::Accepted { seq: 1 }
         );
+        assert!(rx.try_recv().is_err(), "duplicate must not send a snapshot");
         assert!(!owner.world().dirty_of(actor).unwrap().equipment);
         assert_eq!(owner.world().domain_revs_of(actor).unwrap().equipment, revs);
     }
@@ -6520,6 +6541,7 @@ mod tests {
             },
         });
         let _ = recv_equipment(&mut rx);
+        let _ = recv_inventory(&mut rx);
         owner.apply_input(InputUpdate::Unequip {
             connection_id: id,
             request: UnequipRequest {
@@ -6530,6 +6552,14 @@ mod tests {
         assert_eq!(
             recv_equipment(&mut rx),
             ServerEquipment::Accepted { seq: 2 }
+        );
+        let snapshot = recv_inventory(&mut rx);
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| entry.item_instance_id == item),
+            "unequipped item must return to inventory snapshot"
         );
         let state = owner.world().equipment_of(actor).expect("domain remains");
         assert!(state.is_empty());
@@ -6567,6 +6597,7 @@ mod tests {
             },
         });
         let _ = recv_equipment(&mut rx);
+        let _ = recv_inventory(&mut rx);
         let duplicate_item = owned_debug_sword(&mut owner, actor);
         owner.apply_input(InputUpdate::Equip {
             connection_id: id,
@@ -6618,6 +6649,7 @@ mod tests {
             ServerEquipment::Accepted { seq: 2 } => {}
             other => panic!("seq 2 same-value Equip must Accept, got {other:?}"),
         }
+        let _ = recv_inventory(&mut rx);
         owner.apply_input(InputUpdate::Unequip {
             connection_id: id,
             request: UnequipRequest {
@@ -6663,6 +6695,7 @@ mod tests {
             } => {}
             other => panic!("expected SlotMismatch, got {other:?}"),
         }
+        assert!(rx.try_recv().is_err(), "rejection must not send a snapshot");
         assert!(owner.world().equipment_of(actor).is_none());
         let unknown_item = owned_item(&mut owner, actor, ContentId::from_token(1));
         owner.apply_input(InputUpdate::Equip {
@@ -6680,6 +6713,7 @@ mod tests {
             } => {}
             other => panic!("expected UnknownContent, got {other:?}"),
         }
+        assert!(rx.try_recv().is_err(), "rejection must not send a snapshot");
         assert!(owner.world().equipment_of(actor).is_none());
     }
 
@@ -6701,6 +6735,7 @@ mod tests {
             },
         });
         let _ = recv_equipment(&mut rx);
+        let _ = recv_inventory(&mut rx);
         let _ = owner.world_mut().consume_dirty(actor);
         let revs = owner.world().domain_revs_of(actor).unwrap();
         let replacement_item = owned_debug_sword(&mut owner, actor);
@@ -6716,6 +6751,7 @@ mod tests {
             recv_equipment(&mut rx),
             ServerEquipment::Accepted { seq: 2 }
         );
+        let _ = recv_inventory(&mut rx);
         assert!(!owner.world().dirty_of(actor).unwrap().equipment);
         let after = owner.world().domain_revs_of(actor).unwrap();
         assert_eq!(after.equipment, revs.equipment);
