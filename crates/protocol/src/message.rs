@@ -20,7 +20,10 @@ use crate::interact::{
 use crate::inventory::{
     INVENTORY_CAPACITY, InventoryEntry, ServerInventory, decode_inventory_entry,
 };
-use crate::item::{PickupRejectReason, PickupRequest, ServerItem, decode_item_instance_id};
+use crate::item::{
+    DropRejectReason, DropRequest, PickupRejectReason, PickupRequest, ServerItem,
+    decode_item_instance_id,
+};
 use crate::presentation_oneshot::{
     DevPresentationOneShot, ServerPresentationOneShot, TAG_DEV_PRESENTATION_ONESHOT,
     TAG_SERVER_PRESENTATION_ONESHOT, decode_dev_presentation_oneshot,
@@ -67,6 +70,9 @@ const TAG_DIALOGUE_ACTIVE_LINE: u8 = 36;
 const TAG_DEV_SPAWN_NPC: u8 = 37;
 const TAG_DIALOGUE_CHOOSE: u8 = 38;
 const TAG_DIALOGUE_CHOICE_ACCEPTED: u8 = 39;
+const TAG_DROP: u8 = 40;
+const TAG_DROP_ACCEPTED: u8 = 41;
+const TAG_DROP_REJECTED: u8 = 42;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -299,6 +305,8 @@ pub enum ClientControl {
     AbilityActivate(AbilityActivateRequest),
     /// Request pickup of a visible world-drop manifestation.
     Pickup(PickupRequest),
+    /// Request dropping an owned inventory item.
+    Drop(DropRequest),
     /// Request authoritative restoration of the bound player after death.
     Respawn,
 }
@@ -493,6 +501,16 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             out.push(TAG_PICKUP);
             out.extend_from_slice(&req.seq.to_le_bytes());
             write_wire_entity(&mut out, req.target);
+            Ok(out)
+        }
+        ClientControl::Drop(req) => {
+            if req.seq == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            let mut out = Vec::with_capacity(1 + crate::DROP_REQUEST_BYTES);
+            out.push(TAG_DROP);
+            out.extend_from_slice(&req.seq.to_le_bytes());
+            out.extend_from_slice(&req.item_instance_id.raw().to_le_bytes());
             Ok(out)
         }
     }
@@ -713,6 +731,24 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
             }
             Ok(ClientControl::Pickup(PickupRequest { seq, target }))
         }
+        TAG_DROP => {
+            let (seq, rest) = read_u32(rest)?;
+            if rest.len() != 8 {
+                return Err(if rest.len() < 8 {
+                    CodecError::Truncated
+                } else {
+                    CodecError::InvalidValue
+                });
+            }
+            if seq == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            let item_instance_id = decode_item_instance_id(rest)?;
+            Ok(ClientControl::Drop(DropRequest {
+                seq,
+                item_instance_id,
+            }))
+        }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
 }
@@ -815,6 +851,9 @@ pub fn decode_server_control(bytes: &[u8]) -> Result<ServerControl, CodecError> 
             Ok(ServerControl::Ability(decode_server_ability(tag, rest)?))
         }
         TAG_PICKUP_ACCEPTED | TAG_PICKUP_REJECTED => {
+            Ok(ServerControl::Item(decode_server_item(tag, rest)?))
+        }
+        TAG_DROP_ACCEPTED | TAG_DROP_REJECTED => {
             Ok(ServerControl::Item(decode_server_item(tag, rest)?))
         }
         TAG_INVENTORY_SNAPSHOT => Ok(ServerControl::Inventory(decode_server_inventory(rest)?)),
@@ -1050,6 +1089,19 @@ fn encode_server_item(event: &ServerItem) -> Result<Vec<u8>, CodecError> {
             out.push(reason.as_u8());
             Ok(out)
         }
+        ServerItem::DropAccepted { seq } => {
+            let mut out = Vec::with_capacity(1 + crate::DROP_ACCEPTED_BYTES);
+            out.push(TAG_DROP_ACCEPTED);
+            out.extend_from_slice(&seq.to_le_bytes());
+            Ok(out)
+        }
+        ServerItem::DropRejected { seq, reason } => {
+            let mut out = Vec::with_capacity(1 + crate::DROP_REJECTED_BYTES);
+            out.push(TAG_DROP_REJECTED);
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.push(reason.as_u8());
+            Ok(out)
+        }
     }
 }
 
@@ -1083,6 +1135,18 @@ fn decode_server_item(tag: u8, rest: &[u8]) -> Result<ServerItem, CodecError> {
             let reason = PickupRejectReason::from_u8(rest[0]).ok_or(CodecError::InvalidValue)?;
             expect_empty(&rest[1..])?;
             Ok(ServerItem::PickupRejected { seq, reason })
+        }
+        TAG_DROP_ACCEPTED => {
+            expect_empty(rest)?;
+            Ok(ServerItem::DropAccepted { seq })
+        }
+        TAG_DROP_REJECTED => {
+            if rest.is_empty() {
+                return Err(CodecError::Truncated);
+            }
+            let reason = DropRejectReason::from_u8(rest[0]).ok_or(CodecError::InvalidValue)?;
+            expect_empty(&rest[1..])?;
+            Ok(ServerItem::DropRejected { seq, reason })
         }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
@@ -2000,6 +2064,61 @@ mod tests {
         let encoded = encode_server_control(&rejected).unwrap();
         assert_eq!(encoded.len(), 1 + crate::PICKUP_REJECTED_BYTES);
         assert_eq!(decode_server_control(&encoded).unwrap(), rejected);
+    }
+
+    #[test]
+    fn drop_request_and_result_roundtrip_and_sizes() {
+        let drop = ClientControl::Drop(DropRequest {
+            seq: 4,
+            item_instance_id: purgatory_common::ItemInstanceId::from_raw(0x1234),
+        });
+        let encoded = encode_client_control(&drop).unwrap();
+        assert_eq!(encoded[0], TAG_DROP);
+        assert_eq!(encoded.len(), 1 + crate::DROP_REQUEST_BYTES);
+        assert_eq!(decode_client_control(&encoded).unwrap(), drop);
+
+        let accepted = ServerControl::Item(ServerItem::DropAccepted { seq: 4 });
+        let encoded = encode_server_control(&accepted).unwrap();
+        assert_eq!(encoded, [TAG_DROP_ACCEPTED, 4, 0, 0, 0]);
+        assert_eq!(encoded.len(), 1 + crate::DROP_ACCEPTED_BYTES);
+        assert_eq!(decode_server_control(&encoded).unwrap(), accepted);
+
+        let rejected = ServerControl::Item(ServerItem::DropRejected {
+            seq: 5,
+            reason: DropRejectReason::ItemNotInInventory,
+        });
+        let encoded = encode_server_control(&rejected).unwrap();
+        assert_eq!(encoded, [TAG_DROP_REJECTED, 5, 0, 0, 0, 4]);
+        assert_eq!(encoded.len(), 1 + crate::DROP_REJECTED_BYTES);
+        assert_eq!(decode_server_control(&encoded).unwrap(), rejected);
+    }
+
+    #[test]
+    fn drop_rejects_invalid_values() {
+        let zero_seq = ClientControl::Drop(DropRequest {
+            seq: 0,
+            item_instance_id: purgatory_common::ItemInstanceId::from_raw(1),
+        });
+        assert_eq!(
+            encode_client_control(&zero_seq),
+            Err(CodecError::InvalidValue)
+        );
+        assert_eq!(
+            decode_client_control(&[TAG_DROP, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]),
+            Err(CodecError::InvalidValue)
+        );
+        assert_eq!(
+            decode_server_control(&[TAG_DROP_REJECTED, 1, 0, 0, 0, 0]),
+            Err(CodecError::InvalidValue)
+        );
+        assert_eq!(
+            decode_server_control(&[TAG_DROP_REJECTED, 1, 0, 0, 0, 5]),
+            Err(CodecError::InvalidValue)
+        );
+        assert_eq!(
+            decode_server_control(&[TAG_DROP_ACCEPTED, 1, 0, 0, 0, 0]),
+            Err(CodecError::TrailingBytes)
+        );
     }
 
     #[test]

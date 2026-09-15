@@ -40,7 +40,7 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 27` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 28` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
 v26 is an intentional incompatible bump: v1–v25 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
@@ -109,6 +109,12 @@ completion in transient dialogue state, and follows authored `choice.next`.
 Text, actions, and next-Beat authority never come from the client. The v25
 active-line envelope remains wire-compatible; N10 now uses its zero line index
 as a Beat presentation anchor and composes all authored `lines[]` in that Beat.
+
+Protocol v28 adds the inventory `Drop` request (tag 40), carrying only
+`seq` and the owned `ItemInstanceId`. The server returns `DropAccepted` (tag 41)
+or `DropRejected` (tag 42) with the request sequence and, for rejection, one of
+the four defined reject reasons. Drop carries no coordinates, address,
+quantity, slot, or entity id; `seq == 0` is invalid.
 
 ## Golden wire vectors
 

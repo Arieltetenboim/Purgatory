@@ -7,11 +7,20 @@ use crate::{CodecError, WireEntityId};
 pub const PICKUP_REQUEST_BYTES: usize = 4 + 8;
 pub const PICKUP_ACCEPTED_BYTES: usize = 4 + 8 + 2;
 pub const PICKUP_REJECTED_BYTES: usize = 4 + 1;
+pub const DROP_REQUEST_BYTES: usize = 4 + 8;
+pub const DROP_ACCEPTED_BYTES: usize = 4;
+pub const DROP_REJECTED_BYTES: usize = 4 + 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PickupRequest {
     pub seq: u32,
     pub target: WireEntityId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DropRequest {
+    pub seq: u32,
+    pub item_instance_id: ItemInstanceId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,6 +57,33 @@ impl PickupRejectReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum DropRejectReason {
+    StaleRequest = 1,
+    InvalidRequest = 2,
+    StateBlocked = 3,
+    ItemNotInInventory = 4,
+}
+
+impl DropRejectReason {
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    #[must_use]
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::StaleRequest),
+            2 => Some(Self::InvalidRequest),
+            3 => Some(Self::StateBlocked),
+            4 => Some(Self::ItemNotInInventory),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServerItem {
     PickupAccepted {
         seq: u32,
@@ -57,6 +93,13 @@ pub enum ServerItem {
     PickupRejected {
         seq: u32,
         reason: PickupRejectReason,
+    },
+    DropAccepted {
+        seq: u32,
+    },
+    DropRejected {
+        seq: u32,
+        reason: DropRejectReason,
     },
 }
 
