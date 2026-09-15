@@ -16,31 +16,19 @@ use crate::renderer::{
     UiTexturedRect,
 };
 
-const PANEL_PNG: &[u8] = include_bytes!("../../../Graphic/ui/panel.png");
-const PANEL_BLUE_PNG: &[u8] = include_bytes!("../../../Graphic/ui/panelblue.png");
-const PANEL_BROWN_PNG: &[u8] = include_bytes!("../../../Graphic/ui/panelbrown.png");
-const PANEL_DARK1_PNG: &[u8] = include_bytes!("../../../Graphic/ui/paneldark1.png");
-const PANEL_DARK2_PNG: &[u8] = include_bytes!("../../../Graphic/ui/paneldark2.png");
-const PANEL_LIGHT1_PNG: &[u8] = include_bytes!("../../../Graphic/ui/panellight1.png");
-const PANEL_METADATA: &str = include_str!("../../../Graphic/ui/panel.ui.json");
-const PANEL_TEXTURE_FILE: &str = "panel.png";
-const HEADER_PNG: &[u8] = include_bytes!("../../../Graphic/ui/header.png");
-const HEADER_METADATA: &str = include_str!("../../../Graphic/ui/header.ui.json");
-const HEADER_TEXTURE_FILE: &str = "header.png";
-const CLOSE_BUTTON_PNG: &[u8] = include_bytes!("../../../Graphic/ui/BTN_quit.png");
-const CLOSE_BUTTON_METADATA: &str = include_str!("../../../Graphic/ui/BTN_quit.ui.json");
-const CLOSE_BUTTON_TEXTURE_FILE: &str = "BTN_quit.png";
+const ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
+const ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
+const ATLAS_TEXTURE_FILE: &str = "ATLAS.png";
 const TAB_PNG: &[u8] = include_bytes!("../../../Graphic/ui/inventory_tab.png");
 const TAB_METADATA: &str = include_str!("../../../Graphic/ui/inventory_tab.ui.json");
 const TAB_TEXTURE_FILE: &str = "inventory_tab.png";
 const SLOT_PNG: &[u8] = include_bytes!("../../../Graphic/ui/inventory_slot.png");
 const SLOT_METADATA: &str = include_str!("../../../Graphic/ui/inventory_slot.ui.json");
 const SLOT_TEXTURE_FILE: &str = "inventory_slot.png";
-const OK_BUTTON_PNG: &[u8] = include_bytes!("../../../Graphic/ui/btn_ok.png");
-const OK_BUTTON_METADATA: &str = include_str!("../../../Graphic/ui/btn_ok.ui.json");
-const OK_BUTTON_TEXTURE_FILE: &str = "btn_ok.png";
 const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 12.0;
+const HEADER_HEIGHT_UNITS: f32 = 38.0;
+const HEADER_TOP_INSET_UNITS: f32 = 6.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
 const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 23.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
@@ -93,6 +81,33 @@ const INVENTORY_TAB_CATEGORIES: [ItemCategory; 5] = [
     ItemCategory::Material,
     ItemCategory::Tool,
     ItemCategory::Misc,
+];
+const ATLAS_ICON_NAMES: [&str; 25] = [
+    "bag",
+    "chest",
+    "coin",
+    "star",
+    "heart",
+    "plus",
+    "potion_red",
+    "potion_blue",
+    "map",
+    "gear",
+    "home",
+    "sword",
+    "shield",
+    "helmet",
+    "magnifier",
+    "exclamation",
+    "question",
+    "minus",
+    "arrow_up",
+    "arrow_down",
+    "group",
+    "speech",
+    "flag",
+    "key",
+    "door",
 ];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -196,14 +211,6 @@ impl HorizontalCapsUnits {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct HeaderInsetsUnits {
-    left: f32,
-    right: f32,
-    top: f32,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct SourceRectPx {
@@ -227,45 +234,12 @@ impl SourceRectPx {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UiPanelMetadata {
-    schema_version: u32,
-    id: String,
-    texture: String,
-    slice_px: SourceInsets,
-    border_units: DestinationBorders,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UiHeaderMetadata {
-    schema_version: u32,
-    id: String,
-    texture: String,
-    slice_px: HorizontalInsetsPx,
-    cap_units: HorizontalCapsUnits,
-    height_units: f32,
-    inset_units: HeaderInsetsUnits,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct CloseButtonStates {
     normal: SourceRectPx,
     hover: SourceRectPx,
     pressed: SourceRectPx,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UiCloseButtonMetadata {
-    schema_version: u32,
-    id: String,
-    texture: String,
-    states: CloseButtonStates,
-    size_units: [f32; 2],
-    right_inset_units: f32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -309,20 +283,29 @@ struct ButtonStates {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UiButtonMetadata {
+struct UiAtlasMetadata {
     schema_version: u32,
     id: String,
     texture: String,
-    states: ButtonStates,
-    slice_px: HorizontalInsetsPx,
-    cap_units: HorizontalCapsUnits,
-    height_units: f32,
+    dimensions_px: [u32; 2],
+    windows: HashMap<String, SourceRectPx>,
+    window_slice_px: SourceInsets,
+    window_border_units: DestinationBorders,
+    buttons: HashMap<String, ButtonStates>,
+    button_slice_px: HorizontalInsetsPx,
+    button_cap_units: HorizontalCapsUnits,
+    button_height_units: f32,
+    close_button: CloseButtonStates,
+    close_size_units: [f32; 2],
+    close_right_inset_units: f32,
+    icons: HashMap<String, SourceRectPx>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct PanelAsset {
     texture: SpriteTextureId,
     source_size_px: [u32; 2],
+    source_rect: SourceRectPx,
     slice_px: SourceInsets,
     border_units: DestinationBorders,
 }
@@ -339,22 +322,17 @@ impl PanelVariants {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct HeaderAsset {
-    texture: SpriteTextureId,
-    source_size_px: [u32; 2],
-    slice_px: HorizontalInsetsPx,
-    cap_units: HorizontalCapsUnits,
-    height_units: f32,
-    inset_units: HeaderInsetsUnits,
-}
-
-#[derive(Clone, Copy, Debug)]
 struct CloseButtonAsset {
     texture: SpriteTextureId,
     source_size_px: [u32; 2],
     states: CloseButtonStates,
     size_units: [f32; 2],
     right_inset_units: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AtlasIcons {
+    regions: [SourceRectPx; 25],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -387,7 +365,8 @@ pub(crate) enum UiButtonState {
 pub(crate) struct UiButtonAssets {
     texture: SpriteTextureId,
     source_size_px: [u32; 2],
-    states: ButtonStates,
+    variants: [ButtonStates; 6],
+    variant: usize,
     slice_px: HorizontalInsetsPx,
     cap_units: HorizontalCapsUnits,
     pub(crate) height_units: f32,
@@ -410,86 +389,41 @@ pub(crate) struct UiItemIconAssets {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UiWindowAssets {
     panels: PanelVariants,
-    header: HeaderAsset,
     close_button: CloseButtonAsset,
+    icons: AtlasIcons,
     panel_style: PanelStyle,
 }
 
 impl UiWindowAssets {
     pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
-        let panel_metadata: UiPanelMetadata = serde_json::from_str(PANEL_METADATA)
-            .map_err(|error| format!("parse UI panel metadata: {error}"))?;
-        if panel_metadata.texture != PANEL_TEXTURE_FILE {
-            return Err(format!(
-                "UI panel metadata names unexpected base texture {:?}",
-                panel_metadata.texture
-            ));
-        }
-        let panel_sources = [
-            (PANEL_TEXTURE_FILE, PANEL_PNG),
-            ("panelblue.png", PANEL_BLUE_PNG),
-            ("panelbrown.png", PANEL_BROWN_PNG),
-            ("paneldark1.png", PANEL_DARK1_PNG),
-            ("paneldark2.png", PANEL_DARK2_PNG),
-            ("panellight1.png", PANEL_LIGHT1_PNG),
-        ];
-        let mut panels = Vec::with_capacity(panel_sources.len());
-        for (index, (file, png)) in panel_sources.into_iter().enumerate() {
-            let (texture, source_size_px) = register_metadata_texture(
-                assets,
-                &format!("{}.{}", panel_metadata.id, index),
-                &panel_metadata.texture,
-                PANEL_TEXTURE_FILE,
-                png,
-                "panel",
-            )?;
-            validate_panel_metadata(&panel_metadata, source_size_px)?;
-            panels.push(PanelAsset {
+        let metadata: UiAtlasMetadata = serde_json::from_str(ATLAS_METADATA)
+            .map_err(|error| format!("parse UI atlas metadata: {error}"))?;
+        let (texture, source_size_px) = register_metadata_texture(
+            assets,
+            &metadata.id,
+            &metadata.texture,
+            ATLAS_TEXTURE_FILE,
+            ATLAS_PNG,
+            "atlas",
+        )?;
+        validate_atlas_metadata(&metadata, source_size_px)?;
+        let style_names = ["base", "blue", "brown", "dark1", "dark2", "light1"];
+        let panels = style_names
+            .into_iter()
+            .map(|name| PanelAsset {
                 texture,
                 source_size_px,
-                slice_px: panel_metadata.slice_px,
-                border_units: panel_metadata.border_units,
-            });
-            debug_assert_eq!(index, panels.len() - 1);
-        }
-
-        let header_metadata: UiHeaderMetadata = serde_json::from_str(HEADER_METADATA)
-            .map_err(|error| format!("parse UI header metadata: {error}"))?;
-        let (header_texture, header_source_size) = register_metadata_texture(
-            assets,
-            &header_metadata.id,
-            &header_metadata.texture,
-            HEADER_TEXTURE_FILE,
-            HEADER_PNG,
-            "header",
-        )?;
-        validate_header_metadata(&header_metadata, header_source_size)?;
-        let header = HeaderAsset {
-            texture: header_texture,
-            source_size_px: header_source_size,
-            slice_px: header_metadata.slice_px,
-            cap_units: header_metadata.cap_units,
-            height_units: header_metadata.height_units,
-            inset_units: header_metadata.inset_units,
-        };
-
-        let close_metadata: UiCloseButtonMetadata = serde_json::from_str(CLOSE_BUTTON_METADATA)
-            .map_err(|error| format!("parse UI close-button metadata: {error}"))?;
-        let (close_texture, close_source_size) = register_metadata_texture(
-            assets,
-            &close_metadata.id,
-            &close_metadata.texture,
-            CLOSE_BUTTON_TEXTURE_FILE,
-            CLOSE_BUTTON_PNG,
-            "close button",
-        )?;
-        validate_close_button_metadata(&close_metadata, close_source_size)?;
+                source_rect: metadata.windows[name],
+                slice_px: metadata.window_slice_px,
+                border_units: metadata.window_border_units,
+            })
+            .collect::<Vec<_>>();
         let close_button = CloseButtonAsset {
-            texture: close_texture,
-            source_size_px: close_source_size,
-            states: close_metadata.states,
-            size_units: close_metadata.size_units,
-            right_inset_units: close_metadata.right_inset_units,
+            texture,
+            source_size_px,
+            states: metadata.close_button,
+            size_units: metadata.close_size_units,
+            right_inset_units: metadata.close_right_inset_units,
         };
 
         Ok(Self {
@@ -498,8 +432,10 @@ impl UiWindowAssets {
                     .try_into()
                     .map_err(|_| "UI panel variants are incomplete".to_string())?,
             },
-            header,
             close_button,
+            icons: AtlasIcons {
+                regions: std::array::from_fn(|index| metadata.icons[ATLAS_ICON_NAMES[index]]),
+            },
             panel_style: PanelStyle::default(),
         })
     }
@@ -521,26 +457,31 @@ impl UiWindowAssets {
         pixels_per_unit: f32,
         cursor: Option<[f32; 2]>,
     ) -> Result<Option<UiWindowFrame>, String> {
+        self.proof_frame_with_icon(window, title, None, viewport, pixels_per_unit, cursor)
+    }
+
+    fn proof_frame_with_icon(
+        self,
+        window: &mut ProofPanelWindow,
+        title: &str,
+        icon: Option<&str>,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+        cursor: Option<[f32; 2]>,
+    ) -> Result<Option<UiWindowFrame>, String> {
         let Some(layout) = self.layout(window, viewport, pixels_per_unit)? else {
             return Ok(None);
         };
         let panel = self.panels.selected(self.panel_style);
-        let mut textured_rects = assemble_nine_slice(
+        let mut textured_rects = assemble_nine_slice_region(
             layout.window,
             panel.texture,
             panel.source_size_px,
+            panel.source_rect,
             panel.slice_px,
             panel.border_units.scaled(pixels_per_unit),
             [1.0; 4],
         )?;
-        textured_rects.extend(assemble_horizontal_three_slice(
-            layout.header,
-            self.header.texture,
-            self.header.source_size_px,
-            self.header.slice_px,
-            self.header.cap_units.scaled(pixels_per_unit),
-            [1.0; 4],
-        )?);
 
         let source = match window.close_button_visual(cursor, layout.close_button) {
             CloseButtonVisual::Normal => self.close_button.states.normal,
@@ -556,13 +497,33 @@ impl UiWindowAssets {
             uv_max,
             tint: [1.0; 4],
         });
+        if let Some(icon) = icon {
+            let source = ATLAS_ICON_NAMES
+                .iter()
+                .position(|name| *name == icon)
+                .map(|index| self.icons.regions[index])
+                .ok_or_else(|| format!("UI atlas icon {icon} is missing"))?;
+            let icon_size = 20.0 * pixels_per_unit;
+            let icon_min = [
+                layout.header.min[0] + 7.0 * pixels_per_unit,
+                layout.header.min[1] + 7.0 * pixels_per_unit,
+            ];
+            let (uv_min, uv_max) = source.uv_bounds(self.close_button.source_size_px);
+            textured_rects.push(UiTexturedRect {
+                min: icon_min,
+                max: [icon_min[0] + icon_size, icon_min[1] + icon_size],
+                texture: self.close_button.texture,
+                uv_min,
+                uv_max,
+                tint: [1.0; 4],
+            });
+        }
 
         let title_font_size = TITLE_FONT_SIZE_UNITS * pixels_per_unit;
         let title_anchor = [
             layout.header.min[0] + TITLE_LEFT_INSET_UNITS * pixels_per_unit,
             layout.header.min[1]
-                + ((self.header.height_units - TITLE_FONT_SIZE_UNITS) * 0.5).max(0.0)
-                    * pixels_per_unit,
+                + ((HEADER_HEIGHT_UNITS - TITLE_FONT_SIZE_UNITS) * 0.5).max(0.0) * pixels_per_unit,
         ];
         let title_max_width = (layout.close_button.min[0]
             - TITLE_CONTROL_GAP_UNITS * pixels_per_unit
@@ -641,13 +602,12 @@ impl UiWindowAssets {
         ];
         let header = ScreenRect {
             min: [
-                window_min[0] + self.header.inset_units.left * pixels_per_unit,
-                window_min[1] + self.header.inset_units.top * pixels_per_unit,
+                window_min[0] + TITLE_LEFT_INSET_UNITS * pixels_per_unit,
+                window_min[1] + HEADER_TOP_INSET_UNITS * pixels_per_unit,
             ],
             max: [
-                window_max[0] - self.header.inset_units.right * pixels_per_unit,
-                window_min[1]
-                    + (self.header.inset_units.top + self.header.height_units) * pixels_per_unit,
+                window_max[0] - TITLE_LEFT_INSET_UNITS * pixels_per_unit,
+                window_min[1] + HEADER_HEIGHT_UNITS * pixels_per_unit,
             ],
         };
         let button_size = [
@@ -853,24 +813,31 @@ impl UiSlotAssets {
 
 impl UiButtonAssets {
     pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
-        let metadata: UiButtonMetadata = serde_json::from_str(OK_BUTTON_METADATA)
-            .map_err(|error| format!("parse UI button metadata: {error}"))?;
+        let metadata: UiAtlasMetadata = serde_json::from_str(ATLAS_METADATA)
+            .map_err(|error| format!("parse UI atlas metadata for buttons: {error}"))?;
         let (texture, source_size_px) = register_metadata_texture(
             assets,
             &metadata.id,
             &metadata.texture,
-            OK_BUTTON_TEXTURE_FILE,
-            OK_BUTTON_PNG,
-            "button",
+            ATLAS_TEXTURE_FILE,
+            ATLAS_PNG,
+            "atlas",
         )?;
-        validate_button_metadata(&metadata, source_size_px)?;
+        validate_atlas_metadata(&metadata, source_size_px)?;
+        let variants = ["base", "blue", "brown", "dark1", "dark2", "light1"]
+            .into_iter()
+            .map(|name| metadata.buttons[name])
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| "UI atlas button variants are incomplete".to_string())?;
         Ok(Self {
             texture,
             source_size_px,
-            states: metadata.states,
-            slice_px: metadata.slice_px,
-            cap_units: metadata.cap_units,
-            height_units: metadata.height_units,
+            variants,
+            variant: 0,
+            slice_px: metadata.button_slice_px,
+            cap_units: metadata.button_cap_units,
+            height_units: metadata.button_height_units,
         })
     }
 
@@ -881,10 +848,11 @@ impl UiButtonAssets {
         pixels_per_unit: f32,
     ) -> Result<Vec<UiTexturedRect>, String> {
         validate_pixels_per_unit(pixels_per_unit)?;
+        let states = self.variants[self.variant];
         let source = match state {
-            UiButtonState::Normal => self.states.normal,
-            UiButtonState::Hover => self.states.hover,
-            UiButtonState::Pressed => self.states.pressed,
+            UiButtonState::Normal => states.normal,
+            UiButtonState::Hover => states.hover,
+            UiButtonState::Pressed => states.pressed,
         };
         assemble_horizontal_three_slice_region(
             bounds,
@@ -1219,9 +1187,10 @@ impl InventoryWindow {
             self.item_hit_regions.clear();
             return Ok(None);
         };
-        let Some(window_frame) = window_assets.proof_frame(
+        let Some(window_frame) = window_assets.proof_frame_with_icon(
             &mut self.chrome,
             "Item Inventory",
+            Some("bag"),
             viewport,
             pixels_per_unit,
             cursor,
@@ -1647,9 +1616,10 @@ impl EquipmentWindow {
             self.slot_hit_regions.clear();
             return Ok(None);
         };
-        let Some(window_frame) = window_assets.proof_frame(
+        let Some(window_frame) = window_assets.proof_frame_with_icon(
             &mut self.chrome,
             "Equipment",
+            Some("helmet"),
             viewport,
             pixels_per_unit,
             cursor,
@@ -2380,107 +2350,79 @@ fn register_metadata_texture(
     Ok((texture, source_size))
 }
 
-fn validate_panel_metadata(
-    metadata: &UiPanelMetadata,
+fn validate_atlas_metadata(
+    metadata: &UiAtlasMetadata,
     source_size_px: [u32; 2],
 ) -> Result<(), String> {
-    validate_schema_and_id(metadata.schema_version, &metadata.id, "panel")?;
-    if source_size_px.contains(&0)
-        || metadata
-            .slice_px
-            .left
-            .saturating_add(metadata.slice_px.right)
-            >= source_size_px[0]
-        || metadata
-            .slice_px
-            .top
-            .saturating_add(metadata.slice_px.bottom)
-            >= source_size_px[1]
-    {
+    validate_schema_and_id(metadata.schema_version, &metadata.id, "atlas")?;
+    if source_size_px != metadata.dimensions_px {
         return Err(format!(
-            "UI panel {} slice geometry {:?} is outside texture {}x{}",
-            metadata.id, metadata.slice_px, source_size_px[0], source_size_px[1]
+            "UI atlas dimensions {:?} do not match decoded texture {:?}",
+            metadata.dimensions_px, source_size_px
         ));
     }
-    let borders = metadata.border_units;
-    if ![borders.left, borders.right, borders.top, borders.bottom]
+    let window_names = ["base", "blue", "brown", "dark1", "dark2", "light1"];
+    let windows = window_names
+        .into_iter()
+        .map(|name| metadata.windows.get(name).copied())
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "UI atlas is missing a window region".to_string())?;
+    if windows
+        .iter()
+        .any(|rect| !source_rect_fits(*rect, source_size_px))
+        || windows
+            .windows(2)
+            .any(|pair| pair[0].width != pair[1].width || pair[0].height != pair[1].height)
+        || metadata.window_slice_px.left + metadata.window_slice_px.right >= windows[0].width
+        || metadata.window_slice_px.top + metadata.window_slice_px.bottom >= windows[0].height
+        || ![
+            metadata.window_border_units.left,
+            metadata.window_border_units.right,
+            metadata.window_border_units.top,
+            metadata.window_border_units.bottom,
+        ]
         .into_iter()
         .all(finite_positive)
     {
-        return Err(format!(
-            "UI panel {} border_units must be finite and positive",
-            metadata.id
-        ));
+        return Err("UI atlas window regions or slice geometry are invalid".to_string());
     }
-    Ok(())
-}
-
-fn validate_header_metadata(
-    metadata: &UiHeaderMetadata,
-    source_size_px: [u32; 2],
-) -> Result<(), String> {
-    validate_schema_and_id(metadata.schema_version, &metadata.id, "header")?;
-    if source_size_px.contains(&0)
-        || metadata
-            .slice_px
-            .left
-            .saturating_add(metadata.slice_px.right)
-            >= source_size_px[0]
-    {
-        return Err(format!(
-            "UI header {} slice geometry {:?} is outside texture {}x{}",
-            metadata.id, metadata.slice_px, source_size_px[0], source_size_px[1]
-        ));
+    let button_names = ["base", "blue", "brown", "dark1", "dark2", "light1"];
+    for name in button_names {
+        let states = metadata
+            .buttons
+            .get(name)
+            .ok_or_else(|| format!("UI atlas is missing button variant {name}"))?;
+        let regions = [states.normal, states.hover, states.pressed];
+        if !regions
+            .into_iter()
+            .all(|rect| source_rect_fits(rect, source_size_px))
+            || !regions
+                .windows(2)
+                .all(|pair| pair[0].width == pair[1].width && pair[0].height == pair[1].height)
+            || metadata.button_slice_px.left + metadata.button_slice_px.right >= states.normal.width
+        {
+            return Err(format!("UI atlas button variant {name} is invalid"));
+        }
     }
     if ![
-        metadata.cap_units.left,
-        metadata.cap_units.right,
-        metadata.height_units,
+        metadata.close_button.normal,
+        metadata.close_button.hover,
+        metadata.close_button.pressed,
     ]
     .into_iter()
-    .all(finite_positive)
-        || ![
-            metadata.inset_units.left,
-            metadata.inset_units.right,
-            metadata.inset_units.top,
-        ]
-        .into_iter()
-        .all(finite_non_negative)
+    .all(|rect| source_rect_fits(rect, source_size_px))
+        || !metadata.close_size_units.into_iter().all(finite_positive)
+        || !finite_non_negative(metadata.close_right_inset_units)
     {
-        return Err(format!(
-            "UI header {} units must be finite with positive caps/height and non-negative insets",
-            metadata.id
-        ));
+        return Err("UI atlas close-button metadata is invalid".to_string());
     }
-    Ok(())
-}
-
-fn validate_close_button_metadata(
-    metadata: &UiCloseButtonMetadata,
-    source_size_px: [u32; 2],
-) -> Result<(), String> {
-    validate_schema_and_id(metadata.schema_version, &metadata.id, "close button")?;
-    if source_size_px.contains(&0)
-        || ![
-            metadata.states.normal,
-            metadata.states.hover,
-            metadata.states.pressed,
-        ]
-        .into_iter()
-        .all(|rect| source_rect_fits(rect, source_size_px))
+    if metadata.icons.len() != 25
+        || metadata
+            .icons
+            .values()
+            .any(|rect| !source_rect_fits(*rect, source_size_px))
     {
-        return Err(format!(
-            "UI close button {} contains a state outside texture {}x{}",
-            metadata.id, source_size_px[0], source_size_px[1]
-        ));
-    }
-    if !metadata.size_units.into_iter().all(finite_positive)
-        || !finite_non_negative(metadata.right_inset_units)
-    {
-        return Err(format!(
-            "UI close button {} size must be positive and inset non-negative",
-            metadata.id
-        ));
+        return Err("UI atlas icon metadata is incomplete or out of bounds".to_string());
     }
     Ok(())
 }
@@ -2536,52 +2478,6 @@ fn validate_slot_metadata(
     {
         return Err(format!(
             "UI slot {} texture and logical size must be positive squares",
-            metadata.id
-        ));
-    }
-    Ok(())
-}
-
-fn validate_button_metadata(
-    metadata: &UiButtonMetadata,
-    source_size_px: [u32; 2],
-) -> Result<(), String> {
-    validate_schema_and_id(metadata.schema_version, &metadata.id, "button")?;
-    if source_size_px.contains(&0)
-        || ![
-            metadata.states.normal,
-            metadata.states.hover,
-            metadata.states.pressed,
-        ]
-        .into_iter()
-        .all(|rect| source_rect_fits(rect, source_size_px))
-        || ![metadata.slice_px.left, metadata.slice_px.right]
-            .into_iter()
-            .all(|inset| inset < metadata.states.normal.width)
-        || metadata
-            .slice_px
-            .left
-            .saturating_add(metadata.slice_px.right)
-            >= metadata.states.normal.width
-        || !finite_positive(metadata.height_units)
-        || !finite_positive(metadata.cap_units.left)
-        || !finite_positive(metadata.cap_units.right)
-    {
-        return Err(format!(
-            "UI button {} contains invalid state or slice geometry for texture {}x{}",
-            metadata.id, source_size_px[0], source_size_px[1]
-        ));
-    }
-    if ![
-        metadata.states.normal.height,
-        metadata.states.hover.height,
-        metadata.states.pressed.height,
-    ]
-    .into_iter()
-    .all(|height| height > 0)
-    {
-        return Err(format!(
-            "UI button {} state heights must be positive",
             metadata.id
         ));
     }
@@ -2874,10 +2770,36 @@ fn clamp_top_left(position: [f32; 2], window_size: [f32; 2], viewport_size: [f32
     ]
 }
 
+#[allow(dead_code)]
 fn assemble_nine_slice(
     destination: ScreenRect,
     texture: SpriteTextureId,
     source_size_px: [u32; 2],
+    source: SourceInsets,
+    borders: DestinationBorders,
+    tint: [f32; 4],
+) -> Result<Vec<UiTexturedRect>, String> {
+    assemble_nine_slice_region(
+        destination,
+        texture,
+        source_size_px,
+        SourceRectPx {
+            x: 0,
+            y: 0,
+            width: source_size_px[0],
+            height: source_size_px[1],
+        },
+        source,
+        borders,
+        tint,
+    )
+}
+
+fn assemble_nine_slice_region(
+    destination: ScreenRect,
+    texture: SpriteTextureId,
+    source_size_px: [u32; 2],
+    source_rect: SourceRectPx,
     source: SourceInsets,
     borders: DestinationBorders,
     tint: [f32; 4],
@@ -2889,6 +2811,9 @@ fn assemble_nine_slice(
         .all(f32::is_finite)
         || destination.width() <= borders.left + borders.right
         || destination.height() <= borders.top + borders.bottom
+        || !source_rect_fits(source_rect, source_size_px)
+        || source.left + source.right >= source_rect.width
+        || source.top + source.bottom >= source_rect.height
     {
         return Err(
             "UI panel target is invalid or smaller than its destination borders".to_string(),
@@ -2896,16 +2821,16 @@ fn assemble_nine_slice(
     }
 
     let source_x = [
-        0.0,
-        source.left as f32,
-        (source_size_px[0] - source.right) as f32,
-        source_size_px[0] as f32,
+        source_rect.x as f32,
+        (source_rect.x + source.left) as f32,
+        (source_rect.x + source_rect.width - source.right) as f32,
+        (source_rect.x + source_rect.width) as f32,
     ];
     let source_y = [
-        0.0,
-        source.top as f32,
-        (source_size_px[1] - source.bottom) as f32,
-        source_size_px[1] as f32,
+        source_rect.y as f32,
+        (source_rect.y + source.top) as f32,
+        (source_rect.y + source_rect.height - source.bottom) as f32,
+        (source_rect.y + source_rect.height) as f32,
     ];
     let destination_x = [
         destination.min[0],
@@ -2944,6 +2869,7 @@ fn assemble_nine_slice(
     Ok(regions)
 }
 
+#[allow(dead_code)]
 fn assemble_horizontal_three_slice(
     destination: ScreenRect,
     texture: SpriteTextureId,
@@ -3076,12 +3002,20 @@ mod tests {
     fn embedded_metadata_parses_and_validates_against_decoded_textures() {
         let mut runtime = AssetRuntime::new();
         let assets = UiWindowAssets::load_embedded(&mut runtime).unwrap();
-        assert_eq!(assets.panel().source_size_px, [1254, 1254]);
-        assert_eq!(assets.header.source_size_px, [2072, 139]);
-        assert_eq!(assets.close_button.source_size_px, [1500, 500]);
-        assert_eq!(assets.panel().slice_px.left, 128);
-        assert_eq!(assets.header.slice_px.left, 140);
-        assert_eq!(runtime.resource_count(), 8);
+        assert_eq!(assets.panel().source_size_px, [1536, 1024]);
+        assert_eq!(
+            assets.panel().source_rect,
+            SourceRectPx {
+                x: 0,
+                y: 0,
+                width: 256,
+                height: 384
+            }
+        );
+        assert_eq!(assets.close_button.source_size_px, [1536, 1024]);
+        assert_eq!(assets.panel().slice_px.left, 32);
+        assert_eq!(assets.panel().slice_px.top, 64);
+        assert_eq!(runtime.resource_count(), 1);
         assert_eq!(
             runtime
                 .resource(assets.close_button.texture)
@@ -3094,7 +3028,7 @@ mod tests {
     }
 
     #[test]
-    fn panel_variants_share_metadata_geometry_and_have_distinct_textures() {
+    fn panel_variants_share_metadata_geometry_and_texture() {
         let assets = embedded_assets();
         let base = assets.panel();
         let textures: Vec<_> = PanelStyle::ALL
@@ -3104,6 +3038,8 @@ mod tests {
                 assert_eq!(panel.source_size_px, base.source_size_px);
                 assert_eq!(panel.slice_px, base.slice_px);
                 assert_eq!(panel.border_units, base.border_units);
+                assert_eq!(panel.source_rect.width, base.source_rect.width);
+                assert_eq!(panel.source_rect.height, base.source_rect.height);
                 panel.texture
             })
             .collect();
@@ -3113,7 +3049,7 @@ mod tests {
                 .windows(2)
                 .filter(|pair| pair[0] != pair[1])
                 .count(),
-            5
+            0
         );
     }
 
@@ -3121,9 +3057,9 @@ mod tests {
     fn button_states_use_explicit_sheet_regions_and_preserve_three_slice_caps() {
         let button = embedded_button_assets();
         assert_eq!(button.source_size_px, [1536, 1024]);
-        assert_eq!(button.states.normal.y, 256);
-        assert_eq!(button.states.hover.y, 448);
-        assert_eq!(button.states.pressed.y, 640);
+        assert_eq!(button.variants[0].normal.y, 384);
+        assert_eq!(button.variants[0].hover.y, 448);
+        assert_eq!(button.variants[0].pressed.y, 512);
         assert_eq!(button.height_units, 32.0);
         for state in [
             UiButtonState::Normal,
@@ -3293,7 +3229,7 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-        assert_eq!(frame.textured_rects.len(), 65);
+        assert_eq!(frame.textured_rects.len(), 63);
         assert_eq!(frame.texts.len(), 13);
         assert_eq!(frame.texts[0].content.0, "Item Inventory");
         assert_eq!(frame.texts[1].content.0, "Equip");
@@ -3318,7 +3254,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let content_max_y = layout.window.max[1] - window_assets.panel().border_units.bottom;
-        assert_eq!(content_max_y - slots.last().unwrap().max[1], 32.0);
+        assert_eq!(content_max_y - slots.last().unwrap().max[1], 30.0);
         let currency_bounds = inventory_currency_bounds(
             window_assets,
             slot_assets,
@@ -3340,8 +3276,8 @@ mod tests {
         assert_eq!(bounds.width(), 236.0);
         assert_eq!(bounds.min[0] - layout.window.min[0], 23.0);
         assert_eq!(layout.window.max[0] - bounds.max[0], 23.0);
-        let background = frame.textured_rects[13];
-        let separator = frame.textured_rects[14];
+        let background = frame.textured_rects[11];
+        let separator = frame.textured_rects[12];
         assert_eq!(background.texture, window_assets.panel().texture);
         assert_eq!(separator.texture, window_assets.panel().texture);
         assert_eq!(background.tint, INVENTORY_GRID_BACKGROUND_TINT);
@@ -3451,10 +3387,10 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-        assert_eq!(equip.textured_rects.len(), 66);
+        assert_eq!(equip.textured_rects.len(), 64);
         assert_eq!(equip.texts.len(), 13);
-        let first_slot = equip.textured_rects[30];
-        let sword_icon = equip.textured_rects[65];
+        let first_slot = equip.textured_rects[28];
+        let sword_icon = equip.textured_rects[63];
         assert_eq!(sword_icon.texture, item_icons.resolve(sword).texture);
         assert_eq!(sword_icon.min[0] - first_slot.min[0], 4.0);
         assert_eq!(first_slot.max[0] - sword_icon.max[0], 4.0);
@@ -3474,9 +3410,9 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-        assert_eq!(consumables.textured_rects.len(), 66);
+        assert_eq!(consumables.textured_rects.len(), 64);
         assert_eq!(
-            consumables.textured_rects[65].texture,
+            consumables.textured_rects[63].texture,
             item_icons.resolve(potion).texture
         );
         assert_eq!(consumables.texts.len(), 14);
@@ -3559,10 +3495,10 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-        assert_eq!(frame.textured_rects[30].tint, INVENTORY_SLOT_SELECTED_TINT);
+        assert_eq!(frame.textured_rects[28].tint, INVENTORY_SLOT_SELECTED_TINT);
         assert_eq!(
             frame.textured_rects.len(),
-            67,
+            65,
             "one icon + tooltip background"
         );
         assert_eq!(
@@ -3912,53 +3848,101 @@ mod tests {
 
     #[test]
     fn invalid_slice_and_button_state_metadata_are_rejected() {
-        let invalid_panel: UiPanelMetadata = serde_json::from_str(
-            r#"{
-                "schema_version": 1,
-                "id": "ui.panel.invalid",
-                "texture": "panel.png",
-                "slice_px": { "left": 700, "right": 600, "top": 128, "bottom": 128 },
-                "border_units": { "left": 32.0, "right": 32.0, "top": 32.0, "bottom": 32.0 }
-            }"#,
-        )
-        .unwrap();
-        assert!(validate_panel_metadata(&invalid_panel, [1254, 1254]).is_err());
-
-        let invalid_close: UiCloseButtonMetadata = serde_json::from_str(
-            r#"{
-                "schema_version": 1,
-                "id": "ui.button.invalid",
-                "texture": "BTN_quit.png",
-                "states": {
-                    "normal": { "x": 0, "y": 0, "width": 500, "height": 500 },
-                    "hover": { "x": 500, "y": 0, "width": 500, "height": 500 },
-                    "pressed": { "x": 1200, "y": 0, "width": 500, "height": 500 }
-                },
-                "size_units": [24.0, 24.0],
-                "right_inset_units": 5.0
-            }"#,
-        )
-        .unwrap();
-        assert!(validate_close_button_metadata(&invalid_close, [1500, 500]).is_err());
+        let mut metadata: UiAtlasMetadata = serde_json::from_str(ATLAS_METADATA).unwrap();
+        metadata.windows.insert(
+            "base".to_string(),
+            SourceRectPx {
+                x: 1500,
+                y: 900,
+                width: 100,
+                height: 200,
+            },
+        );
+        assert!(validate_atlas_metadata(&metadata, [1536, 1024]).is_err());
+        metadata = serde_json::from_str(ATLAS_METADATA).unwrap();
+        metadata.close_button.normal.width = 500;
+        metadata.close_button.normal.x = 1200;
+        assert!(validate_atlas_metadata(&metadata, [1536, 1024]).is_err());
     }
 
     #[test]
-    fn window_frame_composes_panel_header_button_and_title() {
+    fn window_frame_composes_integrated_window_and_title() {
         let assets = embedded_assets();
         let mut window = normal_window();
         let frame = assets
             .proof_frame(&mut window, "Inventory", viewport(), 1.0, None)
             .unwrap()
             .unwrap();
-        assert_eq!(frame.textured_rects.len(), 13);
-        assert_eq!(frame.textured_rects[0].size(), [32.0, 32.0]);
-        assert_eq!(frame.textured_rects[9].size(), [28.0, 30.0]);
-        assert_eq!(frame.textured_rects[10].size(), [192.0, 30.0]);
-        assert_eq!(frame.textured_rects[11].size(), [28.0, 30.0]);
-        assert_eq!(frame.textured_rects[12].size(), [19.0, 19.0]);
-        assert_eq!(frame.textured_rects[12].uv_min, [0.0, 0.0]);
-        assert_eq!(frame.textured_rects[12].uv_max, [1.0 / 3.0, 1.0]);
+        assert_eq!(frame.textured_rects.len(), 10);
+        assert_eq!(frame.textured_rects[0].size(), [32.0, 64.0]);
+        assert_eq!(frame.textured_rects[9].size(), [19.0, 19.0]);
+        assert_eq!(
+            frame.textured_rects[9].uv_min,
+            [1408.0 / 1536.0, 384.0 / 1024.0]
+        );
+        assert_eq!(
+            frame.textured_rects[9].uv_max,
+            [1536.0 / 1536.0, 448.0 / 1024.0]
+        );
         assert_eq!(frame.title.content.0, "Inventory");
+    }
+
+    #[test]
+    fn inventory_and_equipment_headers_use_atlas_chrome_icons() {
+        let window_assets = embedded_assets();
+        let tab_assets = embedded_tab_assets();
+        let slot_assets = embedded_slot_assets();
+        let registry = inventory_registry();
+        let item_icons = placeholder_item_icons(&registry);
+        let mut inventory = InventoryWindow::default();
+        inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false,
+        );
+        let inventory_frame = inventory
+            .frame(InventoryWindowFrameInput {
+                window_assets,
+                tab_assets,
+                slot_assets,
+                item_icon_assets: &item_icons,
+                entries: &[],
+                registry: &registry,
+                viewport: viewport(),
+                pixels_per_unit: 1.0,
+                cursor: None,
+            })
+            .unwrap()
+            .unwrap();
+        let mut equipment = EquipmentWindow::default();
+        equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false,
+        );
+        let equipment_frame = equipment
+            .frame(EquipmentWindowFrameInput {
+                window_assets,
+                slot_assets,
+                item_icon_assets: &item_icons,
+                equipment: None,
+                viewport: viewport(),
+                pixels_per_unit: 1.0,
+                cursor: None,
+            })
+            .unwrap()
+            .unwrap();
+        let atlas = window_assets.panel().texture;
+        assert_eq!(inventory_frame.textured_rects[10].texture, atlas);
+        assert_eq!(equipment_frame.textured_rects[10].texture, atlas);
+        assert_eq!(
+            inventory_frame.textured_rects[10].uv_min,
+            [0.0, 768.0 / 1024.0]
+        );
+        assert_eq!(
+            equipment_frame.textured_rects[10].uv_min,
+            [128.0 / 1536.0, 896.0 / 1024.0]
+        );
     }
 
     #[test]
@@ -3977,7 +3961,10 @@ mod tests {
             .proof_frame(&mut window, "Panel", viewport(), 1.0, Some(cursor))
             .unwrap()
             .unwrap();
-        assert_eq!(hover.textured_rects[12].uv_min, [1.0 / 3.0, 0.0]);
+        assert_eq!(
+            hover.textured_rects[9].uv_min,
+            [1408.0 / 1536.0, 448.0 / 1024.0]
+        );
         let before = layout.close_button;
         assert!(window.apply_pointer_button(
             assets,
@@ -3990,7 +3977,10 @@ mod tests {
             .proof_frame(&mut window, "Panel", viewport(), 1.0, Some(cursor))
             .unwrap()
             .unwrap();
-        assert_eq!(pressed.textured_rects[12].uv_min, [2.0 / 3.0, 0.0]);
+        assert_eq!(
+            pressed.textured_rects[9].uv_min,
+            [1408.0 / 1536.0, 512.0 / 1024.0]
+        );
         assert_eq!(
             assets
                 .layout(&mut window, viewport(), 1.0)
