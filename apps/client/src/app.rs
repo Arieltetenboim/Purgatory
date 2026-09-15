@@ -4478,6 +4478,7 @@ impl ApplicationHandler for ClientApp {
                     self.actions.release_on_focus_loss();
                     self.on_focus_loss_input();
                     self.inventory_window.cancel_pointer_interaction();
+                    self.equipment_window.cancel_pointer_interaction();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {

@@ -68,6 +68,7 @@ const EQUIPMENT_SLOT_LABELS: [&str; EquipmentSlot::COUNT] =
     ["Headwear", "Bodywear", "Pants", "Gloves", "Boots", "Weapon"];
 const INVENTORY_SLOT_HOVER_TINT: [f32; 4] = [0.9, 0.96, 1.0, 1.0];
 const INVENTORY_SLOT_SELECTED_TINT: [f32; 4] = [1.0, 0.9, 0.68, 1.0];
+const ITEM_DRAG_THRESHOLD_PX: f32 = 4.0;
 const INVENTORY_TOOLTIP_WIDTH_UNITS: f32 = 218.0;
 const INVENTORY_TOOLTIP_HEIGHT_UNITS: f32 = 54.0;
 const INVENTORY_TOOLTIP_OFFSET_UNITS: f32 = 10.0;
@@ -961,6 +962,8 @@ pub(crate) struct InventoryWindow {
     currency: UiCurrencyDisplay,
     selected_item: Option<ItemInstanceId>,
     pressed_item: Option<ItemInstanceId>,
+    pressed_position: Option<[f32; 2]>,
+    dragging_item: Option<ItemInstanceId>,
     completed_drag: Option<ItemInstanceId>,
     completed_click: Option<ItemInstanceId>,
     slot_hit_regions: Vec<ScreenRect>,
@@ -980,6 +983,8 @@ impl Default for InventoryWindow {
             currency: UiCurrencyDisplay::default(),
             selected_item: None,
             pressed_item: None,
+            pressed_position: None,
+            dragging_item: None,
             completed_drag: None,
             completed_click: None,
             slot_hit_regions: Vec::new(),
@@ -1112,6 +1117,7 @@ impl InventoryWindow {
             category,
             &slot_rects,
             pixels_per_unit,
+            self.dragging_item,
         )?;
         let tooltip = hovered_item
             .and_then(|item| entries.iter().find(|entry| entry.item_instance_id == item))
@@ -1164,6 +1170,15 @@ impl InventoryWindow {
             textured_rects.push(tooltip.background);
             texts.extend(tooltip.texts);
         }
+        if let (Some(item), Some(cursor)) = (self.dragging_item, cursor)
+            && let Some(entry) = entries.iter().find(|entry| entry.item_instance_id == item)
+        {
+            textured_rects.push(drag_preview_icon(
+                item_icon_assets.resolve(entry.definition),
+                cursor,
+                pixels_per_unit,
+            )?);
+        }
         Ok(Some(InventoryWindowFrame {
             textured_rects,
             texts,
@@ -1176,7 +1191,8 @@ impl InventoryWindow {
         viewport: PixelViewport,
         pixels_per_unit: f32,
     ) -> bool {
-        self.chrome.pointer_moved(cursor, viewport, pixels_per_unit)
+        self.update_drag(cursor);
+        self.chrome.pointer_moved(cursor, viewport, pixels_per_unit) || self.is_dragging()
     }
 
     pub(crate) fn apply_pointer_button(
@@ -1222,18 +1238,22 @@ impl InventoryWindow {
         match state {
             ElementState::Pressed if hit_slot => {
                 self.pressed_item = hit_item;
+                self.pressed_position = cursor;
+                self.dragging_item = None;
                 if hit_item.is_none() {
                     self.selected_item = None;
                 }
                 return true;
             }
             ElementState::Released => {
-                if let Some(pressed) = self.pressed_item.take() {
-                    if hit_item == Some(pressed) {
+                let pressed = self.pressed_item.take();
+                self.pressed_position = None;
+                if let Some(pressed) = pressed {
+                    if self.dragging_item.take().is_some() {
+                        self.completed_drag = Some(pressed);
+                    } else if hit_item == Some(pressed) {
                         self.selected_item = Some(pressed);
                         self.completed_click = Some(pressed);
-                    } else {
-                        self.completed_drag = Some(pressed);
                     }
                     return true;
                 }
@@ -1252,6 +1272,8 @@ impl InventoryWindow {
         self.chrome.cancel_pointer_interaction();
         self.tabs.cancel_pointer_interaction();
         self.pressed_item = None;
+        self.pressed_position = None;
+        self.dragging_item = None;
         self.completed_drag = None;
         self.completed_click = None;
     }
@@ -1268,6 +1290,24 @@ impl InventoryWindow {
         self.slot_hit_regions
             .iter()
             .any(|bounds| bounds.contains(cursor))
+    }
+
+    pub(crate) fn is_dragging(&self) -> bool {
+        self.dragging_item.is_some()
+    }
+
+    fn update_drag(&mut self, cursor: [f32; 2]) {
+        let Some(item) = self.pressed_item else {
+            return;
+        };
+        let Some(origin) = self.pressed_position else {
+            return;
+        };
+        let dx = cursor[0] - origin[0];
+        let dy = cursor[1] - origin[1];
+        if dx.mul_add(dx, dy * dy) >= ITEM_DRAG_THRESHOLD_PX.powi(2) {
+            self.dragging_item = Some(item);
+        }
     }
 
     pub(crate) fn close_button_at(
@@ -1350,6 +1390,8 @@ pub(crate) struct EquipmentWindow {
     slot_hit_regions: Vec<ScreenRect>,
     occupied_slots: [Option<ContentId>; EquipmentSlot::COUNT],
     pressed_slot: Option<u8>,
+    pressed_position: Option<[f32; 2]>,
+    dragging_slot: Option<u8>,
     completed_drag: Option<u8>,
     completed_click: Option<u8>,
 }
@@ -1376,6 +1418,8 @@ impl Default for EquipmentWindow {
             slot_hit_regions: Vec::new(),
             occupied_slots: [None; EquipmentSlot::COUNT],
             pressed_slot: None,
+            pressed_position: None,
+            dragging_slot: None,
             completed_drag: None,
             completed_click: None,
         }
@@ -1468,6 +1512,7 @@ impl EquipmentWindow {
             &self.occupied_slots,
             &slot_rects,
             pixels_per_unit,
+            self.dragging_slot,
         )?;
         let label_font_size = EQUIPMENT_LABEL_FONT_SIZE_UNITS * pixels_per_unit;
         let labels: Vec<_> = slot_rects
@@ -1493,6 +1538,15 @@ impl EquipmentWindow {
         let mut texts = vec![window_frame.title];
         texts.extend(labels);
         texts.extend(item_frame.texts);
+        if let (Some(slot), Some(cursor)) = (self.dragging_slot, cursor)
+            && let Some(definition) = self.occupied_slots[usize::from(slot)]
+        {
+            textured_rects.push(drag_preview_icon(
+                item_icon_assets.resolve(definition),
+                cursor,
+                pixels_per_unit,
+            )?);
+        }
         Ok(Some(EquipmentWindowFrame {
             textured_rects,
             texts,
@@ -1517,14 +1571,18 @@ impl EquipmentWindow {
             ElementState::Pressed if hit_slot.is_some() => {
                 self.pressed_slot =
                     hit_slot.filter(|slot| self.occupied_slots[usize::from(*slot)].is_some());
+                self.pressed_position = cursor;
+                self.dragging_slot = None;
                 return true;
             }
             ElementState::Released => {
-                if let Some(slot) = self.pressed_slot.take() {
-                    if hit_slot == Some(slot) {
-                        self.completed_click = Some(slot);
-                    } else {
+                let pressed = self.pressed_slot.take();
+                self.pressed_position = None;
+                if let Some(slot) = pressed {
+                    if self.dragging_slot.take().is_some() {
                         self.completed_drag = Some(slot);
+                    } else if hit_slot == Some(slot) {
+                        self.completed_click = Some(slot);
                     }
                     return true;
                 }
@@ -1545,12 +1603,15 @@ impl EquipmentWindow {
         viewport: PixelViewport,
         pixels_per_unit: f32,
     ) -> bool {
-        self.chrome.pointer_moved(cursor, viewport, pixels_per_unit)
+        self.update_drag(cursor);
+        self.chrome.pointer_moved(cursor, viewport, pixels_per_unit) || self.is_dragging()
     }
 
     pub(crate) fn cancel_pointer_interaction(&mut self) {
         self.chrome.cancel_pointer_interaction();
         self.pressed_slot = None;
+        self.pressed_position = None;
+        self.dragging_slot = None;
         self.completed_drag = None;
         self.completed_click = None;
     }
@@ -1568,6 +1629,24 @@ impl EquipmentWindow {
             .iter()
             .position(|bounds| bounds.contains(cursor))
             .and_then(|index| u8::try_from(index).ok())
+    }
+
+    pub(crate) fn is_dragging(&self) -> bool {
+        self.dragging_slot.is_some()
+    }
+
+    fn update_drag(&mut self, cursor: [f32; 2]) {
+        let Some(slot) = self.pressed_slot else {
+            return;
+        };
+        let Some(origin) = self.pressed_position else {
+            return;
+        };
+        let dx = cursor[0] - origin[0];
+        let dy = cursor[1] - origin[1];
+        if dx.mul_add(dx, dy * dy) >= ITEM_DRAG_THRESHOLD_PX.powi(2) {
+            self.dragging_slot = Some(slot);
+        }
     }
 
     pub(crate) fn close_button_at(
@@ -1628,6 +1707,7 @@ fn inventory_items_frame(
     category: ItemCategory,
     slots: &[UiTexturedRect],
     pixels_per_unit: f32,
+    dragging_item: Option<ItemInstanceId>,
 ) -> Result<UiInventoryItemsFrame, String> {
     validate_pixels_per_unit(pixels_per_unit)?;
     let visible = visible_inventory_entries(registry, entries, category, slots.len());
@@ -1635,6 +1715,9 @@ fn inventory_items_frame(
     let mut textured_rects = Vec::with_capacity(visible.len());
     let mut texts = Vec::new();
     for (entry, slot) in visible.into_iter().zip(slots.iter().copied()) {
+        if dragging_item == Some(entry.item_instance_id) {
+            continue;
+        }
         let icon = item_icon_assets.resolve(entry.definition);
         let icon_bounds = fit_item_icon(slot, icon.dimensions_px, pixels_per_unit)?;
         textured_rects.push(UiTexturedRect {
@@ -1676,10 +1759,15 @@ fn equipment_items_frame(
     occupied_slots: &[Option<ContentId>; EquipmentSlot::COUNT],
     slots: &[UiTexturedRect],
     pixels_per_unit: f32,
+    dragging_slot: Option<u8>,
 ) -> Result<UiEquipmentItemsFrame, String> {
     validate_pixels_per_unit(pixels_per_unit)?;
     let mut textured_rects = Vec::new();
-    for (definition, slot) in occupied_slots.iter().zip(slots.iter().copied()) {
+    for (index, (definition, slot)) in occupied_slots.iter().zip(slots.iter().copied()).enumerate()
+    {
+        if dragging_slot == u8::try_from(index).ok() {
+            continue;
+        }
         let Some(definition) = definition else {
             continue;
         };
@@ -1697,6 +1785,31 @@ fn equipment_items_frame(
     Ok(UiEquipmentItemsFrame {
         textured_rects,
         texts: Vec::new(),
+    })
+}
+
+fn drag_preview_icon(
+    icon: UiItemIconVisual,
+    cursor: [f32; 2],
+    pixels_per_unit: f32,
+) -> Result<UiTexturedRect, String> {
+    let half_slot = 20.0 * pixels_per_unit;
+    let slot = UiTexturedRect {
+        min: [cursor[0] - half_slot, cursor[1] - half_slot],
+        max: [cursor[0] + half_slot, cursor[1] + half_slot],
+        texture: icon.texture,
+        uv_min: icon.uv_min,
+        uv_max: icon.uv_max,
+        tint: [1.0; 4],
+    };
+    let bounds = fit_item_icon(slot, icon.dimensions_px, pixels_per_unit)?;
+    Ok(UiTexturedRect {
+        min: bounds.min,
+        max: bounds.max,
+        texture: icon.texture,
+        uv_min: icon.uv_min,
+        uv_max: icon.uv_max,
+        tint: [1.0; 4],
     })
 }
 
@@ -3124,6 +3237,7 @@ mod tests {
             ItemCategory::Misc,
             &slots,
             1.0,
+            None,
         )
         .unwrap();
         assert_eq!(frame.textured_rects.len(), 1);
@@ -3306,6 +3420,12 @@ mod tests {
             viewport(),
             1.0
         ));
+        equipment.pointer_moved(
+            [cursor[0] + ITEM_DRAG_THRESHOLD_PX - 1.0, cursor[1]],
+            viewport(),
+            1.0
+        );
+        assert!(!equipment.is_dragging());
         assert!(equipment.apply_pointer_button(
             window_assets,
             ElementState::Released,
@@ -3323,6 +3443,12 @@ mod tests {
             viewport(),
             1.0
         ));
+        assert!(equipment.pointer_moved(
+            [cursor[0] + ITEM_DRAG_THRESHOLD_PX + 1.0, cursor[1]],
+            viewport(),
+            1.0
+        ));
+        assert!(equipment.is_dragging());
         assert!(equipment.apply_pointer_button(
             window_assets,
             ElementState::Released,
@@ -3332,6 +3458,26 @@ mod tests {
         ));
         assert_eq!(equipment.take_completed_click(), None);
         assert_eq!(equipment.take_completed_drag(), Some(0));
+        assert!(!equipment.is_dragging());
+    }
+
+    #[test]
+    fn drag_preview_uses_the_source_content_icon_and_is_cursor_centered() {
+        let registry = inventory_registry();
+        let item_icons = placeholder_item_icons(&registry);
+        let definition =
+            ContentId::from_authored("equipment.debug.practice_sword").expect("sword id");
+        let cursor = [100.0, 80.0];
+        let preview = drag_preview_icon(item_icons.resolve(definition), cursor, 1.0).unwrap();
+
+        assert_eq!(preview.texture, item_icons.resolve(definition).texture);
+        assert_eq!(
+            [
+                (preview.min[0] + preview.max[0]) * 0.5,
+                (preview.min[1] + preview.max[1]) * 0.5
+            ],
+            cursor
+        );
     }
 
     #[test]
