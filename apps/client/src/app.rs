@@ -942,12 +942,30 @@ impl ClientApp {
         let Some(cursor) = cursor else {
             return;
         };
-        let destination = if self.equipment_window.slot_at(cursor).is_some() {
-            DragDestination::Equipment(self.equipment_window.slot_at(cursor).unwrap_or(0))
-        } else if self.inventory_window.contains_slot(cursor) {
-            DragDestination::Inventory
-        } else {
-            DragDestination::Outside
+        let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() else {
+            return;
+        };
+        let destination = match self.equipment_window.slot_at(cursor) {
+            Some(slot) => DragDestination::Equipment(slot),
+            None if self.equipment_window.contains_window(
+                self.ui_window_assets,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ) =>
+            {
+                DragDestination::EquipmentWindow
+            }
+            None if self.inventory_window.contains_window(
+                self.ui_window_assets,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ) =>
+            {
+                DragDestination::Inventory
+            }
+            None => DragDestination::Outside,
         };
         let inventory_equipment_slot = match source {
             DragSource::Inventory(item_instance_id) => self
@@ -4751,6 +4769,22 @@ mod tests {
             DragResolution::Drop {
                 item_instance_id: item
             }
+        );
+        assert_eq!(
+            super::resolve_drag(
+                DragSource::Inventory(item),
+                DragDestination::EquipmentWindow,
+                Some(5)
+            ),
+            DragResolution::Noop
+        );
+        assert_eq!(
+            super::resolve_drag(
+                DragSource::Equipped(5),
+                DragDestination::EquipmentWindow,
+                None
+            ),
+            DragResolution::Noop
         );
     }
 

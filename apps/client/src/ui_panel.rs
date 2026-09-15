@@ -1286,10 +1286,18 @@ impl InventoryWindow {
         self.completed_click.take()
     }
 
-    pub(crate) fn contains_slot(&self, cursor: [f32; 2]) -> bool {
-        self.slot_hit_regions
-            .iter()
-            .any(|bounds| bounds.contains(cursor))
+    pub(crate) fn contains_window(
+        &mut self,
+        window_assets: UiWindowAssets,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        window_assets
+            .layout(&mut self.chrome, viewport, pixels_per_unit)
+            .ok()
+            .flatten()
+            .is_some_and(|layout| layout.window.contains(cursor))
     }
 
     pub(crate) fn is_dragging(&self) -> bool {
@@ -1341,6 +1349,7 @@ pub(crate) enum DragSource {
 pub(crate) enum DragDestination {
     Inventory,
     Equipment(u8),
+    EquipmentWindow,
     Outside,
 }
 
@@ -1629,6 +1638,20 @@ impl EquipmentWindow {
             .iter()
             .position(|bounds| bounds.contains(cursor))
             .and_then(|index| u8::try_from(index).ok())
+    }
+
+    pub(crate) fn contains_window(
+        &mut self,
+        window_assets: UiWindowAssets,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        window_assets
+            .layout(&mut self.chrome, viewport, pixels_per_unit)
+            .ok()
+            .flatten()
+            .is_some_and(|layout| layout.window.contains(cursor))
     }
 
     pub(crate) fn is_dragging(&self) -> bool {
