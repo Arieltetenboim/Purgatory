@@ -18,7 +18,6 @@ def replace_once(text, old, new, label):
         raise SystemExit(f'{label}: expected exactly one match, found {count}')
     return text.replace(old, new, 1)
 
-# Stop rewriting the authored atlas at decode time. Metadata owns source regions.
 p = 'apps/client/src/asset_runtime.rs'
 s = read(p)
 s = replace_once(s, 'use image::{Rgba, RgbaImage};', 'use image::RgbaImage;', 'asset_runtime import')
@@ -48,7 +47,6 @@ if marker not in s:
 s = s.split(marker, 1)[0].rstrip() + '\n'
 write(p, s)
 
-# Exact authored atlas regions. No synthetic grid, no overlap, no runtime mutation.
 p = 'Graphic/ui/ATLAS.ui.json'
 data = json.loads(read(p))
 window_x = [7, 130, 253, 376, 498, 620]
@@ -71,7 +69,6 @@ data['close_button'] = {
 data['close_size_units'] = [18.0, 18.0]
 write(p, json.dumps(data, indent=2) + '\n')
 
-# New authored tab sheet geometry.
 p = 'Graphic/ui/inventory_tab.ui.json'
 data = json.loads(read(p))
 data['states'] = {
@@ -83,13 +80,11 @@ data['cap_units'] = {'left': 8.0, 'right': 8.0}
 data['height_units'] = 26.0
 write(p, json.dumps(data, indent=2) + '\n')
 
-# Use the available grid width more fully.
 p = 'Graphic/ui/inventory_slot.ui.json'
 data = json.loads(read(p))
 data['size_units'] = [44.0, 44.0]
 write(p, json.dumps(data, indent=2) + '\n')
 
-# Fix panel composition, title/icon layout, metadata validation, and tests.
 p = 'apps/client/src/ui_panel.rs'
 s = read(p)
 old_icon = '''        if let Some(icon) = icon {
@@ -246,6 +241,7 @@ repls = [
     ('        assert_eq!(slots[0].min[0] - bounds.min[0], 9.0);', '        assert_eq!(slots[0].min[0] - bounds.min[0], 4.0);'),
     ('            bounds.max[0] - slots[INVENTORY_SLOT_COLUMNS - 1].max[0],\n            9.0', '            bounds.max[0] - slots[INVENTORY_SLOT_COLUMNS - 1].max[0],\n            4.0'),
     ('        assert_eq!(frame.textured_rects[0].size(), [8.0, 32.0]);', '        assert_eq!(frame.textured_rects[0].size(), [8.0, 38.0]);'),
+    ('        assert_eq!(frame.textured_rects[9].size(), [19.0, 18.0]);', '        assert_eq!(frame.textured_rects[9].size(), [18.0, 18.0]);'),
     ('            [720.5 / 768.0, 210.5 / 283.0]', '            [720.5 / 768.0, 211.5 / 283.0]'),
     ('            [743.5 / 768.0, 227.5 / 283.0]', '            [743.5 / 768.0, 228.5 / 283.0]'),
     ('        assert_eq!(equipment_frame.textured_rects[0].size(), [8.0, 32.0]);', '        assert_eq!(equipment_frame.textured_rects[0].size(), [8.0, 38.0]);'),
@@ -261,7 +257,6 @@ for old, new in repls:
     s = s.replace(old, new)
 write(p, s)
 
-# Tiny center samples are flat fills; edge samples still repeat only on their stretch axis.
 p = 'apps/client/src/renderer/shaders/ui_texture.wgsl'
 s = read(p)
 old = '''    if (source_size.x <= 4.0 && source_size.y <= 4.0 &&
@@ -278,7 +273,6 @@ new = '''    if (source_size.x <= 4.0 && source_size.y <= 4.0 &&
 s = replace_once(s, old, new, 'flat atlas center sampling')
 write(p, s)
 
-# Modal is an explicit top UI layer: lower text/rect overlays cannot draw above it.
 p = 'apps/client/src/app.rs'
 s = read(p)
 old = '''            if let Ok(Some(frame)) = self.message_dialog.frame(
