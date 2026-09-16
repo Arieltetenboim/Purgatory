@@ -2805,6 +2805,11 @@ impl ClientApp {
                 pixels_per_unit,
                 self.cursor_position,
             ) {
+                // Text and colored overlays are separate renderer passes that otherwise
+                // render after every textured window. A modal owns the top UI layer,
+                // so lower-layer labels/bubbles must not leak over its chrome.
+                ui_rects.clear();
+                ui_text.clear();
                 ui_textured_rects.extend(frame.textured_rects);
                 ui_text.extend(frame.texts);
             }

@@ -518,6 +518,7 @@ impl UiWindowAssets {
             uv_max,
             tint: [1.0; 4],
         });
+        let mut title_anchor_x = layout.header.min[0];
         if let Some(icon) = icon {
             let source = ATLAS_ICON_NAMES
                 .iter()
@@ -528,8 +529,8 @@ impl UiWindowAssets {
                 .min(source.width as f32)
                 .min(source.height as f32);
             let icon_min = [
-                layout.header.min[0] + 7.0 * pixels_per_unit,
-                layout.header.min[1] + 7.0 * pixels_per_unit,
+                layout.header.min[0],
+                layout.header.min[1] + ((layout.header.height() - icon_size) * 0.5).max(0.0),
             ];
             let (uv_min, uv_max) = source.uv_bounds(self.close_button.source_size_px);
             textured_rects.push(UiTexturedRect {
@@ -540,11 +541,12 @@ impl UiWindowAssets {
                 uv_max,
                 tint: [1.0; 4],
             });
+            title_anchor_x = icon_min[0] + icon_size + TITLE_CONTROL_GAP_UNITS * pixels_per_unit;
         }
 
         let title_font_size = TITLE_FONT_SIZE_UNITS * pixels_per_unit;
         let title_anchor = [
-            layout.header.min[0] + TITLE_LEFT_INSET_UNITS * pixels_per_unit,
+            title_anchor_x,
             layout.header.min[1]
                 + ((HEADER_HEIGHT_UNITS - TITLE_FONT_SIZE_UNITS) * 0.5).max(0.0) * pixels_per_unit,
         ];
@@ -2198,8 +2200,8 @@ fn panel_center_fill(panel: PanelAsset, bounds: ScreenRect, tint: [f32; 4]) -> U
         panel.source_size_px[1].min(4),
     ];
     let source = SourceRectPx {
-        x: (panel.source_size_px[0] - sample_size[0]) / 2,
-        y: (panel.source_size_px[1] - sample_size[1]) / 2,
+        x: panel.source_rect.x + (panel.source_rect.width - sample_size[0]) / 2,
+        y: panel.source_rect.y + (panel.source_rect.height - sample_size[1]) / 2,
         width: sample_size[0],
         height: sample_size[1],
     };
@@ -2411,11 +2413,13 @@ fn validate_atlas_metadata(
     if windows
         .iter()
         .any(|rect| !source_rect_fits(*rect, source_size_px))
-        || windows.iter().any(|rect| rect.width != 128)
+        || windows
+            .iter()
+            .any(|rect| rect.width != windows[0].width || rect.height != windows[0].height)
         || windows.windows(2).any(|pair| {
             pair[0].y != pair[1].y
                 || pair[0].height != pair[1].height
-                || pair[0].x + pair[0].width != pair[1].x
+                || source_rects_overlap(pair[0], pair[1])
         })
         || windows.iter().any(|rect| {
             metadata.window_slice_px.left + metadata.window_slice_px.right >= rect.width
@@ -2447,7 +2451,7 @@ fn validate_atlas_metadata(
                     && pair[0].height == pair[1].height
                     && pair[0].x == pair[1].x
             })
-            || regions[0].width != 56
+            || regions[0].width != 54
             || regions[0].height != 18
             || regions
                 .windows(2)
@@ -2936,11 +2940,17 @@ fn assemble_nine_slice_region(
     let mut regions = Vec::with_capacity(9);
     for row in 0..3 {
         for column in 0..3 {
-            let source_piece = SourceRectPx {
+            let mut source_piece = SourceRectPx {
                 x: source_x[column] as u32,
                 y: source_y[row] as u32,
                 width: (source_x[column + 1] - source_x[column]) as u32,
                 height: (source_y[row + 1] - source_y[row]) as u32,
+            };
+            source_piece = match (row, column) {
+                (1, 1) => centered_source_sample(source_piece, 2, 2),
+                (0 | 2, 1) => centered_source_sample(source_piece, 2, source_piece.height),
+                (1, 0 | 2) => centered_source_sample(source_piece, source_piece.width, 2),
+                _ => source_piece,
             };
             let (uv_min, uv_max) = source_piece.uv_bounds(source_size_px);
             regions.push(UiTexturedRect {
@@ -2954,6 +2964,17 @@ fn assemble_nine_slice_region(
         }
     }
     Ok(regions)
+}
+
+fn centered_source_sample(rect: SourceRectPx, width: u32, height: u32) -> SourceRectPx {
+    let width = width.clamp(1, rect.width);
+    let height = height.clamp(1, rect.height);
+    SourceRectPx {
+        x: rect.x + (rect.width - width) / 2,
+        y: rect.y + (rect.height - height) / 2,
+        width,
+        height,
+    }
 }
 
 #[allow(dead_code)]
@@ -3100,28 +3121,28 @@ mod tests {
         assert_eq!(
             assets.panel().source_rect,
             SourceRectPx {
-                x: 0,
+                x: 7,
                 y: 24,
-                width: 128,
+                width: 120,
                 height: 177
             }
         );
         assert_eq!(assets.close_button.source_size_px, [768, 283]);
         assert_eq!(assets.panel().slice_px.left, 8);
-        assert_eq!(assets.panel().slice_px.top, 32);
+        assert_eq!(assets.panel().slice_px.top, 38);
         assert_eq!(
             assets.panel().border_units,
             DestinationBorders {
                 left: 8.0,
                 right: 8.0,
-                top: 32.0,
+                top: 38.0,
                 bottom: 8.0,
             }
         );
         for style in PanelStyle::ALL {
             let panel = assets.with_panel_style(style).panel();
             let rect = panel.source_rect;
-            assert_eq!(rect.width, 128);
+            assert_eq!(rect.width, 120);
             assert_eq!(rect.y, 24);
             assert_eq!(rect.height, 177);
         }
@@ -3149,7 +3170,7 @@ mod tests {
                 assert_eq!(panel.source_size_px, base.source_size_px);
                 assert_eq!(panel.slice_px, base.slice_px);
                 assert_eq!(panel.border_units, base.border_units);
-                assert_eq!(panel.source_rect.width, 128);
+                assert_eq!(panel.source_rect.width, 120);
                 assert_eq!(panel.source_rect.height, 177);
                 panel.texture
             })
@@ -3315,13 +3336,13 @@ mod tests {
     fn embedded_tab_metadata_parses_and_matches_two_state_sheet() {
         let mut runtime = AssetRuntime::new();
         let assets = UiTabAssets::load_embedded(&mut runtime).unwrap();
-        assert_eq!(assets.source_size_px, [1632, 220]);
-        assert_eq!(assets.states.normal.x, 13);
-        assert_eq!(assets.states.normal.width, 790);
-        assert_eq!(assets.states.selected.x, 829);
-        assert_eq!(assets.states.selected.width, 790);
-        assert_eq!(assets.slice_px.left, 83);
-        assert_eq!(assets.slice_px.right, 83);
+        assert_eq!(assets.source_size_px, [2172, 724]);
+        assert_eq!(assets.states.normal.x, 123);
+        assert_eq!(assets.states.normal.width, 933);
+        assert_eq!(assets.states.selected.x, 1116);
+        assert_eq!(assets.states.selected.width, 933);
+        assert_eq!(assets.slice_px.left, 96);
+        assert_eq!(assets.slice_px.right, 96);
         assert_eq!(assets.height_units, 26.0);
         assert_eq!(assets.font_size_units, 12.0);
         assert_eq!(assets.gap_units, 1.0);
@@ -3342,11 +3363,12 @@ mod tests {
         let mut runtime = AssetRuntime::new();
         let assets = UiSlotAssets::load_embedded(&mut runtime).unwrap();
         let image = &runtime.resource(assets.texture).unwrap().image;
-        assert_eq!([image.width(), image.height()], [256, 256]);
-        assert_eq!(assets.size_units, [42.0, 42.0]);
+        assert_eq!(image.width(), image.height());
+        assert!(image.width() > 0);
+        assert_eq!(assets.size_units, [44.0, 44.0]);
         assert_eq!(runtime.resource_count(), 1);
         assert_eq!(image.get_pixel(0, 0).0[3], 0);
-        assert!(image.get_pixel(128, 128).0[3] > 0);
+        assert!(image.get_pixel(image.width() / 2, image.height() / 2).0[3] > 0);
     }
 
     #[test]
@@ -3379,8 +3401,8 @@ mod tests {
             frame.textured_rects[3].min[0] - frame.textured_rects[2].max[0],
             1.0
         );
-        assert_eq!(frame.textured_rects[0].uv_min[0], 829.5 / 1632.0);
-        assert_eq!(frame.textured_rects[3].uv_min[0], 13.5 / 1632.0);
+        assert_eq!(frame.textured_rects[0].uv_min[0], 1116.5 / 2172.0);
+        assert_eq!(frame.textured_rects[3].uv_min[0], 123.5 / 2172.0);
     }
 
     #[test]
@@ -3426,7 +3448,7 @@ mod tests {
         let slot_count = INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS;
         let slots = &frame.textured_rects[frame.textured_rects.len() - slot_count..];
         assert_eq!(slots.len(), INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS);
-        assert!(slots.iter().all(|slot| slot.size() == [42.0, 42.0]));
+        assert!(slots.iter().all(|slot| slot.size() == [44.0, 44.0]));
         assert_eq!(slots[1].min[0] - slots[0].max[0], 2.0);
         assert_eq!(slots[INVENTORY_SLOT_COLUMNS].min[1] - slots[0].max[1], 2.0);
 
@@ -3435,7 +3457,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let content_max_y = layout.window.max[1] - window_assets.panel().border_units.bottom;
-        assert_eq!(content_max_y - slots.last().unwrap().max[1], 54.0);
+        assert_eq!(content_max_y - slots.last().unwrap().max[1], 40.0);
         let currency_bounds = inventory_currency_bounds(
             window_assets,
             slot_assets,
@@ -3473,10 +3495,10 @@ mod tests {
         );
         assert_eq!(slots[0].min[1] - background.min[1], 2.0);
         assert_eq!(background.max[1] - slots.last().unwrap().max[1], 2.0);
-        assert_eq!(slots[0].min[0] - bounds.min[0], 9.0);
+        assert_eq!(slots[0].min[0] - bounds.min[0], 4.0);
         assert_eq!(
             bounds.max[0] - slots[INVENTORY_SLOT_COLUMNS - 1].max[0],
-            9.0
+            4.0
         );
         let tab_gap = tab_assets.gap_units;
         let materials = tab_rect(bounds, 2, INVENTORY_TAB_LABELS.len(), tab_gap);
@@ -4055,15 +4077,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(frame.textured_rects.len(), 10);
-        assert_eq!(frame.textured_rects[0].size(), [8.0, 32.0]);
-        assert_eq!(frame.textured_rects[9].size(), [19.0, 18.0]);
+        assert_eq!(frame.textured_rects[0].size(), [8.0, 38.0]);
+        assert_eq!(frame.textured_rects[9].size(), [18.0, 18.0]);
         assert_eq!(
             frame.textured_rects[9].uv_min,
-            [720.5 / 768.0, 210.5 / 283.0]
+            [720.5 / 768.0, 211.5 / 283.0]
         );
         assert_eq!(
             frame.textured_rects[9].uv_max,
-            [743.5 / 768.0, 227.5 / 283.0]
+            [743.5 / 768.0, 228.5 / 283.0]
         );
         assert_eq!(frame.title.content.0, "Inventory");
     }
@@ -4083,10 +4105,10 @@ mod tests {
             .proof_frame(&mut dialog, "Dialog", viewport(), 1.0, None)
             .unwrap()
             .unwrap();
-        assert_eq!(equipment_frame.textured_rects[0].size(), [8.0, 32.0]);
-        assert_eq!(dialog_frame.textured_rects[0].size(), [8.0, 32.0]);
-        assert_eq!(equipment_frame.textured_rects[4].size(), [234.0, 260.0]);
-        assert_eq!(dialog_frame.textured_rects[4].size(), [384.0, 140.0]);
+        assert_eq!(equipment_frame.textured_rects[0].size(), [8.0, 38.0]);
+        assert_eq!(dialog_frame.textured_rects[0].size(), [8.0, 38.0]);
+        assert_eq!(equipment_frame.textured_rects[4].size(), [234.0, 254.0]);
+        assert_eq!(dialog_frame.textured_rects[4].size(), [384.0, 134.0]);
         assert_eq!(equipment_frame.textured_rects[8].size(), [8.0, 8.0]);
         assert_eq!(dialog_frame.textured_rects[8].size(), [8.0, 8.0]);
     }
@@ -4167,7 +4189,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             hover.textured_rects[9].uv_min,
-            [720.5 / 768.0, 228.5 / 283.0]
+            [720.5 / 768.0, 231.5 / 283.0]
         );
         let before = layout.close_button;
         assert!(window.apply_pointer_button(
@@ -4183,7 +4205,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             pressed.textured_rects[9].uv_min,
-            [720.5 / 768.0, 246.5 / 283.0]
+            [720.5 / 768.0, 251.5 / 283.0]
         );
         assert_eq!(
             assets

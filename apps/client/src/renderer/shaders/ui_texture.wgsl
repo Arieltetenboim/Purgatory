@@ -49,7 +49,8 @@ fn fs_main(input: Out) -> @location(0) vec4<f32> {
     // the fill instead of magnifying atlas-boundary pixels across a panel.
     if (source_size.x <= 4.0 && source_size.y <= 4.0 &&
         (input.rect_size.x > source_size.x || input.rect_size.y > source_size.y)) {
-        return input.tint;
+        let center_uv = (input.uv_min + input.uv_max) * 0.5;
+        return textureSample(ui_texture, ui_sampler, center_uv) * input.tint;
     }
 
     var sample_uv = input.uv;
