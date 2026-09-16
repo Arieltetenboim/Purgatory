@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "purgatory_sprite_animation",
+  "id": "ui.overhead.accept",
+  "texture": "accept.png",
+  "dimensions_px": [1536, 1024],
+  "frame_size_px": [192, 1024],
+  "frames": [
+    { "x": 0, "y": 0, "width": 192, "height": 1024, "visual_bounds": [48, 468, 120, 128] },
+    { "x": 192, "y": 0, "width": 192, "height": 1024, "visual_bounds": [46, 425, 122, 170] },
+    { "x": 384, "y": 0, "width": 192, "height": 1024, "visual_bounds": [42, 403, 122, 196] },
+    { "x": 576, "y": 0, "width": 192, "height": 1024, "visual_bounds": [41, 370, 121, 229] },
+    { "x": 768, "y": 0, "width": 192, "height": 1024, "visual_bounds": [40, 373, 130, 227] },
+    { "x": 960, "y": 0, "width": 192, "height": 1024, "visual_bounds": [38, 401, 121, 199] },
+    { "x": 1152, "y": 0, "width": 192, "height": 1024, "visual_bounds": [35, 429, 125, 177] },
+    { "x": 1344, "y": 0, "width": 192, "height": 1024, "visual_bounds": [24, 438, 123, 161] }
+  ],
+  "frame_order": [0, 1, 2, 3, 4, 5, 6, 7],
+  "frame_seconds": 0.1,
+  "loop": true,
+  "registration": "bottom_center"
+}

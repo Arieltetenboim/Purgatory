@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "purgatory_sprite_animation",
+  "id": "ui.overhead.turn",
+  "texture": "turn.png",
+  "dimensions_px": [1536, 1024],
+  "frame_size_px": [192, 1024],
+  "frames": [
+    { "x": 0, "y": 0, "width": 192, "height": 1024, "visual_bounds": [60, 447, 122, 159] },
+    { "x": 192, "y": 0, "width": 192, "height": 1024, "visual_bounds": [37, 436, 139, 170] },
+    { "x": 384, "y": 0, "width": 192, "height": 1024, "visual_bounds": [36, 427, 146, 185] },
+    { "x": 576, "y": 0, "width": 192, "height": 1024, "visual_bounds": [28, 412, 150, 196] },
+    { "x": 768, "y": 0, "width": 192, "height": 1024, "visual_bounds": [33, 391, 133, 216] },
+    { "x": 960, "y": 0, "width": 192, "height": 1024, "visual_bounds": [23, 424, 149, 183] },
+    { "x": 1152, "y": 0, "width": 192, "height": 1024, "visual_bounds": [27, 436, 137, 170] },
+    { "x": 1344, "y": 0, "width": 192, "height": 1024, "visual_bounds": [28, 447, 123, 159] }
+  ],
+  "frame_order": [0, 1, 2, 3, 4, 5, 6, 7],
+  "frame_seconds": 0.1,
+  "loop": true,
+  "registration": "bottom_center"
+}

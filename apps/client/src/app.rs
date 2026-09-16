@@ -75,7 +75,9 @@ use crate::map_fade::{
 #[cfg(feature = "dev-diagnostics")]
 use crate::network::NetworkImpairmentConfig;
 use crate::network::{ClientEndpointConfig, NetworkCommand, NetworkHandle};
-use crate::npc_presentation::{SpriteAnimationPlayer, SpriteSheet, base_activity, clip_name};
+use crate::npc_presentation::{
+    OverheadSheet, SpriteAnimationPlayer, SpriteSheet, base_activity, clip_name,
+};
 use crate::platform::{diagnostic_title, window_attributes};
 use crate::prediction::{LocalPrediction, local_presentation_pose};
 #[cfg(feature = "dev-diagnostics")]
@@ -93,8 +95,8 @@ use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
 use crate::ui_dialog::{DialogAction, DialogButton, MessageDialog, MessageDialogRequest};
 use crate::ui_panel::{
     DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrameInput,
-    InventoryWindow, InventoryWindowFrameInput, PanelStyle, UiButtonAssets, UiItemIconAssets,
-    UiSlotAssets, UiTabAssets, UiWindowAssets, resolve_drag,
+    InventoryWindow, InventoryWindowFrameInput, UiButtonAssets, UiItemIconAssets, UiSlotAssets,
+    UiTabAssets, UiWindowAssets, resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
 
@@ -312,6 +314,10 @@ struct ClientApp {
     characters: CharacterPresentationSet,
     presentation_oneshots: PresentationOneShotTable,
     npc_sheet: SpriteSheet,
+    accept_sheet: OverheadSheet,
+    turn_sheet: OverheadSheet,
+    accept_player: SpriteAnimationPlayer,
+    turn_player: SpriteAnimationPlayer,
     npc_players:
         HashMap<PresentationEntityKey, (SpriteAnimationPlayer, PresentationActivity, bool)>,
     /// A2 proof playback clock (not Clone; lives on App, not DebugUiState).
@@ -349,6 +355,10 @@ impl ClientApp {
                 .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
         let npc_sheet = SpriteSheet::red_slime(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY red slime sprite error: {error}"))?;
+        let accept_sheet = OverheadSheet::accept(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY accept animation error: {error}"))?;
+        let turn_sheet = OverheadSheet::turn(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY turn animation error: {error}"))?;
         let ui_window_assets = UiWindowAssets::load_embedded(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI window asset error: {error}"))?;
         let ui_button_assets = UiButtonAssets::load_embedded(&mut asset_runtime)
@@ -443,6 +453,10 @@ impl ClientApp {
             characters: CharacterPresentationSet::with_dialogue_animations(dialogue_animations),
             presentation_oneshots: PresentationOneShotTable::new(),
             npc_sheet,
+            accept_sheet,
+            turn_sheet,
+            accept_player: SpriteAnimationPlayer::new(),
+            turn_player: SpriteAnimationPlayer::new(),
             npc_players: HashMap::new(),
             #[cfg(feature = "dev-diagnostics")]
             animation_player: purgatory_animation::AnimationPlayer::new(),
@@ -2597,6 +2611,11 @@ impl ClientApp {
                     &self.presentation_oneshots,
                     &self.npc_sheet,
                     &mut self.npc_players,
+                    &self.accept_sheet,
+                    &self.turn_sheet,
+                    &mut self.accept_player,
+                    &mut self.turn_player,
+                    local_pose,
                     frame_dt,
                 )
             };
@@ -2764,9 +2783,9 @@ impl ClientApp {
                 .debug
                 .as_ref()
                 .map(|debug| debug.ui.panel_style)
-                .unwrap_or(PanelStyle::default());
+                .unwrap_or_default();
             #[cfg(not(feature = "dev-diagnostics"))]
-            let panel_style = PanelStyle::default();
+            let panel_style = crate::ui_panel::PanelStyle::default();
             let window_assets = self.ui_window_assets.with_panel_style(panel_style);
             if let Ok(Some(frame)) = self.inventory_window.frame(InventoryWindowFrameInput {
                 window_assets,
@@ -3786,6 +3805,7 @@ fn is_humanoid_social_npc(entity: &ReplicatedEntity) -> bool {
     entity.kind == ReplicatedKind::Npc && entity.equipment.is_some()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn npc_quads(
     replica: &crate::replica::ReplicatedWorld,
     interp: &crate::interp::InterpolationBuffer,
@@ -3799,12 +3819,18 @@ fn npc_quads(
             bool,
         ),
     >,
+    accept_sheet: &crate::npc_presentation::OverheadSheet,
+    turn_sheet: &crate::npc_presentation::OverheadSheet,
+    accept_player: &mut crate::npc_presentation::SpriteAnimationPlayer,
+    turn_player: &mut crate::npc_presentation::SpriteAnimationPlayer,
+    local_player_position: Option<[f32; 2]>,
     frame_dt: f32,
 ) -> Vec<DrawQuad> {
     let poses = interp.poses();
     let server_tick = replica.last_server_tick();
     let mut visible = std::collections::HashSet::new();
-    let quads = replica
+    let mut accept_shown = false;
+    let mut quads = replica
         .iter()
         .filter(|entity| entity.kind == ReplicatedKind::Npc && !is_humanoid_social_npc(entity))
         .flat_map(|entity| {
@@ -3868,6 +3894,11 @@ fn npc_quads(
             state.0.advance(clip, frame_dt);
             let frame = state.0.frame(clip).unwrap_or(8);
             let mut quads = vec![sheet.quad(position, frame, flash, state.2)];
+            if !accept_shown {
+                accept_shown = true;
+                accept_sheet.advance(accept_player, frame_dt);
+                quads.push(accept_sheet.quad(accept_player, [position[0], position[1] + 0.72]));
+            }
             if cue == NpcVisualCue::Hurt {
                 quads.push(DrawQuad::rect(
                     [position[0], position[1] + 0.48],
@@ -3890,6 +3921,10 @@ fn npc_quads(
             quads
         })
         .collect::<Vec<_>>();
+    if let Some(position) = local_player_position {
+        turn_sheet.advance(turn_player, frame_dt);
+        quads.push(turn_sheet.quad(turn_player, [position[0], position[1] + 1.0]));
+    }
     players.retain(|key, _| visible.contains(key));
     quads
 }
