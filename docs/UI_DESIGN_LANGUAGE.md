@@ -18,13 +18,15 @@ It records stable design decisions for colors, panels, typography, spacing, icon
 | Token | Hex | Usage | Status |
 | --- | --- | --- | --- |
 | `window.center` | `#EFEAE0` | CENTER / interior fill of standard UI windows and panels | Established |
+| `window.border` | `#738390` | General border color for standard UI windows and panels | Established |
 
 ## Panels and windows
 
 ### Standard window
 
 - CENTER fill: `#EFEAE0`.
-- Border, header, corner treatment, highlights, shadows, and state variants: not yet standardized.
+- General border color: `#738390`.
+- Header, corner treatment, highlights, shadows, and state variants: not yet standardized.
 
 ## Typography
 
