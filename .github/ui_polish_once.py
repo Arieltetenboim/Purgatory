@@ -74,6 +74,18 @@ text = replace_once(
     "                anchor: [\n                    (slot.min[0] + slot.max[0]) * 0.5,\n                    slot.max[1]\n                        - (EQUIPMENT_LABEL_FONT_SIZE_UNITS + EQUIPMENT_LABEL_GAP_UNITS)\n                            * pixels_per_unit,\n                ],\n                max_width: Some(\n                    (slot.max[0] - slot.min[0] - 4.0 * pixels_per_unit).max(1.0),\n                ),",
     "equipment labels inside slots",
 )
+text = replace_once(
+    text,
+    "        assert_eq!(frame.textured_rects[9].size(), [18.0, 18.0]);",
+    "        assert_eq!(frame.textured_rects[9].size(), [24.0, 18.0]);",
+    "close aspect test",
+)
+text = replace_once(
+    text,
+    "        assert_eq!(window.top_left_units, Some([0.0, 84.0]));",
+    "        assert_eq!(window.top_left_units, Some([0.0, 90.0]));",
+    "header drag expected offset",
+)
 
 UI.write_text(text, encoding="utf-8")
 
