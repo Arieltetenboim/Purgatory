@@ -26,10 +26,8 @@ const SLOT_PNG: &[u8] = include_bytes!("../../../Graphic/ui/inventory_slot.png")
 const SLOT_METADATA: &str = include_str!("../../../Graphic/ui/inventory_slot.ui.json");
 const SLOT_TEXTURE_FILE: &str = "inventory_slot.png";
 const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
-const TITLE_LEFT_INSET_UNITS: f32 = 12.0;
-const HEADER_HEIGHT_UNITS: f32 = 38.0;
-const HEADER_TOP_INSET_UNITS: f32 = 6.0;
-const TITLE_CONTROL_GAP_UNITS: f32 = 6.0;
+const TITLE_LEFT_INSET_UNITS: f32 = 4.0;
+const TITLE_CONTROL_GAP_UNITS: f32 = 5.0;
 const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 23.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 4.0;
@@ -56,8 +54,8 @@ const INVENTORY_QUANTITY_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
 const EQUIPMENT_SLOT_COLUMNS: usize = 2;
 const EQUIPMENT_SLOT_ROWS: usize = 3;
 const EQUIPMENT_SLOT_GAP_UNITS: f32 = 20.0;
-const EQUIPMENT_LABEL_FONT_SIZE_UNITS: f32 = 10.0;
-const EQUIPMENT_LABEL_GAP_UNITS: f32 = 3.0;
+const EQUIPMENT_LABEL_FONT_SIZE_UNITS: f32 = 8.0;
+const EQUIPMENT_LABEL_GAP_UNITS: f32 = 2.0;
 const EQUIPMENT_LABEL_COLOR: [f32; 4] = [0.08, 0.11, 0.16, 1.0];
 const EQUIPMENT_SLOT_LABELS: [&str; EquipmentSlot::COUNT] =
     ["Headwear", "Bodywear", "Pants", "Gloves", "Boots", "Weapon"];
@@ -518,7 +516,7 @@ impl UiWindowAssets {
             uv_max,
             tint: [1.0; 4],
         });
-        let mut title_anchor_x = layout.header.min[0];
+        let mut title_anchor_x = layout.header.min[0] + TITLE_LEFT_INSET_UNITS * pixels_per_unit;
         if let Some(icon) = icon {
             let source = ATLAS_ICON_NAMES
                 .iter()
@@ -529,7 +527,7 @@ impl UiWindowAssets {
                 .min(source.width as f32)
                 .min(source.height as f32);
             let icon_min = [
-                layout.header.min[0],
+                title_anchor_x,
                 layout.header.min[1] + ((layout.header.height() - icon_size) * 0.5).max(0.0),
             ];
             let (uv_min, uv_max) = source.uv_bounds(self.close_button.source_size_px);
@@ -547,8 +545,7 @@ impl UiWindowAssets {
         let title_font_size = TITLE_FONT_SIZE_UNITS * pixels_per_unit;
         let title_anchor = [
             title_anchor_x,
-            layout.header.min[1]
-                + ((HEADER_HEIGHT_UNITS - TITLE_FONT_SIZE_UNITS) * 0.5).max(0.0) * pixels_per_unit,
+            layout.header.min[1] + ((layout.header.height() - title_font_size) * 0.5).max(0.0),
         ];
         let title_max_width = (layout.close_button.min[0]
             - TITLE_CONTROL_GAP_UNITS * pixels_per_unit
@@ -625,14 +622,15 @@ impl UiWindowAssets {
             window_min[0] + window_size_units[0] * pixels_per_unit,
             window_min[1] + window_size_units[1] * pixels_per_unit,
         ];
+        let panel = self.panel();
         let header = ScreenRect {
             min: [
-                window_min[0] + TITLE_LEFT_INSET_UNITS * pixels_per_unit,
-                window_min[1] + HEADER_TOP_INSET_UNITS * pixels_per_unit,
+                window_min[0] + panel.border_units.left * pixels_per_unit,
+                window_min[1],
             ],
             max: [
-                window_max[0] - TITLE_LEFT_INSET_UNITS * pixels_per_unit,
-                window_min[1] + HEADER_HEIGHT_UNITS * pixels_per_unit,
+                window_max[0] - panel.border_units.right * pixels_per_unit,
+                window_min[1] + panel.border_units.top * pixels_per_unit,
             ],
         };
         let button_size = [
@@ -1719,9 +1717,11 @@ impl EquipmentWindow {
                 },
                 anchor: [
                     (slot.min[0] + slot.max[0]) * 0.5,
-                    slot.max[1] + EQUIPMENT_LABEL_GAP_UNITS * pixels_per_unit,
+                    slot.max[1]
+                        - (EQUIPMENT_LABEL_FONT_SIZE_UNITS + EQUIPMENT_LABEL_GAP_UNITS)
+                            * pixels_per_unit,
                 ],
-                max_width: Some(slot.max[0] - slot.min[0]),
+                max_width: Some((slot.max[0] - slot.min[0] - 4.0 * pixels_per_unit).max(1.0)),
             })
             .collect();
         let mut textured_rects = window_frame.textured_rects;
@@ -2940,17 +2940,11 @@ fn assemble_nine_slice_region(
     let mut regions = Vec::with_capacity(9);
     for row in 0..3 {
         for column in 0..3 {
-            let mut source_piece = SourceRectPx {
+            let source_piece = SourceRectPx {
                 x: source_x[column] as u32,
                 y: source_y[row] as u32,
                 width: (source_x[column + 1] - source_x[column]) as u32,
                 height: (source_y[row + 1] - source_y[row]) as u32,
-            };
-            source_piece = match (row, column) {
-                (1, 1) => centered_source_sample(source_piece, 2, 2),
-                (0 | 2, 1) => centered_source_sample(source_piece, 2, source_piece.height),
-                (1, 0 | 2) => centered_source_sample(source_piece, source_piece.width, 2),
-                _ => source_piece,
             };
             let (uv_min, uv_max) = source_piece.uv_bounds(source_size_px);
             regions.push(UiTexturedRect {
@@ -2964,17 +2958,6 @@ fn assemble_nine_slice_region(
         }
     }
     Ok(regions)
-}
-
-fn centered_source_sample(rect: SourceRectPx, width: u32, height: u32) -> SourceRectPx {
-    let width = width.clamp(1, rect.width);
-    let height = height.clamp(1, rect.height);
-    SourceRectPx {
-        x: rect.x + (rect.width - width) / 2,
-        y: rect.y + (rect.height - height) / 2,
-        width,
-        height,
-    }
 }
 
 #[allow(dead_code)]
@@ -4078,7 +4061,7 @@ mod tests {
             .unwrap();
         assert_eq!(frame.textured_rects.len(), 10);
         assert_eq!(frame.textured_rects[0].size(), [8.0, 38.0]);
-        assert_eq!(frame.textured_rects[9].size(), [18.0, 18.0]);
+        assert_eq!(frame.textured_rects[9].size(), [24.0, 18.0]);
         assert_eq!(
             frame.textured_rects[9].uv_min,
             [720.5 / 768.0, 211.5 / 283.0]
@@ -4277,7 +4260,7 @@ mod tests {
             1.0
         ));
         assert!(window.pointer_moved([-100.0, 100.0], viewport(), 1.0));
-        assert_eq!(window.top_left_units, Some([0.0, 84.0]));
+        assert_eq!(window.top_left_units, Some([0.0, 90.0]));
         assert!(window.pointer_moved([2000.0, 1000.0], viewport(), 1.0));
         assert_eq!(window.top_left_units, Some([998.0, 280.0]));
         assert!(window.apply_pointer_button(
