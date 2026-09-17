@@ -7,7 +7,11 @@ use crate::ui::{doctor, launch_profiles, tool_launch};
 
 pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
     let mut cmd = None;
-    layout::page_header(ui, "Settings", "Development environment, launch presets, and process defaults.");
+    layout::page_header(
+        ui,
+        "Settings",
+        "Development environment, launch presets, and process defaults.",
+    );
 
     if let Some(profile_cmd) = launch_profiles::show_section(ui, snap) {
         cmd = Some(profile_cmd);
@@ -26,7 +30,10 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
                 }
             }
         });
-        ui.colored_label(theme::muted(), "Changing profile does not restart a live server.");
+        ui.colored_label(
+            theme::muted(),
+            "Changing profile does not restart a live server.",
+        );
     });
     ui.add_space(theme::SECTION_GAP);
 
@@ -45,27 +52,61 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
     card(ui, "Environment", |ui| {
         kv_row(ui, "Endpoint", &snap.endpoint);
         kv_row(ui, "Workspace", &snap.workspace);
-        kv_row(ui, "cargo", if snap.cargo_found { "on PATH" } else { "NOT FOUND" });
-        ui.colored_label(theme::muted(), "PURGATORY_DATA_DIR is set per Runtime Validation / load ExtraEnv, not globally here.");
+        kv_row(
+            ui,
+            "cargo",
+            if snap.cargo_found {
+                "on PATH"
+            } else {
+                "NOT FOUND"
+            },
+        );
+        ui.colored_label(
+            theme::muted(),
+            "PURGATORY_DATA_DIR is set per Runtime Validation / load ExtraEnv, not globally here.",
+        );
         if !snap.cargo_found {
-            ui.colored_label(theme::state_color(ServerState::Degraded), "cargo is not on PATH");
+            ui.colored_label(
+                theme::state_color(ServerState::Degraded),
+                "cargo is not on PATH",
+            );
         }
     });
     ui.add_space(theme::SECTION_GAP);
 
     card(ui, "Ops", |ui| {
         ui.horizontal(|ui| {
-            if ui.button("QUALITY GATE").on_hover_text("Run the same hidden Quality Gate used by Dashboard; progress is shown on Dashboard and detailed output in Logs.").clicked() {
+            if ui
+                .button("QUALITY GATE")
+                .on_hover_text(
+                    "Run the same hidden Quality Gate used by Dashboard; progress is shown on Dashboard and detailed output in Logs.",
+                )
+                .clicked()
+            {
                 let _ = tool_launch::launch_quality_gate();
             }
-            if ui.button("REBUILD").on_hover_text("Rebuild Hub-managed binaries using the existing runtime build path.").clicked() {
+            if ui
+                .button("REBUILD")
+                .on_hover_text("Rebuild Hub-managed binaries using the existing runtime build path.")
+                .clicked()
+            {
                 cmd = Some(HubCommand::Rebuild);
             }
-            if ui.add(egui::Button::new("KILL ALL").fill(egui::Color32::from_rgb(140, 50, 50))).on_hover_text("Emergency cleanup of workspace runtime processes.").clicked() {
+            if ui
+                .add(
+                    egui::Button::new("KILL ALL")
+                        .fill(egui::Color32::from_rgb(140, 50, 50)),
+                )
+                .on_hover_text("Emergency cleanup of workspace runtime processes.")
+                .clicked()
+            {
                 cmd = Some(HubCommand::KillAll);
             }
         });
-        ui.colored_label(theme::muted(), "Quality Gate runs hidden with isolated output. Kill All stops server, clients, load, and workspace cargo.");
+        ui.colored_label(
+            theme::muted(),
+            "Quality Gate runs hidden with isolated output. Kill All stops server, clients, load, and workspace cargo.",
+        );
     });
     cmd
 }
