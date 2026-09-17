@@ -1,4 +1,4 @@
-//! Provisional eframe shell. Orchestration stays in `purgatory-dev-runtime`.
+//! Developer Hub application shell. Orchestration stays in `purgatory-dev-runtime`.
 
 use std::time::{Duration, Instant};
 
@@ -114,16 +114,6 @@ impl eframe::App for DevHubApp {
                             chip(ui, &format!("Phase {}", snap.phase));
                             ui.add_space(4.0);
                             chip(ui, &snap.build_profile);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.colored_label(
-                                        theme::muted(),
-                                        egui::RichText::new("eframe provisional")
-                                            .font(theme::subtitle_font()),
-                                    );
-                                },
-                            );
                         });
                     });
 
@@ -213,8 +203,6 @@ impl eframe::App for DevHubApp {
                         egui::Margin::symmetric(theme::PAGE_MARGIN as i8, theme::PAGE_MARGIN as i8),
                     ))
                     .show(ui, |ui| {
-                        // Vertical page scroll only. Log panels own their own both-axis scroll
-                        // so long lines do not get clipped by the page scroller.
                         egui::ScrollArea::vertical()
                             .id_salt("hub_central_scroll")
                             .auto_shrink([false, false])
