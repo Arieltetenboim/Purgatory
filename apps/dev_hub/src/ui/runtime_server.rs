@@ -133,29 +133,45 @@ fn server_actions(ui: &mut egui::Ui, snap: &HubSnapshot, cmd: &mut Option<HubCom
     ui.spacing_mut().item_spacing.x = 6.0;
     match snap.server_state {
         ServerState::Stopped | ServerState::Failed => {
-            if ui
-                .add_enabled(snap.can_start, btn_primary("Start"))
+            let response = ui.add_enabled(snap.can_start, btn_primary("Start"));
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(
+                    "Build and start the dedicated server, then verify readiness before marking it Ready.",
+                )
                 .clicked()
             {
                 *cmd = Some(HubCommand::Start);
             }
         }
         ServerState::Ready | ServerState::Degraded => {
-            if ui
-                .add_enabled(snap.can_restart, btn_ghost("Restart"))
+            let response = ui.add_enabled(snap.can_restart, btn_ghost("Restart"));
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(
+                    "Stop the current server and start it again through the normal readiness checks.",
+                )
                 .clicked()
             {
                 *cmd = Some(HubCommand::Restart);
             }
-            if ui
-                .add_enabled(snap.can_stop, btn_destructive("Stop"))
+
+            let response = ui.add_enabled(snap.can_stop, btn_destructive("Stop"));
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Stop the dedicated server. Detached clients are not stopped.")
                 .clicked()
             {
                 *cmd = Some(HubCommand::Stop);
             }
         }
         _ => {
-            if ui.add_enabled(snap.can_stop, btn_ghost("Stop")).clicked() {
+            let response = ui.add_enabled(snap.can_stop, btn_ghost("Stop"));
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Cancel the current server lifecycle operation and stop the server.")
+                .clicked()
+            {
                 *cmd = Some(HubCommand::Stop);
             }
         }
