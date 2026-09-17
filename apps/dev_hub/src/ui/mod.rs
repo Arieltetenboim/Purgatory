@@ -2,6 +2,7 @@ pub mod clients;
 pub mod content;
 pub mod dashboard;
 pub mod dashboard_model;
+pub mod gate_pipeline;
 pub mod layout;
 pub mod log_console;
 pub mod logs;
