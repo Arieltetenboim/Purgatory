@@ -1,5 +1,7 @@
 //! Dashboard: operational control surface for the active workspace.
 
+use std::path::PathBuf;
+
 use eframe::egui::{self, Align, Layout, RichText, Vec2};
 
 use crate::navigation::HubPage;
@@ -8,8 +10,7 @@ use crate::ui::dashboard_model::{self, AttentionVm, DashVm, ProjectVm, StatusMod
 use crate::ui::layout::{
     self, PageOutcome, btn_destructive, btn_ghost, btn_primary, metric_flow, status_badge,
 };
-use crate::ui::log_console;
-use crate::ui::tool_launch;
+use crate::ui::{gate_pipeline, log_console, tool_launch};
 
 pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> PageOutcome {
     let mut outcome = PageOutcome::none();
@@ -32,6 +33,11 @@ pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> Pag
     row_workspace_actions(ui, gap, project_w, actions_w, snap, &model, &mut outcome);
     ui.add_space(gap);
 
+    gate_pipeline::show(
+        ui,
+        &PathBuf::from(&snap.log_dir).join("quality-gate.log"),
+    );
+    ui.add_space(gap);
     activity_panel(ui, snap, &mut outcome);
     outcome
 }
@@ -435,7 +441,7 @@ fn quick_actions(
                 let response = ui.add(btn_ghost("Quality Gate").min_size(button_size));
                 if action_response(
                     response,
-                    "Run scripts/check.ps1 in the background: rustfmt, cargo check, clippy, workspace tests, and content validation. Output appears only in Logs → Quality Gate.",
+                    "Run Format → Cargo Check → Clippy → Workspace Tests → Content Validation. Progress appears below; detailed output stays in Logs → Quality Gate.",
                 )
                 .clicked()
                 {
