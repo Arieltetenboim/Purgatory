@@ -18,6 +18,12 @@ use tokio::net::{TcpListener, TcpStream};
 use super::gameplay::GameplayTx;
 use super::session::{SessionTable, lock_sessions};
 
+#[derive(Clone)]
+struct AdminCatalog {
+    npcs: Arc<Vec<DevAdminContentEntry>>,
+    items: Arc<Vec<DevAdminContentEntry>>,
+}
+
 pub(crate) fn spawn(
     gameplay: GameplayTx,
     sessions: Arc<Mutex<SessionTable>>,
@@ -40,7 +46,23 @@ pub(crate) fn spawn(
         })
         .collect::<Vec<_>>();
     npcs.sort_by(|a, b| a.authored_id.cmp(&b.authored_id));
-    let npcs = Arc::new(npcs);
+
+    let mut items = registry
+        .iter_item_presentations()
+        .filter_map(|item| {
+            let content_id = u32::try_from(item.content_id.token()).ok()?;
+            Some(DevAdminContentEntry {
+                content_id,
+                authored_id: item.authored_id.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| a.authored_id.cmp(&b.authored_id));
+
+    let catalog = AdminCatalog {
+        npcs: Arc::new(npcs),
+        items: Arc::new(items),
+    };
 
     tokio::spawn(async move {
         let addr = format!("127.0.0.1:{port}");
@@ -67,9 +89,9 @@ pub(crate) fn spawn(
             }
             let gameplay = gameplay.clone();
             let sessions = Arc::clone(&sessions);
-            let npcs = Arc::clone(&npcs);
+            let catalog = catalog.clone();
             tokio::spawn(async move {
-                if let Err(err) = handle_connection(stream, gameplay, sessions, npcs).await {
+                if let Err(err) = handle_connection(stream, gameplay, sessions, catalog).await {
                     eprintln!("DEV_ADMIN connection error={err}");
                 }
             });
@@ -83,7 +105,7 @@ async fn handle_connection(
     stream: TcpStream,
     gameplay: GameplayTx,
     sessions: Arc<Mutex<SessionTable>>,
-    npcs: Arc<Vec<DevAdminContentEntry>>,
+    catalog: AdminCatalog,
 ) -> Result<(), String> {
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
@@ -101,7 +123,7 @@ async fn handle_connection(
             continue;
         }
         let response = match serde_json::from_str::<DevAdminRequest>(&line) {
-            Ok(request) => dispatch(request, &gameplay, &sessions, &npcs).await,
+            Ok(request) => dispatch(request, &gameplay, &sessions, &catalog).await,
             Err(err) => DevAdminResponse::command_err(format!("invalid request: {err}")),
         };
         write_response(&mut write_half, &response).await?;
@@ -125,7 +147,7 @@ async fn dispatch(
     request: DevAdminRequest,
     gameplay: &GameplayTx,
     sessions: &Arc<Mutex<SessionTable>>,
-    npcs: &[DevAdminContentEntry],
+    catalog: &AdminCatalog,
 ) -> DevAdminResponse {
     match request {
         DevAdminRequest::Snapshot => {
@@ -139,7 +161,8 @@ async fn dispatch(
             DevAdminResponse::Snapshot {
                 snapshot: DevAdminSnapshot {
                     players,
-                    npcs: npcs.to_vec(),
+                    npcs: catalog.npcs.as_ref().clone(),
+                    items: catalog.items.as_ref().clone(),
                 },
             }
         }
@@ -148,28 +171,63 @@ async fn dispatch(
             npc_content_id,
         } => {
             if !session_exists(sessions, connection_id) {
-                return DevAdminResponse::command_err(format!(
-                    "connection {connection_id} is not active"
-                ));
+                return inactive(connection_id);
             }
-            let id = ContentId::from_raw(npc_content_id);
-            if !npcs.iter().any(|npc| npc.content_id == npc_content_id) {
+            if !catalog
+                .npcs
+                .iter()
+                .any(|npc| npc.content_id == npc_content_id)
+            {
                 return DevAdminResponse::command_err(format!(
                     "ContentId {npc_content_id} is not an authored NPC"
                 ));
             }
             accepted(
                 gameplay
-                    .send_dev_spawn_npc(ConnectionId::from_raw(connection_id), id)
+                    .send_dev_spawn_npc(
+                        ConnectionId::from_raw(connection_id),
+                        ContentId::from_raw(npc_content_id),
+                    )
                     .await,
                 format!("Spawn NPC {npc_content_id} near connection {connection_id}"),
             )
         }
+        DevAdminRequest::SpawnItem {
+            connection_id,
+            item_content_id,
+            quantity,
+        } => {
+            if !session_exists(sessions, connection_id) {
+                return inactive(connection_id);
+            }
+            if quantity == 0 {
+                return DevAdminResponse::command_err("item quantity must be greater than zero");
+            }
+            if !catalog
+                .items
+                .iter()
+                .any(|item| item.content_id == item_content_id)
+            {
+                return DevAdminResponse::command_err(format!(
+                    "ContentId {item_content_id} is not an authored item"
+                ));
+            }
+            accepted(
+                gameplay
+                    .send_dev_spawn_item(
+                        ConnectionId::from_raw(connection_id),
+                        ContentId::from_raw(item_content_id),
+                        quantity,
+                    )
+                    .await,
+                format!(
+                    "Spawn item {item_content_id} x{quantity} near connection {connection_id}"
+                ),
+            )
+        }
         DevAdminRequest::ResetPlayer { connection_id } => {
             if !session_exists(sessions, connection_id) {
-                return DevAdminResponse::command_err(format!(
-                    "connection {connection_id} is not active"
-                ));
+                return inactive(connection_id);
             }
             accepted(
                 gameplay
@@ -183,9 +241,7 @@ async fn dispatch(
             channel,
         } => {
             if !session_exists(sessions, connection_id) {
-                return DevAdminResponse::command_err(format!(
-                    "connection {connection_id} is not active"
-                ));
+                return inactive(connection_id);
             }
             accepted(
                 gameplay
@@ -194,39 +250,11 @@ async fn dispatch(
                 format!("Set connection {connection_id} channel to {channel}"),
             )
         }
-        DevAdminRequest::SetSpeed {
-            connection_id,
-            hundredths,
-        } => {
-            if !session_exists(sessions, connection_id) {
-                return DevAdminResponse::command_err(format!(
-                    "connection {connection_id} is not active"
-                ));
-            }
-            accepted(
-                gameplay
-                    .send_dev_set_speed(ConnectionId::from_raw(connection_id), hundredths)
-                    .await,
-                format!("Set connection {connection_id} speed override to {hundredths:?}"),
-            )
-        }
-        DevAdminRequest::SetJump {
-            connection_id,
-            hundredths,
-        } => {
-            if !session_exists(sessions, connection_id) {
-                return DevAdminResponse::command_err(format!(
-                    "connection {connection_id} is not active"
-                ));
-            }
-            accepted(
-                gameplay
-                    .send_dev_set_jump(ConnectionId::from_raw(connection_id), hundredths)
-                    .await,
-                format!("Set connection {connection_id} jump override to {hundredths:?}"),
-            )
-        }
     }
+}
+
+fn inactive(connection_id: u64) -> DevAdminResponse {
+    DevAdminResponse::command_err(format!("connection {connection_id} is not active"))
 }
 
 fn session_exists(sessions: &Arc<Mutex<SessionTable>>, raw: u64) -> bool {
