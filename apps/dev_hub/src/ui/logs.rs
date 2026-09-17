@@ -1,8 +1,11 @@
+use std::path::PathBuf;
+
 use eframe::egui;
 use purgatory_dev_runtime::{HubCommand, HubSnapshot};
 
 use crate::theme;
-use crate::ui::layout::{self, card, kv_row, log_panel};
+use crate::ui::layout::{self, card, kv_row};
+use crate::ui::log_console;
 
 /// Returns (open_log_dir, optional clear command).
 pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> (bool, Option<HubCommand>) {
@@ -22,22 +25,52 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> (bool, Option<HubCommand>)
             }
             ui.colored_label(
                 theme::muted(),
-                format!("Showing last {} of a 4000-line ring", snap.log_lines.len()),
+                format!("Showing last {} activity lines", snap.log_lines.len()),
             );
         });
         ui.add_space(4.0);
-        if log_panel(
+        if log_console::show(
             ui,
             "hub_activity_log",
             &snap.log_lines,
+            "INFO",
             "(empty)",
-            360.0,
-            "scroll ↕↔ for long lines",
         ) {
             clear = Some(HubCommand::ClearActivityLog);
         }
     });
+
+    ui.add_space(theme::CARD_GAP);
+
+    let quality_gate_path = PathBuf::from(&snap.log_dir).join("quality-gate.log");
+    let quality_gate_lines = read_recent_lines(&quality_gate_path, 600);
+    card(ui, "Quality Gate", |ui| {
+        ui.colored_label(
+            theme::muted(),
+            "scripts/check.ps1 output — runs hidden from Dashboard Quick Actions",
+        );
+        ui.add_space(4.0);
+        if log_console::show(
+            ui,
+            "quality_gate_log",
+            &quality_gate_lines,
+            "GATE",
+            "No Quality Gate output yet.",
+        ) {
+            let _ = std::fs::write(&quality_gate_path, "");
+        }
+    });
+
     (open, clear)
+}
+
+fn read_recent_lines(path: &std::path::Path, max: usize) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(max);
+    lines[start..].iter().map(|line| (*line).to_owned()).collect()
 }
 
 pub fn open_log_dir(dir: &str) {
