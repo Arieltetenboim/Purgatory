@@ -41,18 +41,30 @@ pub fn show(ui: &mut egui::Ui, log_path: &Path) {
         ui.horizontal_wrapped(|ui| {
             for (index, step) in steps.iter().enumerate() {
                 if index > 0 {
-                    ui.colored_label(theme::muted(), "→");
+                    ui.colored_label(theme::muted(), ">");
                 }
-                let (symbol, color) = match step.state {
-                    StepState::Waiting => ("○", theme::muted()),
-                    StepState::Running => ("●", theme::accent()),
-                    StepState::Passed => ("✓", theme::success()),
-                    StepState::Failed => ("×", theme::destructive()),
+                let (status, color) = match step.state {
+                    StepState::Waiting => ("WAIT", theme::muted()),
+                    StepState::Running => ("RUN", theme::accent()),
+                    StepState::Passed => ("PASS", theme::success()),
+                    StepState::Failed => ("FAIL", theme::destructive()),
                 };
-                ui.label(RichText::new(format!("{symbol} {}", step.label)).color(color).strong());
+                ui.label(
+                    RichText::new(format!("{status} {}", step.label))
+                        .color(color)
+                        .strong(),
+                );
             }
         });
     });
+}
+
+pub fn failed_step(log_path: &Path) -> Option<&'static str> {
+    let text = std::fs::read_to_string(log_path).ok()?;
+    parse(&text)
+        .into_iter()
+        .find(|step| step.state == StepState::Failed)
+        .map(|step| step.label)
 }
 
 fn parse(text: &str) -> Vec<GateStep> {
@@ -71,8 +83,12 @@ fn parse(text: &str) -> Vec<GateStep> {
         if parts.next() != Some("HUB_GATE") {
             continue;
         }
-        let Some(event) = parts.next() else { continue };
-        let Some(id) = parts.next() else { continue };
+        let Some(event) = parts.next() else {
+            continue;
+        };
+        let Some(id) = parts.next() else {
+            continue;
+        };
         let Some(step) = steps.iter_mut().find(|step| step.id == id) else {
             continue;
         };
@@ -98,5 +114,19 @@ mod tests {
         assert_eq!(steps[0].state, StepState::Passed);
         assert_eq!(steps[1].state, StepState::Running);
         assert_eq!(steps[2].state, StepState::Waiting);
+    }
+
+    #[test]
+    fn failed_step_reports_first_failed_pipeline_stage() {
+        let steps = parse(
+            "HUB_GATE|PASS|fmt|Format\nHUB_GATE|PASS|check|Cargo Check\nHUB_GATE|FAIL|clippy|Clippy\n",
+        );
+        assert_eq!(
+            steps
+                .into_iter()
+                .find(|step| step.state == StepState::Failed)
+                .map(|step| step.label),
+            Some("Clippy")
+        );
     }
 }
