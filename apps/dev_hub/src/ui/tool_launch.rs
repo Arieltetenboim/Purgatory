@@ -3,25 +3,13 @@ use std::path::{Path, PathBuf};
 pub(crate) fn launch_npc_lab() -> Result<(), String> {
     let root = workspace_root()?;
     let launcher = root.join("tools").join("npc_lab").join("run.ps1");
-    launch_hidden_powershell(
-        &root,
-        &launcher,
-        &[],
-        "npc-lab.log",
-        LogMode::Append,
-    )
+    launch_hidden_powershell(&root, &launcher, &[], "npc-lab.log", LogMode::Append)
 }
 
 pub(crate) fn launch_quality_gate() -> Result<(), String> {
     let root = workspace_root()?;
     let script = root.join("scripts").join("check.ps1");
-    launch_hidden_powershell(
-        &root,
-        &script,
-        &[],
-        "quality-gate.log",
-        LogMode::Truncate,
-    )
+    launch_hidden_powershell(&root, &script, &[], "quality-gate.log", LogMode::Truncate)
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
