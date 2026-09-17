@@ -41,7 +41,7 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> (bool, Option<HubCommand>)
     card(ui, "Quality Gate", |ui| {
         ui.colored_label(
             theme::muted(),
-            "scripts/check.ps1 output — runs hidden from Dashboard Quick Actions",
+            "scripts/check.ps1 output — structured pipeline markers are hidden here and shown on Dashboard",
         );
         ui.add_space(4.0);
         if log_console::show(
@@ -62,9 +62,12 @@ fn read_recent_lines(path: &std::path::Path, max: usize) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    let lines: Vec<&str> = text.lines().collect();
-    let start = lines.len().saturating_sub(max);
-    lines[start..]
+    let visible: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("HUB_GATE|"))
+        .collect();
+    let start = visible.len().saturating_sub(max);
+    visible[start..]
         .iter()
         .map(|line| (*line).to_owned())
         .collect()
