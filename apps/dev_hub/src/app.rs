@@ -11,6 +11,7 @@ use crate::theme;
 use crate::ui;
 use crate::ui::layout::{chip, nav_item};
 use crate::ui::run_view::RunViewState;
+use crate::ui::server_commands::ServerCommandsState;
 
 pub fn run() -> eframe::Result {
     // Fixed window: Hub layout is authored for this size. Resize caused card
@@ -43,6 +44,7 @@ struct DevHubApp {
     load_spec: LoadSpec,
     validation_run: RunViewState,
     load_run: RunViewState,
+    server_commands: ServerCommandsState,
     authoring_export_status: Option<String>,
     logo: Option<TextureHandle>,
 }
@@ -56,6 +58,7 @@ impl DevHubApp {
             load_spec: LoadSpec::default(),
             validation_run: RunViewState::default(),
             load_run: RunViewState::default(),
+            server_commands: ServerCommandsState::default(),
             authoring_export_status: None,
             logo: assets::load_logo(ctx),
         }
@@ -220,7 +223,11 @@ impl eframe::App for DevHubApp {
                                         }
                                     }
                                     HubPage::RuntimeServer => {
-                                        if let Some(c) = ui::runtime_server::show(ui, &snap) {
+                                        if let Some(c) = ui::runtime_server::show(
+                                            ui,
+                                            &snap,
+                                            &mut self.server_commands,
+                                        ) {
                                             cmd = Some(c);
                                         }
                                     }
