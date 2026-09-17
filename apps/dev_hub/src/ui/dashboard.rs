@@ -314,8 +314,7 @@ fn quick_actions(
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for action in &model.actions {
-                if !matches!(action.command, purgatory_dev_runtime::HubCommand::LaunchAnimationLab)
-                {
+                if action.label != "Animation Lab" {
                     continue;
                 }
                 if ui
@@ -340,8 +339,7 @@ fn quick_actions(
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             for action in &model.actions {
-                if matches!(action.command, purgatory_dev_runtime::HubCommand::LaunchAnimationLab)
-                {
+                if matches!(action.label, "Animation Lab" | "+ 1 Client") {
                     continue;
                 }
                 let clicked = match action.kind {
@@ -425,4 +423,21 @@ fn activity_panel(
                 });
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_git_stamp;
+
+    #[test]
+    fn git_stamp_separates_branch_commit_and_dirty_state() {
+        assert_eq!(
+            split_git_stamp("hub-0.4 @ abc1234*"),
+            ("hub-0.4", "abc1234", true)
+        );
+        assert_eq!(
+            split_git_stamp("master @ abc1234"),
+            ("master", "abc1234", false)
+        );
+    }
 }
