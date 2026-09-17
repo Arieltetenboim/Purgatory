@@ -21,6 +21,9 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
     doctor::show_section(ui, snap);
     ui.add_space(theme::SECTION_GAP);
 
+    versions_card(ui);
+    ui.add_space(theme::SECTION_GAP);
+
     card(ui, "Build profile", |ui| {
         ui.horizontal(|ui| {
             for profile in BuildProfile::ALL {
@@ -97,7 +100,7 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
                     egui::Button::new("KILL ALL")
                         .fill(egui::Color32::from_rgb(140, 50, 50)),
                 )
-                .on_hover_text("Emergency cleanup of workspace runtime processes.")
+                .on_hover_text("Emergency cleanup of workspace runtime processes. Shortcut: F9.")
                 .clicked()
             {
                 cmd = Some(HubCommand::KillAll);
@@ -109,4 +112,33 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
         );
     });
     cmd
+}
+
+fn versions_card(ui: &mut egui::Ui) {
+    const COMPONENTS: [&str; 6] = [
+        "Client",
+        "Server",
+        "Developer Hub",
+        "Animation Lab",
+        "NPC Lab",
+        "Character Part Lab",
+    ];
+
+    card(ui, "Component Versions", |ui| {
+        egui::Grid::new("component_versions")
+            .num_columns(2)
+            .spacing([18.0, 5.0])
+            .show(ui, |ui| {
+                for component in COMPONENTS {
+                    ui.label(component);
+                    ui.colored_label(theme::muted(), "not assigned");
+                    ui.end_row();
+                }
+            });
+        ui.add_space(4.0);
+        ui.colored_label(
+            theme::muted(),
+            "Placeholders until each component owns an explicit version file. Future version bumps should accompany changes that alter that component's tracked behavior or contract.",
+        );
+    });
 }
