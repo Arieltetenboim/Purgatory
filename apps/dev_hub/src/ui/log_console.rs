@@ -1,10 +1,10 @@
-use eframe::egui::{self, Align, Layout, RichText, Vec2};
+use eframe::egui::{self, Align, Layout, Vec2};
 use eframe::egui::text::{LayoutJob, TextFormat};
 
 use crate::theme;
 use crate::ui::layout::btn_ghost;
 
-/// Dashboard-style selectable, color-tagged, vertically resizable log console.
+/// Shared selectable, color-tagged, vertically resizable Hub log console.
 /// Returns true when Clear is clicked.
 pub fn show(
     ui: &mut egui::Ui,
@@ -116,7 +116,10 @@ fn classify(message: &str, default_kind: &'static str) -> &'static str {
     let lower = message.to_ascii_lowercase();
     if lower.contains("fail") || lower.contains("error") || lower.contains("panic") {
         "ERROR"
-    } else if lower.contains("warn") || lower.contains("degraded") {
+    } else if lower.contains("warn")
+        || lower.contains("degraded")
+        || lower.contains("not running")
+    {
         "WARN"
     } else if lower.contains("build")
         || lower.contains("rebuild")
@@ -124,6 +127,14 @@ fn classify(message: &str, default_kind: &'static str) -> &'static str {
         || lower.contains("compil")
     {
         "BUILD"
+    } else if lower.contains("quality-gate") || lower.contains("quality gate") {
+        "GATE"
+    } else if lower.contains("client") {
+        "CLIENT"
+    } else if lower.contains("server") || lower.contains("probe") || lower.contains("listener") {
+        "SERVER"
+    } else if lower.contains("load") {
+        "LOAD"
     } else {
         default_kind
     }
@@ -222,8 +233,10 @@ fn tag_color(tag: &str) -> egui::Color32 {
         "[ERROR]" => theme::destructive(),
         "[WARN]" => egui::Color32::from_rgb(220, 160, 50),
         "[BUILD]" => egui::Color32::from_rgb(190, 110, 220),
+        "[GATE]" => egui::Color32::from_rgb(210, 175, 70),
         "[CLIENT]" => egui::Color32::from_rgb(80, 180, 210),
         "[SERVER]" => theme::success(),
+        "[LOAD]" => egui::Color32::from_rgb(170, 140, 210),
         _ => theme::accent(),
     }
 }
@@ -233,9 +246,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classifies_errors_before_default_stream_kind() {
+    fn classifies_errors_before_stream_kind() {
         assert_eq!(classify("client connected", "CLIENT"), "CLIENT");
         assert_eq!(classify("server error: bind failed", "SERVER"), "ERROR");
         assert_eq!(classify("Compiling purgatory-client", "CLIENT"), "BUILD");
+        assert_eq!(classify("quality-gate | checking fmt", "INFO"), "GATE");
     }
 }
