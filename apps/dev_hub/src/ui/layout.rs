@@ -130,10 +130,6 @@ pub fn metric_flow(ui: &mut egui::Ui, pairs: &[(&str, &str, bool)]) {
     });
 }
 
-pub fn empty_state(ui: &mut egui::Ui, message: &str) {
-    ui.colored_label(theme::muted(), message);
-}
-
 pub fn hub_card(
     ui: &mut egui::Ui,
     icon: &str,
@@ -206,10 +202,7 @@ pub fn btn_destructive(label: &str) -> egui::Button<'static> {
             .color(theme::destructive()),
     )
     .fill(theme::destructive_fill())
-    .stroke(Stroke::new(
-        1.0,
-        theme::destructive().gamma_multiply(0.7),
-    ))
+    .stroke(Stroke::new(1.0, theme::destructive().gamma_multiply(0.7)))
     .min_size(Vec2::new(0.0, theme::BTN_MIN_H))
     .corner_radius(6.0)
 }
@@ -354,16 +347,6 @@ pub fn bounded_log_panel(ui: &mut egui::Ui, id_salt: &str, lines: &[String], emp
     )
 }
 
-pub fn log_panel_fill(
-    ui: &mut egui::Ui,
-    id_salt: &str,
-    lines: &[String],
-    empty: &str,
-    hint: &str,
-) -> bool {
-    log_panel(ui, id_salt, lines, empty, 320.0, hint)
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChartSeries {
     Connected,
@@ -427,10 +410,7 @@ pub fn metrics_chart(
         );
         return;
     }
-    let min_v = values
-        .iter()
-        .map(|(_, v)| *v)
-        .fold(f64::INFINITY, f64::min);
+    let min_v = values.iter().map(|(_, v)| *v).fold(f64::INFINITY, f64::min);
     let max_v = values
         .iter()
         .map(|(_, v)| *v)
@@ -466,12 +446,7 @@ pub fn metrics_chart(
         ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, theme::bg());
-    painter.rect_stroke(
-        rect,
-        4.0,
-        theme::card_stroke(),
-        egui::StrokeKind::Inside,
-    );
+    painter.rect_stroke(rect, 4.0, theme::card_stroke(), egui::StrokeKind::Inside);
     let left_axis = 52.0;
     let bottom_axis = 22.0;
     let top_pad = 8.0;
@@ -544,10 +519,7 @@ pub fn metrics_chart(
         ));
     }
     if points.len() >= 2 {
-        painter.add(egui::Shape::line(
-            points,
-            Stroke::new(1.8, theme::accent()),
-        ));
+        painter.add(egui::Shape::line(points, Stroke::new(1.8, theme::accent())));
     } else if let Some(p) = points.first() {
         painter.circle_filled(*p, 3.0, theme::accent());
     }
