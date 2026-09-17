@@ -17,6 +17,7 @@ const HISTORY_CAP: usize = 64;
 const AUTO_REFRESH_CONNECTED: Duration = Duration::from_secs(2);
 const AUTO_REFRESH_UNAVAILABLE: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
+const SPAWN_ITEM_RUNTIME_READY: bool = false;
 
 type AdminReply = (bool, Result<DevAdminResponse, String>);
 
@@ -150,7 +151,11 @@ impl ServerCommandsState {
                 ui.label(RichText::new("Spawn NPC").strong());
                 egui::ComboBox::from_id_salt("server_commands_npc")
                     .width(300.0)
-                    .selected_text(selected_content_label(&snapshot.npcs, self.selected_npc, "Select NPC"))
+                    .selected_text(selected_content_label(
+                        &snapshot.npcs,
+                        self.selected_npc,
+                        "Select NPC",
+                    ))
                     .show_ui(ui, |ui| {
                         for npc in &snapshot.npcs {
                             ui.selectable_value(
@@ -198,22 +203,14 @@ impl ServerCommandsState {
                     });
                 ui.label("Qty");
                 ui.add(egui::DragValue::new(&mut self.item_quantity).range(1..=999));
-                let enabled = ready && self.selected_player.is_some() && self.selected_item.is_some();
-                if ui
-                    .add_enabled(enabled, btn_primary("Spawn near player"))
+                let enabled = SPAWN_ITEM_RUNTIME_READY
+                    && ready
+                    && self.selected_player.is_some()
+                    && self.selected_item.is_some();
+                ui.add_enabled(enabled, btn_primary("Spawn near player"))
                     .on_hover_text(
-                        "Mint an authoritative item instance/world-drop near the selected player. The server validates the authored item and stack limit.",
-                    )
-                    .clicked()
-                    && let (Some(connection_id), Some(item_content_id)) =
-                        (self.selected_player, self.selected_item)
-                {
-                    self.send(DevAdminRequest::SpawnItem {
-                        connection_id,
-                        item_content_id,
-                        quantity: self.item_quantity,
-                    });
-                }
+                        "Item catalog and command contract are staged. The authoritative GameplayOwner world-drop hook is tracked in issue #61 and this button stays disabled until that owner path lands.",
+                    );
             });
 
             ui.add_space(8.0);
