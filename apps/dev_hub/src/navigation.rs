@@ -20,6 +20,23 @@ pub enum PageKind {
     Placeholder,
 }
 
+/// Navigation icons are painted with egui primitives rather than font glyphs.
+/// This avoids missing-glyph squares on Windows while keeping a compact visual
+/// language in the existing Hub sidebar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavIcon {
+    Dashboard,
+    Server,
+    Clients,
+    Validation,
+    Performance,
+    PhaseStats,
+    World,
+    Content,
+    Logs,
+    Settings,
+}
+
 impl HubPage {
     pub const ALL: [HubPage; 10] = [
         Self::Dashboard,
@@ -51,18 +68,18 @@ impl HubPage {
     }
 
     #[must_use]
-    pub fn symbol(self) -> &'static str {
+    pub fn icon(self) -> NavIcon {
         match self {
-            Self::Dashboard => "⌂",
-            Self::RuntimeServer => "▣",
-            Self::RuntimeClients => "▤",
-            Self::Validation => "⛨",
-            Self::Performance => "▥",
-            Self::Phase7Stats => "▦",
-            Self::World => "◈",
-            Self::Content => "◇",
-            Self::Logs => "≡",
-            Self::Settings => "⚙",
+            Self::Dashboard => NavIcon::Dashboard,
+            Self::RuntimeServer => NavIcon::Server,
+            Self::RuntimeClients => NavIcon::Clients,
+            Self::Validation => NavIcon::Validation,
+            Self::Performance => NavIcon::Performance,
+            Self::Phase7Stats => NavIcon::PhaseStats,
+            Self::World => NavIcon::World,
+            Self::Content => NavIcon::Content,
+            Self::Logs => NavIcon::Logs,
+            Self::Settings => NavIcon::Settings,
         }
     }
 
@@ -106,7 +123,7 @@ impl HubPage {
             Self::Content => {
                 "Launch the standalone Animation Lab. Other content editors are not in A7.0."
             }
-            Self::Settings => "Build profile, log level, quality gate, rebuild, Kill All.",
+            Self::Settings => "Build profile and log level for newly launched processes.",
             _ => "",
         }
     }
@@ -137,5 +154,12 @@ mod tests {
                 HubPage::Settings,
             ]
         );
+    }
+
+    #[test]
+    fn every_page_has_a_vector_icon_kind() {
+        for page in HubPage::ALL {
+            let _ = page.icon();
+        }
     }
 }
