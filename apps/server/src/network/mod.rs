@@ -13,6 +13,7 @@ mod abuse;
 mod cert;
 mod config;
 mod connection_lifecycle;
+mod dev_admin;
 mod dialogue;
 mod dialogue_actions;
 mod endpoint;
@@ -104,6 +105,9 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
 
     let (gameplay_tx, mut life_rx, mut input_rx) =
         gameplay::gameplay_channels(config.lifecycle_cap, config.input_cap);
+    if let Err(err) = dev_admin::spawn(gameplay_tx.clone(), bound.sessions.clone()) {
+        eprintln!("DEV_ADMIN unavailable: {err}");
+    }
     let data_dir = persist::data_dir_from_env();
     println!("PURGATORY persist data_dir={}", data_dir.display());
     let persist = persist::PersistenceHandle::spawn(&data_dir)?;
