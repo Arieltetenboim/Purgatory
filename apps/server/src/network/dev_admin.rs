@@ -212,18 +212,9 @@ async fn dispatch(
                     "ContentId {item_content_id} is not an authored item"
                 ));
             }
-            accepted(
-                gameplay
-                    .send_dev_spawn_item(
-                        ConnectionId::from_raw(connection_id),
-                        ContentId::from_raw(item_content_id),
-                        quantity,
-                    )
-                    .await,
-                format!(
-                    "Spawn item {item_content_id} x{quantity} near connection {connection_id}"
-                ),
-            )
+            DevAdminResponse::command_err(format!(
+                "Spawn Item {item_content_id} x{quantity} is staged in Hub 0.5, but the simulation-owner spawn hook is not wired yet"
+            ))
         }
         DevAdminRequest::ResetPlayer { connection_id } => {
             if !session_exists(sessions, connection_id) {
