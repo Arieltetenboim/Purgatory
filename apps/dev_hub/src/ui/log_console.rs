@@ -24,6 +24,13 @@ pub fn show(
             if ui.add(btn_ghost("Clear")).clicked() {
                 clear = true;
             }
+            if ui
+                .add_enabled(!lines.is_empty(), btn_ghost("Copy"))
+                .on_hover_text("Copy the entire visible log to the clipboard.")
+                .clicked()
+            {
+                ui.ctx().copy_text(decorate(lines, default_kind));
+            }
             if ui.checkbox(&mut auto_scroll, "Auto-scroll").changed() {
                 ui.ctx()
                     .data_mut(|data| data.insert_temp(auto_scroll_id, auto_scroll));
@@ -113,9 +120,6 @@ fn split_timestamp(line: &str) -> (&str, &str) {
 fn classify(message: &str, default_kind: &'static str) -> &'static str {
     let lower = message.trim_start().to_ascii_lowercase();
 
-    // Gate output often contains source-code words such as `error` or `warn` inside
-    // rustfmt diffs. Do not label those source lines as failures. Only classify explicit
-    // diagnostics; everything else remains GATE.
     if default_kind == "GATE" {
         if lower.starts_with("error:")
             || lower.starts_with("error[")
@@ -220,7 +224,6 @@ fn layout_job(text: &str) -> LayoutJob {
             && rest.starts_with('[')
         {
             let tag = &rest[..=end];
-            let message = rest[end + 1..].trim_start();
             job.append(
                 tag,
                 0.0,
@@ -231,16 +234,7 @@ fn layout_job(text: &str) -> LayoutJob {
                 },
             );
             job.append(
-                "  ",
-                0.0,
-                TextFormat {
-                    font_id: font.clone(),
-                    color: theme::body(),
-                    ..Default::default()
-                },
-            );
-            job.append(
-                message,
+                &rest[end + 1..],
                 0.0,
                 TextFormat {
                     font_id: font.clone(),
@@ -267,13 +261,13 @@ fn layout_job(text: &str) -> LayoutJob {
 fn tag_color(tag: &str) -> egui::Color32 {
     match tag {
         "[ERROR]" => theme::destructive(),
-        "[WARN]" => egui::Color32::from_rgb(220, 160, 50),
-        "[BUILD]" => egui::Color32::from_rgb(190, 110, 220),
-        "[GATE]" => egui::Color32::from_rgb(210, 175, 70),
-        "[CLIENT]" => egui::Color32::from_rgb(80, 180, 210),
+        "[WARN]" => theme::warning(),
+        "[BUILD]" => theme::accent(),
         "[SERVER]" => theme::success(),
-        "[LOAD]" => egui::Color32::from_rgb(170, 140, 210),
-        _ => theme::accent(),
+        "[CLIENT]" => theme::info(),
+        "[LOAD]" => theme::warning(),
+        "[GATE]" => theme::accent(),
+        _ => theme::muted(),
     }
 }
 
@@ -282,25 +276,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classifies_errors_before_stream_kind() {
-        assert_eq!(classify("client connected", "CLIENT"), "CLIENT");
-        assert_eq!(classify("server error: bind failed", "SERVER"), "ERROR");
-        assert_eq!(classify("Compiling purgatory-client", "CLIENT"), "BUILD");
-        assert_eq!(classify("quality-gate | checking fmt", "INFO"), "INFO");
+    fn normal_classifier_keeps_useful_tags() {
+        assert_eq!(classify("server ready", "INFO"), "SERVER");
+        assert_eq!(classify("cargo build", "INFO"), "BUILD");
+        assert_eq!(classify("warning: slow", "INFO"), "WARN");
     }
 
     #[test]
     fn gate_source_diff_words_are_not_false_errors() {
-        assert_eq!(
-            classify("if lower.contains(\"error\") {", "GATE"),
-            "GATE"
-        );
+        assert_eq!(classify("if lower.contains(\"error\") {", "GATE"), "GATE");
         assert_eq!(classify("error: could not compile `x`", "GATE"), "ERROR");
         assert_eq!(classify("warning: unused import", "GATE"), "WARN");
     }
 
     #[test]
-    fn strips_terminal_ansi_sequences() {
-        assert_eq!(strip_ansi("\u{1b}[31m-red\u{1b}[0m"), "-red");
+    fn ansi_is_removed_before_display() {
+        assert_eq!(strip_ansi("\u{1b}[31merror\u{1b}[0m"), "error");
     }
 }
