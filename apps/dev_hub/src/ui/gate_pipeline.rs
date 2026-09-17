@@ -31,12 +31,17 @@ const STEPS: [(&str, &str); 5] = [
 pub fn show(ui: &mut egui::Ui, log_path: &Path) {
     let text = std::fs::read_to_string(log_path).unwrap_or_default();
     let steps = parse(&text);
+    let launch_failure = launch_failure(&text);
 
     card(ui, "Quality Gate Pipeline", |ui| {
         ui.colored_label(
             theme::muted(),
             "Live progress from scripts/check.ps1. The detailed output stays in Logs → Quality Gate.",
         );
+        if let Some(message) = launch_failure {
+            ui.add_space(6.0);
+            ui.colored_label(theme::destructive(), message);
+        }
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             for (index, step) in steps.iter().enumerate() {
@@ -65,6 +70,20 @@ pub fn failed_step(log_path: &Path) -> Option<&'static str> {
         .into_iter()
         .find(|step| step.state == StepState::Failed)
         .map(|step| step.label)
+}
+
+fn launch_failure(text: &str) -> Option<String> {
+    if !text
+        .lines()
+        .any(|line| line.trim() == "HUB_GATE|LAUNCH_FAIL|quality|Quality Gate")
+    {
+        return None;
+    }
+
+    text.lines()
+        .find(|line| line.starts_with("Quality Gate launch failed:"))
+        .map(str::to_owned)
+        .or_else(|| Some("Quality Gate launch failed. See Logs → Quality Gate.".to_owned()))
 }
 
 fn parse(text: &str) -> Vec<GateStep> {
@@ -127,6 +146,15 @@ mod tests {
                 .find(|step| step.state == StepState::Failed)
                 .map(|step| step.label),
             Some("Clippy")
+        );
+    }
+
+    #[test]
+    fn launch_failure_is_visible_to_pipeline_ui() {
+        let text = "HUB_GATE|LAUNCH_FAIL|quality|Quality Gate\nQuality Gate launch failed: access denied\n";
+        assert_eq!(
+            launch_failure(text).as_deref(),
+            Some("Quality Gate launch failed: access denied")
         );
     }
 }
