@@ -1,15 +1,14 @@
 //! Dashboard: operational control surface for the active workspace.
 
 use eframe::egui::{self, Align, Layout, RichText, Vec2};
+use eframe::egui::text::{LayoutJob, TextFormat};
 
 use crate::navigation::HubPage;
 use crate::theme;
-use crate::ui::dashboard_model::{
-    self, ActionKind, AttentionVm, DashVm, ProjectVm, StatusModuleVm,
-};
+use crate::ui::dashboard_model::{self, AttentionVm, DashVm, ProjectVm, StatusModuleVm};
 use crate::ui::layout::{
-    self, PageOutcome, btn_destructive, btn_ghost, btn_primary, empty_state, hub_card,
-    metric_flow, metric_row, status_badge,
+    self, PageOutcome, btn_destructive, btn_ghost, btn_primary, empty_state, metric_flow,
+    status_badge,
 };
 
 pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> PageOutcome {
@@ -29,8 +28,8 @@ pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> Pag
     row_top(ui, gap, col, snap, &model, &mut outcome);
     ui.add_space(gap);
 
-    let project_w = ((avail - gap) * 0.58).floor().max(340.0);
-    let actions_w = (avail - gap - project_w).floor().max(280.0);
+    let project_w = ((avail - gap) * 0.58).floor().max(360.0);
+    let actions_w = (avail - gap - project_w).floor().max(300.0);
     row_workspace_actions(
         ui,
         gap,
@@ -43,7 +42,6 @@ pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> Pag
     ui.add_space(gap);
 
     activity_panel(ui, snap, &mut outcome);
-
     outcome
 }
 
@@ -100,11 +98,47 @@ fn full_width(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     cell(ui, w, add);
 }
 
+fn dashboard_card(
+    ui: &mut egui::Ui,
+    icon: &str,
+    title: &str,
+    min_height: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> egui::InnerResponse<()> {
+    egui::Frame::new()
+        .fill(theme::card_fill_elevated())
+        .stroke(theme::card_stroke())
+        .corner_radius(theme::CARD_RADIUS)
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.set_min_height(min_height);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if !icon.is_empty() {
+                    ui.label(
+                        RichText::new(icon)
+                            .font(theme::state_font())
+                            .color(theme::muted()),
+                    );
+                }
+                ui.label(
+                    RichText::new(title)
+                        .font(theme::state_font())
+                        .color(theme::body())
+                        .strong(),
+                );
+            });
+            ui.add_space(9.0);
+            add_contents(ui);
+        })
+}
+
 fn status_card(ui: &mut egui::Ui, vm: &StatusModuleVm, outcome: &mut PageOutcome) {
-    hub_card(ui, vm.icon, vm.title, |ui| {
+    dashboard_card(ui, vm.icon, vm.title, 132.0, |ui| {
         if !vm.badge.is_empty() {
             status_badge(ui, &vm.badge, vm.badge_color);
-            ui.add_space(4.0);
+            ui.add_space(5.0);
         }
         ui.add(
             egui::Label::new(
@@ -126,7 +160,7 @@ fn status_card(ui: &mut egui::Ui, vm: &StatusModuleVm, outcome: &mut PageOutcome
             );
         }
         if !vm.metrics.is_empty() {
-            ui.add_space(4.0);
+            ui.add_space(5.0);
             let pairs: Vec<(&str, &str, bool)> = vm
                 .metrics
                 .iter()
@@ -147,7 +181,7 @@ fn status_card(ui: &mut egui::Ui, vm: &StatusModuleVm, outcome: &mut PageOutcome
                 });
         }
 
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             if let Some((label, cmd)) = &vm.primary_action
@@ -187,34 +221,14 @@ fn clients_panel(
     snap: &purgatory_dev_runtime::HubSnapshot,
     outcome: &mut PageOutcome,
 ) {
-    hub_card(ui, "▣", "Clients", |ui| {
-        metric_row(ui, "Running", &snap.client_count.to_string(), true);
-        metric_row(ui, "Queued", &snap.pending_clients.to_string(), true);
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            for count in [1_u32, 2, 3] {
-                if ui
-                    .add_enabled(
-                        snap.can_request_clients,
-                        btn_primary(&format!("+ {count}")),
-                    )
-                    .clicked()
-                {
-                    outcome.command = Some(purgatory_dev_runtime::HubCommand::RequestClients {
-                        count,
-                    });
-                }
-            }
-            if ui
-                .add_enabled(snap.can_stop_clients, btn_ghost("Stop All"))
-                .clicked()
-            {
-                outcome.command = Some(purgatory_dev_runtime::HubCommand::StopClients);
-            }
-        });
-        ui.add_space(4.0);
-        if ui.add(btn_ghost("Open Clients")).clicked() {
+    dashboard_card(ui, "▣", "Clients", 132.0, |ui| {
+        project_row(ui, "Running", &snap.client_count.to_string(), true);
+        project_row(ui, "Queued", &snap.pending_clients.to_string(), true);
+        ui.add_space(10.0);
+        if ui
+            .add(btn_ghost("Open Clients").min_size(Vec2::new(112.0, 30.0)))
+            .clicked()
+        {
             outcome.navigate = Some(HubPage::RuntimeClients);
         }
     });
@@ -222,19 +236,58 @@ fn clients_panel(
 
 fn project_panel(ui: &mut egui::Ui, vm: &ProjectVm) {
     let (branch, commit, dirty) = split_git_stamp(&vm.build);
-    let resp = hub_card(ui, "▤", "Project / Workspace", |ui| {
-        metric_row(ui, "Workspace", vm.workspace_short.as_str(), true);
-        metric_row(ui, "Branch", branch, true);
-        metric_row(ui, "Commit", commit, true);
-        metric_row(
-            ui,
-            "Working tree",
-            if dirty { "DIRTY" } else { "CLEAN" },
-            false,
-        );
+    let resp = dashboard_card(ui, "▰", "Project / Workspace", 174.0, |ui| {
+        ui.separator();
+        ui.add_space(5.0);
+        egui::Grid::new("dashboard_project_grid")
+            .num_columns(2)
+            .spacing(Vec2::new(18.0, 7.0))
+            .show(ui, |ui| {
+                project_grid_row(ui, "Workspace", vm.workspace_short.as_str(), true);
+                project_grid_row(ui, "Branch", branch, true);
+                project_grid_row(ui, "Commit", commit, true);
+                project_grid_row(
+                    ui,
+                    "Working tree",
+                    if dirty { "DIRTY" } else { "CLEAN" },
+                    false,
+                );
+            });
     });
     resp.response
         .on_hover_text(format!("{}\n{}", vm.identity_full, vm.workspace_full));
+}
+
+fn project_grid_row(ui: &mut egui::Ui, label: &str, value: &str, mono: bool) {
+    ui.label(
+        RichText::new(label)
+            .font(theme::subtitle_font())
+            .color(theme::muted()),
+    );
+    let mut value_text = RichText::new(value).color(theme::body()).strong();
+    if mono {
+        value_text = value_text.font(theme::mono_small());
+    } else {
+        value_text = value_text.font(theme::subtitle_font());
+    }
+    ui.add(egui::Label::new(value_text).selectable(true));
+    ui.end_row();
+}
+
+fn project_row(ui: &mut egui::Ui, label: &str, value: &str, mono: bool) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(
+            RichText::new(label)
+                .font(theme::subtitle_font())
+                .color(theme::muted()),
+        );
+        let mut value_text = RichText::new(value).color(theme::body()).strong();
+        if mono {
+            value_text = value_text.font(theme::mono_small());
+        }
+        ui.add(egui::Label::new(value_text).selectable(true));
+    });
 }
 
 fn split_git_stamp(stamp: &str) -> (&str, &str, bool) {
@@ -245,19 +298,19 @@ fn split_git_stamp(stamp: &str) -> (&str, &str, bool) {
 }
 
 fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
-    hub_card(ui, "⚑", "Attention", |ui| {
+    dashboard_card(ui, "⚑", "Attention", 132.0, |ui| {
         if vm.is_healthy() {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::hover());
+                ui.spacing_mut().item_spacing.x = 12.0;
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
                 ui.painter().circle_filled(
                     rect.center(),
-                    12.0,
-                    theme::success().gamma_multiply(0.22),
+                    14.0,
+                    theme::success().gamma_multiply(0.20),
                 );
                 ui.painter().circle_stroke(
                     rect.center(),
-                    12.0,
+                    14.0,
                     egui::Stroke::new(1.5, theme::success()),
                 );
                 ui.painter().text(
@@ -271,6 +324,7 @@ fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
                     ui.add(
                         egui::Label::new(
                             RichText::new("No issues requiring attention.")
+                                .font(theme::section_font())
                                 .color(theme::body())
                                 .strong(),
                         )
@@ -292,7 +346,7 @@ fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
                     ui.colored_label(*color, "●");
                     ui.add(egui::Label::new(RichText::new(text).color(*color)).wrap());
                 });
-                ui.add_space(2.0);
+                ui.add_space(3.0);
             }
         }
     });
@@ -304,72 +358,89 @@ fn quick_actions(
     model: &DashVm,
     outcome: &mut PageOutcome,
 ) {
-    hub_card(ui, "☰", "Quick Actions", |ui| {
-        ui.label(
-            RichText::new("Tools")
-                .font(theme::subtitle_font())
-                .color(theme::muted())
-                .strong(),
-        );
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            for action in &model.actions {
-                if action.label != "Animation Lab" {
-                    continue;
-                }
+    dashboard_card(ui, "◆", "Quick Actions", 174.0, |ui| {
+        let gap = 8.0;
+        let button_w = ((ui.available_width() - gap * 2.0) / 3.0).floor().max(96.0);
+        let button_size = Vec2::new(button_w, 32.0);
+
+        egui::Grid::new("dashboard_quick_actions")
+            .num_columns(3)
+            .spacing(Vec2::new(gap, gap))
+            .show(ui, |ui| {
                 if ui
-                    .add_enabled(action.enabled, btn_ghost(action.label))
+                    .add_enabled(
+                        snap.can_request_clients,
+                        btn_primary("+1 Client").min_size(button_size),
+                    )
                     .clicked()
                 {
-                    outcome.command = Some(action.command.clone());
+                    outcome.command = Some(purgatory_dev_runtime::HubCommand::RequestClients {
+                        count: 1,
+                    });
                 }
-            }
-            if ui.add(btn_ghost("Open Logs")).clicked() {
-                outcome.navigate = Some(HubPage::Logs);
-            }
-        });
+                if ui
+                    .add(btn_ghost("Animation Lab").min_size(button_size))
+                    .clicked()
+                {
+                    outcome.command = Some(purgatory_dev_runtime::HubCommand::LaunchAnimationLab);
+                }
+                if ui
+                    .add(btn_ghost("Open Logs").min_size(button_size))
+                    .clicked()
+                {
+                    outcome.navigate = Some(HubPage::Logs);
+                }
+                ui.end_row();
 
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new("Operations")
-                .font(theme::subtitle_font())
-                .color(theme::muted())
-                .strong(),
-        );
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            for action in &model.actions {
-                if matches!(action.label, "Animation Lab" | "+ 1 Client") {
-                    continue;
+                if ui
+                    .add(btn_ghost("Open Clients").min_size(button_size))
+                    .clicked()
+                {
+                    outcome.navigate = Some(HubPage::RuntimeClients);
                 }
-                let clicked = match action.kind {
-                    ActionKind::Routine => ui
-                        .add_enabled(action.enabled, btn_primary(action.label))
-                        .clicked(),
-                    ActionKind::Secondary => ui
-                        .add_enabled(action.enabled, btn_ghost(action.label))
-                        .clicked(),
-                    ActionKind::Destructive => ui
-                        .add_enabled(action.enabled, btn_destructive(action.label))
-                        .clicked(),
-                };
-                if clicked {
-                    outcome.command = Some(action.command.clone());
+                if ui
+                    .add(btn_ghost("Rebuild").min_size(button_size))
+                    .clicked()
+                {
+                    outcome.command = Some(purgatory_dev_runtime::HubCommand::Rebuild);
                 }
-            }
-            if ui
-                .add_enabled(
-                    !snap.phase78_gate_active,
-                    btn_ghost("Phase 7.8 Gate"),
-                )
-                .clicked()
-            {
-                outcome.command = Some(purgatory_dev_runtime::HubCommand::Phase78Gate);
-            }
-        });
+                if ui
+                    .add(btn_ghost("Quality Gate").min_size(button_size))
+                    .clicked()
+                {
+                    outcome.command = Some(purgatory_dev_runtime::HubCommand::QualityGate);
+                }
+                ui.end_row();
+
+                if ui
+                    .add_enabled(
+                        !snap.phase78_gate_active,
+                        btn_ghost("Phase 7.8 Gate").min_size(button_size),
+                    )
+                    .clicked()
+                {
+                    outcome.command = Some(purgatory_dev_runtime::HubCommand::Phase78Gate);
+                }
+                if ui
+                    .add_enabled(
+                        snap.can_stop_clients,
+                        btn_ghost("Stop Clients").min_size(button_size),
+                    )
+                    .clicked()
+                {
+                    outcome.command = Some(purgatory_dev_runtime::HubCommand::StopClients);
+                }
+                if ui
+                    .add(btn_destructive("Kill All").min_size(button_size))
+                    .clicked()
+                {
+                    outcome.command = Some(purgatory_dev_runtime::HubCommand::KillAll);
+                }
+                ui.end_row();
+            });
 
         if let Some(warn) = model.cargo_warning {
-            ui.add_space(4.0);
+            ui.add_space(7.0);
             ui.colored_label(
                 theme::state_color(purgatory_dev_runtime::ServerState::Degraded),
                 warn,
@@ -384,60 +455,284 @@ fn activity_panel(
     outcome: &mut PageOutcome,
 ) {
     full_width(ui, |ui| {
-        hub_card(ui, "≡", "Recent Activity", |ui| {
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(btn_ghost("Clear")).clicked() {
-                        outcome.command = Some(purgatory_dev_runtime::HubCommand::ClearActivityLog);
-                    }
-                    if ui.add(btn_ghost("Open Logs")).clicked() {
-                        outcome.navigate = Some(HubPage::Logs);
-                    }
-                });
-            });
-            ui.add_space(4.0);
+        egui::Frame::new()
+            .fill(theme::card_fill_elevated())
+            .stroke(theme::card_stroke())
+            .corner_radius(theme::CARD_RADIUS)
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
 
-            egui::Resize::default()
-                .id_salt("dash_activity_resize")
-                .default_height(250.0)
-                .min_height(130.0)
-                .max_height(430.0)
-                .show(ui, |ui| {
-                    if snap.log_lines.is_empty() {
-                        empty_state(ui, "No activity yet.");
-                        return;
-                    }
-                    let mut text = snap.log_lines.join("\n");
-                    egui::ScrollArea::both()
-                        .id_salt("dash_activity_scroll")
-                        .auto_shrink([false, false])
-                        .stick_to_bottom(true)
-                        .show(ui, |ui| {
-                            ui.add_sized(
-                                [ui.available_width(), ui.available_height().max(120.0)],
-                                egui::TextEdit::multiline(&mut text)
-                                    .font(theme::mono_small())
-                                    .desired_width(f32::INFINITY),
-                            );
-                        });
+                let auto_scroll_id = egui::Id::new("dashboard_activity_auto_scroll");
+                let mut auto_scroll = ui
+                    .ctx()
+                    .data_mut(|data| data.get_temp::<bool>(auto_scroll_id).unwrap_or(true));
+
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.label(
+                        RichText::new("≡")
+                            .font(theme::state_font())
+                            .color(theme::muted()),
+                    );
+                    ui.label(
+                        RichText::new("Recent Activity")
+                            .font(theme::state_font())
+                            .color(theme::body())
+                            .strong(),
+                    );
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(btn_ghost("Clear")).clicked() {
+                            outcome.command =
+                                Some(purgatory_dev_runtime::HubCommand::ClearActivityLog);
+                        }
+                        if ui.add(btn_ghost("Open Logs")).clicked() {
+                            outcome.navigate = Some(HubPage::Logs);
+                        }
+                        if ui.checkbox(&mut auto_scroll, "Auto-scroll").changed() {
+                            ui.ctx().data_mut(|data| {
+                                data.insert_temp(auto_scroll_id, auto_scroll);
+                            });
+                        }
+                    });
                 });
-        });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(7.0);
+
+                let full_width = ui.available_width();
+                egui::Resize::default()
+                    .id_salt("dashboard_activity_resize")
+                    .default_size(Vec2::new(full_width, 270.0))
+                    .min_width(full_width)
+                    .max_width(full_width)
+                    .min_height(160.0)
+                    .max_height(430.0)
+                    .show(ui, |ui| {
+                        ui.set_min_width(full_width);
+                        ui.set_max_width(full_width);
+
+                        egui::Frame::new()
+                            .fill(theme::bg())
+                            .stroke(theme::card_stroke())
+                            .corner_radius(5.0)
+                            .inner_margin(egui::Margin::symmetric(8, 6))
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                if snap.log_lines.is_empty() {
+                                    empty_state(ui, "No activity yet.");
+                                    return;
+                                }
+
+                                let display_text = decorate_activity(&snap.log_lines);
+                                let mut readonly = display_text.as_str();
+                                let mut layouter = |
+                                    ui: &egui::Ui,
+                                    text: &dyn egui::TextBuffer,
+                                    wrap_width: f32,
+                                | {
+                                    let mut job = activity_layout_job(text.as_str());
+                                    job.wrap.max_width = wrap_width;
+                                    ui.fonts_mut(|fonts| fonts.layout_job(job))
+                                };
+
+                                egui::ScrollArea::vertical()
+                                    .id_salt("dashboard_activity_scroll")
+                                    .auto_shrink([false, false])
+                                    .stick_to_bottom(auto_scroll)
+                                    .show(ui, |ui| {
+                                        let width = ui.available_width();
+                                        let height = ui.available_height().max(140.0);
+                                        ui.add_sized(
+                                            [width, height],
+                                            egui::TextEdit::multiline(&mut readonly)
+                                                .font(theme::mono_small())
+                                                .desired_width(f32::INFINITY)
+                                                .layouter(&mut layouter),
+                                        );
+                                    });
+                            });
+                    });
+            });
     });
+}
+
+fn decorate_activity(lines: &[String]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            let (stamp, message) = split_timestamp(line);
+            let kind = activity_kind(message);
+            if stamp.is_empty() {
+                format!("[{kind}] {message}")
+            } else {
+                format!("{stamp}  [{kind}] {message}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn split_timestamp(line: &str) -> (&str, &str) {
+    if line.len() >= 8 {
+        let bytes = line.as_bytes();
+        if bytes.get(2) == Some(&b':') && bytes.get(5) == Some(&b':') {
+            return (&line[..8], line[8..].trim_start());
+        }
+    }
+    ("", line)
+}
+
+fn activity_kind(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("fail") || lower.contains("error") || lower.contains("panic") {
+        "ERROR"
+    } else if lower.contains("warn")
+        || lower.contains("degraded")
+        || lower.contains("not running")
+    {
+        "WARN"
+    } else if lower.contains("build")
+        || lower.contains("rebuild")
+        || lower.contains("cargo")
+        || lower.contains("compil")
+    {
+        "BUILD"
+    } else if lower.contains("client") {
+        "CLIENT"
+    } else if lower.contains("server") || lower.contains("probe") || lower.contains("listener") {
+        "SERVER"
+    } else if lower.contains("load") {
+        "LOAD"
+    } else {
+        "INFO"
+    }
+}
+
+fn activity_layout_job(text: &str) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    let font = theme::mono_small();
+
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            job.append(
+                "\n",
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: theme::body(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        let (stamp, rest) = split_timestamp(line);
+        let rest = rest.trim_start();
+        if !stamp.is_empty() {
+            job.append(
+                stamp,
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: theme::muted(),
+                    ..Default::default()
+                },
+            );
+            job.append(
+                "  ",
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: theme::muted(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        if let Some(end) = rest.find(']')
+            && rest.starts_with('[')
+        {
+            let tag = &rest[..=end];
+            let message = rest[end + 1..].trim_start();
+            job.append(
+                tag,
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: activity_tag_color(tag),
+                    ..Default::default()
+                },
+            );
+            job.append(
+                "  ",
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: theme::body(),
+                    ..Default::default()
+                },
+            );
+            job.append(
+                message,
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: theme::body(),
+                    ..Default::default()
+                },
+            );
+        } else {
+            job.append(
+                rest,
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: theme::body(),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    job
+}
+
+fn activity_tag_color(tag: &str) -> egui::Color32 {
+    match tag {
+        "[ERROR]" => theme::destructive(),
+        "[WARN]" => egui::Color32::from_rgb(220, 160, 50),
+        "[BUILD]" => egui::Color32::from_rgb(190, 110, 220),
+        "[CLIENT]" => egui::Color32::from_rgb(80, 180, 210),
+        "[SERVER]" => theme::success(),
+        "[LOAD]" => egui::Color32::from_rgb(170, 140, 210),
+        _ => theme::accent(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::split_git_stamp;
+    use super::*;
 
     #[test]
-    fn git_stamp_separates_branch_commit_and_dirty_state() {
+    fn split_git_stamp_reports_branch_commit_and_dirty() {
         assert_eq!(
-            split_git_stamp("hub-0.4 @ abc1234*"),
-            ("hub-0.4", "abc1234", true)
+            split_git_stamp("hub-0.4 @ 218615b*"),
+            ("hub-0.4", "218615b", true)
         );
         assert_eq!(
             split_git_stamp("master @ abc1234"),
             ("master", "abc1234", false)
         );
+    }
+
+    #[test]
+    fn activity_kind_is_stable_for_common_hub_lines() {
+        assert_eq!(activity_kind("Building purgatory-client"), "BUILD");
+        assert_eq!(activity_kind("Opening client 2"), "CLIENT");
+        assert_eq!(activity_kind("Server ready"), "SERVER");
+        assert_eq!(activity_kind("Server is not running"), "WARN");
+        assert_eq!(activity_kind("build failed"), "ERROR");
     }
 }
