@@ -19,6 +19,9 @@ It records stable design decisions for colors, panels, typography, spacing, icon
 | --- | --- | --- | --- |
 | `window.center` | `#EFEAE0` | CENTER / interior fill of standard UI windows and panels | Established |
 | `window.border` | `#738390` | General border color for standard UI windows and panels | Established |
+| `window.header` | `#627786` | HEADER color for standard UI windows and panels | Established |
+| `window.line` | `#485966` | Standard dark line / divider color in the window visual language | Established |
+| `window.line_bright` | `#93A5B0` | Bright line / highlight counterpart used with the standard line color | Established |
 
 ## Panels and windows
 
@@ -26,7 +29,10 @@ It records stable design decisions for colors, panels, typography, spacing, icon
 
 - CENTER fill: `#EFEAE0`.
 - General border color: `#738390`.
-- Header, corner treatment, highlights, shadows, and state variants: not yet standardized.
+- HEADER color: `#627786`.
+- Standard LINE color: `#485966`.
+- Bright LINE highlight: `#93A5B0`.
+- Corner treatment, shadows, and state variants: not yet standardized.
 
 ## Typography
 
