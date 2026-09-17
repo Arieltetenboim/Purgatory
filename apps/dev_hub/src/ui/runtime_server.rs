@@ -5,9 +5,14 @@ use crate::theme;
 use crate::ui::layout::{
     self, btn_destructive, btn_ghost, btn_primary, hub_card, metric_flow, status_badge,
 };
+use crate::ui::server_commands::ServerCommandsState;
 use crate::ui::{log_console, status};
 
-pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
+pub fn show(
+    ui: &mut egui::Ui,
+    snap: &HubSnapshot,
+    server_commands: &mut ServerCommandsState,
+) -> Option<HubCommand> {
     let mut cmd = None;
     layout::page_header(
         ui,
@@ -113,6 +118,7 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
     });
 
     ui.add_space(theme::CARD_GAP);
+    server_commands.show(ui, snap);
 
     let _ = hub_card(ui, "≡", "Server Log", |ui| {
         if log_console::show(
