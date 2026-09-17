@@ -99,9 +99,13 @@ impl HubPage {
             Self::RuntimeClients => "Open +1/+2/+3 clients after Server Ready. F6 queues one.",
             Self::Validation => "Runtime Validation is live. Use this page to start a harness.",
             Self::Performance => "Load/soak launcher is live on this page.",
-            Self::Phase7Stats => "Frozen Phase 7.8 gate summary from artifacts. HARNESS WARN ≠ SERVER WARN.",
+            Self::Phase7Stats => {
+                "Frozen Phase 7.8 gate summary from artifacts. HARNESS WARN ≠ SERVER WARN."
+            }
             Self::World => "Map/world editing is reserved for a future Hub module.",
-            Self::Content => "Launch the standalone Animation Lab. Other content editors are not in A7.0.",
+            Self::Content => {
+                "Launch the standalone Animation Lab. Other content editors are not in A7.0."
+            }
             Self::Settings => "Build profile, log level, quality gate, rebuild, Kill All.",
             _ => "",
         }
@@ -114,7 +118,24 @@ mod tests {
 
     #[test]
     fn live_pages_cover_launcher_parity() {
-        let live: Vec<_> = HubPage::ALL.iter().copied().filter(|p| p.kind() == PageKind::Live).collect();
-        assert_eq!(live, vec![HubPage::Dashboard, HubPage::RuntimeServer, HubPage::RuntimeClients, HubPage::Content, HubPage::Validation, HubPage::Performance, HubPage::Phase7Stats, HubPage::Logs, HubPage::Settings]);
+        let live: Vec<_> = HubPage::ALL
+            .iter()
+            .copied()
+            .filter(|p| p.kind() == PageKind::Live)
+            .collect();
+        assert_eq!(
+            live,
+            vec![
+                HubPage::Dashboard,
+                HubPage::RuntimeServer,
+                HubPage::RuntimeClients,
+                HubPage::Content,
+                HubPage::Validation,
+                HubPage::Performance,
+                HubPage::Phase7Stats,
+                HubPage::Logs,
+                HubPage::Settings,
+            ]
+        );
     }
 }
