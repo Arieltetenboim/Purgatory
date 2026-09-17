@@ -17,20 +17,17 @@ pub enum DevAdminRequest {
         connection_id: u64,
         npc_content_id: u32,
     },
+    SpawnItem {
+        connection_id: u64,
+        item_content_id: u32,
+        quantity: u32,
+    },
     ResetPlayer {
         connection_id: u64,
     },
     SetChannel {
         connection_id: u64,
         channel: u32,
-    },
-    SetSpeed {
-        connection_id: u64,
-        hundredths: Option<u16>,
-    },
-    SetJump {
-        connection_id: u64,
-        hundredths: Option<u16>,
     },
 }
 
@@ -49,6 +46,7 @@ pub struct DevAdminContentEntry {
 pub struct DevAdminSnapshot {
     pub players: Vec<DevAdminPlayer>,
     pub npcs: Vec<DevAdminContentEntry>,
+    pub items: Vec<DevAdminContentEntry>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -87,12 +85,13 @@ mod tests {
 
     #[test]
     fn request_roundtrip_is_tagged_json() {
-        let request = DevAdminRequest::SpawnNpc {
+        let request = DevAdminRequest::SpawnItem {
             connection_id: 7,
-            npc_content_id: 20_001,
+            item_content_id: 10_001,
+            quantity: 3,
         };
         let json = serde_json::to_string(&request).expect("encode");
-        assert!(json.contains("spawn_npc"));
+        assert!(json.contains("spawn_item"));
         assert_eq!(
             serde_json::from_str::<DevAdminRequest>(&json).expect("decode"),
             request
