@@ -46,6 +46,10 @@ pub struct DevAdminContentEntry {
 pub struct DevAdminSnapshot {
     pub players: Vec<DevAdminPlayer>,
     pub npcs: Vec<DevAdminContentEntry>,
+    /// Added after the original DEV-admin snapshot contract. Old server binaries
+    /// omit this field, so Hub clients must decode that snapshot as an empty item
+    /// catalogue rather than treating the whole admin channel as unavailable.
+    #[serde(default)]
     pub items: Vec<DevAdminContentEntry>,
 }
 
@@ -90,6 +94,18 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<DevAdminRequest>(&json).expect("decode"),
             request
+        );
+    }
+
+    #[test]
+    fn snapshot_without_items_decodes_as_empty_catalogue() {
+        let json = r#"{"type":"snapshot","snapshot":{"players":[],"npcs":[]}}"#;
+        let decoded = serde_json::from_str::<DevAdminResponse>(json).expect("decode old snapshot");
+        assert_eq!(
+            decoded,
+            DevAdminResponse::Snapshot {
+                snapshot: DevAdminSnapshot::default()
+            }
         );
     }
 }
