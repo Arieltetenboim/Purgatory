@@ -12,7 +12,7 @@ pub fn job_label(job: JobPhase) -> String {
     }
 }
 
-/// Footer status bar: pid + job, live rv/load/clients context, shortcuts.
+/// Footer status bar: pid + active job/live context + shortcuts.
 pub fn bar(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) {
     ui.horizontal(|ui| {
         if let Some(pid) = snap.pid {
@@ -20,11 +20,13 @@ pub fn bar(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) {
         } else {
             ui.colored_label(theme::muted(), "pid —");
         }
-        ui.separator();
-        ui.colored_label(
-            theme::muted(),
-            format!("job {}", job_label(snap.job).to_ascii_lowercase()),
-        );
+        if snap.job != JobPhase::Idle {
+            ui.separator();
+            ui.colored_label(
+                theme::muted(),
+                format!("job {}", job_label(snap.job).to_ascii_lowercase()),
+            );
+        }
         if snap.validation != purgatory_dev_runtime::ValidationState::Idle {
             ui.separator();
             ui.colored_label(theme::muted(), format!("rv {}", snap.validation.as_str()));
