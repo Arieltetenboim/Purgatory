@@ -29,13 +29,7 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> (bool, Option<HubCommand>)
             );
         });
         ui.add_space(4.0);
-        if log_console::show(
-            ui,
-            "hub_activity_log",
-            &snap.log_lines,
-            "INFO",
-            "(empty)",
-        ) {
+        if log_console::show(ui, "hub_activity_log", &snap.log_lines, "INFO", "(empty)") {
             clear = Some(HubCommand::ClearActivityLog);
         }
     });
@@ -70,7 +64,10 @@ fn read_recent_lines(path: &std::path::Path, max: usize) -> Vec<String> {
     };
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(max);
-    lines[start..].iter().map(|line| (*line).to_owned()).collect()
+    lines[start..]
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect()
 }
 
 pub fn open_log_dir(dir: &str) {
