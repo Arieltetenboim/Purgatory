@@ -2,7 +2,7 @@
 //! Runtime remains authoritative; this layer does not invent lifecycle truth.
 
 use eframe::egui::Color32;
-use purgatory_dev_runtime::{HubSnapshot, ServerState, ValidationState};
+use purgatory_dev_runtime::{CheckStatus, HubSnapshot, ListenerDiag, ServerState, ValidationState};
 
 use crate::theme;
 
@@ -101,7 +101,7 @@ fn server_vm(snap: &HubSnapshot) -> StatusModuleVm {
     }
 
     StatusModuleVm {
-        icon: "▣",
+        icon: "S",
         title: "Server",
         badge,
         badge_color,
@@ -111,11 +111,11 @@ fn server_vm(snap: &HubSnapshot) -> StatusModuleVm {
     }
 }
 
-fn health_label(h: purgatory_dev_runtime::CheckStatus) -> String {
+fn health_label(h: CheckStatus) -> String {
     match h {
-        purgatory_dev_runtime::CheckStatus::Pass => "Healthy".into(),
-        purgatory_dev_runtime::CheckStatus::Fail => "Unhealthy".into(),
-        purgatory_dev_runtime::CheckStatus::Unknown => "Unknown".into(),
+        CheckStatus::Pass => "Healthy".into(),
+        CheckStatus::Fail => "Unhealthy".into(),
+        CheckStatus::Unknown => "Unknown".into(),
     }
 }
 
@@ -142,6 +142,28 @@ fn attention_vm(snap: &HubSnapshot) -> AttentionVm {
             "Server degraded".into(),
             theme::state_color(ServerState::Degraded),
         ));
+    }
+
+    if snap.process_alive && snap.listener == ListenerDiag::No {
+        issues.push((
+            format!("Server process is alive but {} is not listening", snap.endpoint),
+            theme::destructive(),
+        ));
+    }
+
+    if snap.server_state.uses_live_process() && snap.connection == CheckStatus::Fail {
+        let detail = if snap.connection_reason.is_empty() {
+            "Server readiness connection probe failed".to_owned()
+        } else {
+            format!("Server probe: {}", truncate(&snap.connection_reason, 88))
+        };
+        issues.push((detail, theme::destructive()));
+    }
+
+    if matches!(snap.server_state, ServerState::Ready | ServerState::Degraded)
+        && snap.health == CheckStatus::Fail
+    {
+        issues.push(("Server health/metrics check failed".into(), theme::destructive()));
     }
 
     if matches!(
