@@ -7,6 +7,7 @@ use crate::theme;
 use crate::ui::dashboard_model::{self, AttentionVm, DashVm, ProjectVm, StatusModuleVm};
 use crate::ui::layout::{self, PageOutcome, btn_destructive, btn_ghost, btn_primary, metric_flow, status_badge};
 use crate::ui::log_console;
+use crate::ui::tool_launch;
 
 pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> PageOutcome {
     let mut outcome = PageOutcome::none();
@@ -353,7 +354,7 @@ fn quick_actions(
                     outcome.command = Some(purgatory_dev_runtime::HubCommand::LaunchAnimationLab);
                 }
                 if ui.add(btn_ghost("NPC Lab").min_size(button_size)).clicked() {
-                    let _ = crate::ui::content::launch_npc_lab();
+                    let _ = tool_launch::launch_npc_lab();
                 }
                 if ui.add(btn_ghost("Open Logs").min_size(button_size)).clicked() {
                     outcome.navigate = Some(HubPage::Logs);
@@ -364,7 +365,7 @@ fn quick_actions(
                     outcome.command = Some(purgatory_dev_runtime::HubCommand::Rebuild);
                 }
                 if ui.add(btn_ghost("Quality Gate").min_size(button_size)).clicked() {
-                    outcome.command = Some(purgatory_dev_runtime::HubCommand::QualityGate);
+                    let _ = tool_launch::launch_quality_gate();
                 }
                 if ui
                     .add_enabled(
