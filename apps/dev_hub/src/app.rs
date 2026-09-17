@@ -3,10 +3,13 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, TextureHandle};
-use purgatory_dev_runtime::{HubCommand, LiveHubSession, LoadSpec, ValidationSpec};
+use purgatory_dev_runtime::{
+    HubCommand, LiveHubSession, LoadSpec, ServerState, ValidationSpec,
+};
 
 use crate::assets;
 use crate::navigation::{HubPage, PageKind};
+use crate::sound;
 use crate::theme;
 use crate::ui;
 use crate::ui::layout::{chip, nav_item};
@@ -14,8 +17,6 @@ use crate::ui::run_view::RunViewState;
 use crate::ui::server_commands::ServerCommandsState;
 
 pub fn run() -> eframe::Result {
-    // Fixed window: Hub layout is authored for this size. Resize caused card
-    // overlap / clipped text; keep size stable until a full responsive pass exists.
     const W: f32 = 1280.0;
     const H: f32 = 800.0;
     let options = eframe::NativeOptions {
@@ -47,6 +48,7 @@ struct DevHubApp {
     server_commands: ServerCommandsState,
     authoring_export_status: Option<String>,
     logo: Option<TextureHandle>,
+    last_server_state: Option<ServerState>,
 }
 
 impl DevHubApp {
@@ -61,6 +63,7 @@ impl DevHubApp {
             server_commands: ServerCommandsState::default(),
             authoring_export_status: None,
             logo: assets::load_logo(ctx),
+            last_server_state: None,
         }
     }
 }
@@ -83,6 +86,15 @@ impl eframe::App for DevHubApp {
             }
             Ok(session) => {
                 let snap = session.snapshot(Instant::now());
+                if self
+                    .last_server_state
+                    .is_some_and(|previous| previous != ServerState::Ready)
+                    && snap.server_state == ServerState::Ready
+                {
+                    sound::server_ready();
+                }
+                self.last_server_state = Some(snap.server_state);
+
                 let mut cmd = None;
                 let mut open_logs = false;
 
@@ -95,6 +107,8 @@ impl eframe::App for DevHubApp {
                         });
                     } else if i.key_pressed(egui::Key::F6) {
                         cmd = Some(HubCommand::RequestClients { count: 1 });
+                    } else if i.key_pressed(egui::Key::F9) {
+                        cmd = Some(HubCommand::KillAll);
                     }
                 });
 
