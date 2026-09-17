@@ -57,6 +57,13 @@ impl SessionTable {
     }
 
     #[must_use]
+    pub fn connection_ids(&self) -> Vec<ConnectionId> {
+        let mut ids: Vec<_> = self.sessions.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[must_use]
     pub fn len(&self) -> usize {
         self.sessions.len()
     }
@@ -165,6 +172,21 @@ mod tests {
         assert!(table.remove(ConnectionId::from_raw(3)).is_some());
         assert!(table.remove(ConnectionId::from_raw(3)).is_none());
         assert_eq!(table.len(), 0);
+    }
+
+    #[test]
+    fn connection_ids_are_sorted() {
+        let mut table = SessionTable::new();
+        table.insert(dummy(9));
+        table.insert(dummy(2));
+        assert_eq!(
+            table
+                .connection_ids()
+                .into_iter()
+                .map(ConnectionId::get)
+                .collect::<Vec<_>>(),
+            vec![2, 9]
+        );
     }
 
     #[test]
