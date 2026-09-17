@@ -2,7 +2,7 @@ use std::net::TcpListener;
 use std::path::Path;
 
 use eframe::egui::{self, RichText};
-use purgatory_dev_runtime::HubSnapshot;
+use purgatory_dev_runtime::{HubSnapshot, ListenerDiag};
 
 use crate::theme;
 use crate::ui::layout::card;
@@ -14,15 +14,14 @@ struct Check {
     detail: String,
 }
 
-/// Cheap preflight only: this runs in the egui frame path, so it deliberately avoids
-/// spawning version commands or doing expensive process discovery. Deeper probes belong
-/// in a background runtime job, not in rendering.
+/// Cheap structural preflight only. Deeper process/version/network probes belong in a
+/// background job rather than the egui frame path.
 pub fn show_section(ui: &mut egui::Ui, snap: &HubSnapshot) {
     let checks = collect(snap);
     let passed = checks.iter().filter(|c| c.ok).count();
     card(ui, "Environment Doctor", |ui| {
         ui.label(
-            RichText::new(format!("{passed}/{} preflight checks passed", checks.len()))
+            RichText::new(format!("{passed}/{} fast checks passed", checks.len()))
                 .color(if passed == checks.len() {
                     theme::success()
                 } else {
@@ -32,7 +31,7 @@ pub fn show_section(ui: &mut egui::Ui, snap: &HubSnapshot) {
         );
         ui.colored_label(
             theme::muted(),
-            "Fast checks only; no shell commands run from the UI frame.",
+            "Structural preflight: Cargo discovery, required directories, and local server-port state. It does not validate tool versions, file contents, gameplay login, or external/internet reachability.",
         );
         ui.add_space(8.0);
         egui::Grid::new("doctor_checks")
@@ -46,7 +45,7 @@ pub fn show_section(ui: &mut egui::Ui, snap: &HubSnapshot) {
                         } else {
                             theme::destructive()
                         },
-                        if check.ok { "✓" } else { "×" },
+                        if check.ok { "PASS" } else { "FAIL" },
                     );
                     ui.label(RichText::new(check.label).strong());
                     ui.add(egui::Label::new(check.detail).wrap());
@@ -76,7 +75,7 @@ fn collect(snap: &HubSnapshot) -> Vec<Check> {
         let path = root.join(rel);
         checks.push(Check {
             label,
-            ok: path.exists(),
+            ok: path.is_dir(),
             detail: path.display().to_string(),
         });
     }
@@ -88,17 +87,24 @@ fn collect(snap: &HubSnapshot) -> Vec<Check> {
         .and_then(|p| p.parse::<u16>().ok())
     {
         let available = TcpListener::bind(("127.0.0.1", port)).is_ok();
-        let expected_busy = snap.process_alive;
+        let (ok, detail) = if snap.process_alive {
+            (
+                snap.listener != ListenerDiag::No,
+                if snap.listener == ListenerDiag::No {
+                    format!("{port} server process alive but listener not detected")
+                } else {
+                    format!("{port} owned by running server")
+                },
+            )
+        } else if available {
+            (true, format!("{port} available"))
+        } else {
+            (false, format!("{port} already occupied"))
+        };
         checks.push(Check {
             label: "Server Port",
-            ok: available || expected_busy,
-            detail: if available {
-                format!("{port} available")
-            } else if expected_busy {
-                format!("{port} in use by active server")
-            } else {
-                format!("{port} already occupied")
-            },
+            ok,
+            detail,
         });
     }
     checks
