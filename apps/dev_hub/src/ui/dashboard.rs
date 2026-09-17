@@ -87,15 +87,11 @@ fn row_workspace_actions(
 }
 
 fn cell(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(
-        Vec2::new(width, 0.0),
-        Layout::top_down(Align::Min),
-        |ui| {
-            ui.set_min_width(width);
-            ui.set_max_width(width);
-            add(ui);
-        },
-    );
+    ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
+        ui.set_min_width(width);
+        ui.set_max_width(width);
+        add(ui);
+    });
 }
 
 fn full_width(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -392,9 +388,7 @@ fn quick_actions(
         ui.add_space(6.0);
 
         let gap = 8.0;
-        let button_w = ((ui.available_width() - gap * 2.0) / 3.0)
-            .floor()
-            .max(96.0);
+        let button_w = ((ui.available_width() - gap * 2.0) / 3.0).floor().max(96.0);
         let button_size = Vec2::new(button_w, 32.0);
 
         ui.horizontal(|ui| {

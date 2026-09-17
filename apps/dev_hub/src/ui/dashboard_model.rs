@@ -132,7 +132,10 @@ fn attention_vm(snap: &HubSnapshot) -> AttentionVm {
     let mut issues = Vec::new();
 
     if let Some(fail) = &snap.last_failure
-        && matches!(snap.server_state, ServerState::Failed | ServerState::Degraded)
+        && matches!(
+            snap.server_state,
+            ServerState::Failed | ServerState::Degraded
+        )
     {
         issues.push((truncate(fail, 96), theme::state_color(ServerState::Failed)));
     }
@@ -146,7 +149,10 @@ fn attention_vm(snap: &HubSnapshot) -> AttentionVm {
 
     if snap.process_alive && snap.listener == ListenerDiag::No {
         issues.push((
-            format!("Server process is alive but {} is not listening", snap.endpoint),
+            format!(
+                "Server process is alive but {} is not listening",
+                snap.endpoint
+            ),
             theme::destructive(),
         ));
     }
@@ -160,10 +166,15 @@ fn attention_vm(snap: &HubSnapshot) -> AttentionVm {
         issues.push((detail, theme::destructive()));
     }
 
-    if matches!(snap.server_state, ServerState::Ready | ServerState::Degraded)
-        && snap.health == CheckStatus::Fail
+    if matches!(
+        snap.server_state,
+        ServerState::Ready | ServerState::Degraded
+    ) && snap.health == CheckStatus::Fail
     {
-        issues.push(("Server health/metrics check failed".into(), theme::destructive()));
+        issues.push((
+            "Server health/metrics check failed".into(),
+            theme::destructive(),
+        ));
     }
 
     if matches!(

@@ -3,9 +3,7 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, TextureHandle};
-use purgatory_dev_runtime::{
-    HubCommand, LiveHubSession, LoadSpec, ServerState, ValidationSpec,
-};
+use purgatory_dev_runtime::{HubCommand, LiveHubSession, LoadSpec, ServerState, ValidationSpec};
 
 use crate::assets;
 use crate::navigation::{HubPage, PageKind};

@@ -78,8 +78,8 @@ fn git_stamp(root: &Path) -> String {
     let Some(hash) = git_output(root, &["rev-parse", "--short", "HEAD"]) else {
         return String::new();
     };
-    let branch = git_output(root, &["branch", "--show-current"])
-        .unwrap_or_else(|| "detached".to_string());
+    let branch =
+        git_output(root, &["branch", "--show-current"]).unwrap_or_else(|| "detached".to_string());
     let dirty = Command::new("git")
         .arg("-C")
         .arg(root)

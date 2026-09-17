@@ -34,7 +34,9 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
             let response = ui.add_enabled(snap.can_request_clients, btn_primary("+1 Client"));
             if response
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Queue one native game client. It launches once the server is Ready.")
+                .on_hover_text(
+                    "Queue one native game client. It launches once the server is Ready.",
+                )
                 .clicked()
             {
                 cmd = Some(HubCommand::RequestClients { count: 1 });
@@ -43,7 +45,9 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
             let response = ui.add_enabled(snap.can_request_clients, btn_ghost("+2 Clients"));
             if response
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Queue two native game clients. Launches are staggered after Server Ready.")
+                .on_hover_text(
+                    "Queue two native game clients. Launches are staggered after Server Ready.",
+                )
                 .clicked()
             {
                 cmd = Some(HubCommand::RequestClients { count: 2 });
@@ -52,7 +56,9 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
             let response = ui.add_enabled(snap.can_request_clients, btn_ghost("+3 Clients"));
             if response
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Queue three native game clients. Launches are staggered after Server Ready.")
+                .on_hover_text(
+                    "Queue three native game clients. Launches are staggered after Server Ready.",
+                )
                 .clicked()
             {
                 cmd = Some(HubCommand::RequestClients { count: 3 });
@@ -61,7 +67,9 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
             let response = ui.add_enabled(snap.can_stop_clients, btn_destructive("Stop All"));
             if response
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Stop all workspace game clients and clear the pending client queue.")
+                .on_hover_text(
+                    "Stop all workspace game clients and clear the pending client queue.",
+                )
                 .clicked()
             {
                 cmd = Some(HubCommand::StopClients);

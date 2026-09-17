@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
 use purgatory_common::{
-    DEFAULT_DEV_ADMIN_PORT, DEV_ADMIN_PORT_ENV, DevAdminRequest, DevAdminResponse,
-    DevAdminSnapshot,
+    DEFAULT_DEV_ADMIN_PORT, DEV_ADMIN_PORT_ENV, DevAdminRequest, DevAdminResponse, DevAdminSnapshot,
 };
 use purgatory_dev_runtime::{HubSnapshot, ServerState};
 
@@ -90,7 +89,10 @@ impl ServerCommandsState {
             }
             ui.add_space(8.0);
 
-            let ready = matches!(snap.server_state, ServerState::Ready | ServerState::Degraded);
+            let ready = matches!(
+                snap.server_state,
+                ServerState::Ready | ServerState::Degraded
+            );
             let Some(snapshot) = self.snapshot.clone() else {
                 ui.colored_label(
                     theme::muted(),
@@ -104,10 +106,9 @@ impl ServerCommandsState {
                 return;
             }
 
-            if self
-                .selected_player
-                .is_none_or(|selected| !snapshot.players.iter().any(|p| p.connection_id == selected))
-            {
+            if self.selected_player.is_none_or(|selected| {
+                !snapshot.players.iter().any(|p| p.connection_id == selected)
+            }) {
                 self.selected_player = snapshot.players.first().map(|p| p.connection_id);
             }
             if self
@@ -116,10 +117,12 @@ impl ServerCommandsState {
             {
                 self.selected_npc = snapshot.npcs.first().map(|n| n.content_id);
             }
-            if self
-                .selected_item
-                .is_none_or(|selected| !snapshot.items.iter().any(|item| item.content_id == selected))
-            {
+            if self.selected_item.is_none_or(|selected| {
+                !snapshot
+                    .items
+                    .iter()
+                    .any(|item| item.content_id == selected)
+            }) {
                 self.selected_item = snapshot.items.first().map(|item| item.content_id);
             }
 

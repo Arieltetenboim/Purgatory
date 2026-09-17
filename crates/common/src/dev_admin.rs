@@ -52,13 +52,8 @@ pub struct DevAdminSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DevAdminResponse {
-    Snapshot {
-        snapshot: DevAdminSnapshot,
-    },
-    Command {
-        ok: bool,
-        message: String,
-    },
+    Snapshot { snapshot: DevAdminSnapshot },
+    Command { ok: bool, message: String },
 }
 
 impl DevAdminResponse {

@@ -508,7 +508,8 @@ impl ProcessBackend for FakeProcessBackend {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
-        self.spawn_log.push(format!("{} {}", name, spec.args.join(" ")));
+        self.spawn_log
+            .push(format!("{} {}", name, spec.args.join(" ")));
         self.lifetimes.push(spec.lifetime);
         if name.contains("purgatory-server") {
             self.extra_env_log.extend(spec.env.iter().cloned());
@@ -521,7 +522,11 @@ impl ProcessBackend for FakeProcessBackend {
         }
         let pid = self.alloc();
         let (kind, pending_exit) = if name.contains("cargo") {
-            let pending = if self.hold_cargo { None } else { Some(self.cargo_exit) };
+            let pending = if self.hold_cargo {
+                None
+            } else {
+                Some(self.cargo_exit)
+            };
             (FakeKind::Cargo, pending)
         } else if spec.args.iter().any(|a| a == "--probe") {
             (FakeKind::Probe, self.probe_exit)

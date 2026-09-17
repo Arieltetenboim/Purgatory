@@ -10,10 +10,7 @@ pub(crate) fn launch_npc_lab() -> Result<(), String> {
 pub(crate) fn launch_quality_gate() -> Result<(), String> {
     let root = workspace_root()?;
     let script = root.join("scripts").join("check.ps1");
-    let log_path = root
-        .join("logs")
-        .join("dev-tools")
-        .join("quality-gate.log");
+    let log_path = root.join("logs").join("dev-tools").join("quality-gate.log");
 
     match launch_hidden_powershell(&root, &script, &[], "quality-gate.log", LogMode::Truncate) {
         Ok(()) => Ok(()),
