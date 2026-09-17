@@ -14,8 +14,11 @@ use crate::theme;
 use crate::ui::layout::{btn_ghost, btn_primary, hub_card};
 
 const HISTORY_CAP: usize = 64;
-const AUTO_REFRESH: Duration = Duration::from_secs(2);
+const AUTO_REFRESH_CONNECTED: Duration = Duration::from_secs(2);
+const AUTO_REFRESH_UNAVAILABLE: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
+
+type AdminReply = (bool, Result<DevAdminResponse, String>);
 
 pub struct ServerCommandsState {
     snapshot: Option<DevAdminSnapshot>,
@@ -25,8 +28,8 @@ pub struct ServerCommandsState {
     speed_hundredths: u16,
     jump_hundredths: u16,
     history: Vec<String>,
-    sender: Sender<Result<DevAdminResponse, String>>,
-    receiver: Receiver<Result<DevAdminResponse, String>>,
+    sender: Sender<AdminReply>,
+    receiver: Receiver<AdminReply>,
     in_flight: usize,
     last_refresh: Option<Instant>,
     last_transport_error: Option<String>,
@@ -79,6 +82,10 @@ impl ServerCommandsState {
 
             if let Some(error) = &self.last_transport_error {
                 ui.colored_label(theme::destructive(), error);
+                ui.colored_label(
+                    theme::muted(),
+                    "Automatic retries are throttled. Rebuild/restart the server if this binary predates DEV admin support.",
+                );
             }
             ui.add_space(8.0);
 
@@ -188,7 +195,9 @@ impl ServerCommandsState {
                 ui.add(egui::DragValue::new(&mut self.channel).range(1..=999));
                 if ui
                     .add_enabled(ready, btn_ghost("Apply Channel"))
-                    .on_hover_text("Move the selected player to this DEV channel through server authority.")
+                    .on_hover_text(
+                        "Move the selected player to this DEV channel through server authority.",
+                    )
                     .clicked()
                 {
                     if let Some(connection_id) = self.selected_player {
@@ -207,7 +216,9 @@ impl ServerCommandsState {
                 ui.add(egui::DragValue::new(&mut self.speed_hundredths).range(50..=2400));
                 if ui
                     .add_enabled(ready, btn_ghost("Set Speed"))
-                    .on_hover_text("Apply the server-side DEV speed override to the selected player.")
+                    .on_hover_text(
+                        "Apply the server-side DEV speed override to the selected player.",
+                    )
                     .clicked()
                 {
                     if let Some(connection_id) = self.selected_player {
@@ -219,7 +230,9 @@ impl ServerCommandsState {
                 }
                 if ui
                     .add_enabled(ready, btn_ghost("Clear Speed"))
-                    .on_hover_text("Remove the DEV speed override and return to authored/default movement speed.")
+                    .on_hover_text(
+                        "Remove the DEV speed override and return to authored/default movement speed.",
+                    )
                     .clicked()
                 {
                     if let Some(connection_id) = self.selected_player {
@@ -237,7 +250,9 @@ impl ServerCommandsState {
                 ui.add(egui::DragValue::new(&mut self.jump_hundredths).range(100..=3000));
                 if ui
                     .add_enabled(ready, btn_ghost("Set Jump"))
-                    .on_hover_text("Apply the server-side DEV jump override to the selected player.")
+                    .on_hover_text(
+                        "Apply the server-side DEV jump override to the selected player.",
+                    )
                     .clicked()
                 {
                     if let Some(connection_id) = self.selected_player {
@@ -249,7 +264,9 @@ impl ServerCommandsState {
                 }
                 if ui
                     .add_enabled(ready, btn_ghost("Clear Jump"))
-                    .on_hover_text("Remove the DEV jump override and return to authored/default jump power.")
+                    .on_hover_text(
+                        "Remove the DEV jump override and return to authored/default jump power.",
+                    )
                     .clicked()
                 {
                     if let Some(connection_id) = self.selected_player {
@@ -294,33 +311,51 @@ impl ServerCommandsState {
     }
 
     fn maybe_refresh(&mut self, snap: &HubSnapshot) {
-        if !snap.process_alive || self.in_flight > 0 {
+        if !snap.process_alive {
+            if self.in_flight == 0 {
+                self.snapshot = None;
+                self.last_transport_error = None;
+                self.last_refresh = None;
+            }
             return;
         }
+        if self.in_flight > 0 {
+            return;
+        }
+        let interval = if self.last_transport_error.is_some() {
+            AUTO_REFRESH_UNAVAILABLE
+        } else {
+            AUTO_REFRESH_CONNECTED
+        };
         let due = self
             .last_refresh
-            .is_none_or(|last| last.elapsed() >= AUTO_REFRESH);
+            .is_none_or(|last| last.elapsed() >= interval);
         if due {
             self.send(DevAdminRequest::Snapshot);
         }
     }
 
     fn send(&mut self, request: DevAdminRequest) {
+        let is_snapshot = matches!(request, DevAdminRequest::Snapshot);
         self.in_flight = self.in_flight.saturating_add(1);
-        if matches!(request, DevAdminRequest::Snapshot) {
+        if is_snapshot {
             self.last_refresh = Some(Instant::now());
         }
         let sender = self.sender.clone();
-        std::thread::Builder::new()
+        if std::thread::Builder::new()
             .name("purgatory-dev-admin-client".into())
             .spawn(move || {
-                let _ = sender.send(send_request(&request));
+                let _ = sender.send((is_snapshot, send_request(&request)));
             })
-            .ok();
+            .is_err()
+        {
+            self.in_flight = self.in_flight.saturating_sub(1);
+            self.last_transport_error = Some("failed to start DEV admin request worker".into());
+        }
     }
 
     fn poll(&mut self) {
-        while let Ok(result) = self.receiver.try_recv() {
+        while let Ok((is_snapshot, result)) = self.receiver.try_recv() {
             self.in_flight = self.in_flight.saturating_sub(1);
             match result {
                 Ok(DevAdminResponse::Snapshot { snapshot }) => {
@@ -335,7 +370,9 @@ impl ServerCommandsState {
                 Err(error) => {
                     self.snapshot = None;
                     self.last_transport_error = Some(error.clone());
-                    self.push_history(format!("× {error}"));
+                    if !is_snapshot {
+                        self.push_history(format!("× {error}"));
+                    }
                 }
             }
         }
