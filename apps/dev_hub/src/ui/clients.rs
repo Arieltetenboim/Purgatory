@@ -2,7 +2,8 @@ use eframe::egui;
 use purgatory_dev_runtime::{HubCommand, HubSnapshot, ServerState};
 
 use crate::theme;
-use crate::ui::layout::{self, bounded_log_panel, card, kv_row};
+use crate::ui::layout::{self, card, kv_row};
+use crate::ui::log_console;
 
 pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
     let mut cmd = None;
@@ -59,8 +60,14 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
     });
     ui.add_space(theme::SECTION_GAP);
 
-    card(ui, "CLIENT LOG", |ui| {
-        if bounded_log_panel(ui, "client_log", &snap.client_log_lines, "(empty)") {
+    card(ui, "Client Log", |ui| {
+        if log_console::show(
+            ui,
+            "client_log_console",
+            &snap.client_log_lines,
+            "CLIENT",
+            "(empty — launch a client or wait for output)",
+        ) {
             cmd = Some(HubCommand::ClearClientLog);
         }
     });
