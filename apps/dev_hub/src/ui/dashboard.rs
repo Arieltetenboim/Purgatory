@@ -5,7 +5,9 @@ use eframe::egui::{self, Align, Layout, RichText, Vec2};
 use crate::navigation::HubPage;
 use crate::theme;
 use crate::ui::dashboard_model::{self, AttentionVm, DashVm, ProjectVm, StatusModuleVm};
-use crate::ui::layout::{self, PageOutcome, btn_destructive, btn_ghost, btn_primary, metric_flow, status_badge};
+use crate::ui::layout::{
+    self, PageOutcome, btn_destructive, btn_ghost, btn_primary, metric_flow, status_badge,
+};
 use crate::ui::log_console;
 use crate::ui::tool_launch;
 
@@ -75,11 +77,15 @@ fn row_workspace_actions(
 }
 
 fn cell(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
-        ui.set_min_width(width);
-        ui.set_max_width(width);
-        add(ui);
-    });
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, 0.0),
+        Layout::top_down(Align::Min),
+        |ui| {
+            ui.set_min_width(width);
+            ui.set_max_width(width);
+            add(ui);
+        },
+    );
 }
 
 fn full_width(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -105,7 +111,11 @@ fn dashboard_card(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 if !icon.is_empty() {
-                    ui.label(RichText::new(icon).font(theme::state_font()).color(theme::muted()));
+                    ui.label(
+                        RichText::new(icon)
+                            .font(theme::state_font())
+                            .color(theme::muted()),
+                    );
                 }
                 ui.label(
                     RichText::new(title)
@@ -117,6 +127,12 @@ fn dashboard_card(
             ui.add_space(9.0);
             add_contents(ui);
         })
+}
+
+fn action_response(response: egui::Response, tooltip: &str) -> egui::Response {
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tooltip)
 }
 
 fn server_panel(
@@ -162,33 +178,42 @@ fn server_panel(
             match snap.server_state {
                 purgatory_dev_runtime::ServerState::Stopped
                 | purgatory_dev_runtime::ServerState::Failed => {
-                    if ui
-                        .add_enabled(
-                            snap.can_start,
-                            btn_primary("Start Server").min_size(Vec2::new(112.0, 30.0)),
-                        )
-                        .clicked()
+                    let response = ui.add_enabled(
+                        snap.can_start,
+                        btn_primary("Start Server").min_size(Vec2::new(112.0, 30.0)),
+                    );
+                    if action_response(
+                        response,
+                        "Build and start the dedicated server, then verify readiness before marking it Ready.",
+                    )
+                    .clicked()
                     {
                         outcome.command = Some(purgatory_dev_runtime::HubCommand::Start);
                     }
                 }
                 purgatory_dev_runtime::ServerState::Ready
                 | purgatory_dev_runtime::ServerState::Degraded => {
-                    if ui
-                        .add_enabled(
-                            snap.can_restart,
-                            btn_primary("Restart Server").min_size(Vec2::new(112.0, 30.0)),
-                        )
-                        .clicked()
+                    let response = ui.add_enabled(
+                        snap.can_restart,
+                        btn_primary("Restart Server").min_size(Vec2::new(112.0, 30.0)),
+                    );
+                    if action_response(
+                        response,
+                        "Stop the current dedicated server and start it again through the normal readiness checks.",
+                    )
+                    .clicked()
                     {
                         outcome.command = Some(purgatory_dev_runtime::HubCommand::Restart);
                     }
                 }
                 _ => {}
             }
-            if ui
-                .add(btn_ghost("Open Server").min_size(Vec2::new(112.0, 30.0)))
-                .clicked()
+            let response = ui.add(btn_ghost("Open Server").min_size(Vec2::new(112.0, 30.0)));
+            if action_response(
+                response,
+                "Open server lifecycle controls, diagnostics, health state, and the dedicated server log.",
+            )
+            .clicked()
             {
                 outcome.navigate = Some(HubPage::RuntimeServer);
             }
@@ -207,18 +232,25 @@ fn clients_panel(
         ui.add_space(32.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if ui
-                .add_enabled(
-                    snap.can_request_clients,
-                    btn_primary("+1 Client").min_size(Vec2::new(112.0, 30.0)),
-                )
-                .clicked()
+            let response = ui.add_enabled(
+                snap.can_request_clients,
+                btn_primary("+1 Client").min_size(Vec2::new(112.0, 30.0)),
+            );
+            if action_response(
+                response,
+                "Queue one game client. It launches once the server is Ready; the client is rebuilt first when possible.",
+            )
+            .clicked()
             {
                 outcome.command = Some(purgatory_dev_runtime::HubCommand::RequestClients { count: 1 });
             }
-            if ui
-                .add(btn_ghost("Open Clients").min_size(Vec2::new(112.0, 30.0)))
-                .clicked()
+
+            let response = ui.add(btn_ghost("Open Clients").min_size(Vec2::new(112.0, 30.0)));
+            if action_response(
+                response,
+                "Open client controls, running/queued counts, and the client log.",
+            )
+            .clicked()
             {
                 outcome.navigate = Some(HubPage::RuntimeClients);
             }
@@ -343,42 +375,94 @@ fn quick_actions(
     outcome: &mut PageOutcome,
 ) {
     dashboard_card(ui, "◆", "Quick Actions", 150.0, |ui| {
+        ui.colored_label(
+            theme::muted(),
+            RichText::new("Hover an action for details.").font(theme::subtitle_font()),
+        );
+        ui.add_space(6.0);
+
         let gap = 8.0;
-        let button_w = ((ui.available_width() - gap * 2.0) / 3.0).floor().max(96.0);
+        let button_w = ((ui.available_width() - gap * 2.0) / 3.0)
+            .floor()
+            .max(96.0);
         let button_size = Vec2::new(button_w, 32.0);
         egui::Grid::new("dashboard_quick_actions")
             .num_columns(3)
             .spacing(Vec2::new(gap, gap))
             .show(ui, |ui| {
-                if ui.add(btn_ghost("Animation Lab").min_size(button_size)).clicked() {
-                    outcome.command = Some(purgatory_dev_runtime::HubCommand::LaunchAnimationLab);
+                let response = ui.add(btn_ghost("Animation Lab").min_size(button_size));
+                if action_response(
+                    response,
+                    "Launch the standalone animation authoring tool. It runs independently of the game server and clients.",
+                )
+                .clicked()
+                {
+                    outcome.command =
+                        Some(purgatory_dev_runtime::HubCommand::LaunchAnimationLab);
                 }
-                if ui.add(btn_ghost("NPC Lab").min_size(button_size)).clicked() {
+
+                let response = ui.add(btn_ghost("NPC Lab").min_size(button_size));
+                if action_response(
+                    response,
+                    "Launch the local NPC authoring web tool in the background. Output is written to logs/dev-tools/npc-lab.log.",
+                )
+                .clicked()
+                {
                     let _ = tool_launch::launch_npc_lab();
                 }
-                if ui.add(btn_ghost("Open Logs").min_size(button_size)).clicked() {
+
+                let response = ui.add(btn_ghost("Hub Logs").min_size(button_size));
+                if action_response(
+                    response,
+                    "Open the Logs page, including Hub activity and isolated Quality Gate output.",
+                )
+                .clicked()
+                {
                     outcome.navigate = Some(HubPage::Logs);
                 }
                 ui.end_row();
 
-                if ui.add(btn_ghost("Rebuild").min_size(button_size)).clicked() {
+                let response = ui.add(btn_ghost("Rebuild").min_size(button_size));
+                if action_response(
+                    response,
+                    "Rebuild available Hub binaries. Running or locked executables are skipped rather than forcibly stopped.",
+                )
+                .clicked()
+                {
                     outcome.command = Some(purgatory_dev_runtime::HubCommand::Rebuild);
                 }
-                if ui.add(btn_ghost("Quality Gate").min_size(button_size)).clicked() {
+
+                let response = ui.add(btn_ghost("Quality Gate").min_size(button_size));
+                if action_response(
+                    response,
+                    "Run scripts/check.ps1 in the background: rustfmt, cargo check, clippy, workspace tests, and content validation. Output appears only in Logs → Quality Gate.",
+                )
+                .clicked()
+                {
                     let _ = tool_launch::launch_quality_gate();
                 }
-                if ui
-                    .add_enabled(
-                        snap.can_stop_clients,
-                        btn_ghost("Stop Clients").min_size(button_size),
-                    )
-                    .clicked()
+
+                let response = ui.add_enabled(
+                    snap.can_stop_clients,
+                    btn_ghost("Stop Clients").min_size(button_size),
+                );
+                if action_response(
+                    response,
+                    "Stop all workspace game clients and clear queued client launches.",
+                )
+                .clicked()
                 {
                     outcome.command = Some(purgatory_dev_runtime::HubCommand::StopClients);
                 }
                 ui.end_row();
 
-                if ui.add(btn_destructive("Kill All").min_size(button_size)).clicked() {
+                let response = ui.add(btn_destructive("Kill All").min_size(button_size));
+                if action_response(
+                    response,
+                    "Emergency cleanup for game runtime processes: stop server, clients, load/validation jobs, active builds, and workspace Cargo processes. Authoring tools remain independent.",
+                )
+                .clicked()
+                {
                     outcome.command = Some(purgatory_dev_runtime::HubCommand::KillAll);
                 }
                 ui.end_row();
@@ -409,7 +493,11 @@ fn activity_panel(
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.label(RichText::new("≡").font(theme::state_font()).color(theme::muted()));
+                    ui.label(
+                        RichText::new("≡")
+                            .font(theme::state_font())
+                            .color(theme::muted()),
+                    );
                     ui.label(
                         RichText::new("Recent Activity")
                             .font(theme::state_font())
@@ -417,7 +505,13 @@ fn activity_panel(
                             .strong(),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(btn_ghost("Open Logs")).clicked() {
+                        let response = ui.add(btn_ghost("Open Logs"));
+                        if action_response(
+                            response,
+                            "Open the full Logs page, including isolated Quality Gate output.",
+                        )
+                        .clicked()
+                        {
                             outcome.navigate = Some(HubPage::Logs);
                         }
                     });
