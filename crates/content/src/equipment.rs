@@ -614,7 +614,7 @@ fn validate_attachment_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_visual_key(key: &str) -> Result<(), String> {
+pub(crate) fn validate_visual_key(key: &str) -> Result<(), String> {
     if key.is_empty() {
         return Err("visual key is empty".into());
     }

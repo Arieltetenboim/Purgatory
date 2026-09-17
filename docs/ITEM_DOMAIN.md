@@ -21,7 +21,12 @@ For stackable content, `ItemInstanceId` identifies the authoritative stack insta
 
 Existing `EquipmentDefinition` remains the equipment capability/compatibility contract. It is not replaced and no second equipment identity is introduced. Equip-capable items use the same `ContentId` across Item and Equipment content, with registry validation enforcing consistency.
 
-The minimal generic item definition should contain only semantics required by the Item loop, such as stackability/stack limit when needed. Presentation and broad stat/progression models do not belong here.
+The generic item definition contains only Item-domain gameplay semantics:
+stackability/stack limit and the closed inventory category
+(`equipment`, `consumable`, `material`, `tool`, or `misc`). Category is durable
+gameplay data because later capacity policy may depend on it. Icon selection is
+kept in the optional client-safe `ItemPresentation` contract and broad
+stat/progression models do not belong here.
 
 ## Authoritative runtime owner
 

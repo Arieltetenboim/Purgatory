@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "item.package",
+  "category": "misc",
   "stack_limit": 1
 }

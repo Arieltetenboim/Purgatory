@@ -17,7 +17,8 @@ Human-editable JSON lives under `/content`:
 
 - `shared/maps/` — client-safe map geometry, bounds, spawn points
 - `shared/entities/` — client-safe entity definitions (none required for 6C)
-- `shared/items/` — generic item definitions (`schema_version`, `id`, `stack_limit`)
+- `shared/items/` — generic item gameplay definitions (`schema_version`, `id`, `category`, `stack_limit`)
+- `shared/item_presentation/` — optional client-safe item icon selection for the same `ContentId`
 - `shared/equipment/` — gameplay equipment identity (`schema_version`, `id`, `equipment_slot`)
 - `shared/equipment_presentation/` — client presentation for the same `ContentId` (`attachments[]`)
 - `shared/abilities/` — gameplay ability JSON (`AbilityDefinition`; schema_version 1). Loaded in Shared and Full modes.
@@ -120,13 +121,34 @@ Gameplay JSON (`content/shared/equipment/*.json`):
 { "schema_version": 1, "id": "<ContentId>", "equipment_slot": "headwear|bodywear|pants|gloves|boots|weapon" }
 ```
 
-Item JSON (`content/shared/items/*.json`):
+Item Gameplay Schema v2 (`content/shared/items/*.json`):
 
 ```text
-{ "schema_version": 1, "id": "<ContentId>", "stack_limit": 1 }
+{
+  "schema_version": 2,
+  "id": "<ContentId>",
+  "category": "equipment|consumable|material|tool|misc",
+  "stack_limit": 1
+}
 ```
 
 Every Equipment definition must have an Item definition with the same canonical `ContentId`.
+Equipment-backed items must use the `equipment` category, and an `equipment`
+category item must have a matching Equipment definition. Category is gameplay
+data because future inventory capacity policy may depend on it; it is not
+inferred from an icon or filename.
+
+Optional item presentation JSON (`content/shared/item_presentation/*.json`)
+uses the same `id`:
+
+```text
+{ "schema_version": 1, "id": "<ContentId>", "icon": "<logical visual key>" }
+```
+
+`icon` is not a filesystem path or GPU handle. The client resolves the logical
+key through its presentation asset layer. Missing item presentation, or a
+presentation key unavailable in the current client build, uses the explicit
+inventory placeholder icon.
 
 Presentation JSON (`content/shared/equipment_presentation/*.json`) uses the **same** `id`. It must not repeat `equipment_slot`. Attachments are `0..N`:
 

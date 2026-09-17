@@ -8,7 +8,7 @@ use crate::dialogue::{
 use crate::domain::ContentDomain;
 use crate::equipment::{EquipmentDefinition, EquipmentPresentation};
 use crate::error::{ContentError, ValidationIssue};
-use crate::item::ItemDefinition;
+use crate::item::{ItemCategory, ItemDefinition, ItemPresentation};
 use crate::schema::{EntityDefinition, MapDefinition, Placement, RestorePolicy};
 use purgatory_common::{ContentId, MAP_FOOTNOTE_AUTHORED, MapId};
 use purgatory_simulation::AbilityDefinition;
@@ -21,6 +21,7 @@ pub struct ContentRegistry {
     maps: BTreeMap<String, MapDefinition>,
     placements: BTreeMap<String, Vec<Placement>>,
     items: BTreeMap<String, ItemDefinition>,
+    item_presentations: BTreeMap<String, ItemPresentation>,
     equipment: BTreeMap<String, EquipmentDefinition>,
     equipment_presentation: BTreeMap<String, EquipmentPresentation>,
     abilities: BTreeMap<String, AbilityDefinition>,
@@ -189,6 +190,21 @@ impl ContentRegistry {
     }
 
     #[must_use]
+    pub fn item_presentation(&self, authored: &str) -> Option<&ItemPresentation> {
+        self.item_presentations.get(authored)
+    }
+
+    #[must_use]
+    pub fn item_presentation_by_id(&self, id: ContentId) -> Option<&ItemPresentation> {
+        let authored = self.labels.get(&id)?;
+        self.item_presentations.get(authored)
+    }
+
+    pub fn iter_item_presentations(&self) -> impl Iterator<Item = &ItemPresentation> {
+        self.item_presentations.values()
+    }
+
+    #[must_use]
     pub fn equipment(&self, authored: &str) -> Option<&EquipmentDefinition> {
         self.equipment.get(authored)
     }
@@ -290,6 +306,19 @@ impl ContentRegistry {
             return Err(duplicate(&def.authored_id, "item"));
         }
         self.items.insert(def.authored_id.clone(), def);
+        Ok(())
+    }
+
+    pub(crate) fn insert_item_presentation(
+        &mut self,
+        def: ItemPresentation,
+    ) -> Result<(), ContentError> {
+        crate::item::validate_item_presentation(&def)?;
+        self.intern(&def.authored_id, def.content_id, "item_presentation")?;
+        if self.item_presentations.contains_key(&def.authored_id) {
+            return Err(duplicate(&def.authored_id, "item_presentation"));
+        }
+        self.item_presentations.insert(def.authored_id.clone(), def);
         Ok(())
     }
 
@@ -565,6 +594,15 @@ impl ContentRegistry {
                 }
             }
         }
+        for pres in self.item_presentations.values() {
+            if !self.items.contains_key(&pres.authored_id) {
+                issues.push(item_equipment_issue(
+                    &pres.authored_id,
+                    "id",
+                    "item presentation has no matching item definition",
+                ));
+            }
+        }
         for equipment in self.equipment.values() {
             match self.items.get(&equipment.authored_id) {
                 None => issues.push(item_equipment_issue(
@@ -579,7 +617,25 @@ impl ContentRegistry {
                         "item and equipment definitions must share the same ContentId",
                     ));
                 }
+                Some(item) if item.category != ItemCategory::Equipment => {
+                    issues.push(item_equipment_issue(
+                        &equipment.authored_id,
+                        "category",
+                        "equipment item must use category 'equipment'",
+                    ));
+                }
                 Some(_) => {}
+            }
+        }
+        for item in self.items.values() {
+            if item.category == ItemCategory::Equipment
+                && !self.equipment.contains_key(&item.authored_id)
+            {
+                issues.push(item_equipment_issue(
+                    &item.authored_id,
+                    "category",
+                    "category 'equipment' requires a matching equipment definition",
+                ));
             }
         }
         for dialogue in self.npc_dialogues.values() {
@@ -813,7 +869,9 @@ mod tests {
             content_id: ContentId::from_authored(authored).unwrap(),
             authored_id: authored.into(),
             domain: ContentDomain::Shared,
+            category: ItemCategory::Equipment,
             stack_limit: 1,
+            drop_requires_confirmation: true,
         })
         .unwrap();
         let err = reg

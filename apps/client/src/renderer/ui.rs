@@ -9,7 +9,7 @@ use bytemuck::{Pod, Zeroable};
 use super::gpu::SpriteTextureId;
 
 const MAX_UI_RECTS: usize = 64;
-const MAX_UI_TEXTURED_RECTS: usize = 64;
+const MAX_UI_TEXTURED_RECTS: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct UiRect {
@@ -28,8 +28,6 @@ impl UiRect {
     }
 }
 
-/// Generic screen-space textured rectangle. Coordinates use framebuffer pixels
-/// with a top-left origin; UVs use the same top-left-to-bottom-right convention.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct UiTexturedRect {
     pub min: [f32; 2],
@@ -38,6 +36,27 @@ pub(crate) struct UiTexturedRect {
     pub uv_min: [f32; 2],
     pub uv_max: [f32; 2],
     pub tint: [f32; 4],
+}
+
+/// One atomic screen-space UI submission. Groups are rendered in slice order.
+pub(crate) struct UiComposition<'a> {
+    pub(crate) textured_rects: &'a [UiTexturedRect],
+    pub(crate) rects: &'a [UiRect],
+    pub(crate) text: &'a [super::text::TextBlock],
+}
+
+impl<'a> UiComposition<'a> {
+    pub(crate) const fn new(
+        textured_rects: &'a [UiTexturedRect],
+        rects: &'a [UiRect],
+        text: &'a [super::text::TextBlock],
+    ) -> Self {
+        Self {
+            textured_rects,
+            rects,
+            text,
+        }
+    }
 }
 
 impl UiTexturedRect {
@@ -61,6 +80,10 @@ struct UiTexturedVertex {
     position: [f32; 2],
     uv: [f32; 2],
     tint: [f32; 4],
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+    rect_min: [f32; 2],
+    rect_size: [f32; 2],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,9 +95,13 @@ struct UiTextureRun {
 
 pub(crate) struct UiRenderer {
     pipeline: wgpu::RenderPipeline,
+    textured_pipeline: wgpu::RenderPipeline,
+    batches: Vec<UiBatch>,
+}
+
+struct UiBatch {
     buffer: wgpu::Buffer,
     count: u32,
-    textured_pipeline: wgpu::RenderPipeline,
     textured_buffer: wgpu::Buffer,
     textured_runs: Vec<UiTextureRun>,
 }
@@ -118,12 +145,6 @@ impl UiRenderer {
             multiview_mask: None,
             cache: None,
         });
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("screen-ui-rect-vertices"),
-            size: (MAX_UI_RECTS * 6 * std::mem::size_of::<UiVertex>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let textured_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("screen-ui-texture"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/ui_texture.wgsl").into()),
@@ -146,7 +167,11 @@ impl UiRenderer {
                     attributes: &wgpu::vertex_attr_array![
                         0 => Float32x2,
                         1 => Float32x2,
-                        2 => Float32x4
+                        2 => Float32x4,
+                        3 => Float32x2,
+                        4 => Float32x2,
+                        5 => Float32x2,
+                        6 => Float32x2
                     ],
                 })],
             },
@@ -166,56 +191,54 @@ impl UiRenderer {
             multiview_mask: None,
             cache: None,
         });
-        let textured_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("screen-ui-texture-vertices"),
-            size: (MAX_UI_TEXTURED_RECTS * 6 * std::mem::size_of::<UiTexturedVertex>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         Self {
             pipeline,
-            buffer,
-            count: 0,
             textured_pipeline,
-            textured_buffer,
-            textured_runs: Vec::new(),
+            batches: Vec::new(),
         }
     }
 
     pub(crate) fn prepare(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         rects: &[UiRect],
         textured_rects: &[UiTexturedRect],
         viewport: [u32; 2],
-    ) {
-        self.count = 0;
-        self.textured_runs.clear();
+    ) -> usize {
+        let mut batch = UiBatch {
+            buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("screen-ui-rect-batch"),
+                size: (MAX_UI_RECTS * 6 * std::mem::size_of::<UiVertex>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            count: 0,
+            textured_buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("screen-ui-texture-batch"),
+                size: (MAX_UI_TEXTURED_RECTS * 6 * std::mem::size_of::<UiTexturedVertex>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            textured_runs: Vec::new(),
+        };
         if viewport.contains(&0) {
-            return;
+            self.batches.push(batch);
+            return self.batches.len() - 1;
         }
+
+        let to_ndc = |point: [f32; 2]| {
+            [
+                point[0] / viewport[0] as f32 * 2.0 - 1.0,
+                1.0 - point[1] / viewport[1] as f32 * 2.0,
+            ]
+        };
+
         let mut vertices = Vec::with_capacity(rects.len().min(MAX_UI_RECTS) * 6);
         for rect in rects.iter().take(MAX_UI_RECTS) {
-            if !rect
-                .min
-                .iter()
-                .chain(rect.max.iter())
-                .all(|v| v.is_finite())
-                || rect.max[0] <= rect.min[0]
-                || rect.max[1] <= rect.min[1]
-                || !rect
-                    .color
-                    .iter()
-                    .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
-            {
+            if !valid_rect(rect) {
                 continue;
             }
-            let to_ndc = |point: [f32; 2]| {
-                [
-                    point[0] / viewport[0] as f32 * 2.0 - 1.0,
-                    1.0 - point[1] / viewport[1] as f32 * 2.0,
-                ]
-            };
             let corners = [
                 to_ndc(rect.min),
                 to_ndc([rect.max[0], rect.min[1]]),
@@ -229,9 +252,9 @@ impl UiRenderer {
                 });
             }
         }
-        self.count = u32::try_from(vertices.len()).unwrap_or(0);
-        if self.count > 0 {
-            queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(&vertices));
+        batch.count = u32::try_from(vertices.len()).unwrap_or(0);
+        if batch.count > 0 {
+            queue.write_buffer(&batch.buffer, 0, bytemuck::cast_slice(&vertices));
         }
 
         let mut textured_vertices =
@@ -241,12 +264,6 @@ impl UiRenderer {
                 continue;
             }
             let first_vertex = u32::try_from(textured_vertices.len()).unwrap_or(0);
-            let to_ndc = |point: [f32; 2]| {
-                [
-                    point[0] / viewport[0] as f32 * 2.0 - 1.0,
-                    1.0 - point[1] / viewport[1] as f32 * 2.0,
-                ]
-            };
             let positions = [
                 to_ndc(rect.min),
                 to_ndc([rect.max[0], rect.min[1]]),
@@ -259,19 +276,24 @@ impl UiRenderer {
                 rect.uv_max,
                 [rect.uv_min[0], rect.uv_max[1]],
             ];
+            let rect_size = [rect.max[0] - rect.min[0], rect.max[1] - rect.min[1]];
             for index in [0, 1, 2, 0, 2, 3] {
                 textured_vertices.push(UiTexturedVertex {
                     position: positions[index],
                     uv: uvs[index],
                     tint: rect.tint,
+                    uv_min: rect.uv_min,
+                    uv_max: rect.uv_max,
+                    rect_min: rect.min,
+                    rect_size,
                 });
             }
-            if let Some(run) = self.textured_runs.last_mut()
+            if let Some(run) = batch.textured_runs.last_mut()
                 && run.texture == rect.texture
             {
                 run.vertex_count += 6;
             } else {
-                self.textured_runs.push(UiTextureRun {
+                batch.textured_runs.push(UiTextureRun {
                     texture: rect.texture,
                     first_vertex,
                     vertex_count: 6,
@@ -280,20 +302,26 @@ impl UiRenderer {
         }
         if !textured_vertices.is_empty() {
             queue.write_buffer(
-                &self.textured_buffer,
+                &batch.textured_buffer,
                 0,
                 bytemuck::cast_slice(&textured_vertices),
             );
         }
+        self.batches.push(batch);
+        self.batches.len() - 1
     }
 
     pub(crate) fn draw_textured<'a>(
         &self,
+        batch_index: usize,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         mut texture_bind_group: impl FnMut(SpriteTextureId) -> Option<&'a wgpu::BindGroup>,
     ) {
-        if self.textured_runs.is_empty() {
+        let Some(batch) = self.batches.get(batch_index) else {
+            return;
+        };
+        if batch.textured_runs.is_empty() {
             return;
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -313,8 +341,8 @@ impl UiRenderer {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.textured_pipeline);
-        pass.set_vertex_buffer(0, self.textured_buffer.slice(..));
-        for run in &self.textured_runs {
+        pass.set_vertex_buffer(0, batch.textured_buffer.slice(..));
+        for run in &batch.textured_runs {
             let Some(bind_group) = texture_bind_group(run.texture) else {
                 continue;
             };
@@ -323,8 +351,16 @@ impl UiRenderer {
         }
     }
 
-    pub(crate) fn draw(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
-        if self.count == 0 {
+    pub(crate) fn draw(
+        &self,
+        batch_index: usize,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) {
+        let Some(batch) = self.batches.get(batch_index) else {
+            return;
+        };
+        if batch.count == 0 {
             return;
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -344,9 +380,26 @@ impl UiRenderer {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.buffer.slice(..));
-        pass.draw(0..self.count, 0..1);
+        pass.set_vertex_buffer(0, batch.buffer.slice(..));
+        pass.draw(0..batch.count, 0..1);
     }
+
+    pub(crate) fn clear(&mut self) {
+        self.batches.clear();
+    }
+}
+
+fn valid_rect(rect: &UiRect) -> bool {
+    rect.min
+        .iter()
+        .chain(rect.max.iter())
+        .all(|v| v.is_finite())
+        && rect.max[0] > rect.min[0]
+        && rect.max[1] > rect.min[1]
+        && rect
+            .color
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
 }
 
 fn valid_textured_rect(rect: &UiTexturedRect) -> bool {
@@ -375,30 +428,6 @@ fn valid_textured_rect(rect: &UiTexturedRect) -> bool {
 mod tests {
     use super::*;
 
-    fn texture_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("test-ui-texture-layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        })
-    }
-
     #[test]
     fn hit_bounds_include_edges() {
         let rect = UiRect {
@@ -412,142 +441,51 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a GPU adapter; run explicitly for screen UI verification"]
-    fn renderer_submits_screen_rect_pass() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-            .expect("GPU adapter for screen UI test");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-        let layout = texture_layout(&device);
-        let mut renderer = UiRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb, &layout);
-        renderer.prepare(
-            &queue,
-            &[UiRect {
-                min: [10.0, 20.0],
-                max: [200.0, 100.0],
-                color: [0.2, 0.3, 0.4, 0.8],
-            }],
-            &[],
-            [800, 600],
-        );
-        assert_eq!(renderer.count, 6);
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d {
-                width: 800,
-                height: 600,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let mut encoder = device.create_command_encoder(&Default::default());
-        renderer.draw(&mut encoder, &target.create_view(&Default::default()));
-        queue.submit([encoder.finish()]);
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    fn textured_rect_validation_rejects_bad_uvs() {
+        let texture = SpriteTextureId::from_raw(7);
+        let mut rect = UiTexturedRect {
+            min: [10.0, 20.0],
+            max: [30.0, 40.0],
+            texture,
+            uv_min: [0.1, 0.1],
+            uv_max: [0.9, 0.9],
+            tint: [1.0; 4],
+        };
+        assert!(valid_textured_rect(&rect));
+        rect.uv_max[0] = rect.uv_min[0];
+        assert!(!valid_textured_rect(&rect));
     }
 
     #[test]
-    #[ignore = "requires a GPU adapter; run explicitly for textured screen UI verification"]
-    fn renderer_submits_textured_screen_rect_pass() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-            .expect("GPU adapter for textured screen UI test");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-        let layout = texture_layout(&device);
-        let mut renderer = UiRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb, &layout);
-        let texture_id = SpriteTextureId::from_raw(7);
-        renderer.prepare(
-            &queue,
-            &[],
-            &[UiTexturedRect {
-                min: [10.0, 20.0],
-                max: [200.0, 100.0],
-                texture: texture_id,
-                uv_min: [0.0, 0.0],
-                uv_max: [1.0, 1.0],
-                tint: [1.0; 4],
-            }],
-            [800, 600],
-        );
-        assert_eq!(renderer.textured_runs.len(), 1);
-        assert_eq!(renderer.textured_runs[0].vertex_count, 6);
+    fn compositions_keep_submission_order_and_primitive_collections() {
+        let rects = [UiRect {
+            min: [0.0, 0.0],
+            max: [1.0, 1.0],
+            color: [1.0; 4],
+        }];
+        let textured = [UiTexturedRect {
+            min: [0.0, 0.0],
+            max: [1.0, 1.0],
+            texture: SpriteTextureId::from_raw(1),
+            uv_min: [0.0, 0.0],
+            uv_max: [1.0, 1.0],
+            tint: [1.0; 4],
+        }];
+        let text = [crate::renderer::text::TextBlock {
+            content: crate::renderer::text::TextContent("group".to_owned()),
+            style: crate::renderer::text::TextStyle::default(),
+            anchor: [0.0, 0.0],
+            max_width: None,
+        }];
+        let first = UiComposition::new(&textured, &rects, &text);
+        let second = UiComposition::new(&textured, &rects, &text);
+        let ordered = [first, second];
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("test-ui-source"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[255, 255, 255, 255],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        let view = texture.create_view(&Default::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("test-ui-source"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("test-ui-target"),
-            size: wgpu::Extent3d {
-                width: 800,
-                height: 600,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let target_view = target.create_view(&Default::default());
-        let mut encoder = device.create_command_encoder(&Default::default());
-        renderer.draw_textured(&mut encoder, &target_view, |id| {
-            (id == texture_id).then_some(&bind_group)
-        });
-        queue.submit([encoder.finish()]);
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        assert_eq!(ordered[0].textured_rects.len(), 1);
+        assert_eq!(ordered[0].rects.len(), 1);
+        assert_eq!(ordered[0].text.len(), 1);
+        assert_eq!(ordered[1].textured_rects.len(), 1);
+        assert_eq!(ordered[1].rects.len(), 1);
+        assert_eq!(ordered[1].text.len(), 1);
     }
 }

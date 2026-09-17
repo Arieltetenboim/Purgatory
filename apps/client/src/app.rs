@@ -75,24 +75,31 @@ use crate::map_fade::{
 #[cfg(feature = "dev-diagnostics")]
 use crate::network::NetworkImpairmentConfig;
 use crate::network::{ClientEndpointConfig, NetworkCommand, NetworkHandle};
-use crate::npc_presentation::{SpriteAnimationPlayer, SpriteSheet, base_activity, clip_name};
+use crate::npc_presentation::{
+    OverheadSheet, SpriteAnimationPlayer, SpriteSheet, base_activity, clip_name,
+};
 use crate::platform::{diagnostic_title, window_attributes};
 use crate::prediction::{LocalPrediction, local_presentation_pose};
 #[cfg(feature = "dev-diagnostics")]
 use crate::renderer::rf_diag::{RfVertexProof, rf_probe_proof, rf_scene_quads};
 use crate::renderer::{
-    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, Renderer, TextBlock, UiRect,
-    constrained_pixel_viewport, parallax_quads,
+    Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, PixelViewport, Renderer,
+    TextBlock, UiComposition, UiRect, constrained_pixel_viewport, parallax_quads,
 };
 #[cfg(feature = "dev-diagnostics")]
-use crate::renderer::{
-    PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, PixelViewport, parallax_debug_quads,
-};
+use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_quads};
 #[cfg(feature = "dev-diagnostics")]
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
-use crate::ui_panel::{ProofPanelMode, UiPanelAsset};
+use crate::ui_dialog::{
+    DialogAction, DialogButton, MessageDialog, MessageDialogFrame, MessageDialogRequest,
+};
+use crate::ui_panel::{
+    DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrame,
+    EquipmentWindowFrameInput, InventoryWindow, InventoryWindowFrame, InventoryWindowFrameInput,
+    UiButtonAssets, UiItemIconAssets, UiSlotAssets, UiTabAssets, UiWindowAssets, resolve_drag,
+};
 use crate::ui_runtime::UIRuntimeState;
 
 const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
@@ -104,6 +111,68 @@ const PORTAL_COLOR: [f32; 4] = [0.32, 0.92, 0.78, 1.0];
 const NPC_DEAD_COLOR: [f32; 4] = [0.38, 0.16, 0.18, 1.0];
 const NPC_RESPAWN_COLOR: [f32; 4] = [0.25, 0.95, 0.62, 1.0];
 const NPC_STATE_INDICATOR_COLOR: [f32; 4] = [1.0, 0.93, 0.35, 1.0];
+const ITEM_DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ItemClickTarget {
+    Inventory(purgatory_common::ItemInstanceId),
+    Equipped(u8),
+}
+
+fn is_item_double_click(
+    previous: Option<(ItemClickTarget, Instant)>,
+    target: ItemClickTarget,
+    now: Instant,
+) -> bool {
+    previous.is_some_and(|(previous, when)| {
+        previous == target && now.duration_since(when) <= ITEM_DOUBLE_CLICK_INTERVAL
+    })
+}
+
+fn resolve_item_double_click(
+    target: ItemClickTarget,
+    inventory_equipment_slot: Option<u8>,
+) -> DragResolution {
+    match target {
+        ItemClickTarget::Inventory(item_instance_id) => resolve_drag(
+            DragSource::Inventory(item_instance_id),
+            inventory_equipment_slot
+                .map(DragDestination::Equipment)
+                .unwrap_or(DragDestination::Inventory),
+            inventory_equipment_slot,
+        ),
+        ItemClickTarget::Equipped(slot) => {
+            resolve_drag(DragSource::Equipped(slot), DragDestination::Inventory, None)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DropDispatch {
+    Immediate,
+    AwaitConfirmation,
+    Ignored,
+}
+
+fn drop_dispatch(requires_confirmation: Option<bool>, modal_active: bool) -> DropDispatch {
+    if modal_active {
+        DropDispatch::Ignored
+    } else {
+        match requires_confirmation {
+            Some(true) => DropDispatch::AwaitConfirmation,
+            Some(false) => DropDispatch::Immediate,
+            None => DropDispatch::Ignored,
+        }
+    }
+}
+
+fn resolve_pending_drop(
+    pending: &mut Option<purgatory_common::ItemInstanceId>,
+    action: DialogAction,
+) -> Option<purgatory_common::ItemInstanceId> {
+    let item = pending.take();
+    (action == DialogAction::Confirm).then_some(item).flatten()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NpcVisualCue {
@@ -198,10 +267,20 @@ struct ClientApp {
     #[cfg(feature = "dev-diagnostics")]
     impairment_seed: u64,
     ui_runtime: UIRuntimeState,
-    ui_panel_asset: UiPanelAsset,
-    proof_panel_mode: ProofPanelMode,
+    ui_window_assets: UiWindowAssets,
+    ui_button_assets: UiButtonAssets,
+    ui_tab_assets: UiTabAssets,
+    ui_slot_assets: UiSlotAssets,
+    ui_item_icon_assets: UiItemIconAssets,
+    inventory_window: InventoryWindow,
+    equipment_window: EquipmentWindow,
+    normal_window_order: Vec<NormalWindowKind>,
+    pointer_window: Option<NormalWindowKind>,
+    message_dialog: MessageDialog,
+    pending_drop: Option<purgatory_common::ItemInstanceId>,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
+    last_item_click: Option<(ItemClickTarget, Instant)>,
     speech_bubble_hit: Option<crate::renderer::UiRect>,
     choice_bubble_hits: Vec<crate::renderer::UiRect>,
     choice_click_edge: Option<usize>,
@@ -239,6 +318,10 @@ struct ClientApp {
     characters: CharacterPresentationSet,
     presentation_oneshots: PresentationOneShotTable,
     npc_sheet: SpriteSheet,
+    accept_sheet: OverheadSheet,
+    turn_sheet: OverheadSheet,
+    accept_player: SpriteAnimationPlayer,
+    turn_player: SpriteAnimationPlayer,
     npc_players:
         HashMap<PresentationEntityKey, (SpriteAnimationPlayer, PresentationActivity, bool)>,
     /// A2 proof playback clock (not Clone; lives on App, not DebugUiState).
@@ -247,10 +330,10 @@ struct ClientApp {
     /// One resolved animation sample `t` for the current frame.
     #[cfg(feature = "dev-diagnostics")]
     selected_animation_sample_t: f32,
-    #[cfg(feature = "dev-diagnostics")]
     equipment_seq: u32,
     ability_seq: u32,
     pickup_seq: u32,
+    drop_seq: u32,
     display: DisplayController,
     dev_login: String,
     /// Shipping: auto-connect once when the window is ready on Connection.
@@ -262,6 +345,24 @@ struct ClientApp {
     rf_ab_elapsed: f32,
     #[cfg(feature = "dev-diagnostics")]
     rf_proof: Option<RfVertexProof>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NormalWindowKind {
+    Inventory,
+    Equipment,
+}
+
+fn reorder_normal_window(order: &mut Vec<NormalWindowKind>, kind: NormalWindowKind) {
+    order.retain(|entry| *entry != kind);
+    order.push(kind);
+}
+
+fn topmost_normal_window(
+    order: &[NormalWindowKind],
+    mut hit: impl FnMut(NormalWindowKind) -> bool,
+) -> Option<NormalWindowKind> {
+    order.iter().rev().copied().find(|kind| hit(*kind))
 }
 
 impl ClientApp {
@@ -276,8 +377,20 @@ impl ClientApp {
                 .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
         let npc_sheet = SpriteSheet::red_slime(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY red slime sprite error: {error}"))?;
-        let ui_panel_asset = UiPanelAsset::load_embedded(&mut asset_runtime)
-            .map_err(|error| format!("PURGATORY UI panel asset error: {error}"))?;
+        let accept_sheet = OverheadSheet::accept(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY accept animation error: {error}"))?;
+        let turn_sheet = OverheadSheet::turn(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY turn animation error: {error}"))?;
+        let ui_window_assets = UiWindowAssets::load_embedded(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI window asset error: {error}"))?;
+        let ui_button_assets = UiButtonAssets::load_embedded(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI button asset error: {error}"))?;
+        let ui_tab_assets = UiTabAssets::load_embedded(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI tab asset error: {error}"))?;
+        let ui_slot_assets = UiSlotAssets::load_embedded(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI slot asset error: {error}"))?;
+        let ui_item_icon_assets = UiItemIconAssets::load_placeholder(&mut asset_runtime, &registry)
+            .map_err(|error| format!("PURGATORY UI item icon error: {error}"))?;
         Ok(Self {
             window: None,
             renderer: None,
@@ -313,10 +426,20 @@ impl ClientApp {
             #[cfg(feature = "dev-diagnostics")]
             impairment_seed: NetworkImpairmentConfig::from_env().seed,
             ui_runtime: UIRuntimeState::Idle,
-            ui_panel_asset,
-            proof_panel_mode: ProofPanelMode::Hidden,
+            ui_window_assets,
+            ui_button_assets,
+            ui_tab_assets,
+            ui_slot_assets,
+            ui_item_icon_assets,
+            inventory_window: InventoryWindow::default(),
+            equipment_window: EquipmentWindow::default(),
+            normal_window_order: vec![NormalWindowKind::Inventory, NormalWindowKind::Equipment],
+            pointer_window: None,
+            message_dialog: MessageDialog::default(),
+            pending_drop: None,
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
+            last_item_click: None,
             speech_bubble_hit: None,
             choice_bubble_hits: Vec::new(),
             choice_click_edge: None,
@@ -354,15 +477,19 @@ impl ClientApp {
             characters: CharacterPresentationSet::with_dialogue_animations(dialogue_animations),
             presentation_oneshots: PresentationOneShotTable::new(),
             npc_sheet,
+            accept_sheet,
+            turn_sheet,
+            accept_player: SpriteAnimationPlayer::new(),
+            turn_player: SpriteAnimationPlayer::new(),
             npc_players: HashMap::new(),
             #[cfg(feature = "dev-diagnostics")]
             animation_player: purgatory_animation::AnimationPlayer::new(),
             #[cfg(feature = "dev-diagnostics")]
             selected_animation_sample_t: 0.0,
-            #[cfg(feature = "dev-diagnostics")]
             equipment_seq: 0,
             ability_seq: 0,
             pickup_seq: 0,
+            drop_seq: 0,
             display: DisplayController::new(),
             dev_login: purgatory_common::DEFAULT_DEV_LOGIN.to_string(),
             #[cfg(not(feature = "dev-diagnostics"))]
@@ -400,6 +527,81 @@ impl ClientApp {
     fn toggle_debug_overlay(&mut self) {
         if let Some(overlay) = &mut self.debug {
             overlay.toggle();
+        }
+    }
+
+    fn focus_normal_window(&mut self, kind: NormalWindowKind) {
+        reorder_normal_window(&mut self.normal_window_order, kind);
+    }
+
+    fn normal_window_contains(
+        &mut self,
+        kind: NormalWindowKind,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        match kind {
+            NormalWindowKind::Inventory => self.inventory_window.contains_window(
+                self.ui_window_assets,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
+            NormalWindowKind::Equipment => self.equipment_window.contains_window(
+                self.ui_window_assets,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
+        }
+    }
+
+    fn normal_window_visible(&self, kind: NormalWindowKind) -> bool {
+        match kind {
+            NormalWindowKind::Inventory => self.inventory_window.is_visible(),
+            NormalWindowKind::Equipment => self.equipment_window.is_visible(),
+        }
+    }
+
+    fn close_all_normal_windows(&mut self) {
+        self.inventory_window.close();
+        self.equipment_window.close();
+        self.pointer_window = None;
+    }
+
+    fn cancel_active_modal(&mut self) {
+        if !self.message_dialog.is_active() {
+            return;
+        }
+        self.message_dialog.cancel();
+        self.resolve_drop_dialog();
+    }
+
+    fn apply_normal_pointer_button(
+        &mut self,
+        kind: NormalWindowKind,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        match kind {
+            NormalWindowKind::Inventory => self.inventory_window.apply_pointer_button(
+                self.ui_window_assets,
+                self.ui_tab_assets,
+                state,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
+            NormalWindowKind::Equipment => self.equipment_window.apply_pointer_button(
+                self.ui_window_assets,
+                state,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
         }
     }
 
@@ -535,6 +737,7 @@ impl ClientApp {
         self.last_input = PlayerInput::idle();
         self.intent.reset();
         self.ui_runtime = UIRuntimeState::Idle;
+        self.inventory_window.cancel_pointer_interaction();
         self.dialogue_runtime.clear();
         self.speech_bubble_hit = None;
         self.choice_bubble_hits.clear();
@@ -548,6 +751,9 @@ impl ClientApp {
         }
         self.last_interact_request.clear();
         self.last_interact_result.clear();
+        self.inventory_window.cancel_pointer_interaction();
+        self.equipment_window.cancel_pointer_interaction();
+        self.last_item_click = None;
         if self.lifecycle.screen() != ClientScreen::Game {
             if let Some(network) = &mut self.network {
                 let _ = network.poll_frames();
@@ -560,12 +766,10 @@ impl ClientApp {
             self.characters.clear();
             self.npc_players.clear();
             self.presentation_oneshots.clear();
-            #[cfg(feature = "dev-diagnostics")]
-            {
-                self.equipment_seq = 0;
-            }
+            self.equipment_seq = 0;
             self.ability_seq = 0;
             self.pickup_seq = 0;
+            self.drop_seq = 0;
             self.frame_local = FrameLocalPose::default();
             self.last_observer = None;
             self.frozen_presentation = None;
@@ -755,10 +959,166 @@ impl ClientApp {
         }
     }
 
-    #[cfg(feature = "dev-diagnostics")]
     fn next_equipment_seq(&mut self) -> u32 {
         self.equipment_seq = self.equipment_seq.saturating_add(1);
         self.equipment_seq
+    }
+
+    fn next_drop_seq(&mut self) -> u32 {
+        self.drop_seq = self.drop_seq.saturating_add(1);
+        self.drop_seq
+    }
+
+    fn dispatch_drag_resolution(&mut self, resolution: DragResolution) {
+        match resolution {
+            DragResolution::Equip {
+                item_instance_id,
+                slot,
+            } => {
+                let seq = self.next_equipment_seq();
+                let _ = self.network.as_ref().is_some_and(|network| {
+                    network.try_send_equip(purgatory_protocol::EquipRequest {
+                        seq,
+                        slot,
+                        item_instance_id,
+                    })
+                });
+            }
+            DragResolution::Unequip { slot } => {
+                let seq = self.next_equipment_seq();
+                let _ = self.network.as_ref().is_some_and(|network| {
+                    network.try_send_unequip(purgatory_protocol::UnequipRequest { seq, slot })
+                });
+            }
+            DragResolution::Drop { item_instance_id } => {
+                let requires_confirmation = self
+                    .lifecycle
+                    .view()
+                    .inventory
+                    .iter()
+                    .find(|entry| entry.item_instance_id == item_instance_id)
+                    .and_then(|entry| self.registry.item_by_id(entry.definition))
+                    .map(|item| item.drop_requires_confirmation);
+                match drop_dispatch(requires_confirmation, self.message_dialog.is_active()) {
+                    DropDispatch::AwaitConfirmation => {
+                        self.open_drop_confirmation(item_instance_id)
+                    }
+                    DropDispatch::Immediate => self.send_drop(item_instance_id),
+                    DropDispatch::Ignored => {}
+                }
+            }
+            DragResolution::Noop => {}
+        }
+    }
+
+    fn send_drop(&mut self, item_instance_id: purgatory_common::ItemInstanceId) {
+        let seq = self.next_drop_seq();
+        let _ = self.network.as_ref().is_some_and(|network| {
+            network.try_send_drop(purgatory_protocol::DropRequest {
+                seq,
+                item_instance_id,
+            })
+        });
+    }
+
+    fn open_drop_confirmation(&mut self, item_instance_id: purgatory_common::ItemInstanceId) {
+        if !matches!(
+            drop_dispatch(Some(true), self.message_dialog.is_active()),
+            DropDispatch::AwaitConfirmation
+        ) || self.pending_drop.is_some()
+        {
+            return;
+        }
+        let opened = self.message_dialog.open(MessageDialogRequest {
+            id: u64::from(self.drop_seq).saturating_add(1),
+            title: "Drop Item".into(),
+            body: "Are you sure you want to drop this item?".into(),
+            buttons: vec![
+                DialogButton::new("Cancel", DialogAction::Cancel),
+                DialogButton::new("Drop", DialogAction::Confirm),
+            ],
+            default_action: Some(DialogAction::Confirm),
+            cancel_action: Some(DialogAction::Cancel),
+        });
+        if opened {
+            self.pending_drop = Some(item_instance_id);
+        }
+    }
+
+    fn resolve_drop_dialog(&mut self) {
+        let Some(result) = self.message_dialog.take_result() else {
+            return;
+        };
+        if let Some(item_instance_id) = resolve_pending_drop(&mut self.pending_drop, result.action)
+        {
+            self.send_drop(item_instance_id);
+        }
+    }
+
+    fn resolve_equipment_drag(&mut self, source: DragSource, cursor: Option<[f32; 2]>) {
+        let Some(cursor) = cursor else {
+            return;
+        };
+        let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() else {
+            return;
+        };
+        let destination = match self.equipment_window.slot_at(cursor) {
+            Some(slot) => DragDestination::Equipment(slot),
+            None if self.equipment_window.contains_window(
+                self.ui_window_assets,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ) =>
+            {
+                DragDestination::EquipmentWindow
+            }
+            None if self.inventory_window.contains_window(
+                self.ui_window_assets,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ) =>
+            {
+                DragDestination::Inventory
+            }
+            None => DragDestination::Outside,
+        };
+        let inventory_equipment_slot = match source {
+            DragSource::Inventory(item_instance_id) => self
+                .lifecycle
+                .view()
+                .inventory
+                .iter()
+                .find(|entry| entry.item_instance_id == item_instance_id)
+                .and_then(|entry| self.registry.equipment_by_id(entry.definition))
+                .map(|definition| definition.slot as u8),
+            DragSource::Equipped(_) => None,
+        };
+        self.dispatch_drag_resolution(resolve_drag(source, destination, inventory_equipment_slot));
+    }
+
+    fn handle_item_click(&mut self, target: ItemClickTarget) {
+        let now = Instant::now();
+        let is_double = is_item_double_click(self.last_item_click, target, now);
+        self.last_item_click = (!is_double).then_some((target, now));
+        if is_double {
+            let inventory_equipment_slot = match target {
+                ItemClickTarget::Inventory(item_instance_id) => self
+                    .lifecycle
+                    .view()
+                    .inventory
+                    .iter()
+                    .find(|entry| entry.item_instance_id == item_instance_id)
+                    .and_then(|entry| self.registry.equipment_by_id(entry.definition))
+                    .map(|definition| definition.slot as u8),
+                ItemClickTarget::Equipped(_) => None,
+            };
+            self.dispatch_drag_resolution(resolve_item_double_click(
+                target,
+                inventory_equipment_slot,
+            ));
+        }
     }
 
     #[cfg(feature = "dev-diagnostics")]
@@ -2002,6 +2362,18 @@ impl ClientApp {
         }
     }
 
+    fn production_ui_metrics(&self) -> Option<(PixelViewport, f32)> {
+        let renderer = self.renderer.as_ref()?;
+        let window = self.window.as_ref()?;
+        let (width, height) = renderer.surface_size();
+        let viewport = constrained_pixel_viewport(width, height)?;
+        let pixels_per_unit = effective_pixels_per_point(
+            window.scale_factor() as f32,
+            self.display.settings().ui_scale,
+        );
+        Some((viewport, pixels_per_unit))
+    }
+
     fn flush_display_requests(&mut self) {
         let Some(window) = self.window.clone() else {
             return;
@@ -2042,6 +2414,7 @@ impl ClientApp {
         self.network_frames_this_frame = 0;
         self.last_ticks_executed = 0;
         self.poll_network();
+        self.resolve_drop_dialog();
         // Canonical client frame wall delta (same span historically used as fade_dt).
         // Prefer this over fade-named values for animation; do not pre-multiply speed.
         let frame_dt = Instant::now()
@@ -2337,6 +2710,11 @@ impl ClientApp {
                     &self.presentation_oneshots,
                     &self.npc_sheet,
                     &mut self.npc_players,
+                    &self.accept_sheet,
+                    &self.turn_sheet,
+                    &mut self.accept_player,
+                    &mut self.turn_player,
+                    local_pose,
                     frame_dt,
                 )
             };
@@ -2493,21 +2871,95 @@ impl ClientApp {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let ui_textured_rects = if on_connection {
-            Vec::new()
-        } else {
-            viewport
-                .map(|viewport| {
-                    let pixels_per_unit = effective_pixels_per_point(
-                        window.scale_factor() as f32,
-                        self.display.settings().ui_scale,
-                    );
-                    self.ui_panel_asset
-                        .proof_regions(self.proof_panel_mode, viewport, pixels_per_unit)
-                        .unwrap_or_default()
+        let mut inventory_frame: Option<InventoryWindowFrame> = None;
+        let mut equipment_frame: Option<EquipmentWindowFrame> = None;
+        let mut message_frame: Option<MessageDialogFrame> = None;
+        if !on_connection && let Some(viewport) = viewport {
+            let pixels_per_unit = effective_pixels_per_point(
+                window.scale_factor() as f32,
+                self.display.settings().ui_scale,
+            );
+            #[cfg(feature = "dev-diagnostics")]
+            let panel_style = self
+                .debug
+                .as_ref()
+                .map(|debug| debug.ui.panel_style)
+                .unwrap_or_default();
+            #[cfg(not(feature = "dev-diagnostics"))]
+            let panel_style = crate::ui_panel::PanelStyle::default();
+            let window_assets = self.ui_window_assets.with_panel_style(panel_style);
+            inventory_frame = self
+                .inventory_window
+                .frame(InventoryWindowFrameInput {
+                    window_assets,
+                    tab_assets: self.ui_tab_assets,
+                    slot_assets: self.ui_slot_assets,
+                    item_icon_assets: &self.ui_item_icon_assets,
+                    entries: &self.lifecycle.view().inventory,
+                    registry: &self.registry,
+                    viewport,
+                    pixels_per_unit,
+                    cursor: self.cursor_position,
                 })
-                .unwrap_or_default()
-        };
+                .ok()
+                .flatten();
+            let equipment = self
+                .replica
+                .local_entity()
+                .and_then(|entity| entity.equipment);
+            equipment_frame = self
+                .equipment_window
+                .frame(EquipmentWindowFrameInput {
+                    window_assets,
+                    slot_assets: self.ui_slot_assets,
+                    item_icon_assets: &self.ui_item_icon_assets,
+                    equipment,
+                    viewport,
+                    pixels_per_unit,
+                    cursor: self.cursor_position,
+                })
+                .ok()
+                .flatten();
+            message_frame = self
+                .message_dialog
+                .frame(
+                    window_assets,
+                    self.ui_button_assets,
+                    viewport,
+                    pixels_per_unit,
+                    self.cursor_position,
+                )
+                .ok()
+                .flatten();
+        }
+        let mut ui_compositions = Vec::with_capacity(4);
+        ui_compositions.push(UiComposition::new(&[], &ui_rects, &ui_text));
+        for kind in &self.normal_window_order {
+            match kind {
+                NormalWindowKind::Inventory => {
+                    if let Some(frame) = inventory_frame.as_ref() {
+                        ui_compositions.push(UiComposition::new(
+                            &frame.textured_rects,
+                            &[],
+                            &frame.texts,
+                        ));
+                    }
+                }
+                NormalWindowKind::Equipment => {
+                    if let Some(frame) = equipment_frame.as_ref() {
+                        ui_compositions.push(UiComposition::new(
+                            &frame.textured_rects,
+                            &[],
+                            &frame.texts,
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(frame) = message_frame.as_ref() {
+            // Message is outside normal focus order and always occupies the top group.
+            ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
+        }
         #[cfg(feature = "dev-diagnostics")]
         let demand = self.diagnostics_demand();
         #[cfg(feature = "dev-diagnostics")]
@@ -2548,7 +3000,7 @@ impl ClientApp {
                 let can_connect = self.lifecycle.can_connect();
                 let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
                 let login = &mut self.dev_login;
-                renderer.render(&quads, &ui_textured_rects, &ui_rects, &ui_text, |pass| {
+                renderer.render(&quads, &ui_compositions, |pass| {
                     let Some(overlay) = overlay else {
                         return Vec::new();
                     };
@@ -2576,9 +3028,7 @@ impl ClientApp {
             #[cfg(not(feature = "dev-diagnostics"))]
             {
                 let _ = (&window, on_connection);
-                renderer.render(&quads, &ui_textured_rects, &ui_rects, &ui_text, |_| {
-                    Vec::new()
-                })
+                renderer.render(&quads, &ui_compositions, |_| Vec::new())
             }
         };
 
@@ -3480,6 +3930,7 @@ fn is_humanoid_social_npc(entity: &ReplicatedEntity) -> bool {
     entity.kind == ReplicatedKind::Npc && entity.equipment.is_some()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn npc_quads(
     replica: &crate::replica::ReplicatedWorld,
     interp: &crate::interp::InterpolationBuffer,
@@ -3493,12 +3944,18 @@ fn npc_quads(
             bool,
         ),
     >,
+    accept_sheet: &crate::npc_presentation::OverheadSheet,
+    turn_sheet: &crate::npc_presentation::OverheadSheet,
+    accept_player: &mut crate::npc_presentation::SpriteAnimationPlayer,
+    turn_player: &mut crate::npc_presentation::SpriteAnimationPlayer,
+    local_player_position: Option<[f32; 2]>,
     frame_dt: f32,
 ) -> Vec<DrawQuad> {
     let poses = interp.poses();
     let server_tick = replica.last_server_tick();
     let mut visible = std::collections::HashSet::new();
-    let quads = replica
+    let mut accept_shown = false;
+    let mut quads = replica
         .iter()
         .filter(|entity| entity.kind == ReplicatedKind::Npc && !is_humanoid_social_npc(entity))
         .flat_map(|entity| {
@@ -3562,6 +4019,11 @@ fn npc_quads(
             state.0.advance(clip, frame_dt);
             let frame = state.0.frame(clip).unwrap_or(8);
             let mut quads = vec![sheet.quad(position, frame, flash, state.2)];
+            if !accept_shown {
+                accept_shown = true;
+                accept_sheet.advance(accept_player, frame_dt);
+                quads.push(accept_sheet.quad(accept_player, [position[0], position[1] + 0.72]));
+            }
             if cue == NpcVisualCue::Hurt {
                 quads.push(DrawQuad::rect(
                     [position[0], position[1] + 0.48],
@@ -3584,6 +4046,10 @@ fn npc_quads(
             quads
         })
         .collect::<Vec<_>>();
+    if let Some(position) = local_player_position {
+        turn_sheet.advance(turn_player, frame_dt);
+        quads.push(turn_sheet.quad(turn_player, [position[0], position[1] + 1.0]));
+    }
     players.retain(|key, _| visible.contains(key));
     quads
 }
@@ -4128,6 +4594,24 @@ impl ApplicationHandler for ClientApp {
                 window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                {
+                    if self.message_dialog.is_active() {
+                        self.cancel_active_modal();
+                    } else {
+                        self.close_all_normal_windows();
+                    }
+                    window.request_redraw();
+                    return;
+                }
+                if self.message_dialog.is_active() {
+                    self.message_dialog
+                        .apply_key(event.physical_key, event.state, event.repeat);
+                    window.request_redraw();
+                    return;
+                }
                 #[cfg(feature = "dev-diagnostics")]
                 let text_like = self
                     .debug
@@ -4142,11 +4626,41 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let receives = true;
                 if self.lifecycle.gameplay_actions_allowed() && receives {
-                    if self.proof_panel_mode.apply_key(
+                    let inventory_key = self.inventory_window.apply_key(
                         event.physical_key,
                         event.state,
                         event.repeat,
-                    ) {
+                    );
+                    let equipment_key = self.equipment_window.apply_key(
+                        event.physical_key,
+                        event.state,
+                        event.repeat,
+                    );
+                    if inventory_key {
+                        if self.inventory_window.is_visible() {
+                            self.focus_normal_window(NormalWindowKind::Inventory);
+                        }
+                        if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() {
+                            self.inventory_window.arrange_side_by_side(
+                                viewport,
+                                pixels_per_unit,
+                                false,
+                            );
+                        }
+                        window.request_redraw();
+                        return;
+                    }
+                    if equipment_key {
+                        if self.equipment_window.is_visible() {
+                            self.focus_normal_window(NormalWindowKind::Equipment);
+                        }
+                        if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() {
+                            self.equipment_window.arrange_side_by_side(
+                                viewport,
+                                pixels_per_unit,
+                                true,
+                            );
+                        }
                         window.request_redraw();
                         return;
                     }
@@ -4177,9 +4691,18 @@ impl ApplicationHandler for ClientApp {
                     // Clear held input and push Neutral immediately.
                     self.actions.release_on_focus_loss();
                     self.on_focus_loss_input();
+                    self.inventory_window.cancel_pointer_interaction();
+                    self.equipment_window.cancel_pointer_interaction();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                if self.message_dialog.is_active() {
+                    self.cursor_position = Some([position.x as f32, position.y as f32]);
+                    self.message_dialog
+                        .pointer_moved([position.x as f32, position.y as f32]);
+                    window.request_redraw();
+                    return;
+                }
                 #[cfg(feature = "dev-diagnostics")]
                 let gameplay_mouse = gameplay_receives_pointer(
                     self.debug_overlay_visible(),
@@ -4188,10 +4711,35 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let gameplay_mouse = true;
                 if self.lifecycle.gameplay_actions_allowed() && gameplay_mouse {
-                    self.cursor_position = Some([position.x as f32, position.y as f32]);
+                    let cursor = [position.x as f32, position.y as f32];
+                    self.cursor_position = Some(cursor);
+                    if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
+                        && (self
+                            .inventory_window
+                            .pointer_moved(cursor, viewport, pixels_per_unit)
+                            || self.equipment_window.pointer_moved(
+                                cursor,
+                                viewport,
+                                pixels_per_unit,
+                            ))
+                    {
+                        window.request_redraw();
+                    }
                 }
             }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor_position = None;
+                window.request_redraw();
+            }
             WindowEvent::MouseInput { state, button, .. } => {
+                if self.message_dialog.is_active() {
+                    if button == MouseButton::Left {
+                        self.message_dialog
+                            .apply_pointer_button(state, self.cursor_position);
+                    }
+                    window.request_redraw();
+                    return;
+                }
                 #[cfg(feature = "dev-diagnostics")]
                 let gameplay_mouse = gameplay_receives_pointer(
                     self.debug_overlay_visible(),
@@ -4199,26 +4747,95 @@ impl ApplicationHandler for ClientApp {
                 );
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let gameplay_mouse = true;
+                if (!self.lifecycle.gameplay_actions_allowed() || !gameplay_mouse)
+                    && button == MouseButton::Left
+                {
+                    self.inventory_window.cancel_pointer_interaction();
+                    self.equipment_window.cancel_pointer_interaction();
+                }
                 if self.lifecycle.gameplay_actions_allowed()
                     && gameplay_mouse
-                    && state == ElementState::Pressed
                     && button == MouseButton::Left
-                    && let Some(cursor) = self.cursor_position
+                    && let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
                 {
-                    if let Some(index) = self
-                        .choice_bubble_hits
-                        .iter()
-                        .position(|bounds| bounds.contains(cursor))
-                    {
-                        self.choice_click_edge = Some(index);
-                        window.request_redraw();
-                    } else if self
-                        .speech_bubble_hit
-                        .is_some_and(|bounds| bounds.contains(cursor))
-                    {
-                        self.bubble_click_edge = true;
-                        window.request_redraw();
+                    let selected = if state == ElementState::Pressed {
+                        self.cursor_position.and_then(|cursor| {
+                            let order = self.normal_window_order.clone();
+                            topmost_normal_window(&order, |kind| {
+                                self.normal_window_visible(kind)
+                                    && self.normal_window_contains(
+                                        kind,
+                                        cursor,
+                                        viewport,
+                                        pixels_per_unit,
+                                    )
+                            })
+                        })
+                    } else {
+                        self.pointer_window
+                    };
+                    if state == ElementState::Pressed {
+                        self.pointer_window = selected;
+                        if let Some(kind) = selected {
+                            self.focus_normal_window(kind);
+                        }
                     }
+                    let handled = selected.is_some_and(|kind| {
+                        self.apply_normal_pointer_button(
+                            kind,
+                            state,
+                            self.cursor_position,
+                            viewport,
+                            pixels_per_unit,
+                        )
+                    });
+                    if state == ElementState::Released {
+                        self.pointer_window = None;
+                        if let Some(item) = self.inventory_window.take_completed_drag() {
+                            self.last_item_click = None;
+                            self.resolve_equipment_drag(
+                                DragSource::Inventory(item),
+                                self.cursor_position,
+                            );
+                        }
+                        if let Some(slot) = self.equipment_window.take_completed_drag() {
+                            self.last_item_click = None;
+                            self.resolve_equipment_drag(
+                                DragSource::Equipped(slot),
+                                self.cursor_position,
+                            );
+                        }
+                        if let Some(item) = self.inventory_window.take_completed_click() {
+                            self.handle_item_click(ItemClickTarget::Inventory(item));
+                        }
+                        if let Some(slot) = self.equipment_window.take_completed_click() {
+                            self.handle_item_click(ItemClickTarget::Equipped(slot));
+                        }
+                    }
+                    if handled {
+                        window.request_redraw();
+                        return;
+                    }
+                }
+                if state != ElementState::Pressed {
+                    return;
+                }
+                let Some(cursor) = self.cursor_position else {
+                    return;
+                };
+                if let Some(index) = self
+                    .choice_bubble_hits
+                    .iter()
+                    .position(|bounds| bounds.contains(cursor))
+                {
+                    self.choice_click_edge = Some(index);
+                    window.request_redraw();
+                } else if self
+                    .speech_bubble_hit
+                    .is_some_and(|bounds| bounds.contains(cursor))
+                {
+                    self.bubble_click_edge = true;
+                    window.request_redraw();
                 }
             }
             WindowEvent::MouseWheel { .. } => {}
@@ -4255,10 +4872,12 @@ fn rebase_wall_clock(last_instant: &mut Instant, now: Instant) {
 mod tests {
     use crate::platform::{DEV_WINDOW_HEIGHT, DEV_WINDOW_WIDTH};
     use crate::renderer::{Camera, DEFAULT_LOGICAL_HEIGHT, is_usable_surface};
+    use crate::ui_panel::{DragDestination, DragResolution, DragSource};
+    use purgatory_common::ItemInstanceId;
     use purgatory_simulation::{
         FootnoteConfig, PlayerInput, SimulationClock, TICK_DURATION, World,
     };
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn workspace_crates_are_linked() {
@@ -4266,6 +4885,151 @@ mod tests {
         assert!(!purgatory_protocol::version().is_empty());
         assert!(!purgatory_content::version().is_empty());
         assert!(!purgatory_simulation::version().is_empty());
+    }
+
+    #[test]
+    fn item_click_requires_same_target_inside_bounded_interval() {
+        let first = Instant::now();
+        let item = super::ItemClickTarget::Inventory(ItemInstanceId::from_raw(1));
+        let other = super::ItemClickTarget::Inventory(ItemInstanceId::from_raw(2));
+        assert!(!super::is_item_double_click(None, item, first));
+        assert!(super::is_item_double_click(
+            Some((item, first)),
+            item,
+            first + Duration::from_millis(400)
+        ));
+        assert!(!super::is_item_double_click(
+            Some((item, first)),
+            item,
+            first + Duration::from_millis(401)
+        ));
+        assert!(!super::is_item_double_click(
+            Some((item, first)),
+            other,
+            first + Duration::from_millis(100)
+        ));
+    }
+
+    #[test]
+    fn item_double_click_resolution_only_equipments_and_unequips() {
+        let item = ItemInstanceId::from_raw(3);
+        assert_eq!(
+            super::resolve_item_double_click(super::ItemClickTarget::Inventory(item), Some(5)),
+            DragResolution::Equip {
+                item_instance_id: item,
+                slot: 5
+            }
+        );
+        assert_eq!(
+            super::resolve_item_double_click(super::ItemClickTarget::Equipped(5), None),
+            DragResolution::Unequip { slot: 5 }
+        );
+        assert_eq!(
+            super::resolve_item_double_click(super::ItemClickTarget::Inventory(item), None),
+            DragResolution::Noop
+        );
+        assert_eq!(
+            super::resolve_drag(
+                DragSource::Inventory(item),
+                DragDestination::Outside,
+                Some(5)
+            ),
+            DragResolution::Drop {
+                item_instance_id: item
+            }
+        );
+        assert_eq!(
+            super::resolve_drag(
+                DragSource::Inventory(item),
+                DragDestination::EquipmentWindow,
+                Some(5)
+            ),
+            DragResolution::Noop
+        );
+        assert_eq!(
+            super::resolve_drag(
+                DragSource::Equipped(5),
+                DragDestination::EquipmentWindow,
+                None
+            ),
+            DragResolution::Noop
+        );
+    }
+
+    #[test]
+    fn protected_drop_waits_for_confirmation_and_modal_is_not_replaced() {
+        assert_eq!(
+            super::drop_dispatch(Some(true), false),
+            super::DropDispatch::AwaitConfirmation
+        );
+        assert_eq!(
+            super::drop_dispatch(Some(true), true),
+            super::DropDispatch::Ignored
+        );
+    }
+
+    #[test]
+    fn cancel_drop_sends_nothing_and_confirm_resolves_once() {
+        let item = ItemInstanceId::from_raw(9);
+        let mut pending = Some(item);
+        assert_eq!(
+            super::resolve_pending_drop(&mut pending, super::DialogAction::Cancel),
+            None
+        );
+        assert_eq!(pending, None);
+
+        pending = Some(item);
+        assert_eq!(
+            super::resolve_pending_drop(&mut pending, super::DialogAction::Confirm),
+            Some(item)
+        );
+        assert_eq!(
+            super::resolve_pending_drop(&mut pending, super::DialogAction::Confirm),
+            None
+        );
+    }
+
+    #[test]
+    fn cancelling_drop_confirmation_clears_state_and_allows_retry() {
+        let item = ItemInstanceId::from_raw(11);
+        let mut dialog = super::MessageDialog::default();
+        assert!(dialog.open(super::MessageDialogRequest {
+            id: 1,
+            title: "Drop Item".into(),
+            body: "Confirm".into(),
+            buttons: vec![
+                super::DialogButton::new("Cancel", super::DialogAction::Cancel),
+                super::DialogButton::new("Drop", super::DialogAction::Confirm),
+            ],
+            default_action: Some(super::DialogAction::Confirm),
+            cancel_action: Some(super::DialogAction::Cancel),
+        }));
+        let mut pending = Some(item);
+
+        dialog.apply_key(
+            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape),
+            winit::event::ElementState::Pressed,
+            false,
+        );
+        let result = dialog.take_result().expect("escape cancellation result");
+        assert_eq!(
+            super::resolve_pending_drop(&mut pending, result.action),
+            None
+        );
+        assert!(!dialog.is_active());
+        assert_eq!(pending, None);
+        assert_eq!(
+            super::drop_dispatch(Some(true), dialog.is_active()),
+            super::DropDispatch::AwaitConfirmation
+        );
+    }
+
+    #[test]
+    fn unprotected_drop_remains_immediate() {
+        assert_eq!(
+            super::drop_dispatch(Some(false), false),
+            super::DropDispatch::Immediate
+        );
     }
 
     #[test]
@@ -5333,5 +6097,30 @@ mod tests {
         fade.tick(crate::map_fade::MAP_FADE_OUT_SEC);
         assert!(fade.is_fully_black());
         assert!(fade.allows_baseline_swap());
+    }
+
+    #[test]
+    fn normal_focus_order_and_hit_testing_are_front_to_back() {
+        let mut order = vec![
+            super::NormalWindowKind::Inventory,
+            super::NormalWindowKind::Equipment,
+        ];
+        super::reorder_normal_window(&mut order, super::NormalWindowKind::Inventory);
+        assert_eq!(
+            order,
+            vec![
+                super::NormalWindowKind::Equipment,
+                super::NormalWindowKind::Inventory
+            ]
+        );
+        assert_eq!(
+            super::topmost_normal_window(&order, |kind| {
+                matches!(
+                    kind,
+                    super::NormalWindowKind::Equipment | super::NormalWindowKind::Inventory
+                )
+            }),
+            Some(super::NormalWindowKind::Inventory)
+        );
     }
 }

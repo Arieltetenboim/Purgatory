@@ -32,7 +32,8 @@ pub use instantiate::{
     entity_spawn_request, geometry_plan, map_plan, spawn_point_position, world_address_for_map,
 };
 pub use item::{
-    ITEM_CONTENT_SCHEMA_VERSION, ItemDefinition, is_stackable, validate_item_definition,
+    ITEM_CONTENT_SCHEMA_VERSION, ITEM_PRESENTATION_SCHEMA_VERSION, ItemCategory, ItemDefinition,
+    ItemPresentation, is_stackable, validate_item_definition, validate_item_presentation,
 };
 pub use loader::{LoadMode, default_content_root, load_registry};
 pub use registry::ContentRegistry;

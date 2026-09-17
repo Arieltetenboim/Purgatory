@@ -284,9 +284,13 @@ pub struct TextRenderer {
     texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     pipeline: wgpu::RenderPipeline,
+    batches: Vec<TextBatch>,
+    uploads: usize,
+}
+
+struct TextBatch {
     buffer: wgpu::Buffer,
     count: u32,
-    uploads: usize,
 }
 impl TextRenderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Result<Self, String> {
@@ -335,25 +339,19 @@ impl TextRenderer {
                 },
             ],
         });
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("text-v0-vertices"),
-            size: (MAX_GLYPHS * 6 * std::mem::size_of::<Vertex>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         Ok(Self {
             atlas,
             texture,
             bind_group,
             pipeline,
-            buffer,
-            count: 0,
+            batches: Vec::new(),
             uploads: 0,
         })
     }
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn prepare(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         content: &TextContent,
         style: TextStyle,
@@ -361,15 +359,16 @@ impl TextRenderer {
         viewport: [u32; 2],
     ) -> TextMetrics {
         let layout = TextLayout::new(content, style, anchor, viewport, &mut self.atlas);
-        self.upload_and_store(queue, layout)
+        self.upload_and_store(device, queue, layout)
     }
 
     pub(crate) fn prepare_blocks(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         blocks: &[TextBlock],
         viewport: [u32; 2],
-    ) {
+    ) -> usize {
         let mut vertices = Vec::new();
         for block in blocks {
             let layout = TextLayout::with_max_width(
@@ -386,19 +385,25 @@ impl TextRenderer {
                 break;
             }
         }
-        self.upload_vertices(queue, &vertices);
+        self.upload_vertices(device, queue, &vertices);
+        self.batches.len() - 1
     }
 
     pub(crate) fn clear(&mut self) {
-        self.count = 0;
+        self.batches.clear();
     }
 
-    fn upload_and_store(&mut self, queue: &wgpu::Queue, layout: TextLayout) -> TextMetrics {
-        self.upload_vertices(queue, &layout.vertices);
+    fn upload_and_store(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: TextLayout,
+    ) -> TextMetrics {
+        self.upload_vertices(device, queue, &layout.vertices);
         layout.metrics
     }
 
-    fn upload_vertices(&mut self, queue: &wgpu::Queue, vertices: &[Vertex]) {
+    fn upload_vertices(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[Vertex]) {
         for (cell, pixels) in self.atlas.pending.drain(..) {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -425,13 +430,28 @@ impl TextRenderer {
             );
             self.uploads += 1;
         }
-        self.count = vertices.len() as u32;
-        if self.count > 0 {
-            queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(vertices));
+        let count = vertices.len() as u32;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("text-v0-batch"),
+            size: (MAX_GLYPHS * 6 * std::mem::size_of::<Vertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if count > 0 {
+            queue.write_buffer(&buffer, 0, bytemuck::cast_slice(vertices));
         }
+        self.batches.push(TextBatch { buffer, count });
     }
-    pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
-        if self.count == 0 {
+    pub fn draw(
+        &self,
+        batch_index: usize,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) {
+        let Some(batch) = self.batches.get(batch_index) else {
+            return;
+        };
+        if batch.count == 0 {
             return;
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -452,8 +472,8 @@ impl TextRenderer {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.buffer.slice(..));
-        pass.draw(0..self.count, 0..1);
+        pass.set_vertex_buffer(0, batch.buffer.slice(..));
+        pass.draw(0..batch.count, 0..1);
     }
 }
 
@@ -652,6 +672,7 @@ mod tests {
         let mut renderer = TextRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb).unwrap();
         let content = TextContent("PURGATORY — Text v0\nNative UI text online".into());
         renderer.prepare(
+            &device,
             &queue,
             &content,
             TextStyle::default(),
@@ -661,6 +682,7 @@ mod tests {
         let uploads = renderer.uploads;
         assert!(uploads > 0);
         renderer.prepare(
+            &device,
             &queue,
             &content,
             TextStyle {
@@ -688,7 +710,7 @@ mod tests {
             view_formats: &[],
         });
         let mut encoder = device.create_command_encoder(&Default::default());
-        renderer.draw(&mut encoder, &target.create_view(&Default::default()));
+        renderer.draw(1, &mut encoder, &target.create_view(&Default::default()));
         queue.submit([encoder.finish()]);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     }

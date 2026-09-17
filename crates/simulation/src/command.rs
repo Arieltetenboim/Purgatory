@@ -17,6 +17,7 @@ pub enum CommandClass {
     Ability,
     Equipment,
     Pickup,
+    Drop,
 }
 
 /// Typed command denial. Not a string.

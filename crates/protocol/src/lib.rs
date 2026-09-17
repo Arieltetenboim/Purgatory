@@ -78,6 +78,7 @@ pub use interact::{
 };
 pub use inventory::{InventoryEntry, ServerInventory};
 pub use item::{
+    DROP_ACCEPTED_BYTES, DROP_REJECTED_BYTES, DROP_REQUEST_BYTES, DropRejectReason, DropRequest,
     PICKUP_ACCEPTED_BYTES, PICKUP_REJECTED_BYTES, PICKUP_REQUEST_BYTES, PickupRejectReason,
     PickupRequest, ServerItem,
 };
@@ -119,7 +120,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 27);
+        assert_eq!(PROTOCOL_VERSION, 28);
     }
 
     #[test]

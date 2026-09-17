@@ -979,9 +979,7 @@ impl Renderer {
     pub fn render(
         &mut self,
         world_quads: &[DrawQuad],
-        ui_textured_rects: &[super::ui::UiTexturedRect],
-        ui_rects: &[super::ui::UiRect],
-        ui_text: &[super::text::TextBlock],
+        ui_compositions: &[super::ui::UiComposition<'_>],
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         if !is_usable_surface(self.config.width, self.config.height) {
@@ -992,13 +990,7 @@ impl Renderer {
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                let status = self.draw_surface_texture(
-                    texture,
-                    ui_textured_rects,
-                    ui_rects,
-                    ui_text,
-                    overlay,
-                );
+                let status = self.draw_surface_texture(texture, ui_compositions, overlay);
                 return match status {
                     FrameStatus::Drawn => FrameStatus::NeedsReconfigure,
                     other => other,
@@ -1018,21 +1010,13 @@ impl Renderer {
             }
         };
 
-        self.draw_surface_texture(
-            surface_texture,
-            ui_textured_rects,
-            ui_rects,
-            ui_text,
-            overlay,
-        )
+        self.draw_surface_texture(surface_texture, ui_compositions, overlay)
     }
 
     fn draw_surface_texture(
         &mut self,
         surface_texture: wgpu::SurfaceTexture,
-        ui_textured_rects: &[super::ui::UiTexturedRect],
-        ui_rects: &[super::ui::UiRect],
-        ui_text: &[super::text::TextBlock],
+        ui_compositions: &[super::ui::UiComposition<'_>],
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         self.ensure_world_target();
@@ -1147,29 +1131,34 @@ impl Renderer {
             self.blit_rf_ab_panels(&mut pass);
         }
 
-        self.ui.prepare(
-            &self.queue,
-            ui_rects,
-            ui_textured_rects,
-            [self.config.width, self.config.height],
-        );
-        let sprite_textures = &self.sprite_textures;
-        self.ui.draw_textured(&mut encoder, &view, |texture| {
-            sprite_textures
-                .iter()
-                .find(|sprite| sprite.id == texture)
-                .map(|sprite| &sprite.ui_bind_group)
-        });
-        self.ui.draw(&mut encoder, &view);
-        if !ui_text.is_empty() {
-            self.text.prepare_blocks(
+        self.ui.clear();
+        self.text.clear();
+        for composition in ui_compositions {
+            let ui_batch = self.ui.prepare(
+                &self.device,
                 &self.queue,
-                ui_text,
+                composition.rects,
+                composition.textured_rects,
                 [self.config.width, self.config.height],
             );
-            self.text.draw(&mut encoder, &view);
-        } else {
-            self.text.clear();
+            let sprite_textures = &self.sprite_textures;
+            self.ui
+                .draw_textured(ui_batch, &mut encoder, &view, |texture| {
+                    sprite_textures
+                        .iter()
+                        .find(|sprite| sprite.id == texture)
+                        .map(|sprite| &sprite.ui_bind_group)
+                });
+            self.ui.draw(ui_batch, &mut encoder, &view);
+            if !composition.text.is_empty() {
+                let text_batch = self.text.prepare_blocks(
+                    &self.device,
+                    &self.queue,
+                    composition.text,
+                    [self.config.width, self.config.height],
+                );
+                self.text.draw(text_batch, &mut encoder, &view);
+            }
         }
         let extra = overlay(OverlayPass {
             device: &self.device,

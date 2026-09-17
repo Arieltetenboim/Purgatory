@@ -844,6 +844,55 @@ impl World {
         Ok((moved, slot))
     }
 
+    /// Move one owned inventory item to a freshly spawned transient world-drop
+    /// manifestation at the actor's current authoritative address and position.
+    ///
+    /// The existing `ItemInstanceId` and canonical `ItemRecord` are preserved;
+    /// no new instance is minted and no second record is created. The entire
+    /// stack moves with no splitting. On failure the inventory/item state and
+    /// the manifestation are left unchanged.
+    pub fn drop_inventory_item(
+        &mut self,
+        actor: EntityId,
+        item: ItemInstanceId,
+    ) -> Result<EntityId, ItemRuntimeError> {
+        let Some(actor_data) = self.slot_live(actor) else {
+            return Err(ItemRuntimeError::InvalidPickupActor);
+        };
+        if actor_data.player.is_none()
+            || actor_data.lifecycle != EntityLifecycle::Active
+            || actor_data.transform.is_none()
+        {
+            return Err(ItemRuntimeError::InvalidPickupActor);
+        }
+        // Validate ownership before spawning anything.
+        if !self.inventory_contains(actor, item) {
+            return Err(ItemRuntimeError::ItemNotInInventory { owner: actor, item });
+        }
+        let record = self
+            .item_record(item)
+            .ok_or(ItemRuntimeError::ItemNotInInventory { owner: actor, item })?;
+        let address = actor_data.address;
+        let position = actor_data.transform.expect("checked above").position;
+
+        let Some(entity) = self.spawn(
+            RuntimeSpawnRequest::transient_at(address)
+                .with_transform(Transform::from_position(position))
+                .with_content(record.definition)
+                .visible(),
+        ) else {
+            return Err(ItemRuntimeError::SpawnFailed);
+        };
+        if let Err(err) = self
+            .item_runtime
+            .move_inventory_to_world_drop(actor, item, entity, true)
+        {
+            let _ = self.despawn(entity);
+            return Err(err);
+        }
+        Ok(entity)
+    }
+
     /// Authoritative create: mint one `ItemInstanceId`, spawn one world-drop entity,
     /// and bind one canonical runtime record.
     pub fn spawn_world_drop_item(

@@ -39,13 +39,10 @@ impl AssetRuntime {
             resources: Vec::new(),
             by_key: HashMap::new(),
             visuals: HashMap::new(),
-            // ART-R1 reserved the first renderer identity for Headwear.
             next_id: 1,
         }
     }
 
-    /// Registers an embedded PNG once. Re-registering a key returns its
-    /// existing identity without decoding or allocating another resource.
     pub(crate) fn register_png(
         &mut self,
         key: &str,
@@ -57,11 +54,7 @@ impl AssetRuntime {
         let image = image::load_from_memory(bytes)
             .map_err(|err| format!("decode sprite resource {key}: {err}"))?
             .to_rgba8();
-        let id = SpriteTextureId::from_raw(self.next_id);
-        self.next_id = self.next_id.saturating_add(1);
-        self.by_key.insert(key.to_owned(), id);
-        self.resources.push(SpriteResource { id, image });
-        Ok(id)
+        self.register_image(key, image)
     }
 
     pub(crate) fn register_image(

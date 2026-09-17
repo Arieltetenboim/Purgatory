@@ -20,6 +20,10 @@ const RED_SLIME_FRAME_SECONDS: f32 = 0.10;
 // Four attack frames occupy the readable 0.40 s clip while the authoritative
 // one-shot remains active for 0.60 s and holds the final frame afterward.
 const RED_SLIME_ATTACK_FRAME_SECONDS: f32 = RED_SLIME_FRAME_SECONDS;
+const ACCEPT_MANIFEST: &[u8] = include_bytes!("../../../Graphic/ui/animation/accept.json");
+const ACCEPT_TEXTURE: &[u8] = include_bytes!("../../../Graphic/ui/animation/accept.png");
+const TURN_MANIFEST: &[u8] = include_bytes!("../../../Graphic/ui/animation/turn.json");
+const TURN_TEXTURE: &[u8] = include_bytes!("../../../Graphic/ui/animation/turn.png");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SpritePlaybackMode {
@@ -120,6 +124,146 @@ pub(crate) struct SpriteSheet {
     frame_height: u32,
     frames: Vec<[[f32; 2]; 4]>,
     clips: HashMap<&'static str, SpriteAnimationClip>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct OverheadSheet {
+    texture: SpriteTextureId,
+    frames: Vec<OverheadFrame>,
+    frame_seconds: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OverheadFrame {
+    uv: [[f32; 2]; 4],
+    visual_bounds: [u32; 4],
+}
+
+impl OverheadSheet {
+    pub(crate) fn accept(assets: &mut AssetRuntime) -> Result<Self, String> {
+        Self::load(
+            assets,
+            ACCEPT_MANIFEST,
+            ACCEPT_TEXTURE,
+            "ui.overhead.accept",
+        )
+    }
+
+    pub(crate) fn turn(assets: &mut AssetRuntime) -> Result<Self, String> {
+        Self::load(assets, TURN_MANIFEST, TURN_TEXTURE, "ui.overhead.turn")
+    }
+
+    fn load(
+        assets: &mut AssetRuntime,
+        manifest_bytes: &[u8],
+        texture_bytes: &[u8],
+        expected_id: &str,
+    ) -> Result<Self, String> {
+        let manifest: RawOverheadManifest =
+            serde_json::from_slice(manifest_bytes).map_err(|error| error.to_string())?;
+        if manifest.schema_version != 1
+            || manifest.kind != "purgatory_sprite_animation"
+            || manifest.id != expected_id
+            || manifest.frame_order.len() != manifest.frames.len()
+            || manifest.frame_size_px != [192, 1024]
+            || !manifest.looped
+            || manifest.registration != "bottom_center"
+            || manifest
+                .frame_order
+                .iter()
+                .copied()
+                .enumerate()
+                .any(|(index, frame)| frame != index as u16)
+        {
+            return Err(format!(
+                "unsupported overhead animation manifest {expected_id}"
+            ));
+        }
+        let texture = assets.register_png(&manifest.id, texture_bytes)?;
+        let resource = assets
+            .resource(texture)
+            .ok_or_else(|| format!("{expected_id} texture was not registered"))?;
+        let width = resource.image.width();
+        let height = resource.image.height();
+        if [width, height] != manifest.dimensions_px {
+            return Err(format!(
+                "{expected_id} dimensions do not match decoded texture"
+            ));
+        }
+        let frames = manifest
+            .frames
+            .into_iter()
+            .map(|frame| {
+                let [x, y, w, h] = [frame.x, frame.y, frame.width, frame.height];
+                if w == 0
+                    || h == 0
+                    || x.checked_add(w).is_none_or(|right| right > width)
+                    || y.checked_add(h).is_none_or(|bottom| bottom > height)
+                    || frame.visual_bounds[2] == 0
+                    || frame.visual_bounds[3] == 0
+                    || frame.visual_bounds[0] + frame.visual_bounds[2] > w
+                    || frame.visual_bounds[1] + frame.visual_bounds[3] > h
+                {
+                    return Err(format!("{expected_id} contains an invalid frame"));
+                }
+                let [vx, vy, vw, vh] = frame.visual_bounds;
+                Ok(OverheadFrame {
+                    uv: [
+                        [
+                            (x + vx) as f32 / width as f32,
+                            (y + vy + vh) as f32 / height as f32,
+                        ],
+                        [
+                            (x + vx + vw) as f32 / width as f32,
+                            (y + vy + vh) as f32 / height as f32,
+                        ],
+                        [
+                            (x + vx + vw) as f32 / width as f32,
+                            (y + vy) as f32 / height as f32,
+                        ],
+                        [
+                            (x + vx) as f32 / width as f32,
+                            (y + vy) as f32 / height as f32,
+                        ],
+                    ],
+                    visual_bounds: [vx, vy, vw, vh],
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            texture,
+            frames,
+            frame_seconds: manifest.frame_seconds,
+        })
+    }
+
+    pub(crate) fn advance(&self, player: &mut SpriteAnimationPlayer, dt: f32) {
+        let clip = SpriteAnimationClip::new(
+            (0..self.frames.len()).map(|index| index as u16).collect(),
+            self.frame_seconds,
+            SpritePlaybackMode::Loop,
+        );
+        player.advance(&clip, dt);
+    }
+
+    pub(crate) fn quad(&self, player: &SpriteAnimationPlayer, position: [f32; 2]) -> DrawQuad {
+        let frame = self.frames[player.frame_index % self.frames.len()];
+        let scale = 1.0 / 256.0;
+        let width = frame.visual_bounds[2] as f32 * scale;
+        let height = frame.visual_bounds[3] as f32 * scale;
+        DrawQuad::textured_sprite(
+            self.texture,
+            [position[0], position[1] + height * 0.5],
+            [
+                [-width * 0.5, -height * 0.5],
+                [width * 0.5, -height * 0.5],
+                [width * 0.5, height * 0.5],
+                [-width * 0.5, height * 0.5],
+            ],
+            frame.uv,
+            0.0,
+        )
+    }
 }
 
 impl SpriteSheet {
@@ -269,6 +413,30 @@ struct RawClip {
     looped: bool,
 }
 
+#[derive(Deserialize)]
+struct RawOverheadManifest {
+    schema_version: u32,
+    kind: String,
+    id: String,
+    dimensions_px: [u32; 2],
+    frame_size_px: [u32; 2],
+    frames: Vec<RawOverheadFrame>,
+    frame_order: Vec<u16>,
+    frame_seconds: f32,
+    #[serde(rename = "loop")]
+    looped: bool,
+    registration: String,
+}
+
+#[derive(Deserialize)]
+struct RawOverheadFrame {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    visual_bounds: [u32; 4],
+}
+
 #[must_use]
 pub(crate) fn base_activity(
     velocity_x: f32,
@@ -402,5 +570,16 @@ mod tests {
         assert_eq!(raw.id, "creature.red_slime");
         assert_eq!(raw.atlas, "redslime.png");
         assert_eq!(raw.authored_facing, "right");
+    }
+
+    #[test]
+    fn overhead_manifests_resolve_eight_registered_frames() {
+        let mut assets = AssetRuntime::new();
+        let accept = OverheadSheet::accept(&mut assets).unwrap();
+        let turn = OverheadSheet::turn(&mut assets).unwrap();
+        assert_eq!(accept.frames.len(), 8);
+        assert_eq!(turn.frames.len(), 8);
+        assert_ne!(accept.frames[3].visual_bounds, turn.frames[3].visual_bounds);
+        assert_eq!(assets.resource_count(), 2);
     }
 }
