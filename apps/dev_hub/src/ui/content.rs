@@ -6,60 +6,7 @@ use crate::authoring_template;
 use crate::headwear_side_master;
 use crate::theme;
 use crate::ui::layout::{self, btn_ghost, btn_primary, card};
-
-pub(crate) fn launch_npc_lab() -> Result<(), String> {
-    let root = std::env::current_dir().map_err(|err| format!("current directory: {err}"))?;
-    let launcher = root.join("tools").join("npc_lab").join("run.ps1");
-    if !launcher.is_file() {
-        return Err(format!(
-            "NPC Lab launcher not found: {}",
-            launcher.display()
-        ));
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-
-        let log_dir = root.join("logs").join("dev-tools");
-        std::fs::create_dir_all(&log_dir)
-            .map_err(|err| format!("create {}: {err}", log_dir.display()))?;
-        let log_path = log_dir.join("npc-lab.log");
-        let stdout = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map_err(|err| format!("open {}: {err}", log_path.display()))?;
-        let stderr = stdout
-            .try_clone()
-            .map_err(|err| format!("clone {}: {err}", log_path.display()))?;
-
-        std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-            ])
-            .arg(&launcher)
-            .current_dir(&root)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::from(stdout))
-            .stderr(std::process::Stdio::from(stderr))
-            .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
-            .spawn()
-            .map_err(|err| format!("launch {}: {err}", launcher.display()))?;
-        Ok(())
-    }
-
-    #[cfg(not(windows))]
-    {
-        Err("NPC Lab N1 launcher currently supports Windows only".to_owned())
-    }
-}
+use crate::ui::tool_launch;
 
 pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<HubCommand> {
     let mut cmd = None;
@@ -93,7 +40,7 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
             );
             ui.add_space(8.0);
             if ui.add(btn_primary("Launch NPC Lab")).clicked() {
-                *export_status = Some(match launch_npc_lab() {
+                *export_status = Some(match tool_launch::launch_npc_lab() {
                     Ok(()) => "NPC Lab launch requested".to_owned(),
                     Err(err) => format!("NPC Lab launch failed: {err}"),
                 });
