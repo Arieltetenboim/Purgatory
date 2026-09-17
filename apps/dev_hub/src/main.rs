@@ -8,6 +8,7 @@ mod assets;
 mod authoring_template;
 mod headwear_side_master;
 mod navigation;
+mod sound;
 mod theme;
 mod ui;
 
