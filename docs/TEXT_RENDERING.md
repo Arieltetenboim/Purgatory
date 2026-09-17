@@ -76,3 +76,25 @@ adapter. Run both `cargo test -p purgatory-client renderer::text` and the explic
 GPU test when changing this renderer. N10c additionally requires a normal
 networked visual check that authored dialogue text is readable, remains clamped
 while the camera/window changes, and advances through both `E` and a bubble click.
+
+## Historical Text v0 verification
+
+The original Text v0 proof at implementation commit `78dcc14` was manually accepted
+in-game by the project owner. At that checkpoint, the proof text remained fixed in
+screen space while the camera moved, remained centered through resize and
+minimize/restore, was unaffected by Render Scale, coexisted with Debug, and
+correctly disappeared/reappeared across disconnect/reconnect. This is historical
+owner-reported runtime evidence for that implementation, not a claim that the
+current renderer has been re-verified against the same checklist.
+
+The same checkpoint also reported passing Text v0 CPU tests, the explicit GPU text
+test, workspace check/tests, workspace Clippy with warnings denied, content
+validation, and client check without default features. The then-existing canonical
+PowerShell gate still stopped on unrelated pre-existing rustfmt drift in
+`crates/common`; that blocker was repository state at the time and must not be
+read as a current gate result.
+
+Future text-system polish should continue from the current generic `TextBlock` /
+`SpeechBubble` architecture above rather than reviving the old proof-only branch.
+The deferred areas listed above remain the intended backlog unless superseded by a
+newer design or runtime contract.
