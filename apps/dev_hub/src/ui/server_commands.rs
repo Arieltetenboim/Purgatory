@@ -25,8 +25,6 @@ pub struct ServerCommandsState {
     selected_player: Option<u64>,
     selected_npc: Option<u32>,
     channel: u32,
-    speed_hundredths: u16,
-    jump_hundredths: u16,
     history: Vec<String>,
     sender: Sender<AdminReply>,
     receiver: Receiver<AdminReply>,
@@ -43,8 +41,6 @@ impl Default for ServerCommandsState {
             selected_player: None,
             selected_npc: None,
             channel: 1,
-            speed_hundredths: 500,
-            jump_hundredths: 900,
             history: Vec::new(),
             sender,
             receiver,
@@ -60,7 +56,7 @@ impl ServerCommandsState {
         self.poll();
         self.maybe_refresh(snap);
 
-        let _ = hub_card(ui, "⌘", "Server Commands", |ui| {
+        let _ = hub_card(ui, "CMD", "Server Commands", |ui| {
             ui.horizontal(|ui| {
                 let connected = self.snapshot.is_some() && self.last_transport_error.is_none();
                 let (label, color) = if connected {
@@ -133,10 +129,7 @@ impl ServerCommandsState {
                             );
                         }
                     });
-                ui.colored_label(
-                    theme::muted(),
-                    "All commands remain server-authoritative.",
-                );
+                ui.colored_label(theme::muted(), "All commands remain server-authoritative.");
             });
 
             ui.add_space(8.0);
@@ -164,15 +157,13 @@ impl ServerCommandsState {
                         "Spawn the selected authored NPC near the selected player's authoritative position.",
                     )
                     .clicked()
-                {
-                    if let (Some(connection_id), Some(npc_content_id)) =
+                    && let (Some(connection_id), Some(npc_content_id)) =
                         (self.selected_player, self.selected_npc)
-                    {
-                        self.send(DevAdminRequest::SpawnNpc {
-                            connection_id,
-                            npc_content_id,
-                        });
-                    }
+                {
+                    self.send(DevAdminRequest::SpawnNpc {
+                        connection_id,
+                        npc_content_id,
+                    });
                 }
             });
 
@@ -185,10 +176,9 @@ impl ServerCommandsState {
                         "Reset the selected player through the existing authoritative DEV reset path.",
                     )
                     .clicked()
+                    && let Some(connection_id) = self.selected_player
                 {
-                    if let Some(connection_id) = self.selected_player {
-                        self.send(DevAdminRequest::ResetPlayer { connection_id });
-                    }
+                    self.send(DevAdminRequest::ResetPlayer { connection_id });
                 }
 
                 ui.label("Channel");
@@ -199,94 +189,33 @@ impl ServerCommandsState {
                         "Move the selected player to this DEV channel through server authority.",
                     )
                     .clicked()
+                    && let Some(connection_id) = self.selected_player
                 {
-                    if let Some(connection_id) = self.selected_player {
-                        self.send(DevAdminRequest::SetChannel {
-                            connection_id,
-                            channel: self.channel,
-                        });
-                    }
-                }
-            });
-
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Movement overrides").strong());
-                ui.label("Speed ×0.01");
-                ui.add(egui::DragValue::new(&mut self.speed_hundredths).range(50..=2400));
-                if ui
-                    .add_enabled(ready, btn_ghost("Set Speed"))
-                    .on_hover_text(
-                        "Apply the server-side DEV speed override to the selected player.",
-                    )
-                    .clicked()
-                {
-                    if let Some(connection_id) = self.selected_player {
-                        self.send(DevAdminRequest::SetSpeed {
-                            connection_id,
-                            hundredths: Some(self.speed_hundredths),
-                        });
-                    }
-                }
-                if ui
-                    .add_enabled(ready, btn_ghost("Clear Speed"))
-                    .on_hover_text(
-                        "Remove the DEV speed override and return to authored/default movement speed.",
-                    )
-                    .clicked()
-                {
-                    if let Some(connection_id) = self.selected_player {
-                        self.send(DevAdminRequest::SetSpeed {
-                            connection_id,
-                            hundredths: None,
-                        });
-                    }
-                }
-            });
-
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label("Jump ×0.01");
-                ui.add(egui::DragValue::new(&mut self.jump_hundredths).range(100..=3000));
-                if ui
-                    .add_enabled(ready, btn_ghost("Set Jump"))
-                    .on_hover_text(
-                        "Apply the server-side DEV jump override to the selected player.",
-                    )
-                    .clicked()
-                {
-                    if let Some(connection_id) = self.selected_player {
-                        self.send(DevAdminRequest::SetJump {
-                            connection_id,
-                            hundredths: Some(self.jump_hundredths),
-                        });
-                    }
-                }
-                if ui
-                    .add_enabled(ready, btn_ghost("Clear Jump"))
-                    .on_hover_text(
-                        "Remove the DEV jump override and return to authored/default jump power.",
-                    )
-                    .clicked()
-                {
-                    if let Some(connection_id) = self.selected_player {
-                        self.send(DevAdminRequest::SetJump {
-                            connection_id,
-                            hundredths: None,
-                        });
-                    }
+                    self.send(DevAdminRequest::SetChannel {
+                        connection_id,
+                        channel: self.channel,
+                    });
                 }
             });
 
             ui.add_space(8.0);
             ui.colored_label(
                 theme::muted(),
-                "This first slice exposes existing safe DEV hooks. Item spawning and narrative-state mutation require explicit simulation-owner commands and are not faked here.",
+                "Speed and jump overrides were removed from this surface. Spawn Item is the next authoritative command being added.",
             );
         });
 
         ui.add_space(theme::CARD_GAP);
-        let _ = hub_card(ui, "≡", "Server Commands Log", |ui| {
+        let _ = hub_card(ui, "LOG", "Server Commands Log", |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .add(btn_ghost("Copy"))
+                    .on_hover_text("Copy the entire Server Commands log.")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(self.history.join("\n"));
+                }
+            });
             if self.history.is_empty() {
                 ui.colored_label(theme::muted(), "No Server Commands issued yet.");
                 return;
@@ -297,9 +226,9 @@ impl ServerCommandsState {
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     for line in &self.history {
-                        let color = if line.starts_with('✓') {
+                        let color = if line.starts_with("V ") {
                             theme::success()
-                        } else if line.starts_with('×') {
+                        } else if line.starts_with("X ") {
                             theme::destructive()
                         } else {
                             theme::body()
@@ -364,14 +293,14 @@ impl ServerCommandsState {
                 }
                 Ok(DevAdminResponse::Command { ok, message }) => {
                     self.last_transport_error = None;
-                    self.push_history(format!("{} {message}", if ok { '✓' } else { '×' }));
+                    self.push_history(format!("{} {message}", if ok { 'V' } else { 'X' }));
                     self.last_refresh = None;
                 }
                 Err(error) => {
                     self.snapshot = None;
                     self.last_transport_error = Some(error.clone());
                     if !is_snapshot {
-                        self.push_history(format!("× {error}"));
+                        self.push_history(format!("X {error}"));
                     }
                 }
             }
