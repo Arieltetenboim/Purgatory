@@ -84,7 +84,7 @@ use crate::prediction::{LocalPrediction, local_presentation_pose};
 use crate::renderer::rf_diag::{RfVertexProof, rf_probe_proof, rf_scene_quads};
 use crate::renderer::{
     Camera, DrawQuad, FOOTNOTE_LOGICAL_HEIGHT, FrameStatus, MAX_QUADS, PixelViewport, Renderer,
-    TextBlock, UiRect, constrained_pixel_viewport, parallax_quads,
+    TextBlock, UiComposition, UiRect, constrained_pixel_viewport, parallax_quads,
 };
 #[cfg(feature = "dev-diagnostics")]
 use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_quads};
@@ -92,11 +92,13 @@ use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
-use crate::ui_dialog::{DialogAction, DialogButton, MessageDialog, MessageDialogRequest};
+use crate::ui_dialog::{
+    DialogAction, DialogButton, MessageDialog, MessageDialogFrame, MessageDialogRequest,
+};
 use crate::ui_panel::{
-    DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrameInput,
-    InventoryWindow, InventoryWindowFrameInput, UiButtonAssets, UiItemIconAssets, UiSlotAssets,
-    UiTabAssets, UiWindowAssets, resolve_drag,
+    DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrame,
+    EquipmentWindowFrameInput, InventoryWindow, InventoryWindowFrame, InventoryWindowFrameInput,
+    UiButtonAssets, UiItemIconAssets, UiSlotAssets, UiTabAssets, UiWindowAssets, resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
 
@@ -272,6 +274,8 @@ struct ClientApp {
     ui_item_icon_assets: UiItemIconAssets,
     inventory_window: InventoryWindow,
     equipment_window: EquipmentWindow,
+    normal_window_order: Vec<NormalWindowKind>,
+    pointer_window: Option<NormalWindowKind>,
     message_dialog: MessageDialog,
     pending_drop: Option<purgatory_common::ItemInstanceId>,
     dialogue_runtime: DialogueRuntime,
@@ -343,6 +347,24 @@ struct ClientApp {
     rf_proof: Option<RfVertexProof>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NormalWindowKind {
+    Inventory,
+    Equipment,
+}
+
+fn reorder_normal_window(order: &mut Vec<NormalWindowKind>, kind: NormalWindowKind) {
+    order.retain(|entry| *entry != kind);
+    order.push(kind);
+}
+
+fn topmost_normal_window(
+    order: &[NormalWindowKind],
+    mut hit: impl FnMut(NormalWindowKind) -> bool,
+) -> Option<NormalWindowKind> {
+    order.iter().rev().copied().find(|kind| hit(*kind))
+}
+
 impl ClientApp {
     fn new(
         registry: ContentRegistry,
@@ -411,6 +433,8 @@ impl ClientApp {
             ui_item_icon_assets,
             inventory_window: InventoryWindow::default(),
             equipment_window: EquipmentWindow::default(),
+            normal_window_order: vec![NormalWindowKind::Inventory, NormalWindowKind::Equipment],
+            pointer_window: None,
             message_dialog: MessageDialog::default(),
             pending_drop: None,
             dialogue_runtime: DialogueRuntime::default(),
@@ -503,6 +527,81 @@ impl ClientApp {
     fn toggle_debug_overlay(&mut self) {
         if let Some(overlay) = &mut self.debug {
             overlay.toggle();
+        }
+    }
+
+    fn focus_normal_window(&mut self, kind: NormalWindowKind) {
+        reorder_normal_window(&mut self.normal_window_order, kind);
+    }
+
+    fn normal_window_contains(
+        &mut self,
+        kind: NormalWindowKind,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        match kind {
+            NormalWindowKind::Inventory => self.inventory_window.contains_window(
+                self.ui_window_assets,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
+            NormalWindowKind::Equipment => self.equipment_window.contains_window(
+                self.ui_window_assets,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
+        }
+    }
+
+    fn normal_window_visible(&self, kind: NormalWindowKind) -> bool {
+        match kind {
+            NormalWindowKind::Inventory => self.inventory_window.is_visible(),
+            NormalWindowKind::Equipment => self.equipment_window.is_visible(),
+        }
+    }
+
+    fn close_all_normal_windows(&mut self) {
+        self.inventory_window.close();
+        self.equipment_window.close();
+        self.pointer_window = None;
+    }
+
+    fn cancel_active_modal(&mut self) {
+        if !self.message_dialog.is_active() {
+            return;
+        }
+        self.message_dialog.cancel();
+        self.resolve_drop_dialog();
+    }
+
+    fn apply_normal_pointer_button(
+        &mut self,
+        kind: NormalWindowKind,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        match kind {
+            NormalWindowKind::Inventory => self.inventory_window.apply_pointer_button(
+                self.ui_window_assets,
+                self.ui_tab_assets,
+                state,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
+            NormalWindowKind::Equipment => self.equipment_window.apply_pointer_button(
+                self.ui_window_assets,
+                state,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
         }
     }
 
@@ -2772,7 +2871,9 @@ impl ClientApp {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let mut ui_textured_rects = Vec::new();
+        let mut inventory_frame: Option<InventoryWindowFrame> = None;
+        let mut equipment_frame: Option<EquipmentWindowFrame> = None;
+        let mut message_frame: Option<MessageDialogFrame> = None;
         if !on_connection && let Some(viewport) = viewport {
             let pixels_per_unit = effective_pixels_per_point(
                 window.scale_factor() as f32,
@@ -2787,51 +2888,77 @@ impl ClientApp {
             #[cfg(not(feature = "dev-diagnostics"))]
             let panel_style = crate::ui_panel::PanelStyle::default();
             let window_assets = self.ui_window_assets.with_panel_style(panel_style);
-            if let Ok(Some(frame)) = self.inventory_window.frame(InventoryWindowFrameInput {
-                window_assets,
-                tab_assets: self.ui_tab_assets,
-                slot_assets: self.ui_slot_assets,
-                item_icon_assets: &self.ui_item_icon_assets,
-                entries: &self.lifecycle.view().inventory,
-                registry: &self.registry,
-                viewport,
-                pixels_per_unit,
-                cursor: self.cursor_position,
-            }) {
-                ui_textured_rects.extend(frame.textured_rects);
-                ui_text.extend(frame.texts);
-            }
+            inventory_frame = self
+                .inventory_window
+                .frame(InventoryWindowFrameInput {
+                    window_assets,
+                    tab_assets: self.ui_tab_assets,
+                    slot_assets: self.ui_slot_assets,
+                    item_icon_assets: &self.ui_item_icon_assets,
+                    entries: &self.lifecycle.view().inventory,
+                    registry: &self.registry,
+                    viewport,
+                    pixels_per_unit,
+                    cursor: self.cursor_position,
+                })
+                .ok()
+                .flatten();
             let equipment = self
                 .replica
                 .local_entity()
                 .and_then(|entity| entity.equipment);
-            if let Ok(Some(frame)) = self.equipment_window.frame(EquipmentWindowFrameInput {
-                window_assets,
-                slot_assets: self.ui_slot_assets,
-                item_icon_assets: &self.ui_item_icon_assets,
-                equipment,
-                viewport,
-                pixels_per_unit,
-                cursor: self.cursor_position,
-            }) {
-                ui_textured_rects.extend(frame.textured_rects);
-                ui_text.extend(frame.texts);
+            equipment_frame = self
+                .equipment_window
+                .frame(EquipmentWindowFrameInput {
+                    window_assets,
+                    slot_assets: self.ui_slot_assets,
+                    item_icon_assets: &self.ui_item_icon_assets,
+                    equipment,
+                    viewport,
+                    pixels_per_unit,
+                    cursor: self.cursor_position,
+                })
+                .ok()
+                .flatten();
+            message_frame = self
+                .message_dialog
+                .frame(
+                    window_assets,
+                    self.ui_button_assets,
+                    viewport,
+                    pixels_per_unit,
+                    self.cursor_position,
+                )
+                .ok()
+                .flatten();
+        }
+        let mut ui_compositions = Vec::with_capacity(4);
+        ui_compositions.push(UiComposition::new(&[], &ui_rects, &ui_text));
+        for kind in &self.normal_window_order {
+            match kind {
+                NormalWindowKind::Inventory => {
+                    if let Some(frame) = inventory_frame.as_ref() {
+                        ui_compositions.push(UiComposition::new(
+                            &frame.textured_rects,
+                            &[],
+                            &frame.texts,
+                        ));
+                    }
+                }
+                NormalWindowKind::Equipment => {
+                    if let Some(frame) = equipment_frame.as_ref() {
+                        ui_compositions.push(UiComposition::new(
+                            &frame.textured_rects,
+                            &[],
+                            &frame.texts,
+                        ));
+                    }
+                }
             }
-            if let Ok(Some(frame)) = self.message_dialog.frame(
-                window_assets,
-                self.ui_button_assets,
-                viewport,
-                pixels_per_unit,
-                self.cursor_position,
-            ) {
-                // Text and colored overlays are separate renderer passes that otherwise
-                // render after every textured window. A modal owns the top UI layer,
-                // so lower-layer labels/bubbles must not leak over its chrome.
-                ui_rects.clear();
-                ui_text.clear();
-                ui_textured_rects.extend(frame.textured_rects);
-                ui_text.extend(frame.texts);
-            }
+        }
+        if let Some(frame) = message_frame.as_ref() {
+            // Message is outside normal focus order and always occupies the top group.
+            ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
         }
         #[cfg(feature = "dev-diagnostics")]
         let demand = self.diagnostics_demand();
@@ -2873,7 +3000,7 @@ impl ClientApp {
                 let can_connect = self.lifecycle.can_connect();
                 let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
                 let login = &mut self.dev_login;
-                renderer.render(&quads, &ui_textured_rects, &ui_rects, &ui_text, |pass| {
+                renderer.render(&quads, &ui_compositions, |pass| {
                     let Some(overlay) = overlay else {
                         return Vec::new();
                     };
@@ -2901,9 +3028,7 @@ impl ClientApp {
             #[cfg(not(feature = "dev-diagnostics"))]
             {
                 let _ = (&window, on_connection);
-                renderer.render(&quads, &ui_textured_rects, &ui_rects, &ui_text, |_| {
-                    Vec::new()
-                })
+                renderer.render(&quads, &ui_compositions, |_| Vec::new())
             }
         };
 
@@ -4469,6 +4594,18 @@ impl ApplicationHandler for ClientApp {
                 window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                {
+                    if self.message_dialog.is_active() {
+                        self.cancel_active_modal();
+                    } else {
+                        self.close_all_normal_windows();
+                    }
+                    window.request_redraw();
+                    return;
+                }
                 if self.message_dialog.is_active() {
                     self.message_dialog
                         .apply_key(event.physical_key, event.state, event.repeat);
@@ -4500,6 +4637,9 @@ impl ApplicationHandler for ClientApp {
                         event.repeat,
                     );
                     if inventory_key {
+                        if self.inventory_window.is_visible() {
+                            self.focus_normal_window(NormalWindowKind::Inventory);
+                        }
                         if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() {
                             self.inventory_window.arrange_side_by_side(
                                 viewport,
@@ -4511,6 +4651,9 @@ impl ApplicationHandler for ClientApp {
                         return;
                     }
                     if equipment_key {
+                        if self.equipment_window.is_visible() {
+                            self.focus_normal_window(NormalWindowKind::Equipment);
+                        }
                         if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() {
                             self.equipment_window.arrange_side_by_side(
                                 viewport,
@@ -4613,114 +4756,86 @@ impl ApplicationHandler for ClientApp {
                 if self.lifecycle.gameplay_actions_allowed()
                     && gameplay_mouse
                     && button == MouseButton::Left
+                    && let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
                 {
-                    if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
-                        && {
-                            let close_inventory = state == ElementState::Pressed
-                                && self.cursor_position.is_some_and(|cursor| {
-                                    self.inventory_window.close_button_at(
-                                        self.ui_window_assets,
+                    let selected = if state == ElementState::Pressed {
+                        self.cursor_position.and_then(|cursor| {
+                            let order = self.normal_window_order.clone();
+                            topmost_normal_window(&order, |kind| {
+                                self.normal_window_visible(kind)
+                                    && self.normal_window_contains(
+                                        kind,
                                         cursor,
                                         viewport,
                                         pixels_per_unit,
                                     )
-                                });
-                            let close_equipment = state == ElementState::Pressed
-                                && !close_inventory
-                                && self.cursor_position.is_some_and(|cursor| {
-                                    self.equipment_window.close_button_at(
-                                        self.ui_window_assets,
-                                        cursor,
-                                        viewport,
-                                        pixels_per_unit,
-                                    )
-                                });
-                            let inventory_handled = if close_inventory || close_equipment {
-                                close_inventory
-                                    && self.inventory_window.apply_pointer_button(
-                                        self.ui_window_assets,
-                                        self.ui_tab_assets,
-                                        state,
-                                        self.cursor_position,
-                                        viewport,
-                                        pixels_per_unit,
-                                    )
-                            } else {
-                                self.inventory_window.apply_pointer_button(
-                                    self.ui_window_assets,
-                                    self.ui_tab_assets,
-                                    state,
-                                    self.cursor_position,
-                                    viewport,
-                                    pixels_per_unit,
-                                )
-                            };
-                            let equipment_handled = if close_inventory || close_equipment {
-                                close_equipment
-                                    && self.equipment_window.apply_pointer_button(
-                                        self.ui_window_assets,
-                                        state,
-                                        self.cursor_position,
-                                        viewport,
-                                        pixels_per_unit,
-                                    )
-                            } else {
-                                self.equipment_window.apply_pointer_button(
-                                    self.ui_window_assets,
-                                    state,
-                                    self.cursor_position,
-                                    viewport,
-                                    pixels_per_unit,
-                                )
-                            };
-                            if state == ElementState::Released {
-                                if let Some(item) = self.inventory_window.take_completed_drag() {
-                                    self.last_item_click = None;
-                                    self.resolve_equipment_drag(
-                                        DragSource::Inventory(item),
-                                        self.cursor_position,
-                                    );
-                                }
-                                if let Some(slot) = self.equipment_window.take_completed_drag() {
-                                    self.last_item_click = None;
-                                    self.resolve_equipment_drag(
-                                        DragSource::Equipped(slot),
-                                        self.cursor_position,
-                                    );
-                                }
-                                if let Some(item) = self.inventory_window.take_completed_click() {
-                                    self.handle_item_click(ItemClickTarget::Inventory(item));
-                                }
-                                if let Some(slot) = self.equipment_window.take_completed_click() {
-                                    self.handle_item_click(ItemClickTarget::Equipped(slot));
-                                }
-                            }
-                            inventory_handled || equipment_handled
-                        }
-                    {
-                        window.request_redraw();
-                        return;
-                    }
-                    if state != ElementState::Pressed {
-                        return;
-                    }
-                    let Some(cursor) = self.cursor_position else {
-                        return;
+                            })
+                        })
+                    } else {
+                        self.pointer_window
                     };
-                    if let Some(index) = self
-                        .choice_bubble_hits
-                        .iter()
-                        .position(|bounds| bounds.contains(cursor))
-                    {
-                        self.choice_click_edge = Some(index);
-                        window.request_redraw();
-                    } else if self
-                        .speech_bubble_hit
-                        .is_some_and(|bounds| bounds.contains(cursor))
-                    {
-                        self.bubble_click_edge = true;
-                        window.request_redraw();
+                    if state == ElementState::Pressed {
+                        self.pointer_window = selected;
+                        if let Some(kind) = selected {
+                            self.focus_normal_window(kind);
+                        }
                     }
+                    let handled = selected.is_some_and(|kind| {
+                        self.apply_normal_pointer_button(
+                            kind,
+                            state,
+                            self.cursor_position,
+                            viewport,
+                            pixels_per_unit,
+                        )
+                    });
+                    if state == ElementState::Released {
+                        self.pointer_window = None;
+                        if let Some(item) = self.inventory_window.take_completed_drag() {
+                            self.last_item_click = None;
+                            self.resolve_equipment_drag(
+                                DragSource::Inventory(item),
+                                self.cursor_position,
+                            );
+                        }
+                        if let Some(slot) = self.equipment_window.take_completed_drag() {
+                            self.last_item_click = None;
+                            self.resolve_equipment_drag(
+                                DragSource::Equipped(slot),
+                                self.cursor_position,
+                            );
+                        }
+                        if let Some(item) = self.inventory_window.take_completed_click() {
+                            self.handle_item_click(ItemClickTarget::Inventory(item));
+                        }
+                        if let Some(slot) = self.equipment_window.take_completed_click() {
+                            self.handle_item_click(ItemClickTarget::Equipped(slot));
+                        }
+                    }
+                    if handled {
+                        window.request_redraw();
+                        return;
+                    }
+                }
+                if state != ElementState::Pressed {
+                    return;
+                }
+                let Some(cursor) = self.cursor_position else {
+                    return;
+                };
+                if let Some(index) = self
+                    .choice_bubble_hits
+                    .iter()
+                    .position(|bounds| bounds.contains(cursor))
+                {
+                    self.choice_click_edge = Some(index);
+                    window.request_redraw();
+                } else if self
+                    .speech_bubble_hit
+                    .is_some_and(|bounds| bounds.contains(cursor))
+                {
+                    self.bubble_click_edge = true;
+                    window.request_redraw();
                 }
             }
             WindowEvent::MouseWheel { .. } => {}
@@ -4871,6 +4986,41 @@ mod tests {
         assert_eq!(
             super::resolve_pending_drop(&mut pending, super::DialogAction::Confirm),
             None
+        );
+    }
+
+    #[test]
+    fn cancelling_drop_confirmation_clears_state_and_allows_retry() {
+        let item = ItemInstanceId::from_raw(11);
+        let mut dialog = super::MessageDialog::default();
+        assert!(dialog.open(super::MessageDialogRequest {
+            id: 1,
+            title: "Drop Item".into(),
+            body: "Confirm".into(),
+            buttons: vec![
+                super::DialogButton::new("Cancel", super::DialogAction::Cancel),
+                super::DialogButton::new("Drop", super::DialogAction::Confirm),
+            ],
+            default_action: Some(super::DialogAction::Confirm),
+            cancel_action: Some(super::DialogAction::Cancel),
+        }));
+        let mut pending = Some(item);
+
+        dialog.apply_key(
+            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape),
+            winit::event::ElementState::Pressed,
+            false,
+        );
+        let result = dialog.take_result().expect("escape cancellation result");
+        assert_eq!(
+            super::resolve_pending_drop(&mut pending, result.action),
+            None
+        );
+        assert!(!dialog.is_active());
+        assert_eq!(pending, None);
+        assert_eq!(
+            super::drop_dispatch(Some(true), dialog.is_active()),
+            super::DropDispatch::AwaitConfirmation
         );
     }
 
@@ -5947,5 +6097,30 @@ mod tests {
         fade.tick(crate::map_fade::MAP_FADE_OUT_SEC);
         assert!(fade.is_fully_black());
         assert!(fade.allows_baseline_swap());
+    }
+
+    #[test]
+    fn normal_focus_order_and_hit_testing_are_front_to_back() {
+        let mut order = vec![
+            super::NormalWindowKind::Inventory,
+            super::NormalWindowKind::Equipment,
+        ];
+        super::reorder_normal_window(&mut order, super::NormalWindowKind::Inventory);
+        assert_eq!(
+            order,
+            vec![
+                super::NormalWindowKind::Equipment,
+                super::NormalWindowKind::Inventory
+            ]
+        );
+        assert_eq!(
+            super::topmost_normal_window(&order, |kind| {
+                matches!(
+                    kind,
+                    super::NormalWindowKind::Equipment | super::NormalWindowKind::Inventory
+                )
+            }),
+            Some(super::NormalWindowKind::Inventory)
+        );
     }
 }

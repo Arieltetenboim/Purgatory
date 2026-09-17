@@ -6460,9 +6460,7 @@ mod tests {
         }
     }
 
-    fn recv_inventory(
-        rx: &mut tokio::sync::mpsc::Receiver<ServerControl>,
-    ) -> ServerInventory {
+    fn recv_inventory(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerInventory {
         match rx.try_recv().expect("inventory snapshot") {
             ServerControl::Inventory(snapshot) => snapshot,
             other => panic!("expected Inventory, got {other:?}"),

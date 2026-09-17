@@ -81,6 +81,29 @@ impl MessageDialog {
         self.active.is_some()
     }
 
+    pub(crate) fn close(&mut self) {
+        self.active = None;
+        self.pressed_button = None;
+        self.button_bounds.clear();
+        self.close_button = None;
+    }
+
+    pub(crate) fn cancel(&mut self) -> bool {
+        if !self.is_active() {
+            return false;
+        }
+        if let Some(action) = self
+            .active
+            .as_ref()
+            .and_then(|request| request.cancel_action)
+        {
+            self.finish(action);
+        } else {
+            self.close();
+        }
+        true
+    }
+
     pub(crate) fn take_result(&mut self) -> Option<MessageDialogResult> {
         self.result.take()
     }
@@ -105,10 +128,10 @@ impl MessageDialog {
                         .or_else(|| request.buttons.first().map(|button| button.action))
                 })
             }
-            PhysicalKey::Code(KeyCode::Escape) => self
-                .active
-                .as_ref()
-                .and_then(|request| request.cancel_action),
+            PhysicalKey::Code(KeyCode::Escape) => {
+                self.cancel();
+                None
+            }
             _ => None,
         };
         if let Some(action) = action {
@@ -165,9 +188,8 @@ impl MessageDialog {
                 } else if self
                     .close_button
                     .is_some_and(|bounds| bounds.contains(cursor))
-                    && let Some(action) = self.active.as_ref().and_then(|r| r.cancel_action)
                 {
-                    self.finish(action);
+                    self.cancel();
                 }
             }
         }
@@ -350,6 +372,32 @@ mod tests {
         assert_eq!(
             dialog.take_result().map(|r| r.action),
             Some(DialogAction::Ok)
+        );
+    }
+
+    #[test]
+    fn cancel_is_the_shared_semantic_exit_for_escape_and_close() {
+        let mut escape = MessageDialog::default();
+        assert!(escape.open(request()));
+        assert!(escape.apply_key(
+            PhysicalKey::Code(KeyCode::Escape),
+            ElementState::Pressed,
+            false
+        ));
+
+        let mut close = MessageDialog::default();
+        assert!(close.open(request()));
+        assert!(close.cancel());
+
+        assert!(!escape.is_active());
+        assert!(!close.is_active());
+        assert_eq!(
+            escape.take_result().map(|result| result.action),
+            Some(DialogAction::Cancel)
+        );
+        assert_eq!(
+            close.take_result().map(|result| result.action),
+            Some(DialogAction::Cancel)
         );
     }
 

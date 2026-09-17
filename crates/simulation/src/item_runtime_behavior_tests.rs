@@ -530,10 +530,7 @@ fn dropping_an_inventory_item_creates_live_manifestation_at_actor_pose() {
         .expect("grant inventory item");
     let record_count_before = world.item_record_count();
     let actor_address = world.address_of(actor).expect("actor address");
-    let actor_position = world
-        .transform_of(actor)
-        .expect("actor transform")
-        .position;
+    let actor_position = world.transform_of(actor).expect("actor transform").position;
 
     let entity = world
         .drop_inventory_item(actor, item)
@@ -593,10 +590,9 @@ fn drop_and_pickup_round_trip_preserves_instance_identity() {
 fn dropping_unowned_item_is_rejected_without_spawn_or_mutation() {
     let mut world = World::dev_stage();
     let actor = world.player_id().expect("primary player");
-    let (drop_item, drop_entity) =
-        world
-            .spawn_world_drop_item(WorldAddress::DEV, [0.0, 1.0], content(320), 3, 10)
-            .expect("spawn world drop item");
+    let (drop_item, drop_entity) = world
+        .spawn_world_drop_item(WorldAddress::DEV, [0.0, 1.0], content(320), 3, 10)
+        .expect("spawn world drop item");
     let record_count_before = world.item_record_count();
     let len_before = world.len();
 
@@ -612,8 +608,14 @@ fn dropping_unowned_item_is_rejected_without_spawn_or_mutation() {
     );
     assert_eq!(world.len(), len_before, "no manifestation spawned");
     assert_eq!(world.item_record_count(), record_count_before);
-    assert_eq!(world.item_instance_at_world_drop(drop_entity), Some(drop_item));
-    assert_eq!(world.world_drop_entity_for_item(drop_item), Some(drop_entity));
+    assert_eq!(
+        world.item_instance_at_world_drop(drop_entity),
+        Some(drop_item)
+    );
+    assert_eq!(
+        world.world_drop_entity_for_item(drop_item),
+        Some(drop_entity)
+    );
     assert_eq!(world.inventory_count(actor), 0);
 }
 

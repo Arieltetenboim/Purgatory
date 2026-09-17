@@ -21,12 +21,13 @@ const ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
 const ATLAS_TEXTURE_FILE: &str = "ATLAS.png";
 const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 4.0;
+const HEADER_CONTENT_OFFSET_UNITS: f32 = 2.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 5.0;
 const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 23.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_TAB_SEPARATOR_HEIGHT_UNITS: f32 = 2.0;
-const INVENTORY_GRID_SIDE_PADDING_UNITS: f32 = 4.0;
+const INVENTORY_GRID_SIDE_PADDING_UNITS: f32 = 1.0;
 const INVENTORY_GRID_BOTTOM_PADDING_UNITS: f32 = 2.0;
 const INVENTORY_FOOTER_RESERVED_UNITS: f32 = 28.0;
 const INVENTORY_CURRENCY_VERTICAL_INSET_UNITS: f32 = 4.0;
@@ -40,7 +41,9 @@ const INVENTORY_TAB_SEPARATOR_TINT: [f32; 4] = [0.73, 0.18, 0.17, 1.0];
 const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Cons.", "Mats", "Tools", "Misc"];
 const INVENTORY_SLOT_COLUMNS: usize = 5;
 const INVENTORY_SLOT_ROWS: usize = 7;
+const INVENTORY_SLOT_SIZE_UNITS: f32 = 44.0;
 const INVENTORY_SLOT_GAP_UNITS: f32 = 2.0;
+const INVENTORY_RIGHT_PADDING_UNITS: f32 = 2.0;
 const INVENTORY_ICON_INSET_UNITS: f32 = 4.0;
 const INVENTORY_QUANTITY_FONT_SIZE_UNITS: f32 = 12.0;
 const INVENTORY_QUANTITY_INSET_UNITS: f32 = 3.0;
@@ -119,6 +122,17 @@ impl PanelStyle {
             Self::Dark1 => "Dark 1",
             Self::Dark2 => "Dark 2",
             Self::Light1 => "Light 1",
+        }
+    }
+
+    fn tint(self) -> [f32; 4] {
+        match self {
+            Self::Base => [1.0, 1.0, 1.0, 1.0],
+            Self::Blue => [0.82, 0.9, 1.0, 1.0],
+            Self::Brown => [1.0, 0.88, 0.74, 1.0],
+            Self::Dark1 => [0.72, 0.76, 0.84, 1.0],
+            Self::Dark2 => [0.58, 0.62, 0.72, 1.0],
+            Self::Light1 => [1.0, 0.96, 0.88, 1.0],
         }
     }
 }
@@ -242,22 +256,40 @@ struct ButtonStates {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ButtonStyles {
+    beige: ButtonStates,
+    red: ButtonStates,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SmallButtonStyles {
+    confirm: CloseButtonStates,
+    close: CloseButtonStates,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UiAtlasMetadata {
     schema_version: u32,
     id: String,
     texture: String,
     dimensions_px: [u32; 2],
-    windows: HashMap<String, SourceRectPx>,
+    window: SourceRectPx,
+    slot: SourceRectPx,
+    message_window: SourceRectPx,
     window_slice_px: SourceInsets,
     window_border_units: DestinationBorders,
-    slot_fill: SourceRectPx,
-    buttons: HashMap<String, ButtonStates>,
+    message_window_slice_px: SourceInsets,
+    message_window_border_units: DestinationBorders,
+    buttons: ButtonStyles,
+    small_buttons: SmallButtonStyles,
     button_slice_px: HorizontalInsetsPx,
     button_cap_units: HorizontalCapsUnits,
     button_height_units: f32,
-    close_button: CloseButtonStates,
     close_size_units: [f32; 2],
     close_right_inset_units: f32,
+    icons: HashMap<String, SourceRectPx>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -267,6 +299,7 @@ struct PanelAsset {
     source_rect: SourceRectPx,
     slice_px: SourceInsets,
     border_units: DestinationBorders,
+    tint: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -276,8 +309,27 @@ struct PanelVariants {
 
 impl PanelVariants {
     fn selected(self, style: PanelStyle) -> PanelAsset {
-        self.assets[style as usize]
+        let mut panel = self.assets[0];
+        panel.tint = style.tint();
+        panel
     }
+}
+
+const ATLAS_ICON_NAMES: [&str; 8] = [
+    "skull",
+    "bag",
+    "sword",
+    "speech",
+    "scroll",
+    "gear",
+    "magnifier",
+    "group",
+];
+
+#[derive(Clone, Copy, Debug)]
+struct AtlasIcons {
+    #[allow(dead_code)]
+    regions: [SourceRectPx; 8],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -345,7 +397,11 @@ pub(crate) struct UiItemIconAssets {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UiWindowAssets {
     panels: PanelVariants,
+    #[allow(dead_code)]
+    message_panel: PanelAsset,
     close_button: CloseButtonAsset,
+    #[allow(dead_code)]
+    icons: AtlasIcons,
     panel_style: PanelStyle,
 }
 
@@ -362,32 +418,37 @@ impl UiWindowAssets {
             "atlas",
         )?;
         validate_atlas_metadata(&metadata, source_size_px)?;
-        let style_names = ["base", "blue", "brown", "dark1", "dark2", "light1"];
-        let panels = style_names
-            .into_iter()
-            .map(|name| PanelAsset {
-                texture,
-                source_size_px,
-                source_rect: metadata.windows[name],
-                slice_px: metadata.window_slice_px,
-                border_units: metadata.window_border_units,
-            })
-            .collect::<Vec<_>>();
+        let panel = PanelAsset {
+            texture,
+            source_size_px,
+            source_rect: metadata.window,
+            slice_px: metadata.window_slice_px,
+            border_units: metadata.window_border_units,
+            tint: PanelStyle::Base.tint(),
+        };
+        let message_panel = PanelAsset {
+            texture,
+            source_size_px,
+            source_rect: metadata.message_window,
+            slice_px: metadata.message_window_slice_px,
+            border_units: metadata.message_window_border_units,
+            tint: [1.0; 4],
+        };
         let close_button = CloseButtonAsset {
             texture,
             source_size_px,
-            states: metadata.close_button,
+            states: metadata.small_buttons.close,
             size_units: metadata.close_size_units,
             right_inset_units: metadata.close_right_inset_units,
         };
 
         Ok(Self {
-            panels: PanelVariants {
-                assets: panels
-                    .try_into()
-                    .map_err(|_| "UI panel variants are incomplete".to_string())?,
-            },
+            panels: PanelVariants { assets: [panel; 6] },
+            message_panel,
             close_button,
+            icons: AtlasIcons {
+                regions: std::array::from_fn(|index| metadata.icons[ATLAS_ICON_NAMES[index]]),
+            },
             panel_style: PanelStyle::default(),
         })
     }
@@ -435,7 +496,7 @@ impl UiWindowAssets {
                 .border_units
                 .scaled(pixels_per_unit)
                 .clamped_to_source(panel.slice_px),
-            [1.0; 4],
+            panel.tint,
         )?;
 
         let source = match window.close_button_visual(cursor, layout.close_button) {
@@ -458,7 +519,9 @@ impl UiWindowAssets {
         let title_font_size = TITLE_FONT_SIZE_UNITS * pixels_per_unit;
         let title_anchor = [
             title_anchor_x,
-            layout.header.min[1] + ((layout.header.height() - title_font_size) * 0.5).max(0.0),
+            layout.header.min[1]
+                + ((layout.header.height() - title_font_size) * 0.5).max(0.0)
+                + HEADER_CONTENT_OFFSET_UNITS * pixels_per_unit,
         ];
         let title_max_width = (layout.close_button.min[0]
             - TITLE_CONTROL_GAP_UNITS * pixels_per_unit
@@ -470,7 +533,7 @@ impl UiWindowAssets {
                 content: TextContent(title.to_owned()),
                 style: TextStyle {
                     font_size: title_font_size,
-                    color: [0.08, 0.11, 0.16, 1.0],
+                    color: [1.0; 4],
                     alignment: TextAlignment::Left,
                 },
                 anchor: title_anchor,
@@ -565,7 +628,9 @@ impl UiWindowAssets {
             ),
         ];
         let close_max_x = header.max[0] - self.close_button.right_inset_units * pixels_per_unit;
-        let close_min_y = header.min[1] + ((header.height() - button_size[1]) * 0.5).max(0.0);
+        let close_min_y = header.min[1]
+            + ((header.height() - button_size[1]) * 0.5).max(0.0)
+            + HEADER_CONTENT_OFFSET_UNITS * pixels_per_unit;
         let close_button = ScreenRect {
             min: [close_max_x - button_size[0], close_min_y],
             max: [close_max_x, close_min_y + button_size[1]],
@@ -598,8 +663,8 @@ impl UiTabAssets {
             texture,
             source_size_px,
             states: TabStates {
-                normal: metadata.buttons["base"].normal,
-                selected: metadata.buttons["blue"].normal,
+                normal: metadata.buttons.beige.normal,
+                selected: metadata.buttons.red.normal,
             },
             slice_px: metadata.button_slice_px,
             cap_units: metadata.button_cap_units,
@@ -725,7 +790,7 @@ impl UiSlotAssets {
         Ok(Self {
             texture,
             source_size_px,
-            source_rect: metadata.slot_fill,
+            source_rect: metadata.slot,
             size_units: [44.0, 44.0],
         })
     }
@@ -781,12 +846,14 @@ impl UiButtonAssets {
             "atlas",
         )?;
         validate_atlas_metadata(&metadata, source_size_px)?;
-        let variants = ["base", "blue", "brown", "dark1", "dark2", "light1"]
-            .into_iter()
-            .map(|name| metadata.buttons[name])
-            .collect::<Vec<_>>()
-            .try_into()
-            .map_err(|_| "UI atlas button variants are incomplete".to_string())?;
+        let variants = [
+            metadata.buttons.beige,
+            metadata.buttons.red,
+            metadata.buttons.beige,
+            metadata.buttons.red,
+            metadata.buttons.beige,
+            metadata.buttons.red,
+        ];
         Ok(Self {
             texture,
             source_size_px,
@@ -1070,7 +1137,13 @@ pub(crate) struct InventoryWindow {
 impl Default for InventoryWindow {
     fn default() -> Self {
         Self {
-            chrome: ProofPanelWindow::default(),
+            chrome: ProofPanelWindow::with_size([
+                2.0 * INVENTORY_CONTENT_SIDE_INSET_UNITS
+                    + INVENTORY_SLOT_COLUMNS as f32 * INVENTORY_SLOT_SIZE_UNITS
+                    + INVENTORY_SLOT_COLUMNS.saturating_sub(1) as f32 * INVENTORY_SLOT_GAP_UNITS
+                    + INVENTORY_RIGHT_PADDING_UNITS,
+                440.0,
+            ]),
             tabs: UiTabs::default(),
             slots: UiSlotGrid::new(
                 INVENTORY_SLOT_COLUMNS,
@@ -1103,6 +1176,14 @@ pub(crate) struct InventoryWindowFrameInput<'a> {
 }
 
 impl InventoryWindow {
+    pub(crate) fn is_visible(&self) -> bool {
+        self.chrome.is_visible()
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.chrome.close();
+    }
+
     pub(crate) fn apply_key(
         &mut self,
         physical_key: PhysicalKey,
@@ -1416,20 +1497,6 @@ impl InventoryWindow {
         }
     }
 
-    pub(crate) fn close_button_at(
-        &mut self,
-        window_assets: UiWindowAssets,
-        cursor: [f32; 2],
-        viewport: PixelViewport,
-        pixels_per_unit: f32,
-    ) -> bool {
-        window_assets
-            .layout(&mut self.chrome, viewport, pixels_per_unit)
-            .ok()
-            .flatten()
-            .is_some_and(|layout| layout.close_button.contains(cursor))
-    }
-
     fn item_at(&self, cursor: [f32; 2]) -> Option<ItemInstanceId> {
         self.item_hit_regions
             .iter()
@@ -1534,6 +1601,14 @@ impl Default for EquipmentWindow {
 }
 
 impl EquipmentWindow {
+    pub(crate) fn is_visible(&self) -> bool {
+        self.chrome.is_visible()
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.chrome.close();
+    }
+
     pub(crate) fn apply_key(
         &mut self,
         physical_key: PhysicalKey,
@@ -1771,20 +1846,6 @@ impl EquipmentWindow {
         if dx.mul_add(dx, dy * dy) >= ITEM_DRAG_THRESHOLD_PX.powi(2) {
             self.dragging_slot = Some(slot);
         }
-    }
-
-    pub(crate) fn close_button_at(
-        &mut self,
-        window_assets: UiWindowAssets,
-        cursor: [f32; 2],
-        viewport: PixelViewport,
-        pixels_per_unit: f32,
-    ) -> bool {
-        window_assets
-            .layout(&mut self.chrome, viewport, pixels_per_unit)
-            .ok()
-            .flatten()
-            .is_some_and(|layout| layout.close_button.contains(cursor))
     }
 }
 
@@ -2322,39 +2383,39 @@ fn validate_atlas_metadata(
             metadata.dimensions_px, source_size_px
         ));
     }
-    let window_names = ["base", "blue", "brown"];
-    let windows = window_names
+    let windows = [metadata.window, metadata.message_window];
+    if [metadata.window, metadata.slot, metadata.message_window]
         .into_iter()
-        .map(|name| metadata.windows.get(name).copied())
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| "UI atlas is missing a window region".to_string())?;
-    if windows
-        .iter()
-        .any(|rect| !source_rect_fits(*rect, source_size_px))
-        || windows
-            .windows(2)
-            .any(|pair| source_rects_overlap(pair[0], pair[1]))
-        || windows.iter().any(|rect| {
-            metadata.window_slice_px.left + metadata.window_slice_px.right >= rect.width
-                || metadata.window_slice_px.top + metadata.window_slice_px.bottom >= rect.height
-        })
+        .any(|rect| !source_rect_fits(rect, source_size_px))
+        || source_rects_overlap(metadata.window, metadata.slot)
+        || source_rects_overlap(metadata.window, metadata.message_window)
+        || source_rects_overlap(metadata.slot, metadata.message_window)
+        || metadata.window_slice_px.left + metadata.window_slice_px.right >= metadata.window.width
+        || metadata.window_slice_px.top + metadata.window_slice_px.bottom >= metadata.window.height
+        || metadata.message_window_slice_px.left + metadata.message_window_slice_px.right
+            >= metadata.message_window.width
+        || metadata.message_window_slice_px.top + metadata.message_window_slice_px.bottom
+            >= metadata.message_window.height
         || ![
             metadata.window_border_units.left,
             metadata.window_border_units.right,
             metadata.window_border_units.top,
             metadata.window_border_units.bottom,
+            metadata.message_window_border_units.left,
+            metadata.message_window_border_units.right,
+            metadata.message_window_border_units.top,
+            metadata.message_window_border_units.bottom,
         ]
         .into_iter()
         .all(finite_positive)
     {
         return Err("UI atlas window regions or slice geometry are invalid".to_string());
     }
-    let button_names = ["base", "blue"];
-    for name in button_names {
-        let states = metadata
-            .buttons
-            .get(name)
-            .ok_or_else(|| format!("UI atlas is missing button variant {name}"))?;
+    let button_regions = [
+        ("beige", metadata.buttons.beige),
+        ("red", metadata.buttons.red),
+    ];
+    for (name, states) in button_regions {
         let regions = [states.normal, states.hover, states.pressed];
         if !regions
             .into_iter()
@@ -2371,38 +2432,35 @@ fn validate_atlas_metadata(
             return Err(format!("UI atlas button variant {name} is invalid"));
         }
     }
-    if ![
-        metadata.close_button.normal,
-        metadata.close_button.hover,
-        metadata.close_button.pressed,
-    ]
-    .into_iter()
-    .all(|rect| source_rect_fits(rect, source_size_px))
+    let small_button_regions = [
+        ("confirm", metadata.small_buttons.confirm),
+        ("close", metadata.small_buttons.close),
+    ];
+    if !small_button_regions
+        .iter()
+        .flat_map(|(_, states)| [states.normal, states.hover, states.pressed])
+        .all(|rect| source_rect_fits(rect, source_size_px))
         || !metadata.close_size_units.into_iter().all(finite_positive)
         || !finite_non_negative(metadata.close_right_inset_units)
     {
-        return Err("UI atlas close-button metadata is invalid".to_string());
+        return Err("UI atlas small-button metadata is invalid".to_string());
     }
-    if [
-        metadata.close_button.normal,
-        metadata.close_button.hover,
-        metadata.close_button.pressed,
-    ]
-    .windows(2)
-    .any(|pair| source_rects_overlap(pair[0], pair[1]))
-    {
-        return Err("UI atlas close-button states overlap".to_string());
-    }
-    let mut all_regions = windows;
-    for name in button_names {
-        let states = metadata.buttons[name];
+    let mut all_regions = windows.to_vec();
+    for (_, states) in button_regions {
         all_regions.extend([states.normal, states.hover, states.pressed]);
     }
-    all_regions.extend([
-        metadata.close_button.normal,
-        metadata.close_button.hover,
-        metadata.close_button.pressed,
-    ]);
+    for (_, states) in small_button_regions {
+        all_regions.extend([states.normal, states.hover, states.pressed]);
+    }
+    all_regions.extend(metadata.icons.values().copied());
+    if metadata.icons.len() != ATLAS_ICON_NAMES.len()
+        || metadata
+            .icons
+            .values()
+            .any(|rect| !source_rect_fits(*rect, source_size_px))
+    {
+        return Err("UI atlas icon metadata is incomplete or out of bounds".to_string());
+    }
     if all_regions.iter().enumerate().any(|(index, left)| {
         all_regions
             .iter()
@@ -2510,6 +2568,9 @@ impl ProofPanelWindow {
         pixels_per_unit: f32,
         right: bool,
     ) {
+        if self.top_left_units.is_some() {
+            return;
+        }
         if validate_pixels_per_unit(pixels_per_unit).is_err() {
             return;
         }
@@ -2542,11 +2603,17 @@ impl ProofPanelWindow {
             KeyCode::KeyI => ProofPanelMode::Normal,
             _ => return false,
         };
-        // Keyboard open/size changes begin centered, matching the original
-        // proof. Drag state only applies to the current visible session.
-        self.top_left_units = None;
         self.interaction = PointerInteraction::None;
         true
+    }
+
+    pub(crate) fn is_visible(&self) -> bool {
+        self.mode == ProofPanelMode::Normal
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.mode = ProofPanelMode::Hidden;
+        self.interaction = PointerInteraction::None;
     }
 
     pub(crate) fn pointer_moved(
@@ -2948,10 +3015,10 @@ mod tests {
         assert_eq!(
             assets.panel().source_rect,
             SourceRectPx {
-                x: 67,
-                y: 1,
-                width: 58,
-                height: 58
+                x: 1,
+                y: 0,
+                width: 60,
+                height: 60
             }
         );
         assert_eq!(assets.close_button.source_size_px, [192, 192]);
@@ -2996,6 +3063,7 @@ mod tests {
             .map(|style| {
                 let panel = assets.with_panel_style(style).panel();
                 assert_eq!(panel.source_size_px, base.source_size_px);
+                assert_eq!(panel.source_rect, base.source_rect);
                 assert_eq!(panel.slice_px, base.slice_px);
                 assert_eq!(panel.border_units, base.border_units);
                 assert!(panel.source_rect.width >= 58);
@@ -3011,6 +3079,13 @@ mod tests {
                 .count(),
             0
         );
+        assert_eq!(base.tint, [1.0; 4]);
+        assert!(
+            PanelStyle::ALL
+                .into_iter()
+                .map(PanelStyle::tint)
+                .any(|tint| tint != [1.0; 4])
+        );
     }
 
     #[test]
@@ -3018,9 +3093,9 @@ mod tests {
         let button = embedded_button_assets();
         assert_eq!(button.source_size_px, [192, 192]);
         assert_eq!(button.variants[0].normal.y, 69);
-        assert_eq!(button.variants[0].hover.y, 88);
+        assert_eq!(button.variants[0].hover.y, 87);
         assert_eq!(button.variants[0].hover.height, 18);
-        assert_eq!(button.variants[0].pressed.y, 106);
+        assert_eq!(button.variants[0].pressed.y, 105);
         assert_eq!(button.height_units, 18.0);
         for state in [
             UiButtonState::Normal,
@@ -3090,11 +3165,8 @@ mod tests {
 
     #[test]
     fn atlas_source_partitions_are_disjoint() {
-        let assets = embedded_assets();
-        let panels: Vec<_> = PanelStyle::ALL
-            .into_iter()
-            .map(|style| assets.with_panel_style(style).panel().source_rect)
-            .collect();
+        let metadata: UiAtlasMetadata = serde_json::from_str(ATLAS_METADATA).unwrap();
+        let panels = [metadata.window, metadata.slot, metadata.message_window];
         assert!(
             panels
                 .windows(2)
@@ -3102,12 +3174,12 @@ mod tests {
         );
 
         let button = embedded_button_assets();
-        for states in button.variants {
+        for states in [button.variants[0], button.variants[1]] {
             assert!(!source_rects_overlap(states.normal, states.hover));
             assert!(!source_rects_overlap(states.hover, states.pressed));
             assert!(!source_rects_overlap(states.normal, states.pressed));
         }
-        let close = assets.close_button.states;
+        let close = metadata.small_buttons.close;
         assert!(!source_rects_overlap(close.normal, close.hover));
         assert!(!source_rects_overlap(close.hover, close.pressed));
         assert!(!source_rects_overlap(close.normal, close.pressed));
@@ -3137,7 +3209,7 @@ mod tests {
                 inventory_layout.window.width(),
                 inventory_layout.window.height()
             ],
-            [282.0, 440.0]
+            [276.0, 440.0]
         );
         let equipment_layout = assets
             .layout(&mut equipment.chrome, viewport(), 1.0)
@@ -3303,8 +3375,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let bounds = inventory_tab_bounds(window_assets, tab_assets, layout, 1.0).unwrap();
-        assert_eq!(layout.window.width(), 282.0);
-        assert_eq!(bounds.width(), 236.0);
+        assert_eq!(layout.window.width(), 276.0);
+        assert_eq!(bounds.width(), 230.0);
         assert_eq!(bounds.min[0] - layout.window.min[0], 23.0);
         assert_eq!(layout.window.max[0] - bounds.max[0], 23.0);
         let background = frame.textured_rects[10];
@@ -3316,17 +3388,17 @@ mod tests {
         assert_eq!(separator.min, [bounds.min[0], bounds.max[1]]);
         assert_eq!(separator.size(), [bounds.width(), 2.0]);
         assert_eq!(background.min[1], separator.max[1]);
-        assert_eq!(slots[0].min[0] - background.min[0], 4.0);
+        assert_eq!(slots[0].min[0] - background.min[0], 1.0);
         assert_eq!(
             background.max[0] - slots[INVENTORY_SLOT_COLUMNS - 1].max[0],
-            4.0
+            1.0
         );
         assert_eq!(slots[0].min[1] - background.min[1], 2.0);
         assert_eq!(background.max[1] - slots.last().unwrap().max[1], 2.0);
-        assert_eq!(slots[0].min[0] - bounds.min[0], 4.0);
+        assert_eq!(slots[0].min[0] - bounds.min[0], 1.0);
         assert_eq!(
             bounds.max[0] - slots[INVENTORY_SLOT_COLUMNS - 1].max[0],
-            4.0
+            1.0
         );
         let tab_gap = tab_assets.gap_units;
         let materials = tab_rect(bounds, 2, INVENTORY_TAB_LABELS.len(), tab_gap);
@@ -3882,19 +3954,16 @@ mod tests {
     #[test]
     fn invalid_slice_and_button_state_metadata_are_rejected() {
         let mut metadata: UiAtlasMetadata = serde_json::from_str(ATLAS_METADATA).unwrap();
-        metadata.windows.insert(
-            "base".to_string(),
-            SourceRectPx {
-                x: 1500,
-                y: 900,
-                width: 100,
-                height: 200,
-            },
-        );
+        metadata.window = SourceRectPx {
+            x: 1500,
+            y: 900,
+            width: 100,
+            height: 200,
+        };
         assert!(validate_atlas_metadata(&metadata, [768, 283]).is_err());
         metadata = serde_json::from_str(ATLAS_METADATA).unwrap();
-        metadata.close_button.normal.width = 500;
-        metadata.close_button.normal.x = 1200;
+        metadata.small_buttons.close.normal.width = 500;
+        metadata.small_buttons.close.normal.x = 1200;
         assert!(validate_atlas_metadata(&metadata, [768, 283]).is_err());
     }
 
@@ -3911,11 +3980,11 @@ mod tests {
         assert_eq!(frame.textured_rects[9].size(), [14.0, 12.0]);
         assert_eq!(
             frame.textured_rects[9].uv_min,
-            [154.5 / 192.0, 78.5 / 192.0]
+            [162.5 / 192.0, 105.5 / 192.0]
         );
         assert_eq!(
             frame.textured_rects[9].uv_max,
-            [167.5 / 192.0, 89.5 / 192.0]
+            [179.5 / 192.0, 122.5 / 192.0]
         );
         assert_eq!(frame.title.content.0, "Inventory");
     }
@@ -4011,7 +4080,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             hover.textured_rects[9].uv_min,
-            [154.5 / 192.0, 90.5 / 192.0]
+            [162.5 / 192.0, 69.5 / 192.0]
         );
         let before = layout.close_button;
         assert!(window.apply_pointer_button(
@@ -4027,7 +4096,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             pressed.textured_rects[9].uv_min,
-            [154.5 / 192.0, 102.5 / 192.0]
+            [162.5 / 192.0, 87.5 / 192.0]
         );
         assert_eq!(
             assets
@@ -4161,5 +4230,29 @@ mod tests {
             ElementState::Pressed,
             false
         ));
+    }
+
+    #[test]
+    fn closing_and_reopening_preserves_session_position() {
+        let mut window = InventoryWindow::default();
+        assert!(window.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        window.chrome.top_left_units = Some([31.0, 17.0]);
+        assert!(window.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        assert!(!window.is_visible());
+        assert!(window.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false
+        ));
+        assert!(window.is_visible());
+        assert_eq!(window.chrome.top_left_units, Some([31.0, 17.0]));
     }
 }

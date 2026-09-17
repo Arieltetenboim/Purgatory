@@ -24,5 +24,5 @@ pub use parallax::{
     PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_quads, parallax_quads,
 };
 pub(crate) use text::{Alignment as TextAlignment, TextBlock, TextContent, TextStyle};
-pub(crate) use ui::{UiRect, UiTexturedRect};
+pub(crate) use ui::{UiComposition, UiRect, UiTexturedRect};
 pub(crate) mod text;

@@ -869,10 +869,9 @@ impl World {
         if !self.inventory_contains(actor, item) {
             return Err(ItemRuntimeError::ItemNotInInventory { owner: actor, item });
         }
-        let record = self.item_record(item).ok_or(ItemRuntimeError::ItemNotInInventory {
-            owner: actor,
-            item,
-        })?;
+        let record = self
+            .item_record(item)
+            .ok_or(ItemRuntimeError::ItemNotInInventory { owner: actor, item })?;
         let address = actor_data.address;
         let position = actor_data.transform.expect("checked above").position;
 
@@ -884,9 +883,9 @@ impl World {
         ) else {
             return Err(ItemRuntimeError::SpawnFailed);
         };
-        if let Err(err) =
-            self.item_runtime
-                .move_inventory_to_world_drop(actor, item, entity, true)
+        if let Err(err) = self
+            .item_runtime
+            .move_inventory_to_world_drop(actor, item, entity, true)
         {
             let _ = self.despawn(entity);
             return Err(err);
