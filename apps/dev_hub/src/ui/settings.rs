@@ -3,10 +3,19 @@ use purgatory_dev_runtime::{BuildProfile, HubCommand, HubSnapshot, LogLevel, Ser
 
 use crate::theme;
 use crate::ui::layout::{self, card, kv_row};
+use crate::ui::{doctor, launch_profiles, tool_launch};
 
 pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
     let mut cmd = None;
-    layout::page_header(ui, "Settings", "Applies to newly spawned processes only.");
+    layout::page_header(ui, "Settings", "Development environment, launch presets, and process defaults.");
+
+    if let Some(profile_cmd) = launch_profiles::show_section(ui, snap) {
+        cmd = Some(profile_cmd);
+    }
+    ui.add_space(theme::SECTION_GAP);
+
+    doctor::show_section(ui, snap);
+    ui.add_space(theme::SECTION_GAP);
 
     card(ui, "Build profile", |ui| {
         ui.horizontal(|ui| {
@@ -17,10 +26,7 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
                 }
             }
         });
-        ui.colored_label(
-            theme::muted(),
-            "Changing profile does not restart a live server.",
-        );
+        ui.colored_label(theme::muted(), "Changing profile does not restart a live server.");
     });
     ui.add_space(theme::SECTION_GAP);
 
@@ -39,53 +45,27 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
     card(ui, "Environment", |ui| {
         kv_row(ui, "Endpoint", &snap.endpoint);
         kv_row(ui, "Workspace", &snap.workspace);
-        kv_row(
-            ui,
-            "cargo",
-            if snap.cargo_found {
-                "on PATH"
-            } else {
-                "NOT FOUND"
-            },
-        );
-        ui.colored_label(
-            theme::muted(),
-            "PURGATORY_DATA_DIR is set per Runtime Validation / load ExtraEnv, not globally here.",
-        );
+        kv_row(ui, "cargo", if snap.cargo_found { "on PATH" } else { "NOT FOUND" });
+        ui.colored_label(theme::muted(), "PURGATORY_DATA_DIR is set per Runtime Validation / load ExtraEnv, not globally here.");
         if !snap.cargo_found {
-            ui.colored_label(
-                theme::state_color(ServerState::Degraded),
-                "cargo is not on PATH",
-            );
+            ui.colored_label(theme::state_color(ServerState::Degraded), "cargo is not on PATH");
         }
     });
     ui.add_space(theme::SECTION_GAP);
 
     card(ui, "Ops", |ui| {
         ui.horizontal(|ui| {
-            if ui.button("QUALITY GATE").clicked() {
-                cmd = Some(HubCommand::QualityGate);
+            if ui.button("QUALITY GATE").on_hover_text("Run the same hidden Quality Gate used by Dashboard; progress is shown on Dashboard and detailed output in Logs.").clicked() {
+                let _ = tool_launch::launch_quality_gate();
             }
-            if ui.button("PHASE 7.8 GATE").clicked() {
-                cmd = Some(HubCommand::Phase78Gate);
-            }
-            if snap.phase78_gate_active {
-                ui.colored_label(theme::muted(), "(gate running — ladder isolated)");
-            }
-            if ui.button("REBUILD").clicked() {
+            if ui.button("REBUILD").on_hover_text("Rebuild Hub-managed binaries using the existing runtime build path.").clicked() {
                 cmd = Some(HubCommand::Rebuild);
             }
-            if ui
-                .add(egui::Button::new("KILL ALL").fill(egui::Color32::from_rgb(140, 50, 50)))
-                .clicked()
-            {
+            if ui.add(egui::Button::new("KILL ALL").fill(egui::Color32::from_rgb(140, 50, 50))).on_hover_text("Emergency cleanup of workspace runtime processes.").clicked() {
                 cmd = Some(HubCommand::KillAll);
             }
         });
-        ui.colored_label(
-            theme::muted(),
-            "QUALITY GATE runs scripts/check.ps1. PHASE 7.8 GATE runs scripts/phase_78_gate.ps1 (capacity regression; long). KILL ALL stops server, clients, load, and workspace cargo (unlike closing the Hub).",
-        );
+        ui.colored_label(theme::muted(), "Quality Gate runs hidden with isolated output. Kill All stops server, clients, load, and workspace cargo.");
     });
     cmd
 }
