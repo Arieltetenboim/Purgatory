@@ -12,4 +12,5 @@ pub mod run_view;
 pub mod runtime_server;
 pub mod settings;
 pub mod status;
+pub mod tool_launch;
 pub mod validation;
