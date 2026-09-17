@@ -26,7 +26,6 @@ pub enum JobOp {
     Stop,
     Validate,
     Load,
-    QualityGate,
 }
 
 impl JobOp {
@@ -39,7 +38,6 @@ impl JobOp {
             Self::Stop => "stop",
             Self::Validate => "validate",
             Self::Load => "load",
-            Self::QualityGate => "quality gate",
         }
     }
 }
@@ -65,12 +63,7 @@ impl JobPhase {
         matches!(
             self,
             Self::Running {
-                op: JobOp::Build
-                    | JobOp::Start
-                    | JobOp::Probe
-                    | JobOp::Validate
-                    | JobOp::Load
-                    | JobOp::QualityGate,
+                op: JobOp::Build | JobOp::Start | JobOp::Probe | JobOp::Validate | JobOp::Load,
                 ..
             } | Self::Cancelling { .. }
         )
@@ -113,7 +106,6 @@ pub enum HubCommand {
     StopClients,
     QualityGate,
     LaunchAnimationLab,
-    LaunchNpcLab,
     /// Visible console: `scripts/phase_78_gate.ps1` (Phase 7.8 production performance gate).
     Phase78Gate,
     Rebuild,
