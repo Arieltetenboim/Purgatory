@@ -13,6 +13,7 @@ pub mod phase7_stats;
 pub mod placeholders;
 pub mod run_view;
 pub mod runtime_server;
+pub mod server_commands;
 pub mod settings;
 pub mod status;
 pub mod tool_launch;
