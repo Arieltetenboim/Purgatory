@@ -1,4 +1,4 @@
-//! Dashboard: fixed-window modular layout — no overlapping cards.
+//! Dashboard: operational control surface for the active workspace.
 
 use eframe::egui::{self, Align, Layout, RichText, Vec2};
 
@@ -9,7 +9,7 @@ use crate::ui::dashboard_model::{
 };
 use crate::ui::layout::{
     self, PageOutcome, btn_destructive, btn_ghost, btn_primary, empty_state, hub_card,
-    log_scroll_view, metric_flow, metric_grid_two_col, status_badge,
+    metric_flow, metric_row, status_badge,
 };
 
 pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> PageOutcome {
@@ -19,51 +19,70 @@ pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> Pag
     layout::page_header(
         ui,
         "Dashboard",
-        "Operational overview of your workspace and services.",
+        "Control your development environment and monitor runtime status.",
     );
 
     let gap = theme::CARD_GAP;
     let avail = ui.available_width();
-
-    // Fixed Hub window → always the intentional wide composition.
-    // Avoid egui::columns (nested in ScrollArea it can overlap following rows).
     let col = ((avail - gap * 2.0) / 3.0).floor().max(200.0);
-    row_top(ui, gap, col, &model, &mut outcome);
+
+    row_top(ui, gap, col, snap, &model, &mut outcome);
     ui.add_space(gap);
 
-    let project_w = ((avail - gap) * (8.0 / 12.0)).floor().max(280.0);
-    let attention_w = (avail - gap - project_w).floor().max(180.0);
-    row_two(ui, gap, project_w, attention_w, &model);
+    let project_w = ((avail - gap) * 0.58).floor().max(340.0);
+    let actions_w = (avail - gap - project_w).floor().max(280.0);
+    row_workspace_actions(
+        ui,
+        gap,
+        project_w,
+        actions_w,
+        snap,
+        &model,
+        &mut outcome,
+    );
     ui.add_space(gap);
 
-    quick_actions(ui, &model, &mut outcome);
-    ui.add_space(gap);
-    activity_strip(ui, &model, &mut outcome);
+    activity_panel(ui, snap, &mut outcome);
 
     outcome
 }
 
-fn row_top(ui: &mut egui::Ui, gap: f32, col: f32, model: &DashVm, outcome: &mut PageOutcome) {
+fn row_top(
+    ui: &mut egui::Ui,
+    gap: f32,
+    col: f32,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    model: &DashVm,
+    outcome: &mut PageOutcome,
+) {
     ui.allocate_ui_with_layout(
         Vec2::new(ui.available_width(), 0.0),
         Layout::left_to_right(Align::Min),
         |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
             cell(ui, col, |ui| status_card(ui, &model.server, outcome));
-            cell(ui, col, |ui| status_card(ui, &model.validation, outcome));
-            cell(ui, col, |ui| status_card(ui, &model.latest, outcome));
+            cell(ui, col, |ui| clients_panel(ui, snap, outcome));
+            cell(ui, col, |ui| attention_panel(ui, &model.attention));
         },
     );
 }
 
-fn row_two(ui: &mut egui::Ui, gap: f32, left_w: f32, right_w: f32, model: &DashVm) {
+fn row_workspace_actions(
+    ui: &mut egui::Ui,
+    gap: f32,
+    project_w: f32,
+    actions_w: f32,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    model: &DashVm,
+    outcome: &mut PageOutcome,
+) {
     ui.allocate_ui_with_layout(
         Vec2::new(ui.available_width(), 0.0),
         Layout::left_to_right(Align::Min),
         |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
-            cell(ui, left_w, |ui| project_panel(ui, &model.project));
-            cell(ui, right_w, |ui| attention_panel(ui, &model.attention));
+            cell(ui, project_w, |ui| project_panel(ui, &model.project));
+            cell(ui, actions_w, |ui| quick_actions(ui, snap, model, outcome));
         },
     );
 }
@@ -156,28 +175,73 @@ fn status_card(ui: &mut egui::Ui, vm: &StatusModuleVm, outcome: &mut PageOutcome
 fn nav_page(label: &str) -> HubPage {
     match label {
         "Open Server" => HubPage::RuntimeServer,
+        "Open Clients" => HubPage::RuntimeClients,
         "Open Performance" => HubPage::Performance,
         "Open Logs" => HubPage::Logs,
         _ => HubPage::Validation,
     }
 }
 
+fn clients_panel(
+    ui: &mut egui::Ui,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    outcome: &mut PageOutcome,
+) {
+    hub_card(ui, "▣", "Clients", |ui| {
+        metric_row(ui, "Running", &snap.client_count.to_string(), true);
+        metric_row(ui, "Queued", &snap.pending_clients.to_string(), true);
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            for count in [1_u32, 2, 3] {
+                if ui
+                    .add_enabled(
+                        snap.can_request_clients,
+                        btn_primary(&format!("+ {count}")),
+                    )
+                    .clicked()
+                {
+                    outcome.command = Some(purgatory_dev_runtime::HubCommand::RequestClients {
+                        count,
+                    });
+                }
+            }
+            if ui
+                .add_enabled(snap.can_stop_clients, btn_ghost("Stop All"))
+                .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::StopClients);
+            }
+        });
+        ui.add_space(4.0);
+        if ui.add(btn_ghost("Open Clients")).clicked() {
+            outcome.navigate = Some(HubPage::RuntimeClients);
+        }
+    });
+}
+
 fn project_panel(ui: &mut egui::Ui, vm: &ProjectVm) {
+    let (branch, commit, dirty) = split_git_stamp(&vm.build);
     let resp = hub_card(ui, "▤", "Project / Workspace", |ui| {
-        let left = [
-            ("Phase", vm.phase.as_str(), false),
-            ("Profile", vm.profile.as_str(), false),
-            ("Job", vm.job.as_str(), false),
-        ];
-        let right = [
-            ("Clients", vm.clients.as_str(), false),
-            ("Build", vm.build.as_str(), true),
-            ("Workspace", vm.workspace_short.as_str(), true),
-        ];
-        metric_grid_two_col(ui, &left, &right);
+        metric_row(ui, "Workspace", vm.workspace_short.as_str(), true);
+        metric_row(ui, "Branch", branch, true);
+        metric_row(ui, "Commit", commit, true);
+        metric_row(
+            ui,
+            "Working tree",
+            if dirty { "DIRTY" } else { "CLEAN" },
+            false,
+        );
     });
     resp.response
         .on_hover_text(format!("{}\n{}", vm.identity_full, vm.workspace_full));
+}
+
+fn split_git_stamp(stamp: &str) -> (&str, &str, bool) {
+    let (branch, commit) = stamp.split_once(" @ ").unwrap_or(("—", stamp));
+    let dirty = commit.ends_with('*');
+    let commit = commit.strip_suffix('*').unwrap_or(commit);
+    (branch, commit, dirty)
 }
 
 fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
@@ -234,40 +298,93 @@ fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
     });
 }
 
-fn quick_actions(ui: &mut egui::Ui, model: &DashVm, outcome: &mut PageOutcome) {
-    full_width(ui, |ui| {
-        hub_card(ui, "☰", "Quick Actions", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                for action in &model.actions {
-                    let clicked = match action.kind {
-                        ActionKind::Routine => ui
-                            .add_enabled(action.enabled, btn_primary(action.label))
-                            .clicked(),
-                        ActionKind::Secondary => ui
-                            .add_enabled(action.enabled, btn_ghost(action.label))
-                            .clicked(),
-                        ActionKind::Destructive => ui
-                            .add_enabled(action.enabled, btn_destructive(action.label))
-                            .clicked(),
-                    };
-                    if clicked {
-                        outcome.command = Some(action.command.clone());
-                    }
+fn quick_actions(
+    ui: &mut egui::Ui,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    model: &DashVm,
+    outcome: &mut PageOutcome,
+) {
+    hub_card(ui, "☰", "Quick Actions", |ui| {
+        ui.label(
+            RichText::new("Tools")
+                .font(theme::subtitle_font())
+                .color(theme::muted())
+                .strong(),
+        );
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for action in &model.actions {
+                if !matches!(action.command, purgatory_dev_runtime::HubCommand::LaunchAnimationLab)
+                {
+                    continue;
                 }
-            });
-            if let Some(warn) = model.cargo_warning {
-                ui.add_space(4.0);
-                ui.colored_label(
-                    theme::state_color(purgatory_dev_runtime::ServerState::Degraded),
-                    warn,
-                );
+                if ui
+                    .add_enabled(action.enabled, btn_ghost(action.label))
+                    .clicked()
+                {
+                    outcome.command = Some(action.command.clone());
+                }
+            }
+            if ui.add(btn_ghost("Open Logs")).clicked() {
+                outcome.navigate = Some(HubPage::Logs);
             }
         });
+
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new("Operations")
+                .font(theme::subtitle_font())
+                .color(theme::muted())
+                .strong(),
+        );
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for action in &model.actions {
+                if matches!(action.command, purgatory_dev_runtime::HubCommand::LaunchAnimationLab)
+                {
+                    continue;
+                }
+                let clicked = match action.kind {
+                    ActionKind::Routine => ui
+                        .add_enabled(action.enabled, btn_primary(action.label))
+                        .clicked(),
+                    ActionKind::Secondary => ui
+                        .add_enabled(action.enabled, btn_ghost(action.label))
+                        .clicked(),
+                    ActionKind::Destructive => ui
+                        .add_enabled(action.enabled, btn_destructive(action.label))
+                        .clicked(),
+                };
+                if clicked {
+                    outcome.command = Some(action.command.clone());
+                }
+            }
+            if ui
+                .add_enabled(
+                    !snap.phase78_gate_active,
+                    btn_ghost("Phase 7.8 Gate"),
+                )
+                .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::Phase78Gate);
+            }
+        });
+
+        if let Some(warn) = model.cargo_warning {
+            ui.add_space(4.0);
+            ui.colored_label(
+                theme::state_color(purgatory_dev_runtime::ServerState::Degraded),
+                warn,
+            );
+        }
     });
 }
 
-fn activity_strip(ui: &mut egui::Ui, model: &DashVm, outcome: &mut PageOutcome) {
+fn activity_panel(
+    ui: &mut egui::Ui,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    outcome: &mut PageOutcome,
+) {
     full_width(ui, |ui| {
         hub_card(ui, "≡", "Recent Activity", |ui| {
             ui.horizontal(|ui| {
@@ -280,18 +397,32 @@ fn activity_strip(ui: &mut egui::Ui, model: &DashVm, outcome: &mut PageOutcome) 
                     }
                 });
             });
-            ui.add_space(2.0);
-            if model.activity.is_empty() {
-                empty_state(ui, "No activity yet.");
-            } else {
-                log_scroll_view(
-                    ui,
-                    "dash_activity",
-                    &model.activity,
-                    "No activity yet.",
-                    120.0,
-                );
-            }
+            ui.add_space(4.0);
+
+            egui::Resize::default()
+                .id_salt("dash_activity_resize")
+                .default_height(250.0)
+                .min_height(130.0)
+                .max_height(430.0)
+                .show(ui, |ui| {
+                    if snap.log_lines.is_empty() {
+                        empty_state(ui, "No activity yet.");
+                        return;
+                    }
+                    let mut text = snap.log_lines.join("\n");
+                    egui::ScrollArea::both()
+                        .id_salt("dash_activity_scroll")
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            ui.add_sized(
+                                [ui.available_width(), ui.available_height().max(120.0)],
+                                egui::TextEdit::multiline(&mut text)
+                                    .font(theme::mono_small())
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
+                });
         });
     });
 }
