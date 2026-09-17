@@ -14,7 +14,14 @@ use crate::ui::{gate_pipeline, log_console, tool_launch};
 
 pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> PageOutcome {
     let mut outcome = PageOutcome::none();
-    let model = dashboard_model::from_snapshot(snap);
+    let mut model = dashboard_model::from_snapshot(snap);
+    let gate_log = PathBuf::from(&snap.log_dir).join("quality-gate.log");
+    if let Some(step) = gate_pipeline::failed_step(&gate_log) {
+        model.attention.issues.push((
+            format!("Quality Gate failed at {step}"),
+            theme::destructive(),
+        ));
+    }
 
     layout::page_header(
         ui,
@@ -33,10 +40,7 @@ pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> Pag
     row_workspace_actions(ui, gap, project_w, actions_w, snap, &model, &mut outcome);
     ui.add_space(gap);
 
-    gate_pipeline::show(
-        ui,
-        &PathBuf::from(&snap.log_dir).join("quality-gate.log"),
-    );
+    gate_pipeline::show(ui, &gate_log);
     ui.add_space(gap);
     activity_panel(ui, snap, &mut outcome);
     outcome
@@ -232,7 +236,7 @@ fn clients_panel(
     snap: &purgatory_dev_runtime::HubSnapshot,
     outcome: &mut PageOutcome,
 ) {
-    dashboard_card(ui, "▣", "Clients", 148.0, |ui| {
+    dashboard_card(ui, "C", "Clients", 148.0, |ui| {
         project_row(ui, "Running", &snap.client_count.to_string(), true);
         project_row(ui, "Queued", &snap.pending_clients.to_string(), true);
         ui.add_space(32.0);
@@ -266,7 +270,7 @@ fn clients_panel(
 
 fn project_panel(ui: &mut egui::Ui, vm: &ProjectVm) {
     let (branch, commit, _dirty) = split_git_stamp(&vm.git_stamp);
-    let resp = dashboard_card(ui, "▰", "Project / Workspace", 150.0, |ui| {
+    let resp = dashboard_card(ui, "P", "Project / Workspace", 150.0, |ui| {
         ui.separator();
         ui.add_space(5.0);
         egui::Grid::new("dashboard_project_grid")
@@ -313,14 +317,14 @@ fn project_row(ui: &mut egui::Ui, label: &str, value: &str, mono: bool) {
 }
 
 fn split_git_stamp(stamp: &str) -> (&str, &str, bool) {
-    let (branch, commit) = stamp.split_once(" @ ").unwrap_or(("—", stamp));
+    let (branch, commit) = stamp.split_once(" @ ").unwrap_or(("-", stamp));
     let dirty = commit.ends_with('*');
     let commit = commit.strip_suffix('*').unwrap_or(commit);
     (branch, commit, dirty)
 }
 
 fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
-    dashboard_card(ui, "⚑", "Attention", 148.0, |ui| {
+    dashboard_card(ui, "!", "Attention", 148.0, |ui| {
         if vm.is_healthy() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
@@ -338,8 +342,8 @@ fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    "✓",
-                    theme::section_font(),
+                    "OK",
+                    theme::subtitle_font(),
                     theme::success(),
                 );
                 ui.vertical(|ui| {
@@ -354,7 +358,7 @@ fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
                     );
                     ui.add(
                         egui::Label::new(
-                            RichText::new("All systems operational.")
+                            RichText::new("Current local checks are operational.")
                                 .font(theme::subtitle_font())
                                 .color(theme::muted()),
                         )
@@ -365,7 +369,7 @@ fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
         } else {
             for (text, color) in &vm.issues {
                 ui.horizontal(|ui| {
-                    ui.colored_label(*color, "●");
+                    ui.colored_label(*color, "!");
                     ui.add(egui::Label::new(RichText::new(text).color(*color)).wrap());
                 });
                 ui.add_space(3.0);
@@ -380,7 +384,7 @@ fn quick_actions(
     model: &DashVm,
     outcome: &mut PageOutcome,
 ) {
-    dashboard_card(ui, "◆", "Quick Actions", 150.0, |ui| {
+    dashboard_card(ui, "Q", "Quick Actions", 150.0, |ui| {
         ui.colored_label(
             theme::muted(),
             RichText::new("Hover an action for details.").font(theme::subtitle_font()),
@@ -392,87 +396,89 @@ fn quick_actions(
             .floor()
             .max(96.0);
         let button_size = Vec2::new(button_w, 32.0);
-        egui::Grid::new("dashboard_quick_actions")
-            .num_columns(3)
-            .spacing(Vec2::new(gap, gap))
-            .show(ui, |ui| {
-                let response = ui.add(btn_ghost("Animation Lab").min_size(button_size));
-                if action_response(
-                    response,
-                    "Launch the standalone animation authoring tool. It runs independently of the game server and clients.",
-                )
-                .clicked()
-                {
-                    outcome.command =
-                        Some(purgatory_dev_runtime::HubCommand::LaunchAnimationLab);
-                }
 
-                let response = ui.add(btn_ghost("NPC Lab").min_size(button_size));
-                if action_response(
-                    response,
-                    "Launch the local NPC authoring web tool in the background. Output is written to logs/dev-tools/npc-lab.log.",
-                )
-                .clicked()
-                {
-                    let _ = tool_launch::launch_npc_lab();
-                }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            let response = ui.add(btn_ghost("Animation Lab").min_size(button_size));
+            if action_response(
+                response,
+                "Launch the standalone animation authoring tool. It runs independently of the game server and clients.",
+            )
+            .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::LaunchAnimationLab);
+            }
+            let response = ui.add(btn_ghost("NPC Lab").min_size(button_size));
+            if action_response(
+                response,
+                "Launch the local NPC authoring web tool in the background. Output is written to logs/dev-tools/npc-lab.log.",
+            )
+            .clicked()
+            {
+                let _ = tool_launch::launch_npc_lab();
+            }
+            let response = ui.add(btn_ghost("Hub Logs").min_size(button_size));
+            if action_response(
+                response,
+                "Open the Logs page, including Hub activity and isolated Quality Gate output.",
+            )
+            .clicked()
+            {
+                outcome.navigate = Some(HubPage::Logs);
+            }
+        });
 
-                let response = ui.add(btn_ghost("Hub Logs").min_size(button_size));
-                if action_response(
-                    response,
-                    "Open the Logs page, including Hub activity and isolated Quality Gate output.",
-                )
-                .clicked()
-                {
-                    outcome.navigate = Some(HubPage::Logs);
-                }
-                ui.end_row();
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
 
-                let response = ui.add(btn_ghost("Rebuild").min_size(button_size));
-                if action_response(
-                    response,
-                    "Rebuild available Hub binaries. Running or locked executables are skipped rather than forcibly stopped.",
-                )
-                .clicked()
-                {
-                    outcome.command = Some(purgatory_dev_runtime::HubCommand::Rebuild);
-                }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            let response = ui.add(btn_ghost("Rebuild").min_size(button_size));
+            if action_response(
+                response,
+                "Rebuild available Hub binaries. Running or locked executables are skipped rather than forcibly stopped.",
+            )
+            .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::Rebuild);
+            }
+            let response = ui.add(btn_ghost("Quality Gate").min_size(button_size));
+            if action_response(
+                response,
+                "Run Format -> Cargo Check -> Clippy -> Workspace Tests -> Content Validation. Progress appears below; detailed output stays in Logs -> Quality Gate.",
+            )
+            .clicked()
+            {
+                let _ = tool_launch::launch_quality_gate();
+            }
+            let response = ui.add_enabled(
+                snap.can_stop_clients,
+                btn_ghost("Stop Clients").min_size(button_size),
+            );
+            if action_response(
+                response,
+                "Stop all workspace game clients and clear queued client launches.",
+            )
+            .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::StopClients);
+            }
+        });
 
-                let response = ui.add(btn_ghost("Quality Gate").min_size(button_size));
-                if action_response(
-                    response,
-                    "Run Format → Cargo Check → Clippy → Workspace Tests → Content Validation. Progress appears below; detailed output stays in Logs → Quality Gate.",
-                )
-                .clicked()
-                {
-                    let _ = tool_launch::launch_quality_gate();
-                }
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
 
-                let response = ui.add_enabled(
-                    snap.can_stop_clients,
-                    btn_ghost("Stop Clients").min_size(button_size),
-                );
-                if action_response(
-                    response,
-                    "Stop all workspace game clients and clear queued client launches.",
-                )
-                .clicked()
-                {
-                    outcome.command = Some(purgatory_dev_runtime::HubCommand::StopClients);
-                }
-                ui.end_row();
-
-                let response = ui.add(btn_destructive("Kill All").min_size(button_size));
-                if action_response(
-                    response,
-                    "Emergency cleanup for game runtime processes: stop server, clients, load/validation jobs, active builds, and workspace Cargo processes. Authoring tools remain independent.",
-                )
-                .clicked()
-                {
-                    outcome.command = Some(purgatory_dev_runtime::HubCommand::KillAll);
-                }
-                ui.end_row();
-            });
+        let response = ui.add(btn_destructive("Kill All (F9)").min_size(button_size));
+        if action_response(
+            response,
+            "Emergency cleanup for game runtime processes: stop server, clients, load/validation jobs, active builds, and workspace Cargo processes. Authoring tools remain independent.",
+        )
+        .clicked()
+        {
+            outcome.command = Some(purgatory_dev_runtime::HubCommand::KillAll);
+        }
 
         if let Some(warn) = model.cargo_warning {
             ui.add_space(7.0);
@@ -500,8 +506,8 @@ fn activity_panel(
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     ui.label(
-                        RichText::new("≡")
-                            .font(theme::state_font())
+                        RichText::new("LOG")
+                            .font(theme::subtitle_font())
                             .color(theme::muted()),
                     );
                     ui.label(
