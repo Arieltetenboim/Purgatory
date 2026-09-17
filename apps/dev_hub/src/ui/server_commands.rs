@@ -24,6 +24,8 @@ pub struct ServerCommandsState {
     snapshot: Option<DevAdminSnapshot>,
     selected_player: Option<u64>,
     selected_npc: Option<u32>,
+    selected_item: Option<u32>,
+    item_quantity: u32,
     channel: u32,
     history: Vec<String>,
     sender: Sender<AdminReply>,
@@ -40,6 +42,8 @@ impl Default for ServerCommandsState {
             snapshot: None,
             selected_player: None,
             selected_npc: None,
+            selected_item: None,
+            item_quantity: 1,
             channel: 1,
             history: Vec::new(),
             sender,
@@ -111,6 +115,12 @@ impl ServerCommandsState {
             {
                 self.selected_npc = snapshot.npcs.first().map(|n| n.content_id);
             }
+            if self
+                .selected_item
+                .is_none_or(|selected| !snapshot.items.iter().any(|item| item.content_id == selected))
+            {
+                self.selected_item = snapshot.items.first().map(|item| item.content_id);
+            }
 
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Target Player").color(theme::muted()));
@@ -140,7 +150,7 @@ impl ServerCommandsState {
                 ui.label(RichText::new("Spawn NPC").strong());
                 egui::ComboBox::from_id_salt("server_commands_npc")
                     .width(300.0)
-                    .selected_text(selected_npc_label(&snapshot, self.selected_npc))
+                    .selected_text(selected_content_label(&snapshot.npcs, self.selected_npc, "Select NPC"))
                     .show_ui(ui, |ui| {
                         for npc in &snapshot.npcs {
                             ui.selectable_value(
@@ -163,6 +173,45 @@ impl ServerCommandsState {
                     self.send(DevAdminRequest::SpawnNpc {
                         connection_id,
                         npc_content_id,
+                    });
+                }
+            });
+
+            ui.add_space(7.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Spawn Item").strong());
+                egui::ComboBox::from_id_salt("server_commands_item")
+                    .width(300.0)
+                    .selected_text(selected_content_label(
+                        &snapshot.items,
+                        self.selected_item,
+                        "Select item",
+                    ))
+                    .show_ui(ui, |ui| {
+                        for item in &snapshot.items {
+                            ui.selectable_value(
+                                &mut self.selected_item,
+                                Some(item.content_id),
+                                format!("{}  ({})", item.authored_id, item.content_id),
+                            );
+                        }
+                    });
+                ui.label("Qty");
+                ui.add(egui::DragValue::new(&mut self.item_quantity).range(1..=999));
+                let enabled = ready && self.selected_player.is_some() && self.selected_item.is_some();
+                if ui
+                    .add_enabled(enabled, btn_primary("Spawn near player"))
+                    .on_hover_text(
+                        "Mint an authoritative item instance/world-drop near the selected player. The server validates the authored item and stack limit.",
+                    )
+                    .clicked()
+                    && let (Some(connection_id), Some(item_content_id)) =
+                        (self.selected_player, self.selected_item)
+                {
+                    self.send(DevAdminRequest::SpawnItem {
+                        connection_id,
+                        item_content_id,
+                        quantity: self.item_quantity,
                     });
                 }
             });
@@ -197,19 +246,13 @@ impl ServerCommandsState {
                     });
                 }
             });
-
-            ui.add_space(8.0);
-            ui.colored_label(
-                theme::muted(),
-                "Speed and jump overrides were removed from this surface. Spawn Item is the next authoritative command being added.",
-            );
         });
 
         ui.add_space(theme::CARD_GAP);
         let _ = hub_card(ui, "LOG", "Server Commands Log", |ui| {
             ui.horizontal(|ui| {
                 if ui
-                    .add(btn_ghost("Copy"))
+                    .add_enabled(!self.history.is_empty(), btn_ghost("Copy"))
                     .on_hover_text("Copy the entire Server Commands log.")
                     .clicked()
                 {
@@ -315,11 +358,15 @@ impl ServerCommandsState {
     }
 }
 
-fn selected_npc_label(snapshot: &DevAdminSnapshot, selected: Option<u32>) -> String {
+fn selected_content_label(
+    entries: &[purgatory_common::DevAdminContentEntry],
+    selected: Option<u32>,
+    fallback: &str,
+) -> String {
     selected
-        .and_then(|id| snapshot.npcs.iter().find(|npc| npc.content_id == id))
-        .map(|npc| format!("{}  ({})", npc.authored_id, npc.content_id))
-        .unwrap_or_else(|| "Select NPC".into())
+        .and_then(|id| entries.iter().find(|entry| entry.content_id == id))
+        .map(|entry| format!("{}  ({})", entry.authored_id, entry.content_id))
+        .unwrap_or_else(|| fallback.into())
 }
 
 fn send_request(request: &DevAdminRequest) -> Result<DevAdminResponse, String> {
