@@ -1,5 +1,5 @@
-use eframe::egui::{self, Align, Layout, Vec2};
 use eframe::egui::text::{LayoutJob, TextFormat};
+use eframe::egui::{self, Align, Layout, Vec2};
 
 use crate::theme;
 use crate::ui::layout::btn_ghost;
@@ -57,15 +57,12 @@ pub fn show(
 
                     let display_text = decorate(lines, default_kind);
                     let mut readonly = display_text.as_str();
-                    let mut layouter = |
-                        ui: &egui::Ui,
-                        text: &dyn egui::TextBuffer,
-                        wrap_width: f32,
-                    | {
-                        let mut job = layout_job(text.as_str());
-                        job.wrap.max_width = wrap_width;
-                        ui.fonts_mut(|fonts| fonts.layout_job(job))
-                    };
+                    let mut layouter =
+                        |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+                            let mut job = layout_job(text.as_str());
+                            job.wrap.max_width = wrap_width;
+                            ui.fonts_mut(|fonts| fonts.layout_job(job))
+                        };
 
                     egui::ScrollArea::vertical()
                         .id_salt(format!("{id_salt}_scroll"))
@@ -90,7 +87,8 @@ fn decorate(lines: &[String], default_kind: &'static str) -> String {
     lines
         .iter()
         .map(|line| {
-            let (stamp, message) = split_timestamp(line);
+            let clean = strip_ansi(line);
+            let (stamp, message) = split_timestamp(&clean);
             let kind = classify(message, default_kind);
             if stamp.is_empty() {
                 format!("[{kind}] {message}")
@@ -113,12 +111,29 @@ fn split_timestamp(line: &str) -> (&str, &str) {
 }
 
 fn classify(message: &str, default_kind: &'static str) -> &'static str {
-    let lower = message.to_ascii_lowercase();
+    let lower = message.trim_start().to_ascii_lowercase();
+
+    // Gate output often contains source-code words such as `error` or `warn` inside
+    // rustfmt diffs. Do not label those source lines as failures. Only classify explicit
+    // diagnostics; everything else remains GATE.
+    if default_kind == "GATE" {
+        if lower.starts_with("error:")
+            || lower.starts_with("error[")
+            || lower.contains("test result: failed")
+            || lower.contains("could not compile")
+            || lower.contains("quality gate failed")
+        {
+            return "ERROR";
+        }
+        if lower.starts_with("warning:") {
+            return "WARN";
+        }
+        return "GATE";
+    }
+
     if lower.contains("fail") || lower.contains("error") || lower.contains("panic") {
         "ERROR"
-    } else if lower.contains("warn")
-        || lower.contains("degraded")
-        || lower.contains("not running")
+    } else if lower.contains("warn") || lower.contains("degraded") || lower.contains("not running")
     {
         "WARN"
     } else if lower.contains("build")
@@ -127,8 +142,6 @@ fn classify(message: &str, default_kind: &'static str) -> &'static str {
         || lower.contains("compil")
     {
         "BUILD"
-    } else if lower.contains("quality-gate") || lower.contains("quality gate") {
-        "GATE"
     } else if lower.contains("client") {
         "CLIENT"
     } else if lower.contains("server") || lower.contains("probe") || lower.contains("listener") {
@@ -138,6 +151,29 @@ fn classify(message: &str, default_kind: &'static str) -> &'static str {
     } else {
         default_kind
     }
+}
+
+fn strip_ansi(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
+            i += 2;
+            while i < bytes.len() {
+                let b = bytes[i];
+                i += 1;
+                if (0x40..=0x7e).contains(&b) {
+                    break;
+                }
+            }
+            continue;
+        }
+        let ch = input[i..].chars().next().expect("valid utf-8 boundary");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 fn layout_job(text: &str) -> LayoutJob {
@@ -250,6 +286,21 @@ mod tests {
         assert_eq!(classify("client connected", "CLIENT"), "CLIENT");
         assert_eq!(classify("server error: bind failed", "SERVER"), "ERROR");
         assert_eq!(classify("Compiling purgatory-client", "CLIENT"), "BUILD");
-        assert_eq!(classify("quality-gate | checking fmt", "INFO"), "GATE");
+        assert_eq!(classify("quality-gate | checking fmt", "INFO"), "INFO");
+    }
+
+    #[test]
+    fn gate_source_diff_words_are_not_false_errors() {
+        assert_eq!(
+            classify("if lower.contains(\"error\") {", "GATE"),
+            "GATE"
+        );
+        assert_eq!(classify("error: could not compile `x`", "GATE"), "ERROR");
+        assert_eq!(classify("warning: unused import", "GATE"), "WARN");
+    }
+
+    #[test]
+    fn strips_terminal_ansi_sequences() {
+        assert_eq!(strip_ansi("\u{1b}[31m-red\u{1b}[0m"), "-red");
     }
 }
