@@ -41,24 +41,18 @@ pub(crate) fn spawn(
         .map_err(|err| format!("dev admin content: {err}"))?;
     let mut npcs = registry
         .iter_npc_dialogue_presentations()
-        .filter_map(|npc| {
-            let content_id = u32::try_from(npc.content_id.token()).ok()?;
-            Some(DevAdminContentEntry {
-                content_id,
-                authored_id: npc.authored_id.clone(),
-            })
+        .map(|npc| DevAdminContentEntry {
+            content_id: npc.content_id.token(),
+            authored_id: npc.authored_id.clone(),
         })
         .collect::<Vec<_>>();
     npcs.sort_by(|a, b| a.authored_id.cmp(&b.authored_id));
 
     let mut items = registry
         .iter_items()
-        .filter_map(|item| {
-            let content_id = u32::try_from(item.content_id.token()).ok()?;
-            Some(DevAdminContentEntry {
-                content_id,
-                authored_id: item.authored_id.clone(),
-            })
+        .map(|item| DevAdminContentEntry {
+            content_id: item.content_id.token(),
+            authored_id: item.authored_id.clone(),
         })
         .collect::<Vec<_>>();
     items.sort_by(|a, b| a.authored_id.cmp(&b.authored_id));
@@ -210,7 +204,7 @@ async fn dispatch(
                 gameplay
                     .send_dev_spawn_npc(
                         ConnectionId::from_raw(connection_id),
-                        ContentId::from_raw(npc_content_id),
+                        ContentId::from_token(npc_content_id),
                     )
                     .await,
                 format!("Spawn NPC {npc_content_id} near connection {connection_id}"),
@@ -239,7 +233,7 @@ async fn dispatch(
             match gameplay
                 .send_dev_spawn_item(
                     ConnectionId::from_raw(connection_id),
-                    ContentId::from_raw(item_content_id),
+                    ContentId::from_token(item_content_id),
                     quantity,
                 )
                 .await
