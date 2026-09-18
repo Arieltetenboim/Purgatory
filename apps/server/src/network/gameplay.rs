@@ -584,6 +584,12 @@ pub enum InputUpdate {
         connection_id: ConnectionId,
         npc_content_id: ContentId,
     },
+    DevSpawnItem {
+        connection_id: ConnectionId,
+        item_content_id: ContentId,
+        quantity: u32,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     Equip {
         connection_id: ConnectionId,
         request: EquipRequest,
@@ -831,6 +837,33 @@ impl GameplayTx {
             })
             .await
             .is_ok()
+    }
+
+    pub async fn send_dev_spawn_item(
+        &self,
+        connection_id: ConnectionId,
+        item_content_id: ContentId,
+        quantity: u32,
+    ) -> Result<(), String> {
+        let (reply, result) = tokio::sync::oneshot::channel();
+        self.input
+            .try_send(InputUpdate::DevSpawnItem {
+                connection_id,
+                item_content_id,
+                quantity,
+                reply,
+            })
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    "gameplay command queue full".to_string()
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    "gameplay command queue closed".to_string()
+                }
+            })?;
+        result
+            .await
+            .map_err(|_| "gameplay owner dropped command reply".to_string())?
     }
 
     pub async fn send_equip(&self, connection_id: ConnectionId, request: EquipRequest) -> bool {
@@ -1441,7 +1474,7 @@ impl GameplayOwner {
 
     pub fn apply_input(&mut self, update: InputUpdate) -> SeqDecision {
         if matches!(
-            update,
+            &update,
             InputUpdate::InteractOpen { .. }
                 | InputUpdate::InteractClose { .. }
                 | InputUpdate::DialogueAdvance { .. }
@@ -1451,6 +1484,7 @@ impl GameplayOwner {
                 | InputUpdate::DevSetSpeed { .. }
                 | InputUpdate::DevSetJump { .. }
                 | InputUpdate::DevSpawnNpc { .. }
+                | InputUpdate::DevSpawnItem { .. }
                 | InputUpdate::Equip { .. }
                 | InputUpdate::Unequip { .. }
                 | InputUpdate::DevPresentationOneShot { .. }
@@ -1497,6 +1531,16 @@ impl GameplayOwner {
                     connection_id,
                     npc_content_id,
                 } => self.handle_dev_spawn_npc(connection_id, npc_content_id),
+                InputUpdate::DevSpawnItem {
+                    connection_id,
+                    item_content_id,
+                    quantity,
+                    reply,
+                } => {
+                    let result =
+                        self.handle_dev_spawn_item(connection_id, item_content_id, quantity);
+                    let _ = reply.send(result);
+                }
                 InputUpdate::Equip {
                     connection_id,
                     request,
@@ -1590,6 +1634,7 @@ impl GameplayOwner {
             | InputUpdate::DevSetSpeed { .. }
             | InputUpdate::DevSetJump { .. }
             | InputUpdate::DevSpawnNpc { .. }
+            | InputUpdate::DevSpawnItem { .. }
             | InputUpdate::Equip { .. }
             | InputUpdate::Unequip { .. }
             | InputUpdate::DevPresentationOneShot { .. }
@@ -3074,6 +3119,62 @@ impl GameplayOwner {
             position[1],
             self.dev_spawned_npcs.len()
         );
+    }
+
+    fn handle_dev_spawn_item(
+        &mut self,
+        connection_id: ConnectionId,
+        item_content_id: ContentId,
+        quantity: u32,
+    ) -> Result<(), String> {
+        let actor = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+            .ok_or_else(|| format!("connection {connection_id} has no gameplay binding"))?;
+        if self.world.kind(actor) != Some(EntityKind::Player) {
+            return Err(format!("connection {connection_id} is not bound to a player"));
+        }
+        let address = self
+            .world
+            .address_of(actor)
+            .ok_or_else(|| format!("connection {connection_id} player has no world address"))?;
+        let position = self
+            .world
+            .transform_of(actor)
+            .map(|value| value.position)
+            .ok_or_else(|| format!("connection {connection_id} player has no transform"))?;
+
+        let item = self
+            .registry
+            .item_by_id(item_content_id)
+            .ok_or_else(|| format!("ContentId {item_content_id} is not an authored item"))?;
+        if quantity == 0 {
+            return Err("item quantity must be greater than zero".to_string());
+        }
+        if quantity > item.stack_limit {
+            return Err(format!(
+                "item quantity {quantity} exceeds authored stack limit {}",
+                item.stack_limit
+            ));
+        }
+        let stack_limit = item.stack_limit;
+        let spawn_position = [position[0] + 0.75, position[1] + 0.25];
+        self.world
+            .spawn_world_drop_item(
+                address,
+                spawn_position,
+                item_content_id,
+                quantity,
+                stack_limit,
+            )
+            .map_err(|error| format!("world-drop spawn failed: {error:?}"))?;
+
+        println!(
+            "DEV_ITEM_SPAWN spawned connection={connection_id} actor={actor} item={item_content_id} quantity={quantity} address={address} position=({:.3},{:.3})",
+            spawn_position[0], spawn_position[1]
+        );
+        Ok(())
     }
 
     fn handle_portal_activate(&mut self, connection_id: ConnectionId, target: WireEntityId) {
