@@ -10,6 +10,7 @@ use crate::fixtures::RuntimeFixtures;
 use crate::health::{DAMAGE_IMMUNITY_TICKS, Health};
 use crate::npc::{NPC_HEALTH_MAX, STRIKE_RANGE};
 use crate::platform::Platform;
+use crate::PlayerInput;
 use crate::time::SimulationTick;
 use crate::transform::Transform;
 use crate::{ContentId, NpcRuntimeConfig, PLAYER_HEALTH_MAX, World, WorldAddress};
@@ -540,6 +541,31 @@ fn exact_surface_touch_applies_contact_damage_without_aggro() {
     assert_eq!(world.health_of(player).unwrap().current, 19.0);
     assert_eq!(world.npc_of(npc).unwrap().target, None);
     assert!(world.damage_immunity_active(player));
+}
+
+#[test]
+fn walking_player_into_passive_npc_applies_contact_damage_without_aggro() {
+    let (mut world, npc, player) = setup(-2.0, 0.0);
+    let mut state = world.npc_of(npc).unwrap();
+    state.walking = false;
+    state.runtime_config.movement_speed = 0.0;
+    world.set_npc(npc, state);
+
+    for tick in 2..=90 {
+        world.begin_tick(SimulationTick::from_count(tick));
+        world.tick_player(
+            player,
+            1.0 / 30.0,
+            PlayerInput::from_buttons(false, true, false),
+        );
+        world.tick_npcs_with_approach(1.0 / 30.0, Some((0.5, 0.8)));
+        if world.health_of(player).unwrap().current < 20.0 {
+            break;
+        }
+    }
+
+    assert_eq!(world.npc_of(npc).unwrap().target, None);
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
 }
 
 #[test]
