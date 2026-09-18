@@ -71,11 +71,7 @@ fn setup(player_x: f32, npc_x: f32) -> (World, crate::EntityId, crate::EntityId)
 
 fn damage_aggro(world: &mut World, npc: crate::EntityId, player: crate::EntityId) {
     let before = world.health_of(npc).unwrap().current;
-    assert!(world.execute_ability_effect(
-        player,
-        npc,
-        AbilityEffect::Damage { amount: 1.0 }
-    ));
+    assert!(world.execute_ability_effect(player, npc, AbilityEffect::Damage { amount: 1.0 }));
     assert!(world.health_of(npc).unwrap().current < before);
     assert_eq!(world.npc_of(npc).unwrap().target, Some(player));
 }
@@ -313,11 +309,7 @@ fn damage_from_dead_player_does_not_establish_aggro() {
             max: 20.0,
         },
     );
-    assert!(world.execute_ability_effect(
-        player,
-        npc,
-        AbilityEffect::Damage { amount: 1.0 }
-    ));
+    assert!(world.execute_ability_effect(player, npc, AbilityEffect::Damage { amount: 1.0 }));
     assert_eq!(world.npc_of(npc).unwrap().target, None);
 }
 
@@ -400,11 +392,7 @@ fn later_damaging_player_becomes_the_new_target() {
     let second = RuntimeFixtures::test_player(&mut world);
     world.set_health(second, Health::full(20.0));
     world.set_transform(second, Transform::from_position([-1.0, 1.0]));
-    assert!(world.execute_ability_effect(
-        second,
-        npc,
-        AbilityEffect::Damage { amount: 1.0 }
-    ));
+    assert!(world.execute_ability_effect(second, npc, AbilityEffect::Damage { amount: 1.0 }));
     assert_eq!(world.npc_of(npc).unwrap().target, Some(second));
 }
 

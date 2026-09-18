@@ -1833,12 +1833,12 @@ impl GameplayOwner {
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
-        let authored_approach = self
-            .registry
-            .monster_by_id(MONSTER_RED_SLIME)
-            .and_then(|definition| match definition.behavior {
-                MonsterBehavior::ChaseContactWhenAttacked => Some((0.8, 1.2)),
-            });
+        let authored_approach =
+            self.registry
+                .monster_by_id(MONSTER_RED_SLIME)
+                .and_then(|definition| match definition.behavior {
+                    MonsterBehavior::ChaseContactWhenAttacked => Some((0.8, 1.2)),
+                });
         self.world.tick_npcs_with_approach(dt, authored_approach);
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
         sample.npc_activity += npc_t0.elapsed();
@@ -7297,10 +7297,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(
-            owner.world().npc_of(creature).unwrap().target,
-            Some(player)
-        );
+        assert_eq!(owner.world().npc_of(creature).unwrap().target, Some(player));
         assert_eq!(
             owner.world().health_of(player).unwrap().current,
             PLAYER_HEALTH_MAX - 1.0

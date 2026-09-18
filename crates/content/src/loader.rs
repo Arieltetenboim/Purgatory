@@ -621,10 +621,7 @@ impl RawMonster {
                 "monster ContentId must be allocated in the Monster block",
             ));
         }
-        let behavior = match (
-            self.behavior.kind.as_str(),
-            self.behavior.aggro.as_str(),
-        ) {
+        let behavior = match (self.behavior.kind.as_str(), self.behavior.aggro.as_str()) {
             ("chase_contact", "when_attacked") => MonsterBehavior::ChaseContactWhenAttacked,
             (kind, aggro) => {
                 return Err(ContentError::from_path(
