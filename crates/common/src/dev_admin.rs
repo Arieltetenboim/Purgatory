@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn legacy_content_tokens_roundtrip_through_admin_catalog() {
-        let token = ContentId::from_authored("item.debug.small_potion")
+        let token = crate::ContentId::from_authored("item.debug.small_potion")
             .expect("authored id")
             .token();
         assert!(token > u64::from(u32::MAX));
