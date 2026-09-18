@@ -459,6 +459,58 @@ fn a3_idle_to_move_resets_once() {
 }
 
 #[test]
+fn move_playback_scales_with_horizontal_speed() {
+    let key = PresentationEntityKey::new(42, 1);
+    let registry = ContentRegistry::new();
+    let state = move_state(pose(0.0, 0.0));
+
+    let mut normal = CharacterPresentationSet::new();
+    normal.sync_with_dialogue_motion(
+        [(key, state, None, 4.0)],
+        &registry,
+        0.20,
+    );
+    let normal_t = normal.get(key).unwrap().selected_sample_t();
+
+    let mut half = CharacterPresentationSet::new();
+    half.sync_with_dialogue_motion(
+        [(key, state, None, 2.0)],
+        &registry,
+        0.20,
+    );
+    let half_t = half.get(key).unwrap().selected_sample_t();
+
+    assert!(
+        (normal_t - 0.20).abs() < 1e-4,
+        "reference locomotion speed must keep authored 1x cadence, got {normal_t}"
+    );
+    assert!(
+        (half_t - 0.10).abs() < 1e-4,
+        "half locomotion speed must produce half playback cadence, got {half_t}"
+    );
+}
+
+#[test]
+fn non_move_playback_ignores_horizontal_speed() {
+    let key = PresentationEntityKey::new(43, 1);
+    let registry = ContentRegistry::new();
+    let state = idle_state();
+    let mut set = CharacterPresentationSet::new();
+
+    set.sync_with_dialogue_motion(
+        [(key, state, None, 20.0)],
+        &registry,
+        0.20,
+    );
+
+    let t = set.get(key).unwrap().selected_sample_t();
+    assert!(
+        (t - 0.20).abs() < 1e-4,
+        "Idle cadence must stay 1x regardless of horizontal speed, got {t}"
+    );
+}
+
+#[test]
 fn a3_move_to_move_does_not_reset() {
     let key = PresentationEntityKey::new(4, 1);
     let mut set = CharacterPresentationSet::new();
