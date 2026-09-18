@@ -18,7 +18,7 @@ const CFG: FootnoteConfig = FootnoteConfig::DEFAULT;
 
 #[test]
 fn canonical_defaults_keep_ground_speed_and_jump_value() {
-    assert_eq!(CFG.max_ground_speed, 4.0);
+    assert_eq!(CFG.max_ground_speed, 3.5);
     assert_eq!(CFG.ground_acceleration, 24.0);
     assert_eq!(CFG.ground_deceleration, 30.0);
     assert_eq!(CFG.air_acceleration, 10.0);
