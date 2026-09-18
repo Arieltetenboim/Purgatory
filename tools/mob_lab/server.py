@@ -18,7 +18,7 @@ from typing import Any
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 
 PRESENTATION_SOURCES = {
@@ -52,18 +52,24 @@ def validate_monster_document(value: Any) -> list[str]:
         if not isinstance(number, (int, float)) or isinstance(number, bool) or number <= 0:
             errors.append(f"{key} must be greater than zero.")
 
-    half = value.get("half_extents")
-    if (
-        not isinstance(half, list)
-        or len(half) != 2
-        or any(
-            not isinstance(item, (int, float))
-            or isinstance(item, bool)
-            or item <= 0
-            for item in half
-        )
-    ):
-        errors.append("half_extents must contain two positive numbers.")
+    bounds = value.get("collision_bounds")
+    if not isinstance(bounds, dict):
+        errors.append("collision_bounds must be an object.")
+    else:
+        for key in ("left", "right", "bottom", "top"):
+            number = bounds.get(key)
+            if (
+                not isinstance(number, (int, float))
+                or isinstance(number, bool)
+                or number < 0
+            ):
+                errors.append(f"collision_bounds.{key} must be a non-negative number.")
+        if all(isinstance(bounds.get(k), (int, float)) for k in ("left", "right")):
+            if bounds["left"] + bounds["right"] <= 0:
+                errors.append("collision_bounds horizontal span must be greater than zero.")
+        if all(isinstance(bounds.get(k), (int, float)) for k in ("bottom", "top")):
+            if bounds["bottom"] + bounds["top"] <= 0:
+                errors.append("collision_bounds vertical span must be greater than zero.")
 
     behavior = value.get("behavior")
     if not isinstance(behavior, dict):
@@ -86,7 +92,7 @@ def validate_monster_document(value: Any) -> list[str]:
         "id",
         "debug_name",
         "health_max",
-        "half_extents",
+        "collision_bounds",
         "movement_speed",
         "behavior",
     }
@@ -155,7 +161,12 @@ def load_presentation(repo_root: Path, authored_id: str) -> dict[str, Any] | Non
         "id": authored_id,
         "debug_name": debug_name,
         "health_max": 20.0,
-        "half_extents": [0.4, 0.6],
+        "collision_bounds": {
+            "left": 0.4,
+            "right": 0.4,
+            "bottom": 0.6,
+            "top": 0.6,
+        },
         "movement_speed": 2.0,
         "behavior": {
             "kind": "chase_contact",

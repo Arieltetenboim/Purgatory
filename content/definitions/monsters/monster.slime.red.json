@@ -1,13 +1,18 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "id": "monster.slime.red",
   "debug_name": "Red Slime",
-  "health_max": 20.0,
-  "half_extents": [0.4, 0.6],
-  "movement_speed": 2.0,
+  "health_max": 20,
+  "movement_speed": 2,
   "behavior": {
     "kind": "chase_contact",
     "aggro": "when_attacked",
-    "home_leash_radius": 3.0
+    "home_leash_radius": 3
+  },
+  "collision_bounds": {
+    "left": 0.4,
+    "right": 0.4,
+    "bottom": 0.6,
+    "top": 0.6
   }
 }

@@ -32,15 +32,15 @@ Mob Lab (future editor)
 - Presentation belongs to a separate client-safe definition and asset path. It
   is deliberately not part of schema v1.
 
-## Monster schema v2
+## Monster schema v3
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "id": "monster.slime.red",
   "debug_name": "Red Slime",
   "health_max": 20.0,
-  "half_extents": [0.4, 0.6],
+  "collision_bounds": { "left": 0.4, "right": 0.4, "bottom": 0.6, "top": 0.6 },
   "movement_speed": 2.0,
   "behavior": {
     "kind": "chase_contact",
@@ -54,7 +54,7 @@ Rules:
 
 - `id` requires a permanent allocation in the Monster `ContentId` block.
 - numeric gameplay values must be finite and greater than zero;
-- schema v2 accepts only `chase_contact` with `aggro: "when_attacked"`;
+- schema v3 accepts only `chase_contact` with `aggro: "when_attacked"`;
 - proximity alone never acquires a target; successful player damage assigns that player as target;
 - contact damage is independent of aggro: collider touch or overlap within `CONTACT_EPSILON` damages a live player even while the monster is passive;
 - `home_leash_radius` limits retention/pursuit after aggro;
@@ -83,7 +83,7 @@ misrepresented as authored monster fields.
 | M4 | Real-runtime Test Arena: selected spawn, reset and observations | planned |
 | M5 | Hub integration + v0.1 closeout | planned |
 
-M3 must edit schema v2 rather than create a second model. New behavior kinds,
+M3 must edit schema v3 rather than create a second model. New behavior kinds,
 loot, ability loadouts, placement authoring and presentation require their own
 consumer-backed slices; they must not be added merely as unused form fields.
 
@@ -95,3 +95,16 @@ It is retained only as historical evidence. M0-M2 were forward-ported onto
 `forge/mob-lab-v01` by applying the monster-specific delta to the current
 owners and APIs; no old branch history was merged. Future FORGE M work must
 continue from the recovered branch or a fresh branch based on a current master.
+
+
+### Collision bounds and presentation origin
+
+Monster schema v3 authors collision edges as distances from the entity/presentation origin:
+
+- `left`, `right`
+- `bottom`, `top`
+
+This is intentionally asymmetric. A tall creature may keep its entity origin near
+the feet by using a small `bottom` and a large `top`. Runtime derives a centered
+internal AABB plus collision-center offset from these four distances; presentation
+continues to render around the entity origin.

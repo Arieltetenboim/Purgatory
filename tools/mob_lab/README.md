@@ -24,9 +24,9 @@ Default URL: `http://127.0.0.1:8766/`.
 ## M3 scope
 
 - list runtime Monster definitions;
-- create a schema-v2 Monster for an already allocated stable ContentId;
+- create a schema-v3 Monster for an already allocated stable ContentId;
 - edit identity/body/movement/behavior;
-- preview the actual runtime sprite with a colored collider overlay in world-unit scale;
+- preview the actual runtime sprite with asymmetric Left/Right/Bottom/Top collision bounds in world-unit scale;
 - inspect/apply raw JSON;
 - local shape validation;
 - atomic save directly to `content/definitions/monsters`;
