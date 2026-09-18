@@ -31,6 +31,7 @@ enum LogMode {
     Truncate,
 }
 
+#[cfg(windows)]
 fn open_log_pair(log_path: &Path, mode: LogMode) -> Result<(std::fs::File, std::fs::File), String> {
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)
