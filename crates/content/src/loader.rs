@@ -20,8 +20,7 @@ use crate::item::{
     ItemPresentation, validate_item_definition, validate_item_presentation,
 };
 use crate::monster::{
-    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition,
-    validate_monster_definition,
+    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
 };
 use crate::registry::ContentRegistry;
 use crate::schema::{

@@ -7250,7 +7250,12 @@ mod tests {
             Some(Health::full(definition.health_max))
         );
         assert_eq!(
-            owner.world().npc_of(creatures[0]).unwrap().runtime_config.movement_speed,
+            owner
+                .world()
+                .npc_of(creatures[0])
+                .unwrap()
+                .runtime_config
+                .movement_speed,
             definition.movement_speed
         );
         assert!(
