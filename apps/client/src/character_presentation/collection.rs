@@ -18,6 +18,10 @@ use super::resolve::{BoundAttachment, MissingPresentation, resolve_equipment};
 use super::skeleton_input::{SkeletonInput, skeleton_input_from_state};
 use super::state::{CharacterPresentationState, EquipmentView, Facing, PresentationActivity};
 
+/// Authored Move clip cadence is calibrated to the normal ground locomotion speed.
+/// This is presentation metadata, not gameplay authority or root motion.
+const MOVE_CLIP_REFERENCE_SPEED: f32 = 4.0;
+
 /// Generational presentation key. Copied from replica identity at the adapter
 /// edge so [`CharacterPresentationState`] does not store protocol types.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -292,6 +296,8 @@ impl CharacterPresentationSet {
 
     /// N10f: apply optional client-local animation clips to selected visible
     /// characters while retaining the ordinary activity as fallback.
+    ///
+    /// Callers without motion magnitude retain legacy 1x Move playback.
     pub fn sync_with_dialogue<'a>(
         &mut self,
         items: impl IntoIterator<
@@ -304,11 +310,40 @@ impl CharacterPresentationSet {
         registry: &ContentRegistry,
         frame_dt: f32,
     ) {
+        self.sync_with_dialogue_motion(
+            items.into_iter().map(|(key, state, dialogue_request)| {
+                let horizontal_speed = if state.activity == PresentationActivity::Move {
+                    MOVE_CLIP_REFERENCE_SPEED
+                } else {
+                    0.0
+                };
+                (key, state, dialogue_request, horizontal_speed)
+            }),
+            registry,
+            frame_dt,
+        );
+    }
+
+    /// Runtime path with presentation-local horizontal speed for locomotion cadence.
+    /// The speed only scales the Move clip; it never moves the entity root.
+    pub fn sync_with_dialogue_motion<'a>(
+        &mut self,
+        items: impl IntoIterator<
+            Item = (
+                PresentationEntityKey,
+                CharacterPresentationState,
+                Option<DialogueAnimationRequest<'a>>,
+                f32,
+            ),
+        >,
+        registry: &ContentRegistry,
+        frame_dt: f32,
+    ) {
         self.epoch = self.epoch.wrapping_add(1);
         let epoch = self.epoch;
         let def = humanoid_v0();
         let bone_map = self.bone_map;
-        for (key, state, dialogue_request) in items {
+        for (key, state, dialogue_request, horizontal_speed) in items {
             let dialogue_animation = dialogue_request.and_then(|request| {
                 let Some(clip) = self.dialogue_animations.clip(request.authored_id) else {
                     if self
@@ -327,7 +362,13 @@ impl CharacterPresentationSet {
             let mut did_resolve = false;
             match self.entries.get_mut(&key) {
                 Some(entry) => {
-                    present_entry(entry, state, dialogue_animation, frame_dt);
+                    present_entry(
+                        entry,
+                        state,
+                        dialogue_animation,
+                        horizontal_speed,
+                        frame_dt,
+                    );
                     entry.epoch = epoch;
                     if entry.equipment_key != state.equipment {
                         apply_resolve(entry, bone_map, registry, state.equipment);
@@ -341,6 +382,12 @@ impl CharacterPresentationSet {
                     let clip = dialogue_animation
                         .map(|animation| animation.clip)
                         .unwrap_or_else(|| clip_for_playback_activity(playback));
+                    let playback_speed = playback_speed_for(
+                        playback,
+                        horizontal_speed,
+                        dialogue_animation.is_some(),
+                    );
+                    let _ = player.set_speed(playback_speed);
                     let _ = player.advance(frame_dt, clip);
                     let selected_sample_t = player.sample_time(clip);
                     let mut local = LocalPose::from_bind(def);
@@ -421,6 +468,7 @@ fn present_entry(
     entry: &mut CharacterPresentationEntry,
     state: CharacterPresentationState,
     dialogue_animation: Option<ResolvedDialogueAnimation<'_>>,
+    horizontal_speed: f32,
     frame_dt: f32,
 ) {
     let def = humanoid_v0();
@@ -446,6 +494,12 @@ fn present_entry(
     let clip = dialogue_animation
         .map(|animation| animation.clip)
         .unwrap_or_else(|| clip_for_playback_activity(entry.playback_activity));
+    let playback_speed = playback_speed_for(
+        entry.playback_activity,
+        horizontal_speed,
+        dialogue_animation.is_some(),
+    );
+    let _ = entry.player.set_speed(playback_speed);
     let _ = entry.player.advance(frame_dt, clip);
     entry.selected_sample_t = entry.player.sample_time(clip);
 
@@ -501,6 +555,20 @@ fn present_entry(
     );
     entry.state = state;
     entry.input = input;
+}
+
+fn playback_speed_for(
+    activity: PresentationActivity,
+    horizontal_speed: f32,
+    dialogue_override: bool,
+) -> f32 {
+    if dialogue_override || activity != PresentationActivity::Move {
+        return 1.0;
+    }
+    if !horizontal_speed.is_finite() {
+        return 1.0;
+    }
+    horizontal_speed.abs() / MOVE_CLIP_REFERENCE_SPEED
 }
 
 fn apply_resolve(
