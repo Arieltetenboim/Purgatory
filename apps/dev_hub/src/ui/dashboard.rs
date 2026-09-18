@@ -35,14 +35,15 @@ pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> Pag
     row_top(ui, gap, col, snap, &model, &mut outcome);
     ui.add_space(gap);
 
+    activity_panel(ui, snap, &mut outcome);
+    ui.add_space(gap);
+
     let project_w = ((avail - gap) * 0.58).floor().max(360.0);
-    let actions_w = (avail - gap - project_w).floor().max(300.0);
-    row_workspace_actions(ui, gap, project_w, actions_w, snap, &model, &mut outcome);
+    let attention_w = (avail - gap - project_w).floor().max(300.0);
+    row_workspace_attention(ui, gap, project_w, attention_w, &model);
     ui.add_space(gap);
 
     gate_pipeline::show(ui, &gate_log);
-    ui.add_space(gap);
-    activity_panel(ui, snap, &mut outcome);
     outcome
 }
 
@@ -61,19 +62,17 @@ fn row_top(
             ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
             cell(ui, col, |ui| server_panel(ui, snap, &model.server, outcome));
             cell(ui, col, |ui| clients_panel(ui, snap, outcome));
-            cell(ui, col, |ui| attention_panel(ui, &model.attention));
+            cell(ui, col, |ui| quick_actions(ui, snap, model, outcome));
         },
     );
 }
 
-fn row_workspace_actions(
+fn row_workspace_attention(
     ui: &mut egui::Ui,
     gap: f32,
     project_w: f32,
-    actions_w: f32,
-    snap: &purgatory_dev_runtime::HubSnapshot,
+    attention_w: f32,
     model: &DashVm,
-    outcome: &mut PageOutcome,
 ) {
     ui.allocate_ui_with_layout(
         Vec2::new(ui.available_width(), 0.0),
@@ -81,7 +80,7 @@ fn row_workspace_actions(
         |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
             cell(ui, project_w, |ui| project_panel(ui, &model.project));
-            cell(ui, actions_w, |ui| quick_actions(ui, snap, model, outcome));
+            cell(ui, attention_w, |ui| attention_panel(ui, &model.attention));
         },
     );
 }
