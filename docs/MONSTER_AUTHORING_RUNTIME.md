@@ -56,6 +56,7 @@ Rules:
 - numeric gameplay values must be finite and greater than zero;
 - schema v2 accepts only `chase_contact` with `aggro: "when_attacked"`;
 - proximity alone never acquires a target; successful player damage assigns that player as target;
+- contact damage is independent of aggro: collider overlap damages a live player even while the monster is passive;
 - `home_leash_radius` limits retention/pursuit after aggro;
 - unknown fields and unknown behavior kinds fail validation.
 
