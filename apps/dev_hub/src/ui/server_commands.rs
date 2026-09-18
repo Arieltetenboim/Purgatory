@@ -204,7 +204,11 @@ impl ServerCommandsState {
                     .selected_text(selected_content_label(
                         &snapshot.items,
                         self.selected_item,
-                        "Select item",
+                        if snapshot.items.is_empty() {
+                            "No authored items"
+                        } else {
+                            "Select item"
+                        },
                     ))
                     .show_ui(ui, |ui| {
                         for item in &snapshot.items {
@@ -235,6 +239,12 @@ impl ServerCommandsState {
                     });
                 }
             });
+            if snapshot.items.is_empty() {
+                ui.colored_label(
+                    theme::muted(),
+                    "No item catalogue received. Rebuild/restart the server to refresh authored items.",
+                );
+            }
 
             ui.add_space(8.0);
             ui.separator();
