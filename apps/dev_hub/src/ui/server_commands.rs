@@ -266,11 +266,7 @@ impl ServerCommandsState {
                     })
                     .show_ui(ui, |ui| {
                         for fact in &snapshot.facts {
-                            ui.selectable_value(
-                                &mut self.narrative_fact_id,
-                                fact.clone(),
-                                fact,
-                            );
+                            ui.selectable_value(&mut self.narrative_fact_id, fact.clone(), fact);
                         }
                     });
                 ui.checkbox(&mut self.narrative_fact_value, "Value");

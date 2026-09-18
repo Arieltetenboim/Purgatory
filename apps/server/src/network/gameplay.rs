@@ -3252,7 +3252,9 @@ impl GameplayOwner {
             .map(|binding| binding.entity)
             .ok_or_else(|| format!("connection {connection_id} has no gameplay binding"))?;
         if self.world.kind(actor) != Some(EntityKind::Player) {
-            return Err(format!("connection {connection_id} is not bound to a player"));
+            return Err(format!(
+                "connection {connection_id} is not bound to a player"
+            ));
         }
 
         match command {
