@@ -3195,7 +3195,9 @@ impl GameplayOwner {
             .map(|binding| binding.entity)
             .ok_or_else(|| format!("connection {connection_id} has no gameplay binding"))?;
         if self.world.kind(actor) != Some(EntityKind::Player) {
-            return Err(format!("connection {connection_id} is not bound to a player"));
+            return Err(format!(
+                "connection {connection_id} is not bound to a player"
+            ));
         }
         let address = self
             .world
@@ -3298,11 +3300,7 @@ impl GameplayOwner {
         Ok(())
     }
 
-    fn close_dialogue_for_dev_narrative(
-        &mut self,
-        connection_id: ConnectionId,
-        actor: EntityId,
-    ) {
+    fn close_dialogue_for_dev_narrative(&mut self, connection_id: ConnectionId, actor: EntityId) {
         let session = self.world.interaction_session_of(actor);
         if let Some(session) = session {
             let _ = self.world.close_interaction(actor, session.id);
@@ -4056,18 +4054,38 @@ mod tests {
         let actor_a = owner.entity_of(a).expect("actor a");
         let actor_b = owner.entity_of(b).expect("actor b");
 
-        owner.narrative.set_fact(actor_a, "welcome.workshop.package_needed", false);
+        owner
+            .narrative
+            .set_fact(actor_a, "welcome.workshop.package_needed", false);
         owner.narrative.set_fact(actor_b, "fact.other", true);
-        owner.narrative.mark_npc_met(actor_a, "npc.welcome.traveler_stayed");
+        owner
+            .narrative
+            .mark_npc_met(actor_a, "npc.welcome.traveler_stayed");
 
         owner
             .handle_dev_narrative(a, DevNarrativeCommand::Reset)
             .expect("reset");
 
-        assert!(owner.narrative.fact(actor_a, "welcome.workshop.package_needed"));
-        assert!(owner.narrative.fact(actor_a, "welcome.workshop.package_at_inn"));
-        assert!(!owner.narrative.fact(actor_a, "welcome.workshop.package_delivered"));
-        assert!(!owner.narrative.npc_met(actor_a, "npc.welcome.traveler_stayed"));
+        assert!(
+            owner
+                .narrative
+                .fact(actor_a, "welcome.workshop.package_needed")
+        );
+        assert!(
+            owner
+                .narrative
+                .fact(actor_a, "welcome.workshop.package_at_inn")
+        );
+        assert!(
+            !owner
+                .narrative
+                .fact(actor_a, "welcome.workshop.package_delivered")
+        );
+        assert!(
+            !owner
+                .narrative
+                .npc_met(actor_a, "npc.welcome.traveler_stayed")
+        );
         assert!(owner.narrative.fact(actor_b, "fact.other"));
     }
 
@@ -4108,10 +4126,7 @@ mod tests {
     fn dev_narrative_rejects_disconnected_target_and_unknown_npc() {
         let mut owner = GameplayOwner::new();
         let disconnected = owner
-            .handle_dev_narrative(
-                ConnectionId::from_raw(999),
-                DevNarrativeCommand::Reset,
-            )
+            .handle_dev_narrative(ConnectionId::from_raw(999), DevNarrativeCommand::Reset)
             .expect_err("missing binding");
         assert!(disconnected.contains("no gameplay binding"));
 
