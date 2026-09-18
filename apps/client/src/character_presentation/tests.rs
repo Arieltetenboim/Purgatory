@@ -465,19 +465,11 @@ fn move_playback_scales_with_horizontal_speed() {
     let state = move_state(pose(0.0, 0.0));
 
     let mut normal = CharacterPresentationSet::new();
-    normal.sync_with_dialogue_motion(
-        [(key, state, None, 3.5)],
-        &registry,
-        0.20,
-    );
+    normal.sync_with_dialogue_motion([(key, state, None, 3.5)], &registry, 0.20);
     let normal_t = normal.get(key).unwrap().selected_sample_t();
 
     let mut half = CharacterPresentationSet::new();
-    half.sync_with_dialogue_motion(
-        [(key, state, None, 1.75)],
-        &registry,
-        0.20,
-    );
+    half.sync_with_dialogue_motion([(key, state, None, 1.75)], &registry, 0.20);
     let half_t = half.get(key).unwrap().selected_sample_t();
 
     assert!(
@@ -497,11 +489,7 @@ fn non_move_playback_ignores_horizontal_speed() {
     let state = idle_state();
     let mut set = CharacterPresentationSet::new();
 
-    set.sync_with_dialogue_motion(
-        [(key, state, None, 20.0)],
-        &registry,
-        0.20,
-    );
+    set.sync_with_dialogue_motion([(key, state, None, 20.0)], &registry, 0.20);
 
     let t = set.get(key).unwrap().selected_sample_t();
     assert!(

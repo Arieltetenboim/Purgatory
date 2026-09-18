@@ -362,13 +362,7 @@ impl CharacterPresentationSet {
             let mut did_resolve = false;
             match self.entries.get_mut(&key) {
                 Some(entry) => {
-                    present_entry(
-                        entry,
-                        state,
-                        dialogue_animation,
-                        horizontal_speed,
-                        frame_dt,
-                    );
+                    present_entry(entry, state, dialogue_animation, horizontal_speed, frame_dt);
                     entry.epoch = epoch;
                     if entry.equipment_key != state.equipment {
                         apply_resolve(entry, bone_map, registry, state.equipment);
