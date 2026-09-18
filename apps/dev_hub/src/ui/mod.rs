@@ -4,7 +4,6 @@ pub mod dashboard;
 pub mod dashboard_model;
 pub mod doctor;
 pub mod gate_pipeline;
-pub mod launch_profiles;
 pub mod layout;
 pub mod log_console;
 pub mod logs;
