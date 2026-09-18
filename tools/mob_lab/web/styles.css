@@ -8,3 +8,23 @@
 #previewCanvas{display:block;width:min(100%,520px);height:auto;image-rendering:pixelated}
 .preview-unavailable{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--bad);font-size:12px;font-weight:900;letter-spacing:.1em;background:rgba(9,13,16,.86)}
 .preview-readout{display:flex;justify-content:space-between;gap:10px;margin-top:9px;color:var(--muted);font-family:Consolas,monospace;font-size:10px}
+
+/* Mob Lab readability pass: intentionally larger type across the whole tool. */
+body{font-size:16px}
+.brand{font-size:18px}.tool{font-size:14px}
+button{font-size:14px}
+.title{font-size:13px}
+input,select{font-size:14px}
+.item strong{font-size:14px}.item small{font-size:12px}
+.docbar strong{font-size:16px}.docbar .muted{font-size:12px}
+.badge{font-size:12px}
+.card h2{font-size:18px}
+label{font-size:12px}
+textarea{font-size:14px}
+.kv span{font-size:11px}.kv strong{font-size:14px}
+pre{font-size:13px}
+footer{font-size:12px}
+.preview-legend{font-size:11px}
+.preview-readout{font-size:12px;flex-wrap:wrap}
+.preview-readout span{min-width:30%}
+.preview-unavailable{font-size:14px}

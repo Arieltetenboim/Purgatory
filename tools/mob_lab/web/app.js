@@ -1,7 +1,7 @@
 const state={items:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,presentation:null,previewImage:null,previewFrame:0,previewTimer:null};
 const $=id=>document.getElementById(id);
 const els={};
-["monsterList","filterInput","newButton","reloadButton","saveButton","documentTitle","documentPath","dirtyBadge","emptyState","editor","idInput","contentIdInput","schemaInput","debugNameInput","healthInput","halfXInput","halfYInput","speedInput","leashInput","kindInput","aggroInput","jsonEditor","applyRawButton","validationStatus","validationErrors","summaryId","statusText","previewCanvas","previewUnavailable","spriteReadout","hitboxReadout"].forEach(id=>els[id]=$(id));
+["monsterList","filterInput","newButton","reloadButton","saveButton","documentTitle","documentPath","dirtyBadge","emptyState","editor","idInput","contentIdInput","schemaInput","debugNameInput","healthInput","halfXInput","halfYInput","speedInput","leashInput","kindInput","aggroInput","jsonEditor","applyRawButton","validationStatus","validationErrors","summaryId","statusText","previewCanvas","previewUnavailable","spriteReadout","hitboxReadout","anchorReadout"].forEach(id=>els[id]=$(id));
 const canonical=v=>JSON.stringify(v);
 const clone=v=>JSON.parse(JSON.stringify(v));
 const number=v=>Number(v);
@@ -29,14 +29,36 @@ function drawPreview(){
   const ctx=previewContext(),w=els.previewCanvas.width,h=els.previewCanvas.height;
   ctx.clearRect(0,0,w,h);
   ctx.fillStyle="#090d10";ctx.fillRect(0,0,w,h);
-  const centerX=w/2,groundY=h*0.72,pxPerWorld=150;
+
+  const centerX=w/2,pxPerWorld=150,floorY=h*0.80;
+  const half=state.doc?.half_extents;
+  const validHalf=Array.isArray(half)&&half.length===2&&half.every(v=>Number.isFinite(Number(v))&&Number(v)>0);
+  const halfX=validHalf?Number(half[0]):0.4;
+  const halfY=validHalf?Number(half[1]):0.6;
+  // Runtime transform is the center of the NPC collider. Put the collider's
+  // bottom exactly on the preview floor so sprite registration is visible.
+  const entityY=floorY-halfY*pxPerWorld;
+
   ctx.strokeStyle="#1d2830";ctx.lineWidth=1;
-  for(let x=centerX%30;x<w;x+=30){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke()}
-  for(let y=groundY%30;y<h;y+=30){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
-  ctx.strokeStyle="#52616c";ctx.beginPath();ctx.moveTo(0,groundY);ctx.lineTo(w,groundY);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(centerX,0);ctx.lineTo(centerX,h);ctx.stroke();
+  for(let x=centerX%30;x<w;x+=30){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,floorY);ctx.stroke()}
+  for(let y=floorY%30;y<floorY;y+=30){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
+
+  // Physical floor/platform: top edge is the contact surface.
+  ctx.fillStyle="#182229";ctx.fillRect(0,floorY,w,h-floorY);
+  ctx.strokeStyle="#93a5b0";ctx.lineWidth=4;
+  ctx.beginPath();ctx.moveTo(0,floorY);ctx.lineTo(w,floorY);ctx.stroke();
+  ctx.fillStyle="#b6c5ce";ctx.font="700 14px Segoe UI, Arial, sans-serif";
+  ctx.fillText("FLOOR / COLLIDER CONTACT SURFACE",14,floorY+24);
+
+  // Entity origin used by both runtime presentation and collider.
+  ctx.strokeStyle="#52616c";ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(centerX,0);ctx.lineTo(centerX,floorY);ctx.stroke();
+  ctx.fillStyle="#75c9d6";ctx.beginPath();ctx.arc(centerX,entityY,5,0,Math.PI*2);ctx.fill();
+  ctx.font="700 12px Segoe UI, Arial, sans-serif";
+  ctx.fillText("ENTITY ORIGIN",centerX+10,entityY-8);
 
   const p=state.presentation,img=state.previewImage;
+  let spriteBottomOffset=null;
   if(p&&img&&img.complete&&img.naturalWidth){
     const frames=p.idle_frames||[],frame=frames[state.previewFrame%frames.length]||0;
     const fw=p.frame_size_px[0],fh=p.frame_size_px[1],cols=Math.floor(img.naturalWidth/fw);
@@ -44,24 +66,34 @@ function drawPreview(){
     const worldW=p.world_size[0],worldH=p.world_size[1];
     const dw=worldW*pxPerWorld,dh=worldH*pxPerWorld;
     ctx.imageSmoothingEnabled=false;
-    ctx.drawImage(img,sx,sy,fw,fh,centerX-dw/2,groundY-dh/2,dw,dh);
+    ctx.drawImage(img,sx,sy,fw,fh,centerX-dw/2,entityY-dh/2,dw,dh);
     els.previewUnavailable.classList.add("hidden");
     els.spriteReadout.textContent="Sprite: "+(p.manifest_id||state.doc?.id)+" · "+worldW.toFixed(2)+"×"+worldH.toFixed(2)+" wu";
+    spriteBottomOffset=halfY-worldH/2;
   }else{
     els.previewUnavailable.classList.remove("hidden");
     els.spriteReadout.textContent="Sprite: no runtime presentation";
   }
 
-  const half=state.doc?.half_extents;
-  if(Array.isArray(half)&&half.length===2&&half.every(v=>Number.isFinite(Number(v))&&Number(v)>0)){
-    const bw=Number(half[0])*2*pxPerWorld,bh=Number(half[1])*2*pxPerWorld;
+  if(validHalf){
+    const bw=halfX*2*pxPerWorld,bh=halfY*2*pxPerWorld;
     ctx.fillStyle="rgba(224,106,112,.20)";
     ctx.strokeStyle="#e06a70";ctx.lineWidth=3;
-    ctx.fillRect(centerX-bw/2,groundY-bh/2,bw,bh);
-    ctx.strokeRect(centerX-bw/2,groundY-bh/2,bw,bh);
-    els.hitboxReadout.textContent="Hitbox: "+(Number(half[0])*2).toFixed(2)+"×"+(Number(half[1])*2).toFixed(2)+" wu";
+    ctx.fillRect(centerX-bw/2,entityY-bh/2,bw,bh);
+    ctx.strokeRect(centerX-bw/2,entityY-bh/2,bw,bh);
+    els.hitboxReadout.textContent="Hitbox: "+(halfX*2).toFixed(2)+"×"+(halfY*2).toFixed(2)+" wu · bottom on floor";
   }else{
     els.hitboxReadout.textContent="Hitbox: invalid";
+  }
+
+  if(spriteBottomOffset===null){
+    els.anchorReadout.textContent="Sprite floor offset: -";
+  }else if(Math.abs(spriteBottomOffset)<0.005){
+    els.anchorReadout.textContent="Sprite bottom: ON FLOOR";
+  }else if(spriteBottomOffset>0){
+    els.anchorReadout.textContent="Sprite bottom: "+spriteBottomOffset.toFixed(2)+" wu ABOVE floor";
+  }else{
+    els.anchorReadout.textContent="Sprite bottom: "+Math.abs(spriteBottomOffset).toFixed(2)+" wu BELOW floor";
   }
 }
 async function loadPresentation(){
