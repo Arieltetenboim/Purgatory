@@ -276,10 +276,7 @@ fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, colo
         NavIcon::Server => {
             for y in [t + 1.0, c.y - 1.5, b - 4.0] {
                 painter.rect_stroke(
-                    egui::Rect::from_min_max(
-                        egui::pos2(l + 1.0, y),
-                        egui::pos2(r - 1.0, y + 3.0),
-                    ),
+                    egui::Rect::from_min_max(egui::pos2(l + 1.0, y), egui::pos2(r - 1.0, y + 3.0)),
                     0.5,
                     stroke,
                     egui::StrokeKind::Inside,
@@ -307,12 +304,7 @@ fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, colo
             );
         }
         NavIcon::Validation => {
-            painter.rect_stroke(
-                rect.shrink(1.0),
-                1.0,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
+            painter.rect_stroke(rect.shrink(1.0), 1.0, stroke, egui::StrokeKind::Inside);
             painter.line_segment(
                 [egui::pos2(l + 3.0, c.y), egui::pos2(c.x - 0.5, b - 3.0)],
                 stroke,
@@ -356,10 +348,7 @@ fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, colo
         }
         NavIcon::Logs => {
             for y in [t + 3.0, c.y, b - 3.0] {
-                painter.line_segment(
-                    [egui::pos2(l + 1.0, y), egui::pos2(r - 1.0, y)],
-                    stroke,
-                );
+                painter.line_segment([egui::pos2(l + 1.0, y), egui::pos2(r - 1.0, y)], stroke);
             }
         }
         NavIcon::Settings => {
