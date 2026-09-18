@@ -1836,8 +1836,8 @@ impl GameplayOwner {
         let authored_approach =
             self.registry
                 .monster_by_id(MONSTER_RED_SLIME)
-                .and_then(|definition| match definition.behavior {
-                    MonsterBehavior::ChaseContactWhenAttacked => Some((0.8, 1.2)),
+                .map(|definition| match definition.behavior {
+                    MonsterBehavior::ChaseContactWhenAttacked => (0.8, 1.2),
                 });
         self.world.tick_npcs_with_approach(dt, authored_approach);
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
