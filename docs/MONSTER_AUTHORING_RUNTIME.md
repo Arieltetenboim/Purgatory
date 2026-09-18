@@ -78,7 +78,7 @@ misrepresented as authored monster fields.
 | M0 | Contract and ownership boundary | rescued |
 | M1 | JSON loader, validation, registry and stable Red Slime ID | rescued |
 | M2 | Content-backed normal-session runtime proof | complete + merged + manually verified |
-| M2.1 | Align aggro/contact-damage authoring with current design | implementation branch |
+| M2.1 | Damage-triggered aggro + passive contact behavior | complete + merged + manually verified |
 | M3 | Mob Lab v0.1 editor: browse/create/duplicate/edit/save/validate | planned |
 | M4 | Real-runtime Test Arena: selected spawn, reset and observations | planned |
 | M5 | Hub integration + v0.1 closeout | planned |

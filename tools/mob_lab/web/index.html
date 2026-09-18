@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PURGATORY Mob Lab</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div><div class="brand">PURGATORY</div><div class="tool">MOB LAB <span>M3</span></div></div>
+  <div class="actions">
+    <button id="newButton">NEW MONSTER</button>
+    <button id="reloadButton">RELOAD</button>
+    <button id="saveButton" class="primary" disabled>SAVE</button>
+  </div>
+</header>
+<main class="layout">
+  <aside class="panel library">
+    <div class="title">MONSTERS</div>
+    <input id="filterInput" placeholder="Filter monsters">
+    <div id="monsterList" class="list"></div>
+  </aside>
+  <section class="panel workspace">
+    <div class="docbar">
+      <div><strong id="documentTitle">No monster selected</strong><div id="documentPath" class="muted">Select a runtime monster definition.</div></div>
+      <span id="dirtyBadge" class="badge">CLEAN</span>
+    </div>
+    <div id="emptyState" class="empty">Select a monster from the library or create one.</div>
+    <div id="editor" class="editor hidden">
+      <section class="card">
+        <h2>Identity</h2>
+        <div class="grid two">
+          <label>ID<input id="idInput" readonly></label>
+          <label>Schema<input id="schemaInput" readonly></label>
+          <label class="wide">Debug Name<input id="debugNameInput"></label>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Body & Movement</h2>
+        <div class="grid three">
+          <label>Max Health<input id="healthInput" type="number" min="0.001" step="0.1"></label>
+          <label>Half Width<input id="halfXInput" type="number" min="0.001" step="0.05"></label>
+          <label>Half Height<input id="halfYInput" type="number" min="0.001" step="0.05"></label>
+          <label>Movement Speed<input id="speedInput" type="number" min="0.001" step="0.1"></label>
+          <label>Home Leash<input id="leashInput" type="number" min="0.001" step="0.1"></label>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Behavior</h2>
+        <div class="grid two">
+          <label>Kind<select id="kindInput"><option value="chase_contact">chase_contact</option></select></label>
+          <label>Aggro<select id="aggroInput"><option value="when_attacked">when_attacked</option></select></label>
+        </div>
+        <p class="muted">Contact damage is runtime-default and independent of aggro. Proximity alone does not acquire a target.</p>
+      </section>
+      <section class="card">
+        <div class="cardhead"><h2>Raw Runtime JSON</h2><button id="applyRawButton">APPLY RAW</button></div>
+        <textarea id="jsonEditor" spellcheck="false"></textarea>
+      </section>
+    </div>
+  </section>
+  <aside class="panel inspector">
+    <div class="title">INSPECTOR</div>
+    <div class="kv"><span>Status</span><strong id="validationStatus">No document</strong></div>
+    <div class="kv"><span>Content ID</span><strong id="summaryId">-</strong></div>
+    <div class="kv"><span>Runtime source</span><strong>content/definitions/monsters</strong></div>
+    <div class="kv"><span>Validation</span><pre id="validationErrors">-</pre></div>
+  </aside>
+</main>
+<footer><span id="statusText">Ready.</span><span>Direct runtime definitions · no export step</span></footer>
+<script src="/app.js"></script>
+</body>
+</html>

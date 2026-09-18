@@ -3,10 +3,10 @@
 use crate::error::{ContentError, ValidationIssue};
 use purgatory_common::{ContentId, validate_authored_id};
 
-/// Monster content schema v1.
+/// Monster content schema v2.
 pub const MONSTER_CONTENT_SCHEMA_VERSION: u32 = 2;
 
-/// The intentionally small behavior vocabulary supported by Monster schema v1.
+/// The intentionally small behavior vocabulary supported by Monster schema v2.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MonsterBehavior {
     /// Patrol until damaged by a player, then pursue that attacker and deal contact damage.

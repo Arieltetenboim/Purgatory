@@ -151,8 +151,8 @@ content-backed path before building the Mob Lab editor. The current contract is
 | M0 | Monster Contract + Ownership | complete + merged |
 | M1 | Monster Content + Validation | complete + merged |
 | M2 | Content-backed Red Slime Runtime | complete + merged + manually verified |
-| M2.1 | Damage-triggered aggro contract | implementation branch |
-| M3 | Mob Lab v0.1 Editor | planned |
+| M2.1 | Damage-triggered aggro + passive contact contract | complete + merged + manually verified |
+| M3 | Mob Lab v0.1 Editor | implementation on `master` |
 | M4 | Real-runtime Test Arena + observations | planned |
 | M5 | Hub integration + v0.1 closeout | planned |
 
