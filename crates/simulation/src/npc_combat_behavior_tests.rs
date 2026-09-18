@@ -1,6 +1,7 @@
 //! NPC combat behavior tests (Phase 9E -> permanent).
 //! damage-triggered targeting, approach, attack geometry/execution, invalidation, and contact damage.
 
+use crate::PlayerInput;
 use crate::ability::{
     AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityRequest,
     AbilityTiming, forward_query_aabb,
@@ -10,7 +11,6 @@ use crate::fixtures::RuntimeFixtures;
 use crate::health::{DAMAGE_IMMUNITY_TICKS, Health};
 use crate::npc::{NPC_HEALTH_MAX, STRIKE_RANGE};
 use crate::platform::Platform;
-use crate::PlayerInput;
 use crate::time::SimulationTick;
 use crate::transform::Transform;
 use crate::{ContentId, NpcRuntimeConfig, PLAYER_HEALTH_MAX, World, WorldAddress};
