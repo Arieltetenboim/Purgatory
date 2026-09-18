@@ -214,7 +214,7 @@ fn server_panel(
 
                     let response = ui.add_enabled(
                         snap.can_stop,
-                        btn_destructive("Stop").min_size(Vec2::new(72.0, 30.0)),
+                        btn_destructive("Stop").min_size(Vec2::new(38.0, 30.0)),
                     );
                     if action_response(
                         response,
