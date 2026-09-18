@@ -48,6 +48,16 @@ impl NarrativeRuntime {
             .insert(fact.into(), value);
     }
 
+    pub(crate) fn clear_fact(&mut self, actor: EntityId, fact: &str) {
+        if let Some(state) = self.by_actor.get_mut(&actor) {
+            state.facts.remove(fact);
+        }
+    }
+
+    pub(crate) fn reset_actor(&mut self, actor: EntityId) {
+        self.by_actor.insert(actor, PlayerNarrativeState::default());
+    }
+
     #[must_use]
     pub(crate) fn npc_met(&self, actor: EntityId, npc_authored: &str) -> bool {
         self.by_actor
@@ -118,6 +128,24 @@ mod tests {
             ContentId::from_raw(20_001),
             DialogueBeatIndex::from_raw(3)
         ));
+    }
+
+    #[test]
+    fn clear_and_reset_are_actor_scoped() {
+        let actor_a = EntityId::from_raw(1, 1);
+        let actor_b = EntityId::from_raw(2, 1);
+        let mut runtime = NarrativeRuntime::default();
+        runtime.set_fact(actor_a, "fact.test", true);
+        runtime.set_fact(actor_b, "fact.test", true);
+        runtime.mark_npc_met(actor_a, "npc.test");
+
+        runtime.clear_fact(actor_a, "fact.test");
+        assert!(!runtime.fact(actor_a, "fact.test"));
+        assert!(runtime.fact(actor_b, "fact.test"));
+
+        runtime.reset_actor(actor_a);
+        assert!(!runtime.npc_met(actor_a, "npc.test"));
+        assert!(runtime.fact(actor_b, "fact.test"));
     }
 
     #[test]
