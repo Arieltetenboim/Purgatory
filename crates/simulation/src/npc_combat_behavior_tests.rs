@@ -531,6 +531,18 @@ fn overlapping_passive_npc_applies_contact_damage_without_aggro() {
 }
 
 #[test]
+fn exact_surface_touch_applies_contact_damage_without_aggro() {
+    let (mut world, npc, player) = setup(0.8, 0.0);
+    assert_eq!(world.npc_of(npc).unwrap().target, None);
+
+    world.tick_npcs_with_approach(0.0, Some((0.5, 0.8)));
+
+    assert_eq!(world.health_of(player).unwrap().current, 19.0);
+    assert_eq!(world.npc_of(npc).unwrap().target, None);
+    assert!(world.damage_immunity_active(player));
+}
+
+#[test]
 fn repeated_contact_before_two_seconds_deals_no_additional_damage() {
     let (mut world, _, player) = setup(0.0, 0.0);
     for tick in 2..=59 {
