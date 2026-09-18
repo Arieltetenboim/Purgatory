@@ -9,7 +9,7 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **ERA II — Combat & First Playable Loop**
 - **Phase 11 — Item Loop: complete + closeout**
 - **Root `PHASE`: `11.closeout`**
-- **Active parallel track:** FORGE N — NPC authoring/runtime; N10a-N10f complete and merged
+- **Active parallel track:** FORGE M — Monster Authoring & Runtime on `forge/mob-lab-v01`
 - **Completed parallel presentation foundation:** Production UI I1 — read-only Inventory window
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
 - **Protocol: v27**
@@ -139,6 +139,27 @@ These are follow-ups, not unfinished N10 slices:
 - later polish: final bubble art/responsive layout, richer text/localization, controller navigation, schedules, shops and other NPC systems as separate scoped work.
 
 Do not build a generic quest manager, scripting engine, behavior framework or voice pipeline merely to advance the N numbering.
+
+## FORGE M — Monster Authoring & Runtime
+
+Purpose: turn the proven single-creature PvE fixture into a validated,
+content-backed path before building the Mob Lab editor. The current contract is
+[`MONSTER_AUTHORING_RUNTIME.md`](MONSTER_AUTHORING_RUNTIME.md).
+
+| Slice | Name | Status |
+|---|---|---|
+| M0 | Monster Contract + Ownership | rescued onto `forge/mob-lab-v01` |
+| M1 | Monster Content + Validation | rescued onto `forge/mob-lab-v01` |
+| M2 | Content-backed Red Slime Runtime | rescued; automated regression coverage included, manual proof pending |
+| M2.1 | Align aggro/contact-damage authoring with current design | planned |
+| M3 | Mob Lab v0.1 Editor | planned |
+| M4 | Real-runtime Test Arena + observations | planned |
+| M5 | Hub integration + v0.1 closeout | planned |
+
+The old `forge/mob-lab` branch is historical reference only and must not be
+merged or rebased into current work. FORGE M continues from current `master`
+through `forge/mob-lab-v01`. Do not add unused ability, loot, placement,
+AI-tree or presentation fields before a real runtime consumer requires them.
 
 ## ART-R — Character ART Integration v1
 
