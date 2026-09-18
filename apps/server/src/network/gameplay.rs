@@ -1833,12 +1833,12 @@ impl GameplayOwner {
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
-        let authored_approach =
-            self.registry
-                .monster_by_id(MONSTER_RED_SLIME)
-                .map(|definition| match definition.behavior {
-                    MonsterBehavior::ChaseContactWhenAttacked => (0.8, 1.2),
-                });
+        let authored_approach = self
+            .registry
+            .monster_by_id(MONSTER_RED_SLIME)
+            .map(|definition| match definition.behavior {
+                MonsterBehavior::ChaseContactWhenAttacked => (0.8, 1.2),
+            });
         self.world.tick_npcs_with_approach(dt, authored_approach);
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
         sample.npc_activity += npc_t0.elapsed();
