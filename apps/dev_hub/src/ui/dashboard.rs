@@ -211,6 +211,19 @@ fn server_panel(
                     {
                         outcome.command = Some(purgatory_dev_runtime::HubCommand::Restart);
                     }
+
+                    let response = ui.add_enabled(
+                        snap.can_stop,
+                        btn_destructive("Stop").min_size(Vec2::new(72.0, 30.0)),
+                    );
+                    if action_response(
+                        response,
+                        "Stop the dedicated server. Detached clients are not stopped.",
+                    )
+                    .clicked()
+                    {
+                        outcome.command = Some(purgatory_dev_runtime::HubCommand::Stop);
+                    }
                 }
                 _ => {}
             }
