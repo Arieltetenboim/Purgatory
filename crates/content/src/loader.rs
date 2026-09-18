@@ -587,7 +587,7 @@ struct RawMonster {
 #[serde(deny_unknown_fields)]
 struct RawMonsterBehavior {
     kind: String,
-    acquisition_radius: f32,
+    aggro: String,
     home_leash_radius: f32,
 }
 
@@ -621,14 +621,14 @@ impl RawMonster {
                 "monster ContentId must be allocated in the Monster block",
             ));
         }
-        let behavior = match self.behavior.kind.as_str() {
-            "chase_contact" => MonsterBehavior::ChaseContact,
-            other => {
+        let behavior = match (self.behavior.kind.as_str(), self.behavior.aggro.as_str()) {
+            ("chase_contact", "when_attacked") => MonsterBehavior::ChaseContactWhenAttacked,
+            (kind, aggro) => {
                 return Err(ContentError::from_path(
                     path.to_path_buf(),
                     &self.id,
-                    "behavior.kind",
-                    format!("unknown monster behavior '{other}'"),
+                    "behavior",
+                    format!("unsupported monster behavior kind='{kind}' aggro='{aggro}'"),
                 ));
             }
         };
@@ -640,7 +640,6 @@ impl RawMonster {
             half_extents: self.half_extents,
             movement_speed: self.movement_speed,
             behavior,
-            acquisition_radius: self.behavior.acquisition_radius,
             home_leash_radius: self.behavior.home_leash_radius,
         };
         validate_monster_definition(&def)?;

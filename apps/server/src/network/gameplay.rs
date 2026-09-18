@@ -13,9 +13,9 @@ use purgatory_common::{
     MONSTER_RED_SLIME, RestoreIntent, WorldAddress,
 };
 use purgatory_content::{
-    ContentRegistry, EquipmentAuthError, LoadMode, authorize_equip, default_content_root,
-    entity_spawn_request, load_registry, map_plan, resolve_restore, runtime_placement,
-    world_address_for_map,
+    ContentRegistry, EquipmentAuthError, LoadMode, MonsterBehavior, authorize_equip,
+    default_content_root, entity_spawn_request, load_registry, map_plan, resolve_restore,
+    runtime_placement, world_address_for_map,
 };
 use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
 use purgatory_protocol::{
@@ -27,12 +27,12 @@ use purgatory_protocol::{
     ServerPresentationOneShot, UnequipRequest, WireEntityId,
 };
 use purgatory_simulation::{
-    AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, Cadence,
-    CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X, Health,
-    InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError, NpcRuntimeConfig,
-    P0, P0_POSITION, PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind,
-    RuntimeSpawnRequest, ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
-    validate_command_preamble,
+    AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, CONTACT_EPSILON,
+    Cadence, CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X,
+    Health, InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError,
+    NpcRuntimeConfig, P0, P0_POSITION, PLAYER_HALF_EXTENTS, PLAYER_HEALTH_MAX, PlayerInput,
+    PlayerState, PresentationOneShotKind, RuntimeSpawnRequest, ScheduleOwner, SimulationTick,
+    TICK_RATE_HZ, Transform, WorkLane, World, validate_command_preamble,
 };
 
 use super::dialogue::{
@@ -1836,7 +1836,14 @@ impl GameplayOwner {
         let authored_approach = self
             .registry
             .monster_by_id(MONSTER_RED_SLIME)
-            .map(|definition| (definition.acquisition_radius, 0.8, 1.2));
+            .map(|definition| match definition.behavior {
+                MonsterBehavior::ChaseContactWhenAttacked => (
+                    (definition.half_extents[0] + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
+                        .max(0.0),
+                    (definition.half_extents[1] + PLAYER_HALF_EXTENTS[1] - CONTACT_EPSILON)
+                        .max(0.0),
+                ),
+            });
         self.world.tick_npcs_with_approach(dt, authored_approach);
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
         sample.npc_activity += npc_t0.elapsed();
@@ -7266,7 +7273,7 @@ mod tests {
     }
 
     #[test]
-    fn live_creature_acquires_player_and_uses_contact_damage_runtime() {
+    fn live_creature_contact_damage_is_independent_of_aggro() {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
@@ -7278,13 +7285,19 @@ mod tests {
             .expect("live creature");
         let creature_x = owner.world().transform_of(creature).unwrap().position[0];
         assert!(owner.set_player_x(connection, creature_x - 0.5));
+
         for _ in 0..4 {
             owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
         }
+        assert_eq!(owner.world().npc_of(creature).unwrap().target, None);
         assert_eq!(
             owner.world().health_of(player).unwrap().current,
             PLAYER_HEALTH_MAX - 1.0
         );
+
+        activate_strike(&mut owner, connection, 1, None);
+        tick_ability(&mut owner, 4);
+        assert_eq!(owner.world().npc_of(creature).unwrap().target, Some(player));
         assert!(!owner.world().ability_granted(creature, basic_strike_id()));
     }
 
@@ -7351,8 +7364,8 @@ mod tests {
             health_max
         );
 
-        // Creature -> player: place the live player in range and let the
-        // authoritative NPC driver deliver damage.
+        // Creature -> player: proximity alone is passive. The player first
+        // damages the respawned monster, which establishes authoritative aggro.
         let respawned_x = owner.world().transform_of(respawned).unwrap().position[0];
         assert!(owner.set_player_x(connection, respawned_x - 1.0));
         assert!(owner.world_mut().set_health(
@@ -7362,6 +7375,12 @@ mod tests {
                 max: PLAYER_HEALTH_MAX,
             },
         ));
+        activate_strike(&mut owner, connection, 5, None);
+        tick_ability(&mut owner, 4);
+        assert_eq!(
+            owner.world().npc_of(respawned).unwrap().target,
+            Some(player)
+        );
         for _ in 0..=400 {
             owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
             if owner.world().health_of(player).unwrap().is_dead() {

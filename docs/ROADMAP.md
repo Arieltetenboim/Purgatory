@@ -148,17 +148,16 @@ content-backed path before building the Mob Lab editor. The current contract is
 
 | Slice | Name | Status |
 |---|---|---|
-| M0 | Monster Contract + Ownership | rescued onto `forge/mob-lab-v01` |
-| M1 | Monster Content + Validation | rescued onto `forge/mob-lab-v01` |
-| M2 | Content-backed Red Slime Runtime | rescued; automated regression coverage included, manual proof pending |
-| M2.1 | Align aggro/contact-damage authoring with current design | planned |
+| M0 | Monster Contract + Ownership | complete + merged |
+| M1 | Monster Content + Validation | complete + merged |
+| M2 | Content-backed Red Slime Runtime | complete + merged + manually verified |
+| M2.1 | Damage-triggered aggro contract | implementation branch |
 | M3 | Mob Lab v0.1 Editor | planned |
 | M4 | Real-runtime Test Arena + observations | planned |
 | M5 | Hub integration + v0.1 closeout | planned |
 
-The old `forge/mob-lab` branch is historical reference only and must not be
-merged or rebased into current work. FORGE M continues from current `master`
-through `forge/mob-lab-v01`. Do not add unused ability, loot, placement,
+The old `forge/mob-lab` and recovered `forge/mob-lab-v01` branches are historical
+reference only. Active FORGE M work starts from current `master`. Do not add unused ability, loot, placement,
 AI-tree or presentation fields before a real runtime consumer requires them.
 
 ## ART-R — Character ART Integration v1
