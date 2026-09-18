@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import urllib.parse
 import webbrowser
 from http import HTTPStatus
@@ -351,7 +352,6 @@ def main() -> int:
     url = f"http://{args.host}:{args.port}/"
     print(f"MOB_LAB|READY|{url}")
     if args.open:
-        threading = __import__("threading")
         threading.Timer(0.35, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
