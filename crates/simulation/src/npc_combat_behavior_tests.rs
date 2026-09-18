@@ -454,8 +454,7 @@ fn dead_creature_stops_requesting_abilities() {
 
 #[test]
 fn player_triggered_basic_strike_path_sets_monster_aggro() {
-    let (mut world, _, player) = setup(1.0, 0.0);
-    let target = RuntimeFixtures::test_mob_like(&mut world);
+    let (mut world, target, player) = setup(1.0, 0.0);
     world.set_transform(
         target,
         Transform::from_position([player_position(&world, player)[0] + 1.0, 1.0]),
