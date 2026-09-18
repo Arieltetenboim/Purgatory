@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense, Stroke, Vec2};
 
+use crate::navigation::NavIcon;
 use crate::theme;
 
 pub struct PageOutcome {
@@ -207,7 +208,7 @@ pub fn btn_destructive(label: &str) -> egui::Button<'static> {
     .corner_radius(6.0)
 }
 
-pub fn nav_item(ui: &mut egui::Ui, selected: bool, icon: &str, label: &str) -> egui::Response {
+pub fn nav_item(ui: &mut egui::Ui, selected: bool, icon: NavIcon, label: &str) -> egui::Response {
     let w = ui.available_width();
     let h = theme::SIDEBAR_ITEM_H;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
@@ -222,24 +223,20 @@ pub fn nav_item(ui: &mut egui::Ui, selected: bool, icon: &str, label: &str) -> e
     } else if resp.hovered() {
         painter.rect_filled(rect, 6.0, Color32::from_rgb(24, 30, 38));
     }
-    let text_color = if selected {
+
+    let color = if selected {
         theme::body()
     } else {
         theme::muted()
     };
-    let mut x = rect.left() + 10.0;
-    if !icon.is_empty() {
-        painter.text(
-            egui::pos2(x, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            icon,
-            theme::subtitle_font(),
-            text_color,
-        );
-        x += 18.0;
-    }
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 17.0, rect.center().y),
+        Vec2::splat(14.0),
+    );
+    paint_nav_icon(painter, icon_rect, icon, color);
+
     painter.text(
-        egui::pos2(x, rect.center().y),
+        egui::pos2(rect.left() + 35.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
         theme::section_font(),
@@ -250,6 +247,127 @@ pub fn nav_item(ui: &mut egui::Ui, selected: bool, icon: &str, label: &str) -> e
         },
     );
     resp
+}
+
+fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: Color32) {
+    let stroke = Stroke::new(1.2, color);
+    let c = rect.center();
+    let l = rect.left();
+    let r = rect.right();
+    let t = rect.top();
+    let b = rect.bottom();
+
+    match icon {
+        NavIcon::Dashboard => {
+            for row in 0..2 {
+                for col in 0..2 {
+                    painter.rect_stroke(
+                        egui::Rect::from_min_size(
+                            egui::pos2(l + 1.0 + col as f32 * 7.0, t + 1.0 + row as f32 * 7.0),
+                            Vec2::splat(5.0),
+                        ),
+                        0.5,
+                        stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+        }
+        NavIcon::Server => {
+            for y in [t + 1.0, c.y - 1.5, b - 4.0] {
+                painter.rect_stroke(
+                    egui::Rect::from_min_max(
+                        egui::pos2(l + 1.0, y),
+                        egui::pos2(r - 1.0, y + 3.0),
+                    ),
+                    0.5,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+        NavIcon::Clients => {
+            painter.rect_stroke(
+                egui::Rect::from_min_max(
+                    egui::pos2(l + 1.0, t + 1.0),
+                    egui::pos2(c.x + 1.0, b - 3.0),
+                ),
+                1.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.rect_stroke(
+                egui::Rect::from_min_max(
+                    egui::pos2(c.x - 1.0, t + 4.0),
+                    egui::pos2(r - 1.0, b - 1.0),
+                ),
+                1.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        NavIcon::Validation => {
+            painter.rect_stroke(
+                rect.shrink(1.0),
+                1.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.line_segment(
+                [egui::pos2(l + 3.0, c.y), egui::pos2(c.x - 0.5, b - 3.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [egui::pos2(c.x - 0.5, b - 3.0), egui::pos2(r - 2.0, t + 3.0)],
+                stroke,
+            );
+        }
+        NavIcon::Performance => {
+            for (x, height) in [(l + 2.0, 4.0), (c.x, 8.0), (r - 2.0, 11.0)] {
+                painter.line_segment(
+                    [egui::pos2(x, b - 1.0), egui::pos2(x, b - 1.0 - height)],
+                    Stroke::new(2.0, color),
+                );
+            }
+        }
+        NavIcon::PhaseStats => {
+            painter.rect_stroke(rect.shrink(1.0), 1.0, stroke, egui::StrokeKind::Inside);
+            painter.line_segment([egui::pos2(c.x, t + 1.0), egui::pos2(c.x, b - 1.0)], stroke);
+            painter.line_segment([egui::pos2(l + 1.0, c.y), egui::pos2(r - 1.0, c.y)], stroke);
+        }
+        NavIcon::World => {
+            painter.circle_stroke(c, 6.0, stroke);
+            painter.line_segment([egui::pos2(c.x, t + 1.0), egui::pos2(c.x, b - 1.0)], stroke);
+            painter.line_segment([egui::pos2(l + 1.0, c.y), egui::pos2(r - 1.0, c.y)], stroke);
+        }
+        NavIcon::Content => {
+            painter.line_segment([egui::pos2(c.x, t + 1.0), egui::pos2(r - 1.0, c.y)], stroke);
+            painter.line_segment([egui::pos2(r - 1.0, c.y), egui::pos2(c.x, b - 1.0)], stroke);
+            painter.line_segment([egui::pos2(c.x, b - 1.0), egui::pos2(l + 1.0, c.y)], stroke);
+            painter.line_segment([egui::pos2(l + 1.0, c.y), egui::pos2(c.x, t + 1.0)], stroke);
+        }
+        NavIcon::Logs => {
+            for y in [t + 3.0, c.y, b - 3.0] {
+                painter.line_segment(
+                    [egui::pos2(l + 1.0, y), egui::pos2(r - 1.0, y)],
+                    stroke,
+                );
+            }
+        }
+        NavIcon::Settings => {
+            painter.circle_stroke(c, 4.0, stroke);
+            painter.circle_filled(c, 1.3, color);
+            for (dx, dy) in [(0.0, -6.0), (6.0, 0.0), (0.0, 6.0), (-6.0, 0.0)] {
+                painter.line_segment(
+                    [
+                        egui::pos2(c.x + dx * 0.65, c.y + dy * 0.65),
+                        egui::pos2(c.x + dx, c.y + dy),
+                    ],
+                    stroke,
+                );
+            }
+        }
+    }
 }
 
 pub fn format_secs(secs: f64) -> String {
