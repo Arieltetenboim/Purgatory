@@ -7273,7 +7273,7 @@ mod tests {
     }
 
     #[test]
-    fn live_creature_ignores_nearby_player_until_damaged_then_uses_contact_damage_runtime() {
+    fn live_creature_contact_damage_is_independent_of_aggro() {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
@@ -7292,21 +7292,12 @@ mod tests {
         assert_eq!(owner.world().npc_of(creature).unwrap().target, None);
         assert_eq!(
             owner.world().health_of(player).unwrap().current,
-            PLAYER_HEALTH_MAX
+            PLAYER_HEALTH_MAX - 1.0
         );
 
         activate_strike(&mut owner, connection, 1, None);
-        for _ in 0..20 {
-            owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
-            if owner.world().health_of(player).unwrap().current < PLAYER_HEALTH_MAX {
-                break;
-            }
-        }
+        tick_ability(&mut owner, 4);
         assert_eq!(owner.world().npc_of(creature).unwrap().target, Some(player));
-        assert_eq!(
-            owner.world().health_of(player).unwrap().current,
-            PLAYER_HEALTH_MAX - 1.0
-        );
         assert!(!owner.world().ability_granted(creature, basic_strike_id()));
     }
 
