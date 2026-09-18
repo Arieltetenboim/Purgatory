@@ -13,6 +13,7 @@ use crate::action_gate::{ActionDenialReason, ActionGateContext, evaluate_action_
 use crate::body::CollisionBody;
 use crate::cadence::{Cadence, CadenceBinding};
 use crate::collision::{recover_solid_penetration, resolve_horizontal, resolve_vertical};
+use crate::contact::touches_or_overlaps;
 use crate::effect::{EffectError, EffectId, EffectKind, TempEffect};
 use crate::entity::EntityId;
 use crate::health::{DamageImmunityPolicy, Health};
@@ -1059,10 +1060,10 @@ impl World {
                 let Some((player_transform, player)) = self.get_player(player_id) else {
                     continue;
                 };
-                if npc
-                    .aabb(npc_transform)
-                    .overlaps(player.aabb(*player_transform))
-                {
+                if touches_or_overlaps(
+                    npc.aabb(npc_transform),
+                    player.aabb(*player_transform),
+                ) {
                     let _ = self.apply_contact_damage(player_id, CONTACT_DAMAGE);
                 }
             }
