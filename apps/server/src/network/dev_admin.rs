@@ -4,13 +4,16 @@
 //! client. Requests are accepted only on localhost and are handed to the
 //! existing bounded gameplay channel owned by [`super::gameplay::GameplayOwner`].
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use purgatory_common::{
     ContentId, DEFAULT_DEV_ADMIN_PORT, DEV_ADMIN_MAX_LINE_BYTES, DEV_ADMIN_PORT_ENV,
     DevAdminContentEntry, DevAdminPlayer, DevAdminRequest, DevAdminResponse, DevAdminSnapshot,
 };
-use purgatory_content::{LoadMode, default_content_root, load_registry};
+use purgatory_content::{
+    DialogueAction, DialogueCondition, LoadMode, default_content_root, load_registry,
+};
 use purgatory_protocol::ConnectionId;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -22,6 +25,7 @@ use super::session::{SessionTable, lock_sessions};
 struct AdminCatalog {
     npcs: Arc<Vec<DevAdminContentEntry>>,
     items: Arc<Vec<DevAdminContentEntry>>,
+    facts: Arc<Vec<String>>,
 }
 
 pub(crate) fn spawn(
@@ -48,7 +52,7 @@ pub(crate) fn spawn(
     npcs.sort_by(|a, b| a.authored_id.cmp(&b.authored_id));
 
     let mut items = registry
-        .iter_item_presentations()
+        .iter_items()
         .filter_map(|item| {
             let content_id = u32::try_from(item.content_id.token()).ok()?;
             Some(DevAdminContentEntry {
@@ -59,9 +63,28 @@ pub(crate) fn spawn(
         .collect::<Vec<_>>();
     items.sort_by(|a, b| a.authored_id.cmp(&b.authored_id));
 
+    let mut facts = BTreeSet::new();
+    for dialogue in registry.iter_npc_dialogues() {
+        for beat in &dialogue.beats {
+            for condition in &beat.conditions {
+                if let DialogueCondition::Fact { fact, .. } = condition {
+                    facts.insert(fact.clone());
+                }
+            }
+            for choice in &beat.choices {
+                for action in &choice.actions {
+                    if let DialogueAction::SetFact { fact, .. } = action {
+                        facts.insert(fact.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let catalog = AdminCatalog {
         npcs: Arc::new(npcs),
         items: Arc::new(items),
+        facts: Arc::new(facts.into_iter().collect()),
     };
 
     tokio::spawn(async move {
@@ -163,6 +186,7 @@ async fn dispatch(
                     players,
                     npcs: catalog.npcs.as_ref().clone(),
                     items: catalog.items.as_ref().clone(),
+                    facts: catalog.facts.as_ref().clone(),
                 },
             }
         }
