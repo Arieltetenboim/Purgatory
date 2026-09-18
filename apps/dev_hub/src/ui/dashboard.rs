@@ -10,7 +10,7 @@ use crate::ui::dashboard_model::{self, AttentionVm, DashVm, ProjectVm, StatusMod
 use crate::ui::layout::{
     self, PageOutcome, btn_destructive, btn_ghost, btn_primary, metric_flow, status_badge,
 };
-use crate::ui::{gate_pipeline, log_console, tool_launch};
+use crate::ui::{doctor, gate_pipeline, log_console, tool_launch};
 
 pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> PageOutcome {
     let mut outcome = PageOutcome::none();
@@ -41,6 +41,8 @@ pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> Pag
     ui.add_space(gap);
 
     gate_pipeline::show(ui, &gate_log);
+    ui.add_space(gap);
+    doctor::show_section(ui, snap);
     ui.add_space(gap);
     activity_panel(ui, snap, &mut outcome);
     outcome
