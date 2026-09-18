@@ -89,6 +89,10 @@ impl ContentRegistry {
         self.npc_dialogues.get(authored)
     }
 
+    pub fn iter_npc_dialogues(&self) -> impl Iterator<Item = &NpcDialogueDefinition> {
+        self.npc_dialogues.values()
+    }
+
     /// Client-safe dialogue lines keyed by the same stable NPC identity. This
     /// projection intentionally excludes authoritative conditions and actions.
     #[must_use]
@@ -187,6 +191,10 @@ impl ContentRegistry {
     pub fn item_by_id(&self, id: ContentId) -> Option<&ItemDefinition> {
         let authored = self.labels.get(&id)?;
         self.items.get(authored)
+    }
+
+    pub fn iter_items(&self) -> impl Iterator<Item = &ItemDefinition> {
+        self.items.values()
     }
 
     #[must_use]
