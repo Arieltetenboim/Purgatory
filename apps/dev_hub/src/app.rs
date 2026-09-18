@@ -60,7 +60,7 @@ impl DevHubApp {
             validation_run: RunViewState::default(),
             load_run: RunViewState::default(),
             server_commands: ServerCommandsState::default(),
-            settings: ui::settings::SettingsState::default(),
+            settings: ui::settings::SettingsState,
             authoring_export_status: None,
             logo: assets::load_logo(ctx),
             last_server_state: None,
