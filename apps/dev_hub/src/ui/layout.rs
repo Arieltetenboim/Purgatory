@@ -346,6 +346,14 @@ fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, colo
             painter.line_segment([egui::pos2(c.x, b - 1.0), egui::pos2(l + 1.0, c.y)], stroke);
             painter.line_segment([egui::pos2(l + 1.0, c.y), egui::pos2(c.x, t + 1.0)], stroke);
         }
+        NavIcon::Diagnostics => {
+            painter.circle_stroke(c, 6.0, stroke);
+            painter.line_segment(
+                [egui::pos2(c.x, t + 3.0), egui::pos2(c.x, c.y + 1.0)],
+                stroke,
+            );
+            painter.circle_filled(egui::pos2(c.x, b - 3.0), 1.0, color);
+        }
         NavIcon::Logs => {
             for y in [t + 3.0, c.y, b - 3.0] {
                 painter.line_segment(
