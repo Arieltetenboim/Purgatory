@@ -67,6 +67,10 @@ pub struct DevAdminSnapshot {
     /// catalogue rather than treating the whole admin channel as unavailable.
     #[serde(default)]
     pub items: Vec<DevAdminContentEntry>,
+    /// Authored narrative fact ids discovered from the authoritative dialogue pack.
+    /// Old server binaries omit this field; decode them as an empty catalogue.
+    #[serde(default)]
+    pub facts: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
