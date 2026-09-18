@@ -15,11 +15,11 @@ pub enum DevAdminRequest {
     Snapshot,
     SpawnNpc {
         connection_id: u64,
-        npc_content_id: u32,
+        npc_content_id: u64,
     },
     SpawnItem {
         connection_id: u64,
-        item_content_id: u32,
+        item_content_id: u64,
         quantity: u32,
     },
     SetNarrativeFact {
@@ -54,7 +54,7 @@ pub struct DevAdminPlayer {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DevAdminContentEntry {
-    pub content_id: u32,
+    pub content_id: u64,
     pub authored_id: String,
 }
 
@@ -114,6 +114,23 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<DevAdminRequest>(&json).expect("decode"),
             request
+        );
+    }
+
+    #[test]
+    fn legacy_content_tokens_roundtrip_through_admin_catalog() {
+        let token = ContentId::from_authored("item.debug.small_potion")
+            .expect("authored id")
+            .token();
+        assert!(token > u64::from(u32::MAX));
+        let entry = DevAdminContentEntry {
+            content_id: token,
+            authored_id: "item.debug.small_potion".into(),
+        };
+        let json = serde_json::to_string(&entry).expect("encode");
+        assert_eq!(
+            serde_json::from_str::<DevAdminContentEntry>(&json).expect("decode"),
+            entry
         );
     }
 
