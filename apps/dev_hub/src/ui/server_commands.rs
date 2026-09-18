@@ -487,7 +487,7 @@ impl ServerCommandsState {
 
 fn selected_content_label(
     entries: &[purgatory_common::DevAdminContentEntry],
-    selected: Option<u32>,
+    selected: Option<u64>,
     fallback: &str,
 ) -> String {
     selected
