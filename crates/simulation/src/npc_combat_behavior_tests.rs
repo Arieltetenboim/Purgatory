@@ -519,21 +519,20 @@ fn nearest_health_target_skips_players() {
 }
 
 #[test]
-fn overlapping_npc_applies_one_contact_damage_after_movement() {
+fn overlapping_passive_npc_applies_contact_damage_without_aggro() {
     let (mut world, npc, player) = setup(0.0, 0.0);
-    damage_aggro(&mut world, npc, player);
+    assert_eq!(world.npc_of(npc).unwrap().target, None);
+
     world.tick_npcs_with_approach(0.0, Some((0.5, 0.8)));
 
     assert_eq!(world.health_of(player).unwrap().current, 19.0);
-    assert_eq!(world.npc_of(npc).unwrap().target, Some(player));
+    assert_eq!(world.npc_of(npc).unwrap().target, None);
     assert!(world.damage_immunity_active(player));
 }
 
 #[test]
 fn repeated_contact_before_two_seconds_deals_no_additional_damage() {
     let (mut world, _, player) = setup(0.0, 0.0);
-    let npc = world.iter().find(|&id| world.npc_of(id).is_some()).unwrap();
-    damage_aggro(&mut world, npc, player);
     for tick in 2..=59 {
         world.begin_tick(SimulationTick::from_count(tick));
         world.tick_npcs_with_approach(0.0, Some((0.5, 0.8)));
@@ -544,8 +543,6 @@ fn repeated_contact_before_two_seconds_deals_no_additional_damage() {
 #[test]
 fn immunity_expiry_marks_authoritative_replication_dirty() {
     let (mut world, _, player) = setup(0.0, 0.0);
-    let npc = world.iter().find(|&id| world.npc_of(id).is_some()).unwrap();
-    damage_aggro(&mut world, npc, player);
     world.clear_replication_dirty();
     world.tick_npcs_with_approach(0.0, Some((0.5, 0.8)));
     assert!(world.damage_immunity_active(player));
@@ -566,8 +563,6 @@ fn immunity_expiry_marks_authoritative_replication_dirty() {
 #[test]
 fn contact_at_just_under_two_seconds_is_still_immune() {
     let (mut world, _, player) = setup(0.0, 0.0);
-    let npc = world.iter().find(|&id| world.npc_of(id).is_some()).unwrap();
-    damage_aggro(&mut world, npc, player);
     world.begin_tick(SimulationTick::from_count(61));
     world.tick_npcs_with_approach(0.0, Some((0.5, 0.8)));
     assert_eq!(world.health_of(player).unwrap().current, 19.0);
@@ -576,8 +571,6 @@ fn contact_at_just_under_two_seconds_is_still_immune() {
 #[test]
 fn contact_after_two_seconds_deals_one_damage_and_restarts_immunity() {
     let (mut world, _, player) = setup(0.0, 0.0);
-    let npc = world.iter().find(|&id| world.npc_of(id).is_some()).unwrap();
-    damage_aggro(&mut world, npc, player);
     world.tick_npcs_with_approach(0.0, Some((0.5, 0.8)));
     assert_eq!(world.health_of(player).unwrap().current, 19.0);
 
@@ -606,8 +599,6 @@ fn contact_after_two_seconds_deals_one_damage_and_restarts_immunity() {
 #[test]
 fn leaving_and_reentering_does_not_bypass_contact_immunity() {
     let (mut world, _, player) = setup(0.0, 0.0);
-    let npc = world.iter().find(|&id| world.npc_of(id).is_some()).unwrap();
-    damage_aggro(&mut world, npc, player);
     world.tick_npcs_with_approach(0.0, Some((0.5, 0.8)));
     world.set_transform(player, Transform::from_position([3.0, 1.0]));
     world.begin_tick(SimulationTick::from_count(2));
@@ -639,7 +630,7 @@ fn multiple_overlapping_npcs_cannot_stack_contact_damage() {
         let mut state = world.npc_of(npc).unwrap();
         state.walking = false;
         world.set_npc(npc, state);
-        damage_aggro(&mut world, npc, player);
+        assert_eq!(world.npc_of(npc).unwrap().target, None);
     }
 
     world.tick_npcs_with_approach(0.0, Some((0.5, 0.8)));
@@ -651,7 +642,7 @@ fn basic_enemy_integrated_contact_path_has_no_legacy_strike_source() {
     let (mut world, first, player) = setup(0.0, 0.0);
     let def = strike();
     world.revoke_ability(first, def.id);
-    damage_aggro(&mut world, first, player);
+    assert_eq!(world.npc_of(first).unwrap().target, None);
 
     world.tick_npcs_with_approach(0.0, Some((0.5, 0.8)));
     assert_eq!(world.health_of(player).unwrap().current, 19.0);
@@ -673,7 +664,7 @@ fn basic_enemy_integrated_contact_path_has_no_legacy_strike_source() {
     second_state.walking = false;
     world.set_npc(second, second_state);
     world.revoke_ability(second, def.id);
-    damage_aggro(&mut world, second, player);
+    assert_eq!(world.npc_of(second).unwrap().target, None);
 
     for tick in 2..=61 {
         world.begin_tick(SimulationTick::from_count(tick));
@@ -693,7 +684,7 @@ fn basic_enemy_integrated_contact_path_has_no_legacy_strike_source() {
 #[test]
 fn lethal_contact_preserves_dead_target_invalidation() {
     let (mut world, npc, player) = setup(0.0, 0.0);
-    damage_aggro(&mut world, npc, player);
+    assert_eq!(world.npc_of(npc).unwrap().target, None);
     world.set_health(
         player,
         Health {
