@@ -15,7 +15,7 @@ use purgatory_protocol::ConnectionId;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
-use super::gameplay::GameplayTx;
+use super::gameplay::{DevNarrativeCommand, GameplayTx};
 use super::session::{SessionTable, lock_sessions};
 
 #[derive(Clone)]
@@ -229,6 +229,79 @@ async fn dispatch(
                 Err(message) => DevAdminResponse::command_err(message),
             }
         }
+        DevAdminRequest::SetNarrativeFact {
+            connection_id,
+            fact_id,
+            value,
+        } => {
+            if !session_exists(sessions, connection_id) {
+                return inactive(connection_id);
+            }
+            narrative_result(
+                gameplay
+                    .send_dev_narrative(
+                        ConnectionId::from_raw(connection_id),
+                        DevNarrativeCommand::SetFact {
+                            fact_id: fact_id.clone(),
+                            value,
+                        },
+                    )
+                    .await,
+                format!("Set fact {fact_id}={value} for connection {connection_id}"),
+            )
+        }
+        DevAdminRequest::ClearNarrativeFact {
+            connection_id,
+            fact_id,
+        } => {
+            if !session_exists(sessions, connection_id) {
+                return inactive(connection_id);
+            }
+            narrative_result(
+                gameplay
+                    .send_dev_narrative(
+                        ConnectionId::from_raw(connection_id),
+                        DevNarrativeCommand::ClearFact {
+                            fact_id: fact_id.clone(),
+                        },
+                    )
+                    .await,
+                format!("Clear fact {fact_id} for connection {connection_id}"),
+            )
+        }
+        DevAdminRequest::MarkNpcMet {
+            connection_id,
+            npc_authored_id,
+        } => {
+            if !session_exists(sessions, connection_id) {
+                return inactive(connection_id);
+            }
+            narrative_result(
+                gameplay
+                    .send_dev_narrative(
+                        ConnectionId::from_raw(connection_id),
+                        DevNarrativeCommand::MarkNpcMet {
+                            npc_authored_id: npc_authored_id.clone(),
+                        },
+                    )
+                    .await,
+                format!("Mark NPC met {npc_authored_id} for connection {connection_id}"),
+            )
+        }
+        DevAdminRequest::ResetNarrative { connection_id } => {
+            if !session_exists(sessions, connection_id) {
+                return inactive(connection_id);
+            }
+            narrative_result(
+                gameplay
+                    .send_dev_narrative(
+                        ConnectionId::from_raw(connection_id),
+                        DevNarrativeCommand::Reset,
+                    )
+                    .await,
+                format!("Reset narrative state for connection {connection_id}"),
+            )
+        }
         DevAdminRequest::ResetPlayer { connection_id } => {
             if !session_exists(sessions, connection_id) {
                 return inactive(connection_id);
@@ -254,6 +327,16 @@ async fn dispatch(
                 format!("Set connection {connection_id} channel to {channel}"),
             )
         }
+    }
+}
+
+fn narrative_result(result: Result<(), String>, message: String) -> DevAdminResponse {
+    match result {
+        Ok(()) => {
+            println!("DEV_ADMIN {message}");
+            DevAdminResponse::command_ok(message)
+        }
+        Err(error) => DevAdminResponse::command_err(error),
     }
 }
 
