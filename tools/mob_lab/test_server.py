@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from server import (
+    load_numeric_catalog,
     new_monster_document,
     resolve_monster_path,
     safe_filename,
@@ -40,6 +41,21 @@ class MobLabContractTests(unittest.TestCase):
             self.assertEqual(
                 root / "monster.test.json",
                 resolve_monster_path(root, "monster.test.json"),
+            )
+
+    def test_numeric_catalog_parser_reads_checked_monster_allocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog = root / "crates" / "common" / "src"
+            catalog.mkdir(parents=True)
+            (catalog / "content_catalog.rs").write_text(
+                'pub const MONSTER_RED_SLIME: ContentId = ContentId::from_raw(10_001);\n'
+                '        "monster.slime.red" => MONSTER_RED_SLIME,\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                {"monster.slime.red": 10001},
+                load_numeric_catalog(root),
             )
 
     def test_filename_uses_authored_id(self):

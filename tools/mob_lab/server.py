@@ -88,6 +88,25 @@ def validate_monster_document(value: Any) -> list[str]:
     return errors
 
 
+def load_numeric_catalog(repo_root: Path) -> dict[str, int]:
+    source = (repo_root / "crates" / "common" / "src" / "content_catalog.rs").read_text(
+        encoding="utf-8"
+    )
+    constants = {
+        name: int(raw.replace("_", ""))
+        for name, raw in re.findall(
+            r"pub const ([A-Z0-9_]+): ContentId = ContentId::from_raw\(([0-9_]+)\);",
+            source,
+        )
+    }
+    labels: dict[str, int] = {}
+    for label, constant in re.findall(r'"([^"]+)" => ([A-Z0-9_]+),', source):
+        raw = constants.get(constant)
+        if raw is not None:
+            labels[label] = raw
+    return labels
+
+
 def new_monster_document(authored_id: str, debug_name: str) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -208,13 +227,17 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                 "schema_version": None,
                 "valid": False,
                 "error": None,
+                "content_id": None,
             }
             try:
                 doc = json.loads(path.read_text(encoding="utf-8"))
                 errors = validate_monster_document(doc)
+                catalog = load_numeric_catalog(self.repo_root)
+                authored = doc.get("id") if isinstance(doc, dict) else None
                 entry.update(
                     {
-                        "id": doc.get("id") if isinstance(doc, dict) else None,
+                        "id": authored,
+                        "content_id": catalog.get(authored) if isinstance(authored, str) else None,
                         "debug_name": doc.get("debug_name") if isinstance(doc, dict) else None,
                         "schema_version": doc.get("schema_version") if isinstance(doc, dict) else None,
                         "valid": not errors,
@@ -233,10 +256,14 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                 self._json_response({"error": "Monster file not found."}, HTTPStatus.NOT_FOUND)
                 return
             doc = json.loads(path.read_text(encoding="utf-8"))
+            authored = doc.get("id") if isinstance(doc, dict) else None
             self._json_response(
                 {
                     "path": path.name,
                     "document": doc,
+                    "content_id": load_numeric_catalog(self.repo_root).get(authored)
+                    if isinstance(authored, str)
+                    else None,
                     "validation_errors": validate_monster_document(doc),
                 }
             )
@@ -305,6 +332,19 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             debug_name = str(request.get("debug_name", "")).strip()
             if not debug_name:
                 raise ValueError("New monster requires a debug name.")
+            catalog = load_numeric_catalog(self.repo_root)
+            if authored_id not in catalog:
+                self._json_response(
+                    {
+                        "error": (
+                            f"{authored_id} has no stable numeric ContentId allocation. "
+                            "Allocate it through the checked content catalog first "
+                            "(tracked by issue #24), then create the Monster definition."
+                        )
+                    },
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                )
+                return
             path = resolve_monster_path(self.definitions_root, safe_filename(authored_id))
             if path.exists():
                 self._json_response({"error": f"Monster already exists at {path.name}."}, HTTPStatus.CONFLICT)

@@ -24,7 +24,7 @@ Default URL: `http://127.0.0.1:8766/`.
 ## M3 scope
 
 - list runtime Monster definitions;
-- create a schema-v2 Monster;
+- create a schema-v2 Monster for an already allocated stable ContentId;
 - edit identity/body/movement/behavior;
 - inspect/apply raw JSON;
 - local shape validation;
@@ -49,3 +49,13 @@ If the real content pack fails, Mob Lab restores the previous file (or removes a
 ```powershell
 py -3 -m unittest discover -s .\tools\mob_lab -p "test_*.py"
 ```
+
+## ContentId boundary
+
+M3 does **not** allocate new stable numeric ContentIds. That belongs to the
+shared migration/allocation work tracked by issue #24.
+
+Mob Lab reads the checked catalog and shows the numeric ContentId for existing
+Monster labels. NEW MONSTER refuses an unallocated label with an explicit
+message instead of silently creating a second identity scheme or editing Rust
+catalog source.
