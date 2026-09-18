@@ -335,7 +335,7 @@ pub const RESET_TO_SPAWN_LABEL: &str = "Reset to Spawn Point";
 pub const RESET_TO_SPAWN_HELP: &str = "Connected: server-authoritative spawn reset (DevResetPlayer). Offline: local World spawn and camera center.";
 pub const RESET_TO_SPAWN_FLASH: &str = "RESET TO SPAWN POINT";
 
-pub const DEBUG_MOVE_SPEED_DEFAULT: f32 = 4.0;
+pub const DEBUG_MOVE_SPEED_DEFAULT: f32 = 3.5;
 pub const DEBUG_MOVE_SPEED_MIN: f32 = 0.5;
 pub const DEBUG_MOVE_SPEED_MAX: f32 = 24.0;
 pub const DEBUG_JUMP_SPEED_DEFAULT: f32 = 13.0;
