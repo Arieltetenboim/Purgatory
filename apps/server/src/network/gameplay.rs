@@ -3844,6 +3844,66 @@ mod tests {
     }
 
     #[test]
+    fn dev_spawn_item_uses_authoritative_world_drop_path() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let item = ContentId::from_authored("item.debug.small_potion").expect("item id");
+        let before = owner.world().iter().count();
+
+        owner
+            .handle_dev_spawn_item(connection, item, 1)
+            .expect("spawn item");
+
+        assert_eq!(owner.world().iter().count(), before + 1);
+    }
+
+    #[test]
+    fn dev_spawn_item_rejects_non_item_content() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let not_item = ContentId::from_authored("skill.basic.strike").expect("ability id");
+
+        let error = owner
+            .handle_dev_spawn_item(connection, not_item, 1)
+            .expect_err("non-item must be rejected");
+
+        assert!(error.contains("not an authored item"));
+    }
+
+    #[test]
+    fn dev_spawn_item_rejects_quantity_above_authored_stack_limit() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let item = ContentId::from_authored("item.debug.small_potion").expect("item id");
+        let stack_limit = owner
+            .registry
+            .item_by_id(item)
+            .expect("item definition")
+            .stack_limit;
+
+        let error = owner
+            .handle_dev_spawn_item(connection, item, stack_limit.saturating_add(1))
+            .expect_err("oversized stack must be rejected");
+
+        assert!(error.contains("exceeds authored stack limit"));
+    }
+
+    #[test]
+    fn dev_spawn_item_rejects_disconnected_target() {
+        let mut owner = GameplayOwner::new();
+        let item = ContentId::from_authored("item.debug.small_potion").expect("item id");
+
+        let error = owner
+            .handle_dev_spawn_item(ConnectionId::from_raw(999), item, 1)
+            .expect_err("missing binding must be rejected");
+
+        assert!(error.contains("no gameplay binding"));
+    }
+
+    #[test]
     fn first_sequence_must_be_one() {
         let mut s = SessionInput::new();
         assert_eq!(
