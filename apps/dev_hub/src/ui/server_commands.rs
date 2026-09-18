@@ -16,7 +16,6 @@ const HISTORY_CAP: usize = 64;
 const AUTO_REFRESH_CONNECTED: Duration = Duration::from_secs(2);
 const AUTO_REFRESH_UNAVAILABLE: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
-const SPAWN_ITEM_RUNTIME_READY: bool = false;
 
 type AdminReply = (bool, Result<DevAdminResponse, String>);
 
@@ -206,14 +205,23 @@ impl ServerCommandsState {
                     });
                 ui.label("Qty");
                 ui.add(egui::DragValue::new(&mut self.item_quantity).range(1..=999));
-                let enabled = SPAWN_ITEM_RUNTIME_READY
-                    && ready
-                    && self.selected_player.is_some()
-                    && self.selected_item.is_some();
-                ui.add_enabled(enabled, btn_primary("Spawn near player"))
+                let enabled =
+                    ready && self.selected_player.is_some() && self.selected_item.is_some();
+                let response = ui.add_enabled(enabled, btn_primary("Spawn near player"));
+                if response
                     .on_hover_text(
-                        "Item catalog and command contract are staged. The authoritative GameplayOwner world-drop hook is tracked in issue #61 and this button stays disabled until that owner path lands.",
-                    );
+                        "Spawn an authoritative world-drop near the selected player's server position. Quantity must not exceed the authored stack limit.",
+                    )
+                    .clicked()
+                    && let (Some(connection_id), Some(item_content_id)) =
+                        (self.selected_player, self.selected_item)
+                {
+                    self.send(DevAdminRequest::SpawnItem {
+                        connection_id,
+                        item_content_id,
+                        quantity: self.item_quantity,
+                    });
+                }
             });
 
             ui.add_space(8.0);
