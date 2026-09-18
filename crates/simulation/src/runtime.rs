@@ -1060,10 +1060,7 @@ impl World {
                 let Some((player_transform, player)) = self.get_player(player_id) else {
                     continue;
                 };
-                if touches_or_overlaps(
-                    npc.aabb(npc_transform),
-                    player.aabb(*player_transform),
-                ) {
+                if touches_or_overlaps(npc.aabb(npc_transform), player.aabb(*player_transform)) {
                     let _ = self.apply_contact_damage(player_id, CONTACT_DAMAGE);
                 }
             }
