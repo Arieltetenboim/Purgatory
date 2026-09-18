@@ -44,6 +44,7 @@ struct DevHubApp {
     validation_run: RunViewState,
     load_run: RunViewState,
     server_commands: ServerCommandsState,
+    settings: ui::settings::SettingsState,
     authoring_export_status: Option<String>,
     logo: Option<TextureHandle>,
     last_server_state: Option<ServerState>,
@@ -59,6 +60,7 @@ impl DevHubApp {
             validation_run: RunViewState::default(),
             load_run: RunViewState::default(),
             server_commands: ServerCommandsState::default(),
+            settings: ui::settings::SettingsState::default(),
             authoring_export_status: None,
             logo: assets::load_logo(ctx),
             last_server_state: None,
@@ -199,7 +201,7 @@ impl eframe::App for DevHubApp {
                                         } else {
                                             page.label().to_string()
                                         };
-                                        if nav_item(ui, selected, page.symbol(), &label).clicked() {
+                                        if nav_item(ui, selected, page.icon(), &label).clicked() {
                                             self.page = page;
                                         }
                                         ui.add_space(2.0);
@@ -284,7 +286,7 @@ impl eframe::App for DevHubApp {
                                         }
                                     }
                                     HubPage::Settings => {
-                                        if let Some(c) = ui::settings::show(ui, &snap) {
+                                        if let Some(c) = ui::settings::show(ui, &snap, &mut self.settings) {
                                             cmd = Some(c);
                                         }
                                     }
