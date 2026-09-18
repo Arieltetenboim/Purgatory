@@ -52,7 +52,9 @@ The matching equipment gameplay and equipment-presentation facets use the same I
 
 ### Monsters — 10,000–19,999
 
-No authored catalog definitions allocated yet.
+| ID | Label | Status |
+| ---: | --- | --- |
+| `10001` | `monster.slime.red` | active |
 
 ### NPCs — 20,000–29,999
 

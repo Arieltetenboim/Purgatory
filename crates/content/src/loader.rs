@@ -19,6 +19,9 @@ use crate::item::{
     ITEM_CONTENT_SCHEMA_VERSION, ITEM_PRESENTATION_SCHEMA_VERSION, ItemCategory, ItemDefinition,
     ItemPresentation, validate_item_definition, validate_item_presentation,
 };
+use crate::monster::{
+    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
+};
 use crate::registry::ContentRegistry;
 use crate::schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
@@ -104,6 +107,13 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         mode,
     );
     if mode == LoadMode::Full {
+        load_dir(
+            &mut registry,
+            &mut issues,
+            &root.join("definitions").join("monsters"),
+            ContentDomain::ServerOnly,
+            Kind::Monster,
+        );
         load_dir(
             &mut registry,
             &mut issues,
@@ -221,6 +231,7 @@ enum Kind {
     Equipment,
     EquipmentPresentation,
     Ability,
+    Monster,
 }
 
 fn load_dir(
@@ -313,6 +324,11 @@ fn load_file(
             let authored = raw.id.clone();
             let def = raw.into_def(path)?;
             registry.insert_ability(authored, def)
+        }
+        Kind::Monster => {
+            let raw: RawMonster = parse(path, &text)?;
+            let def = raw.into_def(path)?;
+            registry.insert_monster(def)
         }
     }
 }
@@ -553,6 +569,83 @@ struct RawVisuals {
     side: String,
     #[serde(default)]
     back: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMonster {
+    schema_version: u32,
+    id: String,
+    debug_name: String,
+    health_max: f32,
+    half_extents: [f32; 2],
+    movement_speed: f32,
+    behavior: RawMonsterBehavior,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMonsterBehavior {
+    kind: String,
+    acquisition_radius: f32,
+    home_leash_radius: f32,
+}
+
+impl RawMonster {
+    fn into_def(self, path: &Path) -> Result<MonsterDefinition, ContentError> {
+        if self.schema_version != MONSTER_CONTENT_SCHEMA_VERSION {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "schema_version",
+                format!(
+                    "unsupported monster schema version {} (want {})",
+                    self.schema_version, MONSTER_CONTENT_SCHEMA_VERSION
+                ),
+            ));
+        }
+        check_authored(path, &self.id)?;
+        let content_id = allocated_id_for_label(&self.id).ok_or_else(|| {
+            ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "id",
+                "monster requires a numeric ContentId allocation",
+            )
+        })?;
+        if content_id.kind() != Some(ContentKind::Monster) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "id",
+                "monster ContentId must be allocated in the Monster block",
+            ));
+        }
+        let behavior = match self.behavior.kind.as_str() {
+            "chase_contact" => MonsterBehavior::ChaseContact,
+            other => {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    &self.id,
+                    "behavior.kind",
+                    format!("unknown monster behavior '{other}'"),
+                ));
+            }
+        };
+        let def = MonsterDefinition {
+            content_id,
+            authored_id: self.id,
+            debug_name: self.debug_name,
+            health_max: self.health_max,
+            half_extents: self.half_extents,
+            movement_speed: self.movement_speed,
+            behavior,
+            acquisition_radius: self.behavior.acquisition_radius,
+            home_leash_radius: self.behavior.home_leash_radius,
+        };
+        validate_monster_definition(&def)?;
+        Ok(def)
+    }
 }
 
 #[derive(Deserialize)]
