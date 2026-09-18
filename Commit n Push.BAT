@@ -289,7 +289,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "    switch($k.Key){" ^
   "      'UpArrow'   { if($i -gt 0){$i--} else {$i=$branches.Count-1} }" ^
   "      'DownArrow' { if($i -lt $branches.Count-1){$i++} else {$i=0} }" ^
-  "      'Enter'     { Set-Content -LiteralPath $out -Value $branches[$i] -NoNewline -Encoding UTF8; exit 0 }" ^
+  "      'Enter'     { Set-Content -LiteralPath $out -Value $branches[$i] -NoNewline -Encoding ASCII; exit 0 }" ^
   "      'Escape'    { exit 20 }" ^
   "    }" ^
   "  }" ^
