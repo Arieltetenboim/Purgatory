@@ -32,3 +32,33 @@ pub fn overlap_x(a: crate::aabb::Aabb, b: crate::aabb::Aabb) -> f32 {
 pub fn overlap_y(a: crate::aabb::Aabb, b: crate::aabb::Aabb) -> f32 {
     (a.max_y().min(b.max_y()) - a.min_y().max(b.min_y())).max(0.0)
 }
+
+/// True when two AABBs overlap or their surfaces touch within
+/// [`CONTACT_EPSILON`] on both axes.
+///
+/// This is a gameplay-contact query, not a penetration query. It must not be
+/// used by normal collision response or depenetration.
+#[must_use]
+pub fn touches_or_overlaps(a: crate::aabb::Aabb, b: crate::aabb::Aabb) -> bool {
+    a.min_x() <= b.max_x() + CONTACT_EPSILON
+        && a.max_x() + CONTACT_EPSILON >= b.min_x()
+        && a.min_y() <= b.max_y() + CONTACT_EPSILON
+        && a.max_y() + CONTACT_EPSILON >= b.min_y()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aabb::Aabb;
+
+    #[test]
+    fn gameplay_contact_includes_exact_surface_touch() {
+        let a = Aabb::new([0.0, 0.0], [0.4, 0.6]);
+        let touching = Aabb::new([0.8, 0.0], [0.4, 0.6]);
+        let separated = Aabb::new([0.8 + CONTACT_EPSILON * 2.0, 0.0], [0.4, 0.6]);
+
+        assert!(touches_or_overlaps(a, touching));
+        assert!(!touches_or_overlaps(a, separated));
+        assert!(!a.overlaps(touching));
+    }
+}
