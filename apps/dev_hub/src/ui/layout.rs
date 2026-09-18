@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense, Stroke, Vec2};
 
+use crate::navigation::NavIcon;
 use crate::theme;
 
 pub struct PageOutcome {
@@ -52,7 +53,6 @@ pub fn page_header(ui: &mut egui::Ui, title: &str, blurb: &str) {
     ui.add_space(theme::SECTION_GAP);
 }
 
-/// Compact non-interactive chip (Phase / profile).
 pub fn chip(ui: &mut egui::Ui, text: &str) {
     egui::Frame::new()
         .fill(Color32::from_rgb(28, 34, 42))
@@ -68,7 +68,6 @@ pub fn chip(ui: &mut egui::Ui, text: &str) {
         });
 }
 
-/// Non-interactive status treatment (dot + label). Not a button.
 pub fn status_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
@@ -83,7 +82,6 @@ pub fn status_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
     });
 }
 
-/// Back-compat alias used by other Hub pages.
 pub fn status_pill(ui: &mut egui::Ui, label: &str, color: Color32) {
     status_badge(ui, label, color);
 }
@@ -92,7 +90,6 @@ pub fn kv_row(ui: &mut egui::Ui, key: &str, value: impl AsRef<str>) {
     metric_row(ui, key, value.as_ref(), true);
 }
 
-/// Compact key/value: label immediately beside value (no wide empty key column).
 pub fn metric_row(ui: &mut egui::Ui, key: &str, value: &str, mono: bool) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
@@ -111,7 +108,6 @@ pub fn metric_row(ui: &mut egui::Ui, key: &str, value: &str, mono: bool) {
     });
 }
 
-/// Dense wrapping field strip — all pairs sit close on as few lines as possible.
 pub fn metric_flow(ui: &mut egui::Ui, pairs: &[(&str, &str, bool)]) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(16.0, 2.0);
@@ -135,39 +131,6 @@ pub fn metric_flow(ui: &mut egui::Ui, pairs: &[(&str, &str, bool)]) {
     });
 }
 
-/// Two tight columns of adjacent key/value rows.
-pub fn metric_grid_two_col(
-    ui: &mut egui::Ui,
-    left: &[(&str, &str, bool)],
-    right: &[(&str, &str, bool)],
-) {
-    let gap = 12.0;
-    let avail = ui.available_width();
-    let col_w = ((avail - gap) / 2.0).max(140.0);
-    ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-        ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
-        ui.allocate_ui_with_layout(Vec2::new(col_w, 0.0), Layout::top_down(Align::Min), |ui| {
-            ui.set_width(col_w);
-            ui.spacing_mut().item_spacing.y = 1.0;
-            for (k, v, mono) in left {
-                metric_row(ui, k, v, *mono);
-            }
-        });
-        ui.allocate_ui_with_layout(Vec2::new(col_w, 0.0), Layout::top_down(Align::Min), |ui| {
-            ui.set_width(col_w);
-            ui.spacing_mut().item_spacing.y = 1.0;
-            for (k, v, mono) in right {
-                metric_row(ui, k, v, *mono);
-            }
-        });
-    });
-}
-
-pub fn empty_state(ui: &mut egui::Ui, message: &str) {
-    ui.colored_label(theme::muted(), message);
-}
-
-/// Card with optional text/symbol icon + muted title.
 pub fn hub_card(
     ui: &mut egui::Ui,
     icon: &str,
@@ -213,8 +176,6 @@ pub fn module_title(ui: &mut egui::Ui, icon: &str, title: &str) {
     ui.add_space(2.0);
 }
 
-// --- button variants ---
-
 pub fn btn_primary(label: &str) -> egui::Button<'static> {
     egui::Button::new(
         RichText::new(label.to_owned())
@@ -247,8 +208,7 @@ pub fn btn_destructive(label: &str) -> egui::Button<'static> {
     .corner_radius(6.0)
 }
 
-/// Sidebar nav row with full-width active fill + left accent bar.
-pub fn nav_item(ui: &mut egui::Ui, selected: bool, icon: &str, label: &str) -> egui::Response {
+pub fn nav_item(ui: &mut egui::Ui, selected: bool, icon: NavIcon, label: &str) -> egui::Response {
     let w = ui.available_width();
     let h = theme::SIDEBAR_ITEM_H;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
@@ -263,24 +223,20 @@ pub fn nav_item(ui: &mut egui::Ui, selected: bool, icon: &str, label: &str) -> e
     } else if resp.hovered() {
         painter.rect_filled(rect, 6.0, Color32::from_rgb(24, 30, 38));
     }
-    let text_color = if selected {
+
+    let color = if selected {
         theme::body()
     } else {
         theme::muted()
     };
-    let mut x = rect.left() + 10.0;
-    if !icon.is_empty() {
-        painter.text(
-            egui::pos2(x, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            icon,
-            theme::subtitle_font(),
-            text_color,
-        );
-        x += 18.0;
-    }
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 17.0, rect.center().y),
+        Vec2::splat(14.0),
+    );
+    paint_nav_icon(painter, icon_rect, icon, color);
+
     painter.text(
-        egui::pos2(x, rect.center().y),
+        egui::pos2(rect.left() + 35.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
         theme::section_font(),
@@ -293,14 +249,130 @@ pub fn nav_item(ui: &mut egui::Ui, selected: bool, icon: &str, label: &str) -> e
     resp
 }
 
+fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: Color32) {
+    let stroke = Stroke::new(1.2, color);
+    let c = rect.center();
+    let l = rect.left();
+    let r = rect.right();
+    let t = rect.top();
+    let b = rect.bottom();
+
+    match icon {
+        NavIcon::Dashboard => {
+            for row in 0..2 {
+                for col in 0..2 {
+                    painter.rect_stroke(
+                        egui::Rect::from_min_size(
+                            egui::pos2(l + 1.0 + col as f32 * 7.0, t + 1.0 + row as f32 * 7.0),
+                            Vec2::splat(5.0),
+                        ),
+                        0.5,
+                        stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+        }
+        NavIcon::Server => {
+            for y in [t + 1.0, c.y - 1.5, b - 4.0] {
+                painter.rect_stroke(
+                    egui::Rect::from_min_max(egui::pos2(l + 1.0, y), egui::pos2(r - 1.0, y + 3.0)),
+                    0.5,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+        NavIcon::Clients => {
+            painter.rect_stroke(
+                egui::Rect::from_min_max(
+                    egui::pos2(l + 1.0, t + 1.0),
+                    egui::pos2(c.x + 1.0, b - 3.0),
+                ),
+                1.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.rect_stroke(
+                egui::Rect::from_min_max(
+                    egui::pos2(c.x - 1.0, t + 4.0),
+                    egui::pos2(r - 1.0, b - 1.0),
+                ),
+                1.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        NavIcon::Validation => {
+            painter.rect_stroke(rect.shrink(1.0), 1.0, stroke, egui::StrokeKind::Inside);
+            painter.line_segment(
+                [egui::pos2(l + 3.0, c.y), egui::pos2(c.x - 0.5, b - 3.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [egui::pos2(c.x - 0.5, b - 3.0), egui::pos2(r - 2.0, t + 3.0)],
+                stroke,
+            );
+        }
+        NavIcon::Performance => {
+            for (x, height) in [(l + 2.0, 4.0), (c.x, 8.0), (r - 2.0, 11.0)] {
+                painter.line_segment(
+                    [egui::pos2(x, b - 1.0), egui::pos2(x, b - 1.0 - height)],
+                    Stroke::new(2.0, color),
+                );
+            }
+        }
+        NavIcon::PhaseStats => {
+            painter.rect_stroke(rect.shrink(1.0), 1.0, stroke, egui::StrokeKind::Inside);
+            painter.line_segment([egui::pos2(c.x, t + 1.0), egui::pos2(c.x, b - 1.0)], stroke);
+            painter.line_segment([egui::pos2(l + 1.0, c.y), egui::pos2(r - 1.0, c.y)], stroke);
+        }
+        NavIcon::World => {
+            painter.circle_stroke(c, 6.0, stroke);
+            painter.line_segment([egui::pos2(c.x, t + 1.0), egui::pos2(c.x, b - 1.0)], stroke);
+            painter.line_segment([egui::pos2(l + 1.0, c.y), egui::pos2(r - 1.0, c.y)], stroke);
+        }
+        NavIcon::Content => {
+            painter.line_segment([egui::pos2(c.x, t + 1.0), egui::pos2(r - 1.0, c.y)], stroke);
+            painter.line_segment([egui::pos2(r - 1.0, c.y), egui::pos2(c.x, b - 1.0)], stroke);
+            painter.line_segment([egui::pos2(c.x, b - 1.0), egui::pos2(l + 1.0, c.y)], stroke);
+            painter.line_segment([egui::pos2(l + 1.0, c.y), egui::pos2(c.x, t + 1.0)], stroke);
+        }
+        NavIcon::Diagnostics => {
+            painter.circle_stroke(c, 6.0, stroke);
+            painter.line_segment(
+                [egui::pos2(c.x, t + 3.0), egui::pos2(c.x, c.y + 1.0)],
+                stroke,
+            );
+            painter.circle_filled(egui::pos2(c.x, b - 3.0), 1.0, color);
+        }
+        NavIcon::Logs => {
+            for y in [t + 3.0, c.y, b - 3.0] {
+                painter.line_segment([egui::pos2(l + 1.0, y), egui::pos2(r - 1.0, y)], stroke);
+            }
+        }
+        NavIcon::Settings => {
+            painter.circle_stroke(c, 4.0, stroke);
+            painter.circle_filled(c, 1.3, color);
+            for (dx, dy) in [(0.0, -6.0), (6.0, 0.0), (0.0, 6.0), (-6.0, 0.0)] {
+                painter.line_segment(
+                    [
+                        egui::pos2(c.x + dx * 0.65, c.y + dy * 0.65),
+                        egui::pos2(c.x + dx, c.y + dy),
+                    ],
+                    stroke,
+                );
+            }
+        }
+    }
+}
+
 pub fn format_secs(secs: f64) -> String {
     if !secs.is_finite() || secs < 0.0 {
         return "—".into();
     }
     let total = secs.round() as u64;
-    let m = total / 60;
-    let s = total % 60;
-    format!("{m:02}:{s:02}")
+    format!("{:02}:{:02}", total / 60, total % 60)
 }
 
 pub fn format_ms(v: f64) -> String {
@@ -317,7 +389,6 @@ pub fn format_mb(v: f64) -> String {
     format!("{v:.1} MiB")
 }
 
-/// Shared log viewer: vertical + horizontal scroll so long lines stay readable.
 pub fn log_scroll_view(
     ui: &mut egui::Ui,
     id_salt: &str,
@@ -352,7 +423,6 @@ pub fn log_scroll_view(
         });
 }
 
-/// Log toolbar + scroll view. Returns true when Clear was clicked.
 pub fn log_panel(
     ui: &mut egui::Ui,
     id_salt: &str,
@@ -381,7 +451,6 @@ pub fn log_panel(
     clear
 }
 
-/// Default-height log panel with Clear. Returns true when Clear clicked.
 pub fn bounded_log_panel(ui: &mut egui::Ui, id_salt: &str, lines: &[String], empty: &str) -> bool {
     log_panel(
         ui,
@@ -391,17 +460,6 @@ pub fn bounded_log_panel(ui: &mut egui::Ui, id_salt: &str, lines: &[String], emp
         theme::LOG_VIEW_HEIGHT,
         "scroll ↕↔ for long lines",
     )
-}
-
-/// Fill-height log with Clear. Returns true when Clear clicked.
-pub fn log_panel_fill(
-    ui: &mut egui::Ui,
-    id_salt: &str,
-    lines: &[String],
-    empty: &str,
-    hint: &str,
-) -> bool {
-    log_panel(ui, id_salt, lines, empty, 320.0, hint)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -457,11 +515,7 @@ pub fn metrics_chart(
                 ChartSeries::Connected => Some(s.connected_bots),
                 ChartSeries::TickMean => s.tick_work_mean_ms,
             }?;
-            if v.is_finite() {
-                Some((s.elapsed_secs, v))
-            } else {
-                None
-            }
+            v.is_finite().then_some((s.elapsed_secs, v))
         })
         .collect();
     if values.is_empty() {
@@ -508,7 +562,6 @@ pub fn metrics_chart(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, theme::bg());
     painter.rect_stroke(rect, 4.0, theme::card_stroke(), egui::StrokeKind::Inside);
-
     let left_axis = 52.0;
     let bottom_axis = 22.0;
     let top_pad = 8.0;
@@ -520,13 +573,11 @@ pub fn metrics_chart(
     if plot.width() < 8.0 || plot.height() < 8.0 {
         return;
     }
-
     let span_v = (axis_max - axis_min).abs().max(1e-6);
     let span_t = (t1 - t0).abs().max(1e-6);
     let grid = Color32::from_rgb(45, 50, 58);
     let axis = Color32::from_rgb(120, 128, 140);
     let font = theme::mono_small();
-
     for i in 0..=4 {
         let frac = i as f32 / 4.0;
         let y = plot.bottom() - frac * plot.height();
@@ -559,7 +610,6 @@ pub fn metrics_chart(
             axis,
         );
     }
-
     painter.line_segment(
         [
             egui::pos2(plot.left(), plot.top()),
@@ -574,7 +624,6 @@ pub fn metrics_chart(
         ],
         Stroke::new(1.0, axis),
     );
-
     let mut points = Vec::with_capacity(values.len());
     for (t, v) in &values {
         let tx = ((*t - t0) / span_t) as f32;

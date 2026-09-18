@@ -2353,8 +2353,10 @@ dependencies = [
  "eframe",
  "egui",
  "image",
+ "purgatory-common",
  "purgatory-dev-runtime",
  "purgatory-skeleton",
+ "serde_json",
 ]
 
 [[package]]

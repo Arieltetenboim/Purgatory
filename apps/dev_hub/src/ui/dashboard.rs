@@ -1,69 +1,87 @@
-//! Dashboard: fixed-window modular layout — no overlapping cards.
+//! Dashboard: operational control surface for the active workspace.
+
+use std::path::PathBuf;
 
 use eframe::egui::{self, Align, Layout, RichText, Vec2};
 
 use crate::navigation::HubPage;
 use crate::theme;
-use crate::ui::dashboard_model::{
-    self, ActionKind, AttentionVm, DashVm, ProjectVm, StatusModuleVm,
-};
+use crate::ui::dashboard_model::{self, AttentionVm, DashVm, ProjectVm, StatusModuleVm};
 use crate::ui::layout::{
-    self, PageOutcome, btn_destructive, btn_ghost, btn_primary, empty_state, hub_card,
-    log_scroll_view, metric_flow, metric_grid_two_col, status_badge,
+    self, PageOutcome, btn_destructive, btn_ghost, btn_primary, metric_flow, status_badge,
 };
+use crate::ui::{gate_pipeline, log_console, tool_launch};
 
 pub fn show(ui: &mut egui::Ui, snap: &purgatory_dev_runtime::HubSnapshot) -> PageOutcome {
     let mut outcome = PageOutcome::none();
-    let model = dashboard_model::from_snapshot(snap);
+    let mut model = dashboard_model::from_snapshot(snap);
+    let gate_log = PathBuf::from(&snap.log_dir).join("quality-gate.log");
+    if let Some(step) = gate_pipeline::failed_step(&gate_log) {
+        model.attention.issues.push((
+            format!("Quality Gate failed at {step}"),
+            theme::destructive(),
+        ));
+    }
 
     layout::page_header(
         ui,
         "Dashboard",
-        "Operational overview of your workspace and services.",
+        "Control your development environment and monitor runtime status.",
     );
 
     let gap = theme::CARD_GAP;
     let avail = ui.available_width();
-
-    // Fixed Hub window → always the intentional wide composition.
-    // Avoid egui::columns (nested in ScrollArea it can overlap following rows).
     let col = ((avail - gap * 2.0) / 3.0).floor().max(200.0);
-    row_top(ui, gap, col, &model, &mut outcome);
+    row_top(ui, gap, col, snap, &model, &mut outcome);
     ui.add_space(gap);
 
-    let project_w = ((avail - gap) * (8.0 / 12.0)).floor().max(280.0);
-    let attention_w = (avail - gap - project_w).floor().max(180.0);
-    row_two(ui, gap, project_w, attention_w, &model);
+    let project_w = ((avail - gap) * 0.58).floor().max(360.0);
+    let actions_w = (avail - gap - project_w).floor().max(300.0);
+    row_workspace_actions(ui, gap, project_w, actions_w, snap, &model, &mut outcome);
     ui.add_space(gap);
 
-    quick_actions(ui, &model, &mut outcome);
+    gate_pipeline::show(ui, &gate_log);
     ui.add_space(gap);
-    activity_strip(ui, &model, &mut outcome);
-
+    activity_panel(ui, snap, &mut outcome);
     outcome
 }
 
-fn row_top(ui: &mut egui::Ui, gap: f32, col: f32, model: &DashVm, outcome: &mut PageOutcome) {
+fn row_top(
+    ui: &mut egui::Ui,
+    gap: f32,
+    col: f32,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    model: &DashVm,
+    outcome: &mut PageOutcome,
+) {
     ui.allocate_ui_with_layout(
         Vec2::new(ui.available_width(), 0.0),
         Layout::left_to_right(Align::Min),
         |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
-            cell(ui, col, |ui| status_card(ui, &model.server, outcome));
-            cell(ui, col, |ui| status_card(ui, &model.validation, outcome));
-            cell(ui, col, |ui| status_card(ui, &model.latest, outcome));
+            cell(ui, col, |ui| server_panel(ui, snap, &model.server, outcome));
+            cell(ui, col, |ui| clients_panel(ui, snap, outcome));
+            cell(ui, col, |ui| attention_panel(ui, &model.attention));
         },
     );
 }
 
-fn row_two(ui: &mut egui::Ui, gap: f32, left_w: f32, right_w: f32, model: &DashVm) {
+fn row_workspace_actions(
+    ui: &mut egui::Ui,
+    gap: f32,
+    project_w: f32,
+    actions_w: f32,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    model: &DashVm,
+    outcome: &mut PageOutcome,
+) {
     ui.allocate_ui_with_layout(
         Vec2::new(ui.available_width(), 0.0),
         Layout::left_to_right(Align::Min),
         |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
-            cell(ui, left_w, |ui| project_panel(ui, &model.project));
-            cell(ui, right_w, |ui| attention_panel(ui, &model.attention));
+            cell(ui, project_w, |ui| project_panel(ui, &model.project));
+            cell(ui, actions_w, |ui| quick_actions(ui, snap, model, outcome));
         },
     );
 }
@@ -81,12 +99,57 @@ fn full_width(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     cell(ui, w, add);
 }
 
-fn status_card(ui: &mut egui::Ui, vm: &StatusModuleVm, outcome: &mut PageOutcome) {
-    hub_card(ui, vm.icon, vm.title, |ui| {
-        if !vm.badge.is_empty() {
-            status_badge(ui, &vm.badge, vm.badge_color);
-            ui.add_space(4.0);
-        }
+fn dashboard_card(
+    ui: &mut egui::Ui,
+    icon: &str,
+    title: &str,
+    min_height: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> egui::InnerResponse<()> {
+    egui::Frame::new()
+        .fill(theme::card_fill_elevated())
+        .stroke(theme::card_stroke())
+        .corner_radius(theme::CARD_RADIUS)
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.set_min_height(min_height);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if !icon.is_empty() {
+                    ui.label(
+                        RichText::new(icon)
+                            .font(theme::state_font())
+                            .color(theme::muted()),
+                    );
+                }
+                ui.label(
+                    RichText::new(title)
+                        .font(theme::state_font())
+                        .color(theme::body())
+                        .strong(),
+                );
+            });
+            ui.add_space(9.0);
+            add_contents(ui);
+        })
+}
+
+fn action_response(response: egui::Response, tooltip: &str) -> egui::Response {
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tooltip)
+}
+
+fn server_panel(
+    ui: &mut egui::Ui,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    vm: &StatusModuleVm,
+    outcome: &mut PageOutcome,
+) {
+    dashboard_card(ui, vm.icon, vm.title, 148.0, |ui| {
+        status_badge(ui, &vm.badge, vm.badge_color);
+        ui.add_space(5.0);
         ui.add(
             egui::Label::new(
                 RichText::new(&vm.headline)
@@ -107,7 +170,7 @@ fn status_card(ui: &mut egui::Ui, vm: &StatusModuleVm, outcome: &mut PageOutcome
             );
         }
         if !vm.metrics.is_empty() {
-            ui.add_space(4.0);
+            ui.add_space(5.0);
             let pairs: Vec<(&str, &str, bool)> = vm
                 .metrics
                 .iter()
@@ -115,98 +178,175 @@ fn status_card(ui: &mut egui::Ui, vm: &StatusModuleVm, outcome: &mut PageOutcome
                 .collect();
             metric_flow(ui, &pairs);
         }
-        if !vm.detail_metrics.is_empty() {
-            egui::CollapsingHeader::new("Details")
-                .default_open(false)
-                .show(ui, |ui| {
-                    let pairs: Vec<(&str, &str, bool)> = vm
-                        .detail_metrics
-                        .iter()
-                        .map(|m| (m.key, m.value.as_str(), m.mono))
-                        .collect();
-                    metric_flow(ui, &pairs);
-                });
-        }
-
-        ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if let Some((label, cmd)) = &vm.primary_action
-                && ui.add(btn_primary(label)).clicked()
-            {
-                outcome.command = Some(cmd.clone());
-            }
-            for (action, enabled) in &vm.secondary_actions {
-                if ui
-                    .add_enabled(*enabled, btn_ghost(action.label()))
+            match snap.server_state {
+                purgatory_dev_runtime::ServerState::Stopped
+                | purgatory_dev_runtime::ServerState::Failed => {
+                    let response = ui.add_enabled(
+                        snap.can_start,
+                        btn_primary("Start Server").min_size(Vec2::new(112.0, 30.0)),
+                    );
+                    if action_response(
+                        response,
+                        "Build and start the dedicated server, then verify readiness before marking it Ready.",
+                    )
                     .clicked()
-                {
-                    outcome.command = Some(action.command());
+                    {
+                        outcome.command = Some(purgatory_dev_runtime::HubCommand::Start);
+                    }
                 }
+                purgatory_dev_runtime::ServerState::Ready
+                | purgatory_dev_runtime::ServerState::Degraded => {
+                    let response = ui.add_enabled(
+                        snap.can_restart,
+                        btn_primary("Restart Server").min_size(Vec2::new(112.0, 30.0)),
+                    );
+                    if action_response(
+                        response,
+                        "Stop the current dedicated server and start it again through the normal readiness checks.",
+                    )
+                    .clicked()
+                    {
+                        outcome.command = Some(purgatory_dev_runtime::HubCommand::Restart);
+                    }
+                }
+                _ => {}
             }
-            if let Some(nav) = vm.nav_label
-                && ui.add(btn_ghost(nav)).clicked()
+            let response = ui.add(btn_ghost("Open Server").min_size(Vec2::new(112.0, 30.0)));
+            if action_response(
+                response,
+                "Open server lifecycle controls, diagnostics, health state, and the dedicated server log.",
+            )
+            .clicked()
             {
-                outcome.navigate = Some(nav_page(nav));
+                outcome.navigate = Some(HubPage::RuntimeServer);
             }
         });
     });
 }
 
-fn nav_page(label: &str) -> HubPage {
-    match label {
-        "Open Server" => HubPage::RuntimeServer,
-        "Open Performance" => HubPage::Performance,
-        "Open Logs" => HubPage::Logs,
-        _ => HubPage::Validation,
-    }
+fn clients_panel(
+    ui: &mut egui::Ui,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    outcome: &mut PageOutcome,
+) {
+    dashboard_card(ui, "C", "Clients", 148.0, |ui| {
+        project_row(ui, "Running", &snap.client_count.to_string(), true);
+        project_row(ui, "Queued", &snap.pending_clients.to_string(), true);
+        ui.add_space(32.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let response = ui.add_enabled(
+                snap.can_request_clients,
+                btn_primary("+1 Client").min_size(Vec2::new(112.0, 30.0)),
+            );
+            if action_response(
+                response,
+                "Queue one game client. It launches once the server is Ready; the client is rebuilt first when possible.",
+            )
+            .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::RequestClients { count: 1 });
+            }
+
+            let response = ui.add(btn_ghost("Open Clients").min_size(Vec2::new(112.0, 30.0)));
+            if action_response(
+                response,
+                "Open client controls, running/queued counts, and the client log.",
+            )
+            .clicked()
+            {
+                outcome.navigate = Some(HubPage::RuntimeClients);
+            }
+        });
+    });
 }
 
 fn project_panel(ui: &mut egui::Ui, vm: &ProjectVm) {
-    let resp = hub_card(ui, "▤", "Project / Workspace", |ui| {
-        let left = [
-            ("Phase", vm.phase.as_str(), false),
-            ("Profile", vm.profile.as_str(), false),
-            ("Job", vm.job.as_str(), false),
-        ];
-        let right = [
-            ("Clients", vm.clients.as_str(), false),
-            ("Build", vm.build.as_str(), true),
-            ("Workspace", vm.workspace_short.as_str(), true),
-        ];
-        metric_grid_two_col(ui, &left, &right);
+    let (branch, commit, _dirty) = split_git_stamp(&vm.git_stamp);
+    let resp = dashboard_card(ui, "P", "Project / Workspace", 150.0, |ui| {
+        ui.separator();
+        ui.add_space(5.0);
+        egui::Grid::new("dashboard_project_grid")
+            .num_columns(2)
+            .spacing(Vec2::new(18.0, 8.0))
+            .show(ui, |ui| {
+                project_grid_row(ui, "Workspace", vm.workspace_short.as_str(), true);
+                project_grid_row(ui, "Branch", branch, true);
+                project_grid_row(ui, "Commit", commit, true);
+            });
     });
     resp.response
         .on_hover_text(format!("{}\n{}", vm.identity_full, vm.workspace_full));
 }
 
+fn project_grid_row(ui: &mut egui::Ui, label: &str, value: &str, mono: bool) {
+    ui.label(
+        RichText::new(label)
+            .font(theme::subtitle_font())
+            .color(theme::muted()),
+    );
+    let mut value_text = RichText::new(value).color(theme::body()).strong();
+    if mono {
+        value_text = value_text.font(theme::mono_small());
+    }
+    ui.add(egui::Label::new(value_text).selectable(true));
+    ui.end_row();
+}
+
+fn project_row(ui: &mut egui::Ui, label: &str, value: &str, mono: bool) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(
+            RichText::new(label)
+                .font(theme::subtitle_font())
+                .color(theme::muted()),
+        );
+        let mut value_text = RichText::new(value).color(theme::body()).strong();
+        if mono {
+            value_text = value_text.font(theme::mono_small());
+        }
+        ui.add(egui::Label::new(value_text).selectable(true));
+    });
+}
+
+fn split_git_stamp(stamp: &str) -> (&str, &str, bool) {
+    let (branch, commit) = stamp.split_once(" @ ").unwrap_or(("-", stamp));
+    let dirty = commit.ends_with('*');
+    let commit = commit.strip_suffix('*').unwrap_or(commit);
+    (branch, commit, dirty)
+}
+
 fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
-    hub_card(ui, "⚑", "Attention", |ui| {
+    dashboard_card(ui, "!", "Attention", 148.0, |ui| {
         if vm.is_healthy() {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::hover());
+                ui.spacing_mut().item_spacing.x = 12.0;
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
                 ui.painter().circle_filled(
                     rect.center(),
-                    12.0,
-                    theme::success().gamma_multiply(0.22),
+                    14.0,
+                    theme::success().gamma_multiply(0.20),
                 );
                 ui.painter().circle_stroke(
                     rect.center(),
-                    12.0,
+                    14.0,
                     egui::Stroke::new(1.5, theme::success()),
                 );
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    "✓",
-                    theme::section_font(),
+                    "OK",
+                    theme::subtitle_font(),
                     theme::success(),
                 );
                 ui.vertical(|ui| {
                     ui.add(
                         egui::Label::new(
                             RichText::new("No issues requiring attention.")
+                                .font(theme::section_font())
                                 .color(theme::body())
                                 .strong(),
                         )
@@ -214,7 +354,7 @@ fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
                     );
                     ui.add(
                         egui::Label::new(
-                            RichText::new("All systems operational.")
+                            RichText::new("Current local checks are operational.")
                                 .font(theme::subtitle_font())
                                 .color(theme::muted()),
                         )
@@ -225,73 +365,229 @@ fn attention_panel(ui: &mut egui::Ui, vm: &AttentionVm) {
         } else {
             for (text, color) in &vm.issues {
                 ui.horizontal(|ui| {
-                    ui.colored_label(*color, "●");
+                    ui.colored_label(*color, "!");
                     ui.add(egui::Label::new(RichText::new(text).color(*color)).wrap());
                 });
-                ui.add_space(2.0);
+                ui.add_space(3.0);
             }
         }
     });
 }
 
-fn quick_actions(ui: &mut egui::Ui, model: &DashVm, outcome: &mut PageOutcome) {
-    full_width(ui, |ui| {
-        hub_card(ui, "☰", "Quick Actions", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                for action in &model.actions {
-                    let clicked = match action.kind {
-                        ActionKind::Routine => ui
-                            .add_enabled(action.enabled, btn_primary(action.label))
-                            .clicked(),
-                        ActionKind::Secondary => ui
-                            .add_enabled(action.enabled, btn_ghost(action.label))
-                            .clicked(),
-                        ActionKind::Destructive => ui
-                            .add_enabled(action.enabled, btn_destructive(action.label))
-                            .clicked(),
-                    };
-                    if clicked {
-                        outcome.command = Some(action.command.clone());
-                    }
-                }
-            });
-            if let Some(warn) = model.cargo_warning {
-                ui.add_space(4.0);
-                ui.colored_label(
-                    theme::state_color(purgatory_dev_runtime::ServerState::Degraded),
-                    warn,
-                );
+fn quick_actions(
+    ui: &mut egui::Ui,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    model: &DashVm,
+    outcome: &mut PageOutcome,
+) {
+    dashboard_card(ui, "Q", "Quick Actions", 150.0, |ui| {
+        ui.colored_label(
+            theme::muted(),
+            RichText::new("Hover an action for details.").font(theme::subtitle_font()),
+        );
+        ui.add_space(6.0);
+
+        let gap = 8.0;
+        let button_w = ((ui.available_width() - gap * 2.0) / 3.0).floor().max(96.0);
+        let button_size = Vec2::new(button_w, 32.0);
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            let response = ui.add(btn_ghost("Animation Lab").min_size(button_size));
+            if action_response(
+                response,
+                "Launch the standalone animation authoring tool. It runs independently of the game server and clients.",
+            )
+            .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::LaunchAnimationLab);
+            }
+            let response = ui.add(btn_ghost("NPC Lab").min_size(button_size));
+            if action_response(
+                response,
+                "Launch the local NPC authoring web tool in the background. Output is written to logs/dev-tools/npc-lab.log.",
+            )
+            .clicked()
+            {
+                let _ = tool_launch::launch_npc_lab();
+            }
+            let response = ui.add(btn_ghost("Hub Logs").min_size(button_size));
+            if action_response(
+                response,
+                "Open the Logs page, including Hub activity and isolated Quality Gate output.",
+            )
+            .clicked()
+            {
+                outcome.navigate = Some(HubPage::Logs);
             }
         });
+
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            let response = rebuild_button(ui, button_size);
+            if action_response(
+                response,
+                "Rebuild available Hub binaries. Running or locked executables are skipped rather than forcibly stopped.",
+            )
+            .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::Rebuild);
+            }
+            let response = ui.add(btn_ghost("Quality Gate").min_size(button_size));
+            if action_response(
+                response,
+                "Run Format -> Cargo Check -> Clippy -> Workspace Tests -> Content Validation. Progress appears below; detailed output stays in Logs -> Quality Gate.",
+            )
+            .clicked()
+            {
+                let _ = tool_launch::launch_quality_gate();
+            }
+            let response = ui.add_enabled(
+                snap.can_stop_clients,
+                btn_ghost("Stop Clients").min_size(button_size),
+            );
+            if action_response(
+                response,
+                "Stop all workspace game clients and clear queued client launches.",
+            )
+            .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::StopClients);
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        let response = ui.add(btn_destructive("Kill All (F9)").min_size(button_size));
+        if action_response(
+            response,
+            "Emergency cleanup for game runtime processes: stop server, clients, load/validation jobs, active builds, and workspace Cargo processes. Authoring tools remain independent.",
+        )
+        .clicked()
+        {
+            outcome.command = Some(purgatory_dev_runtime::HubCommand::KillAll);
+        }
+
+        if let Some(warn) = model.cargo_warning {
+            ui.add_space(7.0);
+            ui.colored_label(
+                theme::state_color(purgatory_dev_runtime::ServerState::Degraded),
+                warn,
+            );
+        }
     });
 }
 
-fn activity_strip(ui: &mut egui::Ui, model: &DashVm, outcome: &mut PageOutcome) {
+fn rebuild_button(ui: &mut egui::Ui, size: Vec2) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let fill = if response.hovered() {
+        egui::Color32::from_rgb(34, 40, 48)
+    } else {
+        egui::Color32::from_rgb(28, 34, 42)
+    };
+    ui.painter().rect_filled(rect, 6.0, fill);
+    ui.painter()
+        .rect_stroke(rect, 6.0, theme::card_stroke(), egui::StrokeKind::Inside);
+
+    let icon_center = egui::pos2(rect.left() + 18.0, rect.center().y);
+    let stroke = egui::Stroke::new(1.5, theme::body());
+    ui.painter().line_segment(
+        [
+            egui::pos2(icon_center.x - 3.0, icon_center.y + 4.0),
+            egui::pos2(icon_center.x + 3.0, icon_center.y - 4.0),
+        ],
+        stroke,
+    );
+    ui.painter().rect_stroke(
+        egui::Rect::from_center_size(
+            egui::pos2(icon_center.x + 4.0, icon_center.y - 5.0),
+            Vec2::new(7.0, 4.0),
+        ),
+        1.0,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        egui::pos2(icon_center.x + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Rebuild",
+        theme::section_font(),
+        theme::body(),
+    );
+    response
+}
+
+fn activity_panel(
+    ui: &mut egui::Ui,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    outcome: &mut PageOutcome,
+) {
     full_width(ui, |ui| {
-        hub_card(ui, "≡", "Recent Activity", |ui| {
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(btn_ghost("Clear")).clicked() {
-                        outcome.command = Some(purgatory_dev_runtime::HubCommand::ClearActivityLog);
-                    }
-                    if ui.add(btn_ghost("Open Logs")).clicked() {
-                        outcome.navigate = Some(HubPage::Logs);
-                    }
+        egui::Frame::new()
+            .fill(theme::card_fill_elevated())
+            .stroke(theme::card_stroke())
+            .corner_radius(theme::CARD_RADIUS)
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.label(
+                        RichText::new("LOG")
+                            .font(theme::subtitle_font())
+                            .color(theme::muted()),
+                    );
+                    ui.label(
+                        RichText::new("Recent Activity")
+                            .font(theme::state_font())
+                            .color(theme::body())
+                            .strong(),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let response = ui.add(btn_ghost("Open Logs"));
+                        if action_response(
+                            response,
+                            "Open the full Logs page, including isolated Quality Gate output.",
+                        )
+                        .clicked()
+                        {
+                            outcome.navigate = Some(HubPage::Logs);
+                        }
+                    });
                 });
-            });
-            ui.add_space(2.0);
-            if model.activity.is_empty() {
-                empty_state(ui, "No activity yet.");
-            } else {
-                log_scroll_view(
+                ui.add_space(7.0);
+                if log_console::show(
                     ui,
-                    "dash_activity",
-                    &model.activity,
+                    "dashboard_activity",
+                    &snap.log_lines,
+                    "INFO",
                     "No activity yet.",
-                    120.0,
-                );
-            }
-        });
+                ) {
+                    outcome.command = Some(purgatory_dev_runtime::HubCommand::ClearActivityLog);
+                }
+            });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_git_stamp_reports_branch_commit_and_dirty() {
+        assert_eq!(
+            split_git_stamp("hub-0.4 @ 218615b*"),
+            ("hub-0.4", "218615b", true)
+        );
+        assert_eq!(
+            split_git_stamp("master @ abc1234"),
+            ("master", "abc1234", false)
+        );
+    }
 }

@@ -79,6 +79,20 @@ const WELCOME_NARRATIVE_INITIAL_FACTS: [(&str, bool); 3] = [
 const LIVE_COMBAT_CREATURE_TYPE_TOKEN: u32 = 9_000;
 const LIVE_COMBAT_CREATURE_AGGRO_RADIUS: f32 = 3.0;
 
+fn validate_dev_narrative_id(kind: &str, value: &str) -> Result<(), String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{kind} id must not be empty"));
+    }
+    if trimmed.len() > 160 {
+        return Err(format!("{kind} id is too long"));
+    }
+    if trimmed != value {
+        return Err(format!("{kind} id must not contain surrounding whitespace"));
+    }
+    Ok(())
+}
+
 fn live_basic_strike_id() -> ContentId {
     ContentId::from_authored("skill.basic.strike").expect("authored basic strike id")
 }
@@ -540,6 +554,14 @@ pub enum LifecycleCmd {
     },
 }
 
+#[derive(Clone, Debug)]
+pub enum DevNarrativeCommand {
+    SetFact { fact_id: String, value: bool },
+    ClearFact { fact_id: String },
+    MarkNpcMet { npc_authored_id: String },
+    Reset,
+}
+
 pub enum InputUpdate {
     Command {
         connection_id: ConnectionId,
@@ -583,6 +605,17 @@ pub enum InputUpdate {
     DevSpawnNpc {
         connection_id: ConnectionId,
         npc_content_id: ContentId,
+    },
+    DevSpawnItem {
+        connection_id: ConnectionId,
+        item_content_id: ContentId,
+        quantity: u32,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    DevNarrative {
+        connection_id: ConnectionId,
+        command: DevNarrativeCommand,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
     Equip {
         connection_id: ConnectionId,
@@ -831,6 +864,58 @@ impl GameplayTx {
             })
             .await
             .is_ok()
+    }
+
+    pub async fn send_dev_spawn_item(
+        &self,
+        connection_id: ConnectionId,
+        item_content_id: ContentId,
+        quantity: u32,
+    ) -> Result<(), String> {
+        let (reply, result) = tokio::sync::oneshot::channel();
+        self.input
+            .try_send(InputUpdate::DevSpawnItem {
+                connection_id,
+                item_content_id,
+                quantity,
+                reply,
+            })
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    "gameplay command queue full".to_string()
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    "gameplay command queue closed".to_string()
+                }
+            })?;
+        result
+            .await
+            .map_err(|_| "gameplay owner dropped command reply".to_string())?
+    }
+
+    pub async fn send_dev_narrative(
+        &self,
+        connection_id: ConnectionId,
+        command: DevNarrativeCommand,
+    ) -> Result<(), String> {
+        let (reply, result) = tokio::sync::oneshot::channel();
+        self.input
+            .try_send(InputUpdate::DevNarrative {
+                connection_id,
+                command,
+                reply,
+            })
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    "gameplay command queue full".to_string()
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    "gameplay command queue closed".to_string()
+                }
+            })?;
+        result
+            .await
+            .map_err(|_| "gameplay owner dropped command reply".to_string())?
     }
 
     pub async fn send_equip(&self, connection_id: ConnectionId, request: EquipRequest) -> bool {
@@ -1441,7 +1526,7 @@ impl GameplayOwner {
 
     pub fn apply_input(&mut self, update: InputUpdate) -> SeqDecision {
         if matches!(
-            update,
+            &update,
             InputUpdate::InteractOpen { .. }
                 | InputUpdate::InteractClose { .. }
                 | InputUpdate::DialogueAdvance { .. }
@@ -1451,6 +1536,8 @@ impl GameplayOwner {
                 | InputUpdate::DevSetSpeed { .. }
                 | InputUpdate::DevSetJump { .. }
                 | InputUpdate::DevSpawnNpc { .. }
+                | InputUpdate::DevSpawnItem { .. }
+                | InputUpdate::DevNarrative { .. }
                 | InputUpdate::Equip { .. }
                 | InputUpdate::Unequip { .. }
                 | InputUpdate::DevPresentationOneShot { .. }
@@ -1497,6 +1584,24 @@ impl GameplayOwner {
                     connection_id,
                     npc_content_id,
                 } => self.handle_dev_spawn_npc(connection_id, npc_content_id),
+                InputUpdate::DevSpawnItem {
+                    connection_id,
+                    item_content_id,
+                    quantity,
+                    reply,
+                } => {
+                    let result =
+                        self.handle_dev_spawn_item(connection_id, item_content_id, quantity);
+                    let _ = reply.send(result);
+                }
+                InputUpdate::DevNarrative {
+                    connection_id,
+                    command,
+                    reply,
+                } => {
+                    let result = self.handle_dev_narrative(connection_id, command);
+                    let _ = reply.send(result);
+                }
                 InputUpdate::Equip {
                     connection_id,
                     request,
@@ -1590,6 +1695,8 @@ impl GameplayOwner {
             | InputUpdate::DevSetSpeed { .. }
             | InputUpdate::DevSetJump { .. }
             | InputUpdate::DevSpawnNpc { .. }
+            | InputUpdate::DevSpawnItem { .. }
+            | InputUpdate::DevNarrative { .. }
             | InputUpdate::Equip { .. }
             | InputUpdate::Unequip { .. }
             | InputUpdate::DevPresentationOneShot { .. }
@@ -3076,6 +3183,143 @@ impl GameplayOwner {
         );
     }
 
+    fn handle_dev_spawn_item(
+        &mut self,
+        connection_id: ConnectionId,
+        item_content_id: ContentId,
+        quantity: u32,
+    ) -> Result<(), String> {
+        let actor = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+            .ok_or_else(|| format!("connection {connection_id} has no gameplay binding"))?;
+        if self.world.kind(actor) != Some(EntityKind::Player) {
+            return Err(format!(
+                "connection {connection_id} is not bound to a player"
+            ));
+        }
+        let address = self
+            .world
+            .address_of(actor)
+            .ok_or_else(|| format!("connection {connection_id} player has no world address"))?;
+        let position = self
+            .world
+            .transform_of(actor)
+            .map(|value| value.position)
+            .ok_or_else(|| format!("connection {connection_id} player has no transform"))?;
+
+        let item = self
+            .registry
+            .item_by_id(item_content_id)
+            .ok_or_else(|| format!("ContentId {item_content_id} is not an authored item"))?;
+        if quantity == 0 {
+            return Err("item quantity must be greater than zero".to_string());
+        }
+        if quantity > item.stack_limit {
+            return Err(format!(
+                "item quantity {quantity} exceeds authored stack limit {}",
+                item.stack_limit
+            ));
+        }
+        let stack_limit = item.stack_limit;
+        let spawn_position = [position[0] + 0.75, position[1] + 0.25];
+        self.world
+            .spawn_world_drop_item(
+                address,
+                spawn_position,
+                item_content_id,
+                quantity,
+                stack_limit,
+            )
+            .map_err(|error| format!("world-drop spawn failed: {error:?}"))?;
+
+        println!(
+            "DEV_ITEM_SPAWN spawned connection={connection_id} actor={actor} item={item_content_id} quantity={quantity} address={address} position=({:.3},{:.3})",
+            spawn_position[0], spawn_position[1]
+        );
+        Ok(())
+    }
+
+    fn handle_dev_narrative(
+        &mut self,
+        connection_id: ConnectionId,
+        command: DevNarrativeCommand,
+    ) -> Result<(), String> {
+        let actor = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+            .ok_or_else(|| format!("connection {connection_id} has no gameplay binding"))?;
+        if self.world.kind(actor) != Some(EntityKind::Player) {
+            return Err(format!(
+                "connection {connection_id} is not bound to a player"
+            ));
+        }
+
+        match command {
+            DevNarrativeCommand::SetFact { fact_id, value } => {
+                validate_dev_narrative_id("fact", &fact_id)?;
+                self.close_dialogue_for_dev_narrative(connection_id, actor);
+                self.narrative.set_fact(actor, &fact_id, value);
+                println!(
+                    "DEV_NARRATIVE set_fact connection={connection_id} actor={actor} fact={fact_id} value={value}"
+                );
+            }
+            DevNarrativeCommand::ClearFact { fact_id } => {
+                validate_dev_narrative_id("fact", &fact_id)?;
+                self.close_dialogue_for_dev_narrative(connection_id, actor);
+                self.narrative.clear_fact(actor, &fact_id);
+                println!(
+                    "DEV_NARRATIVE clear_fact connection={connection_id} actor={actor} fact={fact_id}"
+                );
+            }
+            DevNarrativeCommand::MarkNpcMet { npc_authored_id } => {
+                validate_dev_narrative_id("npc", &npc_authored_id)?;
+                if self.registry.npc_dialogue(&npc_authored_id).is_none() {
+                    return Err(format!(
+                        "{npc_authored_id} is not an authored runtime NPC dialogue"
+                    ));
+                }
+                self.close_dialogue_for_dev_narrative(connection_id, actor);
+                self.narrative.mark_npc_met(actor, &npc_authored_id);
+                println!(
+                    "DEV_NARRATIVE mark_npc_met connection={connection_id} actor={actor} npc={npc_authored_id}"
+                );
+            }
+            DevNarrativeCommand::Reset => {
+                self.close_dialogue_for_dev_narrative(connection_id, actor);
+                self.narrative.reset_actor(actor);
+                for (fact, value) in WELCOME_NARRATIVE_INITIAL_FACTS {
+                    self.narrative.set_fact(actor, fact, value);
+                }
+                println!(
+                    "DEV_NARRATIVE reset connection={connection_id} actor={actor} defaults={}",
+                    WELCOME_NARRATIVE_INITIAL_FACTS.len()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn close_dialogue_for_dev_narrative(&mut self, connection_id: ConnectionId, actor: EntityId) {
+        let session = self.world.interaction_session_of(actor);
+        if let Some(session) = session {
+            let _ = self.world.close_interaction(actor, session.id);
+            let tx = self
+                .bindings
+                .get(&connection_id)
+                .and_then(|binding| binding.interact.clone());
+            if let Some(tx) = tx {
+                let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
+                    session_id: session.id.get(),
+                    reason: InteractCloseReason::Requested,
+                }));
+            }
+        }
+        self.clear_dialogue(actor);
+    }
+
     fn handle_portal_activate(&mut self, connection_id: ConnectionId, target: WireEntityId) {
         let Some(binding) = self.bindings.get(&connection_id) else {
             println!(
@@ -3740,6 +3984,165 @@ mod tests {
         for _ in 0..DIALOGUE_REOPEN_COOLDOWN_TICKS {
             owner.simulate_tick(dt);
         }
+    }
+
+    #[test]
+    fn dev_spawn_item_uses_authoritative_world_drop_path() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let item = ContentId::from_authored("item.debug.small_potion").expect("item id");
+        let before = owner.world().iter().count();
+
+        owner
+            .handle_dev_spawn_item(connection, item, 1)
+            .expect("spawn item");
+
+        assert_eq!(owner.world().iter().count(), before + 1);
+    }
+
+    #[test]
+    fn dev_spawn_item_rejects_non_item_content() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let not_item = ContentId::from_authored("skill.basic.strike").expect("ability id");
+
+        let error = owner
+            .handle_dev_spawn_item(connection, not_item, 1)
+            .expect_err("non-item must be rejected");
+
+        assert!(error.contains("not an authored item"));
+    }
+
+    #[test]
+    fn dev_spawn_item_rejects_quantity_above_authored_stack_limit() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let item = ContentId::from_authored("item.debug.small_potion").expect("item id");
+        let stack_limit = owner
+            .registry
+            .item_by_id(item)
+            .expect("item definition")
+            .stack_limit;
+
+        let error = owner
+            .handle_dev_spawn_item(connection, item, stack_limit.saturating_add(1))
+            .expect_err("oversized stack must be rejected");
+
+        assert!(error.contains("exceeds authored stack limit"));
+    }
+
+    #[test]
+    fn dev_spawn_item_rejects_disconnected_target() {
+        let mut owner = GameplayOwner::new();
+        let item = ContentId::from_authored("item.debug.small_potion").expect("item id");
+
+        let error = owner
+            .handle_dev_spawn_item(ConnectionId::from_raw(999), item, 1)
+            .expect_err("missing binding must be rejected");
+
+        assert!(error.contains("no gameplay binding"));
+    }
+
+    #[test]
+    fn dev_narrative_reset_restores_welcome_defaults_and_is_actor_scoped() {
+        let mut owner = GameplayOwner::new();
+        let a = ConnectionId::from_raw(1);
+        let b = ConnectionId::from_raw(2);
+        owner.attach(a);
+        owner.attach(b);
+        let actor_a = owner.entity_of(a).expect("actor a");
+        let actor_b = owner.entity_of(b).expect("actor b");
+
+        owner
+            .narrative
+            .set_fact(actor_a, "welcome.workshop.package_needed", false);
+        owner.narrative.set_fact(actor_b, "fact.other", true);
+        owner
+            .narrative
+            .mark_npc_met(actor_a, "npc.welcome.traveler_stayed");
+
+        owner
+            .handle_dev_narrative(a, DevNarrativeCommand::Reset)
+            .expect("reset");
+
+        assert!(
+            owner
+                .narrative
+                .fact(actor_a, "welcome.workshop.package_needed")
+        );
+        assert!(
+            owner
+                .narrative
+                .fact(actor_a, "welcome.workshop.package_at_inn")
+        );
+        assert!(
+            !owner
+                .narrative
+                .fact(actor_a, "welcome.workshop.package_delivered")
+        );
+        assert!(
+            !owner
+                .narrative
+                .npc_met(actor_a, "npc.welcome.traveler_stayed")
+        );
+        assert!(owner.narrative.fact(actor_b, "fact.other"));
+    }
+
+    #[test]
+    fn dev_narrative_fact_changes_are_actor_scoped() {
+        let mut owner = GameplayOwner::new();
+        let a = ConnectionId::from_raw(1);
+        let b = ConnectionId::from_raw(2);
+        owner.attach(a);
+        owner.attach(b);
+        let actor_a = owner.entity_of(a).expect("actor a");
+        let actor_b = owner.entity_of(b).expect("actor b");
+
+        owner
+            .handle_dev_narrative(
+                a,
+                DevNarrativeCommand::SetFact {
+                    fact_id: "fact.dev.test".into(),
+                    value: true,
+                },
+            )
+            .expect("set fact");
+        assert!(owner.narrative.fact(actor_a, "fact.dev.test"));
+        assert!(!owner.narrative.fact(actor_b, "fact.dev.test"));
+
+        owner
+            .handle_dev_narrative(
+                a,
+                DevNarrativeCommand::ClearFact {
+                    fact_id: "fact.dev.test".into(),
+                },
+            )
+            .expect("clear fact");
+        assert!(!owner.narrative.fact(actor_a, "fact.dev.test"));
+    }
+
+    #[test]
+    fn dev_narrative_rejects_disconnected_target_and_unknown_npc() {
+        let mut owner = GameplayOwner::new();
+        let disconnected = owner
+            .handle_dev_narrative(ConnectionId::from_raw(999), DevNarrativeCommand::Reset)
+            .expect_err("missing binding");
+        assert!(disconnected.contains("no gameplay binding"));
+
+        let a = ConnectionId::from_raw(1);
+        owner.attach(a);
+        let unknown = owner
+            .handle_dev_narrative(
+                a,
+                DevNarrativeCommand::MarkNpcMet {
+                    npc_authored_id: "npc.does.not.exist".into(),
+                },
+            )
+            .expect_err("unknown npc");
+        assert!(unknown.contains("not an authored runtime NPC dialogue"));
     }
 
     #[test]

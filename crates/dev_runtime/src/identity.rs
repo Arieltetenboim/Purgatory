@@ -61,30 +61,34 @@ fn phase_token(root: &Path) -> String {
         .unwrap_or_else(|| "?".to_string())
 }
 
-fn git_stamp(root: &Path) -> String {
-    let hash = Command::new("git")
-        .args([
-            "-C",
-            &root.to_string_lossy(),
-            "rev-parse",
-            "--short",
-            "HEAD",
-        ])
+fn git_output(root: &Path, args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let Some(hash) = hash else {
+        .filter(|s| !s.is_empty())
+}
+
+fn git_stamp(root: &Path) -> String {
+    let Some(hash) = git_output(root, &["rev-parse", "--short", "HEAD"]) else {
         return String::new();
     };
+    let branch =
+        git_output(root, &["branch", "--show-current"]).unwrap_or_else(|| "detached".to_string());
     let dirty = Command::new("git")
-        .args(["-C", &root.to_string_lossy(), "status", "--porcelain"])
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .is_some_and(|s| !s.trim().is_empty());
-    if dirty { format!("{hash}*") } else { hash }
+    let dirty_suffix = if dirty { "*" } else { "" };
+    format!("{branch} @ {hash}{dirty_suffix}")
 }

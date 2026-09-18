@@ -20,8 +20,20 @@ pub fn apply(ctx: &egui::Context) {
     visuals.window_fill = bg();
     visuals.panel_fill = panel();
     visuals.extreme_bg_color = Color32::from_rgb(8, 10, 14);
+
     visuals.widgets.inactive.bg_fill = Color32::from_rgb(28, 34, 42);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(36, 44, 56);
+    visuals.widgets.inactive.bg_stroke = card_stroke();
+
+    // Buttons and other interactive controls should visibly react before the click.
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(43, 55, 72);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, accent().gamma_multiply(0.9));
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.2, body());
+    visuals.widgets.hovered.expansion = 1.0;
+
+    visuals.widgets.active.bg_fill = Color32::from_rgb(35, 74, 126);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, accent());
+    visuals.widgets.active.fg_stroke = Stroke::new(1.3, Color32::WHITE);
+
     visuals.selection.bg_fill = accent().gamma_multiply(0.35);
     visuals.window_corner_radius = CornerRadius::same(CARD_RADIUS as u8);
     visuals.widgets.noninteractive.corner_radius = CornerRadius::same(6);
@@ -64,6 +76,14 @@ pub fn destructive_fill() -> Color32 {
 
 pub fn success() -> Color32 {
     Color32::from_rgb(63, 185, 120)
+}
+
+pub fn warning() -> Color32 {
+    Color32::from_rgb(210, 175, 70)
+}
+
+pub fn info() -> Color32 {
+    Color32::from_rgb(80, 180, 200)
 }
 
 pub fn muted() -> Color32 {
@@ -110,7 +130,7 @@ pub fn state_color(state: purgatory_dev_runtime::ServerState) -> Color32 {
         // Mockup treats STOPPED as attention-red, not idle grey.
         Stopped => destructive(),
         Degraded => Color32::from_rgb(220, 160, 50),
-        _ => Color32::from_rgb(210, 175, 70),
+        _ => warning(),
     }
 }
 
@@ -121,7 +141,7 @@ pub fn outcome_color(state: purgatory_dev_runtime::ValidationState) -> Color32 {
         Failed | OrchestrationFailed => destructive(),
         Cancelled => Color32::from_rgb(180, 150, 90),
         Idle => muted(),
-        _ => Color32::from_rgb(210, 175, 70),
+        _ => warning(),
     }
 }
 
@@ -129,7 +149,7 @@ pub fn log_color(line: &str) -> Color32 {
     if line.contains("server |") {
         success()
     } else if line.contains("client |") {
-        Color32::from_rgb(80, 180, 200)
+        info()
     } else if line.contains("load |") {
         Color32::from_rgb(170, 140, 210)
     } else if line.contains("cargo |") {

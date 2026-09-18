@@ -1,20 +1,20 @@
-//! Provisional eframe shell. Orchestration stays in `purgatory-dev-runtime`.
+//! Developer Hub application shell. Orchestration stays in `purgatory-dev-runtime`.
 
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, TextureHandle};
-use purgatory_dev_runtime::{HubCommand, LiveHubSession, LoadSpec, ValidationSpec};
+use purgatory_dev_runtime::{HubCommand, LiveHubSession, LoadSpec, ServerState, ValidationSpec};
 
 use crate::assets;
 use crate::navigation::{HubPage, PageKind};
+use crate::sound;
 use crate::theme;
 use crate::ui;
 use crate::ui::layout::{chip, nav_item};
 use crate::ui::run_view::RunViewState;
+use crate::ui::server_commands::ServerCommandsState;
 
 pub fn run() -> eframe::Result {
-    // Fixed window: Hub layout is authored for this size. Resize caused card
-    // overlap / clipped text; keep size stable until a full responsive pass exists.
     const W: f32 = 1280.0;
     const H: f32 = 800.0;
     let options = eframe::NativeOptions {
@@ -43,8 +43,11 @@ struct DevHubApp {
     load_spec: LoadSpec,
     validation_run: RunViewState,
     load_run: RunViewState,
+    server_commands: ServerCommandsState,
+    settings: ui::settings::SettingsState,
     authoring_export_status: Option<String>,
     logo: Option<TextureHandle>,
+    last_server_state: Option<ServerState>,
 }
 
 impl DevHubApp {
@@ -56,8 +59,11 @@ impl DevHubApp {
             load_spec: LoadSpec::default(),
             validation_run: RunViewState::default(),
             load_run: RunViewState::default(),
+            server_commands: ServerCommandsState::default(),
+            settings: ui::settings::SettingsState,
             authoring_export_status: None,
             logo: assets::load_logo(ctx),
+            last_server_state: None,
         }
     }
 }
@@ -80,6 +86,15 @@ impl eframe::App for DevHubApp {
             }
             Ok(session) => {
                 let snap = session.snapshot(Instant::now());
+                if self
+                    .last_server_state
+                    .is_some_and(|previous| previous != ServerState::Ready)
+                    && snap.server_state == ServerState::Ready
+                {
+                    sound::server_ready();
+                }
+                self.last_server_state = Some(snap.server_state);
+
                 let mut cmd = None;
                 let mut open_logs = false;
 
@@ -92,6 +107,8 @@ impl eframe::App for DevHubApp {
                         });
                     } else if i.key_pressed(egui::Key::F6) {
                         cmd = Some(HubCommand::RequestClients { count: 1 });
+                    } else if i.key_pressed(egui::Key::F9) {
+                        cmd = Some(HubCommand::KillAll);
                     }
                 });
 
@@ -114,16 +131,6 @@ impl eframe::App for DevHubApp {
                             chip(ui, &format!("Phase {}", snap.phase));
                             ui.add_space(4.0);
                             chip(ui, &snap.build_profile);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.colored_label(
-                                        theme::muted(),
-                                        egui::RichText::new("eframe provisional")
-                                            .font(theme::subtitle_font()),
-                                    );
-                                },
-                            );
                         });
                     });
 
@@ -194,7 +201,7 @@ impl eframe::App for DevHubApp {
                                         } else {
                                             page.label().to_string()
                                         };
-                                        if nav_item(ui, selected, page.symbol(), &label).clicked() {
+                                        if nav_item(ui, selected, page.icon(), &label).clicked() {
                                             self.page = page;
                                         }
                                         ui.add_space(2.0);
@@ -213,8 +220,6 @@ impl eframe::App for DevHubApp {
                         egui::Margin::symmetric(theme::PAGE_MARGIN as i8, theme::PAGE_MARGIN as i8),
                     ))
                     .show(ui, |ui| {
-                        // Vertical page scroll only. Log panels own their own both-axis scroll
-                        // so long lines do not get clipped by the page scroller.
                         egui::ScrollArea::vertical()
                             .id_salt("hub_central_scroll")
                             .auto_shrink([false, false])
@@ -232,7 +237,11 @@ impl eframe::App for DevHubApp {
                                         }
                                     }
                                     HubPage::RuntimeServer => {
-                                        if let Some(c) = ui::runtime_server::show(ui, &snap) {
+                                        if let Some(c) = ui::runtime_server::show(
+                                            ui,
+                                            &snap,
+                                            &mut self.server_commands,
+                                        ) {
                                             cmd = Some(c);
                                         }
                                     }
@@ -276,8 +285,13 @@ impl eframe::App for DevHubApp {
                                             cmd = Some(c);
                                         }
                                     }
+                                    HubPage::Diagnostics => {
+                                        ui::diagnostics::show(ui, &snap);
+                                    }
                                     HubPage::Settings => {
-                                        if let Some(c) = ui::settings::show(ui, &snap) {
+                                        if let Some(c) =
+                                            ui::settings::show(ui, &snap, &mut self.settings)
+                                        {
                                             cmd = Some(c);
                                         }
                                     }
@@ -316,6 +330,7 @@ mod tests {
         assert_eq!(HubPage::Validation.kind(), PageKind::Live);
         assert_eq!(HubPage::Performance.kind(), PageKind::Live);
         assert_eq!(HubPage::Phase7Stats.kind(), PageKind::Live);
+        assert_eq!(HubPage::Diagnostics.kind(), PageKind::Live);
         assert_eq!(HubPage::Settings.kind(), PageKind::Live);
     }
 }

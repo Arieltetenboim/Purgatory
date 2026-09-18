@@ -3,12 +3,16 @@ use purgatory_dev_runtime::{HubCommand, HubSnapshot, ProcessOrigin, ServerState}
 
 use crate::theme;
 use crate::ui::layout::{
-    self, btn_destructive, btn_ghost, btn_primary, hub_card, log_panel_fill, metric_flow,
-    status_badge,
+    self, btn_destructive, btn_ghost, btn_primary, hub_card, metric_flow, status_badge,
 };
-use crate::ui::status;
+use crate::ui::server_commands::ServerCommandsState;
+use crate::ui::{log_console, status};
 
-pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
+pub fn show(
+    ui: &mut egui::Ui,
+    snap: &HubSnapshot,
+    server_commands: &mut ServerCommandsState,
+) -> Option<HubCommand> {
     let mut cmd = None;
     layout::page_header(
         ui,
@@ -114,14 +118,15 @@ pub fn show(ui: &mut egui::Ui, snap: &HubSnapshot) -> Option<HubCommand> {
     });
 
     ui.add_space(theme::CARD_GAP);
+    server_commands.show(ui, snap);
 
     let _ = hub_card(ui, "≡", "Server Log", |ui| {
-        if log_panel_fill(
+        if log_console::show(
             ui,
-            "server_log",
+            "server_log_console",
             &snap.server_log_lines,
+            "SERVER",
             "(empty — start the server or wait for output)",
-            "logs/dev-tools/server.log — scroll ↕↔",
         ) {
             cmd = Some(HubCommand::ClearServerLog);
         }
@@ -134,29 +139,45 @@ fn server_actions(ui: &mut egui::Ui, snap: &HubSnapshot, cmd: &mut Option<HubCom
     ui.spacing_mut().item_spacing.x = 6.0;
     match snap.server_state {
         ServerState::Stopped | ServerState::Failed => {
-            if ui
-                .add_enabled(snap.can_start, btn_primary("Start"))
+            let response = ui.add_enabled(snap.can_start, btn_primary("Start"));
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(
+                    "Build and start the dedicated server, then verify readiness before marking it Ready.",
+                )
                 .clicked()
             {
                 *cmd = Some(HubCommand::Start);
             }
         }
         ServerState::Ready | ServerState::Degraded => {
-            if ui
-                .add_enabled(snap.can_restart, btn_ghost("Restart"))
+            let response = ui.add_enabled(snap.can_restart, btn_ghost("Restart"));
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(
+                    "Stop the current server and start it again through the normal readiness checks.",
+                )
                 .clicked()
             {
                 *cmd = Some(HubCommand::Restart);
             }
-            if ui
-                .add_enabled(snap.can_stop, btn_destructive("Stop"))
+
+            let response = ui.add_enabled(snap.can_stop, btn_destructive("Stop"));
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Stop the dedicated server. Detached clients are not stopped.")
                 .clicked()
             {
                 *cmd = Some(HubCommand::Stop);
             }
         }
         _ => {
-            if ui.add_enabled(snap.can_stop, btn_ghost("Stop")).clicked() {
+            let response = ui.add_enabled(snap.can_stop, btn_ghost("Stop"));
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Cancel the current server lifecycle operation and stop the server.")
+                .clicked()
+            {
                 *cmd = Some(HubCommand::Stop);
             }
         }

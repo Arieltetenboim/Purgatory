@@ -359,18 +359,23 @@ fn kill_process_tree(pid: u32) {
     }
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         let _ = Command::new("taskkill.exe")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
     }
     #[cfg(not(windows))]
     {
         let _ = Command::new("kill")
             .args(["-TERM", &pid.to_string()])
-            .status();
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
     }
 }
 

@@ -2,6 +2,7 @@
 
 pub mod capacity_accounting;
 pub mod content_catalog;
+pub mod dev_admin;
 pub mod identity;
 pub mod impairment;
 pub mod load_metrics;
@@ -26,6 +27,10 @@ pub use content_catalog::{
     ITEM_UNADORNED, MAP_FOOTNOTE, MAP_SECOND, NPC_WELCOME_TRAVELER_STAYED, WORLD_OBJECT_CHEST,
     WORLD_OBJECT_MAP_B_SWITCH, WORLD_OBJECT_PORTAL_TO_FOOTNOTE, WORLD_OBJECT_PORTAL_TO_SECOND,
     WORLD_OBJECT_SWITCH, allocated_id_for_label, label_for_allocated_id,
+};
+pub use dev_admin::{
+    DEFAULT_DEV_ADMIN_PORT, DEV_ADMIN_MAX_LINE_BYTES, DEV_ADMIN_PORT_ENV, DevAdminContentEntry,
+    DevAdminPlayer, DevAdminRequest, DevAdminResponse, DevAdminSnapshot,
 };
 pub use identity::{
     AuthoredIdError, CONTENT_ABILITY_END, CONTENT_ABILITY_START, CONTENT_ID_BLOCK_SIZE,
