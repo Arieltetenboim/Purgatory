@@ -285,8 +285,13 @@ impl eframe::App for DevHubApp {
                                             cmd = Some(c);
                                         }
                                     }
+                                    HubPage::Diagnostics => {
+                                        ui::diagnostics::show(ui, &snap);
+                                    }
                                     HubPage::Settings => {
-                                        if let Some(c) = ui::settings::show(ui, &snap, &mut self.settings) {
+                                        if let Some(c) =
+                                            ui::settings::show(ui, &snap, &mut self.settings)
+                                        {
                                             cmd = Some(c);
                                         }
                                     }
@@ -325,6 +330,7 @@ mod tests {
         assert_eq!(HubPage::Validation.kind(), PageKind::Live);
         assert_eq!(HubPage::Performance.kind(), PageKind::Live);
         assert_eq!(HubPage::Phase7Stats.kind(), PageKind::Live);
+        assert_eq!(HubPage::Diagnostics.kind(), PageKind::Live);
         assert_eq!(HubPage::Settings.kind(), PageKind::Live);
     }
 }
