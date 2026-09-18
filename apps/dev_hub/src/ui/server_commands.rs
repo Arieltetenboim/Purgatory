@@ -22,8 +22,8 @@ type AdminReply = (bool, Result<DevAdminResponse, String>);
 pub struct ServerCommandsState {
     snapshot: Option<DevAdminSnapshot>,
     selected_player: Option<u64>,
-    selected_npc: Option<u32>,
-    selected_item: Option<u32>,
+    selected_npc: Option<u64>,
+    selected_item: Option<u64>,
     item_quantity: u32,
     narrative_fact_id: String,
     narrative_fact_value: bool,
