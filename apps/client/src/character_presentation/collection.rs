@@ -20,7 +20,7 @@ use super::state::{CharacterPresentationState, EquipmentView, Facing, Presentati
 
 /// Authored Move clip cadence is calibrated to the normal ground locomotion speed.
 /// This is presentation metadata, not gameplay authority or root motion.
-const MOVE_CLIP_REFERENCE_SPEED: f32 = 4.0;
+const MOVE_CLIP_REFERENCE_SPEED: f32 = 3.5;
 
 /// Generational presentation key. Copied from replica identity at the adapter
 /// edge so [`CharacterPresentationState`] does not store protocol types.
