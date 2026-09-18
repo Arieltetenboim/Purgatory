@@ -466,7 +466,7 @@ fn move_playback_scales_with_horizontal_speed() {
 
     let mut normal = CharacterPresentationSet::new();
     normal.sync_with_dialogue_motion(
-        [(key, state, None, 4.0)],
+        [(key, state, None, 3.5)],
         &registry,
         0.20,
     );
@@ -474,7 +474,7 @@ fn move_playback_scales_with_horizontal_speed() {
 
     let mut half = CharacterPresentationSet::new();
     half.sync_with_dialogue_motion(
-        [(key, state, None, 2.0)],
+        [(key, state, None, 1.75)],
         &registry,
         0.20,
     );
