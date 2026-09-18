@@ -11,6 +11,7 @@ pub enum HubPage {
     World,
     Content,
     Logs,
+    Diagnostics,
     Settings,
 }
 
@@ -34,11 +35,12 @@ pub enum NavIcon {
     World,
     Content,
     Logs,
+    Diagnostics,
     Settings,
 }
 
 impl HubPage {
-    pub const ALL: [HubPage; 10] = [
+    pub const ALL: [HubPage; 11] = [
         Self::Dashboard,
         Self::RuntimeServer,
         Self::RuntimeClients,
@@ -48,6 +50,7 @@ impl HubPage {
         Self::Performance,
         Self::Phase7Stats,
         Self::Logs,
+        Self::Diagnostics,
         Self::Settings,
     ];
 
@@ -63,6 +66,7 @@ impl HubPage {
             Self::World => "World",
             Self::Content => "Content",
             Self::Logs => "Logs",
+            Self::Diagnostics => "Diagnostics",
             Self::Settings => "Settings",
         }
     }
@@ -79,6 +83,7 @@ impl HubPage {
             Self::World => NavIcon::World,
             Self::Content => NavIcon::Content,
             Self::Logs => NavIcon::Logs,
+            Self::Diagnostics => NavIcon::Diagnostics,
             Self::Settings => NavIcon::Settings,
         }
     }
@@ -90,7 +95,7 @@ impl HubPage {
             Self::RuntimeServer | Self::RuntimeClients => Some("Runtime"),
             Self::Validation | Self::Performance | Self::Phase7Stats => Some("Testing"),
             Self::World | Self::Content => Some("Authoring"),
-            Self::Logs | Self::Settings => Some("System"),
+            Self::Logs | Self::Diagnostics | Self::Settings => Some("System"),
         }
     }
 
@@ -105,6 +110,7 @@ impl HubPage {
             | Self::Performance
             | Self::Phase7Stats
             | Self::Content
+            | Self::Diagnostics
             | Self::Settings => PageKind::Live,
             _ => PageKind::Placeholder,
         }
@@ -123,6 +129,7 @@ impl HubPage {
             Self::Content => {
                 "Launch the standalone Animation Lab. Other content editors are not in A7.0."
             }
+            Self::Diagnostics => "Environment health and structural development preflight.",
             Self::Settings => "Build profile and log level for newly launched processes.",
             _ => "",
         }
@@ -151,6 +158,7 @@ mod tests {
                 HubPage::Performance,
                 HubPage::Phase7Stats,
                 HubPage::Logs,
+                HubPage::Diagnostics,
                 HubPage::Settings,
             ]
         );
