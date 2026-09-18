@@ -27,11 +27,12 @@ use purgatory_protocol::{
     ServerPresentationOneShot, UnequipRequest, WireEntityId,
 };
 use purgatory_simulation::{
-    AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, Cadence,
-    CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X, Health,
-    InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError, NpcRuntimeConfig,
-    P0, P0_POSITION, PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind,
-    RuntimeSpawnRequest, ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
+    AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, CONTACT_EPSILON,
+    Cadence, CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X,
+    Health, InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError,
+    NpcRuntimeConfig, P0, P0_POSITION, PLAYER_HALF_EXTENTS, PLAYER_HEALTH_MAX, PlayerInput,
+    PlayerState, PresentationOneShotKind, RuntimeSpawnRequest, ScheduleOwner, SimulationTick,
+    TICK_RATE_HZ, Transform, WorkLane, World,
     validate_command_preamble,
 };
 
@@ -1837,7 +1838,12 @@ impl GameplayOwner {
             .registry
             .monster_by_id(MONSTER_RED_SLIME)
             .map(|definition| match definition.behavior {
-                MonsterBehavior::ChaseContactWhenAttacked => (0.8, 1.2),
+                MonsterBehavior::ChaseContactWhenAttacked => (
+                    (definition.half_extents[0] + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
+                        .max(0.0),
+                    (definition.half_extents[1] + PLAYER_HALF_EXTENTS[1] - CONTACT_EPSILON)
+                        .max(0.0),
+                ),
             });
         self.world.tick_npcs_with_approach(dt, authored_approach);
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
