@@ -428,7 +428,7 @@ fn quick_actions(
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
-            let response = ui.add(btn_ghost("Rebuild").min_size(button_size));
+            let response = ui.add(btn_ghost("🔨 Rebuild").min_size(button_size));
             if action_response(
                 response,
                 "Rebuild available Hub binaries. Running or locked executables are skipped rather than forcibly stopped.",
