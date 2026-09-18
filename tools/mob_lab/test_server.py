@@ -12,19 +12,25 @@ from server import (
 
 
 class MobLabContractTests(unittest.TestCase):
-    def test_default_document_matches_schema_v2_contract(self):
+    def test_default_document_matches_schema_v3_contract(self):
         doc = new_monster_document("monster.test.slime", "Test Slime")
         self.assertEqual([], validate_monster_document(doc))
+        self.assertEqual(3, doc["schema_version"])
+        self.assertEqual(
+            {"left": 0.4, "right": 0.4, "bottom": 0.6, "top": 0.6},
+            doc["collision_bounds"],
+        )
         self.assertEqual("when_attacked", doc["behavior"]["aggro"])
 
     def test_invalid_runtime_values_are_rejected_before_save(self):
         doc = new_monster_document("monster.test.slime", "Test Slime")
         doc["health_max"] = 0
-        doc["half_extents"] = [0.4, -0.1]
+        doc["collision_bounds"]["bottom"] = -0.1
+        doc["collision_bounds"]["top"] = 0.0
         doc["behavior"]["home_leash_radius"] = 0
         errors = validate_monster_document(doc)
         self.assertTrue(any("health_max" in item for item in errors))
-        self.assertTrue(any("half_extents" in item for item in errors))
+        self.assertTrue(any("collision_bounds.bottom" in item for item in errors))
         self.assertTrue(any("home_leash_radius" in item for item in errors))
 
     def test_unknown_fields_are_rejected(self):
