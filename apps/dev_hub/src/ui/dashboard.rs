@@ -428,7 +428,7 @@ fn quick_actions(
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
-            let response = ui.add(btn_ghost("🔨 Rebuild").min_size(button_size));
+            let response = rebuild_button(ui, button_size);
             if action_response(
                 response,
                 "Rebuild available Hub binaries. Running or locked executables are skipped rather than forcibly stopped.",
@@ -482,6 +482,45 @@ fn quick_actions(
             );
         }
     });
+}
+
+fn rebuild_button(ui: &mut egui::Ui, size: Vec2) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let fill = if response.hovered() {
+        egui::Color32::from_rgb(34, 40, 48)
+    } else {
+        egui::Color32::from_rgb(28, 34, 42)
+    };
+    ui.painter().rect_filled(rect, 6.0, fill);
+    ui.painter()
+        .rect_stroke(rect, 6.0, theme::card_stroke(), egui::StrokeKind::Inside);
+
+    let icon_center = egui::pos2(rect.left() + 18.0, rect.center().y);
+    let stroke = egui::Stroke::new(1.5, theme::body());
+    ui.painter().line_segment(
+        [
+            egui::pos2(icon_center.x - 3.0, icon_center.y + 4.0),
+            egui::pos2(icon_center.x + 3.0, icon_center.y - 4.0),
+        ],
+        stroke,
+    );
+    ui.painter().rect_stroke(
+        egui::Rect::from_center_size(
+            egui::pos2(icon_center.x + 4.0, icon_center.y - 5.0),
+            Vec2::new(7.0, 4.0),
+        ),
+        1.0,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        egui::pos2(icon_center.x + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Rebuild",
+        theme::section_font(),
+        theme::body(),
+    );
+    response
 }
 
 fn activity_panel(
