@@ -268,9 +268,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "$remoteOnly='%~3' -eq '1';" ^
   "$current=(git branch --show-current).Trim();" ^
   "$local=@(git for-each-ref --format='%%(refname:short)' refs/heads);" ^
-  "$remote=@(git for-each-ref --format='%%(refname:short)' refs/remotes/origin ^| Where-Object { $_ -ne 'origin/HEAD' } ^| ForEach-Object { $_ -replace '^origin/','' });" ^
-  "if($remoteOnly){ $branches=@($remote ^| Sort-Object -Unique) } else { $branches=@($local + $remote ^| Sort-Object -Unique) };" ^
-  "if($excludeCurrent){ $branches=@($branches ^| Where-Object { $_ -ne $current }) };" ^
+  "$remote=@(git for-each-ref --format='%%(refname:short)' refs/remotes/origin | Where-Object { $_ -ne 'origin/HEAD' } | ForEach-Object { $_ -replace '^origin/','' });" ^
+  "if($remoteOnly){ $branches=@($remote | Sort-Object -Unique) } else { $branches=@($local + $remote | Sort-Object -Unique) };" ^
+  "if($excludeCurrent){ $branches=@($branches | Where-Object { $_ -ne $current }) };" ^
   "if($branches.Count -eq 0){ Write-Host 'No eligible branches found.' -ForegroundColor Red; exit 10 };" ^
   "$i=0;" ^
   "[Console]::CursorVisible=$false;" ^
@@ -289,7 +289,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "    switch($k.Key){" ^
   "      'UpArrow'   { if($i -gt 0){$i--} else {$i=$branches.Count-1} }" ^
   "      'DownArrow' { if($i -lt $branches.Count-1){$i++} else {$i=0} }" ^
-  "      'Enter'     { Set-Content -LiteralPath $out -Value $branches[$i] -NoNewline -Encoding UTF8; exit 0 }" ^
+  "      'Enter'     { Set-Content -LiteralPath $out -Value $branches[$i] -NoNewline -Encoding ASCII; exit 0 }" ^
   "      'Escape'    { exit 20 }" ^
   "    }" ^
   "  }" ^
