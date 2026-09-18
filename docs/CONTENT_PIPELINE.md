@@ -28,7 +28,7 @@ Human-editable JSON lives under `/content`:
   authoritative dialogue definitions in Full mode.
 - `server/entities/` — server-only entities (interactables, portals with `transition: { map, portal }`)
 - `server/placements/` — server-only placement lists keyed by map authored id
-- `definitions/monsters/` — server-only Monster schema v1 definitions. Loaded only in Full mode; edited directly now and by Mob Lab in a later slice.
+- `definitions/monsters/` — server-only Monster schema v2 definitions. Loaded only in Full mode; edited directly now and by Mob Lab in a later slice.
 
 JSON must not contain numeric `MapId`, channel, or instance. The registry assigns `MapId` (FOOTNOTE / `map.dev.footnote` is pinned to `MapId` 1).
 
@@ -81,10 +81,9 @@ exposes only client-safe Beat text, choice labels and animation cues; Full mode
 also exposes authoritative conditions, pools, continuations and actions. See
 [`NPC_DIALOGUE_RUNTIME.md`](NPC_DIALOGUE_RUNTIME.md).
 
-The Monster schema v1 contract is
+The Monster schema v2 contract is
 [`MONSTER_AUTHORING_RUNTIME.md`](MONSTER_AUTHORING_RUNTIME.md). The Red Slime
-normal-session proof resolves Health, collision half-extents, movement speed,
-acquisition and home leash from the validated Full registry. Workload-only NPC
+normal-session proof resolves Health, collision half-extents, movement speed, damage-triggered chase behavior and home leash from the validated Full registry. Workload-only NPC
 presets and tokens remain owned by simulation/server code and are not monster
 identity. Monster placement, presentation, abilities and loot are not part of
 schema v1.

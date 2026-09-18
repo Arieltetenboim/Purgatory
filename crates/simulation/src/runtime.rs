@@ -379,14 +379,17 @@ impl World {
     /// Apply an ability effect. Ability code must not call [`Self::set_health`].
     pub fn execute_ability_effect(
         &mut self,
-        _source: EntityId,
+        source: EntityId,
         target: EntityId,
         effect: crate::ability::AbilityEffect,
     ) -> bool {
         match effect {
-            crate::ability::AbilityEffect::Damage { amount } => {
-                self.apply_damage_with_immunity(target, amount, DamageImmunityPolicy::Bypass)
-            }
+            crate::ability::AbilityEffect::Damage { amount } => self.apply_damage_from_source(
+                Some(source),
+                target,
+                amount,
+                DamageImmunityPolicy::Bypass,
+            ),
         }
     }
 
@@ -686,12 +689,39 @@ impl World {
     /// oneshots (Dead is Health-derived, not a oneshot). Already-dead targets
     /// do not restart Hurt.
     pub fn apply_damage(&mut self, target: EntityId, amount: f32) -> bool {
-        self.apply_damage_with_immunity(target, amount, DamageImmunityPolicy::Respect)
+        self.apply_damage_from_source(None, target, amount, DamageImmunityPolicy::Respect)
     }
 
     /// Apply normal NPC contact damage through the victim immunity gate.
     pub fn apply_contact_damage(&mut self, target: EntityId, amount: f32) -> bool {
-        self.apply_damage_with_immunity(target, amount, DamageImmunityPolicy::Respect)
+        self.apply_damage_from_source(None, target, amount, DamageImmunityPolicy::Respect)
+    }
+
+    fn apply_damage_from_source(
+        &mut self,
+        source: Option<EntityId>,
+        target: EntityId,
+        amount: f32,
+        immunity: DamageImmunityPolicy,
+    ) -> bool {
+        let before = self.health_of(target).map(|health| health.current);
+        if !self.apply_damage_with_immunity(target, amount, immunity) {
+            return false;
+        }
+        let after = self.health_of(target).map(|health| health.current);
+        let actual_damage = before
+            .zip(after)
+            .is_some_and(|(before, after)| after < before && after > 0.0);
+        if actual_damage
+            && let Some(source) = source
+            && self.kind(source) == Some(crate::entity::EntityKind::Player)
+            && self.valid_npc_target(target, source, f32::MAX)
+            && let Some(mut npc) = self.npc_of(target)
+        {
+            npc.target = Some(source);
+            let _ = self.set_npc(target, npc);
+        }
+        true
     }
 
     /// Apply flat damage with an explicit victim-immunity policy.
@@ -792,7 +822,8 @@ impl World {
             Err(reason) => return reject(self, ActionRejectReason::Gate(reason)),
         };
         if matches!(request.kind, ActionKind::Strike) {
-            let _ = self.apply_damage_with_immunity(
+            let _ = self.apply_damage_from_source(
+                Some(request.actor),
                 request.target,
                 STRIKE_DAMAGE,
                 DamageImmunityPolicy::Bypass,
@@ -857,12 +888,13 @@ impl World {
         self.tick_npcs_with_approach(dt_seconds, None);
     }
 
-    /// Deterministic NPC activity step with optional live-player approach.
+    /// Deterministic NPC activity step with optional target approach geometry.
     ///
-    /// This remains the sole owner of authoritative NPC movement state. The
-    /// Player acquisition is retained by the NPC while the target remains
-    /// alive, in the same world address, and inside its home leash.
-    pub fn tick_npcs_with_approach(&mut self, dt_seconds: f32, approach: Option<(f32, f32, f32)>) {
+    /// This remains the sole owner of authoritative NPC movement state.
+    /// Target acquisition is damage-triggered; this driver only retains and
+    /// approaches an existing target while it is alive, in the same world
+    /// address, and inside the NPC home leash.
+    pub fn tick_npcs_with_approach(&mut self, dt_seconds: f32, approach: Option<(f32, f32)>) {
         let now = self.tick;
         let ids: Vec<EntityId> = self
             .iter()
@@ -884,48 +916,27 @@ impl World {
                 self.runtime_stats.npc_updates_total.saturating_add(1);
 
             if let Some(target) = npc.target
-                && !self.valid_npc_target(id, target, f32::MAX)
+                && !self.valid_npc_target(id, target, npc.hotspot_radius)
             {
                 npc.target = None;
             }
-            let approach_target =
-                approach.and_then(|(acquisition_radius, stop_range, stop_half_height)| {
-                    if let Some(target) = npc.target
-                        && !self.valid_npc_target(
-                            id,
-                            target,
-                            npc.hotspot_radius.max(acquisition_radius),
-                        )
-                    {
-                        npc.target = None;
-                    }
-                    if npc.target.is_none() {
-                        npc.target = self
-                            .nearest_living_player_target(id, acquisition_radius)
-                            .filter(|&target| {
-                                self.valid_npc_target(
-                                    id,
-                                    target,
-                                    npc.hotspot_radius.max(acquisition_radius),
-                                )
-                            });
-                    }
-                    npc.target.and_then(|target| {
-                        let actor_position = self.transform_of(id)?.position;
-                        let target_position = self.transform_of(target)?.position;
-                        let dx = target_position[0] - actor_position[0];
-                        let dy = target_position[1] - actor_position[1];
-                        let facing_x = if dx < 0.0 { -1.0 } else { 1.0 };
-                        let hittable = crate::ability::forward_query_aabb(
-                            actor_position,
-                            facing_x,
-                            stop_range,
-                            stop_half_height,
-                        )
-                        .contains_point(target_position);
-                        Some((target_position, dx * dx + dy * dy, hittable))
-                    })
-                });
+            let approach_target = approach.and_then(|(stop_range, stop_half_height)| {
+                npc.target.and_then(|target| {
+                    let actor_position = self.transform_of(id)?.position;
+                    let target_position = self.transform_of(target)?.position;
+                    let dx = target_position[0] - actor_position[0];
+                    let dy = target_position[1] - actor_position[1];
+                    let facing_x = if dx < 0.0 { -1.0 } else { 1.0 };
+                    let hittable = crate::ability::forward_query_aabb(
+                        actor_position,
+                        facing_x,
+                        stop_range,
+                        stop_half_height,
+                    )
+                    .contains_point(target_position);
+                    Some((target_position, dx * dx + dy * dy, hittable))
+                })
+            });
             if let Some((target_position, _distance_sq, hittable)) = approach_target {
                 let Some(transform) = self.transform_of(id) else {
                     let _ = self.set_npc(id, npc);
@@ -1099,17 +1110,13 @@ impl World {
         let _ = self.set_transform(id, transform);
     }
 
-    /// Drive granted NPC abilities against the nearest living player.
+    /// Drive granted NPC abilities against an existing damage-acquired target.
     ///
-    /// Acquisition belongs to the NPC driver. Movement and facing remain
-    /// owned by `tick_npcs_with_approach`. Ability lifecycle, delivery,
-    /// timing, cooldown, and effects remain owned by the ability runtime.
-    /// Independent abilities intentionally receive no selected target.
-    pub fn drive_npc_combat(
-        &mut self,
-        definition: &crate::ability::AbilityDefinition,
-        acquisition_radius: f32,
-    ) {
+    /// Movement and facing remain owned by `tick_npcs_with_approach`.
+    /// Ability lifecycle, delivery, timing, cooldown, and effects remain owned
+    /// by the ability runtime. Independent abilities intentionally receive no
+    /// selected target.
+    pub fn drive_npc_combat(&mut self, definition: &crate::ability::AbilityDefinition) {
         let ids: Vec<EntityId> = self
             .iter()
             .filter(|&id| self.npc_of(id).is_some())
@@ -1131,25 +1138,15 @@ impl World {
                 continue;
             };
             if let Some(target) = npc.target
-                && !self.valid_npc_target(id, target, f32::MAX)
+                && !self.valid_npc_target(id, target, npc.hotspot_radius)
             {
                 npc.target = None;
-            }
-            if npc.target.is_none() {
-                npc.target = self
-                    .nearest_living_player_target(id, acquisition_radius)
-                    .filter(|&target| {
-                        self.valid_npc_target(
-                            id,
-                            target,
-                            npc.hotspot_radius.max(acquisition_radius),
-                        )
-                    });
+                let _ = self.set_npc(id, npc);
+                continue;
             }
             let Some(_target) = npc.target else {
                 continue;
             };
-            let _ = self.set_npc(id, npc);
             let _ = self.request_ability(
                 crate::ability::AbilityRequest {
                     actor: id,
@@ -1182,32 +1179,6 @@ impl World {
         let dx = target_position[0] - npc.home[0];
         let dy = target_position[1] - npc.home[1];
         dx * dx + dy * dy <= leash_radius * leash_radius
-    }
-
-    /// Deterministic nearest living player in the actor's exact live address.
-    #[must_use]
-    pub fn nearest_living_player_target(&self, actor: EntityId, radius: f32) -> Option<EntityId> {
-        let address = self.address_of(actor)?;
-        let position = self.transform_of(actor)?.position;
-        let mut candidates: Vec<(EntityId, f32)> = self
-            .entities_near(address, position, radius)
-            .filter(|&id| id != actor)
-            .filter(|&id| self.kind(id) == Some(crate::entity::EntityKind::Player))
-            .filter(|&id| self.health_of(id).is_some_and(|health| health.is_alive()))
-            .filter_map(|id| {
-                let target = self.transform_of(id)?.position;
-                let dx = target[0] - position[0];
-                let dy = target[1] - position[1];
-                Some((id, dx * dx + dy * dy))
-            })
-            .collect();
-        candidates.sort_by(|(left_id, left_distance), (right_id, right_distance)| {
-            left_distance.total_cmp(right_distance).then_with(|| {
-                (left_id.index(), left_id.generation())
-                    .cmp(&(right_id.index(), right_id.generation()))
-            })
-        });
-        candidates.first().map(|(id, _)| *id)
     }
 
     /// Nearest other Health-bearing entity within `radius`, tie-break by EntityId.
@@ -1318,6 +1289,7 @@ impl World {
         }
         npc.dead_pending = true;
         npc.active = false;
+        npc.target = None;
         npc.velocity = [0.0, 0.0];
         npc.walking = false;
         let home = npc.home;
@@ -1376,7 +1348,8 @@ impl World {
             let _ = self.effects.remove(id);
             return;
         }
-        let _ = self.apply_damage_with_immunity(
+        let _ = self.apply_damage_from_source(
+            effect.source,
             effect.target,
             crate::npc::PULSE_DAMAGE,
             DamageImmunityPolicy::Bypass,

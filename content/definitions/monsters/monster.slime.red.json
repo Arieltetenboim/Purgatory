@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "monster.slime.red",
   "debug_name": "Red Slime",
   "health_max": 20.0,
@@ -7,7 +7,7 @@
   "movement_speed": 2.0,
   "behavior": {
     "kind": "chase_contact",
-    "acquisition_radius": 3.0,
+    "aggro": "when_attacked",
     "home_leash_radius": 3.0
   }
 }

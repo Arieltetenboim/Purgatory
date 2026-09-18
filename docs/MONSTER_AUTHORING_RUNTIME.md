@@ -1,6 +1,6 @@
 # Monster Authoring and Runtime
 
-Status: FORGE M foundation (`M0-M2`) rescued onto `forge/mob-lab-v01` from current `master`.
+Status: FORGE M foundation (`M0-M2`) merged to `master`; M2.1 aligns damage-triggered aggro before Mob Lab UI.
 
 ## Purpose
 
@@ -32,11 +32,11 @@ Mob Lab (future editor)
 - Presentation belongs to a separate client-safe definition and asset path. It
   is deliberately not part of schema v1.
 
-## Monster schema v1
+## Monster schema v2
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "monster.slime.red",
   "debug_name": "Red Slime",
   "health_max": 20.0,
@@ -44,7 +44,7 @@ Mob Lab (future editor)
   "movement_speed": 2.0,
   "behavior": {
     "kind": "chase_contact",
-    "acquisition_radius": 3.0,
+    "aggro": "when_attacked",
     "home_leash_radius": 3.0
   }
 }
@@ -54,15 +54,16 @@ Rules:
 
 - `id` requires a permanent allocation in the Monster `ContentId` block.
 - numeric gameplay values must be finite and greater than zero;
-- `home_leash_radius` must be at least `acquisition_radius`;
-- schema v1 accepts only the already-proven `chase_contact` behavior;
+- schema v2 accepts only `chase_contact` with `aggro: "when_attacked"`;
+- proximity alone never acquires a target; successful player damage assigns that player as target;
+- `home_leash_radius` limits retention/pursuit after aggro;
 - unknown fields and unknown behavior kinds fail validation.
 
 ## Current proof boundary
 
 The normal-session Red Slime is resolved through `ContentRegistry`, spawned
 with its stable Monster `ContentId`, and receives authored Health, collision
-half-extents, movement speed, acquisition radius and home leash. Scheduled
+half-extents, movement speed, behavior and home leash. Scheduled
 respawn preserves the same `ContentId` and runtime configuration.
 
 The bootstrap location, contact damage, approach contact geometry, respawn
@@ -75,13 +76,13 @@ misrepresented as authored monster fields.
 |---|---|---|
 | M0 | Contract and ownership boundary | rescued |
 | M1 | JSON loader, validation, registry and stable Red Slime ID | rescued |
-| M2 | Content-backed normal-session runtime proof | rescued; manual proof required |
-| M2.1 | Align aggro/contact-damage authoring with current design | planned |
+| M2 | Content-backed normal-session runtime proof | complete + merged + manually verified |
+| M2.1 | Align aggro/contact-damage authoring with current design | implementation branch |
 | M3 | Mob Lab v0.1 editor: browse/create/duplicate/edit/save/validate | planned |
 | M4 | Real-runtime Test Arena: selected spawn, reset and observations | planned |
 | M5 | Hub integration + v0.1 closeout | planned |
 
-M3 must edit schema v1 rather than create a second model. New behavior kinds,
+M3 must edit schema v2 rather than create a second model. New behavior kinds,
 loot, ability loadouts, placement authoring and presentation require their own
 consumer-backed slices; they must not be added merely as unused form fields.
 

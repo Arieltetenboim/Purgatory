@@ -4,13 +4,13 @@ use crate::error::{ContentError, ValidationIssue};
 use purgatory_common::{ContentId, validate_authored_id};
 
 /// Monster content schema v1.
-pub const MONSTER_CONTENT_SCHEMA_VERSION: u32 = 1;
+pub const MONSTER_CONTENT_SCHEMA_VERSION: u32 = 2;
 
 /// The intentionally small behavior vocabulary supported by Monster schema v1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MonsterBehavior {
-    /// Use the existing authoritative player acquisition, approach, and contact loop.
-    ChaseContact,
+    /// Patrol until damaged by a player, then pursue that attacker and deal contact damage.
+    ChaseContactWhenAttacked,
 }
 
 /// Server-only gameplay definition. Placement and presentation are separate concerns.
@@ -23,7 +23,6 @@ pub struct MonsterDefinition {
     pub half_extents: [f32; 2],
     pub movement_speed: f32,
     pub behavior: MonsterBehavior,
-    pub acquisition_radius: f32,
     pub home_leash_radius: f32,
 }
 
@@ -50,22 +49,9 @@ pub fn validate_monster_definition(def: &MonsterDefinition) -> Result<(), Conten
     positive_finite(
         &mut issues,
         def,
-        "behavior.acquisition_radius",
-        def.acquisition_radius,
-    );
-    positive_finite(
-        &mut issues,
-        def,
         "behavior.home_leash_radius",
         def.home_leash_radius,
     );
-    if def.home_leash_radius < def.acquisition_radius {
-        issues.push(monster_issue(
-            &def.authored_id,
-            "behavior.home_leash_radius",
-            "must be greater than or equal to acquisition_radius",
-        ));
-    }
     if issues.is_empty() {
         Ok(())
     } else {
@@ -105,8 +91,7 @@ mod tests {
             health_max: 20.0,
             half_extents: [0.4, 0.6],
             movement_speed: 2.0,
-            behavior: MonsterBehavior::ChaseContact,
-            acquisition_radius: 3.0,
+            behavior: MonsterBehavior::ChaseContactWhenAttacked,
             home_leash_radius: 3.0,
         }
     }
@@ -121,7 +106,7 @@ mod tests {
         let mut def = valid();
         def.health_max = 0.0;
         def.movement_speed = f32::NAN;
-        def.home_leash_radius = 1.0;
+        def.home_leash_radius = 0.0;
         let error = validate_monster_definition(&def).unwrap_err().to_string();
         assert!(error.contains("health_max"));
         assert!(error.contains("movement_speed"));
