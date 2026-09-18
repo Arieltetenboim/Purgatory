@@ -18,7 +18,8 @@ use crate::effect::{EffectError, EffectId, EffectKind, TempEffect};
 use crate::entity::EntityId;
 use crate::health::{DamageImmunityPolicy, Health};
 use crate::npc::{
-    ActionRejectReason, ActionRequest, CONTACT_DAMAGE, NpcRuntimeConfig, NpcState, STRIKE_DAMAGE,
+    ActionRejectReason, ActionRequest, CONTACT_DAMAGE, NpcApproachBounds, NpcRuntimeConfig,
+    NpcState, STRIKE_DAMAGE,
     STRIKE_DURATION_TICKS, STRIKE_RANGE,
 };
 use crate::platform::PlatformView;
@@ -895,7 +896,11 @@ impl World {
     /// Target acquisition is damage-triggered; this driver only retains and
     /// approaches an existing target while it is alive, in the same world
     /// address, and inside the NPC home leash.
-    pub fn tick_npcs_with_approach(&mut self, dt_seconds: f32, approach: Option<(f32, f32)>) {
+    pub fn tick_npcs_with_approach(
+        &mut self,
+        dt_seconds: f32,
+        approach: Option<NpcApproachBounds>,
+    ) {
         let now = self.tick;
         let ids: Vec<EntityId> = self
             .iter()
@@ -921,20 +926,14 @@ impl World {
             {
                 npc.target = None;
             }
-            let approach_target = approach.and_then(|(stop_range, stop_half_height)| {
+            let approach_target = approach.and_then(|bounds| {
                 npc.target.and_then(|target| {
                     let actor_position = self.transform_of(id)?.position;
                     let target_position = self.transform_of(target)?.position;
                     let dx = target_position[0] - actor_position[0];
                     let dy = target_position[1] - actor_position[1];
-                    let facing_x = if dx < 0.0 { -1.0 } else { 1.0 };
-                    let hittable = crate::ability::forward_query_aabb(
-                        actor_position,
-                        facing_x,
-                        stop_range,
-                        stop_half_height,
-                    )
-                    .contains_point(target_position);
+                    let hittable =
+                        bounds.contains_target(actor_position, target_position, dx < 0.0);
                     Some((target_position, dx * dx + dy * dy, hittable))
                 })
             });
@@ -996,11 +995,13 @@ impl World {
                     {
                         min_x = min_x.max(
                             support.platform.min_x(support.transform)
-                                + npc.runtime_config.half_extents[0],
+                                + npc.runtime_config.half_extents[0]
+                                - npc.runtime_config.collision_center_offset[0],
                         );
                         max_x = max_x.min(
                             support.platform.max_x(support.transform)
-                                - npc.runtime_config.half_extents[0],
+                                - npc.runtime_config.half_extents[0]
+                                - npc.runtime_config.collision_center_offset[0],
                         );
                     }
                     if min_x > max_x {
@@ -1068,9 +1069,10 @@ impl World {
     }
 
     fn tick_npc_physics(&mut self, id: EntityId, npc: &mut NpcState, dt_seconds: f32) {
-        let Some(mut transform) = self.transform_of(id) else {
+        let Some(entity_transform) = self.transform_of(id) else {
             return;
         };
+        let mut transform = npc.collision_transform(entity_transform);
         let previous = transform.position;
         let previous_bottom = previous[1] - npc.runtime_config.half_extents[1];
         let previous_top = previous[1] + npc.runtime_config.half_extents[1];
@@ -1121,7 +1123,7 @@ impl World {
                 npc.last_contact = crate::footnote::ContactEvent::Landed { platform };
             }
         }
-        let _ = self.set_transform(id, transform);
+        let _ = self.set_transform(id, npc.entity_transform_from_collision(transform));
     }
 
     /// Drive granted NPC abilities against an existing damage-acquired target.

@@ -30,7 +30,8 @@ use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, CONTACT_EPSILON,
     Cadence, CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X,
     Health, InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError,
-    NpcRuntimeConfig, P0, P0_POSITION, PLAYER_HALF_EXTENTS, PLAYER_HEALTH_MAX, PlayerInput,
+    NpcApproachBounds, NpcRuntimeConfig, P0, P0_POSITION, PLAYER_HALF_EXTENTS,
+    PLAYER_HEALTH_MAX, PlayerInput,
     PlayerState, PresentationOneShotKind, RuntimeSpawnRequest, ScheduleOwner, SimulationTick,
     TICK_RATE_HZ, Transform, WorkLane, World, validate_command_preamble,
 };
@@ -1436,11 +1437,12 @@ impl GameplayOwner {
         else {
             return;
         };
-        let creature_y = floor.top_surface() + definition.half_extents[1];
+        let creature_y = floor.top_surface() + definition.collision_bounds.bottom;
         let now = SimulationTick::from_count(self.ticks);
         let runtime_config = NpcRuntimeConfig {
             movement_speed: definition.movement_speed,
-            half_extents: definition.half_extents,
+            half_extents: definition.collision_bounds.half_extents(),
+            collision_center_offset: definition.collision_bounds.center_offset(),
             ..NpcRuntimeConfig::default()
         };
         let request = World::npc_spawn_request_with_runtime_config(
@@ -1837,12 +1839,20 @@ impl GameplayOwner {
             .registry
             .monster_by_id(MONSTER_RED_SLIME)
             .map(|definition| match definition.behavior {
-                MonsterBehavior::ChaseContactWhenAttacked => (
-                    (definition.half_extents[0] + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
+                MonsterBehavior::ChaseContactWhenAttacked => NpcApproachBounds {
+                    left: (definition.collision_bounds.left + PLAYER_HALF_EXTENTS[0]
+                        - CONTACT_EPSILON)
                         .max(0.0),
-                    (definition.half_extents[1] + PLAYER_HALF_EXTENTS[1] - CONTACT_EPSILON)
+                    right: (definition.collision_bounds.right + PLAYER_HALF_EXTENTS[0]
+                        - CONTACT_EPSILON)
                         .max(0.0),
-                ),
+                    bottom: (definition.collision_bounds.bottom + PLAYER_HALF_EXTENTS[1]
+                        - CONTACT_EPSILON)
+                        .max(0.0),
+                    top: (definition.collision_bounds.top + PLAYER_HALF_EXTENTS[1]
+                        - CONTACT_EPSILON)
+                        .max(0.0),
+                },
             });
         self.world.tick_npcs_with_approach(dt, authored_approach);
         self.load_pressure.drive_npc_workload(&mut self.world, tick);

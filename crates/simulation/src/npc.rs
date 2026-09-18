@@ -8,10 +8,12 @@
 //!
 //! NPCs remain capability-composed [`crate::EntityKind::Generic`] entities.
 
+use crate::aabb::Aabb;
 use crate::body::CollisionBody;
 use crate::entity::EntityId;
 use crate::footnote::ContactEvent;
 use crate::time::SimulationTick;
+use crate::transform::Transform;
 
 /// Flat Strike damage placeholder. Ten strikes defeat the default 20 Health NPC.
 pub const STRIKE_DAMAGE: f32 = 2.0;
@@ -40,6 +42,8 @@ pub struct NpcRuntimeConfig {
     pub movement_speed: f32,
     /// Axis-aligned collision-body half-extents in world units.
     pub half_extents: [f32; 2],
+    /// Collision-center offset from the entity/presentation origin.
+    pub collision_center_offset: [f32; 2],
     /// Ticks between patrol heading changes while active.
     pub turn_period_ticks: u64,
     /// Ticks spent walking before a patrol stop.
@@ -53,6 +57,7 @@ impl Default for NpcRuntimeConfig {
         Self {
             movement_speed: 2.0,
             half_extents: [0.4, 0.6],
+            collision_center_offset: [0.0, 0.0],
             turn_period_ticks: 45,
             walk_period_ticks: 30,
             stop_period_ticks: 15,
@@ -148,6 +153,30 @@ impl NpcState {
             .wrapping_add(1013904223);
         self.rng_state
     }
+
+    #[must_use]
+    pub fn collision_transform(&self, entity_transform: Transform) -> Transform {
+        Transform::from_position([
+            entity_transform.position[0] + self.runtime_config.collision_center_offset[0],
+            entity_transform.position[1] + self.runtime_config.collision_center_offset[1],
+        ])
+    }
+
+    #[must_use]
+    pub fn entity_transform_from_collision(&self, collision_transform: Transform) -> Transform {
+        Transform::from_position([
+            collision_transform.position[0] - self.runtime_config.collision_center_offset[0],
+            collision_transform.position[1] - self.runtime_config.collision_center_offset[1],
+        ])
+    }
+
+    #[must_use]
+    pub fn aabb(&self, entity_transform: Transform) -> Aabb {
+        Aabb::new(
+            self.collision_transform(entity_transform).position,
+            self.runtime_config.half_extents,
+        )
+    }
 }
 
 impl CollisionBody for NpcState {
@@ -187,6 +216,43 @@ impl CollisionBody for NpcState {
 fn random_heading(rng: &mut u32) -> [f32; 2] {
     *rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
     [if *rng < u32::MAX / 2 { 1.0 } else { -1.0 }, 0.0]
+}
+
+/// Target-center envelope that makes an NPC stop horizontal approach.
+///
+/// Distances are measured from the entity/presentation origin. Server-authored
+/// Monster bounds expand these by the target player's half-extents.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NpcApproachBounds {
+    pub left: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub top: f32,
+}
+
+impl NpcApproachBounds {
+    #[must_use]
+    pub const fn symmetric(range: f32, half_height: f32) -> Self {
+        Self {
+            left: range,
+            right: range,
+            bottom: half_height,
+            top: half_height,
+        }
+    }
+
+    #[must_use]
+    pub fn contains_target(self, origin: [f32; 2], target: [f32; 2], facing_left: bool) -> bool {
+        let (min_x, max_x) = if facing_left {
+            (origin[0] - self.left, origin[0])
+        } else {
+            (origin[0], origin[0] + self.right)
+        };
+        target[0] >= min_x
+            && target[0] <= max_x
+            && target[1] >= origin[1] - self.bottom
+            && target[1] <= origin[1] + self.top
+    }
 }
 
 /// Simulation-level action request. Not a wire `ClientControl`.
