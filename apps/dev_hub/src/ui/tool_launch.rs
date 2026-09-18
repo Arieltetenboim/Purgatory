@@ -7,6 +7,12 @@ pub(crate) fn launch_npc_lab() -> Result<(), String> {
     launch_hidden_powershell(&root, &launcher, &[], "npc-lab.log", LogMode::Append)
 }
 
+pub(crate) fn launch_mob_lab() -> Result<(), String> {
+    let root = workspace_root()?;
+    let launcher = root.join("tools").join("mob_lab").join("run.ps1");
+    launch_hidden_powershell(&root, &launcher, &[], "mob-lab.log", LogMode::Append)
+}
+
 pub(crate) fn launch_quality_gate() -> Result<(), String> {
     let root = workspace_root()?;
     let script = root.join("scripts").join("check.ps1");

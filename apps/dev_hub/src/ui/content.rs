@@ -13,9 +13,9 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
     layout::page_header(
         ui,
         "Content",
-        "Standalone authoring tools. Animation Lab and NPC Lab launch independently of the Hub.",
+        "Standalone authoring tools. Animation Lab, NPC Lab, and Mob Lab launch independently of the Hub.",
     );
-    ui.columns(2, |columns| {
+    ui.columns(3, |columns| {
         card(&mut columns[0], "Animation Lab", |ui| {
             ui.label(
                 "Opens a separate window. Lifetime is independent of the Hub and the game client.",
@@ -43,6 +43,22 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
                 *export_status = Some(match tool_launch::launch_npc_lab() {
                     Ok(()) => "NPC Lab launch requested".to_owned(),
                     Err(err) => format!("NPC Lab launch failed: {err}"),
+                });
+            }
+        });
+
+        card(&mut columns[2], "Mob Lab", |ui| {
+            ui.label("Local Web Monster authoring tool. Runtime Monster JSON is the source of truth.");
+            ui.add_space(6.0);
+            ui.colored_label(
+                theme::muted(),
+                "Runs hidden; output is written to logs/dev-tools/mob-lab.log.",
+            );
+            ui.add_space(8.0);
+            if ui.add(btn_primary("Launch Mob Lab")).clicked() {
+                *export_status = Some(match tool_launch::launch_mob_lab() {
+                    Ok(()) => "Mob Lab launch requested".to_owned(),
+                    Err(err) => format!("Mob Lab launch failed: {err}"),
                 });
             }
         });

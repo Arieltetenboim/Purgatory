@@ -392,7 +392,7 @@ fn quick_actions(
     model: &DashVm,
     outcome: &mut PageOutcome,
 ) {
-    dashboard_card(ui, "Q", "Quick Actions", 150.0, |ui| {
+    dashboard_card(ui, "Q", "Quick Actions", 196.0, |ui| {
         ui.colored_label(
             theme::muted(),
             RichText::new("Hover an action for details.").font(theme::subtitle_font()),
@@ -423,14 +423,14 @@ fn quick_actions(
             {
                 let _ = tool_launch::launch_npc_lab();
             }
-            let response = ui.add(btn_ghost("Hub Logs").min_size(button_size));
+            let response = ui.add(btn_ghost("Mob Lab").min_size(button_size));
             if action_response(
                 response,
-                "Open the Logs page, including Hub activity and isolated Quality Gate output.",
+                "Launch the local Monster authoring web tool in the background. Output is written to logs/dev-tools/mob-lab.log.",
             )
             .clicked()
             {
-                outcome.navigate = Some(HubPage::Logs);
+                let _ = tool_launch::launch_mob_lab();
             }
         });
 
@@ -458,6 +458,23 @@ fn quick_actions(
             {
                 let _ = tool_launch::launch_quality_gate();
             }
+            let response = ui.add(btn_ghost("Hub Logs").min_size(button_size));
+            if action_response(
+                response,
+                "Open the Logs page, including Hub activity and isolated Quality Gate output.",
+            )
+            .clicked()
+            {
+                outcome.navigate = Some(HubPage::Logs);
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
             let response = ui.add_enabled(
                 snap.can_stop_clients,
                 btn_ghost("Stop Clients").min_size(button_size),
@@ -470,22 +487,16 @@ fn quick_actions(
             {
                 outcome.command = Some(purgatory_dev_runtime::HubCommand::StopClients);
             }
+            let response = ui.add(btn_destructive("Kill All (F9)").min_size(button_size));
+            if action_response(
+                response,
+                "Emergency cleanup for game runtime processes: stop server, clients, load/validation jobs, active builds, and workspace Cargo processes. Authoring tools remain independent.",
+            )
+            .clicked()
+            {
+                outcome.command = Some(purgatory_dev_runtime::HubCommand::KillAll);
+            }
         });
-
-        ui.add_space(6.0);
-        ui.separator();
-        ui.add_space(6.0);
-
-        let response = ui.add(btn_destructive("Kill All (F9)").min_size(button_size));
-        if action_response(
-            response,
-            "Emergency cleanup for game runtime processes: stop server, clients, load/validation jobs, active builds, and workspace Cargo processes. Authoring tools remain independent.",
-        )
-        .clicked()
-        {
-            outcome.command = Some(purgatory_dev_runtime::HubCommand::KillAll);
-        }
-
         if let Some(warn) = model.cargo_warning {
             ui.add_space(7.0);
             ui.colored_label(
