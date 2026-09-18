@@ -20,7 +20,8 @@ use crate::item::{
     ItemPresentation, validate_item_definition, validate_item_presentation,
 };
 use crate::monster::{
-    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
+    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterCollisionBounds, MonsterDefinition,
+    validate_monster_definition,
 };
 use crate::registry::ContentRegistry;
 use crate::schema::{
@@ -578,9 +579,18 @@ struct RawMonster {
     id: String,
     debug_name: String,
     health_max: f32,
-    half_extents: [f32; 2],
+    collision_bounds: RawMonsterCollisionBounds,
     movement_speed: f32,
     behavior: RawMonsterBehavior,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMonsterCollisionBounds {
+    left: f32,
+    right: f32,
+    bottom: f32,
+    top: f32,
 }
 
 #[derive(Deserialize)]
@@ -637,7 +647,12 @@ impl RawMonster {
             authored_id: self.id,
             debug_name: self.debug_name,
             health_max: self.health_max,
-            half_extents: self.half_extents,
+            collision_bounds: MonsterCollisionBounds {
+                left: self.collision_bounds.left,
+                right: self.collision_bounds.right,
+                bottom: self.collision_bounds.bottom,
+                top: self.collision_bounds.top,
+            },
             movement_speed: self.movement_speed,
             behavior,
             home_leash_radius: self.behavior.home_leash_radius,

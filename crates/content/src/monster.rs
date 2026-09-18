@@ -3,14 +3,44 @@
 use crate::error::{ContentError, ValidationIssue};
 use purgatory_common::{ContentId, validate_authored_id};
 
-/// Monster content schema v2.
-pub const MONSTER_CONTENT_SCHEMA_VERSION: u32 = 2;
+/// Monster content schema v3.
+pub const MONSTER_CONTENT_SCHEMA_VERSION: u32 = 3;
 
-/// The intentionally small behavior vocabulary supported by Monster schema v2.
+/// The intentionally small behavior vocabulary supported by Monster schema v3.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MonsterBehavior {
     /// Patrol until damaged by a player, then pursue that attacker and deal contact damage.
     ChaseContactWhenAttacked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MonsterCollisionBounds {
+    /// Distance from entity origin to the left collision edge.
+    pub left: f32,
+    /// Distance from entity origin to the right collision edge.
+    pub right: f32,
+    /// Distance from entity origin to the bottom collision edge.
+    pub bottom: f32,
+    /// Distance from entity origin to the top collision edge.
+    pub top: f32,
+}
+
+impl MonsterCollisionBounds {
+    #[must_use]
+    pub fn half_extents(self) -> [f32; 2] {
+        [
+            (self.left + self.right) * 0.5,
+            (self.bottom + self.top) * 0.5,
+        ]
+    }
+
+    #[must_use]
+    pub fn center_offset(self) -> [f32; 2] {
+        [
+            (self.right - self.left) * 0.5,
+            (self.top - self.bottom) * 0.5,
+        ]
+    }
 }
 
 /// Server-only gameplay definition. Placement and presentation are separate concerns.
@@ -20,7 +50,7 @@ pub struct MonsterDefinition {
     pub authored_id: String,
     pub debug_name: String,
     pub health_max: f32,
-    pub half_extents: [f32; 2],
+    pub collision_bounds: MonsterCollisionBounds,
     pub movement_speed: f32,
     pub behavior: MonsterBehavior,
     pub home_leash_radius: f32,
@@ -43,8 +73,44 @@ pub fn validate_monster_definition(def: &MonsterDefinition) -> Result<(), Conten
         ));
     }
     positive_finite(&mut issues, def, "health_max", def.health_max);
-    positive_finite(&mut issues, def, "half_extents[0]", def.half_extents[0]);
-    positive_finite(&mut issues, def, "half_extents[1]", def.half_extents[1]);
+    non_negative_finite(
+        &mut issues,
+        def,
+        "collision_bounds.left",
+        def.collision_bounds.left,
+    );
+    non_negative_finite(
+        &mut issues,
+        def,
+        "collision_bounds.right",
+        def.collision_bounds.right,
+    );
+    non_negative_finite(
+        &mut issues,
+        def,
+        "collision_bounds.bottom",
+        def.collision_bounds.bottom,
+    );
+    non_negative_finite(
+        &mut issues,
+        def,
+        "collision_bounds.top",
+        def.collision_bounds.top,
+    );
+    if def.collision_bounds.left + def.collision_bounds.right <= 0.0 {
+        issues.push(monster_issue(
+            &def.authored_id,
+            "collision_bounds",
+            "horizontal span must be greater than zero",
+        ));
+    }
+    if def.collision_bounds.bottom + def.collision_bounds.top <= 0.0 {
+        issues.push(monster_issue(
+            &def.authored_id,
+            "collision_bounds",
+            "vertical span must be greater than zero",
+        ));
+    }
     positive_finite(&mut issues, def, "movement_speed", def.movement_speed);
     positive_finite(
         &mut issues,
@@ -74,6 +140,21 @@ fn positive_finite(
     }
 }
 
+fn non_negative_finite(
+    issues: &mut Vec<ValidationIssue>,
+    def: &MonsterDefinition,
+    field: &str,
+    value: f32,
+) {
+    if !value.is_finite() || value < 0.0 {
+        issues.push(monster_issue(
+            &def.authored_id,
+            field,
+            "must be finite and non-negative",
+        ));
+    }
+}
+
 fn monster_issue(definition: &str, field: &str, detail: impl std::fmt::Display) -> ValidationIssue {
     ValidationIssue::new("monster", definition, field, detail.to_string())
 }
@@ -89,7 +170,12 @@ mod tests {
             authored_id: "monster.slime.red".into(),
             debug_name: "Red Slime".into(),
             health_max: 20.0,
-            half_extents: [0.4, 0.6],
+            collision_bounds: MonsterCollisionBounds {
+                left: 0.4,
+                right: 0.4,
+                bottom: 0.6,
+                top: 0.6,
+            },
             movement_speed: 2.0,
             behavior: MonsterBehavior::ChaseContactWhenAttacked,
             home_leash_radius: 3.0,
@@ -106,10 +192,13 @@ mod tests {
         let mut def = valid();
         def.health_max = 0.0;
         def.movement_speed = f32::NAN;
+        def.collision_bounds.bottom = 0.0;
+        def.collision_bounds.top = 0.0;
         def.home_leash_radius = 0.0;
         let error = validate_monster_definition(&def).unwrap_err().to_string();
         assert!(error.contains("health_max"));
         assert!(error.contains("movement_speed"));
+        assert!(error.contains("collision_bounds"));
         assert!(error.contains("home_leash_radius"));
     }
 }
