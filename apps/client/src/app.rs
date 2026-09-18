@@ -861,6 +861,7 @@ impl ClientApp {
                     false
                 }
             };
+            let mut horizontal_speed = 0.0_f32;
             let mut state = if is_humanoid_social_npc(&entity) {
                 let (pose, _) =
                     interpolated_or_replica_pose(&interp_poses, entity.entity_id, entity.position);
@@ -883,6 +884,7 @@ impl ClientApp {
                 } else {
                     (entity.velocity, self.replica.local_grounded())
                 };
+                horizontal_speed = velocity[0].abs();
                 from_local_with_presentation(
                     LocalMotion {
                         pose: self.frame_local.presented.unwrap_or(entity.position),
@@ -897,6 +899,7 @@ impl ClientApp {
             } else {
                 let (pose, _) =
                     interpolated_or_replica_pose(&interp_poses, entity.entity_id, entity.position);
+                horizontal_speed = entity.velocity[0].abs();
                 from_remote_with_presentation(
                     RemoteMotion {
                         pose,
@@ -919,10 +922,10 @@ impl ClientApp {
                         authored_id,
                     })
                 });
-            items.push((key, state, dialogue_animation));
+            items.push((key, state, dialogue_animation, horizontal_speed));
         }
         self.characters
-            .sync_with_dialogue(items, &self.registry, frame_dt);
+            .sync_with_dialogue_motion(items, &self.registry, frame_dt);
     }
 
     /// Apply Proof UI playback requests, advance A2 player at most once, resolve one sample `t`.
