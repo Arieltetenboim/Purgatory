@@ -128,6 +128,14 @@ impl ServerCommandsState {
             }) {
                 self.selected_item = snapshot.items.first().map(|item| item.content_id);
             }
+            if !snapshot.facts.is_empty()
+                && !snapshot
+                    .facts
+                    .iter()
+                    .any(|fact| fact == &self.narrative_fact_id)
+            {
+                self.narrative_fact_id = snapshot.facts[0].clone();
+            }
 
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Target Player").color(theme::muted()));
@@ -239,17 +247,28 @@ impl ServerCommandsState {
             ui.add_space(5.0);
             ui.horizontal(|ui| {
                 ui.label("Fact");
-                ui.add_sized(
-                    [300.0, 24.0],
-                    egui::TextEdit::singleline(&mut self.narrative_fact_id)
-                        .hint_text("fact id"),
-                );
+                egui::ComboBox::from_id_salt("server_commands_fact")
+                    .width(300.0)
+                    .selected_text(if snapshot.facts.is_empty() {
+                        "No authored facts".to_string()
+                    } else {
+                        self.narrative_fact_id.clone()
+                    })
+                    .show_ui(ui, |ui| {
+                        for fact in &snapshot.facts {
+                            ui.selectable_value(
+                                &mut self.narrative_fact_id,
+                                fact.clone(),
+                                fact,
+                            );
+                        }
+                    });
                 ui.checkbox(&mut self.narrative_fact_value, "Value");
                 let fact_ready =
-                    ready && self.selected_player.is_some() && !self.narrative_fact_id.trim().is_empty();
+                    ready && self.selected_player.is_some() && !snapshot.facts.is_empty();
                 if ui
                     .add_enabled(fact_ready, btn_primary("Set Fact"))
-                    .on_hover_text("Set this boolean narrative fact for the selected player.")
+                    .on_hover_text("Set the selected authored boolean fact for this player.")
                     .clicked()
                     && let Some(connection_id) = self.selected_player
                 {
@@ -261,7 +280,9 @@ impl ServerCommandsState {
                 }
                 if ui
                     .add_enabled(fact_ready, btn_ghost("Clear Fact"))
-                    .on_hover_text("Remove this fact entry for the selected player; reads fall back to false.")
+                    .on_hover_text(
+                        "Remove the selected fact entry for this player; reads fall back to false.",
+                    )
                     .clicked()
                     && let Some(connection_id) = self.selected_player
                 {
@@ -271,6 +292,12 @@ impl ServerCommandsState {
                     });
                 }
             });
+            if snapshot.facts.is_empty() {
+                ui.colored_label(
+                    theme::muted(),
+                    "No fact catalogue received. Rebuild/restart the server to use authored fact selection.",
+                );
+            }
             ui.add_space(5.0);
             ui.horizontal(|ui| {
                 ui.label("NPC Met");
