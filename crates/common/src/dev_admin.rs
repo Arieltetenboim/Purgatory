@@ -22,6 +22,22 @@ pub enum DevAdminRequest {
         item_content_id: u32,
         quantity: u32,
     },
+    SetNarrativeFact {
+        connection_id: u64,
+        fact_id: String,
+        value: bool,
+    },
+    ClearNarrativeFact {
+        connection_id: u64,
+        fact_id: String,
+    },
+    MarkNpcMet {
+        connection_id: u64,
+        npc_authored_id: String,
+    },
+    ResetNarrative {
+        connection_id: u64,
+    },
     ResetPlayer {
         connection_id: u64,
     },
@@ -91,6 +107,21 @@ mod tests {
         };
         let json = serde_json::to_string(&request).expect("encode");
         assert!(json.contains("spawn_item"));
+        assert_eq!(
+            serde_json::from_str::<DevAdminRequest>(&json).expect("decode"),
+            request
+        );
+    }
+
+    #[test]
+    fn narrative_request_roundtrip_is_typed_json() {
+        let request = DevAdminRequest::SetNarrativeFact {
+            connection_id: 9,
+            fact_id: "welcome.workshop.package_delivered".into(),
+            value: true,
+        };
+        let json = serde_json::to_string(&request).expect("encode");
+        assert!(json.contains("set_narrative_fact"));
         assert_eq!(
             serde_json::from_str::<DevAdminRequest>(&json).expect("decode"),
             request
