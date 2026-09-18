@@ -1021,34 +1021,50 @@ impl World {
     }
 
     /// Resolve NPC/player overlap as a gameplay query after all NPC physics.
+    ///
+    /// Contact damage is a physical collision rule, not an aggro rule. Passive
+    /// monsters therefore still hurt players who overlap their collider.
     fn apply_npc_contact_damage(&mut self) {
-        let ids: Vec<EntityId> = self
+        let npcs: Vec<EntityId> = self
             .iter()
             .filter(|&id| self.npc_of(id).is_some())
             .collect();
-        for id in ids {
+        let players: Vec<EntityId> = self
+            .iter()
+            .filter(|&id| self.kind(id) == Some(crate::entity::EntityKind::Player))
+            .collect();
+
+        for id in npcs {
             let Some(npc) = self.npc_of(id) else {
                 continue;
             };
             if !npc.active || npc.dead_pending || self.health_of(id).is_some_and(|h| h.is_dead()) {
                 continue;
             }
-            let Some(target) = npc.target else {
+            let Some(address) = self.address_of(id) else {
                 continue;
             };
-            if !self.valid_npc_target(id, target, f32::MAX) {
-                continue;
-            }
-            let (Some(npc_transform), Some((player_transform, player))) =
-                (self.transform_of(id), self.get_player(target))
-            else {
+            let Some(npc_transform) = self.transform_of(id) else {
                 continue;
             };
-            if npc
-                .aabb(npc_transform)
-                .overlaps(player.aabb(*player_transform))
-            {
-                let _ = self.apply_contact_damage(target, CONTACT_DAMAGE);
+
+            for &player_id in &players {
+                if self.address_of(player_id) != Some(address)
+                    || !self
+                        .health_of(player_id)
+                        .is_some_and(|health| health.is_alive())
+                {
+                    continue;
+                }
+                let Some((player_transform, player)) = self.get_player(player_id) else {
+                    continue;
+                };
+                if npc
+                    .aabb(npc_transform)
+                    .overlaps(player.aabb(*player_transform))
+                {
+                    let _ = self.apply_contact_damage(player_id, CONTACT_DAMAGE);
+                }
             }
         }
     }
