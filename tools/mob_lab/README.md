@@ -26,6 +26,7 @@ Default URL: `http://127.0.0.1:8766/`.
 - list runtime Monster definitions;
 - create a schema-v2 Monster for an already allocated stable ContentId;
 - edit identity/body/movement/behavior;
+- preview the actual runtime sprite with a colored collider overlay in world-unit scale;
 - inspect/apply raw JSON;
 - local shape validation;
 - atomic save directly to `content/definitions/monsters`;

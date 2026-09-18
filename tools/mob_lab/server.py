@@ -21,6 +21,15 @@ DEFAULT_PORT = 8766
 SCHEMA_VERSION = 2
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 
+PRESENTATION_SOURCES = {
+    "monster.slime.red": {
+        "manifest": Path("Graphic/creature/redslime/manifest.json"),
+        "atlas": Path("Graphic/creature/redslime/redslime.png"),
+        "world_size": [1.0, 1.0],
+        "frame_seconds": 0.10,
+    }
+}
+
 
 def validate_monster_document(value: Any) -> list[str]:
     errors: list[str] = []
@@ -107,7 +116,40 @@ def load_numeric_catalog(repo_root: Path) -> dict[str, int]:
     return labels
 
 
-def new_monster_document(authored_id: str, debug_name: str) -> dict[str, Any]:
+
+def load_presentation(repo_root: Path, authored_id: str) -> dict[str, Any] | None:
+    source = PRESENTATION_SOURCES.get(authored_id)
+    if source is None:
+        return None
+
+    manifest_path = repo_root / source["manifest"]
+    atlas_path = repo_root / source["atlas"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    clips = manifest.get("clips", {})
+    idle = clips.get("idle", {})
+    frames = idle.get("frames", [])
+    frame_size = manifest.get("frame_size_px", [])
+    if (
+        manifest.get("kind") != "purgatory_sprite_animation"
+        or len(frame_size) != 2
+        or not frames
+        or not atlas_path.is_file()
+    ):
+        raise ValueError(f"Invalid runtime presentation for {authored_id}.")
+
+    return {
+        "available": True,
+        "manifest_id": manifest.get("id"),
+        "atlas_url": "/api/presentation-atlas?monster="
+        + urllib.parse.quote(authored_id, safe=""),
+        "frame_size_px": frame_size,
+        "idle_frames": frames,
+        "frame_seconds": source["frame_seconds"],
+        "world_size": source["world_size"],
+        "authored_facing": manifest.get("authored_facing"),
+    }
+
+
     return {
         "schema_version": SCHEMA_VERSION,
         "id": authored_id,
@@ -200,6 +242,12 @@ class MobLabHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/monster":
             self._handle_open()
             return
+        if parsed.path == "/api/presentation":
+            self._handle_presentation()
+            return
+        if parsed.path == "/api/presentation-atlas":
+            self._handle_presentation_atlas()
+            return
         if parsed.path == "/":
             self.path = "/index.html"
         super().do_GET()
@@ -216,6 +264,36 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             self._handle_validate()
             return
         self._json_response({"error": "Unknown API route."}, HTTPStatus.NOT_FOUND)
+
+
+    def _handle_presentation(self) -> None:
+        try:
+            authored_id = self._query_value("monster")
+            presentation = load_presentation(self.repo_root, authored_id)
+            if presentation is None:
+                self._json_response({"available": False, "monster": authored_id})
+                return
+            self._json_response(presentation)
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _handle_presentation_atlas(self) -> None:
+        try:
+            authored_id = self._query_value("monster")
+            source = PRESENTATION_SOURCES.get(authored_id)
+            if source is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            path = (self.repo_root / source["atlas"]).resolve()
+            payload = path.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except (ValueError, OSError) as exc:
+            self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def _handle_list(self) -> None:
         items: list[dict[str, Any]] = []

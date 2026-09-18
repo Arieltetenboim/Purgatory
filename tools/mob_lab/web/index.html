@@ -28,6 +28,26 @@
     </div>
     <div id="emptyState" class="empty">Select a monster from the library or create one.</div>
     <div id="editor" class="editor hidden">
+      <section class="card preview-card">
+        <div class="cardhead">
+          <div>
+            <h2>Runtime Preview</h2>
+            <div class="muted">Actual runtime sprite + authored collision box</div>
+          </div>
+          <div class="preview-legend">
+            <span><i class="legend-sprite"></i>SPRITE</span>
+            <span><i class="legend-hitbox"></i>HITBOX</span>
+          </div>
+        </div>
+        <div class="preview-stage-wrap">
+          <canvas id="previewCanvas" width="520" height="360"></canvas>
+          <div id="previewUnavailable" class="preview-unavailable hidden">NO RUNTIME SPRITE</div>
+        </div>
+        <div class="preview-readout">
+          <span id="spriteReadout">Sprite: -</span>
+          <span id="hitboxReadout">Hitbox: -</span>
+        </div>
+      </section>
       <section class="card">
         <h2>Identity</h2>
         <div class="grid two">
