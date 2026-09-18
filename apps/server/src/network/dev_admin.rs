@@ -245,8 +245,9 @@ async fn dispatch(
                 .await
             {
                 Ok(()) => {
-                    let message =
-                        format!("Spawn Item {item_content_id} x{quantity} near connection {connection_id}");
+                    let message = format!(
+                        "Spawn Item {item_content_id} x{quantity} near connection {connection_id}"
+                    );
                     println!("DEV_ADMIN {message}");
                     DevAdminResponse::command_ok(message)
                 }
