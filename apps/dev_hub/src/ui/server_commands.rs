@@ -10,7 +10,7 @@ use purgatory_common::{
 use purgatory_dev_runtime::{HubSnapshot, ServerState};
 
 use crate::theme;
-use crate::ui::layout::{btn_ghost, btn_primary, hub_card};
+use crate::ui::layout::{btn_destructive, btn_ghost, btn_primary, hub_card};
 
 const HISTORY_CAP: usize = 64;
 const AUTO_REFRESH_CONNECTED: Duration = Duration::from_secs(2);
@@ -25,6 +25,8 @@ pub struct ServerCommandsState {
     selected_npc: Option<u32>,
     selected_item: Option<u32>,
     item_quantity: u32,
+    narrative_fact_id: String,
+    narrative_fact_value: bool,
     channel: u32,
     history: Vec<String>,
     sender: Sender<AdminReply>,
@@ -43,6 +45,8 @@ impl Default for ServerCommandsState {
             selected_npc: None,
             selected_item: None,
             item_quantity: 1,
+            narrative_fact_id: "welcome.workshop.package_delivered".into(),
+            narrative_fact_value: true,
             channel: 1,
             history: Vec::new(),
             sender,
@@ -221,6 +225,84 @@ impl ServerCommandsState {
                         item_content_id,
                         quantity: self.item_quantity,
                     });
+                }
+            });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(RichText::new("Narrative").strong());
+            ui.colored_label(
+                theme::muted(),
+                "Per-player authoritative narrative state. Mutations close an active dialogue before changing its conditions.",
+            );
+            ui.add_space(5.0);
+            ui.horizontal(|ui| {
+                ui.label("Fact");
+                ui.add_sized(
+                    [300.0, 24.0],
+                    egui::TextEdit::singleline(&mut self.narrative_fact_id)
+                        .hint_text("fact id"),
+                );
+                ui.checkbox(&mut self.narrative_fact_value, "Value");
+                let fact_ready =
+                    ready && self.selected_player.is_some() && !self.narrative_fact_id.trim().is_empty();
+                if ui
+                    .add_enabled(fact_ready, btn_primary("Set Fact"))
+                    .on_hover_text("Set this boolean narrative fact for the selected player.")
+                    .clicked()
+                    && let Some(connection_id) = self.selected_player
+                {
+                    self.send(DevAdminRequest::SetNarrativeFact {
+                        connection_id,
+                        fact_id: self.narrative_fact_id.clone(),
+                        value: self.narrative_fact_value,
+                    });
+                }
+                if ui
+                    .add_enabled(fact_ready, btn_ghost("Clear Fact"))
+                    .on_hover_text("Remove this fact entry for the selected player; reads fall back to false.")
+                    .clicked()
+                    && let Some(connection_id) = self.selected_player
+                {
+                    self.send(DevAdminRequest::ClearNarrativeFact {
+                        connection_id,
+                        fact_id: self.narrative_fact_id.clone(),
+                    });
+                }
+            });
+            ui.add_space(5.0);
+            ui.horizontal(|ui| {
+                ui.label("NPC Met");
+                let npc_ready = ready && self.selected_player.is_some() && self.selected_npc.is_some();
+                if ui
+                    .add_enabled(npc_ready, btn_ghost("Mark selected NPC met"))
+                    .on_hover_text("Mark the selected authored NPC as met for this player.")
+                    .clicked()
+                    && let (Some(connection_id), Some(npc_content_id)) =
+                        (self.selected_player, self.selected_npc)
+                    && let Some(npc) = snapshot
+                        .npcs
+                        .iter()
+                        .find(|entry| entry.content_id == npc_content_id)
+                {
+                    self.send(DevAdminRequest::MarkNpcMet {
+                        connection_id,
+                        npc_authored_id: npc.authored_id.clone(),
+                    });
+                }
+                if ui
+                    .add_enabled(
+                        ready && self.selected_player.is_some(),
+                        btn_destructive("Reset Narrative"),
+                    )
+                    .on_hover_text(
+                        "Reset only the selected player's transient narrative state, restore Welcome defaults, and close any active dialogue.",
+                    )
+                    .clicked()
+                    && let Some(connection_id) = self.selected_player
+                {
+                    self.send(DevAdminRequest::ResetNarrative { connection_id });
                 }
             });
 
