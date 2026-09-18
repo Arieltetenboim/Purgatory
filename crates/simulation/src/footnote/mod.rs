@@ -35,7 +35,7 @@ pub struct FootnoteConfig {
 impl FootnoteConfig {
     /// Development defaults. Not MapleStory-tuned; rates so max takes several ticks.
     pub const DEFAULT: Self = Self {
-        max_ground_speed: 3.5,
+        max_ground_speed: 4.0,
         ground_acceleration: 24.0,
         ground_deceleration: 30.0,
         air_acceleration: 10.0,
