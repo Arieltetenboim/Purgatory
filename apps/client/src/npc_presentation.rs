@@ -5,6 +5,7 @@
 //! frame and the existing generic `AssetRuntime` texture identity.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -12,14 +13,6 @@ use crate::asset_runtime::AssetRuntime;
 use crate::character_presentation::PresentationActivity;
 use crate::renderer::{DrawQuad, SpriteTextureId};
 
-const RED_SLIME_MANIFEST: &[u8] =
-    include_bytes!("../../../Graphic/creature/redslime/manifest.json");
-const RED_SLIME_ATLAS: &[u8] = include_bytes!("../../../Graphic/creature/redslime/redslime.png");
-const RED_SLIME_KEY: &str = "creature.red_slime.atlas";
-const RED_SLIME_FRAME_SECONDS: f32 = 0.10;
-// Four attack frames occupy the readable 0.40 s clip while the authoritative
-// one-shot remains active for 0.60 s and holds the final frame afterward.
-const RED_SLIME_ATTACK_FRAME_SECONDS: f32 = RED_SLIME_FRAME_SECONDS;
 const ACCEPT_MANIFEST: &[u8] = include_bytes!("../../../Graphic/ui/animation/accept.json");
 const ACCEPT_TEXTURE: &[u8] = include_bytes!("../../../Graphic/ui/animation/accept.png");
 const TURN_MANIFEST: &[u8] = include_bytes!("../../../Graphic/ui/animation/turn.json");
@@ -122,6 +115,8 @@ pub(crate) struct SpriteSheet {
     height: u32,
     frame_width: u32,
     frame_height: u32,
+    world_size: [f32; 2],
+    authored_facing_left: bool,
     frames: Vec<[[f32; 2]; 4]>,
     clips: HashMap<&'static str, SpriteAnimationClip>,
 }
@@ -266,43 +261,96 @@ impl OverheadSheet {
     }
 }
 
-impl SpriteSheet {
-    pub(crate) fn red_slime(assets: &mut AssetRuntime) -> Result<Self, String> {
+fn workspace_root() -> PathBuf {
+    std::env::current_dir()
+        .ok()
+        .filter(|path| path.join("Graphic").join("creature").is_dir())
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
+fn find_sprite_manifest(sprite_id: &str) -> Result<(PathBuf, RawManifest), String> {
+    let root = workspace_root().join("Graphic").join("creature");
+    let entries = std::fs::read_dir(&root)
+        .map_err(|error| format!("read {}: {error}", root.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let manifest_path = entry.path().join("manifest.json");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(&manifest_path)
+            .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
         let manifest: RawManifest =
-            serde_json::from_slice(RED_SLIME_MANIFEST).map_err(|err| err.to_string())?;
+            serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+        if manifest.id == sprite_id {
+            return Ok((manifest_path, manifest));
+        }
+    }
+    Err(format!("sprite manifest '{sprite_id}' not found under {}", root.display()))
+}
+
+impl SpriteSheet {
+    pub(crate) fn from_sprite_id(
+        assets: &mut AssetRuntime,
+        sprite_id: &str,
+    ) -> Result<Self, String> {
+        let (manifest_path, manifest) = find_sprite_manifest(sprite_id)?;
         if manifest.schema_version != 1
             || manifest.kind != "purgatory_sprite_animation"
-            || manifest.id != "creature.red_slime"
-            || manifest.atlas != "redslime.png"
-            || manifest.authored_facing != "right"
+            || !matches!(manifest.authored_facing.as_str(), "left" | "right")
+            || manifest.frame_size_px[0] == 0
+            || manifest.frame_size_px[1] == 0
+            || !manifest.world_size[0].is_finite()
+            || !manifest.world_size[1].is_finite()
+            || manifest.world_size[0] <= 0.0
+            || manifest.world_size[1] <= 0.0
+            || !manifest.frame_seconds.is_finite()
+            || manifest.frame_seconds <= 0.0
         {
-            return Err("unsupported red slime sprite manifest".to_owned());
+            return Err(format!("unsupported sprite manifest {}", manifest_path.display()));
         }
-        let texture = assets.register_png(RED_SLIME_KEY, RED_SLIME_ATLAS)?;
+        let atlas_name = Path::new(&manifest.atlas);
+        if atlas_name.components().count() != 1 {
+            return Err(format!("sprite atlas must be a file name: {}", manifest.atlas));
+        }
+        let atlas_path = manifest_path
+            .parent()
+            .ok_or_else(|| "sprite manifest has no parent directory".to_owned())?
+            .join(atlas_name);
+        let atlas_bytes = std::fs::read(&atlas_path)
+            .map_err(|error| format!("read {}: {error}", atlas_path.display()))?;
+        let texture_key = format!("{}.atlas", manifest.id);
+        let texture = assets.register_png(&texture_key, &atlas_bytes)?;
         let resource = assets
             .resource(texture)
-            .ok_or_else(|| "red slime atlas was not registered".to_owned())?;
+            .ok_or_else(|| format!("sprite texture '{}' was not registered", manifest.id))?;
         let (width, height) = (resource.image.width(), resource.image.height());
-        if (width, height) != (256, 256)
-            || manifest.frame_size_px != [64, 64]
-            || width % manifest.frame_size_px[0] != 0
-            || height % manifest.frame_size_px[1] != 0
-        {
-            return Err("red slime atlas must be a 256x256 sheet of 64x64 cells".to_owned());
+        let [frame_width, frame_height] = manifest.frame_size_px;
+        if width % frame_width != 0 || height % frame_height != 0 {
+            return Err(format!(
+                "{} atlas dimensions {}x{} are not divisible by frame size {}x{}",
+                manifest.id, width, height, frame_width, frame_height
+            ));
         }
-        let columns = width / manifest.frame_size_px[0];
-        let rows = height / manifest.frame_size_px[1];
+        let columns = width / frame_width;
+        let rows = height / frame_height;
         let frames: Vec<[[f32; 2]; 4]> = (0..columns * rows)
             .map(|index| {
-                let x = index % columns * manifest.frame_size_px[0];
-                let y = index / columns * manifest.frame_size_px[1];
+                let x = index % columns * frame_width;
+                let y = index / columns * frame_height;
                 [
-                    [x as f32 / width as f32, (y + 64) as f32 / height as f32],
                     [
-                        (x + 64) as f32 / width as f32,
-                        (y + 64) as f32 / height as f32,
+                        x as f32 / width as f32,
+                        (y + frame_height) as f32 / height as f32,
                     ],
-                    [(x + 64) as f32 / width as f32, y as f32 / height as f32],
+                    [
+                        (x + frame_width) as f32 / width as f32,
+                        (y + frame_height) as f32 / height as f32,
+                    ],
+                    [
+                        (x + frame_width) as f32 / width as f32,
+                        y as f32 / height as f32,
+                    ],
                     [x as f32 / width as f32, y as f32 / height as f32],
                 ]
             })
@@ -310,43 +358,41 @@ impl SpriteSheet {
 
         let mut clips = HashMap::new();
         for (name, raw) in manifest.clips {
+            let name = match name.as_str() {
+                "idle" => "idle",
+                "move" => "move",
+                "attack" => "attack",
+                _ => return Err(format!("unsupported sprite clip {name}")),
+            };
             let mode = if raw.looped {
                 SpritePlaybackMode::Loop
             } else {
                 SpritePlaybackMode::Once
             };
-            let frame_seconds = if name == "attack" {
-                RED_SLIME_ATTACK_FRAME_SECONDS
-            } else {
-                RED_SLIME_FRAME_SECONDS
-            };
-            let clip = SpriteAnimationClip::new(raw.frames, frame_seconds, mode);
+            let clip = SpriteAnimationClip::new(raw.frames, manifest.frame_seconds, mode);
             if clip
                 .frames
                 .iter()
                 .any(|frame| usize::from(*frame) >= frames.len())
             {
-                return Err(format!("red slime clip {name} references an invalid frame"));
+                return Err(format!("{} clip {name} references an invalid frame", manifest.id));
             }
-            let name = match name.as_str() {
-                "idle" => "idle",
-                "move" => "move",
-                "attack" => "attack",
-                _ => return Err(format!("unsupported red slime clip {name}")),
-            };
             clips.insert(name, clip);
         }
         for required in ["idle", "move", "attack"] {
             if !clips.contains_key(required) {
-                return Err(format!("red slime manifest is missing {required}"));
+                return Err(format!("{} manifest is missing {required}", manifest.id));
             }
         }
+
         Ok(Self {
             texture,
             width,
             height,
-            frame_width: 64,
-            frame_height: 64,
+            frame_width,
+            frame_height,
+            world_size: manifest.world_size,
+            authored_facing_left: manifest.authored_facing == "left",
             frames,
             clips,
         })
@@ -377,27 +423,33 @@ impl SpriteSheet {
         flash: bool,
         facing_left: bool,
     ) -> DrawQuad {
-        let half = 0.5;
+        let half = [self.world_size[0] * 0.5, self.world_size[1] * 0.5];
         let mut quad = DrawQuad::textured_sprite(
             self.texture,
             position,
-            [[-half, -half], [half, -half], [half, half], [-half, half]],
+            [
+                [-half[0], -half[1]],
+                [half[0], -half[1]],
+                [half[0], half[1]],
+                [-half[0], half[1]],
+            ],
             self.frame_uv(frame),
             0.0,
         );
         if flash {
             quad.color = [1.0, 0.72, 0.16, 1.0];
         }
-        if facing_left {
+        if facing_left != self.authored_facing_left {
             quad = quad.mirror_x_about(position);
         }
         quad
     }
 }
-
 #[derive(Deserialize)]
 struct RawManifest {
     frame_size_px: [u32; 2],
+    world_size: [f32; 2],
+    frame_seconds: f32,
     authored_facing: String,
     clips: HashMap<String, RawClip>,
     atlas: String,
@@ -465,7 +517,7 @@ mod tests {
 
     fn sheet() -> SpriteSheet {
         let mut assets = AssetRuntime::new();
-        SpriteSheet::red_slime(&mut assets).unwrap()
+        SpriteSheet::from_sprite_id(&mut assets, "creature.red_slime").unwrap()
     }
 
     #[test]
@@ -487,7 +539,7 @@ mod tests {
         assert_eq!(clip.frames(), &[8, 9, 10, 11]);
         assert_eq!(clip.mode(), SpritePlaybackMode::Loop);
         let mut player = SpriteAnimationPlayer::new();
-        player.advance(clip, RED_SLIME_FRAME_SECONDS * 4.0);
+        player.advance(clip, 0.10 * 4.0);
         assert_eq!(player.frame(clip), Some(8));
         assert!(!player.finished());
     }
@@ -511,7 +563,7 @@ mod tests {
         let mut drawn = Vec::new();
         for _ in clip.frames() {
             drawn.push(player.frame(clip).unwrap());
-            player.advance(clip, RED_SLIME_ATTACK_FRAME_SECONDS);
+            player.advance(clip, 0.10);
         }
         assert_eq!(drawn, clip.frames());
         assert_eq!(player.frame(clip), Some(15));
@@ -554,7 +606,7 @@ mod tests {
         let clip = sheet.clip("move");
         let mut player = SpriteAnimationPlayer::new();
         player.set_clip("move");
-        player.advance(clip, RED_SLIME_FRAME_SECONDS);
+        player.advance(clip, 0.10);
         let frame = player.frame(clip).unwrap();
         let quad = sheet.quad([0.0, 0.0], frame, true, false);
         assert_eq!(frame, 1);
