@@ -139,7 +139,7 @@ def monster_reserved_ids(repo_root: Path) -> set[int]:
     used = {
         int(raw.replace("_", ""))
         for raw in re.findall(
-            r"pub const MONSTER_[A-Z0-9_]+: ContentId = ContentId::from_raw\\(([0-9_]+)\\);",
+            r"pub const MONSTER_[A-Z0-9_]+: ContentId = ContentId::from_raw\(([0-9_]+)\);",
             source,
         )
     }
@@ -148,7 +148,7 @@ def monster_reserved_ids(repo_root: Path) -> set[int]:
     )
     used.update(
         int(raw)
-        for raw in re.findall(r"^\\| \`(1[0-9]{4})\` \| \`monster\\.", ledger, flags=re.MULTILINE)
+        for raw in re.findall(r"^\| `(1[0-9]{4})` \| `monster\.", ledger, flags=re.MULTILINE)
     )
     return {
         raw
@@ -164,7 +164,7 @@ def monster_ledger_labels(repo_root: Path) -> dict[str, tuple[int, str]]:
     return {
         label: (int(raw), status.strip())
         for raw, label, status in re.findall(
-            r"^\\| \`(1[0-9]{4})\` \| \`(monster\\.[^\`]+)\` \| ([^|]+)\\|$",
+            r"^\| `(1[0-9]{4})` \| `(monster\.[^`]+)` \| ([^|]+)\|$",
             ledger,
             flags=re.MULTILINE,
         )
