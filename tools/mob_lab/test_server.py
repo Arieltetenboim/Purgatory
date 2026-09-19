@@ -116,7 +116,7 @@ class MobLabContractTests(unittest.TestCase):
 
 pub const MONSTER_RED_SLIME: ContentId = ContentId::from_raw(10_001);
 pub const MONSTER_MOSS_CRAB: ContentId = ContentId::from_raw(10_002);
-pub const MONSTER_RETIRED_WISP: ContentId = ContentId::from_raw(10_004);
+pub const MONSTER_RETIRED_WISP: ContentId = ContentId::from_raw(10_003);
 
 pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
     Some(match label {
