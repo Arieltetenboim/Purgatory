@@ -40,7 +40,7 @@ label{display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:9p
 .build-tag{padding:2px 5px;border:1px solid #29424a;border-radius:3px;color:#75d7e4;font-size:9px;font-weight:900}
 .actions{display:flex;gap:6px}
 
-.app-shell{display:grid;grid-template-columns:230px minmax(560px,1fr) 245px;gap:1px;min-height:0;background:var(--line)}
+.app-shell{display:grid;grid-template-columns:minmax(250px,22%) minmax(620px,1fr) minmax(260px,23%);gap:1px;min-height:0;background:var(--line)}
 .panel{background:var(--panel);min-height:0}
 .library,.inspector{overflow:auto}
 .library{padding:11px 10px}
