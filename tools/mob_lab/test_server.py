@@ -1,8 +1,11 @@
 import json
+import binascii
+import struct
 import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
+import zlib
 
 import server
 from server import (
@@ -20,11 +23,213 @@ from server import (
     resolve_monster_path,
     safe_filename,
     scan_sprite_manifests,
+    sprite_public_record,
     validate_monster_document,
 )
 
 
+def tiny_png(width: int, height: int) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", binascii.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(
+            b"IDAT",
+            zlib.compress(
+                b"".join(b"\x00" + b"\x00\x00\x00\x00" * width for _ in range(height))
+            ),
+        )
+        + chunk(b"IEND", b"")
+    )
+
+
 class MobLabContractTests(unittest.TestCase):
+    @staticmethod
+    def v2_manifest() -> dict:
+        return {
+            "schema_version": 2,
+            "kind": "purgatory_sprite_animation",
+            "id": "creature.goblin_archer",
+            "atlas": "atlas.png",
+            "pixels_per_unit": 64.0,
+            "authored_facing": "right",
+            "frames": [
+                {
+                    "rect_px": [0, 0, 4, 6],
+                    "origin_px": [7, -2],
+                    "sockets": {
+                        "hand": [-3, 8],
+                        "projectile_spawn": [5, -1],
+                    },
+                },
+                {
+                    "rect_px": [4, 0, 3, 8],
+                    "origin_px": [1, 4],
+                    "sockets": {},
+                },
+            ],
+            "clips": {
+                "idle": {
+                    "loop": True,
+                    "steps": [
+                        {"frame": 0, "duration_ms": 100},
+                        {"frame": 1, "duration_ms": 150},
+                    ],
+                    "annotations": [
+                        {"name": "aim", "step": 0, "offset_ms": 0, "socket": "hand"},
+                        {"name": "release", "step": 1, "offset_ms": 20},
+                    ],
+                },
+                "special.attack-1": {
+                    "loop": False,
+                    "steps": [{"frame": 1, "duration_ms": 200}],
+                },
+            },
+            "editor_note": "preserve this optional field",
+        }
+
+    @staticmethod
+    def write_v2_fixture(root: Path, manifest: dict) -> Path:
+        sprite_dir = root / "Graphic" / "creature" / "goblin"
+        sprite_dir.mkdir(parents=True)
+        (sprite_dir / "atlas.png").write_bytes(tiny_png(8, 8))
+        path = sprite_dir / "manifest.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        return path
+
+    def test_valid_v2_manifest_is_discovered_and_preserves_authored_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_v2_fixture(root, self.v2_manifest())
+            items, issues = scan_sprite_manifests(root)
+            self.assertEqual([], issues)
+            self.assertEqual(["creature.goblin_archer"], [item["id"] for item in items])
+            record = load_sprite_record(root, "creature.goblin_archer")
+            self.assertEqual([8, 8], record["atlas_size_px"])
+            self.assertEqual(self.v2_manifest()["frames"], record["frames"])
+            self.assertEqual(
+                ["idle", "special.attack-1"], list(record["clips"])
+            )
+            self.assertEqual(
+                self.v2_manifest()["editor_note"],
+                sprite_public_record(record)["editor_note"],
+            )
+
+    def test_v2_accepts_variable_frames_origins_and_signed_sockets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_v2_fixture(root, self.v2_manifest())
+            item = load_sprite_record(root, "creature.goblin_archer")
+            self.assertEqual([4, 6], item["frames"][0]["rect_px"][2:])
+            self.assertEqual([7, -2], item["frames"][0]["origin_px"])
+            self.assertEqual([-3, 8], item["frames"][0]["sockets"]["hand"])
+
+    def test_v2_rejects_invalid_or_overflowing_rectangles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.v2_manifest()
+            manifest["frames"][0]["rect_px"] = [6, 4, 3, 5]
+            self.write_v2_fixture(root, manifest)
+            items, issues = scan_sprite_manifests(root)
+            self.assertEqual([], items)
+            self.assertIn("does not fit inside atlas", issues[0])
+
+    def test_v2_rejects_invalid_pixels_per_unit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.v2_manifest()
+            manifest["pixels_per_unit"] = True
+            self.write_v2_fixture(root, manifest)
+            _items, issues = scan_sprite_manifests(root)
+            self.assertIn("pixels_per_unit", issues[0])
+
+    def test_v2_rejects_invalid_frame_references_and_durations(self):
+        for mutation, expected in (
+            (lambda doc: doc["clips"]["idle"]["steps"][0].update(frame=2), "frame is invalid"),
+            (lambda doc: doc["clips"]["idle"]["steps"][0].update(duration_ms=0), "positive integer"),
+            (lambda doc: doc["clips"]["idle"]["steps"][0].update(duration_ms=-1), "positive integer"),
+        ):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                manifest = self.v2_manifest()
+                mutation(manifest)
+                self.write_v2_fixture(root, manifest)
+                _items, issues = scan_sprite_manifests(root)
+                self.assertIn(expected, issues[0])
+
+    def test_v2_rejects_invalid_annotation_step_offset_and_socket(self):
+        mutations = (
+            (lambda doc: doc["clips"]["idle"]["annotations"][0].update(step=2), "step is invalid"),
+            (lambda doc: doc["clips"]["idle"]["annotations"][0].update(offset_ms=100), "smaller than step duration"),
+            (lambda doc: doc["clips"]["idle"]["annotations"][0].update(socket="missing"), "missing from referenced frame"),
+        )
+        for mutation, expected in mutations:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                manifest = self.v2_manifest()
+                mutation(manifest)
+                self.write_v2_fixture(root, manifest)
+                _items, issues = scan_sprite_manifests(root)
+                self.assertIn(expected, issues[0])
+
+    def test_v2_requires_idle_and_missing_optional_fields_use_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self.v2_manifest()
+            manifest["clips"]["special.attack-1"].pop("annotations", None)
+            manifest["frames"][1].pop("sockets")
+            self.write_v2_fixture(root, manifest)
+            items, issues = scan_sprite_manifests(root)
+            self.assertEqual([], issues)
+            self.assertEqual({}, items[0]["frames"][1].get("sockets", {}))
+            self.assertEqual([], items[0]["clips"]["special.attack-1"].get("annotations", []))
+
+            del manifest["clips"]["idle"]
+            (root / "Graphic" / "creature" / "goblin" / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            _items, issues = scan_sprite_manifests(root)
+            self.assertIn("missing required idle clip", issues[0])
+
+    def test_v2_invalid_save_preserves_previous_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self.write_v2_fixture(root, self.v2_manifest())
+            _path, loaded = load_sprite_manifest_document(root, "creature.goblin_archer")
+            invalid = json.loads(json.dumps(loaded))
+            invalid["clips"]["idle"]["steps"][0]["duration_ms"] = 0
+            with self.assertRaises(ValueError):
+                save_sprite_manifest_document(root, "creature.goblin_archer", invalid)
+            self.assertEqual(loaded, json.loads(path.read_text(encoding="utf-8")))
+
+    def test_v2_fields_survive_save_and_reload_without_normalization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = self.v2_manifest()
+            self.write_v2_fixture(root, original)
+            edited = json.loads(json.dumps(original))
+            edited["frames"][0]["sockets"]["custom_socket"] = [-8, 13]
+            edited["clips"]["idle"]["annotations"].append(
+                {"name": "late.marker", "step": 1, "offset_ms": 149}
+            )
+            saved, record = save_sprite_manifest_document(
+                root, "creature.goblin_archer", edited
+            )
+            self.assertEqual(edited, saved)
+            self.assertEqual(edited, record["document"])
+            self.assertEqual(edited, json.loads(
+                (root / "Graphic" / "creature" / "goblin" / "manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            ))
+
     def test_default_document_matches_schema_v4_contract(self):
         doc = new_monster_document("monster.test.slime", "Test Slime")
         self.assertEqual([], validate_monster_document(doc))

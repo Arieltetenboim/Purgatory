@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
+import struct
 import subprocess
 import threading
 import tempfile
@@ -23,6 +25,7 @@ MOB_LAB_BUILD = "m3-prototype-parity-v13"
 SCHEMA_VERSION = 4
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 SPRITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+AUTHORED_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 MONSTER_CONTENT_ID_START = 10_001
 MONSTER_CONTENT_ID_END = 19_999
 CONTENT_WRITE_LOCK = threading.Lock()
@@ -297,18 +300,197 @@ def _positive_pair(value: Any) -> bool:
     )
 
 
+def _png_dimensions(path: Path) -> tuple[int, int]:
+    signature = b"\x89PNG\r\n\x1a\n"
+    with path.open("rb") as stream:
+        header = stream.read(24)
+    if len(header) != 24 or header[:8] != signature or header[12:16] != b"IHDR":
+        raise ValueError("atlas is not a valid PNG")
+    width, height = struct.unpack(">II", header[16:24])
+    if width == 0 or height == 0:
+        raise ValueError("atlas PNG dimensions must be positive")
+    return width, height
+
+
+def _is_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_v2_sprite_manifest(
+    manifest_path: Path, manifest: dict[str, Any], atlas_path: Path
+) -> dict[str, Any]:
+    errors: list[str] = []
+    if manifest.get("kind") != "purgatory_sprite_animation":
+        errors.append('kind must be "purgatory_sprite_animation"')
+    sprite_id = manifest.get("id")
+    if not isinstance(sprite_id, str) or not AUTHORED_ID_RE.fullmatch(sprite_id):
+        errors.append("id must use lowercase authored-id characters.")
+
+    pixels_per_unit = manifest.get("pixels_per_unit")
+    if (
+        not isinstance(pixels_per_unit, (int, float))
+        or isinstance(pixels_per_unit, bool)
+        or not math.isfinite(pixels_per_unit)
+        or pixels_per_unit <= 0
+    ):
+        errors.append("pixels_per_unit must be finite and greater than zero.")
+    if manifest.get("authored_facing") not in ("left", "right"):
+        errors.append("authored_facing must be left or right")
+
+    try:
+        atlas_width, atlas_height = _png_dimensions(atlas_path)
+    except (OSError, struct.error, ValueError) as exc:
+        errors.append(str(exc))
+        atlas_width = atlas_height = 0
+
+    frames = manifest.get("frames")
+    if not isinstance(frames, list) or not frames:
+        errors.append("frames must be a non-empty array")
+        frames = []
+    for index, frame in enumerate(frames):
+        if not isinstance(frame, dict):
+            errors.append(f"frames[{index}] must be an object")
+            continue
+        rect = frame.get("rect_px")
+        if (
+            not isinstance(rect, list)
+            or len(rect) != 4
+            or not all(_is_integer(value) for value in rect)
+        ):
+            errors.append(f"frames[{index}].rect_px must contain four integers")
+            rect = None
+        if rect is not None:
+            x, y, width, height = rect
+            if x < 0 or y < 0 or width <= 0 or height <= 0:
+                errors.append(f"frames[{index}].rect_px has invalid bounds")
+            elif (
+                atlas_width == 0
+                or x + width > atlas_width
+                or y + height > atlas_height
+            ):
+                errors.append(f"frames[{index}].rect_px does not fit inside atlas")
+
+        origin = frame.get("origin_px")
+        if (
+            not isinstance(origin, list)
+            or len(origin) != 2
+            or not all(_is_integer(value) for value in origin)
+        ):
+            errors.append(f"frames[{index}].origin_px must contain two integers")
+
+        sockets = frame.get("sockets", {})
+        if not isinstance(sockets, dict):
+            errors.append(f"frames[{index}].sockets must be an object")
+            sockets = {}
+        for name, coordinates in sockets.items():
+            if not isinstance(name, str) or not AUTHORED_ID_RE.fullmatch(name):
+                errors.append(f"frames[{index}] has an invalid socket name")
+            if (
+                not isinstance(coordinates, list)
+                or len(coordinates) != 2
+                or not all(_is_integer(value) for value in coordinates)
+            ):
+                errors.append(f"frames[{index}].sockets.{name} must contain two integers")
+
+    clips = manifest.get("clips")
+    if not isinstance(clips, dict) or not clips:
+        errors.append("clips must be a non-empty object")
+        clips = {}
+    for name, clip in clips.items():
+        if not isinstance(name, str) or not AUTHORED_ID_RE.fullmatch(name):
+            errors.append("clip names must use lowercase authored-id characters")
+        if not isinstance(clip, dict):
+            errors.append(f"{name} clip must be an object")
+            continue
+        if not isinstance(clip.get("loop"), bool):
+            errors.append(f"{name}.loop must be boolean")
+        steps = clip.get("steps")
+        if not isinstance(steps, list) or not steps:
+            errors.append(f"{name}.steps must be a non-empty array")
+            steps = []
+        for step_index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                errors.append(f"{name}.steps[{step_index}] must be an object")
+                continue
+            frame_index = step.get("frame")
+            if (
+                not _is_integer(frame_index)
+                or frame_index < 0
+                or frame_index >= len(frames)
+            ):
+                errors.append(f"{name}.steps[{step_index}].frame is invalid")
+            duration = step.get("duration_ms")
+            if not _is_integer(duration) or duration <= 0:
+                errors.append(
+                    f"{name}.steps[{step_index}].duration_ms must be a positive integer"
+                )
+
+        annotations = clip.get("annotations", [])
+        if not isinstance(annotations, list):
+            errors.append(f"{name}.annotations must be an array")
+            annotations = []
+        for annotation_index, annotation in enumerate(annotations):
+            prefix = f"{name}.annotations[{annotation_index}]"
+            if not isinstance(annotation, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            annotation_name = annotation.get("name")
+            if (
+                not isinstance(annotation_name, str)
+                or not AUTHORED_ID_RE.fullmatch(annotation_name)
+            ):
+                errors.append(f"{prefix}.name is invalid")
+            annotation_step = annotation.get("step")
+            if (
+                not _is_integer(annotation_step)
+                or annotation_step < 0
+                or annotation_step >= len(steps)
+            ):
+                errors.append(f"{prefix}.step is invalid")
+                step = None
+            else:
+                step = steps[annotation_step]
+            offset = annotation.get("offset_ms")
+            if not _is_integer(offset) or offset < 0:
+                errors.append(f"{prefix}.offset_ms must be a non-negative integer")
+            elif (
+                isinstance(step, dict)
+                and _is_integer(step.get("duration_ms"))
+                and offset >= step["duration_ms"]
+            ):
+                errors.append(f"{prefix}.offset_ms must be smaller than step duration")
+            socket = annotation.get("socket")
+            if socket is not None:
+                if not isinstance(socket, str) or not AUTHORED_ID_RE.fullmatch(socket):
+                    errors.append(f"{prefix}.socket is invalid")
+                elif isinstance(step, dict) and _is_integer(step.get("frame")):
+                    frame_index = step["frame"]
+                    if (
+                        0 <= frame_index < len(frames)
+                        and isinstance(frames[frame_index], dict)
+                        and socket not in frames[frame_index].get("sockets", {})
+                    ):
+                        errors.append(f"{prefix}.socket is missing from referenced frame")
+
+    if "idle" not in clips:
+        errors.append("sprite manifest is missing required idle clip")
+    if errors:
+        raise ValueError("; ".join(errors))
+    return {
+        "atlas_size_px": [atlas_width, atlas_height],
+        "pixels_per_unit": float(pixels_per_unit),
+        "frames": frames,
+        "clips": manifest["clips"],
+    }
+
+
 def _sprite_record_from_document(
     repo_root: Path, manifest_path: Path, manifest: Any
 ) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         raise ValueError("manifest must be an object")
     sprite_id = manifest.get("id")
-    if (
-        manifest.get("schema_version") != 1
-        or manifest.get("kind") != "purgatory_sprite_animation"
-        or not isinstance(sprite_id, str)
-        or not SPRITE_ID_RE.fullmatch(sprite_id)
-    ):
+    if not isinstance(sprite_id, str) or not SPRITE_ID_RE.fullmatch(sprite_id):
         raise ValueError("unsupported sprite manifest header")
 
     atlas = manifest.get("atlas")
@@ -317,6 +499,28 @@ def _sprite_record_from_document(
     atlas_path = manifest_path.parent / atlas
     if not atlas_path.is_file():
         raise ValueError(f"atlas not found: {atlas}")
+
+    if manifest.get("schema_version") == 2:
+        validated = _validate_v2_sprite_manifest(manifest_path, manifest, atlas_path)
+        return {
+            "schema_version": 2,
+            "id": sprite_id,
+            "manifest_path": manifest_path.relative_to(repo_root).as_posix(),
+            "atlas": atlas,
+            "atlas_path": atlas_path,
+            "atlas_size_px": validated["atlas_size_px"],
+            "pixels_per_unit": validated["pixels_per_unit"],
+            "authored_facing": manifest["authored_facing"],
+            "frames": validated["frames"],
+            "clips": validated["clips"],
+            "document": manifest,
+        }
+
+    if (
+        manifest.get("schema_version") != 1
+        or manifest.get("kind") != "purgatory_sprite_animation"
+    ):
+        raise ValueError("unsupported sprite manifest header")
 
     frame_size = manifest.get("frame_size_px")
     if (
@@ -463,6 +667,15 @@ def save_sprite_manifest_document(
 
 
 def sprite_public_record(item: dict[str, Any]) -> dict[str, Any]:
+    if item.get("schema_version") == 2:
+        payload = dict(item["document"])
+        payload.update(
+            {
+                "manifest_path": item["manifest_path"],
+                "atlas_size_px": item["atlas_size_px"],
+            }
+        )
+        return payload
     return {
         "id": item["id"],
         "manifest_path": item["manifest_path"],
