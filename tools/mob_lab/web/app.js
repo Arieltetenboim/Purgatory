@@ -16,8 +16,7 @@ const els={};
   "newSpriteInput","newCancelButton","newCreateButton","monsterCount","manifestDirtyBadge","manifestIdInput",
   "manifestAtlasInput","manifestGridColsInput","manifestGridRowsInput","manifestFrameWidthInput",
   "manifestFrameHeightInput","manifestWorldWidthInput","manifestWorldHeightInput",
-  "manifestFrameSecondsInput","manifestFacingInput","manifestPreviewClipInput",
-  "manifestMoveFramesInput","manifestIdleFramesInput","manifestAttackFramesInput",
+  "manifestFrameSecondsInput","manifestFacingInput","manifestPreviewClipInput","manifestClipList",
   "manifestJsonEditor","applyManifestRawButton","saveManifestButton","resetManifestButton",
   "duplicateButton","typeFilterInput","previewAnimationInput","previewPlayButton","previewSpriteToggle",
   "previewHitboxToggle","previewGuidesToggle","sheetGridReadout","frameSheetGrid","selectedFrameCanvas",
@@ -212,6 +211,40 @@ function restartPreviewTimer(){
   if(!state.previewPlaying)return;
   state.previewTimer=setInterval(()=>{state.previewFrame+=1;drawPreview()},Math.max(30,Math.round(seconds*1000)));
 }
+function renderManifestClipEditors(){
+  const clips=state.manifestDoc?.clips||{};
+  els.manifestClipList.replaceChildren();
+  for(const [name,clip] of Object.entries(clips)){
+    const row=document.createElement("div");
+    row.className="clip-editor-row";
+
+    const framesLabel=document.createElement("label");
+    framesLabel.className="clip-frames-field";
+    const title=document.createElement("span");
+    title.textContent=name+" Frames";
+    const framesInput=document.createElement("input");
+    framesInput.value=framesText(clip?.frames);
+    framesInput.placeholder="0,1,2,3";
+    framesInput.dataset.clipFrames=name;
+    framesInput.addEventListener("input",applyManifestForm);
+    framesLabel.append(title,framesInput);
+
+    const loopLabel=document.createElement("label");
+    loopLabel.className="clip-loop-field";
+    const loopInput=document.createElement("input");
+    loopInput.type="checkbox";
+    loopInput.checked=Boolean(clip?.loop);
+    loopInput.dataset.clipLoop=name;
+    loopInput.addEventListener("change",applyManifestForm);
+    const loopText=document.createElement("span");
+    loopText.textContent="Loop";
+    loopLabel.append(loopInput,loopText);
+
+    row.append(framesLabel,loopLabel);
+    els.manifestClipList.appendChild(row);
+  }
+}
+
 function renderManifestForm(){
   const m=state.manifestDoc;
   if(!m)return;
@@ -233,9 +266,7 @@ function renderManifestForm(){
   els.previewAnimationInput.replaceChildren(...clipNames.map(name=>new Option("Animation: "+name,name)));
   els.manifestPreviewClipInput.value=state.previewClip;
   els.previewAnimationInput.value=state.previewClip;
-  els.manifestMoveFramesInput.value=framesText(m.clips?.move?.frames);
-  els.manifestIdleFramesInput.value=framesText(m.clips?.idle?.frames);
-  els.manifestAttackFramesInput.value=framesText(m.clips?.attack?.frames);
+  renderManifestClipEditors();
   syncManifestRaw();updateManifestDirty();manifestToPresentation();drawPreview();
 }
 function applyManifestForm(){
@@ -247,18 +278,14 @@ function applyManifestForm(){
   m.frame_seconds=number(els.manifestFrameSecondsInput.value);
   m.authored_facing=els.manifestFacingInput.value;
   m.clips=m.clips||{};
-  const idleFrames=parseFrames(els.manifestIdleFramesInput.value);
-  m.clips.idle=m.clips.idle||{frames:[],loop:true};
-  m.clips.idle.frames=idleFrames;
-  for(const [name,input,defaultLoop] of [["move",els.manifestMoveFramesInput,true],["attack",els.manifestAttackFramesInput,false]]){
-    const frames=parseFrames(input.value);
-    if(frames.length){
-      m.clips[name]=m.clips[name]||{frames:[],loop:defaultLoop};
-      m.clips[name].frames=frames;
-    }else if(m.clips[name]){
-      delete m.clips[name];
-    }
-  }
+  els.manifestClipList.querySelectorAll("[data-clip-frames]").forEach(input=>{
+    const name=input.dataset.clipFrames;
+    if(m.clips[name])m.clips[name].frames=parseFrames(input.value);
+  });
+  els.manifestClipList.querySelectorAll("[data-clip-loop]").forEach(input=>{
+    const name=input.dataset.clipLoop;
+    if(m.clips[name])m.clips[name].loop=input.checked;
+  });
   state.previewClip=els.manifestPreviewClipInput.value;
   els.previewAnimationInput.value=state.previewClip;
   syncManifestRaw();updateManifestDirty();manifestToPresentation();state.previewFrame=0;renderFrameSheet();updateQuickInfo();restartPreviewTimer();drawPreview();
@@ -481,7 +508,7 @@ els.previewGuidesToggle.addEventListener("change",()=>{state.showGuides=els.prev
 [
   "manifestGridColsInput","manifestGridRowsInput","manifestFrameWidthInput","manifestFrameHeightInput",
   "manifestWorldWidthInput","manifestWorldHeightInput","manifestFrameSecondsInput","manifestFacingInput",
-  "manifestPreviewClipInput","manifestMoveFramesInput","manifestIdleFramesInput","manifestAttackFramesInput"
+  "manifestPreviewClipInput"
 ].forEach(id=>els[id].addEventListener("input",applyManifestForm));
 els.applyManifestRawButton.onclick=()=>{
   try{

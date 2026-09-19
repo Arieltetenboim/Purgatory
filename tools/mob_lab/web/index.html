@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>PURGATORY Mob Lab</title>
-  <link rel="stylesheet" href="/styles.css?v=m3-prototype-parity-v11">
+  <link rel="stylesheet" href="/styles.css?v=m3-prototype-parity-v12">
 </head>
 <body>
 <header class="topbar">
@@ -58,11 +58,7 @@
           <canvas id="previewCanvas" width="800" height="380"></canvas>
           <div class="preview-toolbar">
             <div class="preview-controls">
-              <select id="previewAnimationInput" aria-label="Preview animation">
-                <option value="idle">Animation: idle</option>
-                <option value="move">Animation: move</option>
-                <option value="attack">Animation: attack</option>
-              </select>
+              <select id="previewAnimationInput" aria-label="Preview animation"></select>
               <button id="previewPlayButton" type="button" class="play-button" title="Play preview">▶</button>
             </div>
             <div class="preview-toggle-group">
@@ -143,11 +139,9 @@
             <div><h2>Animations</h2><p>Edit clip frames while watching the persistent preview above.</p></div>
           </div>
           <div class="form-grid two">
-            <label>Preview Clip<select id="manifestPreviewClipInput"><option value="idle">idle</option><option value="move">move</option><option value="attack">attack</option></select></label>
+            <label>Preview Clip<select id="manifestPreviewClipInput"></select></label>
             <label>Frame Seconds<input id="manifestFrameSecondsInput" type="number" min="0.01" step="0.01"></label>
-            <label class="span-two">Move Frames<input id="manifestMoveFramesInput" placeholder="0,1,2,3"></label>
-            <label class="span-two">Idle Frames<input id="manifestIdleFramesInput" placeholder="4,5,6,7"></label>
-            <label class="span-two">Attack Frames<input id="manifestAttackFramesInput" placeholder="8,9,10"></label>
+            <div id="manifestClipList" class="span-two clip-editor-list"></div>
           </div>
         </div>
 
@@ -263,6 +257,6 @@
     </div>
   </form>
 </dialog>
-<script src="/app.js?v=m3-prototype-parity-v11"></script>
+<script src="/app.js?v=m3-prototype-parity-v12"></script>
 </body>
 </html>
