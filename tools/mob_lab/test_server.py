@@ -209,6 +209,64 @@ class MobLabContractTests(unittest.TestCase):
             self.assertEqual([6, 4], persisted["grid_size"])
 
 
+    def test_monster_allocator_accepts_windows_crlf_catalog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            common = root / "crates" / "common" / "src"
+            common.mkdir(parents=True)
+            catalog_path = common / "content_catalog.rs"
+            catalog_path.write_bytes(
+                (
+                    "use crate::ContentId;\r\n"
+                    "\r\n"
+                    "pub const MONSTER_RED_SLIME: ContentId = ContentId::from_raw(10_001);\r\n"
+                    "pub const MONSTER_MOSS_CRAB: ContentId = ContentId::from_raw(10_002);\r\n"
+                    "\r\n"
+                    "pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {\r\n"
+                    "    Some(match label {\r\n"
+                    '        "monster.slime.red" => MONSTER_RED_SLIME,\r\n'
+                    '        "monster.moss_crab" => MONSTER_MOSS_CRAB,\r\n'
+                    "        _ => return None,\r\n"
+                    "    })\r\n"
+                    "}\r\n"
+                    "\r\n"
+                    "pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {\r\n"
+                    "    Some(match id {\r\n"
+                    '        MONSTER_RED_SLIME => "monster.slime.red",\r\n'
+                    '        MONSTER_MOSS_CRAB => "monster.moss_crab",\r\n'
+                    "        _ => return None,\r\n"
+                    "    })\r\n"
+                    "}\r\n"
+                ).encode("utf-8")
+            )
+            content = root / "content"
+            content.mkdir(parents=True)
+            (content / "CONTENT_ID_CATALOG.md").write_bytes(
+                (
+                    "# Content ID Catalog\r\n"
+                    "\r\n"
+                    "### Monsters — 10,000–19,999\r\n"
+                    "\r\n"
+                    "| ID | Label | Status |\r\n"
+                    "| ---: | --- | --- |\r\n"
+                    "| `10001` | `monster.slime.red` | active |\r\n"
+                    "| `10002` | `monster.moss_crab` | active |\r\n"
+                    "\r\n"
+                    "### NPCs — 20,000–29,999\r\n"
+                ).encode("utf-8")
+            )
+
+            content_id, writes = prepare_monster_allocation(root, "monster.shroom")
+            self.assertEqual(10003, content_id)
+            self.assertEqual(2, len(writes))
+            catalog_new = next(new for path, _old, new in writes if path == catalog_path).decode("utf-8")
+            self.assertIn(
+                "pub const MONSTER_SHROOM: ContentId = ContentId::from_raw(10_003);",
+                catalog_new,
+            )
+            self.assertIn('"monster.shroom" => MONSTER_SHROOM,', catalog_new)
+            self.assertIn('MONSTER_SHROOM => "monster.shroom",', catalog_new)
+
     def test_monster_allocator_assigns_next_permanent_id_and_updates_catalog_and_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

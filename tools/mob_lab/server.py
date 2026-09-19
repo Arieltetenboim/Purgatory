@@ -18,7 +18,7 @@ from typing import Any
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
-MOB_LAB_BUILD = "m3-prototype-parity-v9"
+MOB_LAB_BUILD = "m3-prototype-parity-v10"
 SCHEMA_VERSION = 4
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 SPRITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -165,7 +165,7 @@ def monster_ledger_labels(repo_root: Path) -> dict[str, tuple[int, str]]:
     return {
         label: (int(raw), status.strip())
         for raw, label, status in re.findall(
-            r"^\| `(1[0-9]{4})` \| `(monster\.[^`]+)` \| ([^|]+)\|$",
+            r"^\| `(1[0-9]{4})` \| `(monster\.[^`]+)` \| ([^|]+)\|\r?$",
             ledger,
             flags=re.MULTILINE,
         )
@@ -209,7 +209,7 @@ def prepare_monster_allocation(
 
     constant_matches = list(
         re.finditer(
-            r"^pub const MONSTER_[A-Z0-9_]+: ContentId = ContentId::from_raw\([0-9_]+\);$",
+            r"^pub const MONSTER_[A-Z0-9_]+: ContentId = ContentId::from_raw\([0-9_]+\);\r?$",
             catalog,
             flags=re.MULTILINE,
         )
@@ -226,7 +226,7 @@ def prepare_monster_allocation(
 
     label_matches = list(
         re.finditer(
-            r'^\s*"monster\.[^"]+"\s*=>\s*MONSTER_[A-Z0-9_]+,$',
+            r'^\s*"monster\.[^"]+"\s*=>\s*MONSTER_[A-Z0-9_]+,\r?$',
             catalog,
             flags=re.MULTILINE,
         )
@@ -243,7 +243,7 @@ def prepare_monster_allocation(
 
     reverse_matches = list(
         re.finditer(
-            r'^\s*MONSTER_[A-Z0-9_]+\s*=>\s*"monster\.[^"]+",$',
+            r'^\s*MONSTER_[A-Z0-9_]+\s*=>\s*"monster\.[^"]+",\r?$',
             catalog,
             flags=re.MULTILINE,
         )
