@@ -10,7 +10,8 @@ const els={};
   "spriteInput","healthInput","leftInput","rightInput","bottomInput","topInput","speedInput",
   "leashInput","kindInput","aggroInput","jsonEditor","applyRawButton","validationStatus",
   "validationErrors","summaryId","statusText","previewCanvas","previewUnavailable","spriteReadout",
-  "hitboxReadout","anchorReadout"
+  "hitboxReadout","anchorReadout","newMonsterDialog","newMonsterForm","newIdInput","newNameInput",
+  "newSpriteInput","newCancelButton","newCreateButton"
 ].forEach(id=>els[id]=$(id));
 
 const canonical=v=>JSON.stringify(v);
@@ -141,11 +142,17 @@ async function loadSprites(){
   const data=await api("/api/sprites");
   state.sprites=data.items||[];
   els.spriteInput.replaceChildren();
+  els.newSpriteInput.replaceChildren();
   for(const sprite of state.sprites){
+    const label=sprite.id+"  ·  "+sprite.frame_size_px[0]+"×"+sprite.frame_size_px[1]+" px";
     const option=document.createElement("option");
     option.value=sprite.id;
-    option.textContent=sprite.id+"  ·  "+sprite.frame_size_px[0]+"×"+sprite.frame_size_px[1]+" px";
+    option.textContent=label;
     els.spriteInput.appendChild(option);
+    const newOption=document.createElement("option");
+    newOption.value=sprite.id;
+    newOption.textContent=label;
+    els.newSpriteInput.appendChild(newOption);
   }
   if(data.issues?.length)setStatus("Sprite scan warning: "+data.issues.join(" | "));
 }
@@ -275,19 +282,42 @@ els.saveButton.onclick=async()=>{
     setStatus("Saved and runtime-validated: "+data.path);
   }catch(e){setStatus(String(e.message||e))}
 };
-els.newButton.onclick=async()=>{
-  const id=prompt("Monster authored label (must already have a stable numeric ContentId allocation):","monster.");
-  if(!id)return;
-  const name=prompt("Debug name:","New Monster");
-  if(!name)return;
-  setStatus("Creating and validating...");
+els.newButton.onclick=()=>{
+  if(!state.sprites.length){
+    setStatus("No valid creature sprites were found. Add/fix a manifest under Graphic/creature first.");
+    return;
+  }
+  els.newIdInput.value="monster.";
+  els.newNameInput.value="New Monster";
+  els.newSpriteInput.value=state.sprites[0].id;
+  els.newMonsterDialog.showModal();
+  setTimeout(()=>els.newIdInput.focus(),0);
+};
+els.newCancelButton.onclick=()=>els.newMonsterDialog.close();
+els.newMonsterForm.addEventListener("submit",async event=>{
+  event.preventDefault();
+  const id=els.newIdInput.value.trim();
+  const name=els.newNameInput.value.trim();
+  const sprite=els.newSpriteInput.value;
+  if(!id||!name||!sprite)return;
+  els.newCreateButton.disabled=true;
+  setStatus("Allocating ContentId and validating new Monster...");
   try{
     const data=await api("/api/new",{
-      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,debug_name:name})
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id,debug_name:name,sprite})
     });
-    await loadList();await openMonster(data.path);
-  }catch(e){setStatus(String(e.message||e))}
-};
+    els.newMonsterDialog.close();
+    await loadList();
+    await openMonster(data.path);
+    setStatus("Created "+data.document.id+" · ContentId "+data.content_id+" · "+data.document.sprite);
+  }catch(e){
+    setStatus(String(e.message||e));
+  }finally{
+    els.newCreateButton.disabled=false;
+  }
+});
 
 (async()=>{
   try{await loadSprites();await loadList();setStatus("Ready.");}
