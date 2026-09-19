@@ -28,3 +28,11 @@ footer{font-size:12px}
 .preview-readout{font-size:12px;flex-wrap:wrap}
 .preview-readout span{min-width:30%}
 .preview-unavailable{font-size:14px}
+
+.modal{width:min(620px,calc(100vw - 40px));border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);padding:0;box-shadow:0 24px 80px rgba(0,0,0,.55)}
+.modal::backdrop{background:rgba(0,0,0,.72)}
+.modal form{padding:18px}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding-bottom:15px;border-bottom:1px solid var(--line)}
+.modal-head strong{font-size:18px}
+.modal-grid{margin-top:16px}
+.modal-actions{display:flex;justify-content:flex-end;margin-top:18px}
