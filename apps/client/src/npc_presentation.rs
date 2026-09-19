@@ -270,8 +270,8 @@ fn workspace_root() -> PathBuf {
 
 fn find_sprite_manifest(sprite_id: &str) -> Result<(PathBuf, RawManifest), String> {
     let root = workspace_root().join("Graphic").join("creature");
-    let entries = std::fs::read_dir(&root)
-        .map_err(|error| format!("read {}: {error}", root.display()))?;
+    let entries =
+        std::fs::read_dir(&root).map_err(|error| format!("read {}: {error}", root.display()))?;
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
         let manifest_path = entry.path().join("manifest.json");
@@ -280,13 +280,16 @@ fn find_sprite_manifest(sprite_id: &str) -> Result<(PathBuf, RawManifest), Strin
         }
         let bytes = std::fs::read(&manifest_path)
             .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
-        let manifest: RawManifest =
-            serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+        let manifest: RawManifest = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
         if manifest.id == sprite_id {
             return Ok((manifest_path, manifest));
         }
     }
-    Err(format!("sprite manifest '{sprite_id}' not found under {}", root.display()))
+    Err(format!(
+        "sprite manifest '{sprite_id}' not found under {}",
+        root.display()
+    ))
 }
 
 impl SpriteSheet {
@@ -307,11 +310,17 @@ impl SpriteSheet {
             || !manifest.frame_seconds.is_finite()
             || manifest.frame_seconds <= 0.0
         {
-            return Err(format!("unsupported sprite manifest {}", manifest_path.display()));
+            return Err(format!(
+                "unsupported sprite manifest {}",
+                manifest_path.display()
+            ));
         }
         let atlas_name = Path::new(&manifest.atlas);
         if atlas_name.components().count() != 1 {
-            return Err(format!("sprite atlas must be a file name: {}", manifest.atlas));
+            return Err(format!(
+                "sprite atlas must be a file name: {}",
+                manifest.atlas
+            ));
         }
         let atlas_path = manifest_path
             .parent()
@@ -375,7 +384,10 @@ impl SpriteSheet {
                 .iter()
                 .any(|frame| usize::from(*frame) >= frames.len())
             {
-                return Err(format!("{} clip {name} references an invalid frame", manifest.id));
+                return Err(format!(
+                    "{} clip {name} references an invalid frame",
+                    manifest.id
+                ));
             }
             clips.insert(name, clip);
         }
