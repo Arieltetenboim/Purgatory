@@ -32,13 +32,14 @@ Mob Lab (future editor)
 - Presentation belongs to a separate client-safe definition and asset path. It
   is deliberately not part of schema v1.
 
-## Monster schema v3
+## Monster schema v4
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "monster.slime.red",
   "debug_name": "Red Slime",
+  "sprite": "creature.red_slime",
   "health_max": 20.0,
   "collision_bounds": { "left": 0.4, "right": 0.4, "bottom": 0.6, "top": 0.6 },
   "movement_speed": 2.0,
@@ -54,7 +55,7 @@ Rules:
 
 - `id` requires a permanent allocation in the Monster `ContentId` block.
 - numeric gameplay values must be finite and greater than zero;
-- schema v3 accepts only `chase_contact` with `aggro: "when_attacked"`;
+- schema v4 accepts only `chase_contact` with `aggro: "when_attacked"`;
 - proximity alone never acquires a target; successful player damage assigns that player as target;
 - contact damage is independent of aggro: collider touch or overlap within `CONTACT_EPSILON` damages a live player even while the monster is passive;
 - `home_leash_radius` limits retention/pursuit after aggro;
@@ -83,7 +84,7 @@ misrepresented as authored monster fields.
 | M4 | Real-runtime Test Arena: selected spawn, reset and observations | planned |
 | M5 | Hub integration + v0.1 closeout | planned |
 
-M3 must edit schema v3 rather than create a second model. New behavior kinds,
+M3 must edit schema v4 rather than create a second model. New behavior kinds,
 loot, ability loadouts, placement authoring and presentation require their own
 consumer-backed slices; they must not be added merely as unused form fields.
 
@@ -99,7 +100,7 @@ continue from the recovered branch or a fresh branch based on a current master.
 
 ### Collision bounds and presentation origin
 
-Monster schema v3 authors collision edges as distances from the entity/presentation origin:
+Monster schema v4 authors collision edges as distances from the entity/presentation origin:
 
 - `left`, `right`
 - `bottom`, `top`
@@ -108,3 +109,19 @@ This is intentionally asymmetric. A tall creature may keep its entity origin nea
 the feet by using a small `bottom` and a large `top`. Runtime derives a centered
 internal AABB plus collision-center offset from these four distances; presentation
 continues to render around the entity origin.
+
+
+### Sprite selection
+
+Monster schema v4 stores a stable `sprite` id (for example
+`creature.red_slime`) in the same Monster JSON as gameplay authoring.
+
+The client-safe content projection exposes only Monster identity + sprite id;
+gameplay fields remain server-owned. The client resolves the selected sprite from
+`Graphic/creature/*/manifest.json`, and Mob Lab discovers the same manifests.
+There is no Monster-to-sprite hardcoded table in Mob Lab.
+
+Current limitation: live replication does not yet carry Monster ContentId per
+replicated NPC. The current single live combat Monster therefore uses the selected
+sprite correctly; per-entity selection for multiple simultaneous Monster types is
+part of the M4 identity/runtime slice rather than a protocol change hidden inside M3.

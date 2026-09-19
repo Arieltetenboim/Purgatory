@@ -1353,6 +1353,28 @@ mod tests {
     }
 
     #[test]
+    fn monster_projection_separates_gameplay_from_client_sprite_selection() {
+        use purgatory_common::MONSTER_RED_SLIME;
+
+        let full = load_registry(&default_content_root(), LoadMode::Full).expect("full pack");
+        let monster = full
+            .monster_by_id(MONSTER_RED_SLIME)
+            .expect("server Monster gameplay definition");
+        let presentation = full
+            .monster_presentation_by_id(MONSTER_RED_SLIME)
+            .expect("Monster presentation projection");
+        assert_eq!(monster.authored_id, presentation.authored_id);
+        assert_eq!(presentation.sprite_id, "creature.red_slime");
+
+        let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared pack");
+        assert_eq!(shared.monster_count(), 0);
+        let presentation = shared
+            .monster_presentation_by_id(MONSTER_RED_SLIME)
+            .expect("client-safe Monster presentation");
+        assert_eq!(presentation.sprite_id, "creature.red_slime");
+    }
+
+    #[test]
     fn social_npc_entity_without_catalog_allocation_fails_clearly() {
         let tmp = std::env::temp_dir().join(format!(
             "purgatory-content-npc-entity-allocation-{}",
