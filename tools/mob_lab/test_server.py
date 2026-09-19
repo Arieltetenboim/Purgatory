@@ -6,6 +6,9 @@ from pathlib import Path
 from server import (
     load_numeric_catalog,
     load_sprite_record,
+    monster_constant_name,
+    next_monster_content_id,
+    prepare_monster_allocation,
     new_monster_document,
     resolve_monster_path,
     safe_filename,
@@ -100,6 +103,71 @@ class MobLabContractTests(unittest.TestCase):
             self.assertEqual([], issues)
             self.assertEqual(["creature.test"], [item["id"] for item in items])
             self.assertEqual("creature.test", load_sprite_record(root, "creature.test")["id"])
+
+
+    def test_monster_allocator_assigns_next_permanent_id_and_updates_catalog_and_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            common = root / "crates" / "common" / "src"
+            common.mkdir(parents=True)
+            (common / "content_catalog.rs").write_text(
+                """use crate::ContentId;
+
+pub const MONSTER_RED_SLIME: ContentId = ContentId::from_raw(10_001);
+pub const MONSTER_MOSS_CRAB: ContentId = ContentId::from_raw(10_002);
+
+pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
+    Some(match label {
+        "monster.slime.red" => MONSTER_RED_SLIME,
+        "monster.moss_crab" => MONSTER_MOSS_CRAB,
+        _ => return None,
+    })
+}
+
+pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
+    Some(match id {
+        MONSTER_RED_SLIME => "monster.slime.red",
+        MONSTER_MOSS_CRAB => "monster.moss_crab",
+        _ => return None,
+    })
+}
+""",
+                encoding="utf-8",
+            )
+            content = root / "content"
+            content.mkdir(parents=True)
+            (content / "CONTENT_ID_CATALOG.md").write_text(
+                """# Content ID Catalog
+
+### Monsters — 10,000–19,999
+
+| ID | Label | Status |
+| ---: | --- | --- |
+| `10001` | `monster.slime.red` | active |
+| `10002` | `monster.moss_crab` | active |
+
+### NPCs — 20,000–29,999
+""",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(10003, next_monster_content_id(root))
+            self.assertEqual("MONSTER_CAVE_BAT", monster_constant_name("monster.cave_bat"))
+            content_id, writes = prepare_monster_allocation(root, "monster.cave_bat")
+            self.assertEqual(10003, content_id)
+            self.assertEqual(2, len(writes))
+            for path, _old, new in writes:
+                path.write_bytes(new)
+
+            catalog_text = (common / "content_catalog.rs").read_text(encoding="utf-8")
+            ledger_text = (content / "CONTENT_ID_CATALOG.md").read_text(encoding="utf-8")
+            self.assertIn(
+                "pub const MONSTER_CAVE_BAT: ContentId = ContentId::from_raw(10_003);",
+                catalog_text,
+            )
+            self.assertIn('"monster.cave_bat" => MONSTER_CAVE_BAT,', catalog_text)
+            self.assertIn('MONSTER_CAVE_BAT => "monster.cave_bat",', catalog_text)
+            self.assertIn("| `10003` | `monster.cave_bat` | active |", ledger_text)
 
     def test_filename_uses_authored_id(self):
         self.assertEqual("monster.slime.blue.json", safe_filename("monster.slime.blue"))
