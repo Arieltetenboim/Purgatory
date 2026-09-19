@@ -42,3 +42,18 @@ footer{font-size:12px}
 .manifest-raw-head{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
 .manifest-raw-head h2{margin:0}
 .manifest-json{min-height:220px}
+
+.editor{padding:0;background:#0d1115}
+.editor-tabs{position:sticky;top:0;z-index:10;display:flex;gap:0;padding:0 18px;background:#10161b;border-bottom:1px solid var(--line)}
+.editor-tab{height:46px;border:0;border-radius:0;background:transparent;color:var(--muted);padding:0 18px;font-size:12px;font-weight:900;letter-spacing:.08em;border-bottom:2px solid transparent}
+.editor-tab:hover{background:#151d23;color:var(--text)}
+.editor-tab.active{color:var(--accent);border-bottom-color:var(--accent);background:#121a20}
+.tab-panel{display:none;padding:18px}
+.tab-panel.active{display:block}
+.section-label{margin:4px 0 10px;color:var(--accent);font-size:10px;font-weight:900;letter-spacing:.12em}
+.manifest-section{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+@media(max-width:800px){
+  .editor-tabs{overflow-x:auto;padding:0}
+  .editor-tab{flex:0 0 auto}
+  .tab-panel{padding:12px}
+}
