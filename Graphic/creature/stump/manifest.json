@@ -4,11 +4,14 @@
   "id": "creature.stump",
   "atlas": "stump.png",
   "frame_size_px": [96, 96],
+  "grid_size": [6, 4],
+  "world_size": [1.0, 1.0],
+  "frame_seconds": 0.1,
   "authored_facing": "right",
   "clips": {
-    "move":  { "frames": [0,1,2,3,4,5], "loop": true },
-    "idle":  { "frames": [6,7,8,9,10,11], "loop": true },
-    "hit":   { "frames": [12,13,14,15,16,17], "loop": false },
-    "death": { "frames": [18,19,20,21,22,23], "loop": false }
+    "move": { "frames": [0, 1, 2, 3, 4, 5], "loop": true },
+    "idle": { "frames": [6, 7, 8, 9, 10, 11], "loop": true },
+    "hit": { "frames": [12, 13, 14, 15, 16, 17], "loop": false },
+    "death": { "frames": [18, 19, 20, 21, 22, 23], "loop": false }
   }
 }

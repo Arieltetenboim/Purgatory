@@ -8,7 +8,7 @@ $Server = Join-Path $PSScriptRoot "server.py"
 $Url = "http://127.0.0.1:$Port/"
 $HealthUrl = "${Url}api/health"
 
-$ExpectedBuild = "m3-prototype-parity-v7"
+$ExpectedBuild = "m3-prototype-parity-v8"
 
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 1

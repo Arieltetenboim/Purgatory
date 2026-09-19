@@ -18,7 +18,7 @@ from typing import Any
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
-MOB_LAB_BUILD = "m3-prototype-parity-v7"
+MOB_LAB_BUILD = "m3-prototype-parity-v8"
 SCHEMA_VERSION = 4
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 SPRITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -337,17 +337,29 @@ def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
         raise ValueError("authored_facing must be left or right")
 
     clips = manifest.get("clips")
-    if not isinstance(clips, dict):
-        raise ValueError("clips must be an object")
-    for required in ("idle", "move", "attack"):
-        clip = clips.get(required)
+    if not isinstance(clips, dict) or not clips:
+        raise ValueError("clips must be a non-empty object")
+    for name, clip in clips.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("clip names must be non-empty strings")
         frames = clip.get("frames") if isinstance(clip, dict) else None
         if not isinstance(frames, list) or not frames or any(
             not isinstance(frame, int) or frame < 0 for frame in frames
         ):
-            raise ValueError(f"{required} clip must contain frame indices")
+            raise ValueError(f"{name} clip must contain frame indices")
         if not isinstance(clip.get("loop"), bool):
-            raise ValueError(f"{required}.loop must be boolean")
+            raise ValueError(f"{name}.loop must be boolean")
+        if grid_size is not None:
+            total_frames = grid_size[0] * grid_size[1]
+            if any(frame >= total_frames for frame in frames):
+                raise ValueError(
+                    f"{name} clip references a frame outside grid_size "
+                    f"{grid_size[0]}x{grid_size[1]}"
+                )
+
+    for required in ("idle", "move"):
+        if required not in clips:
+            raise ValueError(f"monster sprite manifest is missing {required}")
 
     idle_frames = clips["idle"]["frames"]
     return {

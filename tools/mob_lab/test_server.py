@@ -117,9 +117,10 @@ class MobLabContractTests(unittest.TestCase):
                         "frame_seconds": 0.1,
                         "authored_facing": "right",
                         "clips": {
-                            "move": {"frames": [0], "loop": True},
-                            "idle": {"frames": [0], "loop": True},
-                            "attack": {"frames": [0], "loop": False},
+                            "move": {"frames": [0, 1], "loop": True},
+                            "idle": {"frames": [4, 5], "loop": True},
+                            "hit": {"frames": [8, 9], "loop": False},
+                            "death": {"frames": [12, 13, 14, 15], "loop": False},
                         },
                     }
                 ),
@@ -131,6 +132,7 @@ class MobLabContractTests(unittest.TestCase):
             record = load_sprite_record(root, "creature.test")
             self.assertEqual("creature.test", record["id"])
             self.assertEqual([4, 4], record["grid_size"])
+            self.assertEqual([4, 5], record["idle_frames"])
 
 
     def test_sprite_manifest_save_validates_and_rolls_back(self):
