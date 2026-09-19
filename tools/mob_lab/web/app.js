@@ -324,7 +324,6 @@ els.spriteInput.addEventListener("change",async()=>{applyForm();await loadPresen
   "manifestWorldWidthInput","manifestWorldHeightInput","manifestFrameSecondsInput","manifestFacingInput",
   "manifestPreviewClipInput","manifestMoveFramesInput","manifestIdleFramesInput","manifestAttackFramesInput"
 ].forEach(id=>els[id].addEventListener("input",applyManifestForm));
-els.manifestPreviewClipInput.addEventListener("change",applyManifestForm);
 els.applyManifestRawButton.onclick=()=>{
   try{
     const parsed=JSON.parse(els.manifestJsonEditor.value);
@@ -347,8 +346,7 @@ els.saveManifestButton.onclick=async()=>{
     });
     state.manifestOriginal=canonical(state.manifestDoc);updateManifestDirty();
     await loadSprites();
-    state.presentation={...state.presentation,...data.presentation};
-    manifestToPresentation();restartPreviewTimer();drawPreview();
+    await loadPresentation();
     setStatus("Saved manifest: "+data.path);
   }catch(e){setStatus(String(e.message||e))}
 };
