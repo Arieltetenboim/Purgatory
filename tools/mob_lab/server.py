@@ -18,7 +18,7 @@ from typing import Any
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
-MOB_LAB_BUILD = "m3-prototype-parity-v5"
+MOB_LAB_BUILD = "m3-prototype-parity-v6"
 SCHEMA_VERSION = 4
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 SPRITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -485,6 +485,19 @@ def new_monster_document(
     }
 
 
+def clone_monster_document(
+    source: Any, authored_id: str, debug_name: str, sprite_id: str
+) -> dict[str, Any]:
+    errors = validate_monster_document(source)
+    if errors:
+        raise ValueError("Source Monster is invalid: " + "; ".join(errors))
+    cloned = json.loads(json.dumps(source))
+    cloned["id"] = authored_id
+    cloned["debug_name"] = debug_name
+    cloned["sprite"] = sprite_id
+    return cloned
+
+
 def resolve_monster_path(root: Path, relative: str) -> Path:
     candidate = (root / relative).resolve()
     resolved_root = root.resolve()
@@ -792,6 +805,9 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             authored_id = str(request.get("id", "")).strip()
             debug_name = str(request.get("debug_name", "")).strip()
             sprite_id = str(request.get("sprite", "")).strip()
+            template_path = request.get("template_path")
+            if template_path is not None and not isinstance(template_path, str):
+                raise ValueError("template_path must be a Monster JSON file name.")
             if not ID_RE.fullmatch(authored_id):
                 raise ValueError(
                     "New monster id must use monster.* and lowercase authored-id characters."
@@ -821,7 +837,24 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                 try:
                     for target, _old, new in allocation_writes:
                         atomic_write(target, new)
-                    doc = new_monster_document(authored_id, debug_name, sprite["id"])
+                    if template_path:
+                        source_path = resolve_monster_path(
+                            self.definitions_root, template_path
+                        )
+                        if not source_path.is_file():
+                            raise ValueError(
+                                f"Duplicate source Monster not found: {template_path}."
+                            )
+                        source_doc = json.loads(
+                            source_path.read_text(encoding="utf-8")
+                        )
+                        doc = clone_monster_document(
+                            source_doc, authored_id, debug_name, sprite["id"]
+                        )
+                    else:
+                        doc = new_monster_document(
+                            authored_id, debug_name, sprite["id"]
+                        )
                     encoded = (
                         json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
                     ).encode("utf-8")
