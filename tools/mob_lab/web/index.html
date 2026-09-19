@@ -59,13 +59,42 @@
         </div>
       </section>
       <section class="card">
-        <h2>Presentation</h2>
-        <div class="grid two">
+        <div class="cardhead">
+          <div>
+            <h2>Presentation</h2>
+            <div class="muted">Sprite selection + live manifest tuning</div>
+          </div>
+          <span id="manifestDirtyBadge" class="badge">MANIFEST CLEAN</span>
+        </div>
+        <div class="grid two presentation-grid">
           <label class="wide">Sprite
             <select id="spriteInput"></select>
           </label>
+          <label>Manifest ID<input id="manifestIdInput" readonly></label>
+          <label>Atlas<input id="manifestAtlasInput" readonly></label>
+          <label>Grid Columns<input id="manifestGridColsInput" type="number" min="1" step="1"></label>
+          <label>Grid Rows<input id="manifestGridRowsInput" type="number" min="1" step="1"></label>
+          <label>Frame Width px<input id="manifestFrameWidthInput" type="number" min="1" step="1"></label>
+          <label>Frame Height px<input id="manifestFrameHeightInput" type="number" min="1" step="1"></label>
+          <label>World Width<input id="manifestWorldWidthInput" type="number" min="0.01" step="0.05"></label>
+          <label>World Height<input id="manifestWorldHeightInput" type="number" min="0.01" step="0.05"></label>
+          <label>Frame Seconds<input id="manifestFrameSecondsInput" type="number" min="0.01" step="0.01"></label>
+          <label>Authored Facing<select id="manifestFacingInput"><option value="right">right</option><option value="left">left</option></select></label>
+          <label>Preview Clip<select id="manifestPreviewClipInput"><option value="idle">idle</option><option value="move">move</option><option value="attack">attack</option></select></label>
+          <label class="wide">Move Frames<input id="manifestMoveFramesInput" placeholder="0,1,2,3"></label>
+          <label class="wide">Idle Frames<input id="manifestIdleFramesInput" placeholder="4,5,6,7"></label>
+          <label class="wide">Attack Frames<input id="manifestAttackFramesInput" placeholder="8,9,10"></label>
         </div>
-        <p class="muted">Discovered directly from Graphic/creature/*/manifest.json. Changing this field changes the runtime Monster sprite after the client is restarted.</p>
+        <div class="manifest-actions">
+          <button id="resetManifestButton">RESET MANIFEST</button>
+          <button id="saveManifestButton" class="primary" disabled>SAVE MANIFEST</button>
+        </div>
+        <div class="cardhead manifest-raw-head">
+          <h2>Raw Manifest</h2>
+          <button id="applyManifestRawButton">APPLY RAW</button>
+        </div>
+        <textarea id="manifestJsonEditor" class="manifest-json" spellcheck="false"></textarea>
+        <p class="muted">Grid, frame size, world size, timing and clip frames update the preview immediately. SAVE MANIFEST writes Graphic/creature/*/manifest.json. Atlas changes made in Raw Manifest take effect after save/reload.</p>
       </section>
       <section class="card">
         <h2>Body & Movement</h2>
