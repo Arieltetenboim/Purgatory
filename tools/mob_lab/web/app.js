@@ -99,7 +99,10 @@ function drawPreview(){
   let spriteBottomOffset=null;
   if(p&&img&&img.complete&&img.naturalWidth){
     const frames=p.idle_frames||[],frame=frames[state.previewFrame%frames.length]||0;
-    const fw=p.frame_size_px[0],fh=p.frame_size_px[1],cols=Math.floor(img.naturalWidth/fw);
+    const grid=p.grid_size;
+    const cols=grid?.[0]||Math.floor(img.naturalWidth/p.frame_size_px[0]);
+    const rows=grid?.[1]||Math.floor(img.naturalHeight/p.frame_size_px[1]);
+    const fw=img.naturalWidth/cols,fh=img.naturalHeight/rows;
     const sx=(frame%cols)*fw,sy=Math.floor(frame/cols)*fh;
     const worldW=p.world_size[0],worldH=p.world_size[1];
     const dw=worldW*pxPerWorld,dh=worldH*pxPerWorld;
@@ -149,7 +152,8 @@ async function loadSprites(){
   els.spriteInput.replaceChildren();
   if(els.newSpriteInput)els.newSpriteInput.replaceChildren();
   for(const sprite of state.sprites){
-    const label=sprite.id+"  ·  "+sprite.frame_size_px[0]+"×"+sprite.frame_size_px[1]+" px";
+    const grid=sprite.grid_size?(" · "+sprite.grid_size[0]+"×"+sprite.grid_size[1]+" grid"):"";
+    const label=sprite.id+"  ·  "+sprite.frame_size_px[0]+"×"+sprite.frame_size_px[1]+" px"+grid;
     const option=document.createElement("option");
     option.value=sprite.id;
     option.textContent=label;
