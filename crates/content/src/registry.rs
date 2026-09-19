@@ -101,10 +101,7 @@ impl ContentRegistry {
     }
 
     #[must_use]
-    pub fn monster_presentation(
-        &self,
-        authored: &str,
-    ) -> Option<&MonsterPresentationDefinition> {
+    pub fn monster_presentation(&self, authored: &str) -> Option<&MonsterPresentationDefinition> {
         self.monster_presentations.get(authored)
     }
 
@@ -431,15 +428,12 @@ impl ContentRegistry {
         def: MonsterPresentationDefinition,
     ) -> Result<(), ContentError> {
         validate_monster_presentation(&def)?;
-        self.intern(
-            &def.authored_id,
-            def.content_id,
-            "monster_presentation",
-        )?;
+        self.intern(&def.authored_id, def.content_id, "monster_presentation")?;
         if self.monster_presentations.contains_key(&def.authored_id) {
             return Err(duplicate(&def.authored_id, "monster_presentation"));
         }
-        self.monster_presentations.insert(def.authored_id.clone(), def);
+        self.monster_presentations
+            .insert(def.authored_id.clone(), def);
         Ok(())
     }
 
