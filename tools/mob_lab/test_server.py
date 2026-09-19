@@ -7,6 +7,7 @@ from server import (
     load_numeric_catalog,
     load_sprite_record,
     monster_constant_name,
+    monster_reserved_ids,
     next_monster_content_id,
     prepare_monster_allocation,
     new_monster_document,
@@ -115,6 +116,7 @@ class MobLabContractTests(unittest.TestCase):
 
 pub const MONSTER_RED_SLIME: ContentId = ContentId::from_raw(10_001);
 pub const MONSTER_MOSS_CRAB: ContentId = ContentId::from_raw(10_002);
+pub const MONSTER_RETIRED_WISP: ContentId = ContentId::from_raw(10_004);
 
 pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
     Some(match label {
@@ -151,10 +153,11 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
                 encoding="utf-8",
             )
 
-            self.assertEqual(10003, next_monster_content_id(root))
+            self.assertEqual({10001, 10002, 10003}, monster_reserved_ids(root))
+            self.assertEqual(10004, next_monster_content_id(root))
             self.assertEqual("MONSTER_CAVE_BAT", monster_constant_name("monster.cave_bat"))
             content_id, writes = prepare_monster_allocation(root, "monster.cave_bat")
-            self.assertEqual(10003, content_id)
+            self.assertEqual(10004, content_id)
             self.assertEqual(2, len(writes))
             for path, _old, new in writes:
                 path.write_bytes(new)
@@ -162,12 +165,12 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
             catalog_text = (common / "content_catalog.rs").read_text(encoding="utf-8")
             ledger_text = (content / "CONTENT_ID_CATALOG.md").read_text(encoding="utf-8")
             self.assertIn(
-                "pub const MONSTER_CAVE_BAT: ContentId = ContentId::from_raw(10_003);",
+                "pub const MONSTER_CAVE_BAT: ContentId = ContentId::from_raw(10_004);",
                 catalog_text,
             )
             self.assertIn('"monster.cave_bat" => MONSTER_CAVE_BAT,', catalog_text)
             self.assertIn('MONSTER_CAVE_BAT => "monster.cave_bat",', catalog_text)
-            self.assertIn("| `10003` | `monster.cave_bat` | active |", ledger_text)
+            self.assertIn("| `10004` | `monster.cave_bat` | active |", ledger_text)
 
     def test_filename_uses_authored_id(self):
         self.assertEqual("monster.slime.blue.json", safe_filename("monster.slime.blue"))
