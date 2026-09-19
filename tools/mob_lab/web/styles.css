@@ -122,6 +122,28 @@ label{color:var(--muted);font-size:12px}
 .selected-frame-stage{display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:1/1;max-height:180px;border:1px solid #314651;border-radius:4px;background:#091219;overflow:hidden}
 #selectedFrameCanvas,#quickThumbCanvas{image-rendering:pixelated}
 #selectedFrameCanvas{width:100%;height:100%}
+.v2-manifest-control{min-width:0}
+#v2AtlasViewport{border:1px solid #344a56;border-radius:4px;background:#091219;overflow:auto;max-height:420px}
+#atlasCanvas{display:block;width:100%;height:auto;min-height:220px;image-rendering:pixelated;cursor:crosshair}
+.v2-actions{display:flex;align-items:center;gap:10px}
+.v2-actions button{flex:0 0 auto}
+.field-error{margin:0;color:var(--bad);font-size:11px;line-height:1.35}
+.v2-frame-editor{display:flex;flex-direction:column;gap:12px}
+.frame-list{display:flex;gap:5px;max-height:44px;overflow:auto;padding-bottom:2px}
+.frame-list button{height:32px;min-width:34px;padding:0 8px;font:12px Consolas,monospace}
+.frame-list button.selected{border-color:#59d2e5;background:#163542;color:#fff}
+.frame-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.frame-fields label,.socket-row label{display:flex;flex-direction:column;gap:4px;color:#9fb0ba;font-size:11px}
+.frame-fields label:first-child{grid-column:span 2}
+.frame-fields input,.socket-row input{height:31px}
+.socket-editor{border-top:1px solid #263b47;padding-top:10px}
+.socket-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.socket-heading strong{font-size:12px;color:#dce7ec}
+.socket-heading button{height:30px;padding:0 9px;font-size:10px}
+.socket-row{display:grid;grid-template-columns:minmax(70px,1.3fr) minmax(50px,1fr) minmax(50px,1fr) 30px;gap:5px;align-items:end;padding:6px;border:1px solid transparent;border-radius:4px}
+.socket-row.selected{border-color:#4e91aa;background:rgba(86,199,218,.08)}
+.socket-row button{height:31px;padding:0;font-size:15px}
+.socket-placement{cursor:crosshair}
 .selected-frame-meta{display:flex;flex-direction:column;gap:11px;margin-top:13px}
 .selected-frame-meta div,.quick-readout{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
 .selected-frame-meta span,.quick-readout span{color:#9fb0ba;font-size:11px}

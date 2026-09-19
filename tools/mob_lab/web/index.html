@@ -99,29 +99,55 @@
                 </span>
               </label>
               <input id="manifestAtlasInput" type="hidden">
-              <label class="target-row"><span>Grid Columns</span><input id="manifestGridColsInput" type="number" min="1" step="1"></label>
-              <label class="target-row"><span>Grid Rows</span><input id="manifestGridRowsInput" type="number" min="1" step="1"></label>
+              <label class="target-row v1-manifest-control"><span>Grid Columns</span><input id="manifestGridColsInput" type="number" min="1" step="1"></label>
+              <label class="target-row v1-manifest-control"><span>Grid Rows</span><input id="manifestGridRowsInput" type="number" min="1" step="1"></label>
               <label class="target-row">
-                <span>Frame Size (px)</span>
-                <span class="pair-input"><input id="manifestFrameWidthInput" type="number" min="1" step="1"><b>×</b><input id="manifestFrameHeightInput" type="number" min="1" step="1"></span>
+                <span class="v1-manifest-control">Frame Size (px)</span>
+                <span class="pair-input v1-manifest-control"><input id="manifestFrameWidthInput" type="number" min="1" step="1"><b>×</b><input id="manifestFrameHeightInput" type="number" min="1" step="1"></span>
               </label>
-              <label class="target-row">
+              <label class="target-row v1-manifest-control">
                 <span>World Size (wu)</span>
                 <span class="pair-input"><input id="manifestWorldWidthInput" type="number" min="0.01" step="0.05"><b>×</b><input id="manifestWorldHeightInput" type="number" min="0.01" step="0.05"></span>
               </label>
+              <label class="target-row v2-manifest-control hidden"><span>Pixels per Unit</span><input id="manifestPixelsPerUnitInput" type="number" min="0.0001" step="0.1"></label>
               <label class="target-row"><span>Authored Facing</span><select id="manifestFacingInput"><option value="right">right</option><option value="left">left</option></select></label>
               <input id="manifestIdInput" type="hidden">
+              <div class="v2-manifest-control hidden v2-actions">
+                <button id="addFrameButton" type="button">ADD FRAME</button>
+                <button id="deleteFrameButton" type="button">DELETE FRAME</button>
+                <span id="frameActionMessage" class="field-error"></span>
+              </div>
             </section>
 
             <section class="sheet-preview-panel">
-              <h2>Sprite Sheet Preview <span id="sheetGridReadout"></span></h2>
-              <div id="frameSheetGrid" class="frame-sheet-grid"></div>
+              <h2>Atlas Preview <span id="sheetGridReadout"></span></h2>
+              <div id="v1FrameSheet" class="v1-manifest-control"><div id="frameSheetGrid" class="frame-sheet-grid"></div></div>
+              <div id="v2AtlasViewport" class="v2-manifest-control hidden">
+                <canvas id="atlasCanvas" width="640" height="420" aria-label="Atlas frame overlay"></canvas>
+              </div>
             </section>
 
             <section class="selected-frame-panel">
               <h2>Selected Frame</h2>
-              <div class="selected-frame-stage">
+              <div class="selected-frame-stage v1-manifest-control">
                 <canvas id="selectedFrameCanvas" width="160" height="160"></canvas>
+              </div>
+              <div class="v2-manifest-control hidden v2-frame-editor">
+                <div class="frame-list" id="v2FrameList"></div>
+                <div class="frame-fields">
+                  <label><span>Frame Index</span><input id="v2FrameIndexInput" readonly></label>
+                  <label><span>Rect X</span><input id="v2RectXInput" type="number" min="0" step="1"></label>
+                  <label><span>Rect Y</span><input id="v2RectYInput" type="number" min="0" step="1"></label>
+                  <label><span>Rect Width</span><input id="v2RectWidthInput" type="number" min="1" step="1"></label>
+                  <label><span>Rect Height</span><input id="v2RectHeightInput" type="number" min="1" step="1"></label>
+                  <label><span>Origin X</span><input id="v2OriginXInput" type="number" step="1"></label>
+                  <label><span>Origin Y</span><input id="v2OriginYInput" type="number" step="1"></label>
+                </div>
+                <div class="socket-editor">
+                  <div class="socket-heading"><strong>Sockets</strong><button id="addSocketButton" type="button">ADD SOCKET</button></div>
+                  <div id="socketList"></div>
+                  <p id="socketMessage" class="field-error"></p>
+                </div>
               </div>
               <div class="selected-frame-meta">
                 <div><span>Frame Index</span><strong id="selectedFrameIndex">0</strong></div>

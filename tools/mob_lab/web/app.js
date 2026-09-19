@@ -2,7 +2,7 @@ const state={
   items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,
   presentation:null,previewImage:null,previewFrame:0,previewTimer:null,
   manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle",activeTab:"atlas",
-  selectedFrame:0,previewPlaying:false,showSprite:true,showHitbox:true,showGuides:false,newTemplatePath:null
+  selectedFrame:0,selectedSocket:null,socketPlacement:false,previewPlaying:false,showSprite:true,showHitbox:true,showGuides:false,newTemplatePath:null
 };
 const $=id=>document.getElementById(id);
 const els={};
@@ -16,19 +16,47 @@ const els={};
   "newSpriteInput","newCancelButton","newCreateButton","monsterCount","manifestDirtyBadge","manifestIdInput",
   "manifestAtlasInput","manifestGridColsInput","manifestGridRowsInput","manifestFrameWidthInput",
   "manifestFrameHeightInput","manifestWorldWidthInput","manifestWorldHeightInput",
-  "manifestFrameSecondsInput","manifestFacingInput","manifestPreviewClipInput","manifestClipList",
+  "manifestFrameSecondsInput","manifestPixelsPerUnitInput","manifestFacingInput","manifestPreviewClipInput","manifestClipList",
   "manifestJsonEditor","applyManifestRawButton","saveManifestButton","resetManifestButton",
   "duplicateButton","typeFilterInput","previewAnimationInput","previewPlayButton","previewSpriteToggle",
   "previewHitboxToggle","previewGuidesToggle","sheetGridReadout","frameSheetGrid","selectedFrameCanvas",
   "selectedFrameIndex","selectedFramePixels","selectedFrameWorld","quickThumbCanvas","quickTypeInput",
   "quickSourceFile","quickAtlas","quickImageSize","quickFrames","quickFrameSize","quickWorldSize",
-  "footerMonsterCount","footerSchemaStatus","footerDirtyStatus","docContentId","docSchema"
+  "footerMonsterCount","footerSchemaStatus","footerDirtyStatus","docContentId","docSchema",
+  "atlasCanvas","v2FrameList","v2FrameIndexInput","v2RectXInput","v2RectYInput",
+  "v2RectWidthInput","v2RectHeightInput","v2OriginXInput","v2OriginYInput",
+  "addFrameButton","deleteFrameButton","frameActionMessage","addSocketButton","socketList","socketMessage"
 ].forEach(id=>els[id]=$(id));
 
 const canonical=v=>JSON.stringify(v);
 const number=v=>Number(v);
 const int=v=>Math.trunc(Number(v));
 const framesText=frames=>Array.isArray(frames)?frames.join(","):"";
+const isV2=doc=>Number(doc?.schema_version)===2;
+function v2Frame(doc,index){return isV2(doc)&&Array.isArray(doc.frames)?doc.frames[index]:null}
+function frameReferences(doc,index){
+  const refs=[];
+  for(const [clipName,clip] of Object.entries(doc?.clips||{})){
+    for(let step=0;step<(clip?.steps||[]).length;step++){
+      if(clip.steps[step]?.frame===index)refs.push(clipName+" step "+step);
+    }
+  }
+  return refs;
+}
+function socketReferences(doc,index,name){
+  const refs=[];
+  for(const [clipName,clip] of Object.entries(doc?.clips||{})){
+    for(let annotation=0;annotation<(clip?.annotations||[]).length;annotation++){
+      const item=clip.annotations[annotation],step=clip.steps?.[item?.step];
+      if(item?.socket===name&&step?.frame===index)refs.push(clipName+" annotation "+(item.name||annotation));
+    }
+  }
+  return refs;
+}
+function mirroredSocketDisplayX(socketX,originX,mirrored){
+  return mirrored?originX-(socketX-originX):socketX;
+}
+window.mobLabTestHelpers={frameReferences,socketReferences,mirroredSocketDisplayX};
 function parseFrames(value){
   const text=String(value??"").trim();
   if(!text)return[];
@@ -45,8 +73,8 @@ function atlasUrl(spriteId){return "/api/presentation-atlas?sprite="+encodeURICo
 function frameGeometry(){
   const p=state.presentation,img=state.previewImage;
   if(!p||!img||!img.naturalWidth)return null;
-  const cols=Math.max(1,Math.trunc(Number(p.grid_size?.[0])||Math.floor(img.naturalWidth/p.frame_size_px[0])||1));
-  const rows=Math.max(1,Math.trunc(Number(p.grid_size?.[1])||Math.floor(img.naturalHeight/p.frame_size_px[1])||1));
+  const cols=Math.max(1,Math.trunc(Number(p.grid_size?.[0])||Math.floor(img.naturalWidth/(p.frame_size_px?.[0]||img.naturalWidth))||1));
+  const rows=Math.max(1,Math.trunc(Number(p.grid_size?.[1])||Math.floor(img.naturalHeight/(p.frame_size_px?.[1]||img.naturalHeight))||1));
   return {cols,rows,fw:img.naturalWidth/cols,fh:img.naturalHeight/rows,total:cols*rows};
 }
 function drawAtlasFrame(ctx,frame,dw,dh){
@@ -71,6 +99,7 @@ function renderSelectedFrame(){
   els.selectedFrameWorld.textContent=w.toFixed(2)+" × "+h.toFixed(2)+" wu";
 }
 function renderFrameSheet(){
+  if(isV2(state.manifestDoc)){els.frameSheetGrid.replaceChildren();return}
   const g=frameGeometry();
   els.frameSheetGrid.replaceChildren();
   if(!g)return;
@@ -106,9 +135,10 @@ function updateQuickInfo(){
   els.quickSourceFile.textContent=(state.selectedPath||"-").split("/").pop();
   els.quickAtlas.textContent=state.manifestDoc?.atlas||"-";
   els.quickImageSize.textContent=state.previewImage?.naturalWidth?state.previewImage.naturalWidth+" × "+state.previewImage.naturalHeight:"-";
-  els.quickFrames.textContent=g?g.total+" ("+g.cols+" × "+g.rows+")":"-";
+  els.quickFrames.textContent=isV2(state.manifestDoc)?(state.manifestDoc.frames?.length||0)+" explicit":(g?g.total+" ("+g.cols+" × "+g.rows+")":"-");
   const declared=state.manifestDoc?.frame_size_px;
-  els.quickFrameSize.textContent=Array.isArray(declared)?declared[0]+" × "+declared[1]:(g?Math.round(g.fw)+" × "+Math.round(g.fh):"-");
+  const selected=v2Frame(state.manifestDoc,state.selectedFrame);
+  els.quickFrameSize.textContent=isV2(state.manifestDoc)&&selected?selected.rect_px[2]+" × "+selected.rect_px[3]:(Array.isArray(declared)?declared[0]+" × "+declared[1]:(g?Math.round(g.fw)+" × "+Math.round(g.fh):"-"));
   const world=state.manifestDoc?.world_size;
   els.quickWorldSize.textContent=Array.isArray(world)?Number(world[0]).toFixed(2)+" × "+Number(world[1]).toFixed(2)+" wu":"-";
   renderQuickThumb();
@@ -246,9 +276,175 @@ function renderManifestClipEditors(){
   }
 }
 
+function v2AtlasTransform(){
+  const img=state.previewImage,canvas=els.atlasCanvas;
+  if(!img?.naturalWidth||!canvas)return null;
+  const scale=Math.min(canvas.width/img.naturalWidth,canvas.height/img.naturalHeight);
+  return {scale,ox:(canvas.width-img.naturalWidth*scale)/2,oy:(canvas.height-img.naturalHeight*scale)/2};
+}
+function renderV2Atlas(){
+  const canvas=els.atlasCanvas,img=state.previewImage;
+  if(!canvas||!img?.naturalWidth)return;
+  const ctx=canvas.getContext("2d"),t=v2AtlasTransform();
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle="#091219";ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(img,t.ox,t.oy,img.naturalWidth*t.scale,img.naturalHeight*t.scale);
+  (state.manifestDoc.frames||[]).forEach((frame,index)=>{
+    const [x,y,w,h]=frame.rect_px||[];
+    const selected=index===state.selectedFrame;
+    ctx.strokeStyle=selected?"#f4dc73":"#56c7da";
+    ctx.lineWidth=selected?3:1.5;
+    ctx.globalAlpha=selected?1:.72;
+    ctx.strokeRect(t.ox+x*t.scale,t.oy+y*t.scale,w*t.scale,h*t.scale);
+    ctx.globalAlpha=1;
+    ctx.fillStyle=selected?"#fff0a1":"#d5edf2";
+    ctx.font="bold 12px Consolas";
+    ctx.fillText(String(index),t.ox+x*t.scale+4,t.oy+y*t.scale+14);
+    if(selected){
+      const [ox,oy]=frame.origin_px||[0,0];
+      ctx.fillStyle="#f39b62";ctx.beginPath();
+      ctx.arc(t.ox+(x+ox)*t.scale,t.oy+(y+oy)*t.scale,5,0,Math.PI*2);ctx.fill();
+      Object.entries(frame.sockets||{}).forEach(([name,[sx,sy]])=>{
+        const socketSelected=name===state.selectedSocket;
+        ctx.fillStyle=socketSelected?"#fff":"#bd7cff";
+        ctx.strokeStyle="#081117";ctx.lineWidth=2;
+        ctx.beginPath();ctx.arc(t.ox+(x+sx)*t.scale,t.oy+(y+sy)*t.scale,socketSelected?5:4,0,Math.PI*2);ctx.fill();ctx.stroke();
+        ctx.fillStyle="#f0e8ff";ctx.font="11px Consolas";
+        ctx.fillText(name,t.ox+(x+sx)*t.scale+7,t.oy+(y+sy)*t.scale-5);
+      });
+    }
+  });
+}
+function renderV2Editor(){
+  const frames=state.manifestDoc?.frames||[];
+  if(frames.length)state.selectedFrame=Math.max(0,Math.min(frames.length-1,state.selectedFrame));
+  els.v2FrameList.replaceChildren();
+  frames.forEach((frame,index)=>{
+    const button=document.createElement("button");
+    button.type="button";button.textContent=String(index);
+    button.className=index===state.selectedFrame?"selected":"";
+    button.title="Select frame "+index;
+    button.onclick=()=>{state.selectedFrame=index;state.selectedSocket=null;renderV2Editor();renderV2Atlas();drawPreview()};
+    els.v2FrameList.appendChild(button);
+  });
+  const frame=v2Frame(state.manifestDoc,state.selectedFrame);
+  if(!frame)return;
+  const [x,y,w,h]=frame.rect_px||[0,0,1,1], [ox,oy]=frame.origin_px||[0,0];
+  els.v2FrameIndexInput.value=state.selectedFrame;
+  els.v2RectXInput.value=x;els.v2RectYInput.value=y;
+  els.v2RectWidthInput.value=w;els.v2RectHeightInput.value=h;
+  els.v2OriginXInput.value=ox;els.v2OriginYInput.value=oy;
+  els.selectedFrameIndex.textContent=String(state.selectedFrame);
+  els.selectedFramePixels.textContent=w+" × "+h;
+  const ppu=Number(state.manifestDoc.pixels_per_unit);
+  els.selectedFrameWorld.textContent=Number.isFinite(ppu)&&ppu>0?(w/ppu).toFixed(2)+" × "+(h/ppu).toFixed(2)+" wu":"-";
+  renderSocketList();renderV2Atlas();
+}
+function renderSocketList(){
+  const frame=v2Frame(state.manifestDoc,state.selectedFrame);
+  els.socketList.replaceChildren();
+  for(const [name,coords] of Object.entries(frame?.sockets||{})){
+    const row=document.createElement("div");
+    row.className="socket-row"+(name===state.selectedSocket?" selected":"");
+    row.dataset.socket=name;
+    const nameInput=document.createElement("input");nameInput.value=name;nameInput.title="Socket name";
+    const xInput=document.createElement("input");xInput.type="number";xInput.step="1";xInput.value=coords[0];
+    const yInput=document.createElement("input");yInput.type="number";yInput.step="1";yInput.value=coords[1];
+    const remove=document.createElement("button");remove.type="button";remove.textContent="×";remove.title="Delete socket";
+    const nameLabel=document.createElement("label");nameLabel.textContent="Name";nameLabel.append(nameInput);
+    const xLabel=document.createElement("label");xLabel.textContent="X";xLabel.append(xInput);
+    const yLabel=document.createElement("label");yLabel.textContent="Y";yLabel.append(yInput);
+    row.append(nameLabel,xLabel,yLabel,remove);els.socketList.appendChild(row);
+    row.onclick=()=>{state.selectedSocket=name;state.socketPlacement=true;renderSocketList();renderV2Atlas()};
+    nameInput.onchange=()=>renameSocket(name,nameInput.value.trim());
+    const applyCoordinate=()=>updateSocket(name,xInput.value,yInput.value);
+    xInput.onchange=applyCoordinate;yInput.onchange=applyCoordinate;
+    remove.onclick=event=>{event.stopPropagation();deleteSocket(name)};
+  }
+}
+function applyV2GlobalForm(){
+  const m=state.manifestDoc,ppu=Number(els.manifestPixelsPerUnitInput.value);
+  if(!Number.isFinite(ppu)||ppu<=0){
+    setStatus("pixels_per_unit must be finite and greater than zero.");return;
+  }
+  if(!["left","right"].includes(els.manifestFacingInput.value)){
+    setStatus("authored_facing must be left or right.");return;
+  }
+  m.pixels_per_unit=ppu;m.authored_facing=els.manifestFacingInput.value;
+  syncManifestRaw();updateManifestDirty();renderV2Atlas();drawPreview();updateQuickInfo();
+}
+function updateSelectedFrame(){
+  const frame=v2Frame(state.manifestDoc,state.selectedFrame),values=[
+    Number(els.v2RectXInput.value),Number(els.v2RectYInput.value),
+    Number(els.v2RectWidthInput.value),Number(els.v2RectHeightInput.value),
+    Number(els.v2OriginXInput.value),Number(els.v2OriginYInput.value)
+  ];
+  const [x,y,w,h,ox,oy]=values;
+  const rawValues=[els.v2RectXInput.value,els.v2RectYInput.value,els.v2RectWidthInput.value,els.v2RectHeightInput.value,els.v2OriginXInput.value,els.v2OriginYInput.value];
+  if(rawValues.some(value=>String(value).trim()==="")||!values.every(Number.isInteger)||x<0||y<0||w<=0||h<=0){
+    setStatus("Frame rectangle requires non-negative integer X/Y and positive integer width/height.");return;
+  }
+  const iw=state.previewImage?.naturalWidth,ih=state.previewImage?.naturalHeight;
+  if(iw&&ih&&(x+w>iw||y+h>ih)){setStatus("Frame rectangle must fit inside the atlas.");return}
+  frame.rect_px=[x,y,w,h];frame.origin_px=[ox,oy];
+  syncManifestRaw();updateManifestDirty();renderSocketList();renderV2Atlas();drawPreview();
+}
+function addFrame(){
+  const img=state.previewImage;
+  if(!img?.naturalWidth||!img.naturalHeight){setStatus("Cannot add a frame until the atlas is loaded.");return}
+  state.manifestDoc.frames.push({rect_px:[0,0,1,1],origin_px:[0,0],sockets:{}});
+  state.selectedFrame=state.manifestDoc.frames.length-1;state.selectedSocket=null;
+  syncManifestRaw();updateManifestDirty();renderV2Editor();drawPreview();
+}
+function deleteSelectedFrame(){
+  const frames=state.manifestDoc.frames,index=state.selectedFrame;
+  if(index!==frames.length-1){
+    els.frameActionMessage.textContent="Only the final frame may be deleted; deleting this one would renumber later references.";
+    return;
+  }
+  const refs=frameReferences(state.manifestDoc,index);
+  if(refs.length){els.frameActionMessage.textContent="Cannot delete frame "+index+"; referenced by "+refs.join(", ")+".";
+    return}
+  if(frames.length<=1){els.frameActionMessage.textContent="A V2 manifest must retain at least one frame.";return}
+  frames.pop();state.selectedFrame=Math.max(0,index-1);state.selectedSocket=null;
+  els.frameActionMessage.textContent="";syncManifestRaw();updateManifestDirty();renderV2Editor();drawPreview();
+}
+function renameSocket(oldName,newName){
+  const frame=v2Frame(state.manifestDoc,state.selectedFrame);
+  if(!newName||!/^[a-z0-9][a-z0-9._-]*$/.test(newName)){setStatus("Socket names must use lowercase authored-id characters.");renderSocketList();return}
+  if(newName!==oldName&&Object.hasOwn(frame.sockets,newName)){setStatus("Duplicate socket names are not allowed.");renderSocketList();return}
+  const refs=socketReferences(state.manifestDoc,state.selectedFrame,oldName);
+  if(refs.length){els.socketMessage.textContent="Cannot rename "+oldName+"; referenced by "+refs.join(", ")+".";
+    renderSocketList();return}
+  frame.sockets[newName]=frame.sockets[oldName];delete frame.sockets[oldName];state.selectedSocket=newName;
+  els.socketMessage.textContent="";syncManifestRaw();updateManifestDirty();renderSocketList();renderV2Atlas();
+}
+function updateSocket(name,xValue,yValue){
+  const x=Number(xValue),y=Number(yValue),frame=v2Frame(state.manifestDoc,state.selectedFrame);
+  if(String(xValue).trim()===""||String(yValue).trim()===""||!Number.isInteger(x)||!Number.isInteger(y)){setStatus("Socket coordinates must be signed integers.");renderSocketList();return}
+  frame.sockets[name]=[x,y];syncManifestRaw();updateManifestDirty();renderV2Atlas();drawPreview();
+}
+function addSocket(){
+  const frame=v2Frame(state.manifestDoc,state.selectedFrame);let name="socket",index=1;
+  while(Object.hasOwn(frame.sockets,name))name="socket_"+index++;
+  frame.sockets[name]=[0,0];state.selectedSocket=name;state.socketPlacement=true;
+  syncManifestRaw();updateManifestDirty();renderSocketList();renderV2Atlas();
+}
+function deleteSocket(name){
+  const refs=socketReferences(state.manifestDoc,state.selectedFrame,name);
+  if(refs.length){els.socketMessage.textContent="Cannot delete "+name+"; referenced by "+refs.join(", ")+".";
+    return}
+  const frame=v2Frame(state.manifestDoc,state.selectedFrame);delete frame.sockets[name];
+  state.selectedSocket=null;els.socketMessage.textContent="";syncManifestRaw();updateManifestDirty();renderSocketList();renderV2Atlas();drawPreview();
+}
+
 function renderManifestForm(){
   const m=state.manifestDoc;
   if(!m)return;
+  const v2=isV2(m);
+  document.querySelectorAll(".v1-manifest-control").forEach(node=>node.classList.toggle("hidden",v2));
+  document.querySelectorAll(".v2-manifest-control").forEach(node=>node.classList.toggle("hidden",!v2));
   els.manifestIdInput.value=m.id||"";
   els.manifestAtlasInput.value=m.atlas||"";
   els.manifestGridColsInput.value=m.grid_size?.[0]??"";
@@ -258,6 +454,7 @@ function renderManifestForm(){
   els.manifestWorldWidthInput.value=m.world_size?.[0]??"";
   els.manifestWorldHeightInput.value=m.world_size?.[1]??"";
   els.manifestFrameSecondsInput.value=m.frame_seconds??"";
+  els.manifestPixelsPerUnitInput.value=m.pixels_per_unit??"";
   els.manifestFacingInput.value=m.authored_facing||"right";
   const clipNames=Object.keys(m.clips||{});
   if(!clipNames.includes(state.previewClip)){
@@ -268,11 +465,16 @@ function renderManifestForm(){
   els.manifestPreviewClipInput.value=state.previewClip;
   els.previewAnimationInput.value=state.previewClip;
   renderManifestClipEditors();
+  if(v2)renderV2Editor();
   syncManifestRaw();updateManifestDirty();manifestToPresentation();drawPreview();
 }
 function applyManifestForm(){
   const m=state.manifestDoc;
   if(!m)return;
+  if(isV2(m)){
+    applyV2GlobalForm();
+    return;
+  }
   const gridCols=int(els.manifestGridColsInput.value),gridRows=int(els.manifestGridRowsInput.value);
   if(gridCols>0&&gridRows>0)m.grid_size=[gridCols,gridRows];
   else if(Object.hasOwn(m,"grid_size"))m.grid_size=null;
@@ -296,6 +498,36 @@ function applyManifestForm(){
 
 function stopPreviewTimer(){if(state.previewTimer){clearInterval(state.previewTimer);state.previewTimer=null}}
 function previewContext(){return els.previewCanvas.getContext("2d")}
+
+function drawV2Preview(ctx,centerX,entityY,pxPerWorld){
+  const frame=v2Frame(state.manifestDoc,state.selectedFrame),img=state.previewImage;
+  if(!frame||!img?.naturalWidth)return false;
+  const [sx,sy,fw,fh]=frame.rect_px,[ox,oy]=frame.origin_px;
+  const ppu=Number(state.manifestDoc.pixels_per_unit);
+  if(!Number.isFinite(ppu)||ppu<=0)return false;
+  const scale=pxPerWorld/ppu,mirrored=state.manifestDoc.authored_facing==="left";
+  if(state.showSprite){
+    ctx.save();ctx.translate(centerX,entityY);
+    if(mirrored)ctx.scale(-1,1);
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(img,sx,sy,fw,fh,-ox*scale,-oy*scale,fw*scale,fh*scale);
+    ctx.restore();
+  }
+  ctx.fillStyle="#f39b62";
+  ctx.beginPath();ctx.arc(centerX,entityY,4,0,Math.PI*2);ctx.fill();
+  for(const [name,[socketX,socketY]] of Object.entries(frame.sockets||{})){
+    const displayX=mirroredSocketDisplayX(socketX,ox,mirrored);
+    const px=centerX+(displayX-ox)*scale,py=entityY+(socketY-oy)*scale;
+    ctx.fillStyle=name===state.selectedSocket?"#fff":"#bd7cff";
+    ctx.strokeStyle="#081117";ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(px,py,name===state.selectedSocket?5:4,0,Math.PI*2);ctx.fill();ctx.stroke();
+    ctx.fillStyle="#f0e8ff";ctx.font="11px Consolas";ctx.fillText(name,px+7,py-5);
+  }
+  els.spriteReadout.textContent="Frame "+state.selectedFrame;
+  els.hitboxReadout.textContent=ppu.toFixed(1)+" px/wu";
+  els.anchorReadout.textContent=(mirrored?"Mirrored ":"")+"Origin "+ox+","+oy;
+  return true;
+}
 
 function drawPreview(){
   const ctx=previewContext(),w=els.previewCanvas.width,h=els.previewCanvas.height;
@@ -324,7 +556,11 @@ function drawPreview(){
   ctx.globalAlpha=1;
 
   const p=state.presentation,img=state.previewImage;
-  if(p&&img&&img.complete&&img.naturalWidth){
+  const v2Preview=isV2(state.manifestDoc);
+  if(v2Preview){
+    if(drawV2Preview(ctx,centerX,entityY,pxPerWorld))els.previewUnavailable.classList.add("hidden");
+    else els.previewUnavailable.classList.remove("hidden");
+  }else if(p&&img&&img.complete&&img.naturalWidth){
     const frames=p.idle_frames||[];
     const frame=frames[state.previewFrame%Math.max(frames.length,1)]||0;
     const grid=p.grid_size;
@@ -369,6 +605,7 @@ function drawPreview(){
     ctx.fill();
   }
 
+  if(v2Preview)return;
   const clipFrames=state.presentation?.idle_frames||[];
   const clipLength=Math.max(clipFrames.length,1);
   const clipFrame=(state.previewFrame%clipLength)+1;
@@ -431,7 +668,7 @@ async function loadPresentation(){
     img.onload=()=>{
       state.previewImage=img;
       els.previewUnavailable.classList.add("hidden");
-      manifestToPresentation();drawPreview();renderFrameSheet();updateQuickInfo();restartPreviewTimer();
+      manifestToPresentation();drawPreview();renderFrameSheet();renderV2Editor();renderV2Atlas();updateQuickInfo();restartPreviewTimer();
     };
     img.onerror=()=>{state.previewImage=null;drawPreview()};
     img.src=p.atlas_url+"&v="+Date.now();
@@ -510,9 +747,35 @@ els.previewGuidesToggle.addEventListener("change",()=>{state.showGuides=els.prev
 
 [
   "manifestGridColsInput","manifestGridRowsInput","manifestFrameWidthInput","manifestFrameHeightInput",
-  "manifestWorldWidthInput","manifestWorldHeightInput","manifestFrameSecondsInput","manifestFacingInput",
+  "manifestWorldWidthInput","manifestWorldHeightInput","manifestFrameSecondsInput","manifestPixelsPerUnitInput","manifestFacingInput",
   "manifestPreviewClipInput"
 ].forEach(id=>els[id].addEventListener("input",applyManifestForm));
+["v2RectXInput","v2RectYInput","v2RectWidthInput","v2RectHeightInput","v2OriginXInput","v2OriginYInput"]
+  .forEach(id=>els[id].addEventListener("change",updateSelectedFrame));
+els.addFrameButton.onclick=addFrame;
+els.deleteFrameButton.onclick=deleteSelectedFrame;
+els.addSocketButton.onclick=addSocket;
+els.atlasCanvas.addEventListener("click",event=>{
+  if(!isV2(state.manifestDoc))return;
+  const t=v2AtlasTransform(),rect=els.atlasCanvas.getBoundingClientRect();
+  if(!t)return;
+  const ax=(event.clientX-rect.left)*(els.atlasCanvas.width/rect.width);
+  const ay=(event.clientY-rect.top)*(els.atlasCanvas.height/rect.height);
+  const x=(ax-t.ox)/t.scale,y=(ay-t.oy)/t.scale;
+  const candidates=(state.manifestDoc.frames||[]).map((frame,index)=>{
+    const [fx,fy,fw,fh]=frame.rect_px||[];
+    return x>=fx&&x<=fx+fw&&y>=fy&&y<=fy+fh?index:-1;
+  }).filter(index=>index>=0);
+  if(state.socketPlacement&&state.selectedSocket){
+    const frame=v2Frame(state.manifestDoc,state.selectedFrame),[fx,fy]=frame.rect_px;
+    frame.sockets[state.selectedSocket]=[Math.round(x-fx),Math.round(y-fy)];
+    state.socketPlacement=false;syncManifestRaw();updateManifestDirty();renderSocketList();renderV2Atlas();drawPreview();return;
+  }
+  if(candidates.length){
+    state.selectedFrame=candidates[candidates.length-1];state.selectedSocket=null;
+    renderV2Editor();drawPreview();
+  }
+});
 els.applyManifestRawButton.onclick=()=>{
   try{
     const parsed=JSON.parse(els.manifestJsonEditor.value);
@@ -595,7 +858,7 @@ async function openMonster(path){
   els.emptyState.classList.add("hidden");els.editor.classList.remove("hidden");
   els.documentTitle.textContent=state.doc.debug_name||state.doc.id;
   els.documentPath.textContent="content/definitions/monsters/"+data.path;
-  state.selectedFrame=0;
+  state.selectedFrame=0;state.selectedSocket=null;state.socketPlacement=false;
   renderForm();renderList();setEditorTab(state.activeTab||"atlas");await loadPresentation();updateQuickInfo();setStatus("Loaded "+data.path);
 }
 
