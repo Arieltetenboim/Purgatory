@@ -24,6 +24,7 @@ use super::session::{SessionTable, lock_sessions};
 #[derive(Clone)]
 struct AdminCatalog {
     npcs: Arc<Vec<DevAdminContentEntry>>,
+    monsters: Arc<Vec<DevAdminContentEntry>>,
     items: Arc<Vec<DevAdminContentEntry>>,
     facts: Arc<Vec<String>>,
 }
@@ -47,6 +48,15 @@ pub(crate) fn spawn(
         })
         .collect::<Vec<_>>();
     npcs.sort_by(|a, b| a.authored_id.cmp(&b.authored_id));
+
+    let mut monsters = registry
+        .iter_monsters()
+        .map(|monster| DevAdminContentEntry {
+            content_id: monster.content_id.token(),
+            authored_id: monster.authored_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    monsters.sort_by(|a, b| a.authored_id.cmp(&b.authored_id));
 
     let mut items = registry
         .iter_items()
@@ -77,6 +87,7 @@ pub(crate) fn spawn(
 
     let catalog = AdminCatalog {
         npcs: Arc::new(npcs),
+        monsters: Arc::new(monsters),
         items: Arc::new(items),
         facts: Arc::new(facts.into_iter().collect()),
     };
@@ -179,6 +190,7 @@ async fn dispatch(
                 snapshot: DevAdminSnapshot {
                     players,
                     npcs: catalog.npcs.as_ref().clone(),
+                    monsters: catalog.monsters.as_ref().clone(),
                     items: catalog.items.as_ref().clone(),
                     facts: catalog.facts.as_ref().clone(),
                 },
@@ -208,6 +220,32 @@ async fn dispatch(
                     )
                     .await,
                 format!("Spawn NPC {npc_content_id} near connection {connection_id}"),
+            )
+        }
+        DevAdminRequest::SpawnMonster {
+            connection_id,
+            monster_content_id,
+        } => {
+            if !session_exists(sessions, connection_id) {
+                return inactive(connection_id);
+            }
+            if !catalog
+                .monsters
+                .iter()
+                .any(|monster| monster.content_id == monster_content_id)
+            {
+                return DevAdminResponse::command_err(format!(
+                    "ContentId {monster_content_id} is not an authored Monster"
+                ));
+            }
+            accepted(
+                gameplay
+                    .send_dev_spawn_monster(
+                        ConnectionId::from_raw(connection_id),
+                        ContentId::from_token(monster_content_id),
+                    )
+                    .await,
+                format!("Spawn Monster {monster_content_id} near connection {connection_id}"),
             )
         }
         DevAdminRequest::SpawnItem {
