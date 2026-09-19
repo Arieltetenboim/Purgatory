@@ -461,7 +461,14 @@ els.newMonsterForm.addEventListener("submit",async event=>{
 });
 
 (async()=>{
-  try{await loadSprites();await loadList();setStatus("Ready.");}
-  catch(e){setStatus(String(e.message||e))}
+  try{
+    await loadSprites();
+    await loadList();
+    if(!state.selectedPath&&state.items.length){
+      await openMonster(state.items[0].path);
+    }else{
+      setStatus("Ready.");
+    }
+  }catch(e){setStatus(String(e.message||e))}
 })();
 window.addEventListener("beforeunload",stopPreviewTimer);
