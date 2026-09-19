@@ -377,17 +377,17 @@ impl ClientApp {
                 .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
         let monster_presentation = registry
             .monster_presentation_by_id(purgatory_common::MONSTER_RED_SLIME)
-            .ok_or_else(|| "PURGATORY red slime presentation missing from shared content".to_owned())?;
-        let npc_sheet = SpriteSheet::from_sprite_id(
-            &mut asset_runtime,
-            &monster_presentation.sprite_id,
-        )
-        .map_err(|error| {
-            format!(
-                "PURGATORY monster sprite '{}' error: {error}",
-                monster_presentation.sprite_id
-            )
-        })?;
+            .ok_or_else(|| {
+                "PURGATORY red slime presentation missing from shared content".to_owned()
+            })?;
+        let npc_sheet =
+            SpriteSheet::from_sprite_id(&mut asset_runtime, &monster_presentation.sprite_id)
+                .map_err(|error| {
+                    format!(
+                        "PURGATORY monster sprite '{}' error: {error}",
+                        monster_presentation.sprite_id
+                    )
+                })?;
         let accept_sheet = OverheadSheet::accept(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY accept animation error: {error}"))?;
         let turn_sheet = OverheadSheet::turn(&mut asset_runtime)
