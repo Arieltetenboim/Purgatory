@@ -117,10 +117,9 @@ class MobLabContractTests(unittest.TestCase):
                         "frame_seconds": 0.1,
                         "authored_facing": "right",
                         "clips": {
-                            "move": {"frames": [0, 1], "loop": True},
                             "idle": {"frames": [4, 5], "loop": True},
                             "hit": {"frames": [8, 9], "loop": False},
-                            "death": {"frames": [12, 13, 14, 15], "loop": False},
+                            "special_attack_3": {"frames": [12, 13, 14, 15], "loop": False},
                         },
                     }
                 ),
@@ -133,6 +132,38 @@ class MobLabContractTests(unittest.TestCase):
             self.assertEqual("creature.test", record["id"])
             self.assertEqual([4, 4], record["grid_size"])
             self.assertEqual([4, 5], record["idle_frames"])
+
+
+    def test_sprite_scanner_rejects_manifest_without_idle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sprite_dir = root / "Graphic" / "creature" / "test"
+            sprite_dir.mkdir(parents=True)
+            (sprite_dir / "atlas.png").write_bytes(b"png")
+            (sprite_dir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "purgatory_sprite_animation",
+                        "id": "creature.test",
+                        "atlas": "atlas.png",
+                        "frame_size_px": [64, 64],
+                        "grid_size": [2, 2],
+                        "world_size": [1.0, 1.0],
+                        "frame_seconds": 0.1,
+                        "authored_facing": "right",
+                        "clips": {
+                            "hit": {"frames": [0], "loop": False},
+                            "death": {"frames": [1], "loop": False},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            items, issues = scan_sprite_manifests(root)
+            self.assertEqual([], items)
+            self.assertEqual(1, len(issues))
+            self.assertIn("missing required idle clip", issues[0])
 
 
     def test_sprite_manifest_save_validates_and_rolls_back(self):

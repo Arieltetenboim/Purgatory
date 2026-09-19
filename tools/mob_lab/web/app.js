@@ -225,6 +225,12 @@ function renderManifestForm(){
   els.manifestWorldHeightInput.value=m.world_size?.[1]??"";
   els.manifestFrameSecondsInput.value=m.frame_seconds??"";
   els.manifestFacingInput.value=m.authored_facing||"right";
+  const clipNames=Object.keys(m.clips||{});
+  if(!clipNames.includes(state.previewClip)){
+    state.previewClip=clipNames.includes("idle")?"idle":(clipNames[0]||"idle");
+  }
+  els.manifestPreviewClipInput.replaceChildren(...clipNames.map(name=>new Option(name,name)));
+  els.previewAnimationInput.replaceChildren(...clipNames.map(name=>new Option("Animation: "+name,name)));
   els.manifestPreviewClipInput.value=state.previewClip;
   els.previewAnimationInput.value=state.previewClip;
   els.manifestMoveFramesInput.value=framesText(m.clips?.move?.frames);
@@ -241,9 +247,17 @@ function applyManifestForm(){
   m.frame_seconds=number(els.manifestFrameSecondsInput.value);
   m.authored_facing=els.manifestFacingInput.value;
   m.clips=m.clips||{};
-  for(const [name,input] of [["move",els.manifestMoveFramesInput],["idle",els.manifestIdleFramesInput],["attack",els.manifestAttackFramesInput]]){
-    m.clips[name]=m.clips[name]||{frames:[],loop:name!=="attack"};
-    m.clips[name].frames=parseFrames(input.value);
+  const idleFrames=parseFrames(els.manifestIdleFramesInput.value);
+  m.clips.idle=m.clips.idle||{frames:[],loop:true};
+  m.clips.idle.frames=idleFrames;
+  for(const [name,input,defaultLoop] of [["move",els.manifestMoveFramesInput,true],["attack",els.manifestAttackFramesInput,false]]){
+    const frames=parseFrames(input.value);
+    if(frames.length){
+      m.clips[name]=m.clips[name]||{frames:[],loop:defaultLoop};
+      m.clips[name].frames=frames;
+    }else if(m.clips[name]){
+      delete m.clips[name];
+    }
   }
   state.previewClip=els.manifestPreviewClipInput.value;
   els.previewAnimationInput.value=state.previewClip;

@@ -118,7 +118,7 @@ pub(crate) struct SpriteSheet {
     world_size: [f32; 2],
     authored_facing_left: bool,
     frames: Vec<[[f32; 2]; 4]>,
-    clips: HashMap<&'static str, SpriteAnimationClip>,
+    clips: HashMap<String, SpriteAnimationClip>,
 }
 
 #[derive(Clone, Debug)]
@@ -366,12 +366,12 @@ impl SpriteSheet {
 
         let mut clips = HashMap::new();
         for (name, raw) in manifest.clips {
-            let name = match name.as_str() {
-                "idle" => "idle",
-                "move" => "move",
-                "attack" => "attack",
-                _ => continue,
-            };
+            if name.is_empty() {
+                return Err(format!("{} contains an empty clip name", manifest.id));
+            }
+            if raw.frames.is_empty() {
+                return Err(format!("{} clip {name} contains no frames", manifest.id));
+            }
             let mode = if raw.looped {
                 SpritePlaybackMode::Loop
             } else {
@@ -390,10 +390,8 @@ impl SpriteSheet {
             }
             clips.insert(name, clip);
         }
-        for required in ["idle", "move", "attack"] {
-            if !clips.contains_key(required) {
-                return Err(format!("{} manifest is missing {required}", manifest.id));
-            }
+        if !clips.contains_key("idle") {
+            return Err(format!("{} manifest is missing idle", manifest.id));
         }
 
         Ok(Self {
@@ -409,8 +407,11 @@ impl SpriteSheet {
         })
     }
 
-    pub(crate) fn clip(&self, name: &'static str) -> &SpriteAnimationClip {
-        &self.clips[name]
+    pub(crate) fn clip(&self, name: &str) -> &SpriteAnimationClip {
+        self.clips
+            .get(name)
+            .or_else(|| self.clips.get("idle"))
+            .expect("SpriteSheet construction guarantees an idle clip")
     }
 
     pub(crate) fn frame_uv(&self, frame: u16) -> [[f32; 2]; 4] {
@@ -519,6 +520,8 @@ pub(crate) fn base_activity(
 pub(crate) fn clip_name(activity: PresentationActivity) -> &'static str {
     match activity {
         PresentationActivity::Attack => "attack",
+        PresentationActivity::Hurt => "hit",
+        PresentationActivity::Dead => "death",
         PresentationActivity::Move => "move",
         _ => "idle",
     }
@@ -582,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn attack_is_selected_only_by_presentation_activity() {
+    fn semantic_activity_names_optional_clips() {
         assert_eq!(
             clip_name(base_activity(0.0, Some(PresentationActivity::Attack))),
             "attack"
@@ -591,8 +594,20 @@ mod tests {
             base_activity(0.0, Some(PresentationActivity::Attack)),
             PresentationActivity::Attack
         );
+        assert_eq!(clip_name(PresentationActivity::Hurt), "hit");
+        assert_eq!(clip_name(PresentationActivity::Dead), "death");
         assert_eq!(clip_name(base_activity(1.0, None)), "move");
         assert_eq!(clip_name(base_activity(0.0, None)), "idle");
+    }
+
+    #[test]
+    fn missing_optional_clip_falls_back_to_idle() {
+        let mut sheet = sheet();
+        sheet.clips.remove("move");
+        sheet.clips.remove("attack");
+        assert_eq!(sheet.clip("move").frames(), sheet.clip("idle").frames());
+        assert_eq!(sheet.clip("attack").frames(), sheet.clip("idle").frames());
+        assert_eq!(sheet.clip("special_attack_3").frames(), sheet.clip("idle").frames());
     }
 
     #[test]

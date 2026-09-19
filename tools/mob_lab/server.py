@@ -18,7 +18,7 @@ from typing import Any
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
-MOB_LAB_BUILD = "m3-prototype-parity-v8"
+MOB_LAB_BUILD = "m3-prototype-parity-v9"
 SCHEMA_VERSION = 4
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 SPRITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -357,9 +357,8 @@ def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
                     f"{grid_size[0]}x{grid_size[1]}"
                 )
 
-    for required in ("idle", "move"):
-        if required not in clips:
-            raise ValueError(f"monster sprite manifest is missing {required}")
+    if "idle" not in clips:
+        raise ValueError("sprite manifest is missing required idle clip")
 
     idle_frames = clips["idle"]["frames"]
     return {
