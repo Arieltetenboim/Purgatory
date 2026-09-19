@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>PURGATORY Mob Lab</title>
-  <link rel="stylesheet" href="/styles.css?v=m3-prototype-layout-v4">
+  <link rel="stylesheet" href="/styles.css?v=m3-prototype-parity-v5">
 </head>
 <body>
 <header class="topbar">
@@ -16,6 +16,7 @@
   </div>
   <div class="actions">
     <button id="newButton">NEW MONSTER</button>
+    <button id="duplicateButton" disabled title="Duplicate wiring follows after the editor parity pass">DUPLICATE</button>
     <button id="reloadButton">RELOAD</button>
     <button id="saveButton" class="primary" disabled>SAVE</button>
   </div>
@@ -27,7 +28,10 @@
       <span>MONSTERS</span>
       <span id="monsterCount" class="count-badge">0</span>
     </div>
-    <input id="filterInput" class="compact-input" placeholder="Search monsters">
+    <div class="library-filters">
+      <input id="filterInput" class="compact-input" placeholder="Search...">
+      <select id="typeFilterInput" aria-label="Filter monster type"><option value="">All Types</option></select>
+    </div>
     <div id="monsterList" class="list"></div>
   </aside>
 
@@ -47,13 +51,16 @@
     <div id="editor" class="editor hidden">
       <section class="preview-shell">
         <div class="preview-toolbar">
-          <div>
-            <span class="section-kicker">LIVE PREVIEW</span>
-            <span class="preview-subtitle">Runtime sprite + collision</span>
+          <div class="preview-controls">
+            <label class="inline-control">Animation
+              <select id="previewAnimationInput"><option value="idle">idle</option><option value="move">move</option><option value="attack">attack</option></select>
+            </label>
+            <button id="previewPlayButton" type="button" class="icon-button" title="Pause preview">Ⅱ</button>
           </div>
-          <div class="preview-legend">
-            <span><i class="legend-sprite"></i>SPRITE</span>
-            <span><i class="legend-hitbox"></i>HITBOX</span>
+          <div class="preview-toggle-group">
+            <label><input id="previewSpriteToggle" type="checkbox" checked>SPRITE</label>
+            <label><input id="previewHitboxToggle" type="checkbox" checked>HITBOX</label>
+            <label><input id="previewGuidesToggle" type="checkbox" checked>BOUNDS</label>
           </div>
         </div>
         <div class="preview-stage-wrap">
@@ -81,38 +88,49 @@
           <div class="section-head">
             <div>
               <h2>Atlas &amp; Frames</h2>
-              <p>Live atlas layout and world presentation.</p>
+              <p>Live atlas layout, frame selection and world presentation.</p>
             </div>
             <span id="manifestDirtyBadge" class="badge">MANIFEST CLEAN</span>
           </div>
 
-          <div class="compact-section">
-            <div class="section-label">SPRITE SOURCE</div>
-            <div class="form-grid three">
-              <label class="span-two">Runtime Sprite<select id="spriteInput"></select></label>
-              <label>Authored Facing<select id="manifestFacingInput"><option value="right">right</option><option value="left">left</option></select></label>
-              <label>Manifest ID<input id="manifestIdInput" readonly></label>
-              <label class="span-two">Atlas<input id="manifestAtlasInput" readonly></label>
-            </div>
-          </div>
-
-          <div class="compact-section">
-            <div class="section-label">ATLAS LAYOUT</div>
-            <div class="form-grid four">
-              <label>Grid Columns<input id="manifestGridColsInput" type="number" min="1" step="1"></label>
-              <label>Grid Rows<input id="manifestGridRowsInput" type="number" min="1" step="1"></label>
-              <label>Frame Width px<input id="manifestFrameWidthInput" type="number" min="1" step="1"></label>
-              <label>Frame Height px<input id="manifestFrameHeightInput" type="number" min="1" step="1"></label>
-            </div>
-          </div>
-
-          <div class="compact-section">
-            <div class="section-label">WORLD PRESENTATION</div>
-            <div class="form-grid three">
-              <label>World Width<input id="manifestWorldWidthInput" type="number" min="0.01" step="0.05"></label>
-              <label>World Height<input id="manifestWorldHeightInput" type="number" min="0.01" step="0.05"></label>
+          <div class="atlas-workbench">
+            <section class="atlas-settings">
+              <div class="section-label">ATLAS SETTINGS</div>
+              <label>Runtime Sprite<select id="spriteInput"></select></label>
+              <label>Atlas File<input id="manifestAtlasInput" readonly></label>
+              <div class="pair-row">
+                <label>Grid Columns<input id="manifestGridColsInput" type="number" min="1" step="1"></label>
+                <label>Grid Rows<input id="manifestGridRowsInput" type="number" min="1" step="1"></label>
+              </div>
+              <div class="pair-row">
+                <label>Frame Width px<input id="manifestFrameWidthInput" type="number" min="1" step="1"></label>
+                <label>Frame Height px<input id="manifestFrameHeightInput" type="number" min="1" step="1"></label>
+              </div>
+              <div class="pair-row">
+                <label>World Width<input id="manifestWorldWidthInput" type="number" min="0.01" step="0.05"></label>
+                <label>World Height<input id="manifestWorldHeightInput" type="number" min="0.01" step="0.05"></label>
+              </div>
               <label>Frame Seconds<input id="manifestFrameSecondsInput" type="number" min="0.01" step="0.01"></label>
-            </div>
+              <label>Authored Facing<select id="manifestFacingInput"><option value="right">right</option><option value="left">left</option></select></label>
+              <input id="manifestIdInput" type="hidden">
+            </section>
+
+            <section class="sheet-preview-panel">
+              <div class="section-label">SPRITE SHEET PREVIEW <span id="sheetGridReadout"></span></div>
+              <div id="frameSheetGrid" class="frame-sheet-grid"></div>
+            </section>
+
+            <section class="selected-frame-panel">
+              <div class="section-label">SELECTED FRAME</div>
+              <div class="selected-frame-stage">
+                <canvas id="selectedFrameCanvas" width="160" height="160"></canvas>
+              </div>
+              <div class="selected-frame-meta">
+                <div><span>Frame Index</span><strong id="selectedFrameIndex">0</strong></div>
+                <div><span>Pixel Size</span><strong id="selectedFramePixels">-</strong></div>
+                <div><span>World Size</span><strong id="selectedFrameWorld">-</strong></div>
+              </div>
+            </section>
           </div>
 
           <div class="panel-actions">
@@ -186,16 +204,26 @@
 
   <aside class="panel inspector">
     <div class="panel-heading">QUICK INFO</div>
-    <div class="quick-info">
+    <div class="quick-hero">
+      <div class="quick-thumb"><canvas id="quickThumbCanvas" width="72" height="72"></canvas></div>
       <label>Debug Name<input id="debugNameInput"></label>
-      <div class="info-row"><span>Authored Label</span><input id="idInput" readonly></div>
+    </div>
+    <div class="quick-info">
+      <div class="info-row"><span>Label</span><input id="idInput" readonly></div>
       <div class="info-row"><span>Content ID</span><input id="contentIdInput" readonly></div>
       <div class="info-row"><span>Schema</span><input id="schemaInput" readonly></div>
+      <div class="info-row"><span>Type</span><input id="quickTypeInput" readonly></div>
+      <div class="info-divider"></div>
+      <div class="quick-readout"><span>Source File</span><strong id="quickSourceFile">-</strong></div>
+      <div class="quick-readout"><span>Atlas</span><strong id="quickAtlas">-</strong></div>
+      <div class="quick-readout"><span>Size (px)</span><strong id="quickImageSize">-</strong></div>
+      <div class="quick-readout"><span>Frames</span><strong id="quickFrames">-</strong></div>
+      <div class="quick-readout"><span>Frame Size</span><strong id="quickFrameSize">-</strong></div>
+      <div class="quick-readout"><span>World Size</span><strong id="quickWorldSize">-</strong></div>
       <div class="info-divider"></div>
       <div class="kv"><span>Status</span><strong id="validationStatus">No document</strong></div>
-      <div class="kv"><span>Content ID</span><strong id="summaryId">-</strong></div>
-      <div class="kv"><span>Runtime source</span><strong>content/definitions/monsters</strong></div>
-      <div class="kv"><span>Validation</span><pre id="validationErrors">-</pre></div>
+      <div class="kv compact-only"><span>Content ID</span><strong id="summaryId">-</strong></div>
+      <div class="kv compact-only"><span>Validation</span><pre id="validationErrors">-</pre></div>
     </div>
   </aside>
 </main>
@@ -222,6 +250,6 @@
     </div>
   </form>
 </dialog>
-<script src="/app.js?v=m3-prototype-layout-v4"></script>
+<script src="/app.js?v=m3-prototype-parity-v5"></script>
 </body>
 </html>
