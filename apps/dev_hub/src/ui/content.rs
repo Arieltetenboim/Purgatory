@@ -48,7 +48,9 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
         });
 
         card(&mut columns[2], "Mob Lab", |ui| {
-            ui.label("Local Web Monster authoring tool. Runtime Monster JSON is the source of truth.");
+            ui.label(
+                "Local Web Monster authoring tool. Runtime Monster JSON is the source of truth.",
+            );
             ui.add_space(6.0);
             ui.colored_label(
                 theme::muted(),
