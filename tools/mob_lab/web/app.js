@@ -228,6 +228,7 @@ function applyManifestForm(){
     m.clips[name].frames=parseFrames(input.value);
   }
   state.previewClip=els.manifestPreviewClipInput.value;
+  els.previewAnimationInput.value=state.previewClip;
   syncManifestRaw();updateManifestDirty();manifestToPresentation();state.previewFrame=0;renderFrameSheet();updateQuickInfo();restartPreviewTimer();drawPreview();
 }
 
@@ -295,10 +296,14 @@ function drawPreview(){
     ctx.fillStyle="rgba(224,106,112,.20)";
     ctx.strokeStyle="#e06a70";ctx.lineWidth=3;
     ctx.fillRect(x,y,bw,bh);ctx.strokeRect(x,y,bw,bh);
+  }
+  if(!validBounds){
+    els.hitboxReadout.textContent="Hitbox: invalid";
+  }else if(!state.showHitbox){
+    els.hitboxReadout.textContent="Hitbox: hidden";
+  }else{
     els.hitboxReadout.textContent=
       "Bounds L"+left.toFixed(2)+" R"+right.toFixed(2)+" B"+bottom.toFixed(2)+" T"+top.toFixed(2)+" wu";
-  }else{
-    els.hitboxReadout.textContent="Hitbox: invalid";
   }
 
   if(spriteBottomOffset===null)els.anchorReadout.textContent="Sprite floor offset: -";
