@@ -36,3 +36,9 @@ footer{font-size:12px}
 .modal-head strong{font-size:18px}
 .modal-grid{margin-top:16px}
 .modal-actions{display:flex;justify-content:flex-end;margin-top:18px}
+
+.presentation-grid{margin-top:14px}
+.manifest-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.manifest-raw-head{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.manifest-raw-head h2{margin:0}
+.manifest-json{min-height:220px}
