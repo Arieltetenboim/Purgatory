@@ -316,6 +316,14 @@ def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
     ):
         raise ValueError("frame_size_px must contain two positive integers")
 
+    grid_size = manifest.get("grid_size")
+    if grid_size is not None and (
+        not isinstance(grid_size, list)
+        or len(grid_size) != 2
+        or any(not isinstance(item, int) or item <= 0 for item in grid_size)
+    ):
+        raise ValueError("grid_size must contain two positive integers")
+
     if not _positive_pair(manifest.get("world_size")):
         raise ValueError("world_size must contain two positive numbers")
     frame_seconds = manifest.get("frame_seconds")
@@ -348,6 +356,7 @@ def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
         "atlas": atlas,
         "atlas_path": atlas_path,
         "frame_size_px": frame_size,
+        "grid_size": grid_size,
         "idle_frames": idle_frames,
         "frame_seconds": float(frame_seconds),
         "world_size": [float(manifest["world_size"][0]), float(manifest["world_size"][1])],
@@ -385,6 +394,7 @@ def sprite_public_record(item: dict[str, Any]) -> dict[str, Any]:
         "manifest_path": item["manifest_path"],
         "atlas": item["atlas"],
         "frame_size_px": item["frame_size_px"],
+        "grid_size": item["grid_size"],
         "idle_frames": item["idle_frames"],
         "frame_seconds": item["frame_seconds"],
         "world_size": item["world_size"],
