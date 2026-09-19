@@ -150,9 +150,8 @@ pub use motion_debug::{CorrectionAxis, PlayerMotionDebug, ResponseKind};
 pub use movement::{GRAVITY, JUMP_VELOCITY, MOVE_SPEED};
 pub use npc::{
     ActionRejectReason, ActionRequest, CONTACT_DAMAGE, NPC_HEALTH_MAX, NpcApproachBounds,
-    NpcRuntimeConfig, NpcState,
-    PULSE_DAMAGE, PULSE_DURATION_TICKS, PULSE_PERIOD_TICKS, STRIKE_DAMAGE, STRIKE_DURATION_TICKS,
-    STRIKE_RANGE,
+    NpcRuntimeConfig, NpcState, PULSE_DAMAGE, PULSE_DURATION_TICKS, PULSE_PERIOD_TICKS,
+    STRIKE_DAMAGE, STRIKE_DURATION_TICKS, STRIKE_RANGE,
 };
 pub use platform::{
     Approach, FLOOR, FLOOR_POSITION, ONEWAY_A, ONEWAY_A_POSITION, ONEWAY_B, ONEWAY_B_POSITION,
