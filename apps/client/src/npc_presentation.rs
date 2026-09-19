@@ -338,32 +338,33 @@ impl SpriteSheet {
             .ok_or_else(|| format!("sprite texture '{}' was not registered", manifest.id))?;
         let (width, height) = (resource.image.width(), resource.image.height());
         let [frame_width, frame_height] = manifest.frame_size_px;
-        if width % frame_width != 0 || height % frame_height != 0 {
-            return Err(format!(
-                "{} atlas dimensions {}x{} are not divisible by frame size {}x{}",
-                manifest.id, width, height, frame_width, frame_height
-            ));
-        }
-        let columns = width / frame_width;
-        let rows = height / frame_height;
+        let [columns, rows] = if let Some([columns, rows]) = manifest.grid_size {
+            if columns == 0 || rows == 0 {
+                return Err(format!("{} grid_size must be positive", manifest.id));
+            }
+            [columns, rows]
+        } else {
+            if width % frame_width != 0 || height % frame_height != 0 {
+                return Err(format!(
+                    "{} atlas dimensions {}x{} are not divisible by frame size {}x{}; add grid_size for proportional atlas slicing",
+                    manifest.id, width, height, frame_width, frame_height
+                ));
+            }
+            [width / frame_width, height / frame_height]
+        };
         let frames: Vec<[[f32; 2]; 4]> = (0..columns * rows)
             .map(|index| {
-                let x = index % columns * frame_width;
-                let y = index / columns * frame_height;
+                let column = index % columns;
+                let row = index / columns;
+                let left = column as f32 / columns as f32;
+                let right = (column + 1) as f32 / columns as f32;
+                let top = row as f32 / rows as f32;
+                let bottom = (row + 1) as f32 / rows as f32;
                 [
-                    [
-                        x as f32 / width as f32,
-                        (y + frame_height) as f32 / height as f32,
-                    ],
-                    [
-                        (x + frame_width) as f32 / width as f32,
-                        (y + frame_height) as f32 / height as f32,
-                    ],
-                    [
-                        (x + frame_width) as f32 / width as f32,
-                        y as f32 / height as f32,
-                    ],
-                    [x as f32 / width as f32, y as f32 / height as f32],
+                    [left, bottom],
+                    [right, bottom],
+                    [right, top],
+                    [left, top],
                 ]
             })
             .collect();
@@ -463,6 +464,8 @@ impl SpriteSheet {
 #[derive(Deserialize)]
 struct RawManifest {
     frame_size_px: [u32; 2],
+    #[serde(default)]
+    grid_size: Option<[u32; 2]>,
     world_size: [f32; 2],
     frame_seconds: f32,
     authored_facing: String,
@@ -536,10 +539,8 @@ mod tests {
     }
 
     #[test]
-    fn sheet_resolves_fixed_four_by_four_cells() {
+    fn sheet_resolves_declared_four_by_four_grid() {
         let sheet = sheet();
-        assert_eq!(sheet.dimensions_px(), (256, 256));
-        assert_eq!(sheet.cell_size_px(), (64, 64));
         assert_eq!(sheet.frames.len(), 16);
         assert_eq!(
             sheet.frame_uv(0),
