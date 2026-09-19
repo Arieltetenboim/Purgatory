@@ -11,6 +11,14 @@ $HealthUrl = "${Url}api/health"
 $ExpectedBuild = "m3-prototype-parity-v9"
 
 try {
+    $Host.UI.RawUI.WindowTitle = "PURGATORY Mob Lab - $ExpectedBuild - close window to stop server"
+} catch {
+    # Non-interactive hosts may not expose RawUI; lifecycle behavior still works.
+}
+Write-Host "MOB_LAB|LAUNCH|build=$ExpectedBuild"
+Write-Host "MOB_LAB|LIFETIME|Close this PowerShell window or press Ctrl+C to stop the server."
+
+try {
     $health = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 1
     if ($health.ok -and $health.tool -eq "mob-lab" -and $health.build -eq $ExpectedBuild) {
         Start-Process "$Url?build=$ExpectedBuild" | Out-Null
