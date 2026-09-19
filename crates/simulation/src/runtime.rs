@@ -19,8 +19,7 @@ use crate::entity::EntityId;
 use crate::health::{DamageImmunityPolicy, Health};
 use crate::npc::{
     ActionRejectReason, ActionRequest, CONTACT_DAMAGE, NpcApproachBounds, NpcRuntimeConfig,
-    NpcState, STRIKE_DAMAGE,
-    STRIKE_DURATION_TICKS, STRIKE_RANGE,
+    NpcState, STRIKE_DAMAGE, STRIKE_DURATION_TICKS, STRIKE_RANGE,
 };
 use crate::platform::PlatformView;
 use crate::query::{QueryFilter, QueryLimit};
