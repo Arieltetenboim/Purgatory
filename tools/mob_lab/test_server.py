@@ -13,6 +13,7 @@ from server import (
     monster_reserved_ids,
     next_monster_content_id,
     prepare_monster_allocation,
+    clone_monster_document,
     new_monster_document,
     resolve_monster_path,
     safe_filename,
@@ -32,6 +33,26 @@ class MobLabContractTests(unittest.TestCase):
             doc["collision_bounds"],
         )
         self.assertEqual("when_attacked", doc["behavior"]["aggro"])
+
+    def test_clone_monster_document_preserves_runtime_values(self):
+        source = new_monster_document("monster.slime.red", "Red Slime")
+        source["health_max"] = 77.0
+        source["movement_speed"] = 3.25
+        source["collision_bounds"]["left"] = 0.7
+        clone = clone_monster_document(
+            source,
+            "monster.slime.red.copy",
+            "Red Slime Copy",
+            "creature.moss_crab",
+        )
+        self.assertEqual("monster.slime.red.copy", clone["id"])
+        self.assertEqual("Red Slime Copy", clone["debug_name"])
+        self.assertEqual("creature.moss_crab", clone["sprite"])
+        self.assertEqual(77.0, clone["health_max"])
+        self.assertEqual(3.25, clone["movement_speed"])
+        self.assertEqual(0.7, clone["collision_bounds"]["left"])
+        self.assertEqual("monster.slime.red", source["id"])
+
 
     def test_invalid_runtime_values_are_rejected_before_save(self):
         doc = new_monster_document("monster.test.slime", "Test Slime")
