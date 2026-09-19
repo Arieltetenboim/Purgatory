@@ -18,7 +18,7 @@ from typing import Any
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
-MOB_LAB_BUILD = "m3-prototype-parity-v10"
+MOB_LAB_BUILD = "m3-prototype-parity-v11"
 SCHEMA_VERSION = 4
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 SPRITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -203,6 +203,8 @@ def prepare_monster_allocation(
     ledger_old = ledger_path.read_bytes()
     catalog = catalog_old.decode("utf-8")
     ledger = ledger_old.decode("utf-8")
+    catalog_newline = "\r\n" if "\r\n" in catalog else "\n"
+    ledger_newline = "\r\n" if "\r\n" in ledger else "\n"
 
     if re.search(rf"\b{re.escape(constant)}\b", catalog):
         raise ValueError(f"Catalog constant {constant} already exists.")
@@ -220,7 +222,7 @@ def prepare_monster_allocation(
     numeric = f"{content_id // 1000}_{content_id % 1000:03d}"
     catalog = (
         catalog[: last.end()]
-        + f"\npub const {constant}: ContentId = ContentId::from_raw({numeric});"
+        + f"{catalog_newline}pub const {constant}: ContentId = ContentId::from_raw({numeric});"
         + catalog[last.end() :]
     )
 
@@ -237,7 +239,7 @@ def prepare_monster_allocation(
     indent = re.match(r"^\s*", last.group(0)).group(0)
     catalog = (
         catalog[: last.end()]
-        + f'\n{indent}"{authored_id}" => {constant},'
+        + f'{catalog_newline}{indent}"{authored_id}" => {constant},'
         + catalog[last.end() :]
     )
 
@@ -254,21 +256,27 @@ def prepare_monster_allocation(
     indent = re.match(r"^\s*", last.group(0)).group(0)
     catalog = (
         catalog[: last.end()]
-        + f'\n{indent}{constant} => "{authored_id}",'
+        + f'{catalog_newline}{indent}{constant} => "{authored_id}",'
         + catalog[last.end() :]
     )
 
-    section = re.search(
-        r"(### Monsters — 10,000–19,999.*?\n\| ---: \| --- \| --- \|\n)(.*?)(?=\n### |\Z)",
-        ledger,
-        flags=re.DOTALL,
+    monster_rows = list(
+        re.finditer(
+            r"^\| `1[0-9]{4}` \| `monster\.[^`]+` \| [^|]+\|\r?$",
+            ledger,
+            flags=re.MULTILINE,
+        )
     )
-    if section is None:
-        raise ValueError("Monster allocation table was not found in CONTENT_ID_CATALOG.md.")
-    rows = section.group(2).rstrip()
+    if not monster_rows:
+        raise ValueError("No Monster allocation rows were found in CONTENT_ID_CATALOG.md.")
+    last = monster_rows[-1]
     new_row = f"| `{content_id}` | `{authored_id}` | active |"
-    replacement = rows + ("\n" if rows else "") + new_row + "\n"
-    ledger = ledger[: section.start(2)] + replacement + ledger[section.end(2) :]
+    ledger = (
+        ledger[: last.end()]
+        + ledger_newline
+        + new_row
+        + ledger[last.end() :]
+    )
 
     return content_id, [
         (catalog_path, catalog_old, catalog.encode("utf-8")),

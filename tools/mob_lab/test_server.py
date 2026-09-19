@@ -245,7 +245,7 @@ class MobLabContractTests(unittest.TestCase):
                 (
                     "# Content ID Catalog\r\n"
                     "\r\n"
-                    "### Monsters — 10,000–19,999\r\n"
+                    "### Monsters (allocation range owned elsewhere)\r\n"
                     "\r\n"
                     "| ID | Label | Status |\r\n"
                     "| ---: | --- | --- |\r\n"
