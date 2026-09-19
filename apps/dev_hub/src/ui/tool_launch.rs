@@ -10,7 +10,7 @@ pub(crate) fn launch_npc_lab() -> Result<(), String> {
 pub(crate) fn launch_mob_lab() -> Result<(), String> {
     let root = workspace_root()?;
     let launcher = root.join("tools").join("mob_lab").join("run.ps1");
-    launch_hidden_powershell(&root, &launcher, &[], "mob-lab.log", LogMode::Append)
+    launch_visible_powershell(&root, &launcher, &[])
 }
 
 pub(crate) fn launch_quality_gate() -> Result<(), String> {
@@ -62,6 +62,38 @@ fn open_log_pair(log_path: &Path, mode: LogMode) -> Result<(std::fs::File, std::
         .try_clone()
         .map_err(|err| format!("clone {}: {err}", log_path.display()))?;
     Ok((stdout, stderr))
+}
+
+fn launch_visible_powershell(
+    root: &Path,
+    script: &Path,
+    extra_args: &[&str],
+) -> Result<(), String> {
+    if !script.is_file() {
+        return Err(format!("launcher not found: {}", script.display()));
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+        std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(script)
+            .args(extra_args)
+            .current_dir(root)
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("launch {}: {err}", script.display()))
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (root, extra_args);
+        Err("Developer tool launch currently supports Windows only".to_owned())
+    }
 }
 
 fn launch_hidden_powershell(

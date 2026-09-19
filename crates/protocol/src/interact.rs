@@ -6,6 +6,8 @@ use crate::snapshot::WireEntityId;
 
 /// Fixed payload bytes for [`DevSpawnNpc`] after the control discriminant.
 pub const DEV_SPAWN_NPC_BYTES: usize = 4;
+/// Fixed payload bytes for [`DevSpawnMonster`] after the control discriminant.
+pub const DEV_SPAWN_MONSTER_BYTES: usize = 4;
 
 /// Client → server: request to open an interaction with `target`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,6 +54,13 @@ pub struct DevSetJump {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DevSpawnNpc {
     pub npc_content_id: ContentId,
+}
+
+/// DEV-only request to spawn one validated authored Monster near the bound
+/// player's authoritative current position and in the same WorldAddress.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DevSpawnMonster {
+    pub monster_content_id: ContentId,
 }
 
 /// Authoritative reject reason. Unknown wire values are [`CodecError::InvalidValue`].

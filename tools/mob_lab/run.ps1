@@ -8,13 +8,33 @@ $Server = Join-Path $PSScriptRoot "server.py"
 $Url = "http://127.0.0.1:$Port/"
 $HealthUrl = "${Url}api/health"
 
+$ExpectedBuild = "m3-prototype-parity-v13"
+
+try {
+    $Host.UI.RawUI.WindowTitle = "PURGATORY Mob Lab - $ExpectedBuild - close window to stop server"
+} catch {
+    # Non-interactive hosts may not expose RawUI; lifecycle behavior still works.
+}
+Write-Host "MOB_LAB|LAUNCH|build=$ExpectedBuild"
+Write-Host "MOB_LAB|LIFETIME|Close this PowerShell window or press Ctrl+C to stop the server."
+
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 1
-    if ($health.ok -and $health.tool -eq "mob-lab") {
-        Start-Process $Url | Out-Null
+    if ($health.ok -and $health.tool -eq "mob-lab" -and $health.build -eq $ExpectedBuild) {
+        Start-Process "$Url?build=$ExpectedBuild" | Out-Null
         exit 0
     }
-    if ($health.ok) {
+
+    if ($health.ok -and $health.tool -eq "mob-lab") {
+        Write-Host "MOB_LAB|RESTART|stale server detected"
+        $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($null -ne $connection) {
+            Stop-Process -Id $connection.OwningProcess -Force -ErrorAction Stop
+            Start-Sleep -Milliseconds 250
+        }
+    }
+    elseif ($health.ok) {
         throw "Another local tool is already running on port $Port."
     }
 }

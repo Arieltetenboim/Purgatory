@@ -4,104 +4,259 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>PURGATORY Mob Lab</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=m3-prototype-parity-v13">
 </head>
 <body>
 <header class="topbar">
-  <div><div class="brand">PURGATORY</div><div class="tool">MOB LAB <span>M3</span></div></div>
+  <div class="brandline">
+    <span class="brand">PURGATORY</span>
+    <span class="brand-separator">/</span>
+    <span class="tool">MOB LAB</span>
+    <span class="build-tag">M3</span>
+  </div>
   <div class="actions">
     <button id="newButton">NEW MONSTER</button>
+    <button id="duplicateButton" disabled>DUPLICATE</button>
     <button id="reloadButton">RELOAD</button>
     <button id="saveButton" class="primary" disabled>SAVE</button>
   </div>
 </header>
-<main class="layout">
+
+<main class="app-shell">
   <aside class="panel library">
-    <div class="title">MONSTERS</div>
-    <input id="filterInput" placeholder="Filter monsters">
+    <div class="panel-heading">
+      <span>MONSTERS <span class="heading-count">(<span id="monsterCount">0</span>)</span></span>
+    </div>
+    <div class="library-filters">
+      <div class="search-wrap"><input id="filterInput" placeholder="Search..."></div>
+      <select id="typeFilterInput" aria-label="Filter monster type"><option value="">All Types</option></select>
+    </div>
     <div id="monsterList" class="list"></div>
   </aside>
-  <section class="panel workspace">
+
+  <section class="workspace">
     <div class="docbar">
-      <div><strong id="documentTitle">No monster selected</strong><div id="documentPath" class="muted">Select a runtime monster definition.</div></div>
-      <span id="dirtyBadge" class="badge">CLEAN</span>
+      <div class="doc-title-block">
+        <div class="doc-title-row">
+          <strong id="documentTitle">No monster selected</strong>
+          <span id="dirtyBadge" class="badge">CLEAN</span>
+        </div>
+        <div id="documentPath" class="muted mono">Select a runtime monster definition.</div>
+      </div>
+      <div class="doc-meta">
+        <span>ID: <strong id="docContentId">—</strong></span>
+        <i></i>
+        <span>Schema: <strong id="docSchema">—</strong></span>
+      </div>
     </div>
-    <div id="emptyState" class="empty">Select a monster from the library or create one.</div>
+
+    <div id="emptyState" class="empty panel">Select a monster from the library or create one.</div>
+
     <div id="editor" class="editor hidden">
-      <section class="card preview-card">
-        <div class="cardhead">
-          <div>
-            <h2>Runtime Preview</h2>
-            <div class="muted">Actual runtime sprite + authored collision box</div>
-          </div>
-          <div class="preview-legend">
-            <span><i class="legend-sprite"></i>SPRITE</span>
-            <span><i class="legend-hitbox"></i>HITBOX</span>
-          </div>
-        </div>
+      <section class="preview-shell">
         <div class="preview-stage-wrap">
-          <canvas id="previewCanvas" width="520" height="360"></canvas>
+          <canvas id="previewCanvas" width="800" height="380"></canvas>
+          <div class="preview-toolbar">
+            <div class="preview-controls">
+              <select id="previewAnimationInput" aria-label="Preview animation"></select>
+              <button id="previewPlayButton" type="button" class="play-button" title="Play preview">▶</button>
+            </div>
+            <div class="preview-toggle-group">
+              <label><input id="previewSpriteToggle" type="checkbox" checked><span>Sprite</span></label>
+              <label><input id="previewHitboxToggle" type="checkbox" checked><span>Hitbox</span></label>
+              <label><input id="previewGuidesToggle" type="checkbox"><span>Bounds</span></label>
+            </div>
+          </div>
           <div id="previewUnavailable" class="preview-unavailable hidden">NO RUNTIME SPRITE</div>
-        </div>
-        <div class="preview-readout">
-          <span id="spriteReadout">Sprite: -</span>
-          <span id="hitboxReadout">Hitbox: -</span>
-          <span id="anchorReadout">Sprite floor offset: -</span>
-        </div>
-      </section>
-      <section class="card">
-        <h2>Identity</h2>
-        <div class="grid two">
-          <label>Authored Label<input id="idInput" readonly></label>
-          <label>ContentId<input id="contentIdInput" readonly></label>
-          <label>Schema<input id="schemaInput" readonly></label>
-          <label class="wide">Debug Name<input id="debugNameInput"></label>
+          <div class="preview-readout">
+            <span id="spriteReadout">Frame -/-</span>
+            <span id="hitboxReadout">0.10s</span>
+            <span id="anchorReadout">1.00x</span>
+          </div>
         </div>
       </section>
-      <section class="card">
-        <h2>Presentation</h2>
-        <div class="grid two">
-          <label class="wide">Sprite
-            <select id="spriteInput"></select>
-          </label>
+
+      <nav class="editor-tabs" aria-label="Monster editor sections">
+        <button type="button" class="editor-tab active" data-tab="atlas">ATLAS &amp; FRAMES</button>
+        <button type="button" class="editor-tab" data-tab="animations">ANIMATIONS</button>
+        <button type="button" class="editor-tab" data-tab="gameplay">GAMEPLAY</button>
+        <button type="button" class="editor-tab" data-tab="behavior">BEHAVIOR</button>
+        <button type="button" class="editor-tab" data-tab="collision">COLLISION</button>
+        <button type="button" class="editor-tab" data-tab="raw">RAW JSON</button>
+      </nav>
+
+      <section class="tab-workspace">
+        <div class="tab-panel active atlas-panel" data-panel="atlas">
+          <span id="manifestDirtyBadge" class="hidden">MANIFEST CLEAN</span>
+          <div class="atlas-workbench">
+            <section class="atlas-settings">
+              <h2>Atlas Settings</h2>
+              <label class="target-row">
+                <span>Atlas File</span>
+                <span class="file-select-wrap">
+                  <select id="spriteInput"></select>
+                  <i class="file-icon" aria-hidden="true">▱</i>
+                </span>
+              </label>
+              <input id="manifestAtlasInput" type="hidden">
+              <label class="target-row"><span>Grid Columns</span><input id="manifestGridColsInput" type="number" min="1" step="1"></label>
+              <label class="target-row"><span>Grid Rows</span><input id="manifestGridRowsInput" type="number" min="1" step="1"></label>
+              <label class="target-row">
+                <span>Frame Size (px)</span>
+                <span class="pair-input"><input id="manifestFrameWidthInput" type="number" min="1" step="1"><b>×</b><input id="manifestFrameHeightInput" type="number" min="1" step="1"></span>
+              </label>
+              <label class="target-row">
+                <span>World Size (wu)</span>
+                <span class="pair-input"><input id="manifestWorldWidthInput" type="number" min="0.01" step="0.05"><b>×</b><input id="manifestWorldHeightInput" type="number" min="0.01" step="0.05"></span>
+              </label>
+              <label class="target-row"><span>Authored Facing</span><select id="manifestFacingInput"><option value="right">right</option><option value="left">left</option></select></label>
+              <input id="manifestIdInput" type="hidden">
+            </section>
+
+            <section class="sheet-preview-panel">
+              <h2>Sprite Sheet Preview <span id="sheetGridReadout"></span></h2>
+              <div id="frameSheetGrid" class="frame-sheet-grid"></div>
+            </section>
+
+            <section class="selected-frame-panel">
+              <h2>Selected Frame</h2>
+              <div class="selected-frame-stage">
+                <canvas id="selectedFrameCanvas" width="160" height="160"></canvas>
+              </div>
+              <div class="selected-frame-meta">
+                <div><span>Frame Index</span><strong id="selectedFrameIndex">0</strong></div>
+                <div><span>Pixel Size</span><strong id="selectedFramePixels">-</strong></div>
+                <div><span>World Size</span><strong id="selectedFrameWorld">-</strong></div>
+              </div>
+              <button id="saveManifestButton" class="apply-button" disabled>APPLY CHANGES</button>
+              <button id="resetManifestButton" class="hidden" type="button">RESET MANIFEST</button>
+            </section>
+          </div>
         </div>
-        <p class="muted">Discovered directly from Graphic/creature/*/manifest.json. Changing this field changes the runtime Monster sprite after a client rebuild/restart.</p>
-      </section>
-      <section class="card">
-        <h2>Body & Movement</h2>
-        <div class="grid three">
-          <label>Max Health<input id="healthInput" type="number" min="0.001" step="0.1"></label>
-          <label>Collision Left<input id="leftInput" type="number" min="0" step="0.05"></label>
-          <label>Collision Right<input id="rightInput" type="number" min="0" step="0.05"></label>
-          <label>Collision Bottom<input id="bottomInput" type="number" min="0" step="0.05"></label>
-          <label>Collision Top<input id="topInput" type="number" min="0" step="0.05"></label>
-          <label>Movement Speed<input id="speedInput" type="number" min="0.001" step="0.1"></label>
-          <label>Home Leash<input id="leashInput" type="number" min="0.001" step="0.1"></label>
+
+        <div class="tab-panel" data-panel="animations">
+          <div class="section-head">
+            <div><h2>Animations</h2><p>Edit clip frames while watching the persistent preview above.</p></div>
+          </div>
+          <div class="form-grid two">
+            <label>Preview Clip<select id="manifestPreviewClipInput"></select></label>
+            <label>Frame Seconds<input id="manifestFrameSecondsInput" type="number" min="0.01" step="0.01"></label>
+            <div id="manifestClipList" class="span-two clip-editor-list"></div>
+          </div>
         </div>
-      </section>
-      <section class="card">
-        <h2>Behavior</h2>
-        <div class="grid two">
-          <label>Kind<select id="kindInput"><option value="chase_contact">chase_contact</option></select></label>
-          <label>Aggro<select id="aggroInput"><option value="when_attacked">when_attacked</option></select></label>
+
+        <div class="tab-panel" data-panel="gameplay">
+          <div class="section-head">
+            <div><h2>Gameplay</h2><p>Core runtime Monster values.</p></div>
+          </div>
+          <div class="form-grid three">
+            <label class="span-three">Debug Name<input id="debugNameInput"></label>
+            <label>Max Health<input id="healthInput" type="number" min="0.001" step="0.1"></label>
+            <label>Movement Speed<input id="speedInput" type="number" min="0.001" step="0.1"></label>
+            <label>Home Leash<input id="leashInput" type="number" min="0.001" step="0.1"></label>
+          </div>
         </div>
-        <p class="muted">Contact damage is runtime-default and independent of aggro. Proximity alone does not acquire a target.</p>
-      </section>
-      <section class="card">
-        <div class="cardhead"><h2>Raw Runtime JSON</h2><button id="applyRawButton">APPLY RAW</button></div>
-        <textarea id="jsonEditor" spellcheck="false"></textarea>
+
+        <div class="tab-panel" data-panel="behavior">
+          <div class="section-head">
+            <div><h2>Behavior</h2><p>Runtime acquisition and movement behavior.</p></div>
+          </div>
+          <div class="form-grid two">
+            <label>Kind<select id="kindInput"><option value="chase_contact">chase_contact</option></select></label>
+            <label>Aggro<select id="aggroInput"><option value="when_attacked">when_attacked</option></select></label>
+          </div>
+          <p class="muted section-note">Contact damage is runtime-default and independent of aggro. Proximity alone does not acquire a target.</p>
+        </div>
+
+        <div class="tab-panel" data-panel="collision">
+          <div class="section-head">
+            <div><h2>Collision</h2><p>Author collision bounds while the hitbox updates live above.</p></div>
+          </div>
+          <div class="form-grid four">
+            <label>Left<input id="leftInput" type="number" min="0" step="0.05"></label>
+            <label>Right<input id="rightInput" type="number" min="0" step="0.05"></label>
+            <label>Bottom<input id="bottomInput" type="number" min="0" step="0.05"></label>
+            <label>Top<input id="topInput" type="number" min="0" step="0.05"></label>
+          </div>
+        </div>
+
+        <div class="tab-panel" data-panel="raw">
+          <div class="raw-grid">
+            <section>
+              <div class="raw-head"><h2>Runtime JSON</h2><button id="applyRawButton">APPLY RAW</button></div>
+              <textarea id="jsonEditor" spellcheck="false"></textarea>
+            </section>
+            <section>
+              <div class="raw-head"><h2>Manifest JSON</h2><button id="applyManifestRawButton">APPLY RAW</button></div>
+              <textarea id="manifestJsonEditor" class="manifest-json" spellcheck="false"></textarea>
+            </section>
+          </div>
+        </div>
       </section>
     </div>
   </section>
+
   <aside class="panel inspector">
-    <div class="title">INSPECTOR</div>
-    <div class="kv"><span>Status</span><strong id="validationStatus">No document</strong></div>
-    <div class="kv"><span>Content ID</span><strong id="summaryId">-</strong></div>
-    <div class="kv"><span>Runtime source</span><strong>content/definitions/monsters</strong></div>
-    <div class="kv"><span>Validation</span><pre id="validationErrors">-</pre></div>
+    <div class="panel-heading quick-heading">Quick Info</div>
+    <div class="quick-hero">
+      <div class="quick-thumb"><canvas id="quickThumbCanvas" width="86" height="86"></canvas></div>
+      <div class="quick-primary">
+        <label>Label<input id="idInput" readonly></label>
+        <label>Content ID<input id="contentIdInput" readonly></label>
+        <label>Schema<input id="schemaInput" readonly></label>
+        <label>Type<select id="quickTypeInput" disabled><option value="">-</option></select></label>
+      </div>
+    </div>
+    <div class="quick-info">
+      <div class="quick-field-row"><span>Source File</span><span class="file-readout"><strong id="quickSourceFile">-</strong><i class="file-icon">▱</i></span></div>
+      <div class="quick-field-row"><span>Atlas</span><span class="file-readout"><strong id="quickAtlas">-</strong><i class="file-icon">▱</i></span></div>
+      <div class="quick-readout"><span>Size (px)</span><strong id="quickImageSize">-</strong></div>
+      <div class="quick-readout"><span>Frames</span><strong id="quickFrames">-</strong></div>
+      <div class="quick-readout"><span>Frame Size</span><strong id="quickFrameSize">-</strong></div>
+      <div class="quick-readout"><span>World Size</span><strong id="quickWorldSize">-</strong></div>
+      <div class="hidden">
+        <strong id="validationStatus">No document</strong>
+        <strong id="summaryId">-</strong>
+        <pre id="validationErrors">-</pre>
+      </div>
+    </div>
   </aside>
 </main>
-<footer><span id="statusText">Ready.</span><span>Direct runtime definitions · no export step</span></footer>
-<script src="/app.js"></script>
+
+<footer>
+  <div class="footer-group">
+    <span>Mob Lab M3</span>
+    <i></i>
+    <span id="footerMonsterCount">Loaded 0 monsters</span>
+    <i></i>
+    <span id="footerSchemaStatus">Schema v4 OK</span>
+  </div>
+  <div class="footer-group">
+    <span id="statusText" class="footer-status">Ready.</span>
+    <i class="live-dot"></i>
+    <span>Preview updates live</span>
+    <i></i>
+    <span id="footerDirtyStatus">Saved</span>
+  </div>
+</footer>
+
+<dialog id="newMonsterDialog" class="modal">
+  <form id="newMonsterForm" method="dialog">
+    <div class="modal-head">
+      <div><strong>NEW MONSTER</strong><div class="muted">Allocate a permanent Monster ContentId and create the runtime definition.</div></div>
+      <button id="newCancelButton" type="button">CANCEL</button>
+    </div>
+    <div class="form-grid two modal-grid">
+      <label>Authored ID<input id="newIdInput" value="monster." autocomplete="off"></label>
+      <label>Debug Name<input id="newNameInput" value="New Monster" autocomplete="off"></label>
+      <label class="span-two">Sprite<select id="newSpriteInput"></select></label>
+    </div>
+    <p class="muted">Mob Lab assigns the next free permanent ID from the Monster block (10001–19999). The allocation is validated and rolled back if creation fails.</p>
+    <div class="modal-actions">
+      <button id="newCreateButton" type="submit" class="primary">CREATE MONSTER</button>
+    </div>
+  </form>
+</dialog>
+<script src="/app.js?v=m3-prototype-parity-v13"></script>
 </body>
 </html>

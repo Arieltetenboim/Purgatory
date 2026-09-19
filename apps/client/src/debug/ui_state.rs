@@ -58,6 +58,8 @@ pub struct DebugUiState {
     pub request_channel: Option<u32>,
     /// Selected stable NPC definition for the separate DEV spawn command.
     pub selected_debug_npc: Option<ContentId>,
+    /// Selected stable Monster definition for the DEV spawn command.
+    pub selected_debug_monster: Option<ContentId>,
     /// DEV A5 presentation Attack oneshot request.
     pub request_presentation_attack: bool,
     /// DEV A5 presentation Hurt oneshot request.
@@ -187,6 +189,7 @@ impl Default for DebugUiState {
             network_disconnect: false,
             request_channel: None,
             selected_debug_npc: None,
+            selected_debug_monster: None,
             request_presentation_attack: false,
             request_presentation_hurt: false,
             last_observed_channel: None,

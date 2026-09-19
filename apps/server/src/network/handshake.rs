@@ -767,6 +767,38 @@ async fn serve_connection(live: LiveSession) {
                             }
                         }
                     }
+                    Ok(ClientControl::DevSpawnMonster(req)) => {
+                        println!(
+                            "DEV_MONSTER_SPAWN recv connection={id} monster={}",
+                            req.monster_content_id
+                        );
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx
+                                        .send_dev_spawn_monster(id, req.monster_content_id)
+                                        .await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Ok(ClientControl::Equip(req)) => {
                         match rate.note(Instant::now(), abuse_cfg) {
                             RateDecision::Disconnect => {

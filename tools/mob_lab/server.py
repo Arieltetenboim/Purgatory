@@ -18,9 +18,13 @@ from typing import Any
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
+MOB_LAB_BUILD = "m3-prototype-parity-v13"
 SCHEMA_VERSION = 4
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 SPRITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+MONSTER_CONTENT_ID_START = 10_001
+MONSTER_CONTENT_ID_END = 19_999
+CONTENT_WRITE_LOCK = threading.Lock()
 
 
 def validate_monster_document(value: Any) -> list[str]:
@@ -119,6 +123,166 @@ def load_numeric_catalog(repo_root: Path) -> dict[str, int]:
     return labels
 
 
+def monster_constant_name(authored_id: str) -> str:
+    if not ID_RE.fullmatch(authored_id):
+        raise ValueError("Monster id must use monster.* and lowercase authored-id characters.")
+    suffix = authored_id.removeprefix("monster.")
+    constant = "MONSTER_" + re.sub(r"[^A-Za-z0-9]+", "_", suffix).strip("_").upper()
+    if constant == "MONSTER_":
+        raise ValueError("Monster id must contain a name after monster.")
+    return constant
+
+
+def monster_reserved_ids(repo_root: Path) -> set[int]:
+    source = (
+        repo_root / "crates" / "common" / "src" / "content_catalog.rs"
+    ).read_text(encoding="utf-8")
+    used = {
+        int(raw.replace("_", ""))
+        for raw in re.findall(
+            r"pub const MONSTER_[A-Z0-9_]+: ContentId = ContentId::from_raw\(([0-9_]+)\);",
+            source,
+        )
+    }
+    ledger = (repo_root / "content" / "CONTENT_ID_CATALOG.md").read_text(
+        encoding="utf-8"
+    )
+    used.update(
+        int(raw)
+        for raw in re.findall(r"^\| `(1[0-9]{4})` \| `monster\.", ledger, flags=re.MULTILINE)
+    )
+    return {
+        raw
+        for raw in used
+        if MONSTER_CONTENT_ID_START <= raw <= MONSTER_CONTENT_ID_END
+    }
+
+
+def monster_ledger_labels(repo_root: Path) -> dict[str, tuple[int, str]]:
+    ledger = (repo_root / "content" / "CONTENT_ID_CATALOG.md").read_text(
+        encoding="utf-8"
+    )
+    return {
+        label: (int(raw), status.strip())
+        for raw, label, status in re.findall(
+            r"^\| `(1[0-9]{4})` \| `(monster\.[^`]+)` \| ([^|]+)\|\r?$",
+            ledger,
+            flags=re.MULTILINE,
+        )
+    }
+
+
+def next_monster_content_id(repo_root: Path) -> int:
+    used = monster_reserved_ids(repo_root)
+    for raw in range(MONSTER_CONTENT_ID_START, MONSTER_CONTENT_ID_END + 1):
+        if raw not in used:
+            return raw
+    raise ValueError("Monster ContentId block is exhausted.")
+
+
+def prepare_monster_allocation(
+    repo_root: Path, authored_id: str
+) -> tuple[int, list[tuple[Path, bytes, bytes]]]:
+    existing = load_numeric_catalog(repo_root)
+    if authored_id in existing:
+        return existing[authored_id], []
+
+    ledger_labels = monster_ledger_labels(repo_root)
+    if authored_id in ledger_labels:
+        raw, status = ledger_labels[authored_id]
+        raise ValueError(
+            f"{authored_id} already has ledger allocation {raw} with status '{status}' "
+            "but is not active in the runtime catalog; refusing to reuse or silently reactivate it."
+        )
+
+    content_id = next_monster_content_id(repo_root)
+    constant = monster_constant_name(authored_id)
+    catalog_path = repo_root / "crates" / "common" / "src" / "content_catalog.rs"
+    ledger_path = repo_root / "content" / "CONTENT_ID_CATALOG.md"
+    catalog_old = catalog_path.read_bytes()
+    ledger_old = ledger_path.read_bytes()
+    catalog = catalog_old.decode("utf-8")
+    ledger = ledger_old.decode("utf-8")
+    catalog_newline = "\r\n" if "\r\n" in catalog else "\n"
+    ledger_newline = "\r\n" if "\r\n" in ledger else "\n"
+
+    if re.search(rf"\b{re.escape(constant)}\b", catalog):
+        raise ValueError(f"Catalog constant {constant} already exists.")
+
+    constant_matches = list(
+        re.finditer(
+            r"^pub const MONSTER_[A-Z0-9_]+: ContentId = ContentId::from_raw\([0-9_]+\);\r?$",
+            catalog,
+            flags=re.MULTILINE,
+        )
+    )
+    if not constant_matches:
+        raise ValueError("Monster constant block was not found in content_catalog.rs.")
+    last = constant_matches[-1]
+    numeric = f"{content_id // 1000}_{content_id % 1000:03d}"
+    catalog = (
+        catalog[: last.end()]
+        + f"{catalog_newline}pub const {constant}: ContentId = ContentId::from_raw({numeric});"
+        + catalog[last.end() :]
+    )
+
+    label_matches = list(
+        re.finditer(
+            r'^\s*"monster\.[^"]+"\s*=>\s*MONSTER_[A-Z0-9_]+,\r?$',
+            catalog,
+            flags=re.MULTILINE,
+        )
+    )
+    if not label_matches:
+        raise ValueError("Monster label block was not found in content_catalog.rs.")
+    last = label_matches[-1]
+    indent = re.match(r"^\s*", last.group(0)).group(0)
+    catalog = (
+        catalog[: last.end()]
+        + f'{catalog_newline}{indent}"{authored_id}" => {constant},'
+        + catalog[last.end() :]
+    )
+
+    reverse_matches = list(
+        re.finditer(
+            r'^\s*MONSTER_[A-Z0-9_]+\s*=>\s*"monster\.[^"]+",\r?$',
+            catalog,
+            flags=re.MULTILINE,
+        )
+    )
+    if not reverse_matches:
+        raise ValueError("Monster reverse-label block was not found in content_catalog.rs.")
+    last = reverse_matches[-1]
+    indent = re.match(r"^\s*", last.group(0)).group(0)
+    catalog = (
+        catalog[: last.end()]
+        + f'{catalog_newline}{indent}{constant} => "{authored_id}",'
+        + catalog[last.end() :]
+    )
+
+    monster_rows = list(
+        re.finditer(
+            r"^\| `1[0-9]{4}` \| `monster\.[^`]+` \| [^|]+\|\r?$",
+            ledger,
+            flags=re.MULTILINE,
+        )
+    )
+    if not monster_rows:
+        raise ValueError("No Monster allocation rows were found in CONTENT_ID_CATALOG.md.")
+    last = monster_rows[-1]
+    new_row = f"| `{content_id}` | `{authored_id}` | active |"
+    ledger = (
+        ledger[: last.end()]
+        + ledger_newline
+        + new_row
+        + ledger[last.end() :]
+    )
+
+    return content_id, [
+        (catalog_path, catalog_old, catalog.encode("utf-8")),
+        (ledger_path, ledger_old, ledger.encode("utf-8")),
+    ]
+
 def _positive_pair(value: Any) -> bool:
     return (
         isinstance(value, list)
@@ -160,6 +324,14 @@ def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
     ):
         raise ValueError("frame_size_px must contain two positive integers")
 
+    grid_size = manifest.get("grid_size")
+    if grid_size is not None and (
+        not isinstance(grid_size, list)
+        or len(grid_size) != 2
+        or any(not isinstance(item, int) or item <= 0 for item in grid_size)
+    ):
+        raise ValueError("grid_size must contain two positive integers")
+
     if not _positive_pair(manifest.get("world_size")):
         raise ValueError("world_size must contain two positive numbers")
     frame_seconds = manifest.get("frame_seconds")
@@ -173,17 +345,28 @@ def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
         raise ValueError("authored_facing must be left or right")
 
     clips = manifest.get("clips")
-    if not isinstance(clips, dict):
-        raise ValueError("clips must be an object")
-    for required in ("idle", "move", "attack"):
-        clip = clips.get(required)
+    if not isinstance(clips, dict) or not clips:
+        raise ValueError("clips must be a non-empty object")
+    for name, clip in clips.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("clip names must be non-empty strings")
         frames = clip.get("frames") if isinstance(clip, dict) else None
         if not isinstance(frames, list) or not frames or any(
             not isinstance(frame, int) or frame < 0 for frame in frames
         ):
-            raise ValueError(f"{required} clip must contain frame indices")
+            raise ValueError(f"{name} clip must contain frame indices")
         if not isinstance(clip.get("loop"), bool):
-            raise ValueError(f"{required}.loop must be boolean")
+            raise ValueError(f"{name}.loop must be boolean")
+        if grid_size is not None:
+            total_frames = grid_size[0] * grid_size[1]
+            if any(frame >= total_frames for frame in frames):
+                raise ValueError(
+                    f"{name} clip references a frame outside grid_size "
+                    f"{grid_size[0]}x{grid_size[1]}"
+                )
+
+    if "idle" not in clips:
+        raise ValueError("sprite manifest is missing required idle clip")
 
     idle_frames = clips["idle"]["frames"]
     return {
@@ -192,6 +375,7 @@ def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
         "atlas": atlas,
         "atlas_path": atlas_path,
         "frame_size_px": frame_size,
+        "grid_size": grid_size,
         "idle_frames": idle_frames,
         "frame_seconds": float(frame_seconds),
         "world_size": [float(manifest["world_size"][0]), float(manifest["world_size"][1])],
@@ -223,12 +407,56 @@ def load_sprite_record(repo_root: Path, sprite_id: str) -> dict[str, Any]:
     raise ValueError(f"Sprite '{sprite_id}' was not found in Graphic/creature{detail}.")
 
 
+def find_sprite_manifest_path(repo_root: Path, sprite_id: str) -> Path:
+    if not isinstance(sprite_id, str) or not SPRITE_ID_RE.fullmatch(sprite_id):
+        raise ValueError("Invalid sprite id.")
+    root = repo_root / "Graphic" / "creature"
+    if not root.is_dir():
+        raise ValueError(f"Sprite root not found: {root}")
+    for manifest_path in sorted(root.glob("*/manifest.json")):
+        try:
+            doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(doc, dict) and doc.get("id") == sprite_id:
+            return manifest_path
+    raise ValueError(f"Sprite manifest '{sprite_id}' was not found.")
+
+
+def load_sprite_manifest_document(repo_root: Path, sprite_id: str) -> tuple[Path, dict[str, Any]]:
+    path = find_sprite_manifest_path(repo_root, sprite_id)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict):
+        raise ValueError("Sprite manifest must be an object.")
+    return path, doc
+
+
+def save_sprite_manifest_document(
+    repo_root: Path, sprite_id: str, doc: Any
+) -> dict[str, Any]:
+    if not isinstance(doc, dict):
+        raise ValueError("Sprite manifest must be an object.")
+    if doc.get("id") != sprite_id:
+        raise ValueError("Sprite manifest id cannot be changed from Mob Lab.")
+
+    path = find_sprite_manifest_path(repo_root, sprite_id)
+    original = path.read_bytes()
+    encoded = (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    atomic_write(path, encoded)
+    try:
+        return _sprite_record(repo_root, path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        atomic_write(path, original)
+        raise
+
+
 def sprite_public_record(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": item["id"],
         "manifest_path": item["manifest_path"],
         "atlas": item["atlas"],
         "frame_size_px": item["frame_size_px"],
+        "grid_size": item["grid_size"],
         "idle_frames": item["idle_frames"],
         "frame_seconds": item["frame_seconds"],
         "world_size": item["world_size"],
@@ -274,6 +502,19 @@ def new_monster_document(
             "home_leash_radius": 3.0,
         },
     }
+
+
+def clone_monster_document(
+    source: Any, authored_id: str, debug_name: str, sprite_id: str
+) -> dict[str, Any]:
+    errors = validate_monster_document(source)
+    if errors:
+        raise ValueError("Source Monster is invalid: " + "; ".join(errors))
+    cloned = json.loads(json.dumps(source))
+    cloned["id"] = authored_id
+    cloned["debug_name"] = debug_name
+    cloned["sprite"] = sprite_id
+    return cloned
 
 
 def resolve_monster_path(root: Path, relative: str) -> Path:
@@ -322,6 +563,12 @@ class MobLabHandler(SimpleHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"MOB_LAB|{self.address_string()}|{fmt % args}")
 
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
     def _json_response(self, value: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         self.send_response(status)
@@ -345,7 +592,14 @@ class MobLabHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
-            self._json_response({"ok": True, "tool": "mob-lab", "slice": "M3"})
+            self._json_response(
+                {
+                    "ok": True,
+                    "tool": "mob-lab",
+                    "slice": "M3",
+                    "build": MOB_LAB_BUILD,
+                }
+            )
             return
         if parsed.path == "/api/monsters":
             self._handle_list()
@@ -358,6 +612,9 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/presentation":
             self._handle_presentation()
+            return
+        if parsed.path == "/api/sprite-manifest":
+            self._handle_sprite_manifest()
             return
         if parsed.path == "/api/presentation-atlas":
             self._handle_presentation_atlas()
@@ -374,6 +631,9 @@ class MobLabHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/new":
             self._handle_new()
             return
+        if parsed.path == "/api/sprite-manifest":
+            self._handle_save_sprite_manifest()
+            return
         if parsed.path == "/api/validate":
             self._handle_validate()
             return
@@ -387,6 +647,40 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                 "issues": issues,
             }
         )
+
+    def _handle_sprite_manifest(self) -> None:
+        try:
+            sprite_id = self._query_value("sprite")
+            path, doc = load_sprite_manifest_document(self.repo_root, sprite_id)
+            self._json_response(
+                {
+                    "sprite": sprite_id,
+                    "path": path.relative_to(self.repo_root).as_posix(),
+                    "document": doc,
+                }
+            )
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _handle_save_sprite_manifest(self) -> None:
+        try:
+            sprite_id = self._query_value("sprite")
+            doc = self._read_json_body()
+            with CONTENT_WRITE_LOCK:
+                record = save_sprite_manifest_document(self.repo_root, sprite_id, doc)
+            self._json_response(
+                {
+                    "ok": True,
+                    "sprite": sprite_id,
+                    "path": record["manifest_path"],
+                    "presentation": presentation_payload(record),
+                }
+            )
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            self._json_response(
+                {"error": f"Sprite manifest save rejected: {exc}"},
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+            )
 
     def _handle_presentation(self) -> None:
         try:
@@ -499,7 +793,8 @@ class MobLabHandler(SimpleHTTPRequestHandler):
         try:
             path = resolve_monster_path(self.definitions_root, self._query_value("path"))
             doc = self._read_json_body()
-            ok, errors, output = self._save_candidate(path, doc)
+            with CONTENT_WRITE_LOCK:
+                ok, errors, output = self._save_candidate(path, doc)
             if not ok:
                 self._json_response(
                     {
@@ -528,51 +823,94 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                 raise ValueError("New monster request must be an object.")
             authored_id = str(request.get("id", "")).strip()
             debug_name = str(request.get("debug_name", "")).strip()
+            sprite_id = str(request.get("sprite", "")).strip()
+            template_path = request.get("template_path")
+            if template_path is not None and not isinstance(template_path, str):
+                raise ValueError("template_path must be a Monster JSON file name.")
+            if not ID_RE.fullmatch(authored_id):
+                raise ValueError(
+                    "New monster id must use monster.* and lowercase authored-id characters."
+                )
             if not debug_name:
                 raise ValueError("New monster requires a debug name.")
-            catalog = load_numeric_catalog(self.repo_root)
-            if authored_id not in catalog:
-                self._json_response(
-                    {
-                        "error": (
-                            f"{authored_id} has no stable numeric ContentId allocation. "
-                            "Allocate it through the checked content catalog first "
-                            "(tracked by issue #24), then create the Monster definition."
+            sprite = load_sprite_record(self.repo_root, sprite_id)
+
+            with CONTENT_WRITE_LOCK:
+                path = resolve_monster_path(
+                    self.definitions_root, safe_filename(authored_id)
+                )
+                if path.exists():
+                    self._json_response(
+                        {"error": f"Monster already exists at {path.name}."},
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
+
+                content_id, allocation_writes = prepare_monster_allocation(
+                    self.repo_root, authored_id
+                )
+                originals: list[tuple[Path, bytes | None]] = [
+                    (target, old) for target, old, _new in allocation_writes
+                ]
+                originals.append((path, None))
+                try:
+                    for target, _old, new in allocation_writes:
+                        atomic_write(target, new)
+                    if template_path:
+                        source_path = resolve_monster_path(
+                            self.definitions_root, template_path
                         )
-                    },
-                    HTTPStatus.UNPROCESSABLE_ENTITY,
-                )
-                return
-            path = resolve_monster_path(self.definitions_root, safe_filename(authored_id))
-            if path.exists():
-                self._json_response(
-                    {"error": f"Monster already exists at {path.name}."},
-                    HTTPStatus.CONFLICT,
-                )
-                return
-            sprites, sprite_issues = scan_sprite_manifests(self.repo_root)
-            if not sprites:
-                detail = "; ".join(sprite_issues) if sprite_issues else "no manifests found"
-                raise ValueError(f"Cannot create Monster without a valid sprite: {detail}")
-            doc = new_monster_document(authored_id, debug_name, sprites[0]["id"])
-            ok, errors, output = self._save_candidate(path, doc)
-            if not ok:
+                        if not source_path.is_file():
+                            raise ValueError(
+                                f"Duplicate source Monster not found: {template_path}."
+                            )
+                        source_doc = json.loads(
+                            source_path.read_text(encoding="utf-8")
+                        )
+                        doc = clone_monster_document(
+                            source_doc, authored_id, debug_name, sprite["id"]
+                        )
+                    else:
+                        doc = new_monster_document(
+                            authored_id, debug_name, sprite["id"]
+                        )
+                    encoded = (
+                        json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
+                    ).encode("utf-8")
+                    atomic_write(path, encoded)
+                    ok, output = validate_runtime_pack(self.repo_root)
+                    if not ok:
+                        raise RuntimeError(output or "runtime content validation failed")
+                except Exception:
+                    for target, original in reversed(originals):
+                        if original is None:
+                            target.unlink(missing_ok=True)
+                        else:
+                            atomic_write(target, original)
+                    raise
+
                 self._json_response(
                     {
-                        "error": "New monster rejected by runtime validation.",
-                        "validation_errors": errors,
+                        "ok": True,
+                        "path": path.name,
+                        "document": doc,
+                        "content_id": content_id,
                         "validator_output": output,
                     },
-                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    HTTPStatus.CREATED,
                 )
-                return
+        except RuntimeError as exc:
             self._json_response(
-                {"ok": True, "path": path.name, "document": doc, "validator_output": output},
-                HTTPStatus.CREATED,
+                {
+                    "error": (
+                        "New monster failed runtime validation; allocation and file were rolled back."
+                    ),
+                    "validator_output": str(exc),
+                },
+                HTTPStatus.UNPROCESSABLE_ENTITY,
             )
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="PURGATORY Mob Lab local server")

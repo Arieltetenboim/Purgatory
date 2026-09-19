@@ -426,7 +426,7 @@ fn quick_actions(
             let response = ui.add(btn_ghost("Mob Lab").min_size(button_size));
             if action_response(
                 response,
-                "Launch the local Monster authoring web tool in the background. Output is written to logs/dev-tools/mob-lab.log.",
+                "Launch Mob Lab in its own PowerShell window. Closing that window stops the Mob Lab server.",
             )
             .clicked()
             {

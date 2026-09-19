@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "purgatory_sprite_animation",
+  "id": "creature.shroom",
+  "atlas": "shroom.png",
+  "frame_size_px": [96, 96],
+  "grid_size": [8, 4],
+  "world_size": [1.0, 1.0],
+  "frame_seconds": 0.1,
+  "authored_facing": "right",
+  "clips": {
+    "move": { "frames": [0, 1, 2, 3, 4, 5, 6, 7], "loop": true },
+    "idle": { "frames": [8, 9, 10, 11], "loop": true },
+    "hit": { "frames": [16, 17, 18, 19, 20], "loop": false },
+    "death": { "frames": [24, 25, 26, 27, 28, 29, 30, 31], "loop": false }
+  }
+}

@@ -38,6 +38,7 @@ use crate::renderer::OverlayPass;
 
 const SEC_NOW_POSE: &str = "debug.pose";
 const SEC_NOW_NPC_SPAWN: &str = "debug.npc_spawn";
+const SEC_NOW_MONSTER_SPAWN: &str = "debug.monster_spawn";
 const SEC_NOW_CAMERA: &str = "debug.camera";
 const SEC_NOW_REPLICA: &str = "debug.replica";
 const SEC_NOW_VIEW: &str = "debug.view";
@@ -104,9 +105,16 @@ struct NpcSpawnOption {
     authored_id: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MonsterSpawnOption {
+    content_id: ContentId,
+    authored_id: String,
+}
+
 struct DebugOverlayResources<'a> {
     history: &'a mut CollisionHistory,
     npc_spawn_options: &'a [NpcSpawnOption],
+    monster_spawn_options: &'a [MonsterSpawnOption],
 }
 
 /// Client-owned development overlay.
@@ -117,6 +125,7 @@ pub struct DebugOverlay {
     renderer: EguiRenderer,
     tab: DebugTab,
     npc_spawn_options: Vec<NpcSpawnOption>,
+    monster_spawn_options: Vec<MonsterSpawnOption>,
     pub ui: DebugUiState,
     pub collision_history: CollisionHistory,
 }
@@ -142,8 +151,16 @@ impl DebugOverlay {
                 authored_id: npc.authored_id.clone(),
             })
             .collect();
+        let monster_spawn_options: Vec<_> = registry
+            .iter_monster_presentations()
+            .map(|monster| MonsterSpawnOption {
+                content_id: monster.content_id,
+                authored_id: monster.authored_id.clone(),
+            })
+            .collect();
         let mut ui = DebugUiState::from_env();
         ui.selected_debug_npc = npc_spawn_options.first().map(|npc| npc.content_id);
+        ui.selected_debug_monster = monster_spawn_options.first().map(|monster| monster.content_id);
         Self {
             visible: false,
             ctx,
@@ -151,6 +168,7 @@ impl DebugOverlay {
             renderer,
             tab: DebugTab::Debug,
             npc_spawn_options,
+            monster_spawn_options,
             ui,
             collision_history: CollisionHistory::default(),
         }
@@ -231,6 +249,7 @@ impl DebugOverlay {
         let mut ui_state = self.ui.clone();
         let history = &mut self.collision_history;
         let npc_spawn_options = &self.npc_spawn_options;
+        let monster_spawn_options = &self.monster_spawn_options;
         let mut connection = connection;
         let mut full_output = self.ctx.run_ui(raw_input, |egui_ctx| {
             if let Some(health) = gameplay_health {
@@ -255,6 +274,7 @@ impl DebugOverlay {
                     DebugOverlayResources {
                         history,
                         npc_spawn_options,
+                        monster_spawn_options,
                     },
                     &mut actions,
                 );
@@ -384,6 +404,7 @@ fn tab_section_ids(tab: DebugTab) -> &'static [&'static str] {
     match tab {
         DebugTab::Debug => &[
             SEC_NOW_NPC_SPAWN,
+            SEC_NOW_MONSTER_SPAWN,
             SEC_NOW_POSE,
             SEC_NOW_CAMERA,
             SEC_NOW_REPLICA,
@@ -764,6 +785,7 @@ fn draw_debug_window(
     let DebugOverlayResources {
         history,
         npc_spawn_options,
+        monster_spawn_options,
     } = resources;
     egui::Window::new("PURGATORY DEBUG")
         .open(visible)
@@ -801,9 +823,14 @@ fn draw_debug_window(
                 .show(ui, |ui| {
                     draw_expand_collapse(ui, &mut ui_state.sections, tab_section_ids(*tab));
                     match *tab {
-                        DebugTab::Debug => {
-                            draw_now_tab(ui, frame, ui_state, npc_spawn_options, actions)
-                        }
+                        DebugTab::Debug => draw_now_tab(
+                            ui,
+                            frame,
+                            ui_state,
+                            npc_spawn_options,
+                            monster_spawn_options,
+                            actions,
+                        ),
                         DebugTab::Runtime => draw_runtime_tab(ui, frame, ui_state),
                         DebugTab::Player => draw_player_tab(ui, frame, ui_state, actions),
                         DebugTab::Skeleton => draw_skeleton_tab(ui, frame, ui_state),
@@ -1137,17 +1164,72 @@ fn draw_npc_spawner(
     }
 }
 
+fn draw_monster_spawner(
+    ui: &mut egui::Ui,
+    frame: &DiagnosticsFrame,
+    ui_state: &mut DebugUiState,
+    monster_spawn_options: &[MonsterSpawnOption],
+    actions: &mut Vec<DebugCommand>,
+) {
+    let selected = ui_state
+        .selected_debug_monster
+        .and_then(|id| monster_spawn_options.iter().find(|monster| monster.content_id == id));
+    let selected_label = selected
+        .map(|monster| format!("{} [{}]", monster.authored_id, monster.content_id))
+        .unwrap_or_else(|| "No runtime Monsters".into());
+    if debug_section(
+        ui,
+        &mut ui_state.sections,
+        SEC_NOW_MONSTER_SPAWN,
+        true,
+        "DEV Monster Spawner",
+        Some(&selected_label),
+    ) {
+        ui.indent(SEC_NOW_MONSTER_SPAWN, |ui| {
+            egui::ComboBox::from_id_salt("debug.monster_spawn.select")
+                .selected_text(&selected_label)
+                .show_ui(ui, |ui| {
+                    for monster in monster_spawn_options {
+                        ui.selectable_value(
+                            &mut ui_state.selected_debug_monster,
+                            Some(monster.content_id),
+                            format!("{} [{}]", monster.authored_id, monster.content_id),
+                        );
+                    }
+                });
+            let can_spawn = frame.network.lifecycle.connection_id.is_some()
+                && frame.physics.player.is_some()
+                && ui_state.selected_debug_monster.is_some();
+            if ui
+                .add_enabled(can_spawn, egui::Button::new("Spawn near Player"))
+                .on_hover_text(
+                    "Server resolves the authored Monster and spawns it near the player's authoritative position.",
+                )
+                .clicked()
+                && let Some(content_id) = ui_state.selected_debug_monster
+            {
+                actions.push(DebugCommand::SpawnMonster(content_id));
+            }
+            ui.small(
+                "Transient DEV spawn using the authored Monster gameplay definition. Not written to map content or persistence.",
+            );
+        });
+    }
+}
+
 fn draw_now_tab(
     ui: &mut egui::Ui,
     frame: &DiagnosticsFrame,
     ui_state: &mut DebugUiState,
     npc_spawn_options: &[NpcSpawnOption],
+    monster_spawn_options: &[MonsterSpawnOption],
     actions: &mut Vec<DebugCommand>,
 ) {
     draw_time_scale_buttons(ui, ui_state);
     ui.small("Scales wall elapsed into SimulationClock only. Tick rate stays 30 Hz.");
     draw_reset_action(ui, frame, actions);
     draw_npc_spawner(ui, frame, ui_state, npc_spawn_options, actions);
+    draw_monster_spawner(ui, frame, ui_state, monster_spawn_options, actions);
     let pose_summary = frame.physics.player.map(|player| {
         format!(
             "({:.2}, {:.2}) {}",
@@ -3366,6 +3448,7 @@ mod tests {
             tab_section_ids(DebugTab::Debug),
             &[
                 SEC_NOW_NPC_SPAWN,
+                SEC_NOW_MONSTER_SPAWN,
                 SEC_NOW_POSE,
                 SEC_NOW_CAMERA,
                 SEC_NOW_REPLICA,

@@ -66,6 +66,7 @@ const DEV_SPEED_MAX_HUNDREDTHS: u16 = 2_400;
 const DEV_JUMP_MIN_HUNDREDTHS: u16 = 100;
 const DEV_JUMP_MAX_HUNDREDTHS: u16 = 3_000;
 const DEV_SPAWNED_NPC_CAP: usize = 64;
+const DEV_SPAWNED_MONSTER_CAP: usize = 64;
 /// Prevent rapid close/reopen churn without making one player's dialogue lock
 /// the NPC for other players. The authoritative server runs at 30 Hz.
 const DIALOGUE_REOPEN_COOLDOWN_TICKS: u64 = TICK_RATE_HZ as u64 / 2;
@@ -473,6 +474,7 @@ pub struct GameplayOwner {
     /// Bounded bookkeeping for transient NPCs created by the DEV overlay.
     /// `World` owns the entities; this list only enforces the tool cap.
     dev_spawned_npcs: Vec<EntityId>,
+    dev_spawned_monsters: Vec<EntityId>,
     load_pressure: super::load_pressure::LoadPressure,
     /// Shared entity → Known-observer reverse index (6G.7B).
     interest_fanout: InterestFanoutIndex,
@@ -604,6 +606,10 @@ pub enum InputUpdate {
     DevSpawnNpc {
         connection_id: ConnectionId,
         npc_content_id: ContentId,
+    },
+    DevSpawnMonster {
+        connection_id: ConnectionId,
+        monster_content_id: ContentId,
     },
     DevSpawnItem {
         connection_id: ConnectionId,
@@ -865,6 +871,20 @@ impl GameplayTx {
             .is_ok()
     }
 
+    pub async fn send_dev_spawn_monster(
+        &self,
+        connection_id: ConnectionId,
+        monster_content_id: ContentId,
+    ) -> bool {
+        self.input
+            .send(InputUpdate::DevSpawnMonster {
+                connection_id,
+                monster_content_id,
+            })
+            .await
+            .is_ok()
+    }
+
     pub async fn send_dev_spawn_item(
         &self,
         connection_id: ConnectionId,
@@ -1098,6 +1118,7 @@ impl GameplayOwner {
             runtime_probe: RuntimeProbe::from_env(),
             proof_drop_spawned: false,
             dev_spawned_npcs: Vec::new(),
+            dev_spawned_monsters: Vec::new(),
             load_pressure: super::load_pressure::LoadPressure::from_process_env(),
             interest_fanout: InterestFanoutIndex::new(),
             replication_fanout_accounting: ReplicationFanoutAccounting::default(),
@@ -1545,6 +1566,7 @@ impl GameplayOwner {
                 | InputUpdate::DevSetSpeed { .. }
                 | InputUpdate::DevSetJump { .. }
                 | InputUpdate::DevSpawnNpc { .. }
+                | InputUpdate::DevSpawnMonster { .. }
                 | InputUpdate::DevSpawnItem { .. }
                 | InputUpdate::DevNarrative { .. }
                 | InputUpdate::Equip { .. }
@@ -1593,6 +1615,10 @@ impl GameplayOwner {
                     connection_id,
                     npc_content_id,
                 } => self.handle_dev_spawn_npc(connection_id, npc_content_id),
+                InputUpdate::DevSpawnMonster {
+                    connection_id,
+                    monster_content_id,
+                } => self.handle_dev_spawn_monster(connection_id, monster_content_id),
                 InputUpdate::DevSpawnItem {
                     connection_id,
                     item_content_id,
@@ -3207,6 +3233,82 @@ impl GameplayOwner {
             position[0],
             position[1],
             self.dev_spawned_npcs.len()
+        );
+    }
+
+    fn handle_dev_spawn_monster(
+        &mut self,
+        connection_id: ConnectionId,
+        monster_content_id: ContentId,
+    ) {
+        let Some(actor) = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+        else {
+            println!("DEV_MONSTER_SPAWN reject connection={connection_id} reason=no_binding");
+            return;
+        };
+        let Some(address) = self.world.address_of(actor) else {
+            println!("DEV_MONSTER_SPAWN reject connection={connection_id} reason=no_address");
+            return;
+        };
+        let Some(position) = self.world.transform_of(actor).map(|value| value.position) else {
+            println!("DEV_MONSTER_SPAWN reject connection={connection_id} reason=no_transform");
+            return;
+        };
+        let Some(definition) = self.registry.monster_by_id(monster_content_id).cloned() else {
+            println!(
+                "DEV_MONSTER_SPAWN reject connection={connection_id} monster={monster_content_id} reason=not_authored_monster"
+            );
+            return;
+        };
+        if self.dev_spawned_monsters.len() >= DEV_SPAWNED_MONSTER_CAP {
+            println!(
+                "DEV_MONSTER_SPAWN reject connection={connection_id} monster={monster_content_id} reason=cap cap={DEV_SPAWNED_MONSTER_CAP}"
+            );
+            return;
+        }
+
+        let floor_y = position[1] - PLAYER_HALF_EXTENTS[1];
+        let spawn_position = [
+            position[0] + 1.5,
+            floor_y + definition.collision_bounds.bottom,
+        ];
+        let runtime_config = NpcRuntimeConfig {
+            movement_speed: definition.movement_speed,
+            half_extents: definition.collision_bounds.half_extents(),
+            collision_center_offset: definition.collision_bounds.center_offset(),
+            ..NpcRuntimeConfig::default()
+        };
+        let request = World::npc_spawn_request_with_runtime_config(
+            address,
+            spawn_position,
+            LIVE_COMBAT_CREATURE_TYPE_TOKEN,
+            definition.home_leash_radius,
+            self.ticks as u32 ^ monster_content_id.token() as u32,
+            SimulationTick::from_count(self.ticks),
+            true,
+            definition.health_max,
+            runtime_config,
+        )
+        .with_content(definition.content_id);
+        let Some(entity) = self.world.spawn(request) else {
+            println!(
+                "DEV_MONSTER_SPAWN reject connection={connection_id} monster={monster_content_id} reason=world_spawn"
+            );
+            return;
+        };
+        if let Some(mut npc) = self.world.npc_of(entity) {
+            npc.walking = false;
+            let _ = self.world.set_npc(entity, npc);
+        }
+        self.dev_spawned_monsters.push(entity);
+        println!(
+            "DEV_MONSTER_SPAWN spawned connection={connection_id} actor={actor} entity={entity} monster={monster_content_id} address={address} position=({:.3},{:.3}) count={}",
+            spawn_position[0],
+            spawn_position[1],
+            self.dev_spawned_monsters.len()
         );
     }
 
@@ -6322,6 +6424,48 @@ mod tests {
             })
             .map(|beat| beat.id.as_str());
         assert_eq!(post_delivery_beat, Some("lore_roofs"));
+    }
+
+    #[test]
+    fn dev_spawn_monster_resolves_authored_definition_and_spawns_near_player() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let actor = owner.entity_of(connection).expect("bound actor");
+        let actor_address = owner.world().address_of(actor).expect("actor address");
+        let before = owner
+            .world()
+            .iter()
+            .filter(|&entity| owner.world().content_id_of(entity) == Some(MONSTER_RED_SLIME))
+            .count();
+
+        owner.apply_input(InputUpdate::DevSpawnMonster {
+            connection_id: connection,
+            monster_content_id: MONSTER_RED_SLIME,
+        });
+
+        let spawned = *owner
+            .dev_spawned_monsters
+            .last()
+            .expect("DEV-spawned Monster");
+        assert_eq!(owner.world().address_of(spawned), Some(actor_address));
+        assert_eq!(owner.world().content_id_of(spawned), Some(MONSTER_RED_SLIME));
+        assert!(owner.world().npc_of(spawned).is_some());
+        assert_eq!(
+            owner.world().health_of(spawned),
+            owner
+                .registry
+                .monster_by_id(MONSTER_RED_SLIME)
+                .map(|definition| Health::full(definition.health_max))
+        );
+        assert_eq!(
+            before + 1,
+            owner
+                .world()
+                .iter()
+                .filter(|&entity| owner.world().content_id_of(entity) == Some(MONSTER_RED_SLIME))
+                .count()
+        );
     }
 
     #[test]
