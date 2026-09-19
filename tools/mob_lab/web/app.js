@@ -1,7 +1,7 @@
 const state={
   items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,
   presentation:null,previewImage:null,previewFrame:0,previewTimer:null,
-  manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle",activeTab:"overview"
+  manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle",activeTab:"atlas"
 };
 const $=id=>document.getElementById(id);
 const els={};
@@ -12,7 +12,7 @@ const els={};
   "leashInput","kindInput","aggroInput","jsonEditor","applyRawButton","validationStatus",
   "validationErrors","summaryId","statusText","previewCanvas","previewUnavailable","spriteReadout",
   "hitboxReadout","anchorReadout","newMonsterDialog","newMonsterForm","newIdInput","newNameInput",
-  "newSpriteInput","newCancelButton","newCreateButton","manifestDirtyBadge","manifestIdInput",
+  "newSpriteInput","newCancelButton","newCreateButton","monsterCount","manifestDirtyBadge","manifestIdInput",
   "manifestAtlasInput","manifestGridColsInput","manifestGridRowsInput","manifestFrameWidthInput",
   "manifestFrameHeightInput","manifestWorldWidthInput","manifestWorldHeightInput",
   "manifestFrameSecondsInput","manifestFacingInput","manifestPreviewClipInput",
@@ -367,6 +367,7 @@ els.saveManifestButton.onclick=async()=>{
 
 function renderList(){
   const q=els.filterInput.value.trim().toLowerCase();
+  els.monsterCount.textContent=String(state.items.length);
   els.monsterList.replaceChildren();
   state.items
     .filter(x=>!q||String(x.id||"").toLowerCase().includes(q)||String(x.debug_name||"").toLowerCase().includes(q))
@@ -392,7 +393,7 @@ async function openMonster(path){
   els.emptyState.classList.add("hidden");els.editor.classList.remove("hidden");
   els.documentTitle.textContent=state.doc.debug_name||state.doc.id;
   els.documentPath.textContent="content/definitions/monsters/"+data.path;
-  renderForm();renderList();setEditorTab(state.activeTab||"overview");await loadPresentation();setStatus("Loaded "+data.path);
+  renderForm();renderList();setEditorTab(state.activeTab||"atlas");await loadPresentation();setStatus("Loaded "+data.path);
 }
 
 els.filterInput.addEventListener("input",renderList);
