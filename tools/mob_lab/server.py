@@ -121,7 +121,6 @@ def load_numeric_catalog(repo_root: Path) -> dict[str, int]:
     return labels
 
 
-
 def monster_constant_name(authored_id: str) -> str:
     if not ID_RE.fullmatch(authored_id):
         raise ValueError("Monster id must use monster.* and lowercase authored-id characters.")
@@ -181,7 +180,8 @@ def prepare_monster_allocation(
     )
 
     label_matches = list(
-        re.finditer(r'^\s*"monster\.[^"]+"\s*=>\s*MONSTER_[A-Z0-9_]+,
+        re.finditer(
+            r'^\s*"monster\.[^"]+"\s*=>\s*MONSTER_[A-Z0-9_]+,
     return (
         isinstance(value, list)
         and len(value) == 2
@@ -592,7 +592,9 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             debug_name = str(request.get("debug_name", "")).strip()
             sprite_id = str(request.get("sprite", "")).strip()
             if not ID_RE.fullmatch(authored_id):
-                raise ValueError("New monster id must use monster.* and lowercase authored-id characters.")
+                raise ValueError(
+                    "New monster id must use monster.* and lowercase authored-id characters."
+                )
             if not debug_name:
                 raise ValueError("New monster requires a debug name.")
             sprite = load_sprite_record(self.repo_root, sprite_id)
@@ -644,14 +646,15 @@ class MobLabHandler(SimpleHTTPRequestHandler):
         except RuntimeError as exc:
             self._json_response(
                 {
-                    "error": "New monster failed runtime validation; allocation and file were rolled back.",
+                    "error": (
+                        "New monster failed runtime validation; allocation and file were rolled back."
+                    ),
                     "validator_output": str(exc),
                 },
                 HTTPStatus.UNPROCESSABLE_ENTITY,
             )
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="PURGATORY Mob Lab local server")
@@ -690,7 +693,10 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-, catalog, flags=re.MULTILINE)
+,
+            catalog,
+            flags=re.MULTILINE,
+        )
     )
     if not label_matches:
         raise ValueError("Monster label allocation block was not found in content_catalog.rs.")
@@ -699,7 +705,8 @@ if __name__ == "__main__":
     catalog = catalog[:pos] + f'\n{indent}"{authored_id}" => {constant},' + catalog[pos:]
 
     reverse_matches = list(
-        re.finditer(r'^\s*MONSTER_[A-Z0-9_]+\s*=>\s*"monster\.[^"]+",
+        re.finditer(
+            r'^\s*MONSTER_[A-Z0-9_]+\s*=>\s*"monster\.[^"]+",
     return (
         isinstance(value, list)
         and len(value) == 2
@@ -1191,7 +1198,10 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-, catalog, flags=re.MULTILINE)
+,
+            catalog,
+            flags=re.MULTILINE,
+        )
     )
     if not reverse_matches:
         raise ValueError("Monster reverse-label block was not found in content_catalog.rs.")
@@ -1207,15 +1217,18 @@ if __name__ == "__main__":
     if monster_section is None:
         raise ValueError("Monster allocation table was not found in CONTENT_ID_CATALOG.md.")
     rows = monster_section.group(2).rstrip()
-    new_row = f"| \`{content_id}\` | \`{authored_id}\` | active |"
+    new_row = f"| `{content_id}` | `{authored_id}` | active |"
     replacement_rows = rows + ("\n" if rows else "") + new_row + "\n"
-    ledger = ledger[: monster_section.start(2)] + replacement_rows + ledger[monster_section.end(2) :]
+    ledger = (
+        ledger[: monster_section.start(2)]
+        + replacement_rows
+        + ledger[monster_section.end(2) :]
+    )
 
     return content_id, [
         (catalog_path, catalog_old, catalog.encode("utf-8")),
         (ledger_path, ledger_old, ledger.encode("utf-8")),
     ]
-
 
 def _positive_pair(value: Any) -> bool:
     return (
