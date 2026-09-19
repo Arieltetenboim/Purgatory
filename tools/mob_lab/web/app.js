@@ -2,7 +2,7 @@ const state={
   items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,
   presentation:null,previewImage:null,previewFrame:0,previewTimer:null,
   manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle",activeTab:"atlas",
-  selectedFrame:0,previewPlaying:true,showSprite:true,showHitbox:true,showGuides:true
+  selectedFrame:0,previewPlaying:true,showSprite:true,showHitbox:true,showGuides:true,newTemplatePath:null
 };
 const $=id=>document.getElementById(id);
 const els={};
@@ -18,7 +18,12 @@ const els={};
   "manifestFrameHeightInput","manifestWorldWidthInput","manifestWorldHeightInput",
   "manifestFrameSecondsInput","manifestFacingInput","manifestPreviewClipInput",
   "manifestMoveFramesInput","manifestIdleFramesInput","manifestAttackFramesInput",
-  "manifestJsonEditor","applyManifestRawButton","saveManifestButton","resetManifestButton"
+  "manifestJsonEditor","applyManifestRawButton","saveManifestButton","resetManifestButton",
+  "duplicateButton","typeFilterInput","previewAnimationInput","previewPlayButton","previewSpriteToggle",
+  "previewHitboxToggle","previewGuidesToggle","sheetGridReadout","frameSheetGrid","selectedFrameCanvas",
+  "selectedFrameIndex","selectedFramePixels","selectedFrameWorld","quickThumbCanvas","quickTypeInput",
+  "quickSourceFile","quickAtlas","quickImageSize","quickFrames","quickFrameSize","quickWorldSize",
+  "footerMonsterCount","footerSchemaStatus","footerDirtyStatus"
 ].forEach(id=>els[id]=$(id));
 
 const canonical=v=>JSON.stringify(v);
@@ -160,6 +165,8 @@ function updateDirty(){
   els.saveButton.disabled=!state.dirty;
   els.dirtyBadge.textContent=state.dirty?"DIRTY":"CLEAN";
   els.dirtyBadge.classList.toggle("dirty",state.dirty);
+  els.footerDirtyStatus.textContent=(state.dirty||state.manifestDirty)?"Unsaved changes":"Saved";
+  els.footerDirtyStatus.classList.toggle("warn",state.dirty||state.manifestDirty);
 }
 function updateInspector(){
   const e=localErrors(state.doc);
@@ -167,6 +174,8 @@ function updateInspector(){
   els.validationStatus.textContent=e.length?"Needs attention":"Schema v4 OK";
   els.validationStatus.className=e.length?"bad":"good";
   els.validationErrors.textContent=e.length?e.join("\n"):"Local shape valid. Save also runs the Rust runtime content validator.";
+  els.footerSchemaStatus.textContent=e.length?"Schema needs attention":"Schema v4 OK";
+  els.footerSchemaStatus.className=e.length?"bad":"good";
 }
 function syncRaw(){els.jsonEditor.value=state.doc?JSON.stringify(state.doc,null,2)+"\n":""}
 function updateManifestDirty(){
@@ -174,6 +183,10 @@ function updateManifestDirty(){
   els.saveManifestButton.disabled=!state.manifestDirty;
   els.manifestDirtyBadge.textContent=state.manifestDirty?"MANIFEST DIRTY":"MANIFEST CLEAN";
   els.manifestDirtyBadge.classList.toggle("dirty",state.manifestDirty);
+  if(els.footerDirtyStatus){
+    els.footerDirtyStatus.textContent=(state.dirty||state.manifestDirty)?"Unsaved changes":"Saved";
+    els.footerDirtyStatus.classList.toggle("warn",state.dirty||state.manifestDirty);
+  }
 }
 function syncManifestRaw(){
   els.manifestJsonEditor.value=state.manifestDoc?JSON.stringify(state.manifestDoc,null,2)+"\n":"";
@@ -283,11 +296,9 @@ function drawPreview(){
       ctx.drawImage(img,sx,sy,fw,fh,centerX-dw/2,entityY-dh/2,dw,dh);
     }
     els.previewUnavailable.classList.add("hidden");
-    els.spriteReadout.textContent="Sprite: "+p.manifest_id+" · "+worldW.toFixed(2)+"×"+worldH.toFixed(2)+" wu";
     spriteBottomOffset=bottom-worldH/2;
   }else{
     els.previewUnavailable.classList.remove("hidden");
-    els.spriteReadout.textContent="Sprite: no runtime presentation";
   }
 
   if(validBounds&&state.showHitbox){
@@ -297,19 +308,12 @@ function drawPreview(){
     ctx.strokeStyle="#e06a70";ctx.lineWidth=3;
     ctx.fillRect(x,y,bw,bh);ctx.strokeRect(x,y,bw,bh);
   }
-  if(!validBounds){
-    els.hitboxReadout.textContent="Hitbox: invalid";
-  }else if(!state.showHitbox){
-    els.hitboxReadout.textContent="Hitbox: hidden";
-  }else{
-    els.hitboxReadout.textContent=
-      "Bounds L"+left.toFixed(2)+" R"+right.toFixed(2)+" B"+bottom.toFixed(2)+" T"+top.toFixed(2)+" wu";
-  }
-
-  if(spriteBottomOffset===null)els.anchorReadout.textContent="Sprite floor offset: -";
-  else if(Math.abs(spriteBottomOffset)<0.005)els.anchorReadout.textContent="Sprite bottom: ON FLOOR";
-  else if(spriteBottomOffset>0)els.anchorReadout.textContent="Sprite bottom: "+spriteBottomOffset.toFixed(2)+" wu ABOVE floor";
-  else els.anchorReadout.textContent="Sprite bottom: "+Math.abs(spriteBottomOffset).toFixed(2)+" wu BELOW floor";
+  const clipFrames=state.presentation?.idle_frames||[];
+  const clipLength=Math.max(clipFrames.length,1);
+  const clipFrame=(state.previewFrame%clipLength)+1;
+  els.spriteReadout.textContent="Frame "+clipFrame+"/"+clipLength;
+  els.hitboxReadout.textContent=(Number(state.presentation?.frame_seconds)||0.1).toFixed(2)+"s";
+  els.anchorReadout.textContent="1.00×";
 }
 
 async function api(url,options){
@@ -477,6 +481,7 @@ function renderList(){
   const q=els.filterInput.value.trim().toLowerCase();
   const type=els.typeFilterInput.value;
   els.monsterCount.textContent=String(state.items.length);
+  els.footerMonsterCount.textContent="Loaded "+state.items.length+" monster"+(state.items.length===1?"":"s");
   els.monsterList.replaceChildren();
   state.items
     .filter(item=>{
@@ -525,6 +530,7 @@ async function openMonster(path){
   const data=await api("/api/monster?path="+encodeURIComponent(path));
   state.selectedPath=data.path;state.doc=data.document;state.contentId=data.content_id??null;
   state.original=canonical(state.doc);
+  els.duplicateButton.disabled=false;
   els.emptyState.classList.add("hidden");els.editor.classList.remove("hidden");
   els.documentTitle.textContent=state.doc.debug_name||state.doc.id;
   els.documentPath.textContent="content/definitions/monsters/"+data.path;
@@ -557,6 +563,7 @@ els.saveButton.onclick=async()=>{
   }catch(e){setStatus(String(e.message||e))}
 };
 els.newButton.onclick=()=>{
+  state.newTemplatePath=null;
   if(!els.newMonsterDialog||!els.newSpriteInput){
     setStatus("Mob Lab page is stale. Close this tab and relaunch Mob Lab.");
     return;
@@ -568,6 +575,15 @@ els.newButton.onclick=()=>{
   els.newIdInput.value="monster.";
   els.newNameInput.value="New Monster";
   els.newSpriteInput.value=state.sprites[0].id;
+  els.newMonsterDialog.showModal();
+  setTimeout(()=>els.newIdInput.focus(),0);
+};
+els.duplicateButton.onclick=()=>{
+  if(!state.doc||!state.selectedPath)return;
+  state.newTemplatePath=state.selectedPath;
+  els.newIdInput.value=(state.doc.id||"monster.")+".copy";
+  els.newNameInput.value=(state.doc.debug_name||"Monster")+" Copy";
+  els.newSpriteInput.value=state.doc.sprite||state.sprites[0]?.id||"";
   els.newMonsterDialog.showModal();
   setTimeout(()=>els.newIdInput.focus(),0);
 };
@@ -584,9 +600,10 @@ els.newMonsterForm.addEventListener("submit",async event=>{
     const data=await api("/api/new",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id,debug_name:name,sprite})
+      body:JSON.stringify({id,debug_name:name,sprite,template_path:state.newTemplatePath})
     });
     els.newMonsterDialog.close();
+    state.newTemplatePath=null;
     await loadList();
     await openMonster(data.path);
     setStatus("Created "+data.document.id+" · ContentId "+data.content_id+" · "+data.document.sprite);
