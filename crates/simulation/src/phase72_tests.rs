@@ -590,7 +590,10 @@ fn npc_approach_does_not_move_vertically_toward_elevated_player() {
         world.tick_npcs(1.0 / 30.0);
     }
     let grounded_y = world.transform_of(npc).unwrap().position[1];
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(crate::NpcApproachBounds::symmetric(0.5, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(crate::NpcApproachBounds::symmetric(0.5, 0.8)),
+    );
     let state = world.npc_of(npc).unwrap();
     assert!(state.grounded);
     assert!(state.grounded_on.is_some());
