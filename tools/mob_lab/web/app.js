@@ -1,7 +1,7 @@
 const state={
   items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,
   presentation:null,previewImage:null,previewFrame:0,previewTimer:null,
-  manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle"
+  manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle",activeTab:"overview"
 };
 const $=id=>document.getElementById(id);
 const els={};
@@ -31,6 +31,19 @@ function parseFrames(value){
 }
 
 function setStatus(v){els.statusText.textContent=v}
+function setEditorTab(name){
+  state.activeTab=name;
+  document.querySelectorAll(".editor-tab").forEach(button=>{
+    button.classList.toggle("active",button.dataset.tab===name);
+  });
+  document.querySelectorAll(".tab-panel").forEach(panel=>{
+    panel.classList.toggle("active",panel.dataset.panel===name);
+  });
+}
+document.querySelectorAll(".editor-tab").forEach(button=>{
+  button.addEventListener("click",()=>setEditorTab(button.dataset.tab));
+});
+
 
 function localErrors(doc){
   const e=[];
@@ -379,7 +392,7 @@ async function openMonster(path){
   els.emptyState.classList.add("hidden");els.editor.classList.remove("hidden");
   els.documentTitle.textContent=state.doc.debug_name||state.doc.id;
   els.documentPath.textContent="content/definitions/monsters/"+data.path;
-  renderForm();renderList();await loadPresentation();setStatus("Loaded "+data.path);
+  renderForm();renderList();setEditorTab(state.activeTab||"overview");await loadPresentation();setStatus("Loaded "+data.path);
 }
 
 els.filterInput.addEventListener("input",renderList);
