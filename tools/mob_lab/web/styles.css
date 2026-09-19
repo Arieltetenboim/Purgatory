@@ -186,3 +186,11 @@ footer{display:flex;align-items:center;justify-content:space-between;padding:0 9
   .selected-frame-panel>.section-label{grid-column:1/-1}
   .selected-frame-stage{width:140px}
 }
+
+.footer-group{display:flex;align-items:center;gap:8px}
+.footer-group i{width:2px;height:2px;border-radius:50%;background:#52636e}
+.footer-group .warn{color:var(--warn)}
+.preview-readout{font-size:9px}
+.preview-readout span:first-child{text-align:left}
+.preview-readout span:nth-child(2){text-align:center}
+.preview-readout span:last-child{text-align:right}
