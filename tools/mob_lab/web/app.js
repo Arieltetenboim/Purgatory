@@ -164,13 +164,17 @@ function localErrors(doc){
   return e;
 }
 
+function updateSaveState(){
+  const dirty=Boolean(state.dirty||state.manifestDirty);
+  els.saveButton.disabled=!dirty;
+  els.footerDirtyStatus.textContent=dirty?"Unsaved changes":"Saved";
+  els.footerDirtyStatus.classList.toggle("warn",dirty);
+}
 function updateDirty(){
   state.dirty=Boolean(state.selectedPath)&&canonical(state.doc)!==state.original;
-  els.saveButton.disabled=!state.dirty;
   els.dirtyBadge.textContent=state.dirty?"DIRTY":"CLEAN";
   els.dirtyBadge.classList.toggle("dirty",state.dirty);
-  els.footerDirtyStatus.textContent=(state.dirty||state.manifestDirty)?"Unsaved changes":"Saved";
-  els.footerDirtyStatus.classList.toggle("warn",state.dirty||state.manifestDirty);
+  updateSaveState();
 }
 function updateInspector(){
   const e=localErrors(state.doc);
@@ -187,10 +191,7 @@ function updateManifestDirty(){
   els.saveManifestButton.disabled=!state.manifestDirty;
   els.manifestDirtyBadge.textContent=state.manifestDirty?"MANIFEST DIRTY":"MANIFEST CLEAN";
   els.manifestDirtyBadge.classList.toggle("dirty",state.manifestDirty);
-  if(els.footerDirtyStatus){
-    els.footerDirtyStatus.textContent=(state.dirty||state.manifestDirty)?"Unsaved changes":"Saved";
-    els.footerDirtyStatus.classList.toggle("warn",state.dirty||state.manifestDirty);
-  }
+  updateSaveState();
 }
 function syncManifestRaw(){
   els.manifestJsonEditor.value=state.manifestDoc?JSON.stringify(state.manifestDoc,null,2)+"\n":"";
@@ -524,13 +525,10 @@ els.resetManifestButton.onclick=()=>{
   setStatus("Manifest changes reset.");
 };
 els.saveManifestButton.onclick=async()=>{
-  if(!state.manifestDoc||!state.doc?.sprite)return;
+  if(!state.manifestDirty)return;
   setStatus("Validating and saving sprite manifest...");
   try{
-    const data=await api("/api/sprite-manifest?sprite="+encodeURIComponent(state.doc.sprite),{
-      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(state.manifestDoc)
-    });
-    state.manifestOriginal=canonical(state.manifestDoc);updateManifestDirty();
+    const data=await saveSpriteManifest();
     await loadSprites();
     await loadPresentation();
     setStatus("Saved manifest: "+data.path);
@@ -587,7 +585,7 @@ async function loadList(){
 }
 
 async function openMonster(path){
-  if(state.dirty&&!confirm("Discard unsaved changes?"))return;
+  if((state.dirty||state.manifestDirty)&&!confirm("Discard unsaved Monster or sprite-manifest changes?"))return;
   const data=await api("/api/monster?path="+encodeURIComponent(path));
   state.selectedPath=data.path;state.doc=data.document;state.contentId=data.content_id??null;
   state.original=canonical(state.doc);
@@ -611,18 +609,54 @@ els.applyRawButton.onclick=async()=>{
     renderForm();await loadPresentation();setStatus("Raw JSON applied in memory.");
   }catch(e){setStatus("Invalid JSON: "+e.message)}
 };
-els.saveButton.onclick=async()=>{
+async function saveMonsterDocument(){
+  if(!state.dirty)return null;
   const errors=localErrors(state.doc);
-  if(errors.length){updateInspector();setStatus("Fix validation errors before save.");return}
-  setStatus("Running runtime content validation...");
+  if(errors.length){
+    updateInspector();
+    throw new Error("Monster JSON has validation errors. Fix them before save.");
+  }
+  const data=await api("/api/monster?path="+encodeURIComponent(state.selectedPath),{
+    method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(state.doc)
+  });
+  state.original=canonical(state.doc);
+  updateDirty();
+  return data;
+}
+async function saveSpriteManifest(){
+  if(!state.manifestDirty)return null;
+  if(!state.manifestDoc?.id)throw new Error("Sprite manifest id is missing.");
+  const data=await api("/api/sprite-manifest?sprite="+encodeURIComponent(state.manifestDoc.id),{
+    method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(state.manifestDoc)
+  });
+  state.manifestOriginal=canonical(state.manifestDoc);
+  updateManifestDirty();
+  return data;
+}
+async function saveAllDirty(){
+  if(!state.dirty&&!state.manifestDirty)return;
+  setStatus("Saving dirty Monster and sprite-manifest data...");
+  const saved=[];
   try{
-    const data=await api("/api/monster?path="+encodeURIComponent(state.selectedPath),{
-      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(state.doc)
-    });
-    state.original=canonical(state.doc);updateDirty();await loadList();
-    setStatus("Saved and runtime-validated: "+data.path);
-  }catch(e){setStatus(String(e.message||e))}
-};
+    if(state.manifestDirty){
+      const manifest=await saveSpriteManifest();
+      if(manifest)saved.push("manifest "+manifest.path);
+    }
+    if(state.dirty){
+      const monster=await saveMonsterDocument();
+      if(monster)saved.push("monster "+monster.path);
+    }
+    await loadSprites();
+    await loadList();
+    await loadPresentation();
+    updateQuickInfo();
+    setStatus("Saved: "+saved.join(" · "));
+  }catch(e){
+    updateSaveState();
+    setStatus(String(e.message||e));
+  }
+}
+els.saveButton.onclick=saveAllDirty;
 els.newButton.onclick=()=>{
   state.newTemplatePath=null;
   if(!els.newMonsterDialog||!els.newSpriteInput){

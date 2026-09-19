@@ -8,7 +8,7 @@ $Server = Join-Path $PSScriptRoot "server.py"
 $Url = "http://127.0.0.1:$Port/"
 $HealthUrl = "${Url}api/health"
 
-$ExpectedBuild = "m3-prototype-parity-v12"
+$ExpectedBuild = "m3-prototype-parity-v13"
 
 try {
     $Host.UI.RawUI.WindowTitle = "PURGATORY Mob Lab - $ExpectedBuild - close window to stop server"
