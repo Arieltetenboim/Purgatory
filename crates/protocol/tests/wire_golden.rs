@@ -698,8 +698,8 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_28() {
-    assert_eq!(PROTOCOL_VERSION, 28);
+fn current_protocol_version_is_29() {
+    assert_eq!(PROTOCOL_VERSION, 29);
 }
 
 #[test]

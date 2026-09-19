@@ -785,6 +785,7 @@ fn draw_debug_window(
     let DebugOverlayResources {
         history,
         npc_spawn_options,
+        monster_spawn_options,
     } = resources;
     egui::Window::new("PURGATORY DEBUG")
         .open(visible)
