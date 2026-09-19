@@ -374,7 +374,7 @@ impl SpriteSheet {
                 "idle" => "idle",
                 "move" => "move",
                 "attack" => "attack",
-                _ => return Err(format!("unsupported sprite clip {name}")),
+                _ => continue,
             };
             let mode = if raw.looped {
                 SpritePlaybackMode::Loop
