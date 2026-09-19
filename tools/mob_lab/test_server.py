@@ -88,6 +88,7 @@ class MobLabContractTests(unittest.TestCase):
                         "id": "creature.test",
                         "atlas": "atlas.png",
                         "frame_size_px": [64, 64],
+                        "grid_size": [4, 4],
                         "world_size": [1.0, 1.5],
                         "frame_seconds": 0.1,
                         "authored_facing": "right",
@@ -103,7 +104,9 @@ class MobLabContractTests(unittest.TestCase):
             items, issues = scan_sprite_manifests(root)
             self.assertEqual([], issues)
             self.assertEqual(["creature.test"], [item["id"] for item in items])
-            self.assertEqual("creature.test", load_sprite_record(root, "creature.test")["id"])
+            record = load_sprite_record(root, "creature.test")
+            self.assertEqual("creature.test", record["id"])
+            self.assertEqual([4, 4], record["grid_size"])
 
 
     def test_monster_allocator_assigns_next_permanent_id_and_updates_catalog_and_ledger(self):
