@@ -18,7 +18,7 @@
 //! followed by that many UTF-8 bytes. Field order is the declaration order.
 
 use purgatory_protocol::{
-    ClientControl, ConnectionId, DevSpawnNpc, DisconnectReason, DisconnectReasonCode, Hello,
+    ClientControl, ConnectionId, DevSpawnMonster, DevSpawnNpc, DisconnectReason, DisconnectReasonCode, Hello,
     InputCommand, InteractClose, InteractCloseReason, InteractOpen, InteractRejectReason,
     MAX_CONTROL_MESSAGE_BYTES, MAX_GAMEPLAY_SNAPSHOT_BYTES, MoveAxis, PROTOCOL_VERSION,
     PlatformSupportId, PortalActivate, ReplicatedKind, ReplicationFrame, ReplicationRecord,
@@ -713,6 +713,21 @@ fn dev_spawn_npc_v26_matches_golden_bytes() {
     );
     assert_eq!(
         decode_client_control(DEV_SPAWN_NPC_V26).expect("decode"),
+        request
+    );
+}
+
+#[test]
+fn dev_spawn_monster_v29_matches_wire_bytes() {
+    let request = ClientControl::DevSpawnMonster(DevSpawnMonster {
+        monster_content_id: purgatory_common::ContentId::from_raw(10_003),
+    });
+    assert_eq!(
+        encode_client_control(&request).expect("encode"),
+        vec![43, 0x13, 0x27, 0x00, 0x00]
+    );
+    assert_eq!(
+        decode_client_control(&[43, 0x13, 0x27, 0x00, 0x00]).expect("decode"),
         request
     );
 }
