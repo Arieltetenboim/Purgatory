@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>PURGATORY Mob Lab</title>
-  <link rel="stylesheet" href="/styles.css?v=m3-prototype-parity-v5">
+  <link rel="stylesheet" href="/styles.css?v=m3-prototype-parity-v6">
 </head>
 <body>
 <header class="topbar">
@@ -16,7 +16,7 @@
   </div>
   <div class="actions">
     <button id="newButton">NEW MONSTER</button>
-    <button id="duplicateButton" disabled title="Duplicate wiring follows after the editor parity pass">DUPLICATE</button>
+    <button id="duplicateButton" disabled>DUPLICATE</button>
     <button id="reloadButton">RELOAD</button>
     <button id="saveButton" class="primary" disabled>SAVE</button>
   </div>
@@ -68,9 +68,9 @@
           <div id="previewUnavailable" class="preview-unavailable hidden">NO RUNTIME SPRITE</div>
         </div>
         <div class="preview-readout">
-          <span id="spriteReadout">Sprite: -</span>
-          <span id="hitboxReadout">Hitbox: -</span>
-          <span id="anchorReadout">Sprite floor offset: -</span>
+          <span id="spriteReadout">Frame -/-</span>
+          <span id="hitboxReadout">0.10s</span>
+          <span id="anchorReadout">1.00×</span>
         </div>
       </section>
 
@@ -229,8 +229,20 @@
 </main>
 
 <footer>
-  <span id="statusText">Ready.</span>
-  <span>Mob Lab M3 · Preview updates live</span>
+  <div class="footer-group">
+    <span>Mob Lab M3</span>
+    <i></i>
+    <span id="footerMonsterCount">Loaded 0 monsters</span>
+    <i></i>
+    <span id="footerSchemaStatus">Schema v4 OK</span>
+  </div>
+  <div class="footer-group">
+    <span id="statusText">Ready.</span>
+    <i></i>
+    <span>Preview updates live</span>
+    <i></i>
+    <span id="footerDirtyStatus">Saved</span>
+  </div>
 </footer>
 
 <dialog id="newMonsterDialog" class="modal">
@@ -250,6 +262,6 @@
     </div>
   </form>
 </dialog>
-<script src="/app.js?v=m3-prototype-parity-v5"></script>
+<script src="/app.js?v=m3-prototype-parity-v6"></script>
 </body>
 </html>
