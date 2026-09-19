@@ -8,99 +8,97 @@
 </head>
 <body>
 <header class="topbar">
-  <div><div class="brand">PURGATORY</div><div class="tool">MOB LAB <span>M3</span></div></div>
+  <div class="brandline">
+    <span class="brand">PURGATORY</span>
+    <span class="brand-separator">/</span>
+    <span class="tool">MOB LAB</span>
+    <span class="build-tag">M3</span>
+  </div>
   <div class="actions">
     <button id="newButton">NEW MONSTER</button>
     <button id="reloadButton">RELOAD</button>
     <button id="saveButton" class="primary" disabled>SAVE</button>
   </div>
 </header>
-<main class="layout">
+
+<main class="app-shell">
   <aside class="panel library">
-    <div class="title">MONSTERS</div>
-    <input id="filterInput" placeholder="Filter monsters">
+    <div class="panel-heading">
+      <span>MONSTERS</span>
+      <span id="monsterCount" class="count-badge">0</span>
+    </div>
+    <input id="filterInput" class="compact-input" placeholder="Search monsters">
     <div id="monsterList" class="list"></div>
   </aside>
+
   <section class="panel workspace">
     <div class="docbar">
-      <div><strong id="documentTitle">No monster selected</strong><div id="documentPath" class="muted">Select a runtime monster definition.</div></div>
-      <span id="dirtyBadge" class="badge">CLEAN</span>
+      <div class="doc-title-block">
+        <div class="doc-title-row">
+          <strong id="documentTitle">No monster selected</strong>
+          <span id="dirtyBadge" class="badge">CLEAN</span>
+        </div>
+        <div id="documentPath" class="muted mono">Select a runtime monster definition.</div>
+      </div>
     </div>
+
     <div id="emptyState" class="empty">Select a monster from the library or create one.</div>
+
     <div id="editor" class="editor hidden">
+      <section class="preview-shell">
+        <div class="preview-toolbar">
+          <div>
+            <span class="section-kicker">LIVE PREVIEW</span>
+            <span class="preview-subtitle">Runtime sprite + collision</span>
+          </div>
+          <div class="preview-legend">
+            <span><i class="legend-sprite"></i>SPRITE</span>
+            <span><i class="legend-hitbox"></i>HITBOX</span>
+          </div>
+        </div>
+        <div class="preview-stage-wrap">
+          <canvas id="previewCanvas" width="520" height="360"></canvas>
+          <div id="previewUnavailable" class="preview-unavailable hidden">NO RUNTIME SPRITE</div>
+        </div>
+        <div class="preview-readout">
+          <span id="spriteReadout">Sprite: -</span>
+          <span id="hitboxReadout">Hitbox: -</span>
+          <span id="anchorReadout">Sprite floor offset: -</span>
+        </div>
+      </section>
+
       <nav class="editor-tabs" aria-label="Monster editor sections">
-        <button type="button" class="editor-tab active" data-tab="overview">OVERVIEW</button>
-        <button type="button" class="editor-tab" data-tab="manifest">MANIFEST</button>
+        <button type="button" class="editor-tab active" data-tab="atlas">ATLAS &amp; FRAMES</button>
+        <button type="button" class="editor-tab" data-tab="animations">ANIMATIONS</button>
         <button type="button" class="editor-tab" data-tab="gameplay">GAMEPLAY</button>
         <button type="button" class="editor-tab" data-tab="behavior">BEHAVIOR</button>
-        <button type="button" class="editor-tab" data-tab="raw">RAW</button>
+        <button type="button" class="editor-tab" data-tab="collision">COLLISION</button>
+        <button type="button" class="editor-tab" data-tab="raw">RAW JSON</button>
       </nav>
 
-      <div class="tab-panel active" data-panel="overview">
-        <section class="card preview-card">
-          <div class="cardhead">
+      <section class="tab-workspace">
+        <div class="tab-panel active" data-panel="atlas">
+          <div class="section-head">
             <div>
-              <h2>Runtime Preview</h2>
-              <div class="muted">Actual runtime sprite + authored collision box</div>
-            </div>
-            <div class="preview-legend">
-              <span><i class="legend-sprite"></i>SPRITE</span>
-              <span><i class="legend-hitbox"></i>HITBOX</span>
-            </div>
-          </div>
-          <div class="preview-stage-wrap">
-            <canvas id="previewCanvas" width="520" height="360"></canvas>
-            <div id="previewUnavailable" class="preview-unavailable hidden">NO RUNTIME SPRITE</div>
-          </div>
-          <div class="preview-readout">
-            <span id="spriteReadout">Sprite: -</span>
-            <span id="hitboxReadout">Hitbox: -</span>
-            <span id="anchorReadout">Sprite floor offset: -</span>
-          </div>
-        </section>
-
-        <section class="card">
-          <h2>Identity</h2>
-          <div class="grid two">
-            <label>Authored Label<input id="idInput" readonly></label>
-            <label>ContentId<input id="contentIdInput" readonly></label>
-            <label>Schema<input id="schemaInput" readonly></label>
-            <label class="wide">Debug Name<input id="debugNameInput"></label>
-          </div>
-        </section>
-
-        <section class="card">
-          <h2>Sprite</h2>
-          <div class="grid two">
-            <label class="wide">Runtime Sprite
-              <select id="spriteInput"></select>
-            </label>
-          </div>
-          <p class="muted">Choose the creature presentation used by this Monster. Tune its atlas and animation in the Manifest tab.</p>
-        </section>
-      </div>
-
-      <div class="tab-panel" data-panel="manifest">
-        <section class="card">
-          <div class="cardhead">
-            <div>
-              <h2>Manifest</h2>
-              <div class="muted">Live sprite atlas, scale, timing and animation tuning</div>
+              <h2>Atlas &amp; Frames</h2>
+              <p>Live atlas layout and world presentation.</p>
             </div>
             <span id="manifestDirtyBadge" class="badge">MANIFEST CLEAN</span>
           </div>
 
-          <div class="manifest-section">
-            <div class="section-label">SOURCE</div>
-            <div class="grid two presentation-grid">
+          <div class="compact-section">
+            <div class="section-label">SPRITE SOURCE</div>
+            <div class="form-grid three">
+              <label class="span-two">Runtime Sprite<select id="spriteInput"></select></label>
+              <label>Authored Facing<select id="manifestFacingInput"><option value="right">right</option><option value="left">left</option></select></label>
               <label>Manifest ID<input id="manifestIdInput" readonly></label>
-              <label>Atlas<input id="manifestAtlasInput" readonly></label>
+              <label class="span-two">Atlas<input id="manifestAtlasInput" readonly></label>
             </div>
           </div>
 
-          <div class="manifest-section">
+          <div class="compact-section">
             <div class="section-label">ATLAS LAYOUT</div>
-            <div class="grid two">
+            <div class="form-grid four">
               <label>Grid Columns<input id="manifestGridColsInput" type="number" min="1" step="1"></label>
               <label>Grid Rows<input id="manifestGridRowsInput" type="number" min="1" step="1"></label>
               <label>Frame Width px<input id="manifestFrameWidthInput" type="number" min="1" step="1"></label>
@@ -108,100 +106,115 @@
             </div>
           </div>
 
-          <div class="manifest-section">
+          <div class="compact-section">
             <div class="section-label">WORLD PRESENTATION</div>
-            <div class="grid two">
+            <div class="form-grid three">
               <label>World Width<input id="manifestWorldWidthInput" type="number" min="0.01" step="0.05"></label>
               <label>World Height<input id="manifestWorldHeightInput" type="number" min="0.01" step="0.05"></label>
               <label>Frame Seconds<input id="manifestFrameSecondsInput" type="number" min="0.01" step="0.01"></label>
-              <label>Authored Facing<select id="manifestFacingInput"><option value="right">right</option><option value="left">left</option></select></label>
             </div>
           </div>
 
-          <div class="manifest-section">
-            <div class="section-label">ANIMATION CLIPS</div>
-            <div class="grid two">
-              <label>Preview Clip<select id="manifestPreviewClipInput"><option value="idle">idle</option><option value="move">move</option><option value="attack">attack</option></select></label>
-              <div></div>
-              <label class="wide">Move Frames<input id="manifestMoveFramesInput" placeholder="0,1,2,3"></label>
-              <label class="wide">Idle Frames<input id="manifestIdleFramesInput" placeholder="4,5,6,7"></label>
-              <label class="wide">Attack Frames<input id="manifestAttackFramesInput" placeholder="8,9,10"></label>
-            </div>
-          </div>
-
-          <div class="manifest-actions">
+          <div class="panel-actions">
             <button id="resetManifestButton">RESET MANIFEST</button>
             <button id="saveManifestButton" class="primary" disabled>SAVE MANIFEST</button>
           </div>
-        </section>
-      </div>
+        </div>
 
-      <div class="tab-panel" data-panel="gameplay">
-        <section class="card">
-          <h2>Body & Movement</h2>
-          <div class="section-label">CORE</div>
-          <div class="grid three">
+        <div class="tab-panel" data-panel="animations">
+          <div class="section-head">
+            <div><h2>Animations</h2><p>Edit clip frames while watching the persistent preview above.</p></div>
+          </div>
+          <div class="form-grid two">
+            <label>Preview Clip<select id="manifestPreviewClipInput"><option value="idle">idle</option><option value="move">move</option><option value="attack">attack</option></select></label>
+            <div></div>
+            <label class="span-two">Move Frames<input id="manifestMoveFramesInput" placeholder="0,1,2,3"></label>
+            <label class="span-two">Idle Frames<input id="manifestIdleFramesInput" placeholder="4,5,6,7"></label>
+            <label class="span-two">Attack Frames<input id="manifestAttackFramesInput" placeholder="8,9,10"></label>
+          </div>
+        </div>
+
+        <div class="tab-panel" data-panel="gameplay">
+          <div class="section-head">
+            <div><h2>Gameplay</h2><p>Core runtime Monster values.</p></div>
+          </div>
+          <div class="form-grid three">
             <label>Max Health<input id="healthInput" type="number" min="0.001" step="0.1"></label>
             <label>Movement Speed<input id="speedInput" type="number" min="0.001" step="0.1"></label>
             <label>Home Leash<input id="leashInput" type="number" min="0.001" step="0.1"></label>
           </div>
+        </div>
 
-          <div class="manifest-section">
-            <div class="section-label">COLLISION BOUNDS</div>
-            <div class="grid two">
-              <label>Left<input id="leftInput" type="number" min="0" step="0.05"></label>
-              <label>Right<input id="rightInput" type="number" min="0" step="0.05"></label>
-              <label>Bottom<input id="bottomInput" type="number" min="0" step="0.05"></label>
-              <label>Top<input id="topInput" type="number" min="0" step="0.05"></label>
-            </div>
+        <div class="tab-panel" data-panel="behavior">
+          <div class="section-head">
+            <div><h2>Behavior</h2><p>Runtime acquisition and movement behavior.</p></div>
           </div>
-        </section>
-      </div>
-
-      <div class="tab-panel" data-panel="behavior">
-        <section class="card">
-          <h2>Behavior</h2>
-          <div class="grid two">
+          <div class="form-grid two">
             <label>Kind<select id="kindInput"><option value="chase_contact">chase_contact</option></select></label>
             <label>Aggro<select id="aggroInput"><option value="when_attacked">when_attacked</option></select></label>
           </div>
-          <p class="muted">Contact damage is runtime-default and independent of aggro. Proximity alone does not acquire a target.</p>
-        </section>
-      </div>
+          <p class="muted section-note">Contact damage is runtime-default and independent of aggro. Proximity alone does not acquire a target.</p>
+        </div>
 
-      <div class="tab-panel" data-panel="raw">
-        <section class="card">
-          <div class="cardhead"><h2>Raw Runtime JSON</h2><button id="applyRawButton">APPLY RAW</button></div>
-          <textarea id="jsonEditor" spellcheck="false"></textarea>
-        </section>
+        <div class="tab-panel" data-panel="collision">
+          <div class="section-head">
+            <div><h2>Collision</h2><p>Author collision bounds while the hitbox updates live above.</p></div>
+          </div>
+          <div class="form-grid four">
+            <label>Left<input id="leftInput" type="number" min="0" step="0.05"></label>
+            <label>Right<input id="rightInput" type="number" min="0" step="0.05"></label>
+            <label>Bottom<input id="bottomInput" type="number" min="0" step="0.05"></label>
+            <label>Top<input id="topInput" type="number" min="0" step="0.05"></label>
+          </div>
+        </div>
 
-        <section class="card">
-          <div class="cardhead"><h2>Raw Manifest JSON</h2><button id="applyManifestRawButton">APPLY RAW</button></div>
-          <textarea id="manifestJsonEditor" class="manifest-json" spellcheck="false"></textarea>
-          <p class="muted">Raw manifest edits are applied in memory first. Use SAVE MANIFEST from the Manifest tab to persist them.</p>
-        </section>
-      </div>
+        <div class="tab-panel" data-panel="raw">
+          <div class="raw-grid">
+            <section>
+              <div class="raw-head"><h2>Runtime JSON</h2><button id="applyRawButton">APPLY RAW</button></div>
+              <textarea id="jsonEditor" spellcheck="false"></textarea>
+            </section>
+            <section>
+              <div class="raw-head"><h2>Manifest JSON</h2><button id="applyManifestRawButton">APPLY RAW</button></div>
+              <textarea id="manifestJsonEditor" class="manifest-json" spellcheck="false"></textarea>
+            </section>
+          </div>
+        </div>
+      </section>
     </div>
   </section>
+
   <aside class="panel inspector">
-    <div class="title">INSPECTOR</div>
-    <div class="kv"><span>Status</span><strong id="validationStatus">No document</strong></div>
-    <div class="kv"><span>Content ID</span><strong id="summaryId">-</strong></div>
-    <div class="kv"><span>Runtime source</span><strong>content/definitions/monsters</strong></div>
-    <div class="kv"><span>Validation</span><pre id="validationErrors">-</pre></div>
+    <div class="panel-heading">QUICK INFO</div>
+    <div class="quick-info">
+      <label>Debug Name<input id="debugNameInput"></label>
+      <div class="info-row"><span>Authored Label</span><input id="idInput" readonly></div>
+      <div class="info-row"><span>Content ID</span><input id="contentIdInput" readonly></div>
+      <div class="info-row"><span>Schema</span><input id="schemaInput" readonly></div>
+      <div class="info-divider"></div>
+      <div class="kv"><span>Status</span><strong id="validationStatus">No document</strong></div>
+      <div class="kv"><span>Content ID</span><strong id="summaryId">-</strong></div>
+      <div class="kv"><span>Runtime source</span><strong>content/definitions/monsters</strong></div>
+      <div class="kv"><span>Validation</span><pre id="validationErrors">-</pre></div>
+    </div>
   </aside>
 </main>
-<footer><span id="statusText">Ready.</span><span>Direct runtime definitions · no export step</span></footer>
+
+<footer>
+  <span id="statusText">Ready.</span>
+  <span>Mob Lab M3 · Preview updates live</span>
+</footer>
+
 <dialog id="newMonsterDialog" class="modal">
   <form id="newMonsterForm" method="dialog">
     <div class="modal-head">
       <div><strong>NEW MONSTER</strong><div class="muted">Allocate a permanent Monster ContentId and create the runtime definition.</div></div>
       <button id="newCancelButton" type="button">CANCEL</button>
     </div>
-    <div class="grid two modal-grid">
+    <div class="form-grid two modal-grid">
       <label>Authored ID<input id="newIdInput" value="monster." autocomplete="off"></label>
       <label>Debug Name<input id="newNameInput" value="New Monster" autocomplete="off"></label>
-      <label class="wide">Sprite<select id="newSpriteInput"></select></label>
+      <label class="span-two">Sprite<select id="newSpriteInput"></select></label>
     </div>
     <p class="muted">Mob Lab assigns the next free permanent ID from the Monster block (10001–19999). The allocation is validated and rolled back if creation fails.</p>
     <div class="modal-actions">
