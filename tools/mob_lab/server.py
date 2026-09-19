@@ -132,12 +132,47 @@ def monster_constant_name(authored_id: str) -> str:
     return constant
 
 
-def next_monster_content_id(repo_root: Path) -> int:
+def monster_reserved_ids(repo_root: Path) -> set[int]:
+    source = (
+        repo_root / "crates" / "common" / "src" / "content_catalog.rs"
+    ).read_text(encoding="utf-8")
     used = {
+        int(raw.replace("_", ""))
+        for raw in re.findall(
+            r"pub const MONSTER_[A-Z0-9_]+: ContentId = ContentId::from_raw\\(([0-9_]+)\\);",
+            source,
+        )
+    }
+    ledger = (repo_root / "content" / "CONTENT_ID_CATALOG.md").read_text(
+        encoding="utf-8"
+    )
+    used.update(
+        int(raw)
+        for raw in re.findall(r"^\\| \`(1[0-9]{4})\` \| \`monster\\.", ledger, flags=re.MULTILINE)
+    )
+    return {
         raw
-        for raw in load_numeric_catalog(repo_root).values()
+        for raw in used
         if MONSTER_CONTENT_ID_START <= raw <= MONSTER_CONTENT_ID_END
     }
+
+
+def monster_ledger_labels(repo_root: Path) -> dict[str, tuple[int, str]]:
+    ledger = (repo_root / "content" / "CONTENT_ID_CATALOG.md").read_text(
+        encoding="utf-8"
+    )
+    return {
+        label: (int(raw), status.strip())
+        for raw, label, status in re.findall(
+            r"^\\| \`(1[0-9]{4})\` \| \`(monster\\.[^\`]+)\` \| ([^|]+)\\|$",
+            ledger,
+            flags=re.MULTILINE,
+        )
+    }
+
+
+def next_monster_content_id(repo_root: Path) -> int:
+    used = monster_reserved_ids(repo_root)
     for raw in range(MONSTER_CONTENT_ID_START, MONSTER_CONTENT_ID_END + 1):
         if raw not in used:
             return raw
@@ -150,6 +185,14 @@ def prepare_monster_allocation(
     existing = load_numeric_catalog(repo_root)
     if authored_id in existing:
         return existing[authored_id], []
+
+    ledger_labels = monster_ledger_labels(repo_root)
+    if authored_id in ledger_labels:
+        raw, status = ledger_labels[authored_id]
+        raise ValueError(
+            f"{authored_id} already has ledger allocation {raw} with status '{status}' "
+            "but is not active in the runtime catalog; refusing to reuse or silently reactivate it."
+        )
 
     content_id = next_monster_content_id(repo_root)
     constant = monster_constant_name(authored_id)
@@ -611,7 +654,8 @@ class MobLabHandler(SimpleHTTPRequestHandler):
         try:
             path = resolve_monster_path(self.definitions_root, self._query_value("path"))
             doc = self._read_json_body()
-            ok, errors, output = self._save_candidate(path, doc)
+            with CONTENT_WRITE_LOCK:
+                ok, errors, output = self._save_candidate(path, doc)
             if not ok:
                 self._json_response(
                     {
