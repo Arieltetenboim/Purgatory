@@ -360,12 +360,7 @@ impl SpriteSheet {
                 let right = (column + 1) as f32 / columns as f32;
                 let top = row as f32 / rows as f32;
                 let bottom = (row + 1) as f32 / rows as f32;
-                [
-                    [left, bottom],
-                    [right, bottom],
-                    [right, top],
-                    [left, top],
-                ]
+                [[left, bottom], [right, bottom], [right, top], [left, top]]
             })
             .collect();
 
