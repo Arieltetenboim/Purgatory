@@ -21,7 +21,7 @@ use crate::item::{
 };
 use crate::monster::{
     MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterCollisionBounds, MonsterDefinition,
-    validate_monster_definition,
+    MonsterPresentationDefinition, validate_monster_definition, validate_monster_presentation,
 };
 use crate::registry::ContentRegistry;
 use crate::schema::{
@@ -107,14 +107,13 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         &root.join("authoring").join("npcs"),
         mode,
     );
+    load_monster_tree(
+        &mut registry,
+        &mut issues,
+        &root.join("definitions").join("monsters"),
+        mode,
+    );
     if mode == LoadMode::Full {
-        load_dir(
-            &mut registry,
-            &mut issues,
-            &root.join("definitions").join("monsters"),
-            ContentDomain::ServerOnly,
-            Kind::Monster,
-        );
         load_dir(
             &mut registry,
             &mut issues,
@@ -192,6 +191,33 @@ fn load_npc_authoring_tree(
     }
 }
 
+fn load_monster_tree(
+    registry: &mut ContentRegistry,
+    issues: &mut Vec<ValidationIssue>,
+    root: &Path,
+    mode: LoadMode,
+) {
+    let mut paths = Vec::new();
+    collect_json_paths(root, &mut paths, issues);
+    paths.sort();
+    for path in paths {
+        let result = fs::read_to_string(&path)
+            .map_err(|error| ContentError::from_io(&path, &error))
+            .and_then(|text| parse::<RawMonster>(&path, &text))
+            .and_then(|raw| {
+                let presentation = raw.presentation_def(&path)?;
+                registry.insert_monster_presentation(presentation)?;
+                if mode == LoadMode::Full {
+                    registry.insert_monster(raw.into_def(&path)?)?;
+                }
+                Ok(())
+            });
+        if let Err(error) = result {
+            issues.extend(error.issues);
+        }
+    }
+}
+
 fn collect_json_paths(dir: &Path, paths: &mut Vec<PathBuf>, issues: &mut Vec<ValidationIssue>) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -232,7 +258,6 @@ enum Kind {
     Equipment,
     EquipmentPresentation,
     Ability,
-    Monster,
 }
 
 fn load_dir(
@@ -325,11 +350,6 @@ fn load_file(
             let authored = raw.id.clone();
             let def = raw.into_def(path)?;
             registry.insert_ability(authored, def)
-        }
-        Kind::Monster => {
-            let raw: RawMonster = parse(path, &text)?;
-            let def = raw.into_def(path)?;
-            registry.insert_monster(def)
         }
     }
 }
@@ -572,19 +592,20 @@ struct RawVisuals {
     back: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawMonster {
     schema_version: u32,
     id: String,
     debug_name: String,
+    sprite: String,
     health_max: f32,
     collision_bounds: RawMonsterCollisionBounds,
     movement_speed: f32,
     behavior: RawMonsterBehavior,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawMonsterCollisionBounds {
     left: f32,
@@ -593,7 +614,7 @@ struct RawMonsterCollisionBounds {
     top: f32,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawMonsterBehavior {
     kind: String,
@@ -602,7 +623,7 @@ struct RawMonsterBehavior {
 }
 
 impl RawMonster {
-    fn into_def(self, path: &Path) -> Result<MonsterDefinition, ContentError> {
+    fn validated_content_id(&self, path: &Path) -> Result<ContentId, ContentError> {
         if self.schema_version != MONSTER_CONTENT_SCHEMA_VERSION {
             return Err(ContentError::from_path(
                 path.to_path_buf(),
@@ -615,6 +636,7 @@ impl RawMonster {
             ));
         }
         check_authored(path, &self.id)?;
+        check_authored(path, &self.sprite)?;
         let content_id = allocated_id_for_label(&self.id).ok_or_else(|| {
             ContentError::from_path(
                 path.to_path_buf(),
@@ -631,6 +653,21 @@ impl RawMonster {
                 "monster ContentId must be allocated in the Monster block",
             ));
         }
+        Ok(content_id)
+    }
+
+    fn presentation_def(&self, path: &Path) -> Result<MonsterPresentationDefinition, ContentError> {
+        let def = MonsterPresentationDefinition {
+            content_id: self.validated_content_id(path)?,
+            authored_id: self.id.clone(),
+            sprite_id: self.sprite.clone(),
+        };
+        validate_monster_presentation(&def)?;
+        Ok(def)
+    }
+
+    fn into_def(self, path: &Path) -> Result<MonsterDefinition, ContentError> {
+        let content_id = self.validated_content_id(path)?;
         let behavior = match (self.behavior.kind.as_str(), self.behavior.aggro.as_str()) {
             ("chase_contact", "when_attacked") => MonsterBehavior::ChaseContactWhenAttacked,
             (kind, aggro) => {

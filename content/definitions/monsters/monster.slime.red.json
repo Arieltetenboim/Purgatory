@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "id": "monster.slime.red",
   "debug_name": "Red Slime",
   "health_max": 20,
@@ -14,5 +14,6 @@
     "right": 0.4,
     "bottom": 0.6,
     "top": 0.6
-  }
+  },
+  "sprite": "creature.red_slime"
 }

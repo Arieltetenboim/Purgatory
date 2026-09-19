@@ -3,10 +3,10 @@
 use crate::error::{ContentError, ValidationIssue};
 use purgatory_common::{ContentId, validate_authored_id};
 
-/// Monster content schema v3.
-pub const MONSTER_CONTENT_SCHEMA_VERSION: u32 = 3;
+/// Monster content schema v4.
+pub const MONSTER_CONTENT_SCHEMA_VERSION: u32 = 4;
 
-/// The intentionally small behavior vocabulary supported by Monster schema v3.
+/// The intentionally small behavior vocabulary supported by Monster schema v4.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MonsterBehavior {
     /// Patrol until damaged by a player, then pursue that attacker and deal contact damage.
@@ -40,6 +40,39 @@ impl MonsterCollisionBounds {
             (self.right - self.left) * 0.5,
             (self.top - self.bottom) * 0.5,
         ]
+    }
+}
+
+/// Client-safe presentation projection from the same authored Monster JSON.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MonsterPresentationDefinition {
+    pub content_id: ContentId,
+    pub authored_id: String,
+    pub sprite_id: String,
+}
+
+pub fn validate_monster_presentation(
+    def: &MonsterPresentationDefinition,
+) -> Result<(), ContentError> {
+    let mut issues = Vec::new();
+    if let Err(err) = validate_authored_id(&def.authored_id) {
+        issues.push(monster_issue(
+            &def.authored_id,
+            "id",
+            format!("invalid authored id ({err:?})"),
+        ));
+    }
+    if let Err(err) = validate_authored_id(&def.sprite_id) {
+        issues.push(monster_issue(
+            &def.authored_id,
+            "sprite",
+            format!("invalid sprite id ({err:?})"),
+        ));
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ContentError { issues })
     }
 }
 
@@ -164,6 +197,14 @@ mod tests {
     use super::*;
     use purgatory_common::MONSTER_RED_SLIME;
 
+    fn valid_presentation() -> MonsterPresentationDefinition {
+        MonsterPresentationDefinition {
+            content_id: MONSTER_RED_SLIME,
+            authored_id: "monster.slime.red".into(),
+            sprite_id: "creature.red_slime".into(),
+        }
+    }
+
     fn valid() -> MonsterDefinition {
         MonsterDefinition {
             content_id: MONSTER_RED_SLIME,
@@ -180,6 +221,11 @@ mod tests {
             behavior: MonsterBehavior::ChaseContactWhenAttacked,
             home_leash_radius: 3.0,
         }
+    }
+
+    #[test]
+    fn valid_sprite_presentation_is_accepted() {
+        validate_monster_presentation(&valid_presentation()).unwrap();
     }
 
     #[test]

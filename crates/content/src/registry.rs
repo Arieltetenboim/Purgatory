@@ -9,7 +9,10 @@ use crate::domain::ContentDomain;
 use crate::equipment::{EquipmentDefinition, EquipmentPresentation};
 use crate::error::{ContentError, ValidationIssue};
 use crate::item::{ItemCategory, ItemDefinition, ItemPresentation};
-use crate::monster::{MonsterDefinition, validate_monster_definition};
+use crate::monster::{
+    MonsterDefinition, MonsterPresentationDefinition, validate_monster_definition,
+    validate_monster_presentation,
+};
 use crate::schema::{EntityDefinition, MapDefinition, Placement, RestorePolicy};
 use purgatory_common::{ContentId, MAP_FOOTNOTE_AUTHORED, MapId};
 use purgatory_simulation::AbilityDefinition;
@@ -27,6 +30,7 @@ pub struct ContentRegistry {
     equipment_presentation: BTreeMap<String, EquipmentPresentation>,
     abilities: BTreeMap<String, AbilityDefinition>,
     monsters: BTreeMap<String, MonsterDefinition>,
+    monster_presentations: BTreeMap<String, MonsterPresentationDefinition>,
     npc_dialogues: BTreeMap<String, NpcDialogueDefinition>,
     npc_dialogue_presentations: BTreeMap<String, NpcDialoguePresentation>,
     map_id_by_content: HashMap<ContentId, MapId>,
@@ -94,6 +98,29 @@ impl ContentRegistry {
 
     pub fn iter_monsters(&self) -> impl Iterator<Item = &MonsterDefinition> {
         self.monsters.values()
+    }
+
+    #[must_use]
+    pub fn monster_presentation(
+        &self,
+        authored: &str,
+    ) -> Option<&MonsterPresentationDefinition> {
+        self.monster_presentations.get(authored)
+    }
+
+    #[must_use]
+    pub fn monster_presentation_by_id(
+        &self,
+        id: ContentId,
+    ) -> Option<&MonsterPresentationDefinition> {
+        let authored = self.labels.get(&id)?;
+        self.monster_presentations.get(authored)
+    }
+
+    pub fn iter_monster_presentations(
+        &self,
+    ) -> impl Iterator<Item = &MonsterPresentationDefinition> {
+        self.monster_presentations.values()
     }
 
     #[must_use]
@@ -396,6 +423,23 @@ impl ContentRegistry {
         validate_monster_definition(&def)?;
         self.intern(&def.authored_id, def.content_id, "monster")?;
         self.monsters.insert(def.authored_id.clone(), def);
+        Ok(())
+    }
+
+    pub(crate) fn insert_monster_presentation(
+        &mut self,
+        def: MonsterPresentationDefinition,
+    ) -> Result<(), ContentError> {
+        validate_monster_presentation(&def)?;
+        self.intern(
+            &def.authored_id,
+            def.content_id,
+            "monster_presentation",
+        )?;
+        if self.monster_presentations.contains_key(&def.authored_id) {
+            return Err(duplicate(&def.authored_id, "monster_presentation"));
+        }
+        self.monster_presentations.insert(def.authored_id.clone(), def);
         Ok(())
     }
 
