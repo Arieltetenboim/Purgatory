@@ -18,6 +18,7 @@ from typing import Any
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
+MOB_LAB_BUILD = "m3-sprite-create-v2"
 SCHEMA_VERSION = 4
 ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 SPRITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -477,6 +478,12 @@ class MobLabHandler(SimpleHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"MOB_LAB|{self.address_string()}|{fmt % args}")
 
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
     def _json_response(self, value: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
         self.send_response(status)
@@ -500,7 +507,14 @@ class MobLabHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
-            self._json_response({"ok": True, "tool": "mob-lab", "slice": "M3"})
+            self._json_response(
+                {
+                    "ok": True,
+                    "tool": "mob-lab",
+                    "slice": "M3",
+                    "build": MOB_LAB_BUILD,
+                }
+            )
             return
         if parsed.path == "/api/monsters":
             self._handle_list()
