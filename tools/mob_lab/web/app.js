@@ -134,7 +134,11 @@ function drawPreview(){
 async function api(url,options){
   const r=await fetch(url,options);
   const data=await r.json();
-  if(!r.ok)throw new Error(data.error||data.validation_errors?.join("\n")||"Request failed");
+  if(!r.ok){
+    let message=data.error||data.validation_errors?.join("\n")||"Request failed";
+    if(data.validator_output)message+="\n\n"+data.validator_output;
+    throw new Error(message);
+  }
   return data;
 }
 
