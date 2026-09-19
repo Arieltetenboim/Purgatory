@@ -5,7 +5,10 @@ from pathlib import Path
 
 from server import (
     load_numeric_catalog,
+    find_sprite_manifest_path,
+    load_sprite_manifest_document,
     load_sprite_record,
+    save_sprite_manifest_document,
     monster_constant_name,
     monster_reserved_ids,
     next_monster_content_id,
@@ -107,6 +110,49 @@ class MobLabContractTests(unittest.TestCase):
             record = load_sprite_record(root, "creature.test")
             self.assertEqual("creature.test", record["id"])
             self.assertEqual([4, 4], record["grid_size"])
+
+
+    def test_sprite_manifest_save_validates_and_rolls_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sprite_dir = root / "Graphic" / "creature" / "test"
+            sprite_dir.mkdir(parents=True)
+            (sprite_dir / "atlas.png").write_bytes(b"png")
+            original = {
+                "schema_version": 1,
+                "kind": "purgatory_sprite_animation",
+                "id": "creature.test",
+                "atlas": "atlas.png",
+                "frame_size_px": [64, 64],
+                "grid_size": [4, 4],
+                "world_size": [1.0, 1.0],
+                "frame_seconds": 0.1,
+                "authored_facing": "right",
+                "clips": {
+                    "move": {"frames": [0], "loop": True},
+                    "idle": {"frames": [0], "loop": True},
+                    "attack": {"frames": [0], "loop": False},
+                },
+            }
+            manifest_path = sprite_dir / "manifest.json"
+            manifest_path.write_text(json.dumps(original), encoding="utf-8")
+
+            self.assertEqual(manifest_path, find_sprite_manifest_path(root, "creature.test"))
+            path, loaded = load_sprite_manifest_document(root, "creature.test")
+            self.assertEqual(manifest_path, path)
+            self.assertEqual([4, 4], loaded["grid_size"])
+
+            edited = dict(loaded)
+            edited["grid_size"] = [6, 4]
+            record = save_sprite_manifest_document(root, "creature.test", edited)
+            self.assertEqual([6, 4], record["grid_size"])
+
+            invalid = dict(edited)
+            invalid["world_size"] = [0, 1]
+            with self.assertRaises(ValueError):
+                save_sprite_manifest_document(root, "creature.test", invalid)
+            persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual([6, 4], persisted["grid_size"])
 
 
     def test_monster_allocator_assigns_next_permanent_id_and_updates_catalog_and_ledger(self):
