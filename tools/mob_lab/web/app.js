@@ -1,6 +1,7 @@
 const state={
   items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,
-  presentation:null,previewImage:null,previewFrame:0,previewTimer:null
+  presentation:null,previewImage:null,previewFrame:0,previewTimer:null,
+  manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle"
 };
 const $=id=>document.getElementById(id);
 const els={};
@@ -11,11 +12,24 @@ const els={};
   "leashInput","kindInput","aggroInput","jsonEditor","applyRawButton","validationStatus",
   "validationErrors","summaryId","statusText","previewCanvas","previewUnavailable","spriteReadout",
   "hitboxReadout","anchorReadout","newMonsterDialog","newMonsterForm","newIdInput","newNameInput",
-  "newSpriteInput","newCancelButton","newCreateButton"
+  "newSpriteInput","newCancelButton","newCreateButton","manifestDirtyBadge","manifestIdInput",
+  "manifestAtlasInput","manifestGridColsInput","manifestGridRowsInput","manifestFrameWidthInput",
+  "manifestFrameHeightInput","manifestWorldWidthInput","manifestWorldHeightInput",
+  "manifestFrameSecondsInput","manifestFacingInput","manifestPreviewClipInput",
+  "manifestMoveFramesInput","manifestIdleFramesInput","manifestAttackFramesInput",
+  "manifestJsonEditor","applyManifestRawButton","saveManifestButton","resetManifestButton"
 ].forEach(id=>els[id]=$(id));
 
 const canonical=v=>JSON.stringify(v);
 const number=v=>Number(v);
+const int=v=>Math.trunc(Number(v));
+const framesText=frames=>Array.isArray(frames)?frames.join(","):"";
+function parseFrames(value){
+  const text=String(value??"").trim();
+  if(!text)return[];
+  return text.split(",").map(part=>Number(part.trim())).filter(Number.isInteger);
+}
+
 function setStatus(v){els.statusText.textContent=v}
 
 function localErrors(doc){
@@ -60,6 +74,66 @@ function updateInspector(){
   els.validationErrors.textContent=e.length?e.join("\n"):"Local shape valid. Save also runs the Rust runtime content validator.";
 }
 function syncRaw(){els.jsonEditor.value=state.doc?JSON.stringify(state.doc,null,2)+"\n":""}
+function updateManifestDirty(){
+  state.manifestDirty=Boolean(state.manifestDoc)&&canonical(state.manifestDoc)!==state.manifestOriginal;
+  els.saveManifestButton.disabled=!state.manifestDirty;
+  els.manifestDirtyBadge.textContent=state.manifestDirty?"MANIFEST DIRTY":"MANIFEST CLEAN";
+  els.manifestDirtyBadge.classList.toggle("dirty",state.manifestDirty);
+}
+function syncManifestRaw(){
+  els.manifestJsonEditor.value=state.manifestDoc?JSON.stringify(state.manifestDoc,null,2)+"\n":"";
+}
+function manifestToPresentation(){
+  if(!state.manifestDoc||!state.presentation)return;
+  const doc=state.manifestDoc,clip=doc.clips?.[state.previewClip]||doc.clips?.idle;
+  state.presentation.frame_size_px=doc.frame_size_px;
+  state.presentation.grid_size=doc.grid_size||null;
+  state.presentation.world_size=doc.world_size;
+  state.presentation.frame_seconds=Number(doc.frame_seconds);
+  state.presentation.idle_frames=Array.isArray(clip?.frames)?clip.frames:[0];
+  state.presentation.authored_facing=doc.authored_facing;
+}
+function restartPreviewTimer(){
+  stopPreviewTimer();
+  const seconds=Number(state.presentation?.frame_seconds)||0.1;
+  state.previewTimer=setInterval(()=>{state.previewFrame+=1;drawPreview()},Math.max(30,Math.round(seconds*1000)));
+}
+function renderManifestForm(){
+  const m=state.manifestDoc;
+  if(!m)return;
+  els.manifestIdInput.value=m.id||"";
+  els.manifestAtlasInput.value=m.atlas||"";
+  els.manifestGridColsInput.value=m.grid_size?.[0]??"";
+  els.manifestGridRowsInput.value=m.grid_size?.[1]??"";
+  els.manifestFrameWidthInput.value=m.frame_size_px?.[0]??"";
+  els.manifestFrameHeightInput.value=m.frame_size_px?.[1]??"";
+  els.manifestWorldWidthInput.value=m.world_size?.[0]??"";
+  els.manifestWorldHeightInput.value=m.world_size?.[1]??"";
+  els.manifestFrameSecondsInput.value=m.frame_seconds??"";
+  els.manifestFacingInput.value=m.authored_facing||"right";
+  els.manifestPreviewClipInput.value=state.previewClip;
+  els.manifestMoveFramesInput.value=framesText(m.clips?.move?.frames);
+  els.manifestIdleFramesInput.value=framesText(m.clips?.idle?.frames);
+  els.manifestAttackFramesInput.value=framesText(m.clips?.attack?.frames);
+  syncManifestRaw();updateManifestDirty();manifestToPresentation();drawPreview();
+}
+function applyManifestForm(){
+  const m=state.manifestDoc;
+  if(!m)return;
+  m.grid_size=[int(els.manifestGridColsInput.value),int(els.manifestGridRowsInput.value)];
+  m.frame_size_px=[int(els.manifestFrameWidthInput.value),int(els.manifestFrameHeightInput.value)];
+  m.world_size=[number(els.manifestWorldWidthInput.value),number(els.manifestWorldHeightInput.value)];
+  m.frame_seconds=number(els.manifestFrameSecondsInput.value);
+  m.authored_facing=els.manifestFacingInput.value;
+  m.clips=m.clips||{};
+  for(const [name,input] of [["move",els.manifestMoveFramesInput],["idle",els.manifestIdleFramesInput],["attack",els.manifestAttackFramesInput]]){
+    m.clips[name]=m.clips[name]||{frames:[],loop:name!=="attack"};
+    m.clips[name].frames=parseFrames(input.value);
+  }
+  state.previewClip=els.manifestPreviewClipInput.value;
+  syncManifestRaw();updateManifestDirty();manifestToPresentation();state.previewFrame=0;restartPreviewTimer();drawPreview();
+}
+
 function stopPreviewTimer(){if(state.previewTimer){clearInterval(state.previewTimer);state.previewTimer=null}}
 function previewContext(){return els.previewCanvas.getContext("2d")}
 
@@ -100,11 +174,11 @@ function drawPreview(){
   if(p&&img&&img.complete&&img.naturalWidth){
     const frames=p.idle_frames||[],frame=frames[state.previewFrame%frames.length]||0;
     const grid=p.grid_size;
-    const cols=grid?.[0]||Math.floor(img.naturalWidth/p.frame_size_px[0]);
-    const rows=grid?.[1]||Math.floor(img.naturalHeight/p.frame_size_px[1]);
+    const cols=Math.max(1,Math.trunc(Number(grid?.[0])||Math.floor(img.naturalWidth/p.frame_size_px[0])||1));
+    const rows=Math.max(1,Math.trunc(Number(grid?.[1])||Math.floor(img.naturalHeight/p.frame_size_px[1])||1));
     const fw=img.naturalWidth/cols,fh=img.naturalHeight/rows;
     const sx=(frame%cols)*fw,sy=Math.floor(frame/cols)*fh;
-    const worldW=p.world_size[0],worldH=p.world_size[1];
+    const worldW=Math.max(0.01,Number(p.world_size?.[0])||1),worldH=Math.max(0.01,Number(p.world_size?.[1])||1);
     const dw=worldW*pxPerWorld,dh=worldH*pxPerWorld;
     ctx.imageSmoothingEnabled=false;
     ctx.drawImage(img,sx,sy,fw,fh,centerX-dw/2,entityY-dh/2,dw,dh);
@@ -170,17 +244,23 @@ async function loadSprites(){
 
 async function loadPresentation(){
   stopPreviewTimer();
-  state.presentation=null;state.previewImage=null;state.previewFrame=0;drawPreview();
+  state.presentation=null;state.previewImage=null;state.previewFrame=0;
+  state.manifestDoc=null;state.manifestOriginal="";state.manifestPath=null;updateManifestDirty();drawPreview();
   if(!state.doc?.sprite)return;
   try{
-    const p=await api("/api/presentation?sprite="+encodeURIComponent(state.doc.sprite));
+    const sprite=encodeURIComponent(state.doc.sprite);
+    const [p,m]=await Promise.all([
+      api("/api/presentation?sprite="+sprite),
+      api("/api/sprite-manifest?sprite="+sprite)
+    ]);
     state.presentation=p;
+    state.manifestDoc=m.document;
+    state.manifestOriginal=canonical(m.document);
+    state.manifestPath=m.path;
+    renderManifestForm();
     const img=new Image();
     img.onload=()=>{
-      state.previewImage=img;drawPreview();stopPreviewTimer();
-      state.previewTimer=setInterval(()=>{
-        state.previewFrame+=1;drawPreview();
-      },Math.max(50,Math.round((p.frame_seconds||0.1)*1000)));
+      state.previewImage=img;manifestToPresentation();drawPreview();restartPreviewTimer();
     };
     img.onerror=()=>{state.previewImage=null;drawPreview()};
     img.src=p.atlas_url+"&v="+Date.now();
@@ -239,6 +319,40 @@ function applyForm(){
   "speedInput","leashInput","kindInput","aggroInput"
 ].forEach(id=>els[id].addEventListener("input",applyForm));
 els.spriteInput.addEventListener("change",async()=>{applyForm();await loadPresentation()});
+[
+  "manifestGridColsInput","manifestGridRowsInput","manifestFrameWidthInput","manifestFrameHeightInput",
+  "manifestWorldWidthInput","manifestWorldHeightInput","manifestFrameSecondsInput","manifestFacingInput",
+  "manifestPreviewClipInput","manifestMoveFramesInput","manifestIdleFramesInput","manifestAttackFramesInput"
+].forEach(id=>els[id].addEventListener("input",applyManifestForm));
+els.manifestPreviewClipInput.addEventListener("change",applyManifestForm);
+els.applyManifestRawButton.onclick=()=>{
+  try{
+    const parsed=JSON.parse(els.manifestJsonEditor.value);
+    if(parsed.id!==state.doc?.sprite)throw new Error("Manifest id must stay "+state.doc?.sprite);
+    state.manifestDoc=parsed;renderManifestForm();restartPreviewTimer();
+    setStatus("Raw manifest applied in memory. Preview is live; SAVE MANIFEST persists it.");
+  }catch(e){setStatus("Invalid manifest JSON: "+e.message)}
+};
+els.resetManifestButton.onclick=()=>{
+  if(!state.manifestOriginal)return;
+  state.manifestDoc=JSON.parse(state.manifestOriginal);renderManifestForm();restartPreviewTimer();
+  setStatus("Manifest changes reset.");
+};
+els.saveManifestButton.onclick=async()=>{
+  if(!state.manifestDoc||!state.doc?.sprite)return;
+  setStatus("Validating and saving sprite manifest...");
+  try{
+    const data=await api("/api/sprite-manifest?sprite="+encodeURIComponent(state.doc.sprite),{
+      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(state.manifestDoc)
+    });
+    state.manifestOriginal=canonical(state.manifestDoc);updateManifestDirty();
+    await loadSprites();
+    state.presentation={...state.presentation,...data.presentation};
+    manifestToPresentation();restartPreviewTimer();drawPreview();
+    setStatus("Saved manifest: "+data.path);
+  }catch(e){setStatus(String(e.message||e))}
+};
+
 
 function renderList(){
   const q=els.filterInput.value.trim().toLowerCase();
