@@ -145,18 +145,21 @@ async function api(url,options){
 async function loadSprites(){
   const data=await api("/api/sprites");
   state.sprites=data.items||[];
+  if(!els.spriteInput)throw new Error("Mob Lab HTML/JS version mismatch: spriteInput is missing. Reload the page.");
   els.spriteInput.replaceChildren();
-  els.newSpriteInput.replaceChildren();
+  if(els.newSpriteInput)els.newSpriteInput.replaceChildren();
   for(const sprite of state.sprites){
     const label=sprite.id+"  ·  "+sprite.frame_size_px[0]+"×"+sprite.frame_size_px[1]+" px";
     const option=document.createElement("option");
     option.value=sprite.id;
     option.textContent=label;
     els.spriteInput.appendChild(option);
-    const newOption=document.createElement("option");
-    newOption.value=sprite.id;
-    newOption.textContent=label;
-    els.newSpriteInput.appendChild(newOption);
+    if(els.newSpriteInput){
+      const newOption=document.createElement("option");
+      newOption.value=sprite.id;
+      newOption.textContent=label;
+      els.newSpriteInput.appendChild(newOption);
+    }
   }
   if(data.issues?.length)setStatus("Sprite scan warning: "+data.issues.join(" | "));
 }
@@ -287,6 +290,10 @@ els.saveButton.onclick=async()=>{
   }catch(e){setStatus(String(e.message||e))}
 };
 els.newButton.onclick=()=>{
+  if(!els.newMonsterDialog||!els.newSpriteInput){
+    setStatus("Mob Lab page is stale. Close this tab and relaunch Mob Lab.");
+    return;
+  }
   if(!state.sprites.length){
     setStatus("No valid creature sprites were found. Add/fix a manifest under Graphic/creature first.");
     return;
