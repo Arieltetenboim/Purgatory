@@ -23,6 +23,7 @@ ID_RE = re.compile(r"^monster\.[a-z0-9][a-z0-9._-]*$")
 SPRITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 MONSTER_CONTENT_ID_START = 10_001
 MONSTER_CONTENT_ID_END = 19_999
+CONTENT_WRITE_LOCK = threading.Lock()
 
 
 def validate_monster_document(value: Any) -> list[str]:
@@ -648,50 +649,53 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                 raise ValueError("New monster requires a debug name.")
             sprite = load_sprite_record(self.repo_root, sprite_id)
 
-            path = resolve_monster_path(self.definitions_root, safe_filename(authored_id))
-            if path.exists():
-                self._json_response(
-                    {"error": f"Monster already exists at {path.name}."},
-                    HTTPStatus.CONFLICT,
+            with CONTENT_WRITE_LOCK:
+                path = resolve_monster_path(
+                    self.definitions_root, safe_filename(authored_id)
                 )
-                return
+                if path.exists():
+                    self._json_response(
+                        {"error": f"Monster already exists at {path.name}."},
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
 
-            content_id, allocation_writes = prepare_monster_allocation(
-                self.repo_root, authored_id
-            )
-            originals: list[tuple[Path, bytes | None]] = [
-                (target, old) for target, old, _new in allocation_writes
-            ]
-            originals.append((path, None))
-            try:
-                for target, _old, new in allocation_writes:
-                    atomic_write(target, new)
-                doc = new_monster_document(authored_id, debug_name, sprite["id"])
-                encoded = (
-                    json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
-                ).encode("utf-8")
-                atomic_write(path, encoded)
-                ok, output = validate_runtime_pack(self.repo_root)
-                if not ok:
-                    raise RuntimeError(output or "runtime content validation failed")
-            except Exception:
-                for target, original in reversed(originals):
-                    if original is None:
-                        target.unlink(missing_ok=True)
-                    else:
-                        atomic_write(target, original)
-                raise
+                content_id, allocation_writes = prepare_monster_allocation(
+                    self.repo_root, authored_id
+                )
+                originals: list[tuple[Path, bytes | None]] = [
+                    (target, old) for target, old, _new in allocation_writes
+                ]
+                originals.append((path, None))
+                try:
+                    for target, _old, new in allocation_writes:
+                        atomic_write(target, new)
+                    doc = new_monster_document(authored_id, debug_name, sprite["id"])
+                    encoded = (
+                        json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
+                    ).encode("utf-8")
+                    atomic_write(path, encoded)
+                    ok, output = validate_runtime_pack(self.repo_root)
+                    if not ok:
+                        raise RuntimeError(output or "runtime content validation failed")
+                except Exception:
+                    for target, original in reversed(originals):
+                        if original is None:
+                            target.unlink(missing_ok=True)
+                        else:
+                            atomic_write(target, original)
+                    raise
 
-            self._json_response(
-                {
-                    "ok": True,
-                    "path": path.name,
-                    "document": doc,
-                    "content_id": content_id,
-                    "validator_output": output,
-                },
-                HTTPStatus.CREATED,
-            )
+                self._json_response(
+                    {
+                        "ok": True,
+                        "path": path.name,
+                        "document": doc,
+                        "content_id": content_id,
+                        "validator_output": output,
+                    },
+                    HTTPStatus.CREATED,
+                )
         except RuntimeError as exc:
             self._json_response(
                 {
