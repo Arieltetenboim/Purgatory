@@ -253,7 +253,10 @@ fn live_combat_creature_receives_basic_strike_grant() {
 #[test]
 fn nearby_living_player_does_not_aggro_until_damage() {
     let (mut world, npc, player) = setup(1.0, 0.0);
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     assert_eq!(world.npc_of(npc).unwrap().target, None);
     assert_eq!(world.health_of(player).unwrap().current, 20.0);
 
@@ -265,7 +268,10 @@ fn creature_approaches_damage_acquired_player_outside_strike_range() {
     let (mut world, npc, player) = setup(2.5, 0.0);
     damage_aggro(&mut world, npc, player);
     let before = world.transform_of(npc).unwrap().position;
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     let after = world.transform_of(npc).unwrap().position;
 
     assert!(after[0] > before[0]);
@@ -277,13 +283,19 @@ fn creature_approaches_damage_acquired_player_outside_strike_range() {
 fn approach_retains_damage_acquired_target_when_another_player_becomes_closer() {
     let (mut world, npc, first) = setup(2.5, 0.0);
     damage_aggro(&mut world, npc, first);
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     assert_eq!(world.npc_of(npc).unwrap().target, Some(first));
 
     let second = RuntimeFixtures::test_player(&mut world);
     world.set_health(second, Health::full(20.0));
     world.set_transform(second, Transform::from_position([0.25, 1.0]));
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
 
     assert_eq!(world.npc_of(npc).unwrap().target, Some(first));
     assert!(world.npc_of(npc).unwrap().velocity[0] > 0.0);
@@ -294,7 +306,10 @@ fn creature_stops_inside_strike_range_and_keeps_ability_path() {
     let (mut world, npc, player) = setup(1.0, 0.0);
     damage_aggro(&mut world, npc, player);
     let before = world.transform_of(npc).unwrap().position;
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
 
     assert_eq!(world.transform_of(npc).unwrap().position, before);
     assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);
@@ -311,7 +326,10 @@ fn creature_stops_inside_strike_range_and_keeps_ability_path() {
 fn creature_at_forward_query_boundary_can_hit_before_approach_stops() {
     let (mut world, npc, player) = setup(1.5, 0.0);
     damage_aggro(&mut world, npc, player);
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);
 
     let def = strike();
@@ -333,7 +351,10 @@ fn creature_approach_uses_forward_query_geometry_before_attacking_offset_target(
     assert!(distance_sq < STRIKE_ABILITY_RANGE * STRIKE_ABILITY_RANGE);
     assert!(!initial_query.contains_point([1.0, 2.05]));
 
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     let after = world.transform_of(npc).unwrap().position;
     assert!(after[0] > initial[0]);
     assert_eq!(after[1], initial[1]);
@@ -364,7 +385,10 @@ fn damage_from_dead_player_does_not_establish_aggro() {
 fn dead_target_stops_existing_approach() {
     let (mut world, npc, player) = setup(2.5, 0.0);
     damage_aggro(&mut world, npc, player);
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     let before = world.transform_of(npc).unwrap().position;
     world.set_health(
         player,
@@ -373,7 +397,10 @@ fn dead_target_stops_existing_approach() {
             max: 20.0,
         },
     );
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
 
     assert_eq!(world.transform_of(npc).unwrap().position, before);
     assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);
@@ -383,10 +410,16 @@ fn dead_target_stops_existing_approach() {
 fn despawned_target_stops_existing_approach() {
     let (mut world, npc, player) = setup(2.5, 0.0);
     damage_aggro(&mut world, npc, player);
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     let before = world.transform_of(npc).unwrap().position;
     assert!(world.despawn(player));
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
 
     assert_eq!(world.transform_of(npc).unwrap().position, before);
     assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);
@@ -396,7 +429,10 @@ fn despawned_target_stops_existing_approach() {
 fn target_in_wrong_world_address_is_cleared() {
     let (mut world, npc, player) = setup(2.5, 0.0);
     damage_aggro(&mut world, npc, player);
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     let other_address = WorldAddress::new(
         crate::MapId::from_raw(2),
         crate::ChannelId::DEFAULT,
@@ -404,7 +440,10 @@ fn target_in_wrong_world_address_is_cleared() {
     );
     assert!(world.set_address(player, other_address));
 
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
 
     assert_eq!(world.npc_of(npc).unwrap().target, None);
     assert_eq!(world.npc_of(npc).unwrap().velocity, [0.0, 0.0]);
@@ -414,14 +453,20 @@ fn target_in_wrong_world_address_is_cleared() {
 fn target_beyond_home_leash_is_cleared_and_patrol_resumes() {
     let (mut world, npc, player) = setup(2.5, 0.0);
     damage_aggro(&mut world, npc, player);
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     world.set_transform(player, Transform::from_position([10.0, 1.0]));
     let mut state = world.npc_of(npc).unwrap();
     state.walking = true;
     state.heading = [1.0, 0.0];
     world.set_npc(npc, state);
 
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
 
     let state = world.npc_of(npc).unwrap();
     assert_eq!(state.target, None);
@@ -450,7 +495,10 @@ fn proximity_with_multiple_players_does_not_choose_a_target() {
     world.set_health(second, Health::full(20.0));
     world.set_transform(second, Transform::from_position([-1.0, 1.0]));
 
-    world.tick_npcs_with_approach(1.0 / 30.0, Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)));
+    world.tick_npcs_with_approach(
+        1.0 / 30.0,
+        Some(NpcApproachBounds::symmetric(STRIKE_ABILITY_RANGE, 0.8)),
+    );
     assert_eq!(world.npc_of(npc).unwrap().target, None);
 }
 
