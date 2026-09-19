@@ -4,8 +4,8 @@
   "id": "creature.moss_crab",
   "atlas": "moss_crab.png",
   "frame_size_px": [
-    256,
-    256
+    150,
+    150
   ],
   "world_size": [
     1,
