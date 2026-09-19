@@ -60,6 +60,7 @@
             <div class="preview-controls">
               <select id="previewAnimationInput" aria-label="Preview animation"></select>
               <button id="previewPlayButton" type="button" class="play-button" title="Play preview">▶</button>
+              <button id="previewStopButton" type="button" title="Stop and reset preview">■</button>
             </div>
             <div class="preview-toggle-group">
               <label><input id="previewSpriteToggle" type="checkbox" checked><span>Sprite</span></label>
@@ -162,12 +163,37 @@
 
         <div class="tab-panel" data-panel="animations">
           <div class="section-head">
-            <div><h2>Animations</h2><p>Edit clip frames while watching the persistent preview above.</p></div>
+            <div><h2>Animations</h2><p>Author ordered V2 steps and presentation annotations. Changes update the preview immediately.</p></div>
           </div>
-          <div class="form-grid two">
+          <div id="v1AnimationEditor" class="form-grid two">
             <label>Preview Clip<select id="manifestPreviewClipInput"></select></label>
             <label>Frame Seconds<input id="manifestFrameSecondsInput" type="number" min="0.01" step="0.01"></label>
             <div id="manifestClipList" class="span-two clip-editor-list"></div>
+          </div>
+          <div id="v2AnimationEditor" class="v2-animation-editor hidden">
+            <div class="animation-library-bar">
+              <label>Clip<select id="v2ClipSelect"></select></label>
+              <button id="addClipButton" type="button">ADD CLIP</button>
+              <button id="renameClipButton" type="button">RENAME CLIP</button>
+              <button id="deleteClipButton" type="button">DELETE CLIP</button>
+              <label class="checkbox-field"><input id="v2ClipLoopInput" type="checkbox"><span>Loop</span></label>
+            </div>
+            <p id="animationMessage" class="field-error"></p>
+            <div class="animation-columns">
+              <section>
+                <div class="subsection-heading"><strong>Steps</strong><div class="inline-actions"><button id="addStepButton" type="button">ADD STEP</button><button id="deleteStepButton" type="button">DELETE STEP</button><button id="moveStepEarlierButton" type="button">←</button><button id="moveStepLaterButton" type="button">→</button></div></div>
+                <div id="v2StepList" class="v2-step-list"></div>
+              </section>
+              <section>
+                <div class="subsection-heading"><strong>Annotations</strong><button id="addAnnotationButton" type="button">ADD ANNOTATION</button></div>
+                <div id="v2AnnotationList" class="v2-annotation-list"></div>
+              </section>
+            </div>
+            <section class="timeline-section">
+              <div class="subsection-heading"><strong>Timeline</strong><span id="timelineTotal">0 ms</span></div>
+              <div id="v2Timeline" class="v2-timeline" aria-label="Clip timing timeline"></div>
+              <div id="annotationFeedback" class="annotation-feedback"></div>
+            </section>
           </div>
         </div>
 

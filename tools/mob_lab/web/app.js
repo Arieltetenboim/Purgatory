@@ -1,6 +1,6 @@
 const state={
   items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,
-  presentation:null,previewImage:null,previewFrame:0,previewTimer:null,
+  presentation:null,previewImage:null,previewFrame:0,previewTimer:null,previewTime:0,previewStarted:false,previewFinished:false,markerFeedback:"",
   manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle",activeTab:"atlas",
   selectedFrame:0,selectedSocket:null,socketPlacement:false,previewPlaying:false,showSprite:true,showHitbox:true,showGuides:false,newTemplatePath:null
 };
@@ -19,13 +19,16 @@ const els={};
   "manifestFrameSecondsInput","manifestPixelsPerUnitInput","manifestFacingInput","manifestPreviewClipInput","manifestClipList",
   "manifestJsonEditor","applyManifestRawButton","saveManifestButton","resetManifestButton",
   "duplicateButton","typeFilterInput","previewAnimationInput","previewPlayButton","previewSpriteToggle",
-  "previewHitboxToggle","previewGuidesToggle","sheetGridReadout","frameSheetGrid","selectedFrameCanvas",
+  "previewStopButton","previewHitboxToggle","previewGuidesToggle","sheetGridReadout","frameSheetGrid","selectedFrameCanvas",
   "selectedFrameIndex","selectedFramePixels","selectedFrameWorld","quickThumbCanvas","quickTypeInput",
   "quickSourceFile","quickAtlas","quickImageSize","quickFrames","quickFrameSize","quickWorldSize",
   "footerMonsterCount","footerSchemaStatus","footerDirtyStatus","docContentId","docSchema",
   "atlasCanvas","v2FrameList","v2FrameIndexInput","v2RectXInput","v2RectYInput",
   "v2RectWidthInput","v2RectHeightInput","v2OriginXInput","v2OriginYInput",
-  "addFrameButton","deleteFrameButton","frameActionMessage","addSocketButton","socketList","socketMessage"
+  "addFrameButton","deleteFrameButton","frameActionMessage","addSocketButton","socketList","socketMessage",
+  "v1AnimationEditor","v2AnimationEditor","v2ClipSelect","addClipButton","renameClipButton","deleteClipButton",
+  "v2ClipLoopInput","animationMessage","v2StepList","v2AnnotationList","addStepButton","deleteStepButton",
+  "moveStepEarlierButton","moveStepLaterButton","addAnnotationButton","v2Timeline","timelineTotal","annotationFeedback"
 ].forEach(id=>els[id]=$(id));
 
 const canonical=v=>JSON.stringify(v);
@@ -34,6 +37,59 @@ const int=v=>Math.trunc(Number(v));
 const framesText=frames=>Array.isArray(frames)?frames.join(","):"";
 const isV2=doc=>Number(doc?.schema_version)===2;
 function v2Frame(doc,index){return isV2(doc)&&Array.isArray(doc.frames)?doc.frames[index]:null}
+const authoredId=/^[a-z0-9][a-z0-9._-]*$/;
+function v2Clip(doc,name){return doc?.clips?.[name]||null}
+function clipDuration(clip){
+  return (clip?.steps||[]).reduce((total,step)=>total+(Number.isInteger(step?.duration_ms)&&step.duration_ms>0?step.duration_ms:0),0);
+}
+function stepStartTime(clip,index){
+  return (clip?.steps||[]).slice(0,Math.max(0,index)).reduce((total,step)=>total+Number(step?.duration_ms||0),0);
+}
+function annotationAbsoluteTime(clip,annotation){
+  return stepStartTime(clip,annotation?.step)+Number(annotation?.offset_ms||0);
+}
+function timelinePlacement(clip){
+  const total=clipDuration(clip)||1;
+  return (clip?.steps||[]).map((step,index)=>({
+    index,frame:step.frame,duration:step.duration_ms,start:stepStartTime(clip,index),width:step.duration_ms/total
+  }));
+}
+function remapAnnotationStepOnMove(annotations,from,to){
+  return (annotations||[]).map(annotation=>{
+    const step=annotation.step;
+    if(step===from)return {...annotation,step:to};
+    if(from<to&&step>from&&step<=to)return {...annotation,step:step-1};
+    if(to<from&&step>=to&&step<from)return {...annotation,step:step+1};
+    return annotation;
+  });
+}
+function remapAnnotationsAfterDelete(annotations,deleted){
+  return (annotations||[]).filter(annotation=>annotation.step!==deleted).map(annotation=>(
+    annotation.step>deleted?{...annotation,step:annotation.step-1}:annotation
+  ));
+}
+function annotationEventsInRange(clip,start,end,includeStart){
+  return (clip?.annotations||[]).map((annotation,index)=>({annotation,index,time:annotationAbsoluteTime(clip,annotation)}))
+    .filter(item=>includeStart?item.time>=start&&item.time<=end:item.time>start&&item.time<=end)
+    .sort((a,b)=>a.time-b.time||a.index-b.index).map(item=>item.annotation);
+}
+function advanceV2Playback(clip,player,elapsedMs){
+  if(!clip||!Array.isArray(clip.steps)||!clip.steps.length||!Number.isFinite(elapsedMs)||elapsedMs<=0||player.finished)return[];
+  const total=clipDuration(clip),events=[];
+  if(!total)return[];
+  if(!player.started){player.started=true;events.push(...annotationEventsInRange(clip,0,0,true))}
+  let remaining=elapsedMs;
+  while(remaining>0){
+    const amount=Math.min(remaining,total-player.time);
+    events.push(...annotationEventsInRange(clip,player.time,player.time+amount,false));
+    player.time+=amount;remaining-=amount;
+    if(player.time>=total){
+      if(clip.loop){player.time=0;events.push(...annotationEventsInRange(clip,0,0,true))}
+      else{player.time=total;player.finished=true;break}
+    }
+  }
+  return events;
+}
 function frameReferences(doc,index){
   const refs=[];
   for(const [clipName,clip] of Object.entries(doc?.clips||{})){
@@ -56,7 +112,7 @@ function socketReferences(doc,index,name){
 function mirroredSocketDisplayX(socketX,originX,mirrored){
   return mirrored?originX-(socketX-originX):socketX;
 }
-window.mobLabTestHelpers={frameReferences,socketReferences,mirroredSocketDisplayX};
+window.mobLabTestHelpers={frameReferences,socketReferences,mirroredSocketDisplayX,clipDuration,stepStartTime,annotationAbsoluteTime,timelinePlacement,remapAnnotationStepOnMove,remapAnnotationsAfterDelete,advanceV2Playback};
 function parseFrames(value){
   const text=String(value??"").trim();
   if(!text)return[];
@@ -229,6 +285,7 @@ function syncManifestRaw(){
 function manifestToPresentation(){
   if(!state.manifestDoc||!state.presentation)return;
   const doc=state.manifestDoc,clip=doc.clips?.[state.previewClip]||doc.clips?.idle;
+  if(isV2(doc))return;
   state.presentation.frame_size_px=doc.frame_size_px;
   state.presentation.grid_size=doc.grid_size||null;
   state.presentation.world_size=doc.world_size;
@@ -238,9 +295,26 @@ function manifestToPresentation(){
 }
 function restartPreviewTimer(){
   stopPreviewTimer();
-  const seconds=Number(state.presentation?.frame_seconds)||0.1;
   if(!state.previewPlaying)return;
-  state.previewTimer=setInterval(()=>{state.previewFrame+=1;drawPreview()},Math.max(30,Math.round(seconds*1000)));
+  let last=performance.now(),v1Carry=0;
+  state.previewTimer=setInterval(()=>{
+    const now=performance.now(),elapsed=now-last;last=now;
+    if(isV2(state.manifestDoc)){
+      const clip=v2Clip(state.manifestDoc,state.previewClip)||v2Clip(state.manifestDoc,"idle");
+      const player={time:state.previewTime,started:state.previewStarted,finished:state.previewFinished};
+      const events=advanceV2Playback(clip,player,elapsed);
+      state.previewTime=player.time;state.previewStarted=player.started;state.previewFinished=player.finished;
+      events.forEach(annotation=>{
+        state.markerFeedback=`${annotation.name} @ ${annotationAbsoluteTime(clip,annotation)} ms`;
+        els.annotationFeedback.textContent=state.markerFeedback;
+      });
+      drawPreview();renderV2Timeline();
+    }else{
+      const seconds=Number(state.presentation?.frame_seconds)||0.1;
+      v1Carry+=elapsed;
+      if(v1Carry>=seconds*1000){state.previewFrame+=Math.floor(v1Carry/(seconds*1000));v1Carry%=seconds*1000;drawPreview()}
+    }
+  },30);
 }
 function renderManifestClipEditors(){
   const clips=state.manifestDoc?.clips||{};
@@ -274,6 +348,175 @@ function renderManifestClipEditors(){
     row.append(framesLabel,loopLabel);
     els.manifestClipList.appendChild(row);
   }
+  if(isV2(state.manifestDoc)){
+    els.v1AnimationEditor.classList.add("hidden");
+    els.v2AnimationEditor.classList.remove("hidden");
+    renderV2AnimationEditor();
+  }else{
+    els.v1AnimationEditor.classList.remove("hidden");
+    els.v2AnimationEditor.classList.add("hidden");
+  }
+}
+
+function v2ValidationMessage(clip){
+  if(!clip)return"Select a clip.";
+  const errors=[];
+  (clip.steps||[]).forEach((step,index)=>{
+    if(!Number.isInteger(step.frame)||!v2Frame(state.manifestDoc,step.frame))errors.push(`Step ${index} must reference an existing frame.`);
+    if(!Number.isInteger(step.duration_ms)||step.duration_ms<=0)errors.push(`Step ${index} duration must be a positive integer.`);
+  });
+  (clip.annotations||[]).forEach((annotation,index)=>{
+    const step=clip.steps?.[annotation.step],frame=v2Frame(state.manifestDoc,step?.frame);
+    if(!authoredId.test(String(annotation.name||"")))errors.push(`Annotation ${index} has an invalid name.`);
+    if(!step)errors.push(`Annotation ${index} references an invalid step.`);
+    else if(!Number.isInteger(annotation.offset_ms)||annotation.offset_ms<0||annotation.offset_ms>=step.duration_ms)errors.push(`Annotation ${index} offset must be within its step.`);
+    if(annotation.socket!=null&&(!frame||!Object.hasOwn(frame.sockets||{},annotation.socket)))errors.push(`Annotation ${index} socket is missing from its referenced frame.`);
+  });
+  return errors.join(" ");
+}
+function selectedV2Clip(){return v2Clip(state.manifestDoc,state.previewClip)||v2Clip(state.manifestDoc,"idle")}
+function resetV2Playback(){
+  state.previewTime=0;state.previewStarted=false;state.previewFinished=false;state.markerFeedback="";
+  if(els.annotationFeedback)els.annotationFeedback.textContent="";
+}
+function renderV2AnimationEditor(){
+  const clips=state.manifestDoc?.clips||{},names=Object.keys(clips);
+  els.v2ClipSelect.replaceChildren(...names.map(name=>new Option(name,name)));
+  els.v2ClipSelect.value=state.previewClip;
+  const clip=selectedV2Clip();
+  els.v2ClipLoopInput.checked=Boolean(clip?.loop);
+  renderV2StepList(clip);renderV2AnnotationList(clip);renderV2Timeline();
+}
+function renderV2StepList(clip){
+  els.v2StepList.replaceChildren();
+  (clip?.steps||[]).forEach((step,index)=>{
+    const row=document.createElement("div");row.className="v2-step-row"+(index===currentV2Step()?" selected":"");
+    const indexLabel=document.createElement("span");indexLabel.className="step-index";indexLabel.textContent=String(index);
+    const frameLabel=document.createElement("label");frameLabel.textContent="Frame";
+    const frameInput=document.createElement("select");
+    (state.manifestDoc.frames||[]).forEach((_frame,frame)=>frameInput.appendChild(new Option(String(frame),String(frame))));
+    frameInput.value=String(step.frame);frameInput.onchange=()=>updateV2Step(index,"frame",Number(frameInput.value));
+    frameLabel.append(frameInput);
+    const durationLabel=document.createElement("label");durationLabel.textContent="Duration ms";
+    const durationInput=document.createElement("input");durationInput.type="number";durationInput.min="1";durationInput.step="1";durationInput.value=step.duration_ms;
+    durationInput.onchange=()=>updateV2Step(index,"duration_ms",durationInput.value);
+    durationLabel.append(durationInput);
+    row.onclick=()=>{state.selectedStep=index;renderV2AnimationEditor();drawPreview()};
+    row.append(indexLabel,frameLabel,durationLabel);els.v2StepList.appendChild(row);
+  });
+}
+function currentV2Step(){return Number.isInteger(state.selectedStep)?state.selectedStep:0}
+function renderV2AnnotationList(clip){
+  els.v2AnnotationList.replaceChildren();
+  (clip?.annotations||[]).forEach((annotation,index)=>{
+    const row=document.createElement("div");row.className="v2-annotation-row";
+    const name=document.createElement("input");name.value=annotation.name||"";name.title="Annotation name";
+    const step=document.createElement("select");(clip.steps||[]).forEach((_s,i)=>step.appendChild(new Option(String(i),String(i))));step.value=String(annotation.step);
+    const offset=document.createElement("input");offset.type="number";offset.min="0";offset.step="1";offset.value=annotation.offset_ms;
+    const socket=document.createElement("select");socket.appendChild(new Option("No socket",""));
+    const frame=v2Frame(state.manifestDoc,clip.steps?.[annotation.step]?.frame);
+    Object.keys(frame?.sockets||{}).forEach(name=>socket.appendChild(new Option(name,name)));
+    socket.value=annotation.socket||"";
+    const remove=document.createElement("button");remove.type="button";remove.textContent="×";remove.title="Delete annotation";
+    name.onchange=()=>updateV2Annotation(index,"name",name.value);
+    step.onchange=()=>updateV2Annotation(index,"step",Number(step.value));
+    offset.onchange=()=>updateV2Annotation(index,"offset_ms",offset.value);
+    socket.onchange=()=>updateV2Annotation(index,"socket",socket.value||null);
+    remove.onclick=()=>{clip.annotations.splice(index,1);commitV2Edit("Annotation deleted.")};
+    row.append(name,step,offset,socket,remove);els.v2AnnotationList.appendChild(row);
+  });
+}
+function renderV2Timeline(){
+  const clip=selectedV2Clip();if(!els.v2Timeline)return;
+  const total=clipDuration(clip),placements=timelinePlacement(clip);
+  els.timelineTotal.textContent=`${total} ms`;
+  els.v2Timeline.replaceChildren();
+  placements.forEach(item=>{
+    const segment=document.createElement("div");segment.className="timeline-segment";
+    segment.style.width=`${item.width*100}%`;
+    if(item.index===currentV2Step())segment.classList.add("selected");
+    const current=total>0&&state.previewTime>=item.start&&(state.previewTime<item.start+item.duration||item.index===placements.length-1&&state.previewTime===total);
+    if(current)segment.classList.add("current");
+    segment.textContent=`F${item.frame} · ${item.duration}ms`;
+    els.v2Timeline.appendChild(segment);
+  });
+  (clip?.annotations||[]).map((annotation,index)=>({annotation,index,time:annotationAbsoluteTime(clip,annotation)}))
+    .sort((a,b)=>a.time-b.time||a.index-b.index).forEach(item=>{
+      const marker=document.createElement("span");marker.className="timeline-marker";
+      marker.style.left=`${total?item.time/total*100:0}%`;marker.title=`${item.annotation.name} @ ${item.time} ms`;
+      marker.textContent=item.annotation.name;
+      els.v2Timeline.appendChild(marker);
+    });
+}
+function commitV2Edit(message){
+  syncManifestRaw();updateManifestDirty();resetV2Playback();renderManifestForm();restartPreviewTimer();drawPreview();setStatus(message||"Animation updated.");
+}
+function updateV2Step(index,key,value){
+  const clip=selectedV2Clip(),step=clip?.steps?.[index];if(!step)return;
+  const parsed=Number(value);
+  if(!Number.isInteger(parsed)||(key==="frame"&&!v2Frame(state.manifestDoc,parsed))||(key==="duration_ms"&&parsed<=0)){
+    setStatus(key==="duration_ms"?"Duration must be a positive integer.":"Frame must reference an existing frame.");renderV2AnimationEditor();return;
+  }
+  step[key]=parsed;state.selectedStep=index;
+  const error=v2ValidationMessage(clip);commitV2Edit(error||"Step updated.");
+  if(error)setStatus(error);
+}
+function updateV2Annotation(index,key,value){
+  const clip=selectedV2Clip(),annotation=clip?.annotations?.[index];if(!annotation)return;
+  if(key==="name"&&!authoredId.test(String(value))){setStatus("Annotation names must use lowercase authored-id characters.");renderV2AnimationEditor();return}
+  if(key==="offset_ms"&&(!Number.isInteger(Number(value))||Number(value)<0)){setStatus("Offset must be a non-negative integer.");renderV2AnimationEditor();return}
+  annotation[key]=key==="offset_ms"?Number(value):value;
+  if(key==="step"){renderV2AnimationEditor()}
+  const error=v2ValidationMessage(clip);if(error){setStatus(error);renderV2AnnotationList(clip);renderV2Timeline();syncManifestRaw();updateManifestDirty();return}
+  commitV2Edit("Annotation updated.");
+}
+function addV2Clip(){
+  const clips=state.manifestDoc.clips,frames=state.manifestDoc.frames||[];
+  let name="clip",suffix=1;while(Object.hasOwn(clips,name))name=`clip_${suffix++}`;
+  clips[name]={loop:true,steps:[{frame:frames.length?state.selectedFrame:0,duration_ms:100}],annotations:[]};
+  state.previewClip=name;state.selectedStep=0;commitV2Edit(`Added clip ${name}.`);
+}
+function renameV2Clip(){
+  const oldName=state.previewClip;if(oldName==="idle"){setStatus("The required idle clip cannot be renamed.");return}
+  const name=prompt("New clip name",oldName)?.trim();
+  if(name===null||name===undefined)return;
+  if(!authoredId.test(name)){setStatus("Clip names must use lowercase authored-id characters.");return}
+  if(Object.hasOwn(state.manifestDoc.clips,name)){setStatus("A clip with that name already exists.");return}
+  const entries=Object.entries(state.manifestDoc.clips),next={};
+  entries.forEach(([key,value])=>{next[key===oldName?name:key]=value});
+  state.manifestDoc.clips=next;state.previewClip=name;commitV2Edit(`Renamed clip to ${name}.`);
+}
+function deleteV2Clip(){
+  const name=state.previewClip;
+  if(name==="idle"){setStatus("The required idle clip cannot be deleted.");return}
+  if(!confirm(`Delete optional clip "${name}"?`))return;
+  delete state.manifestDoc.clips[name];state.previewClip="idle";state.selectedStep=0;commitV2Edit(`Deleted clip ${name}.`);
+}
+function addV2Step(){
+  const clip=selectedV2Clip();if(!clip)return;
+  const frame=state.manifestDoc.frames?.length?state.selectedFrame:0;
+  clip.steps.push({frame,duration_ms:100});state.selectedStep=clip.steps.length-1;commitV2Edit("Step added.");
+}
+function deleteV2Step(){
+  const clip=selectedV2Clip(),index=currentV2Step();if(!clip)return;
+  if(clip.steps.length<=1){setStatus("Every clip must retain at least one step.");return}
+  if((clip.annotations||[]).some(annotation=>annotation.step===index)){
+    setStatus(`Cannot delete step ${index}; delete or move its annotations first.`);return;
+  }
+  clip.steps.splice(index,1);clip.annotations=remapAnnotationsAfterDelete(clip.annotations,index);
+  state.selectedStep=Math.max(0,index-1);commitV2Edit("Step deleted.");
+}
+function moveV2Step(delta){
+  const clip=selectedV2Clip(),from=currentV2Step(),to=from+delta;if(!clip||to<0||to>=clip.steps.length)return;
+  [clip.steps[from],clip.steps[to]]=[clip.steps[to],clip.steps[from]];
+  clip.annotations=remapAnnotationStepOnMove(clip.annotations,from,to);
+  state.selectedStep=to;commitV2Edit("Step order updated.");
+}
+function addV2Annotation(){
+  const clip=selectedV2Clip();if(!clip)return;
+  const step=Math.min(currentV2Step(),Math.max(0,clip.steps.length-1));
+  clip.annotations.push({name:"marker",step,offset_ms:0});
+  commitV2Edit("Annotation added.");
 }
 
 function v2AtlasTransform(){
@@ -388,7 +631,9 @@ function updateSelectedFrame(){
   const iw=state.previewImage?.naturalWidth,ih=state.previewImage?.naturalHeight;
   if(iw&&ih&&(x+w>iw||y+h>ih)){setStatus("Frame rectangle must fit inside the atlas.");return}
   frame.rect_px=[x,y,w,h];frame.origin_px=[ox,oy];
-  syncManifestRaw();updateManifestDirty();renderSocketList();renderV2Atlas();drawPreview();
+  const clip=selectedV2Clip(),error=v2ValidationMessage(clip);
+  syncManifestRaw();updateManifestDirty();renderSocketList();renderV2Atlas();resetV2Playback();drawPreview();
+  if(error)setStatus(error);
 }
 function addFrame(){
   const img=state.previewImage;
@@ -500,7 +745,15 @@ function stopPreviewTimer(){if(state.previewTimer){clearInterval(state.previewTi
 function previewContext(){return els.previewCanvas.getContext("2d")}
 
 function drawV2Preview(ctx,centerX,entityY,pxPerWorld){
-  const frame=v2Frame(state.manifestDoc,state.selectedFrame),img=state.previewImage;
+  const clip=selectedV2Clip(),total=clipDuration(clip);
+  let activeStep=0;
+  if(clip?.steps?.length&&total){
+    const time=Math.min(state.previewTime,total);
+    activeStep=clip.steps.findIndex((step,index)=>time<stepStartTime(clip,index)+step.duration_ms);
+    if(activeStep<0)activeStep=clip.steps.length-1;
+  }
+  const activeFrame=clip?.steps?.[activeStep]?.frame;
+  const frame=v2Frame(state.manifestDoc,activeFrame??state.selectedFrame),img=state.previewImage;
   if(!frame||!img?.naturalWidth)return false;
   const [sx,sy,fw,fh]=frame.rect_px,[ox,oy]=frame.origin_px;
   const ppu=Number(state.manifestDoc.pixels_per_unit);
@@ -523,8 +776,8 @@ function drawV2Preview(ctx,centerX,entityY,pxPerWorld){
     ctx.beginPath();ctx.arc(px,py,name===state.selectedSocket?5:4,0,Math.PI*2);ctx.fill();ctx.stroke();
     ctx.fillStyle="#f0e8ff";ctx.font="11px Consolas";ctx.fillText(name,px+7,py-5);
   }
-  els.spriteReadout.textContent="Frame "+state.selectedFrame;
-  els.hitboxReadout.textContent=ppu.toFixed(1)+" px/wu";
+  els.spriteReadout.textContent=`Step ${activeStep} · Frame ${activeFrame??state.selectedFrame}`;
+  els.hitboxReadout.textContent=`${state.previewTime.toFixed(0)}/${total} ms`;
   els.anchorReadout.textContent=(mirrored?"Mirrored ":"")+"Origin "+ox+","+oy;
   return true;
 }
@@ -733,7 +986,7 @@ els.spriteInput.addEventListener("change",async()=>{applyForm();await loadPresen
 els.previewAnimationInput.addEventListener("change",()=>{
   state.previewClip=els.previewAnimationInput.value;
   els.manifestPreviewClipInput.value=state.previewClip;
-  manifestToPresentation();state.previewFrame=0;restartPreviewTimer();drawPreview();
+  manifestToPresentation();state.previewFrame=0;resetV2Playback();restartPreviewTimer();renderV2AnimationEditor();drawPreview();
 });
 els.previewPlayButton.onclick=()=>{
   state.previewPlaying=!state.previewPlaying;
@@ -741,6 +994,26 @@ els.previewPlayButton.onclick=()=>{
   els.previewPlayButton.title=state.previewPlaying?"Pause preview":"Play preview";
   restartPreviewTimer();
 };
+els.previewStopButton.onclick=()=>{
+  state.previewPlaying=false;els.previewPlayButton.textContent="▶";els.previewPlayButton.title="Play preview";
+  stopPreviewTimer();resetV2Playback();state.previewFrame=0;drawPreview();renderV2Timeline();
+};
+els.v2ClipSelect.onchange=()=>{
+  state.previewClip=els.v2ClipSelect.value;state.selectedStep=0;resetV2Playback();
+  els.previewAnimationInput.value=state.previewClip;els.manifestPreviewClipInput.value=state.previewClip;
+  renderManifestForm();restartPreviewTimer();drawPreview();
+};
+els.v2ClipLoopInput.onchange=()=>{
+  const clip=selectedV2Clip();if(clip){clip.loop=els.v2ClipLoopInput.checked;commitV2Edit("Clip loop updated.")}
+};
+els.addClipButton.onclick=addV2Clip;
+els.renameClipButton.onclick=renameV2Clip;
+els.deleteClipButton.onclick=deleteV2Clip;
+els.addStepButton.onclick=addV2Step;
+els.deleteStepButton.onclick=deleteV2Step;
+els.moveStepEarlierButton.onclick=()=>moveV2Step(-1);
+els.moveStepLaterButton.onclick=()=>moveV2Step(1);
+els.addAnnotationButton.onclick=addV2Annotation;
 els.previewSpriteToggle.addEventListener("change",()=>{state.showSprite=els.previewSpriteToggle.checked;drawPreview()});
 els.previewHitboxToggle.addEventListener("change",()=>{state.showHitbox=els.previewHitboxToggle.checked;drawPreview()});
 els.previewGuidesToggle.addEventListener("change",()=>{state.showGuides=els.previewGuidesToggle.checked;drawPreview()});
@@ -780,7 +1053,7 @@ els.applyManifestRawButton.onclick=()=>{
   try{
     const parsed=JSON.parse(els.manifestJsonEditor.value);
     if(parsed.id!==state.doc?.sprite)throw new Error("Manifest id must stay "+state.doc?.sprite);
-    state.manifestDoc=parsed;renderManifestForm();restartPreviewTimer();
+    state.manifestDoc=parsed;state.previewClip=Object.hasOwn(parsed.clips||{},state.previewClip)?state.previewClip:"idle";resetV2Playback();renderManifestForm();restartPreviewTimer();
     setStatus("Raw manifest applied in memory. Preview is live; SAVE MANIFEST persists it.");
   }catch(e){setStatus("Invalid manifest JSON: "+e.message)}
 };
