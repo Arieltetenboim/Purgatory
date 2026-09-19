@@ -388,6 +388,49 @@ def load_sprite_record(repo_root: Path, sprite_id: str) -> dict[str, Any]:
     raise ValueError(f"Sprite '{sprite_id}' was not found in Graphic/creature{detail}.")
 
 
+def find_sprite_manifest_path(repo_root: Path, sprite_id: str) -> Path:
+    if not isinstance(sprite_id, str) or not SPRITE_ID_RE.fullmatch(sprite_id):
+        raise ValueError("Invalid sprite id.")
+    root = repo_root / "Graphic" / "creature"
+    if not root.is_dir():
+        raise ValueError(f"Sprite root not found: {root}")
+    for manifest_path in sorted(root.glob("*/manifest.json")):
+        try:
+            doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(doc, dict) and doc.get("id") == sprite_id:
+            return manifest_path
+    raise ValueError(f"Sprite manifest '{sprite_id}' was not found.")
+
+
+def load_sprite_manifest_document(repo_root: Path, sprite_id: str) -> tuple[Path, dict[str, Any]]:
+    path = find_sprite_manifest_path(repo_root, sprite_id)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict):
+        raise ValueError("Sprite manifest must be an object.")
+    return path, doc
+
+
+def save_sprite_manifest_document(
+    repo_root: Path, sprite_id: str, doc: Any
+) -> dict[str, Any]:
+    if not isinstance(doc, dict):
+        raise ValueError("Sprite manifest must be an object.")
+    if doc.get("id") != sprite_id:
+        raise ValueError("Sprite manifest id cannot be changed from Mob Lab.")
+
+    path = find_sprite_manifest_path(repo_root, sprite_id)
+    original = path.read_bytes()
+    encoded = (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    atomic_write(path, encoded)
+    try:
+        return _sprite_record(repo_root, path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        atomic_write(path, original)
+        raise
+
+
 def sprite_public_record(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": item["id"],
@@ -538,6 +581,9 @@ class MobLabHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/presentation":
             self._handle_presentation()
             return
+        if parsed.path == "/api/sprite-manifest":
+            self._handle_sprite_manifest()
+            return
         if parsed.path == "/api/presentation-atlas":
             self._handle_presentation_atlas()
             return
@@ -553,6 +599,9 @@ class MobLabHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/new":
             self._handle_new()
             return
+        if parsed.path == "/api/sprite-manifest":
+            self._handle_save_sprite_manifest()
+            return
         if parsed.path == "/api/validate":
             self._handle_validate()
             return
@@ -566,6 +615,40 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                 "issues": issues,
             }
         )
+
+    def _handle_sprite_manifest(self) -> None:
+        try:
+            sprite_id = self._query_value("sprite")
+            path, doc = load_sprite_manifest_document(self.repo_root, sprite_id)
+            self._json_response(
+                {
+                    "sprite": sprite_id,
+                    "path": path.relative_to(self.repo_root).as_posix(),
+                    "document": doc,
+                }
+            )
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _handle_save_sprite_manifest(self) -> None:
+        try:
+            sprite_id = self._query_value("sprite")
+            doc = self._read_json_body()
+            with CONTENT_WRITE_LOCK:
+                record = save_sprite_manifest_document(self.repo_root, sprite_id, doc)
+            self._json_response(
+                {
+                    "ok": True,
+                    "sprite": sprite_id,
+                    "path": record["manifest_path"],
+                    "presentation": presentation_payload(record),
+                }
+            )
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            self._json_response(
+                {"error": f"Sprite manifest save rejected: {exc}"},
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+            )
 
     def _handle_presentation(self) -> None:
         try:
