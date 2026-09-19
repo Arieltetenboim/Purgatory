@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "purgatory_sprite_animation",
-  "id": "creature.spider",
+  "id": "creature.moss_crab",
   "atlas": "spider.png",
   "frame_size_px": [
     256,
