@@ -102,6 +102,23 @@
   </aside>
 </main>
 <footer><span id="statusText">Ready.</span><span>Direct runtime definitions · no export step</span></footer>
+<dialog id="newMonsterDialog" class="modal">
+  <form id="newMonsterForm" method="dialog">
+    <div class="modal-head">
+      <div><strong>NEW MONSTER</strong><div class="muted">Allocate a permanent Monster ContentId and create the runtime definition.</div></div>
+      <button id="newCancelButton" type="button">CANCEL</button>
+    </div>
+    <div class="grid two modal-grid">
+      <label>Authored ID<input id="newIdInput" value="monster." autocomplete="off"></label>
+      <label>Debug Name<input id="newNameInput" value="New Monster" autocomplete="off"></label>
+      <label class="wide">Sprite<select id="newSpriteInput"></select></label>
+    </div>
+    <p class="muted">Mob Lab assigns the next free permanent ID from the Monster block (10001–19999). The allocation is validated and rolled back if creation fails.</p>
+    <div class="modal-actions">
+      <button id="newCreateButton" type="submit" class="primary">CREATE MONSTER</button>
+    </div>
+  </form>
+</dialog>
 <script src="/app.js"></script>
 </body>
 </html>
