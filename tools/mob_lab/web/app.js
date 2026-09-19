@@ -273,7 +273,9 @@ function renderManifestForm(){
 function applyManifestForm(){
   const m=state.manifestDoc;
   if(!m)return;
-  m.grid_size=[int(els.manifestGridColsInput.value),int(els.manifestGridRowsInput.value)];
+  const gridCols=int(els.manifestGridColsInput.value),gridRows=int(els.manifestGridRowsInput.value);
+  if(gridCols>0&&gridRows>0)m.grid_size=[gridCols,gridRows];
+  else if(Object.hasOwn(m,"grid_size"))m.grid_size=null;
   m.frame_size_px=[int(els.manifestFrameWidthInput.value),int(els.manifestFrameHeightInput.value)];
   m.world_size=[number(els.manifestWorldWidthInput.value),number(els.manifestWorldHeightInput.value)];
   m.frame_seconds=number(els.manifestFrameSecondsInput.value);
@@ -619,7 +621,11 @@ async function saveMonsterDocument(){
   const data=await api("/api/monster?path="+encodeURIComponent(state.selectedPath),{
     method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(state.doc)
   });
-  state.original=canonical(state.doc);
+  if(data.document){
+    state.doc=data.document;
+    state.original=canonical(data.document);
+    renderForm();
+  }
   updateDirty();
   return data;
 }
@@ -629,7 +635,9 @@ async function saveSpriteManifest(){
   const data=await api("/api/sprite-manifest?sprite="+encodeURIComponent(state.manifestDoc.id),{
     method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(state.manifestDoc)
   });
+  if(data.document)state.manifestDoc=data.document;
   state.manifestOriginal=canonical(state.manifestDoc);
+  renderManifestForm();
   updateManifestDirty();
   return data;
 }

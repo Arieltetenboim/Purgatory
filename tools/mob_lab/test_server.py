@@ -1,8 +1,10 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
+import server
 from server import (
     load_numeric_catalog,
     find_sprite_manifest_path,
@@ -132,6 +134,7 @@ class MobLabContractTests(unittest.TestCase):
             self.assertEqual("creature.test", record["id"])
             self.assertEqual([4, 4], record["grid_size"])
             self.assertEqual([4, 5], record["idle_frames"])
+            self.assertEqual(["idle", "hit", "special_attack_3"], list(record["clips"]))
 
 
     def test_sprite_scanner_rejects_manifest_without_idle(self):
@@ -198,8 +201,12 @@ class MobLabContractTests(unittest.TestCase):
 
             edited = dict(loaded)
             edited["grid_size"] = [6, 4]
-            record = save_sprite_manifest_document(root, "creature.test", edited)
+            saved, record = save_sprite_manifest_document(root, "creature.test", edited)
+            self.assertEqual(edited, saved)
             self.assertEqual([6, 4], record["grid_size"])
+            self.assertEqual(
+                ["move", "idle", "attack"], list(saved["clips"])
+            )
 
             invalid = dict(edited)
             invalid["world_size"] = [0, 1]
@@ -207,6 +214,66 @@ class MobLabContractTests(unittest.TestCase):
                 save_sprite_manifest_document(root, "creature.test", invalid)
             persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual([6, 4], persisted["grid_size"])
+
+    def test_monster_save_reload_preserves_valid_document_and_rejects_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            definitions = root / "content" / "definitions" / "monsters"
+            definitions.mkdir(parents=True)
+            sprite_dir = root / "Graphic" / "creature" / "test"
+            sprite_dir.mkdir(parents=True)
+            (sprite_dir / "atlas.png").write_bytes(b"png")
+            (sprite_dir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "purgatory_sprite_animation",
+                        "id": "creature.test",
+                        "atlas": "atlas.png",
+                        "frame_size_px": [64, 64],
+                        "grid_size": [1, 1],
+                        "world_size": [1, 1],
+                        "frame_seconds": 0.1,
+                        "authored_facing": "right",
+                        "clips": {"idle": {"frames": [0], "loop": True}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            path = definitions / "monster.test.json"
+            original = new_monster_document("monster.test", "Test")
+            original["sprite"] = "creature.test"
+            path.write_text(json.dumps(original), encoding="utf-8")
+            edited = json.loads(json.dumps(original))
+            edited["debug_name"] = "Edited"
+            edited["behavior"]["home_leash_radius"] = 9.5
+            handler = object.__new__(server.MobLabHandler)
+            handler.repo_root = root
+
+            with mock.patch("server.validate_runtime_pack", return_value=(True, "")):
+                ok, errors, _ = handler._save_candidate(path, edited)
+            self.assertTrue(ok)
+            self.assertEqual([], errors)
+            self.assertEqual(edited, json.loads(path.read_text(encoding="utf-8")))
+
+            invalid = json.loads(json.dumps(edited))
+            invalid["health_max"] = 0
+            with mock.patch("server.validate_runtime_pack") as validator:
+                ok, errors, _ = handler._save_candidate(path, invalid)
+            validator.assert_not_called()
+            self.assertFalse(ok)
+            self.assertTrue(errors)
+            self.assertEqual(edited, json.loads(path.read_text(encoding="utf-8")))
+
+    def test_atomic_write_failure_removes_temporary_file_and_preserves_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "manifest.json"
+            path.write_bytes(b'{"valid":true}\n')
+            with mock.patch("server.os.replace", side_effect=OSError("replace failed")):
+                with self.assertRaises(OSError):
+                    server.atomic_write(path, b'{"valid":false}\n')
+            self.assertEqual(b'{"valid":true}\n', path.read_bytes())
+            self.assertEqual([], list(path.parent.glob(f".{path.name}.*.tmp")))
 
 
     def test_monster_allocator_accepts_windows_crlf_catalog(self):

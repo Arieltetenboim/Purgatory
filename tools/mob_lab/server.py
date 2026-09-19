@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import threading
+import tempfile
 import urllib.parse
 import webbrowser
 from http import HTTPStatus
@@ -296,8 +297,9 @@ def _positive_pair(value: Any) -> bool:
     )
 
 
-def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+def _sprite_record_from_document(
+    repo_root: Path, manifest_path: Path, manifest: Any
+) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         raise ValueError("manifest must be an object")
     sprite_id = manifest.get("id")
@@ -377,10 +379,16 @@ def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
         "frame_size_px": frame_size,
         "grid_size": grid_size,
         "idle_frames": idle_frames,
+        "clips": manifest["clips"],
         "frame_seconds": float(frame_seconds),
         "world_size": [float(manifest["world_size"][0]), float(manifest["world_size"][1])],
         "authored_facing": manifest["authored_facing"],
     }
+
+
+def _sprite_record(repo_root: Path, manifest_path: Path) -> dict[str, Any]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return _sprite_record_from_document(repo_root, manifest_path, manifest)
 
 
 def scan_sprite_manifests(repo_root: Path) -> tuple[list[dict[str, Any]], list[str]]:
@@ -433,18 +441,22 @@ def load_sprite_manifest_document(repo_root: Path, sprite_id: str) -> tuple[Path
 
 def save_sprite_manifest_document(
     repo_root: Path, sprite_id: str, doc: Any
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(doc, dict):
         raise ValueError("Sprite manifest must be an object.")
     if doc.get("id") != sprite_id:
         raise ValueError("Sprite manifest id cannot be changed from Mob Lab.")
 
     path = find_sprite_manifest_path(repo_root, sprite_id)
+    _sprite_record_from_document(repo_root, path, doc)
     original = path.read_bytes()
     encoded = (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     atomic_write(path, encoded)
     try:
-        return _sprite_record(repo_root, path)
+        reloaded = json.loads(path.read_text(encoding="utf-8"))
+        if reloaded != doc:
+            raise ValueError("saved sprite manifest did not survive reload unchanged")
+        return reloaded, _sprite_record_from_document(repo_root, path, reloaded)
     except (OSError, ValueError, json.JSONDecodeError):
         atomic_write(path, original)
         raise
@@ -458,6 +470,7 @@ def sprite_public_record(item: dict[str, Any]) -> dict[str, Any]:
         "frame_size_px": item["frame_size_px"],
         "grid_size": item["grid_size"],
         "idle_frames": item["idle_frames"],
+        "clips": item["clips"],
         "frame_seconds": item["frame_seconds"],
         "world_size": item["world_size"],
         "authored_facing": item["authored_facing"],
@@ -533,12 +546,19 @@ def safe_filename(authored_id: str) -> str:
 
 def atomic_write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("wb") as fh:
-        fh.write(payload)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def validate_runtime_pack(repo_root: Path) -> tuple[bool, str]:
@@ -667,12 +687,15 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             sprite_id = self._query_value("sprite")
             doc = self._read_json_body()
             with CONTENT_WRITE_LOCK:
-                record = save_sprite_manifest_document(self.repo_root, sprite_id, doc)
+                saved_doc, record = save_sprite_manifest_document(
+                    self.repo_root, sprite_id, doc
+                )
             self._json_response(
                 {
                     "ok": True,
                     "sprite": sprite_id,
                     "path": record["manifest_path"],
+                    "document": saved_doc,
                     "presentation": presentation_payload(record),
                 }
             )
@@ -805,10 +828,12 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                     HTTPStatus.UNPROCESSABLE_ENTITY,
                 )
                 return
+            saved_doc = json.loads(path.read_text(encoding="utf-8"))
             self._json_response(
                 {
                     "ok": True,
                     "path": path.name,
+                    "document": saved_doc,
                     "validation_errors": [],
                     "validator_output": output,
                 }
