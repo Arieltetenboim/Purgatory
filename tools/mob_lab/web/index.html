@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>PURGATORY Mob Lab</title>
-  <link rel="stylesheet" href="/styles.css?v=m3-prototype-parity-v6">
+  <link rel="stylesheet" href="/styles.css?v=m3-prototype-parity-v7">
 </head>
 <body>
 <header class="topbar">
@@ -25,17 +25,16 @@
 <main class="app-shell">
   <aside class="panel library">
     <div class="panel-heading">
-      <span>MONSTERS</span>
-      <span id="monsterCount" class="count-badge">0</span>
+      <span>MONSTERS <span class="heading-count">(<span id="monsterCount">0</span>)</span></span>
     </div>
     <div class="library-filters">
-      <input id="filterInput" class="compact-input" placeholder="Search...">
+      <div class="search-wrap"><input id="filterInput" placeholder="Search..."></div>
       <select id="typeFilterInput" aria-label="Filter monster type"><option value="">All Types</option></select>
     </div>
     <div id="monsterList" class="list"></div>
   </aside>
 
-  <section class="panel workspace">
+  <section class="workspace">
     <div class="docbar">
       <div class="doc-title-block">
         <div class="doc-title-row">
@@ -44,33 +43,40 @@
         </div>
         <div id="documentPath" class="muted mono">Select a runtime monster definition.</div>
       </div>
+      <div class="doc-meta">
+        <span>ID: <strong id="docContentId">—</strong></span>
+        <i></i>
+        <span>Schema: <strong id="docSchema">—</strong></span>
+      </div>
     </div>
 
-    <div id="emptyState" class="empty">Select a monster from the library or create one.</div>
+    <div id="emptyState" class="empty panel">Select a monster from the library or create one.</div>
 
     <div id="editor" class="editor hidden">
       <section class="preview-shell">
-        <div class="preview-toolbar">
-          <div class="preview-controls">
-            <label class="inline-control">Animation
-              <select id="previewAnimationInput"><option value="idle">idle</option><option value="move">move</option><option value="attack">attack</option></select>
-            </label>
-            <button id="previewPlayButton" type="button" class="icon-button" title="Pause preview">Ⅱ</button>
-          </div>
-          <div class="preview-toggle-group">
-            <label><input id="previewSpriteToggle" type="checkbox" checked>SPRITE</label>
-            <label><input id="previewHitboxToggle" type="checkbox" checked>HITBOX</label>
-            <label><input id="previewGuidesToggle" type="checkbox" checked>BOUNDS</label>
-          </div>
-        </div>
         <div class="preview-stage-wrap">
-          <canvas id="previewCanvas" width="520" height="360"></canvas>
+          <canvas id="previewCanvas" width="800" height="380"></canvas>
+          <div class="preview-toolbar">
+            <div class="preview-controls">
+              <select id="previewAnimationInput" aria-label="Preview animation">
+                <option value="idle">Animation: idle</option>
+                <option value="move">Animation: move</option>
+                <option value="attack">Animation: attack</option>
+              </select>
+              <button id="previewPlayButton" type="button" class="play-button" title="Play preview">▶</button>
+            </div>
+            <div class="preview-toggle-group">
+              <label><input id="previewSpriteToggle" type="checkbox" checked><span>Sprite</span></label>
+              <label><input id="previewHitboxToggle" type="checkbox" checked><span>Hitbox</span></label>
+              <label><input id="previewGuidesToggle" type="checkbox"><span>Bounds</span></label>
+            </div>
+          </div>
           <div id="previewUnavailable" class="preview-unavailable hidden">NO RUNTIME SPRITE</div>
-        </div>
-        <div class="preview-readout">
-          <span id="spriteReadout">Frame -/-</span>
-          <span id="hitboxReadout">0.10s</span>
-          <span id="anchorReadout">1.00×</span>
+          <div class="preview-readout">
+            <span id="spriteReadout">Frame -/-</span>
+            <span id="hitboxReadout">0.10s</span>
+            <span id="anchorReadout">1.00x</span>
+          </div>
         </div>
       </section>
 
@@ -84,44 +90,40 @@
       </nav>
 
       <section class="tab-workspace">
-        <div class="tab-panel active" data-panel="atlas">
-          <div class="section-head">
-            <div>
-              <h2>Atlas &amp; Frames</h2>
-              <p>Live atlas layout, frame selection and world presentation.</p>
-            </div>
-            <span id="manifestDirtyBadge" class="badge">MANIFEST CLEAN</span>
-          </div>
-
+        <div class="tab-panel active atlas-panel" data-panel="atlas">
+          <span id="manifestDirtyBadge" class="hidden">MANIFEST CLEAN</span>
           <div class="atlas-workbench">
             <section class="atlas-settings">
-              <div class="section-label">ATLAS SETTINGS</div>
-              <label>Runtime Sprite<select id="spriteInput"></select></label>
-              <label>Atlas File<input id="manifestAtlasInput" readonly></label>
-              <div class="pair-row">
-                <label>Grid Columns<input id="manifestGridColsInput" type="number" min="1" step="1"></label>
-                <label>Grid Rows<input id="manifestGridRowsInput" type="number" min="1" step="1"></label>
-              </div>
-              <div class="pair-row">
-                <label>Frame Width px<input id="manifestFrameWidthInput" type="number" min="1" step="1"></label>
-                <label>Frame Height px<input id="manifestFrameHeightInput" type="number" min="1" step="1"></label>
-              </div>
-              <div class="pair-row">
-                <label>World Width<input id="manifestWorldWidthInput" type="number" min="0.01" step="0.05"></label>
-                <label>World Height<input id="manifestWorldHeightInput" type="number" min="0.01" step="0.05"></label>
-              </div>
-              <label>Frame Seconds<input id="manifestFrameSecondsInput" type="number" min="0.01" step="0.01"></label>
-              <label>Authored Facing<select id="manifestFacingInput"><option value="right">right</option><option value="left">left</option></select></label>
+              <h2>Atlas Settings</h2>
+              <label class="target-row">
+                <span>Atlas File</span>
+                <span class="file-select-wrap">
+                  <select id="spriteInput"></select>
+                  <i class="file-icon" aria-hidden="true">▱</i>
+                </span>
+              </label>
+              <input id="manifestAtlasInput" type="hidden">
+              <label class="target-row"><span>Grid Columns</span><input id="manifestGridColsInput" type="number" min="1" step="1"></label>
+              <label class="target-row"><span>Grid Rows</span><input id="manifestGridRowsInput" type="number" min="1" step="1"></label>
+              <label class="target-row">
+                <span>Frame Size (px)</span>
+                <span class="pair-input"><input id="manifestFrameWidthInput" type="number" min="1" step="1"><b>×</b><input id="manifestFrameHeightInput" type="number" min="1" step="1"></span>
+              </label>
+              <label class="target-row">
+                <span>World Size (wu)</span>
+                <span class="pair-input"><input id="manifestWorldWidthInput" type="number" min="0.01" step="0.05"><b>×</b><input id="manifestWorldHeightInput" type="number" min="0.01" step="0.05"></span>
+              </label>
+              <label class="target-row"><span>Authored Facing</span><select id="manifestFacingInput"><option value="right">right</option><option value="left">left</option></select></label>
               <input id="manifestIdInput" type="hidden">
             </section>
 
             <section class="sheet-preview-panel">
-              <div class="section-label">SPRITE SHEET PREVIEW <span id="sheetGridReadout"></span></div>
+              <h2>Sprite Sheet Preview <span id="sheetGridReadout"></span></h2>
               <div id="frameSheetGrid" class="frame-sheet-grid"></div>
             </section>
 
             <section class="selected-frame-panel">
-              <div class="section-label">SELECTED FRAME</div>
+              <h2>Selected Frame</h2>
               <div class="selected-frame-stage">
                 <canvas id="selectedFrameCanvas" width="160" height="160"></canvas>
               </div>
@@ -130,12 +132,9 @@
                 <div><span>Pixel Size</span><strong id="selectedFramePixels">-</strong></div>
                 <div><span>World Size</span><strong id="selectedFrameWorld">-</strong></div>
               </div>
+              <button id="saveManifestButton" class="apply-button" disabled>APPLY CHANGES</button>
+              <button id="resetManifestButton" class="hidden" type="button">RESET MANIFEST</button>
             </section>
-          </div>
-
-          <div class="panel-actions">
-            <button id="resetManifestButton">RESET MANIFEST</button>
-            <button id="saveManifestButton" class="primary" disabled>SAVE MANIFEST</button>
           </div>
         </div>
 
@@ -145,7 +144,7 @@
           </div>
           <div class="form-grid two">
             <label>Preview Clip<select id="manifestPreviewClipInput"><option value="idle">idle</option><option value="move">move</option><option value="attack">attack</option></select></label>
-            <div></div>
+            <label>Frame Seconds<input id="manifestFrameSecondsInput" type="number" min="0.01" step="0.01"></label>
             <label class="span-two">Move Frames<input id="manifestMoveFramesInput" placeholder="0,1,2,3"></label>
             <label class="span-two">Idle Frames<input id="manifestIdleFramesInput" placeholder="4,5,6,7"></label>
             <label class="span-two">Attack Frames<input id="manifestAttackFramesInput" placeholder="8,9,10"></label>
@@ -157,6 +156,7 @@
             <div><h2>Gameplay</h2><p>Core runtime Monster values.</p></div>
           </div>
           <div class="form-grid three">
+            <label class="span-three">Debug Name<input id="debugNameInput"></label>
             <label>Max Health<input id="healthInput" type="number" min="0.001" step="0.1"></label>
             <label>Movement Speed<input id="speedInput" type="number" min="0.001" step="0.1"></label>
             <label>Home Leash<input id="leashInput" type="number" min="0.001" step="0.1"></label>
@@ -203,27 +203,28 @@
   </section>
 
   <aside class="panel inspector">
-    <div class="panel-heading">QUICK INFO</div>
+    <div class="panel-heading quick-heading">Quick Info</div>
     <div class="quick-hero">
-      <div class="quick-thumb"><canvas id="quickThumbCanvas" width="72" height="72"></canvas></div>
-      <label>Debug Name<input id="debugNameInput"></label>
+      <div class="quick-thumb"><canvas id="quickThumbCanvas" width="86" height="86"></canvas></div>
+      <div class="quick-primary">
+        <label>Label<input id="idInput" readonly></label>
+        <label>Content ID<input id="contentIdInput" readonly></label>
+        <label>Schema<input id="schemaInput" readonly></label>
+        <label>Type<select id="quickTypeInput" disabled><option value="">-</option></select></label>
+      </div>
     </div>
     <div class="quick-info">
-      <div class="info-row"><span>Label</span><input id="idInput" readonly></div>
-      <div class="info-row"><span>Content ID</span><input id="contentIdInput" readonly></div>
-      <div class="info-row"><span>Schema</span><input id="schemaInput" readonly></div>
-      <div class="info-row"><span>Type</span><input id="quickTypeInput" readonly></div>
-      <div class="info-divider"></div>
-      <div class="quick-readout"><span>Source File</span><strong id="quickSourceFile">-</strong></div>
-      <div class="quick-readout"><span>Atlas</span><strong id="quickAtlas">-</strong></div>
+      <div class="quick-field-row"><span>Source File</span><span class="file-readout"><strong id="quickSourceFile">-</strong><i class="file-icon">▱</i></span></div>
+      <div class="quick-field-row"><span>Atlas</span><span class="file-readout"><strong id="quickAtlas">-</strong><i class="file-icon">▱</i></span></div>
       <div class="quick-readout"><span>Size (px)</span><strong id="quickImageSize">-</strong></div>
       <div class="quick-readout"><span>Frames</span><strong id="quickFrames">-</strong></div>
       <div class="quick-readout"><span>Frame Size</span><strong id="quickFrameSize">-</strong></div>
       <div class="quick-readout"><span>World Size</span><strong id="quickWorldSize">-</strong></div>
-      <div class="info-divider"></div>
-      <div class="kv"><span>Status</span><strong id="validationStatus">No document</strong></div>
-      <div class="kv compact-only"><span>Content ID</span><strong id="summaryId">-</strong></div>
-      <div class="kv compact-only"><span>Validation</span><pre id="validationErrors">-</pre></div>
+      <div class="hidden">
+        <strong id="validationStatus">No document</strong>
+        <strong id="summaryId">-</strong>
+        <pre id="validationErrors">-</pre>
+      </div>
     </div>
   </aside>
 </main>
@@ -237,8 +238,8 @@
     <span id="footerSchemaStatus">Schema v4 OK</span>
   </div>
   <div class="footer-group">
-    <span id="statusText">Ready.</span>
-    <i></i>
+    <span id="statusText" class="footer-status">Ready.</span>
+    <i class="live-dot"></i>
     <span>Preview updates live</span>
     <i></i>
     <span id="footerDirtyStatus">Saved</span>
@@ -262,6 +263,6 @@
     </div>
   </form>
 </dialog>
-<script src="/app.js?v=m3-prototype-parity-v6"></script>
+<script src="/app.js?v=m3-prototype-parity-v7"></script>
 </body>
 </html>

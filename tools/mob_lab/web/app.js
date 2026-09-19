@@ -2,7 +2,7 @@ const state={
   items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,
   presentation:null,previewImage:null,previewFrame:0,previewTimer:null,
   manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle",activeTab:"atlas",
-  selectedFrame:0,previewPlaying:true,showSprite:true,showHitbox:true,showGuides:true,newTemplatePath:null
+  selectedFrame:0,previewPlaying:false,showSprite:true,showHitbox:true,showGuides:false,newTemplatePath:null
 };
 const $=id=>document.getElementById(id);
 const els={};
@@ -23,7 +23,7 @@ const els={};
   "previewHitboxToggle","previewGuidesToggle","sheetGridReadout","frameSheetGrid","selectedFrameCanvas",
   "selectedFrameIndex","selectedFramePixels","selectedFrameWorld","quickThumbCanvas","quickTypeInput",
   "quickSourceFile","quickAtlas","quickImageSize","quickFrames","quickFrameSize","quickWorldSize",
-  "footerMonsterCount","footerSchemaStatus","footerDirtyStatus"
+  "footerMonsterCount","footerSchemaStatus","footerDirtyStatus","docContentId","docSchema"
 ].forEach(id=>els[id]=$(id));
 
 const canonical=v=>JSON.stringify(v);
@@ -66,7 +66,8 @@ function renderSelectedFrame(){
   state.selectedFrame=Math.max(0,Math.min(g.total-1,state.selectedFrame));
   drawAtlasFrame(canvas.getContext("2d"),state.selectedFrame,canvas.width,canvas.height);
   els.selectedFrameIndex.textContent=String(state.selectedFrame);
-  els.selectedFramePixels.textContent=Math.round(g.fw)+" × "+Math.round(g.fh);
+  const declared=state.manifestDoc?.frame_size_px;
+  els.selectedFramePixels.textContent=Array.isArray(declared)?declared[0]+" × "+declared[1]:Math.round(g.fw)+" × "+Math.round(g.fh);
   const w=Number(state.presentation?.world_size?.[0])||1,h=Number(state.presentation?.world_size?.[1])||1;
   els.selectedFrameWorld.textContent=w.toFixed(2)+" × "+h.toFixed(2)+" wu";
 }
@@ -94,17 +95,21 @@ function renderFrameSheet(){
 function renderQuickThumb(){
   const canvas=els.quickThumbCanvas;
   if(!canvas)return;
-  drawAtlasFrame(canvas.getContext("2d"),0,canvas.width,canvas.height);
+  const first=state.presentation?.idle_frames?.[0]??0;
+  drawAtlasFrame(canvas.getContext("2d"),first,canvas.width,canvas.height);
 }
 function updateQuickInfo(){
   if(!state.doc)return;
   const g=frameGeometry();
-  els.quickTypeInput.value=derivedType(state.doc);
-  els.quickSourceFile.textContent=state.selectedPath||"-";
+  const type=derivedType(state.doc);
+  els.quickTypeInput.replaceChildren(new Option(type.replace(/\b\w/g,c=>c.toUpperCase()),type));
+  els.quickTypeInput.value=type;
+  els.quickSourceFile.textContent=(state.selectedPath||"-").split("/").pop();
   els.quickAtlas.textContent=state.manifestDoc?.atlas||"-";
   els.quickImageSize.textContent=state.previewImage?.naturalWidth?state.previewImage.naturalWidth+" × "+state.previewImage.naturalHeight:"-";
   els.quickFrames.textContent=g?g.total+" ("+g.cols+" × "+g.rows+")":"-";
-  els.quickFrameSize.textContent=g?Math.round(g.fw)+" × "+Math.round(g.fh):"-";
+  const declared=state.manifestDoc?.frame_size_px;
+  els.quickFrameSize.textContent=Array.isArray(declared)?declared[0]+" × "+declared[1]:(g?Math.round(g.fw)+" × "+Math.round(g.fh):"-");
   const world=state.manifestDoc?.world_size;
   els.quickWorldSize.textContent=Array.isArray(world)?Number(world[0]).toFixed(2)+" × "+Number(world[1]).toFixed(2)+" wu":"-";
   renderQuickThumb();
@@ -251,9 +256,10 @@ function previewContext(){return els.previewCanvas.getContext("2d")}
 function drawPreview(){
   const ctx=previewContext(),w=els.previewCanvas.width,h=els.previewCanvas.height;
   ctx.clearRect(0,0,w,h);
-  ctx.fillStyle="#090d10";ctx.fillRect(0,0,w,h);
 
-  const centerX=w/2,pxPerWorld=150,floorY=h*0.80;
+  const centerX=w/2;
+  const pxPerWorld=Math.min(190,Math.max(145,h*0.48));
+  const floorY=h*0.82;
   const bounds=state.doc?.collision_bounds;
   const validBounds=bounds&&["left","right","bottom","top"].every(
     k=>Number.isFinite(Number(bounds[k]))&&Number(bounds[k])>=0
@@ -264,39 +270,32 @@ function drawPreview(){
   const top=validBounds?Number(bounds.top):0.6;
   const entityY=floorY-bottom*pxPerWorld;
 
-  if(state.showGuides){
-    ctx.strokeStyle="#1d2830";ctx.lineWidth=1;
-    for(let x=centerX%30;x<w;x+=30){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,floorY);ctx.stroke()}
-    for(let y=floorY%30;y<floorY;y+=30){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
-    ctx.fillStyle="#182229";ctx.fillRect(0,floorY,w,h-floorY);
-    ctx.strokeStyle="#93a5b0";ctx.lineWidth=4;
-    ctx.beginPath();ctx.moveTo(0,floorY);ctx.lineTo(w,floorY);ctx.stroke();
-    ctx.fillStyle="#b6c5ce";ctx.font="700 14px Segoe UI, Arial, sans-serif";
-    ctx.fillText("FLOOR / COLLIDER CONTACT SURFACE",14,floorY+24);
-    ctx.strokeStyle="#52616c";ctx.lineWidth=1;
-    ctx.beginPath();ctx.moveTo(centerX,0);ctx.lineTo(centerX,floorY);ctx.stroke();
-    ctx.fillStyle="#75c9d6";ctx.beginPath();ctx.arc(centerX,entityY,5,0,Math.PI*2);ctx.fill();
-    ctx.font="700 12px Segoe UI, Arial, sans-serif";
-    ctx.fillText("ENTITY ORIGIN",centerX+10,entityY-8);
-  }
+  ctx.strokeStyle="#93a5b0";
+  ctx.globalAlpha=.78;
+  ctx.lineWidth=4;
+  ctx.beginPath();
+  ctx.moveTo(w*0.24,floorY);
+  ctx.lineTo(w*0.76,floorY);
+  ctx.stroke();
+  ctx.globalAlpha=1;
 
   const p=state.presentation,img=state.previewImage;
-  let spriteBottomOffset=null;
   if(p&&img&&img.complete&&img.naturalWidth){
-    const frames=p.idle_frames||[],frame=frames[state.previewFrame%frames.length]||0;
+    const frames=p.idle_frames||[];
+    const frame=frames[state.previewFrame%Math.max(frames.length,1)]||0;
     const grid=p.grid_size;
     const cols=Math.max(1,Math.trunc(Number(grid?.[0])||Math.floor(img.naturalWidth/p.frame_size_px[0])||1));
     const rows=Math.max(1,Math.trunc(Number(grid?.[1])||Math.floor(img.naturalHeight/p.frame_size_px[1])||1));
     const fw=img.naturalWidth/cols,fh=img.naturalHeight/rows;
     const sx=(frame%cols)*fw,sy=Math.floor(frame/cols)*fh;
-    const worldW=Math.max(0.01,Number(p.world_size?.[0])||1),worldH=Math.max(0.01,Number(p.world_size?.[1])||1);
+    const worldW=Math.max(0.01,Number(p.world_size?.[0])||1);
+    const worldH=Math.max(0.01,Number(p.world_size?.[1])||1);
     const dw=worldW*pxPerWorld,dh=worldH*pxPerWorld;
     if(state.showSprite){
       ctx.imageSmoothingEnabled=false;
       ctx.drawImage(img,sx,sy,fw,fh,centerX-dw/2,entityY-dh/2,dw,dh);
     }
     els.previewUnavailable.classList.add("hidden");
-    spriteBottomOffset=bottom-worldH/2;
   }else{
     els.previewUnavailable.classList.remove("hidden");
   }
@@ -304,18 +303,35 @@ function drawPreview(){
   if(validBounds&&state.showHitbox){
     const x=centerX-left*pxPerWorld,y=entityY-top*pxPerWorld;
     const bw=(left+right)*pxPerWorld,bh=(bottom+top)*pxPerWorld;
-    ctx.fillStyle="rgba(224,106,112,.20)";
-    ctx.strokeStyle="#e06a70";ctx.lineWidth=3;
-    ctx.fillRect(x,y,bw,bh);ctx.strokeRect(x,y,bw,bh);
+    ctx.fillStyle="rgba(224,95,104,.20)";
+    ctx.strokeStyle="#df626b";
+    ctx.lineWidth=3;
+    ctx.fillRect(x,y,bw,bh);
+    ctx.strokeRect(x,y,bw,bh);
   }
+
+  if(validBounds&&state.showGuides){
+    ctx.strokeStyle="#7a909c";
+    ctx.lineWidth=1;
+    ctx.setLineDash([5,4]);
+    ctx.beginPath();
+    ctx.moveTo(centerX,Math.max(18,entityY-top*pxPerWorld-22));
+    ctx.lineTo(centerX,Math.min(floorY+18,h-18));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle="#72cddd";
+    ctx.beginPath();
+    ctx.arc(centerX,entityY,4,0,Math.PI*2);
+    ctx.fill();
+  }
+
   const clipFrames=state.presentation?.idle_frames||[];
   const clipLength=Math.max(clipFrames.length,1);
   const clipFrame=(state.previewFrame%clipLength)+1;
   els.spriteReadout.textContent="Frame "+clipFrame+"/"+clipLength;
   els.hitboxReadout.textContent=(Number(state.presentation?.frame_seconds)||0.1).toFixed(2)+"s";
-  els.anchorReadout.textContent="1.00×";
+  els.anchorReadout.textContent="1.00x";
 }
-
 async function api(url,options){
   const r=await fetch(url,options);
   const data=await r.json();
@@ -335,15 +351,16 @@ async function loadSprites(){
   if(els.newSpriteInput)els.newSpriteInput.replaceChildren();
   for(const sprite of state.sprites){
     const grid=sprite.grid_size?(" · "+sprite.grid_size[0]+"×"+sprite.grid_size[1]+" grid"):"";
-    const label=sprite.id+"  ·  "+sprite.frame_size_px[0]+"×"+sprite.frame_size_px[1]+" px"+grid;
+    const detail=sprite.id+" · "+sprite.frame_size_px[0]+"×"+sprite.frame_size_px[1]+" px"+grid;
     const option=document.createElement("option");
     option.value=sprite.id;
-    option.textContent=label;
+    option.textContent=sprite.atlas||sprite.id;
+    option.title=detail;
     els.spriteInput.appendChild(option);
     if(els.newSpriteInput){
       const newOption=document.createElement("option");
       newOption.value=sprite.id;
-      newOption.textContent=label;
+      newOption.textContent=detail;
       els.newSpriteInput.appendChild(newOption);
     }
   }
@@ -394,6 +411,8 @@ function renderForm(){
   els.idInput.value=state.doc.id||"";
   els.contentIdInput.value=state.contentId??"UNALLOCATED";
   els.schemaInput.value=state.doc.schema_version??"";
+  els.docContentId.textContent=state.contentId??"—";
+  els.docSchema.textContent=state.doc.schema_version??"—";
   els.debugNameInput.value=state.doc.debug_name||"";
   renderSpriteOptions();
   els.healthInput.value=state.doc.health_max??"";
@@ -410,6 +429,7 @@ function renderForm(){
 function applyForm(){
   if(!state.doc)return;
   state.doc.debug_name=els.debugNameInput.value;
+  els.documentTitle.textContent=state.doc.debug_name||state.doc.id;
   state.doc.sprite=els.spriteInput.value;
   state.doc.health_max=number(els.healthInput.value);
   state.doc.collision_bounds={
