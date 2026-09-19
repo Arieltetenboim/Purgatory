@@ -280,11 +280,14 @@ fn find_sprite_manifest(sprite_id: &str) -> Result<(PathBuf, RawManifest), Strin
         }
         let bytes = std::fs::read(&manifest_path)
             .map_err(|error| format!("read {}: {error}", manifest_path.display()))?;
-        let manifest: RawManifest = serde_json::from_slice(&bytes)
+        let header: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
-        if manifest.id == sprite_id {
-            return Ok((manifest_path, manifest));
+        if header.get("id").and_then(serde_json::Value::as_str) != Some(sprite_id) {
+            continue;
         }
+        let manifest: RawManifest = serde_json::from_value(header)
+            .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+        return Ok((manifest_path, manifest));
     }
     Err(format!(
         "sprite manifest '{sprite_id}' not found under {}",
@@ -628,7 +631,15 @@ mod tests {
 
     #[test]
     fn manifest_metadata_is_validated_by_the_resolved_sheet() {
-        let raw: RawManifest = serde_json::from_slice(RED_SLIME_MANIFEST).unwrap();
+        let bytes = std::fs::read(
+            workspace_root()
+                .join("Graphic")
+                .join("creature")
+                .join("redslime")
+                .join("manifest.json"),
+        )
+        .unwrap();
+        let raw: RawManifest = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(raw.schema_version, 1);
         assert_eq!(raw.kind, "purgatory_sprite_animation");
         assert_eq!(raw.id, "creature.red_slime");

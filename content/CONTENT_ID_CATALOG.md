@@ -55,6 +55,7 @@ The matching equipment gameplay and equipment-presentation facets use the same I
 | ID | Label | Status |
 | ---: | --- | --- |
 | `10001` | `monster.slime.red` | active |
+| `10002` | `monster.spider` | active |
 
 ### NPCs — 20,000–29,999
 

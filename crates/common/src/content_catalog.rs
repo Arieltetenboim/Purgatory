@@ -9,6 +9,7 @@ pub const ABILITY_BASIC_STRIKE: ContentId = ContentId::from_raw(40_001);
 pub const ABILITY_PRACTICE_SWORD_STRIKE: ContentId = ContentId::from_raw(40_002);
 
 pub const MONSTER_RED_SLIME: ContentId = ContentId::from_raw(10_001);
+pub const MONSTER_SPIDER: ContentId = ContentId::from_raw(10_002);
 
 pub const NPC_WELCOME_TRAVELER_STAYED: ContentId = ContentId::from_raw(20_001);
 pub const NPC_WELCOME_GATE_WATCHMAN: ContentId = ContentId::from_raw(20_002);
@@ -42,6 +43,7 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
         "skill.basic.strike" => ABILITY_BASIC_STRIKE,
         "skill.debug.practice_sword_strike" => ABILITY_PRACTICE_SWORD_STRIKE,
         "monster.slime.red" => MONSTER_RED_SLIME,
+        "monster.spider" => MONSTER_SPIDER,
         "npc.welcome.traveler_stayed" => NPC_WELCOME_TRAVELER_STAYED,
         "npc.welcome.gate_watchman" => NPC_WELCOME_GATE_WATCHMAN,
         "npc.welcome.shopkeeper" => NPC_WELCOME_SHOPKEEPER,
@@ -71,6 +73,7 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
         ABILITY_BASIC_STRIKE => "skill.basic.strike",
         ABILITY_PRACTICE_SWORD_STRIKE => "skill.debug.practice_sword_strike",
         MONSTER_RED_SLIME => "monster.slime.red",
+        MONSTER_SPIDER => "monster.spider",
         NPC_WELCOME_TRAVELER_STAYED => "npc.welcome.traveler_stayed",
         NPC_WELCOME_GATE_WATCHMAN => "npc.welcome.gate_watchman",
         NPC_WELCOME_SHOPKEEPER => "npc.welcome.shopkeeper",
@@ -116,7 +119,9 @@ mod tests {
         for id in [ABILITY_BASIC_STRIKE, ABILITY_PRACTICE_SWORD_STRIKE] {
             assert_eq!(id.kind(), Some(ContentKind::Ability));
         }
-        assert_eq!(MONSTER_RED_SLIME.kind(), Some(ContentKind::Monster));
+        for id in [MONSTER_RED_SLIME, MONSTER_SPIDER] {
+            assert_eq!(id.kind(), Some(ContentKind::Monster));
+        }
         for id in [
             NPC_WELCOME_TRAVELER_STAYED,
             NPC_WELCOME_GATE_WATCHMAN,
@@ -144,6 +149,7 @@ mod tests {
         for label in [
             "skill.basic.strike",
             "monster.slime.red",
+            "monster.spider",
             "npc.welcome.traveler_stayed",
             "npc.welcome.gate_watchman",
             "npc.welcome.shopkeeper",
