@@ -307,7 +307,10 @@ mod tests {
     fn current_embedded_pack_loads_and_resolves_metadata() {
         let mut assets = runtime();
         let pack = embedded_character_visual_pack(&mut assets).unwrap();
-        assert!(matches!(pack.completeness.as_str(), "partial_dev" | "complete"));
+        assert!(matches!(
+            pack.completeness.as_str(),
+            "partial_dev" | "complete"
+        ));
         assert_eq!(pack.visual_count(), VISUAL_PARTS.len());
         let visual = pack.visual("character.base.dev_01.head.side").unwrap();
         assert_eq!(
