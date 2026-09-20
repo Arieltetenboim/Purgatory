@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="2048" height="2048" viewBox="0 0 2048 2048">
-  <title>PURGATORY Character Base Template V1</title>
-  <desc>14 fixed body-part cells. Keep artwork inside its labeled cell, align the joint to the pivot cross, and export art-only transparent PNG at 2048x2048.</desc>
-  <g id="instructions" font-family="Segoe UI,Arial,sans-serif" fill="#111827">
-    <text x="24" y="32" font-size="18" font-weight="700">CHARACTER_BASE_TEMPLATE_V1 · 2048×2048 · 512 px / presentation unit</text>
-    <text x="24" y="56" font-size="13">Paint on a separate layer. Hide/delete this guide before exporting the transparent PNG.</text>
-  </g>
-  <g id="cells" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="10 8">
+<title>PURGATORY Character Base Template V1</title>
+<desc>14 fixed body-part cells. Keep artwork inside its labeled cell, align the joint to the pivot cross, and export art-only transparent PNG at 2048x2048.</desc>
+<g id="instructions" font-family="Segoe UI,Arial,sans-serif" fill="#111827">
+<text x="24" y="32" font-size="18" font-weight="700">CHARACTER_BASE_TEMPLATE_V1 · 2048×2048 · 512 px / presentation unit</text>
+<text x="24" y="56" font-size="13">Paint on a separate layer. Hide/delete this guide before exporting the transparent PNG.</text>
+</g>
+<g id="cells" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="10 8">
     <g id="cell-head">
       <rect x="0" y="0" width="512" height="512"/>
       <text x="18" y="28" fill="#334155" stroke="none" font-family="Consolas,monospace" font-size="18">head</text>
