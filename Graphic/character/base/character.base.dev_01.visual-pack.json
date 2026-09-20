@@ -5,7 +5,7 @@
   "rig": "humanoid_v0",
   "view": "side",
   "authored_facing": "right",
-  "pixels_per_unit": 256,
+  "pixels_per_unit": 677,
   "completeness": "complete",
   "atlas": {
     "file": "character.base.dev_01.side.atlas.png",
@@ -100,8 +100,8 @@
         107
       ],
       "pivot_px": [
-        -138.33690546863568,
-        1.480468649740601
+        94.24702795584994,
+        1.4943048053456778
       ]
     },
     {
@@ -160,8 +160,8 @@
         108
       ],
       "pivot_px": [
-        291.24702795584994,
-        1.4943048053456778
+        58.66309453136432,
+        1.480468649740601
       ]
     },
     {
