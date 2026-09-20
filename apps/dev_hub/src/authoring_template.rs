@@ -61,9 +61,12 @@ pub fn render_character_lab_contract_js() -> String {
         "// Generated from purgatory-skeleton Humanoid v0. Do not hand-edit.\n\
 window.PURGATORY_HUMANOID_V0_CONTRACT = {\n  version: 1,\n  rig: 'humanoid_v0',\n  bones: {\n",
     );
-    for i in 0..def.bone_count() {
+    for (i, &label) in HUMANOID_V0_BONE_LABELS
+        .iter()
+        .enumerate()
+        .take(def.bone_count())
+    {
         let bone = BoneIndex::from_u8(i as u8);
-        let label = HUMANOID_V0_BONE_LABELS[i];
         let xf = local.get(bone).expect("bind bone");
         let parent = def
             .parent(bone)
