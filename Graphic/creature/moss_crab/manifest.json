@@ -13,25 +13,30 @@
   ],
   "frame_seconds": 0.1,
   "authored_facing": "right",
+  "anchor_px": [
+    128,
+    239
+  ],
+  "notes": "MapleStory craft: origin is metadata only — no registration ink in PNG",
   "clips": {
     "move": {
       "frames": [
         0,
         1,
         2,
-        3
+        3,
+        4,
+        5
       ],
       "loop": true
     },
     "idle": {
       "frames": [
         6,
+        6,
         7,
-        8,
-        9,
-        10,
-        11,
-        0
+        7,
+        9
       ],
       "loop": true
     },
@@ -57,9 +62,5 @@
       ],
       "loop": false
     }
-  },
-  "grid_size": [
-    6,
-    4
-  ]
+  }
 }
