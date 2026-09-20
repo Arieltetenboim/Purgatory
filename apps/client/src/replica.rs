@@ -753,13 +753,13 @@ mod tests {
                     entity: entity(1, 1, 1.0),
                     health: None,
                     equipment: None,
-                                    content_id: None,
+                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: entity(2, 1, 2.0),
                     health: None,
                     equipment: None,
-                                    content_id: None,
+                    content_id: None,
                 },
             ],
         );
@@ -819,7 +819,7 @@ mod tests {
                     damage_immunity_active: true,
                 }),
                 equipment: None,
-                            content_id: None,
+                content_id: None,
             }],
         ));
         assert!(
@@ -877,7 +877,7 @@ mod tests {
                 entity: entity(1, 1, 1.0),
                 health: None,
                 equipment: None,
-                            content_id: None,
+                content_id: None,
             }],
         );
         world.apply_frame(enter);
@@ -906,13 +906,13 @@ mod tests {
                     entity: entity(1, 1, 0.0),
                     health: None,
                     equipment: None,
-                                    content_id: None,
+                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: entity(2, 1, 2.0),
                     health: None,
                     equipment: None,
-                                    content_id: None,
+                    content_id: None,
                 },
             ],
         );
@@ -970,7 +970,7 @@ mod tests {
                 entity: entity(1, 1, 1.0),
                 health: None,
                 equipment: None,
-                            content_id: None,
+                content_id: None,
             }],
         ));
         world.apply_frame(frame(
@@ -1017,13 +1017,13 @@ mod tests {
                     entity: entity(1, 1, 1.0),
                     health: None,
                     equipment: None,
-                                    content_id: None,
+                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: entity(8, 1, 80.0),
                     health: None,
                     equipment: None,
-                                    content_id: None,
+                    content_id: None,
                 },
             ],
         ));
@@ -1036,7 +1036,7 @@ mod tests {
                 entity: entity(1, 1, 3.0),
                 health: None,
                 equipment: None,
-                            content_id: None,
+                content_id: None,
             }],
         ));
         assert_eq!(decision, FrameDecision::Applied { epoch_reset: true });
@@ -1069,7 +1069,7 @@ mod tests {
                 entity: entity(1, 1, 1.0),
                 health: None,
                 equipment: None,
-                            content_id: None,
+                content_id: None,
             }],
         ));
         assert!(world.get(a).unwrap().equipment.is_none());
@@ -1104,7 +1104,7 @@ mod tests {
                 entity: entity(1, 1, 1.0),
                 health: None,
                 equipment: Some(empty),
-                            content_id: None,
+                content_id: None,
             }],
         ));
         assert_eq!(world.get(a).unwrap().equipment.unwrap().get(5), Some(sword));
