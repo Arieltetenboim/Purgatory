@@ -215,6 +215,9 @@
         <button id="openTemplateBtn">Open Template V1</button>
         <button class="primary" id="importTemplateBtn">Import Template V1 PNG (2048×2048 only)</button>
       </div>
+      <div class="row">
+        <button class="primary" id="convertTemplateBtn" disabled>Convert Current → Template V1 PNG</button>
+      </div>
       <input id="templateImportInput" type="file" accept="image/png" />
       <div class="hint">
         Golden path: use the actual Template V1 guide. Resolution alone is not enough: each body part must stay isolated inside its assigned cell with clear transparent margin. Hide the guide, export a transparent 2048×2048 PNG, then import it here.
@@ -481,6 +484,7 @@
   const fileInput = document.getElementById('fileInput');
   const openTemplateBtn = document.getElementById('openTemplateBtn');
   const importTemplateBtn = document.getElementById('importTemplateBtn');
+  const convertTemplateBtn = document.getElementById('convertTemplateBtn');
   const templateImportInput = document.getElementById('templateImportInput');
   const dropZone = document.getElementById('dropZone');
   const imageStatus = document.getElementById('imageStatus');
@@ -2719,6 +2723,7 @@
     downloadAtlasBtn.disabled=!v.canExport;
     downloadRuntimeBtn.disabled=!v.canExport;
     downloadRigBtn.disabled=!v.canExport || !assemblyInitialized;
+    convertTemplateBtn.disabled=!v.complete || !TEMPLATE_V1;
 
     if(!v.canExport){
       exportStatus.className='exportStatus';
@@ -2783,6 +2788,92 @@
     cctx.putImageData(out,0,0);
     return {canvas:c,bounds:b};
   }
+
+  function buildTemplateV1FromCurrent(){
+    if(!TEMPLATE_V1) throw new Error(CONTRACT_LOAD_ERROR || 'Template V1 contract unavailable.');
+
+    const validation=exportValidation();
+    if(!validation.complete){
+      throw new Error(
+        `Current project is not complete: ${validation.missingParts.length} missing parts, `+
+        `${validation.missingPivots.length} missing pivots.`
+      );
+    }
+
+    const sourcePpu=pixelsPerUnit();
+    const targetPpu=Number(TEMPLATE_V1.pixels_per_unit);
+    if(!Number.isFinite(sourcePpu)||sourcePpu<=0||!Number.isFinite(targetPpu)||targetPpu<=0){
+      throw new Error('Invalid source/template pixels-per-unit.');
+    }
+    const scale=targetPpu/sourcePpu;
+    const margin=8;
+
+    const out=document.createElement('canvas');
+    out.width=Number(TEMPLATE_V1.width);
+    out.height=Number(TEMPLATE_V1.height);
+    const octx=out.getContext('2d');
+    octx.clearRect(0,0,out.width,out.height);
+    octx.imageSmoothingEnabled=true;
+
+    for(const cell of TEMPLATE_V1.cells){
+      const partId=cell.part;
+      const made=makePartCanvas(partId);
+      const sourcePivot=pivots.get(partId);
+      if(!made||!sourcePivot){
+        throw new Error(`${partId}: missing artwork or pivot.`);
+      }
+
+      const pivotLocalX=sourcePivot.x-made.bounds.minX;
+      const pivotLocalY=sourcePivot.y-made.bounds.minY;
+      const targetPivotX=Number(cell.x)+Number(cell.pivot[0]);
+      const targetPivotY=Number(cell.y)+Number(cell.pivot[1]);
+
+      const dw=made.canvas.width*scale;
+      const dh=made.canvas.height*scale;
+      const dx=targetPivotX-pivotLocalX*scale;
+      const dy=targetPivotY-pivotLocalY*scale;
+
+      const minX=Number(cell.x)+margin;
+      const minY=Number(cell.y)+margin;
+      const maxX=Number(cell.x)+Number(cell.w)-margin;
+      const maxY=Number(cell.y)+Number(cell.h)-margin;
+      if(dx<minX||dy<minY||dx+dw>maxX||dy+dh>maxY){
+        throw new Error(
+          `${partId}: converted artwork does not fit its Template V1 cell at preserved world scale `+
+          `(${sourcePpu.toFixed(2)} → ${targetPpu.toFixed(2)} px/unit).`
+        );
+      }
+
+      octx.drawImage(made.canvas,dx,dy,dw,dh);
+    }
+
+    return {canvas:out,sourcePpu,targetPpu,scale};
+  }
+
+  convertTemplateBtn.addEventListener('click',()=>{
+    try{
+      const converted=buildTemplateV1FromCurrent();
+      converted.canvas.toBlob(blob=>{
+        if(!blob){
+          setProjectStatus('Template conversion failed: browser did not create PNG.');
+          return;
+        }
+        const filename=`${sanitizedAssetId()}.template-v1.png`;
+        downloadBlob(blob,filename);
+        const message=
+          `Converted to Template V1 · 14/14 parts · scale ${converted.scale.toFixed(4)} `+
+          `(${converted.sourcePpu.toFixed(2)} → ${converted.targetPpu.toFixed(2)} px/unit) · ${filename}`;
+        setProjectStatus(message,true);
+        imageStatus.textContent=message;
+        imageStatus.style.borderColor='#3f6b5d';
+      },'image/png');
+    }catch(err){
+      const message=`Template conversion failed: ${err?.message||String(err)}`;
+      setProjectStatus(message);
+      imageStatus.textContent=message;
+      imageStatus.style.borderColor='#b45309';
+    }
+  });
 
   function nextPow2(n){
     let p=1;while(p<n)p*=2;return p;
