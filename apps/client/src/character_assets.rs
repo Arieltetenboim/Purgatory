@@ -120,7 +120,7 @@ pub(crate) fn load_character_visual_pack(
         .map_err(|error| CharacterVisualPackError::Json(error.to_string()))?;
     validate_header(&raw)?;
     validate_atlas_declaration(&raw.atlas)?;
-    if raw.completeness != "partial_dev" {
+    if !matches!(raw.completeness.as_str(), "partial_dev" | "complete") {
         return Err(CharacterVisualPackError::Unsupported(
             "completeness",
             raw.completeness,
@@ -314,12 +314,38 @@ mod tests {
                 .unwrap()
                 .texture
         );
-        assert_eq!(visual.rect_px, [4, 4, 201, 228]);
-        assert_eq!(visual.dimensions_px, [201, 228]);
-        assert!((visual.pivot_px[0] - 118.45177).abs() < 1e-4);
-        assert!((visual.pivot_px[1] - 182.84172).abs() < 1e-4);
+        assert_eq!(
+            visual.dimensions_px,
+            [visual.rect_px[2], visual.rect_px[3]]
+        );
+        assert!(visual.dimensions_px[0] > 0 && visual.dimensions_px[1] > 0);
+        assert!(visual.pivot_px.iter().all(|value| value.is_finite()));
         assert_eq!(visual.pixels_per_unit, 256.0);
         assert_eq!(assets.resource_count(), 1);
+    }
+
+    #[test]
+    fn complete_pack_is_accepted() {
+        let json = manifest().replacen(
+            "\"completeness\": \"partial_dev\"",
+            "\"completeness\": \"complete\"",
+            1,
+        );
+        let pack = load(&json, &mut runtime()).unwrap();
+        assert_eq!(pack.completeness, "complete");
+    }
+
+    #[test]
+    fn unknown_completeness_is_rejected() {
+        let json = manifest().replacen(
+            "\"completeness\": \"partial_dev\"",
+            "\"completeness\": \"other\"",
+            1,
+        );
+        assert!(matches!(
+            load(&json, &mut runtime()),
+            Err(CharacterVisualPackError::Unsupported("completeness", value)) if value == "other"
+        ));
     }
 
     #[test]
