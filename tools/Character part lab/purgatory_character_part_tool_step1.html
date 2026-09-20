@@ -2475,13 +2475,22 @@
     const missingParts=[...REQUIRED_BASE].filter(id=>!assigned.has(id));
     const missingPivots=[...REQUIRED_BASE].filter(id=>assigned.has(id)&&!pivots.has(id));
     const missingAssembly=[...REQUIRED_BASE].filter(id=>pivots.has(id)&&!assemblyPos.has(id));
+    const outsidePivots=[];
+    for(const id of assigned){
+      const b=unionBoundsForPart(id),p=pivots.get(id);
+      if(!b||!p) continue;
+      if(p.x<b.minX||p.x>b.maxX||p.y<b.minY||p.y>b.maxY){
+        outsidePivots.push(id);
+      }
+    }
     const parts=exportableParts();
     return {
       parts,
       missingParts,
       missingPivots,
       missingAssembly,
-      complete:missingParts.length===0&&missingPivots.length===0&&missingAssembly.length===0,
+      outsidePivots,
+      complete:missingParts.length===0&&missingPivots.length===0&&missingAssembly.length===0&&outsidePivots.length===0,
       canExport:parts.length>0
     };
   }
@@ -2510,6 +2519,7 @@
     if(v.missingParts.length) items.push(`${v.missingParts.length} missing part assignments`);
     if(v.missingPivots.length) items.push(`${v.missingPivots.length} missing pivots`);
     if(v.missingAssembly.length) items.push(`${v.missingAssembly.length} missing assembly origins`);
+    if(v.outsidePivots.length) items.push(`${v.outsidePivots.length} pivot(s) outside assigned sprite: ${v.outsidePivots.join(', ')}`);
     exportStatus.innerHTML=`PARTIAL DEV EXPORT · ${v.parts.length} visual parts<br>${items.join(' · ')}`;
   }
 
