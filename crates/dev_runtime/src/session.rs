@@ -1323,6 +1323,13 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             .map(|l| l.trim().to_string())
     }
 
+    fn probe_detail_indicates_protocol_skew(detail: &str) -> bool {
+        let detail = detail.to_ascii_lowercase();
+        detail.contains("version_mismatch")
+            || detail.contains("version mismatch")
+            || detail.contains("protocol mismatch")
+    }
+
     fn start_one_client(&mut self) -> bool {
         let exe = self.paths.client_exe();
         if !exe.is_file() {
@@ -2389,11 +2396,21 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             if elapsed > READY_TIMEOUT {
                 self.stop_probe();
                 self.connection = CheckStatus::Fail;
-                self.connection_reason = "timed out".to_string();
-                let msg = self.format_readiness_failure(&format!(
-                    "readiness timed out after {}s",
-                    READY_TIMEOUT.as_secs()
-                ));
+                let last_probe = self.connection_reason.trim().to_string();
+                let reason = if last_probe.is_empty() {
+                    format!("readiness timed out after {}s", READY_TIMEOUT.as_secs())
+                } else {
+                    format!(
+                        "readiness timed out after {}s; last probe: {last_probe}",
+                        READY_TIMEOUT.as_secs()
+                    )
+                };
+                self.connection_reason = if last_probe.is_empty() {
+                    "timed out".to_string()
+                } else {
+                    last_probe
+                };
+                let msg = self.format_readiness_failure(&reason);
                 self.set_state(ServerState::Failed, Some(&msg));
                 self.clear_pending_clients_for_server_failure("server readiness timed out");
                 if self.validation_is_active() {
@@ -2428,31 +2445,41 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 if !keep_job {
                     self.clear_job();
                 }
-            } else if code == 2 && !self.probe_prep_attempted {
-                self.probe_prep_attempted = true;
-                self.log_hub(
-                    "Probe binary rejected --probe (exit 2); rebuilding purgatory-bot-client",
-                );
-                self.set_state(ServerState::Starting, None);
-                if let Some(cargo) = self.cargo_path.clone() {
-                    let id = self.job_id().unwrap_or_else(|| self.alloc_job());
-                    if !self.validation_is_active() && !self.load_is_active() {
-                        self.set_running(id, JobOp::Build);
-                    }
-                    let profile = self.profile_for_tracked_server();
-                    let _ = self.start_build_with_profile(
-                        cargo,
-                        &[LOAD_PACKAGE],
-                        BuildReason::ProbePrep,
-                        id,
-                        profile,
-                        now,
-                    );
-                }
             } else {
                 let detail = self
                     .last_probe_log_line()
                     .unwrap_or_else(|| format!("probe exit {code}"));
+                let stale_cli = code == 2;
+                let protocol_skew = Self::probe_detail_indicates_protocol_skew(&detail);
+                if (stale_cli || protocol_skew) && !self.probe_prep_attempted {
+                    self.probe_prep_attempted = true;
+                    if protocol_skew {
+                        self.log_hub(&format!(
+                            "Probe/server protocol skew ({detail}); rebuilding purgatory-bot-client"
+                        ));
+                    } else {
+                        self.log_hub(
+                            "Probe binary rejected --probe (exit 2); rebuilding purgatory-bot-client",
+                        );
+                    }
+                    self.set_state(ServerState::Starting, None);
+                    if let Some(cargo) = self.cargo_path.clone() {
+                        let id = self.job_id().unwrap_or_else(|| self.alloc_job());
+                        if !self.validation_is_active() && !self.load_is_active() {
+                            self.set_running(id, JobOp::Build);
+                        }
+                        let profile = self.profile_for_tracked_server();
+                        let _ = self.start_build_with_profile(
+                            cargo,
+                            &[LOAD_PACKAGE],
+                            BuildReason::ProbePrep,
+                            id,
+                            profile,
+                            now,
+                        );
+                    }
+                    return;
+                }
                 if !self.probe_logged_fail {
                     self.log_hub(&format!(
                         "Probe unsuccessful ({detail}); retrying until Ready timeout"
@@ -2902,10 +2929,30 @@ mod tests {
         backend.probe_exit = None;
         let (mut session, now) = harness("timeout", backend, FakeHealthSource::none());
         let now = drive_to_ready(&mut session, now);
+        session.connection_reason = "purgatory-load --probe: server rejected: version_mismatch".into();
         session.run_lifecycle(now + READY_TIMEOUT + Duration::from_secs(1));
         assert_eq!(session.state, ServerState::Failed);
         assert!(session.tracked.is_some());
         assert!(session.server_alive());
+        assert!(
+            session
+                .last_failure
+                .as_deref()
+                .is_some_and(|reason| reason.contains("last probe:") && reason.contains("version_mismatch"))
+        );
+    }
+
+    #[test]
+    fn probe_protocol_skew_is_detected_from_probe_detail() {
+        assert!(HubSession::<FakeProcessBackend, FakeHealthSource>::probe_detail_indicates_protocol_skew(
+            "purgatory-load --probe: server rejected: version_mismatch"
+        ));
+        assert!(HubSession::<FakeProcessBackend, FakeHealthSource>::probe_detail_indicates_protocol_skew(
+            "protocol mismatch"
+        ));
+        assert!(!HubSession::<FakeProcessBackend, FakeHealthSource>::probe_detail_indicates_protocol_skew(
+            "QUIC connect timeout"
+        ));
     }
 
     #[test]
