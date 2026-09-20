@@ -13,9 +13,9 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
     layout::page_header(
         ui,
         "Content",
-        "Standalone authoring tools. Animation Lab, NPC Lab, and Mob Lab launch independently of the Hub.",
+        "Standalone authoring tools. Animation Lab, Character Lab, NPC Lab, and Mob Lab launch independently of the Hub.",
     );
-    ui.columns(3, |columns| {
+    ui.columns(4, |columns| {
         card(&mut columns[0], "Animation Lab", |ui| {
             ui.label(
                 "Opens a separate window. Lifetime is independent of the Hub and the game client.",
@@ -31,7 +31,25 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
             }
         });
 
-        card(&mut columns[1], "NPC Lab", |ui| {
+        card(&mut columns[1], "Character Lab", |ui| {
+            ui.label(
+                "Opens the existing local Character Part Authoring Tool in your default browser.",
+            );
+            ui.add_space(6.0);
+            ui.colored_label(
+                theme::muted(),
+                "Local-only authoring tool; no game server or client dependency.",
+            );
+            ui.add_space(8.0);
+            if ui.add(btn_primary("Launch Character Lab")).clicked() {
+                *export_status = Some(match tool_launch::launch_character_lab() {
+                    Ok(()) => "Character Lab launch requested".to_owned(),
+                    Err(err) => format!("Character Lab launch failed: {err}"),
+                });
+            }
+        });
+
+        card(&mut columns[2], "NPC Lab", |ui| {
             ui.label("Local Web NPC authoring tool. Repository JSON remains the source of truth.");
             ui.add_space(6.0);
             ui.colored_label(
@@ -47,7 +65,7 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
             }
         });
 
-        card(&mut columns[2], "Mob Lab", |ui| {
+        card(&mut columns[3], "Mob Lab", |ui| {
             ui.label(
                 "Local Web Monster authoring tool. Runtime Monster JSON is the source of truth.",
             );
