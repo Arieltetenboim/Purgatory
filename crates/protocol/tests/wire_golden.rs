@@ -1853,7 +1853,7 @@ fn sample_v8_replication_frame() -> ReplicationFrame {
             },
             health: None,
             equipment: None,
-                    content_id: None,
+            content_id: None,
         }],
         aoi_debug: None,
     }
