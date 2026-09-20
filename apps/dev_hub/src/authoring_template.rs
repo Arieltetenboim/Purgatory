@@ -30,6 +30,8 @@ pub const ORIGIN_Y: f32 = 768.0;
 pub const SAFE_MARGIN_WU: f32 = 0.12;
 
 const OUTPUT_REL: &str = "Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg";
+const CHARACTER_LAB_CONTRACT_REL: &str =
+    "tools/Character part lab/humanoid_v0_contract.js";
 
 /// Default repository path for the generated template.
 #[must_use]
@@ -37,6 +39,59 @@ pub fn default_output_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../")
         .join(OUTPUT_REL)
+}
+
+
+/// Repository path for the generated Character Lab runtime-bind contract.
+#[must_use]
+pub fn character_lab_contract_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../")
+        .join(CHARACTER_LAB_CONTRACT_REL)
+}
+
+/// Canonical Humanoid v0 bind data for the browser Character Lab.
+///
+/// Generated from purgatory-skeleton so the Lab never hand-copies bind values.
+/// Local translation and rotation are both exported because runtime composition
+/// must match the engine, including rotated parent chains.
+#[must_use]
+pub fn render_character_lab_contract_js() -> String {
+    let def = humanoid_v0();
+    let local = LocalPose::from_bind(def);
+    let mut out = String::from(
+        "// Generated from purgatory-skeleton Humanoid v0. Do not hand-edit.\n\
+window.PURGATORY_HUMANOID_V0_CONTRACT = {\n  version: 1,\n  rig: 'humanoid_v0',\n  bones: {\n",
+    );
+    for i in 0..def.bone_count() {
+        let bone = BoneIndex::from_u8(i as u8);
+        let label = HUMANOID_V0_BONE_LABELS[i];
+        let xf = local.get(bone).expect("bind bone");
+        let parent = def.parent(bone).map(|p| HUMANOID_V0_BONE_LABELS[p.as_usize()]);
+        let parent_js = parent
+            .map(|p| format!("'{p}'"))
+            .unwrap_or_else(|| "null".to_owned());
+        let _ = writeln!(
+            out,
+            "    '{label}': {{ parent: {parent_js}, t: [{x}, {y}], r: {r} }},",
+            x = fmt_num(xf.translation[0]),
+            y = fmt_num(xf.translation[1]),
+            r = fmt_num(xf.rotation),
+        );
+    }
+    out.push_str("  }\n};\n");
+    out
+}
+
+/// Write the generated Character Lab contract beside the static HTML tool.
+pub fn export_character_lab_contract() -> Result<PathBuf, String> {
+    let path = character_lab_contract_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("create dir: {err}"))?;
+    }
+    std::fs::write(&path, render_character_lab_contract_js())
+        .map_err(|err| format!("write {}: {err}", path.display()))?;
+    Ok(path)
 }
 
 /// World (+X right, +Y up) → canvas pixels (origin top-left, +Y down).
@@ -518,6 +573,7 @@ mod tests {
             return;
         }
         export_to(&default_output_path()).expect("write committed template");
+        export_character_lab_contract().expect("write Character Lab Humanoid v0 contract");
         crate::ai_modular_reference::export_to(&crate::ai_modular_reference::default_output_path())
             .expect("write committed AI modular reference");
     }
@@ -530,6 +586,28 @@ mod tests {
             on_disk.replace("\r\n", "\n"),
             render_svg().replace("\r\n", "\n"),
             "re-export with PURGATORY_WRITE_AUTHORING_TEMPLATE=1 cargo test -p purgatory-dev-hub --bin purgatory-dev-hub write_authoring_template_if_requested"
+        );
+    }
+
+
+    #[test]
+    fn character_lab_contract_is_generated_from_live_bind() {
+        let js = render_character_lab_contract_js();
+        assert!(js.contains("'lower_arm_back'"));
+        assert!(js.contains("r: 0.50"));
+        for bone in HUMANOID_V0_BONE_LABELS {
+            assert!(js.contains(&format!("'{bone}'")), "missing {bone}");
+        }
+    }
+
+    #[test]
+    fn committed_character_lab_contract_matches_generator() {
+        let path = character_lab_contract_path();
+        let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            on_disk.replace("\r\n", "\n"),
+            render_character_lab_contract_js().replace("\r\n", "\n"),
+            "regenerate the Character Lab Humanoid v0 contract from purgatory-skeleton"
         );
     }
 }
