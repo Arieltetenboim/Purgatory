@@ -4,8 +4,8 @@
   "id": "creature.moss_crab",
   "atlas": "moss_crab.png",
   "frame_size_px": [
-    150,
-    150
+    256,
+    256
   ],
   "world_size": [
     1,
@@ -19,9 +19,7 @@
         0,
         1,
         2,
-        3,
-        4,
-        5
+        3
       ],
       "loop": true
     },
@@ -30,7 +28,10 @@
         6,
         7,
         8,
-        9
+        9,
+        10,
+        11,
+        0
       ],
       "loop": true
     },
@@ -38,9 +39,12 @@
       "frames": [
         12,
         13,
-        14
+        14,
+        15,
+        16
       ],
-      "loop": false
+      "loop": false,
+      "impact_frame": 2
     },
     "disappear": {
       "frames": [
