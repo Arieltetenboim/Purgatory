@@ -71,7 +71,6 @@ pub fn character_lab_contract_path() -> PathBuf {
         .join(CHARACTER_LAB_CONTRACT_REL)
 }
 
-
 #[must_use]
 pub fn character_base_template_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -146,7 +145,6 @@ pub fn export_character_lab_contract() -> Result<PathBuf, String> {
         .map_err(|err| format!("write {}: {err}", path.display()))?;
     Ok(path)
 }
-
 
 #[must_use]
 pub fn render_character_base_template_v1_svg() -> String {
@@ -711,7 +709,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn character_base_template_v1_has_all_required_parts() {
         let svg = render_character_base_template_v1_svg();
@@ -731,7 +728,10 @@ mod tests {
             "foot_back",
             "foot_front",
         ] {
-            assert!(svg.contains(&format!("id=\"cell-{part}\"")), "missing {part}");
+            assert!(
+                svg.contains(&format!("id=\"cell-{part}\"")),
+                "missing {part}"
+            );
         }
     }
 
