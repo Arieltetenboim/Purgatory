@@ -15,8 +15,7 @@ use crate::equipment::{
 };
 use crate::interact::{
     DevSetChannel, DevSetJump, DevSetSpeed, DevSpawnMonster, DevSpawnNpc, InteractClose,
-    InteractOpen,
-    PortalActivate, ServerInteract,
+    InteractOpen, PortalActivate, ServerInteract,
 };
 use crate::inventory::{
     INVENTORY_CAPACITY, InventoryEntry, ServerInventory, decode_inventory_entry,
@@ -471,8 +470,10 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             if req.monster_content_id.kind() != Some(purgatory_common::ContentKind::Monster) {
                 return Err(CodecError::InvalidValue);
             }
-            let monster_content_id =
-                req.monster_content_id.raw().ok_or(CodecError::InvalidValue)?;
+            let monster_content_id = req
+                .monster_content_id
+                .raw()
+                .ok_or(CodecError::InvalidValue)?;
             let mut out = Vec::with_capacity(1 + crate::DEV_SPAWN_MONSTER_BYTES);
             out.push(TAG_DEV_SPAWN_MONSTER);
             out.extend_from_slice(&monster_content_id.to_le_bytes());

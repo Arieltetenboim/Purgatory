@@ -160,7 +160,9 @@ impl DebugOverlay {
             .collect();
         let mut ui = DebugUiState::from_env();
         ui.selected_debug_npc = npc_spawn_options.first().map(|npc| npc.content_id);
-        ui.selected_debug_monster = monster_spawn_options.first().map(|monster| monster.content_id);
+        ui.selected_debug_monster = monster_spawn_options
+            .first()
+            .map(|monster| monster.content_id);
         Self {
             visible: false,
             ctx,
@@ -1171,9 +1173,11 @@ fn draw_monster_spawner(
     monster_spawn_options: &[MonsterSpawnOption],
     actions: &mut Vec<DebugCommand>,
 ) {
-    let selected = ui_state
-        .selected_debug_monster
-        .and_then(|id| monster_spawn_options.iter().find(|monster| monster.content_id == id));
+    let selected = ui_state.selected_debug_monster.and_then(|id| {
+        monster_spawn_options
+            .iter()
+            .find(|monster| monster.content_id == id)
+    });
     let selected_label = selected
         .map(|monster| format!("{} [{}]", monster.authored_id, monster.content_id))
         .unwrap_or_else(|| "No runtime Monsters".into());

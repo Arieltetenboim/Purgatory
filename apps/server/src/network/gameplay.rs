@@ -6449,7 +6449,10 @@ mod tests {
             .last()
             .expect("DEV-spawned Monster");
         assert_eq!(owner.world().address_of(spawned), Some(actor_address));
-        assert_eq!(owner.world().content_id_of(spawned), Some(MONSTER_RED_SLIME));
+        assert_eq!(
+            owner.world().content_id_of(spawned),
+            Some(MONSTER_RED_SLIME)
+        );
         assert!(owner.world().npc_of(spawned).is_some());
         assert_eq!(
             owner.world().health_of(spawned),
