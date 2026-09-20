@@ -114,9 +114,10 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         stats.leave_handshake();
         stats.note_reject(reason.code);
         println!(
-            "handshake rejected {} reason={}",
+            "handshake rejected {} reason={} detail={}",
             sanitize_log_text(&remote.to_string()),
-            reason.code.as_str()
+            reason.code.as_str(),
+            sanitize_log_text(&reason.detail)
         );
         let _ = write_server_control(&mut send, &ServerControl::Disconnect(reason.clone())).await;
         connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());

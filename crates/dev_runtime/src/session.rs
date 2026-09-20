@@ -247,9 +247,15 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
 
     pub fn command(&mut self, cmd: HubCommand, now: Instant) -> CommandOutcome {
         match cmd {
-            HubCommand::Start => self.request_start(now),
+            HubCommand::Start => {
+                self.probe_prep_attempted = false;
+                self.request_start(now)
+            }
             HubCommand::Stop => self.request_stop(now, true),
-            HubCommand::Restart => self.request_restart(now),
+            HubCommand::Restart => {
+                self.probe_prep_attempted = false;
+                self.request_restart(now)
+            }
             HubCommand::StartValidation { spec } => self.request_start_validation(spec, now),
             HubCommand::StopValidation => self.request_stop_validation(now),
             HubCommand::StartLoad { spec } => self.request_start_load(spec, now),
@@ -2100,7 +2106,6 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                     exe_path: exe.clone(),
                 });
                 self.seen_alive = true;
-                self.probe_prep_attempted = false;
                 self.connection = CheckStatus::Unknown;
                 self.connection_reason.clear();
                 self.metrics_ok = false;
@@ -2443,6 +2448,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             if code == 0 {
                 self.connection = CheckStatus::Pass;
                 self.connection_reason.clear();
+                self.probe_prep_attempted = false;
                 self.set_state(ServerState::Ready, None);
                 let keep_job =
                     self.maybe_spawn_validation_harness() || self.maybe_spawn_load_harness();
@@ -2455,17 +2461,19 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                     .unwrap_or_else(|| format!("probe exit {code}"));
                 let stale_cli = code == 2;
                 let protocol_skew = Self::probe_detail_indicates_protocol_skew(&detail);
-                if (stale_cli || protocol_skew) && !self.probe_prep_attempted {
+                if protocol_skew && !self.probe_prep_attempted {
                     self.probe_prep_attempted = true;
-                    if protocol_skew {
-                        self.log_hub(&format!(
-                            "Probe/server protocol skew ({detail}); rebuilding purgatory-bot-client"
-                        ));
-                    } else {
-                        self.log_hub(
-                            "Probe binary rejected --probe (exit 2); rebuilding purgatory-bot-client",
-                        );
-                    }
+                    self.log_hub(&format!(
+                        "Probe/server protocol skew ({detail}); restarting and rebuilding server + probe"
+                    ));
+                    let _ = self.request_restart(now);
+                    return;
+                }
+                if stale_cli && !self.probe_prep_attempted {
+                    self.probe_prep_attempted = true;
+                    self.log_hub(
+                        "Probe binary rejected --probe (exit 2); rebuilding purgatory-bot-client",
+                    );
                     self.set_state(ServerState::Starting, None);
                     if let Some(cargo) = self.cargo_path.clone() {
                         let id = self.job_id().unwrap_or_else(|| self.alloc_job());
@@ -3013,6 +3021,38 @@ mod tests {
         assert!(!HubSession::<FakeProcessBackend, FakeHealthSource>::probe_detail_indicates_protocol_skew(
             "QUIC connect timeout"
         ));
+    }
+
+    #[test]
+    fn protocol_skew_restarts_and_rebuilds_server_and_probe_once() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(1);
+        let (mut session, now) =
+            harness("protocol-skew-rebuild", backend, FakeHealthSource::healthy());
+        std::fs::write(
+            session.paths.dev_log_dir().join("probe.log"),
+            "purgatory-load --probe: server rejected: version mismatch\n",
+        )
+        .unwrap();
+
+        let now = drive_to_ready(&mut session, now);
+        assert_eq!(session.state, ServerState::Stopping);
+        assert!(session.restart_after_stop);
+        assert!(session.probe_prep_attempted);
+        assert!(
+            session
+                .activity
+                .view_lines()
+                .iter()
+                .any(|line| line.contains("rebuilding server + probe"))
+        );
+
+        session.run_lifecycle(now + LIFECYCLE_FAST);
+        assert_eq!(session.state, ServerState::Building);
+        let rebuild = session.backend.spawn_log.last().expect("restart build");
+        assert!(rebuild.contains("-p purgatory-server"), "{rebuild}");
+        assert!(rebuild.contains("-p purgatory-bot-client"), "{rebuild}");
+        assert!(!rebuild.contains("--bin purgatory-load"), "{rebuild}");
     }
 
     #[test]
