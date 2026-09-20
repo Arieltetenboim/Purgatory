@@ -2827,7 +2827,8 @@ mod tests {
     fn start_server_build_does_not_filter_out_server_binary() {
         let mut backend = FakeProcessBackend::new();
         backend.hold_cargo = true;
-        let (mut session, now) = harness("start-build-targets", backend, FakeHealthSource::none());
+        let (mut session, now) =
+            harness("start-build-targets", backend, FakeHealthSource::none());
 
         assert_eq!(
             session.command(HubCommand::Start, now),
@@ -2875,7 +2876,10 @@ mod tests {
             .iter()
             .find(|line| line.contains("--bin purgatory-load"))
             .expect("load-only probe build");
-        assert!(probe_build.contains("-p purgatory-bot-client"), "{probe_build}");
+        assert!(
+            probe_build.contains("-p purgatory-bot-client"),
+            "{probe_build}"
+        );
     }
 
     #[test]
@@ -2988,17 +2992,15 @@ mod tests {
         backend.probe_exit = None;
         let (mut session, now) = harness("timeout", backend, FakeHealthSource::none());
         let now = drive_to_ready(&mut session, now);
-        session.connection_reason = "purgatory-load --probe: server rejected: version_mismatch".into();
+        session.connection_reason =
+            "purgatory-load --probe: server rejected: version_mismatch".into();
         session.run_lifecycle(now + READY_TIMEOUT + Duration::from_secs(1));
         assert_eq!(session.state, ServerState::Failed);
         assert!(session.tracked.is_some());
         assert!(session.server_alive());
-        assert!(
-            session
-                .last_failure
-                .as_deref()
-                .is_some_and(|reason| reason.contains("last probe:") && reason.contains("version_mismatch"))
-        );
+        assert!(session.last_failure.as_deref().is_some_and(
+            |reason| reason.contains("last probe:") && reason.contains("version_mismatch")
+        ));
     }
 
     #[test]
