@@ -217,7 +217,7 @@
       </div>
       <input id="templateImportInput" type="file" accept="image/png" />
       <div class="hint">
-        Golden path: paint each body part in its fixed Template V1 cell, hide the guide, export a transparent 2048×2048 PNG, then import it here.
+        Golden path: use the actual Template V1 guide. Resolution alone is not enough: each body part must stay isolated inside its assigned cell with clear transparent margin. Hide the guide, export a transparent 2048×2048 PNG, then import it here.
       </div>
       <div class="status" id="imageStatus" style="margin-top:8px">No image loaded.</div>
     </div>
@@ -939,6 +939,48 @@
     return {minX,minY,maxX,maxY,count,partId:cell.part,pixels};
   }
 
+  function validateTemplateV1Sheet(data){
+    const issues=[];
+    const edgeMargin=8;
+    const occupied=[];
+
+    for(const cell of TEMPLATE_V1.cells){
+      const comp=templateComponentForCell(data,cell);
+      if(!comp){
+        issues.push(`${cell.part}: empty cell`);
+        continue;
+      }
+      occupied.push([cell,comp]);
+
+      const left=comp.minX-Number(cell.x);
+      const top=comp.minY-Number(cell.y);
+      const right=Number(cell.x)+Number(cell.w)-1-comp.maxX;
+      const bottom=Number(cell.y)+Number(cell.h)-1-comp.maxY;
+      if(left<edgeMargin||top<edgeMargin||right<edgeMargin||bottom<edgeMargin){
+        issues.push(`${cell.part}: artwork touches/crosses cell boundary`);
+      }
+    }
+
+    // Bottom-right two cells are reserved in V1 and must stay transparent.
+    const reserved=[
+      {x:1024,y:1536,w:512,h:512,label:'reserved cell 15'},
+      {x:1536,y:1536,w:512,h:512,label:'reserved cell 16'}
+    ];
+    const width=workCanvas.width;
+    for(const area of reserved){
+      let dirty=false;
+      outer:
+      for(let y=area.y;y<area.y+area.h;y++){
+        for(let x=area.x;x<area.x+area.w;x++){
+          if(data[(y*width+x)*4+3]!==0){dirty=true;break outer;}
+        }
+      }
+      if(dirty) issues.push(`${area.label}: must be transparent`);
+    }
+
+    return {issues,occupied};
+  }
+
   function importTemplateImage(img,fileName){
     if(!TEMPLATE_V1) throw new Error(CONTRACT_LOAD_ERROR);
     if(img.naturalWidth!==Number(TEMPLATE_V1.width) || img.naturalHeight!==Number(TEMPLATE_V1.height)){
@@ -956,12 +998,19 @@
     sourceFileName=fileName||'CHARACTER_BASE_TEMPLATE_V1_ART.png';
 
     const data=workCtx.getImageData(0,0,workCanvas.width,workCanvas.height).data;
+    const checked=validateTemplateV1Sheet(data);
+    if(checked.issues.length){
+      throw new Error(
+        `Not a valid Template V1 sheet. ${checked.issues.slice(0,4).join(' · ')}`+
+        (checked.issues.length>4 ? ` · +${checked.issues.length-4} more` : '')+
+        ' · Use “Load any source” for freeform/existing sheets.'
+      );
+    }
+
     components=[];
     pivots.clear();
     const missing=[];
-    for(const cell of TEMPLATE_V1.cells){
-      const comp=templateComponentForCell(data,cell);
-      if(!comp){missing.push(cell.part);continue;}
+    for(const [cell,comp] of checked.occupied){
       components.push(comp);
       pivots.set(cell.part,{
         x:Number(cell.x)+Number(cell.pivot[0]),
