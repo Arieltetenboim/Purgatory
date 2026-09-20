@@ -181,7 +181,7 @@
   .runtimeRow{display:grid;grid-template-columns:92px 1fr;gap:7px;align-items:center}
   .runtimeRow label{font-size:11px;color:var(--muted)}
   .runtimeRow select{font-size:11px;padding:6px}
-  #runtimeAtlasInput,#runtimeManifestInput,#runtimeRigInput{display:none}
+  #runtimeAtlasInput,#runtimeManifestInput,#runtimeRigInput,#templateImportInput{display:none}
   .runtimeLegend{
     position:absolute;left:10px;bottom:10px;max-width:560px;padding:8px 10px;
     border:1px solid var(--line);border-radius:8px;background:rgba(22,27,33,.92);
@@ -211,6 +211,14 @@
         <span class="small">Drop image here or click to browse</span>
       </label>
       <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" />
+      <div class="row" style="margin-top:8px">
+        <button id="openTemplateBtn">Open Template V1</button>
+        <button class="primary" id="importTemplateBtn">Import Template V1 PNG</button>
+      </div>
+      <input id="templateImportInput" type="file" accept="image/png" />
+      <div class="hint">
+        Golden path: paint each body part in its fixed Template V1 cell, hide the guide, export a transparent 2048×2048 PNG, then import it here.
+      </div>
       <div class="status" id="imageStatus" style="margin-top:8px">No image loaded.</div>
     </div>
 
@@ -462,6 +470,9 @@
   const ctx = canvas.getContext('2d', { willReadFrequently:true });
   const workspace = document.getElementById('workspace');
   const fileInput = document.getElementById('fileInput');
+  const openTemplateBtn = document.getElementById('openTemplateBtn');
+  const importTemplateBtn = document.getElementById('importTemplateBtn');
+  const templateImportInput = document.getElementById('templateImportInput');
   const dropZone = document.getElementById('dropZone');
   const imageStatus = document.getElementById('imageStatus');
   const sampleBtn = document.getElementById('sampleBtn');
@@ -580,8 +591,9 @@
 
   // Canonical Humanoid v0 bind generated from purgatory-skeleton.
   const ENGINE_BIND_V0 = window.PURGATORY_HUMANOID_V0_CONTRACT?.bones;
-  if(!ENGINE_BIND_V0){
-    throw new Error('Character Lab Humanoid v0 contract is missing. Regenerate humanoid_v0_contract.js from purgatory-skeleton.');
+  const TEMPLATE_V1 = window.PURGATORY_HUMANOID_V0_CONTRACT?.template_v1;
+  if(!ENGINE_BIND_V0 || !TEMPLATE_V1){
+    throw new Error('Character Lab Humanoid v0 contract/template is missing. Regenerate humanoid_v0_contract.js from purgatory-skeleton.');
   }
 
   // Authoring vocabulary. These are visual body-part identities, not extra pose nodes.
@@ -828,6 +840,105 @@
     };
     img.src = url;
   }
+
+  openTemplateBtn.addEventListener('click',()=>{
+    window.open('../../Graphic/character/CHARACTER_BASE_TEMPLATE_V1.svg','_blank');
+  });
+
+  importTemplateBtn.addEventListener('click',()=>templateImportInput.click());
+
+  function templateComponentForCell(data,cell){
+    const w=workCanvas.width;
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity,count=0;
+    const pixels=[];
+    const x0=Number(cell.x),y0=Number(cell.y);
+    const x1=x0+Number(cell.w),y1=y0+Number(cell.h);
+    for(let y=y0;y<y1;y++){
+      for(let x=x0;x<x1;x++){
+        const idx=y*w+x;
+        if(data[idx*4+3]===0) continue;
+        pixels.push(idx);
+        count++;
+        if(x<minX)minX=x;if(x>maxX)maxX=x;
+        if(y<minY)minY=y;if(y>maxY)maxY=y;
+      }
+    }
+    if(!count) return null;
+    return {minX,minY,maxX,maxY,count,partId:cell.part,pixels};
+  }
+
+  function importTemplateImage(img,fileName){
+    if(img.naturalWidth!==Number(TEMPLATE_V1.width) || img.naturalHeight!==Number(TEMPLATE_V1.height)){
+      throw new Error(`Template V1 PNG must be ${TEMPLATE_V1.width}×${TEMPLATE_V1.height}; got ${img.naturalWidth}×${img.naturalHeight}.`);
+    }
+
+    stopMotion();
+    sourceCanvas.width=workCanvas.width=img.naturalWidth;
+    sourceCanvas.height=workCanvas.height=img.naturalHeight;
+    sourceCtx.clearRect(0,0,img.naturalWidth,img.naturalHeight);
+    workCtx.clearRect(0,0,img.naturalWidth,img.naturalHeight);
+    sourceCtx.drawImage(img,0,0);
+    workCtx.drawImage(img,0,0);
+    hasImage=true;
+    sourceFileName=fileName||'CHARACTER_BASE_TEMPLATE_V1_ART.png';
+
+    const data=workCtx.getImageData(0,0,workCanvas.width,workCanvas.height).data;
+    components=[];
+    pivots.clear();
+    const missing=[];
+    for(const cell of TEMPLATE_V1.cells){
+      const comp=templateComponentForCell(data,cell);
+      if(!comp){missing.push(cell.part);continue;}
+      components.push(comp);
+      pivots.set(cell.part,{
+        x:Number(cell.x)+Number(cell.pivot[0]),
+        y:Number(cell.y)+Number(cell.pivot[1])
+      });
+    }
+
+    selected=new Set(components.map((_,i)=>i));
+    activeCandidate=components.length?0:null;
+    pivotPartId=components[0]?.partId||'';
+    pivotMode=false;
+    assemblyInitialized=false;
+    assemblyPos.clear();
+    undoStack.length=0;redoStack.length=0;
+    ppuInput.value=String(TEMPLATE_V1.pixels_per_unit);
+
+    setEnabled(true);
+    imageStatus.textContent=`${sourceFileName} · Template V1 · ${img.naturalWidth} × ${img.naturalHeight}`;
+    setProjectStatus(
+      missing.length
+        ? `Template imported · missing ${missing.length}: ${missing.join(', ')}`
+        : 'Template V1 imported · 14/14 parts mapped with canonical pivots',
+      missing.length===0
+    );
+    renderParts();
+    updateHistoryButtons();
+    updateViewAvailability();
+    setViewMode('source');
+    fitImage();
+    renderExportStatus();
+    redraw();
+  }
+
+  templateImportInput.addEventListener('change',()=>{
+    const file=templateImportInput.files?.[0];
+    templateImportInput.value='';
+    if(!file) return;
+    const url=URL.createObjectURL(file);
+    const img=new Image();
+    img.onload=()=>{
+      try{importTemplateImage(img,file.name);}
+      catch(err){setProjectStatus(`Template import failed: ${err?.message||String(err)}`);}
+      finally{URL.revokeObjectURL(url);}
+    };
+    img.onerror=()=>{
+      URL.revokeObjectURL(url);
+      setProjectStatus('Template import failed: could not decode PNG.');
+    };
+    img.src=url;
+  });
 
   fileInput.addEventListener('change', e=>loadFile(e.target.files[0]));
   ['dragenter','dragover'].forEach(ev=>dropZone.addEventListener(ev,e=>{
@@ -2464,7 +2575,7 @@
 
   function exportableParts(){
     return ASSEMBLY_DRAW_ORDER.filter(id=>
-      componentsForPart(id).length>0 && pivots.has(id) && assemblyPos.has(id)
+      componentsForPart(id).length>0 && pivots.has(id)
     );
   }
 
@@ -2488,7 +2599,7 @@
       missingPivots,
       missingAssembly,
       outsidePivots,
-      complete:missingParts.length===0&&missingPivots.length===0&&missingAssembly.length===0&&outsidePivots.length===0,
+      complete:missingParts.length===0&&missingPivots.length===0,
       canExport:parts.length>0
     };
   }
@@ -2498,17 +2609,17 @@
     const v=exportValidation();
     downloadAtlasBtn.disabled=!v.canExport;
     downloadRuntimeBtn.disabled=!v.canExport;
-    downloadRigBtn.disabled=!v.canExport;
+    downloadRigBtn.disabled=!v.canExport || !assemblyInitialized;
 
     if(!v.canExport){
       exportStatus.className='exportStatus';
-      exportStatus.textContent='Nothing exportable yet: assign at least one part, set its pivot, and open Assembly.';
+      exportStatus.textContent='Nothing exportable yet: assign at least one part and set its pivot.';
       return;
     }
 
     if(v.complete){
       exportStatus.className='exportStatus ready';
-      exportStatus.innerHTML=`READY · ${v.parts.length} visual parts · Humanoid v0 base complete`;
+      exportStatus.innerHTML=`READY · ${v.parts.length} visual parts · Humanoid v0 runtime base complete`;
       return;
     }
 
@@ -2516,8 +2627,8 @@
     const items=[];
     if(v.missingParts.length) items.push(`${v.missingParts.length} missing part assignments`);
     if(v.missingPivots.length) items.push(`${v.missingPivots.length} missing pivots`);
-    if(v.missingAssembly.length) items.push(`${v.missingAssembly.length} missing assembly origins`);
-    if(v.outsidePivots.length) items.push(`${v.outsidePivots.length} pivot(s) outside assigned sprite: ${v.outsidePivots.join(', ')}`);
+    if(v.missingAssembly.length) items.push(`${v.missingAssembly.length} assembly origins missing (optional debug calibration)`);
+    if(v.outsidePivots.length) items.push(`${v.outsidePivots.length} pivot(s) outside artwork bounds (allowed; inspect if unexpected): ${v.outsidePivots.join(', ')}`);
     exportStatus.innerHTML=`PARTIAL DEV EXPORT · ${v.parts.length} visual parts<br>${items.join(' · ')}`;
   }
 
