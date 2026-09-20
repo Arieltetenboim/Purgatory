@@ -195,21 +195,21 @@ fn monster_issue(definition: &str, field: &str, detail: impl std::fmt::Display) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use purgatory_common::MONSTER_RED_SLIME;
+    use purgatory_common::MONSTER_MOSS_CRAB;
 
     fn valid_presentation() -> MonsterPresentationDefinition {
         MonsterPresentationDefinition {
-            content_id: MONSTER_RED_SLIME,
-            authored_id: "monster.slime.red".into(),
-            sprite_id: "creature.red_slime".into(),
+            content_id: MONSTER_MOSS_CRAB,
+            authored_id: "monster.moss_crab".into(),
+            sprite_id: "creature.moss_crab".into(),
         }
     }
 
     fn valid() -> MonsterDefinition {
         MonsterDefinition {
-            content_id: MONSTER_RED_SLIME,
-            authored_id: "monster.slime.red".into(),
-            debug_name: "Red Slime".into(),
+            content_id: MONSTER_MOSS_CRAB,
+            authored_id: "monster.moss_crab".into(),
+            debug_name: "Moss Crab".into(),
             health_max: 20.0,
             collision_bounds: MonsterCollisionBounds {
                 left: 0.4,
