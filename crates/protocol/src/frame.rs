@@ -339,7 +339,7 @@ fn decode_record(bytes: &[u8]) -> Result<(ReplicationRecord, &[u8]), CodecError>
                     },
                     health,
                     equipment,
-                                    content_id,
+                    content_id,
                 },
                 rest,
             ))
@@ -549,7 +549,7 @@ mod tests {
                     damage_immunity_active: true,
                 }),
                 equipment: None,
-                            content_id: None,
+                content_id: None,
             },
             ReplicationRecord::Update {
                 entity_id: sample_entity().entity_id,
