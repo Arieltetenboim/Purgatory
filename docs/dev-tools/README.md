@@ -33,7 +33,7 @@ Implemented in this pass:
 | Phase 7 Stats | Testing → Phase 7 Stats: read-only Phase 7.8 gate summary from `logs/load/capacity_78/gate_*/phase78_gate_summary.json`. Verdict GREEN/YELLOW/RED/INVALID; HARNESS WARN ≠ SERVER WARN. |
 | Runtime Validation | Dialog (`--preset` smoke/mixed/stress/soak/…, optional `--duration` overlay, seed). Forwards the same CLI a headless run uses. Requires Server **Ready**. Always rebuilds `purgatory-load` first, then restarts a clean load-mode server with isolated `PURGATORY_DATA_DIR`. Refuses a second concurrent harness. Live status shows elapsed/duration, real-client count, and portal progress from `live_status.json` (no extra console window; 1 Hz dashboard writeln would ding). Pass/fail is Rust, not PowerShell. Mixed soak keeps a persistent real-QUIC baseline; churn is a separate role; portal bots walk into the activation zone. `--duration` without `--timeout` raises the wall-clock timeout in Rust (not in the GUI). ANALYZE LAST RUN uses a completed artifact (`last_finished.txt`), not an in-progress `current_run` or a future-dated folder. Exit 2 with `unexpected argument` rebuilds `-p purgatory-bot-client --bin purgatory-load`. Other CLI errors are shown as-is (not treated as a stale binary). |
 | Metrics | UDP `PURGSTAT` on `127.0.0.1:5002` (operational measurements + Health). |
-| Connection probe | `purgatory-load --probe` (Quinn Hello/Welcome, protocol v10, login `dev.probe`). |
+| Connection probe | `purgatory-load --probe` (Quinn Hello/Welcome using the current protocol contract; `dev.probe` login was introduced in v10). |
 | Single-instance | Mutex `Local\PurgatoryDevLauncher`. A second `DEV.BAT` focuses the existing window. |
 | Recovery | On open, adopt workspace `target\` server/client/load processes and **verify** before Ready. Duplicate servers for this workspace are stopped. |
 | Logging | Colored activity box (green server, cyan client) plus `logs/dev-tools/`. Server/client/probe stdout is shown live. The ACTIVITY expand control opens a separate resizable log window. Routine log/status/portal lines are silent. Windows dialog sounds still play only for blocking `MessageBox` calls (refusals, failures, already-running). |
@@ -55,7 +55,7 @@ These are not synonyms. See [RUNTIME_LIFECYCLE.md](RUNTIME_LIFECYCLE.md).
 
 ### Probe persistence (known debt)
 
-`--probe` uses the normal DEV login / persistence / enter path with reserved login `dev.probe`. A successful probe may **create or restore** that character under the persist root (`%LOCALAPPDATA%\Purgatory\` unless `PURGATORY_DATA_DIR` is set). This is not the long-term health design. Do not treat it as a reason to change protocol v10.
+`--probe` uses the normal DEV login / persistence / enter path with reserved login `dev.probe`. A successful probe may **create or restore** that character under the persist root (`%LOCALAPPDATA%\Purgatory\` unless `PURGATORY_DATA_DIR` is set). This is not the long-term health design. The probe must track the repository's current `PROTOCOL_VERSION`; the persistence debt does not by itself justify another wire change.
 
 ## PLANNED
 

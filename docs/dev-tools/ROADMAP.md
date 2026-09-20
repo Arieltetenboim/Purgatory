@@ -12,7 +12,7 @@ This tooling evolution is not a PURGATORY gameplay or capacity phase. Root `PHAS
 - Live pages: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings, Content (Animation Lab, NPC Lab, and Mob Lab launch + authoring-template exports)
 - Runtime Validation (`--preset`) and load/soak (no `--preset`); CLI owns pass/fail; workspace `hub.lock`
 - Clients +1/+2/+3, quality gate, Rebuild, Kill All, F5/F6, debug/release + log level for new processes
-- `purgatory-load --probe` (protocol v10, persist-path debt documented)
+- `purgatory-load --probe` on the current protocol contract (DEV login/persist path originated in v10; persist-path debt documented)
 - PowerShell remains fallback until an explicit decision switches `DEV.BAT`
 
 ## Next Developer Tools steps

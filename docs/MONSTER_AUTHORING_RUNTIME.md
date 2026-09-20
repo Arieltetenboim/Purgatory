@@ -1,6 +1,6 @@
 # Monster Authoring and Runtime
 
-Status: FORGE M0-M2.1 merged to `master`; M3 is implemented on `forge/mob-lab-m3` / PR #72. M4 runtime identity/presentation proof is tracked by #75.
+Status: FORGE M0-M2.1 merged to `master`; M3 implementation is complete on `forge/mob-lab-m3` / PR #72 pending closeout smoke + final gate. M4 runtime identity/presentation proof is tracked by #75.
 
 ## Purpose
 

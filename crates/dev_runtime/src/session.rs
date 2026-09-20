@@ -3027,8 +3027,11 @@ mod tests {
     fn protocol_skew_restarts_and_rebuilds_server_and_probe_once() {
         let mut backend = FakeProcessBackend::new();
         backend.probe_exit = Some(1);
-        let (mut session, now) =
-            harness("protocol-skew-rebuild", backend, FakeHealthSource::healthy());
+        let (mut session, now) = harness(
+            "protocol-skew-rebuild",
+            backend,
+            FakeHealthSource::healthy(),
+        );
         std::fs::write(
             session.paths.dev_log_dir().join("probe.log"),
             "purgatory-load --probe: server rejected: version mismatch\n",

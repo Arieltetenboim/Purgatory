@@ -151,7 +151,7 @@ Purpose: turn the proven single-creature PvE fixture into a validated, content-b
 | M1 | Monster Content + Validation | complete + merged |
 | M2 | Content-backed Red Slime Runtime | complete + merged + manually verified |
 | M2.1 | Damage-triggered aggro + passive contact contract | complete + merged + manually verified |
-| M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | implemented; automated gate green; manual closeout smoke before PR #72 merge |
+| M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | implementation complete; manual closeout smoke + final PR gate before merge |
 | M4 | Multi-monster runtime identity + presentation + test-arena proof | next; tracked by #75 |
 | M5 | Hub integration + v0.1 closeout | partially landed; final closeout waits on M4 |
 

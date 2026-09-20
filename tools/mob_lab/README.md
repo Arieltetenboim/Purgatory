@@ -1,6 +1,6 @@
 # Mob Lab
 
-Status: FORGE M3 implemented on `forge/mob-lab-m3`; automated quality gate green. Manual closeout smoke remains before PR #72 merge.
+Status: FORGE M3 implementation complete on `forge/mob-lab-m3`. Manual closeout smoke and the final PR quality gate remain before PR #72 merge.
 
 Mob Lab edits the **same Monster JSON files loaded by the game**:
 
