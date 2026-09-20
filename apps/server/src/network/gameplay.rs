@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use purgatory_common::{
     ChannelId, CharacterId, ContentId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
-    MONSTER_MOSS_CRAB, RestoreIntent, WorldAddress,
+    RestoreIntent, WorldAddress,
 };
 use purgatory_content::{
     ContentRegistry, EquipmentAuthError, LoadMode, MonsterBehavior, authorize_equip,
@@ -3211,7 +3211,8 @@ impl GameplayOwner {
             MonsterBehavior::ChaseContactWhenAttacked => Some(NpcApproachBounds {
                 left: (definition.collision_bounds.left + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
                     .max(0.0),
-                right: (definition.collision_bounds.right + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
+                right: (definition.collision_bounds.right + PLAYER_HALF_EXTENTS[0]
+                    - CONTACT_EPSILON)
                     .max(0.0),
                 bottom: (definition.collision_bounds.bottom + PLAYER_HALF_EXTENTS[1]
                     - CONTACT_EPSILON)
