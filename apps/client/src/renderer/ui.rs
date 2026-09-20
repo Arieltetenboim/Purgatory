@@ -31,14 +31,9 @@ impl UiBudgetUsage {
     }
 
     #[must_use]
-    pub(crate) fn rect_overflow(self) -> usize {
-        self.requested_rects.saturating_sub(self.accepted_rects)
-    }
-
-    #[must_use]
-    pub(crate) fn textured_rect_overflow(self) -> usize {
-        self.requested_textured_rects
-            .saturating_sub(self.accepted_textured_rects)
+    fn overflowed(self) -> bool {
+        self.requested_rects > self.accepted_rects
+            || self.requested_textured_rects > self.accepted_textured_rects
     }
 }
 
@@ -128,6 +123,7 @@ pub(crate) struct UiRenderer {
     pipeline: wgpu::RenderPipeline,
     textured_pipeline: wgpu::RenderPipeline,
     batches: Vec<UiBatch>,
+    overflow_active: bool,
 }
 
 struct UiBatch {
@@ -135,7 +131,6 @@ struct UiBatch {
     count: u32,
     textured_buffer: wgpu::Buffer,
     textured_runs: Vec<UiTextureRun>,
-    budget_usage: UiBudgetUsage,
 }
 
 impl UiRenderer {
@@ -227,6 +222,7 @@ impl UiRenderer {
             pipeline,
             textured_pipeline,
             batches: Vec::new(),
+            overflow_active: false,
         }
     }
 
@@ -238,9 +234,6 @@ impl UiRenderer {
         textured_rects: &[UiTexturedRect],
         viewport: [u32; 2],
     ) -> usize {
-        let budget_usage = UiBudgetUsage::from_counts(rects.len(), textured_rects.len());
-        let rects = budgeted_slice(rects, MAX_UI_RECTS);
-        let textured_rects = budgeted_slice(textured_rects, MAX_UI_TEXTURED_RECTS);
         let mut batch = UiBatch {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("screen-ui-rect-batch"),
@@ -256,12 +249,29 @@ impl UiRenderer {
                 mapped_at_creation: false,
             }),
             textured_runs: Vec::new(),
-            budget_usage,
         };
         if viewport.contains(&0) {
             self.batches.push(batch);
             return self.batches.len() - 1;
         }
+
+        let budget_usage = UiBudgetUsage::from_counts(rects.len(), textured_rects.len());
+        if budget_usage.overflowed() {
+            if !self.overflow_active {
+                eprintln!(
+                    "PURGATORY UI: primitive budget overflow; rects {}/{} textured {}/{}",
+                    budget_usage.requested_rects,
+                    budget_usage.accepted_rects,
+                    budget_usage.requested_textured_rects,
+                    budget_usage.accepted_textured_rects
+                );
+            }
+            self.overflow_active = true;
+        } else {
+            self.overflow_active = false;
+        }
+        let rects = budgeted_slice(rects, MAX_UI_RECTS);
+        let textured_rects = budgeted_slice(textured_rects, MAX_UI_TEXTURED_RECTS);
 
         let to_ndc = |point: [f32; 2]| {
             [
@@ -344,14 +354,6 @@ impl UiRenderer {
         }
         self.batches.push(batch);
         self.batches.len() - 1
-    }
-
-    #[must_use]
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn budget_usage(&self, batch_index: usize) -> Option<UiBudgetUsage> {
-        self.batches
-            .get(batch_index)
-            .map(|batch| batch.budget_usage)
     }
 
     pub(crate) fn draw_textured<'a>(
@@ -488,14 +490,12 @@ mod tests {
         );
         assert_eq!(usage.requested_rects, MAX_UI_RECTS + 3);
         assert_eq!(usage.accepted_rects, MAX_UI_RECTS);
-        assert_eq!(usage.rect_overflow(), 3);
         assert_eq!(usage.requested_textured_rects, MAX_UI_TEXTURED_RECTS + 5);
         assert_eq!(usage.accepted_textured_rects, MAX_UI_TEXTURED_RECTS);
-        assert_eq!(usage.textured_rect_overflow(), 5);
+        assert!(usage.overflowed());
 
         let at_cap = UiBudgetUsage::from_counts(MAX_UI_RECTS, MAX_UI_TEXTURED_RECTS);
-        assert_eq!(at_cap.rect_overflow(), 0);
-        assert_eq!(at_cap.textured_rect_overflow(), 0);
+        assert!(!at_cap.overflowed());
     }
 
     #[test]
