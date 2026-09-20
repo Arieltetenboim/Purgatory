@@ -39,7 +39,8 @@ pub(crate) fn launch_character_lab() -> Result<(), String> {
             tool.to_string_lossy().replace('\\', "/").replace(' ', "%20")
         );
 
-        std::process::Command::new("explorer.exe")
+        std::process::Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
             .arg(&file_url)
             .current_dir(&root)
             .spawn()
