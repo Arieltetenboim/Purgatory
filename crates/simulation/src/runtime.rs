@@ -925,7 +925,7 @@ impl World {
             {
                 npc.target = None;
             }
-            let approach_target = approach.and_then(|bounds| {
+            let approach_target = npc.runtime_config.approach_bounds.or(approach).and_then(|bounds| {
                 npc.target.and_then(|target| {
                     let actor_position = self.transform_of(id)?.position;
                     let target_position = self.transform_of(target)?.position;

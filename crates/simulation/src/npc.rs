@@ -44,6 +44,9 @@ pub struct NpcRuntimeConfig {
     pub half_extents: [f32; 2],
     /// Collision-center offset from the entity/presentation origin.
     pub collision_center_offset: [f32; 2],
+    /// Optional target-center envelope used while approaching an acquired target.
+    /// Authored Monster runtime projection sets this per entity; workload NPCs may omit it.
+    pub approach_bounds: Option<NpcApproachBounds>,
     /// Ticks between patrol heading changes while active.
     pub turn_period_ticks: u64,
     /// Ticks spent walking before a patrol stop.
@@ -58,6 +61,7 @@ impl Default for NpcRuntimeConfig {
             movement_speed: 2.0,
             half_extents: [0.4, 0.6],
             collision_center_offset: [0.0, 0.0],
+            approach_bounds: None,
             turn_period_ticks: 45,
             walk_period_ticks: 30,
             stop_period_ticks: 15,

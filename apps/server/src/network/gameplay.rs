@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use purgatory_common::{
     ChannelId, CharacterId, ContentId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
-    MONSTER_RED_SLIME, RestoreIntent, WorldAddress,
+    MONSTER_MOSS_CRAB, RestoreIntent, WorldAddress,
 };
 use purgatory_content::{
     ContentRegistry, EquipmentAuthError, LoadMode, MonsterBehavior, authorize_equip,
@@ -1262,7 +1262,6 @@ impl GameplayOwner {
             self.duplicate_session_detected = self.duplicate_session_detected.saturating_add(1);
             return;
         }
-        self.ensure_live_combat_creature();
         let address = self.map_a_address();
         let n = self.bindings.len();
         let spawn_x = match self.placement {
@@ -1304,7 +1303,6 @@ impl GameplayOwner {
         if self.occupancy.contains_key(&character_id) {
             return Err(EnterError::Occupied);
         }
-        self.ensure_live_combat_creature();
         self.occupancy.insert(character_id, connection_id);
         let logical = resolve_restore(&self.registry, &character.restore);
         let Some((address, spawn_pos)) = runtime_placement(&self.registry, &logical) else {
@@ -1435,54 +1433,6 @@ impl GameplayOwner {
             .is_err()
         {
             println!("11C_INVENTORY response dropped (interact channel full or closed)");
-        }
-    }
-
-    fn ensure_live_combat_creature(&mut self) {
-        if self
-            .world
-            .iter()
-            .any(|id| self.world.content_id_of(id) == Some(MONSTER_RED_SLIME))
-        {
-            return;
-        }
-        let Some(definition) = self.registry.monster_by_id(MONSTER_RED_SLIME).cloned() else {
-            return;
-        };
-        let address = self.map_a_address();
-        let Some(floor) = self
-            .world
-            .iter_platforms()
-            .find(|platform| self.world.address_of(platform.id) == Some(address))
-        else {
-            return;
-        };
-        let creature_y = floor.top_surface() + definition.collision_bounds.bottom;
-        let now = SimulationTick::from_count(self.ticks);
-        let runtime_config = NpcRuntimeConfig {
-            movement_speed: definition.movement_speed,
-            half_extents: definition.collision_bounds.half_extents(),
-            collision_center_offset: definition.collision_bounds.center_offset(),
-            ..NpcRuntimeConfig::default()
-        };
-        let request = World::npc_spawn_request_with_runtime_config(
-            address,
-            [FOOTNOTE_SPAWN_X + 6.0, creature_y],
-            LIVE_COMBAT_CREATURE_TYPE_TOKEN,
-            definition.home_leash_radius,
-            9,
-            now,
-            true,
-            definition.health_max,
-            runtime_config,
-        )
-        .with_content(definition.content_id);
-        let Some(creature) = self.world.spawn(request) else {
-            return;
-        };
-        if let Some(mut npc) = self.world.npc_of(creature) {
-            npc.walking = false;
-            let _ = self.world.set_npc(creature, npc);
         }
     }
 
@@ -1861,26 +1811,7 @@ impl GameplayOwner {
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
-        let authored_approach = self
-            .registry
-            .monster_by_id(MONSTER_RED_SLIME)
-            .map(|definition| match definition.behavior {
-                MonsterBehavior::ChaseContactWhenAttacked => NpcApproachBounds {
-                    left: (definition.collision_bounds.left + PLAYER_HALF_EXTENTS[0]
-                        - CONTACT_EPSILON)
-                        .max(0.0),
-                    right: (definition.collision_bounds.right + PLAYER_HALF_EXTENTS[0]
-                        - CONTACT_EPSILON)
-                        .max(0.0),
-                    bottom: (definition.collision_bounds.bottom + PLAYER_HALF_EXTENTS[1]
-                        - CONTACT_EPSILON)
-                        .max(0.0),
-                    top: (definition.collision_bounds.top + PLAYER_HALF_EXTENTS[1]
-                        - CONTACT_EPSILON)
-                        .max(0.0),
-                },
-            });
-        self.world.tick_npcs_with_approach(dt, authored_approach);
+        self.world.tick_npcs(dt);
         self.load_pressure.drive_npc_workload(&mut self.world, tick);
         sample.npc_activity += npc_t0.elapsed();
 
@@ -3276,10 +3207,24 @@ impl GameplayOwner {
             position[0] + 1.5,
             floor_y + definition.collision_bounds.bottom,
         ];
+        let approach_bounds = match definition.behavior {
+            MonsterBehavior::ChaseContactWhenAttacked => Some(NpcApproachBounds {
+                left: (definition.collision_bounds.left + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
+                    .max(0.0),
+                right: (definition.collision_bounds.right + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
+                    .max(0.0),
+                bottom: (definition.collision_bounds.bottom + PLAYER_HALF_EXTENTS[1]
+                    - CONTACT_EPSILON)
+                    .max(0.0),
+                top: (definition.collision_bounds.top + PLAYER_HALF_EXTENTS[1] - CONTACT_EPSILON)
+                    .max(0.0),
+            }),
+        };
         let runtime_config = NpcRuntimeConfig {
             movement_speed: definition.movement_speed,
             half_extents: definition.collision_bounds.half_extents(),
             collision_center_offset: definition.collision_bounds.center_offset(),
+            approach_bounds,
             ..NpcRuntimeConfig::default()
         };
         let request = World::npc_spawn_request_with_runtime_config(
@@ -6437,12 +6382,12 @@ mod tests {
         let before = owner
             .world()
             .iter()
-            .filter(|&entity| owner.world().content_id_of(entity) == Some(MONSTER_RED_SLIME))
+            .filter(|&entity| owner.world().content_id_of(entity) == Some(MONSTER_MOSS_CRAB))
             .count();
 
         owner.apply_input(InputUpdate::DevSpawnMonster {
             connection_id: connection,
-            monster_content_id: MONSTER_RED_SLIME,
+            monster_content_id: MONSTER_MOSS_CRAB,
         });
 
         let spawned = *owner
@@ -6452,14 +6397,14 @@ mod tests {
         assert_eq!(owner.world().address_of(spawned), Some(actor_address));
         assert_eq!(
             owner.world().content_id_of(spawned),
-            Some(MONSTER_RED_SLIME)
+            Some(MONSTER_MOSS_CRAB)
         );
         assert!(owner.world().npc_of(spawned).is_some());
         assert_eq!(
             owner.world().health_of(spawned),
             owner
                 .registry
-                .monster_by_id(MONSTER_RED_SLIME)
+                .monster_by_id(MONSTER_MOSS_CRAB)
                 .map(|definition| Health::full(definition.health_max))
         );
         assert_eq!(
@@ -6467,7 +6412,7 @@ mod tests {
             owner
                 .world()
                 .iter()
-                .filter(|&entity| owner.world().content_id_of(entity) == Some(MONSTER_RED_SLIME))
+                .filter(|&entity| owner.world().content_id_of(entity) == Some(MONSTER_MOSS_CRAB))
                 .count()
         );
     }
@@ -7392,6 +7337,10 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
+        owner.apply_input(InputUpdate::DevSpawnMonster {
+            connection_id: id,
+            monster_content_id: MONSTER_MOSS_CRAB,
+        });
         let actor = owner.entity_of(id).unwrap();
         assert!(owner.world().health_of(actor).is_some());
         assert!(owner.world().ability_granted(actor, basic_strike_id()));
@@ -7403,12 +7352,12 @@ mod tests {
         assert_eq!(creatures.len(), 1);
         assert_eq!(
             owner.world().content_id_of(creatures[0]),
-            Some(MONSTER_RED_SLIME)
+            Some(MONSTER_MOSS_CRAB)
         );
         let definition = owner
             .registry
-            .monster_by_id(MONSTER_RED_SLIME)
-            .expect("Red Slime definition");
+            .monster_by_id(MONSTER_MOSS_CRAB)
+            .expect("Moss Crab definition");
         assert_eq!(
             owner.world().health_of(creatures[0]),
             Some(Health::full(definition.health_max))
@@ -7434,6 +7383,10 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
+        owner.apply_input(InputUpdate::DevSpawnMonster {
+            connection_id: connection,
+            monster_content_id: MONSTER_MOSS_CRAB,
+        });
         let player = owner.entity_of(connection).unwrap();
         let creature = owner
             .world()
@@ -7463,6 +7416,10 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
+        owner.apply_input(InputUpdate::DevSpawnMonster {
+            connection_id: connection,
+            monster_content_id: MONSTER_MOSS_CRAB,
+        });
         let player = owner.entity_of(connection).expect("player");
         let creature = owner
             .world()
@@ -7508,13 +7465,13 @@ mod tests {
         assert_ne!(respawned, creature);
         assert_eq!(
             owner.world().content_id_of(respawned),
-            Some(MONSTER_RED_SLIME),
+            Some(MONSTER_MOSS_CRAB),
             "scheduled respawn must preserve authored monster identity"
         );
         let health_max = owner
             .registry
-            .monster_by_id(MONSTER_RED_SLIME)
-            .expect("Red Slime definition")
+            .monster_by_id(MONSTER_MOSS_CRAB)
+            .expect("Moss Crab definition")
             .health_max;
         assert_eq!(
             owner.world().health_of(respawned).unwrap().current,
