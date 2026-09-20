@@ -349,7 +349,9 @@ impl UiRenderer {
     #[must_use]
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn budget_usage(&self, batch_index: usize) -> Option<UiBudgetUsage> {
-        self.batches.get(batch_index).map(|batch| batch.budget_usage)
+        self.batches
+            .get(batch_index)
+            .map(|batch| batch.budget_usage)
     }
 
     pub(crate) fn draw_textured<'a>(
