@@ -14,6 +14,14 @@ function Prune-ClientList {
     for ($i = $script:Clients.Count - 1; $i -ge 0; $i--) {
         $row = $script:Clients[$i]
         if (-not (Test-ProcessAlive -Process $row.Process)) {
+            $exitCode = Get-ProcessExitCode -Process $row.Process
+            $runtimeSeconds = 0.0
+            try {
+                $runtimeSeconds = ([datetime]::UtcNow - $row.StartedAt).TotalSeconds
+            }
+            catch { }
+            $exitText = if ($null -eq $exitCode) { "unknown" } else { [string]$exitCode }
+            Write-LaunchLog ("Client {0} exited code={1} after {2:N1}s" -f $row.Serial, $exitText, $runtimeSeconds)
             $script:Clients.RemoveAt($i)
             $dead++
         }
@@ -140,13 +148,7 @@ function Request-StopClients {
 }
 
 function Update-ClientLifecycle {
-    $dead = Prune-ClientList
-    $live = $script:Clients.Count
-    if ($live -lt $script:LastClientLive) {
-        $dropped = $script:LastClientLive - $live
-        if ($dropped -eq 1) { Write-LaunchLog "Client closed" }
-        else { Write-LaunchLog "$dropped clients closed" }
-    }
-    $script:LastClientLive = $live
+    [void](Prune-ClientList)
+    $script:LastClientLive = $script:Clients.Count
     Start-QueuedClientLaunches
 }
