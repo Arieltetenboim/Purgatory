@@ -207,13 +207,13 @@
     <div class="section">
       <h2>1. Source image</h2>
       <label class="drop" id="dropZone" for="fileInput">
-        <strong>Load PNG / JPG / WebP</strong>
+        <strong>Load any source PNG / JPG / WebP</strong>
         <span class="small">Drop image here or click to browse</span>
       </label>
       <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" />
       <div class="row" style="margin-top:8px">
         <button id="openTemplateBtn">Open Template V1</button>
-        <button class="primary" id="importTemplateBtn">Import Template V1 PNG</button>
+        <button class="primary" id="importTemplateBtn">Import Template V1 PNG (2048×2048 only)</button>
       </div>
       <input id="templateImportInput" type="file" accept="image/png" />
       <div class="hint">
@@ -839,12 +839,20 @@
       const img=new Image();
       img.onload=()=>{
         try{importTemplateImage(img,file.name);}
-        catch(err){setProjectStatus(`Template import failed: ${err?.message||String(err)}`);}
+        catch(err){
+          const message=`Template import failed: ${err?.message||String(err)}`;
+          setProjectStatus(message);
+          imageStatus.textContent=message;
+          imageStatus.style.borderColor='#b45309';
+        }
         finally{URL.revokeObjectURL(url);}
       };
       img.onerror=()=>{
         URL.revokeObjectURL(url);
-        setProjectStatus('Template import failed: could not decode PNG.');
+        const message='Template import failed: could not decode PNG.';
+        setProjectStatus(message);
+        imageStatus.textContent=message;
+        imageStatus.style.borderColor='#b45309';
       };
       img.src=url;
     });
@@ -896,9 +904,12 @@
       pivotPartId = '';
       renderParts();
       sourceFileName = file.name;
-      imageStatus.textContent = `${file.name} · ${img.naturalWidth} × ${img.naturalHeight}`;
+      imageStatus.textContent = `${file.name} · ${img.naturalWidth} × ${img.naturalHeight} · source loaded`;
+      imageStatus.style.borderColor='#3f6b5d';
       setEnabled(true);
       setProjectStatus('New source loaded. Save a project to preserve this session.');
+      setViewMode('source');
+      resizeCanvas();
       fitImage();
     };
     img.onerror = () => {
