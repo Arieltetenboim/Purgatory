@@ -13,6 +13,33 @@ pub(crate) fn launch_mob_lab() -> Result<(), String> {
     launch_visible_powershell(&root, &launcher, &[])
 }
 
+pub(crate) fn launch_character_lab() -> Result<(), String> {
+    let root = workspace_root()?;
+    let tool = root
+        .join("tools")
+        .join("Character part lab")
+        .join("purgatory_character_part_tool_step1.html");
+
+    if !tool.is_file() {
+        return Err(format!("Character Lab not found: {}", tool.display()));
+    }
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(&tool)
+            .current_dir(&root)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("launch {}: {err}", tool.display()))
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("Character Lab launch currently supports Windows only".to_owned())
+    }
+}
+
 pub(crate) fn launch_quality_gate() -> Result<(), String> {
     let root = workspace_root()?;
     let script = root.join("scripts").join("check.ps1");
