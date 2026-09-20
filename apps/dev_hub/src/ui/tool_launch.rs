@@ -15,6 +15,8 @@ pub(crate) fn launch_mob_lab() -> Result<(), String> {
 
 pub(crate) fn launch_character_lab() -> Result<(), String> {
     let root = workspace_root()?;
+    crate::authoring_template::export_character_lab_contract()?;
+    crate::authoring_template::export_character_base_template_v1()?;
     let tool = root
         .join("tools")
         .join("Character part lab")
