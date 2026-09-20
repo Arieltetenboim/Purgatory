@@ -94,12 +94,12 @@
       "y": 718.5018002443768
     },
     "foot_front": {
-      "x": 1265.24702795585,
-      "y": 857.4943048053457
-    },
-    "foot_back": {
       "x": 1032.6630945313643,
       "y": 857.4804686497406
+    },
+    "foot_back": {
+      "x": 1265.24702795585,
+      "y": 857.4943048053457
     }
   },
   "assembly": {
@@ -176,7 +176,7 @@
   },
   "export": {
     "asset_id": "character.base.dev_01",
-    "pixels_per_unit": 256
+    "pixels_per_unit": 677
   },
   "ui": {
     "pivot_part_id": "upper_arm_front",
