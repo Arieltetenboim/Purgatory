@@ -142,8 +142,7 @@ Do not build a generic quest manager, scripting engine, behavior framework or vo
 
 ## FORGE M — Monster Authoring & Runtime
 
-Purpose: turn the proven single-creature PvE fixture into a validated,
-content-backed path before building the Mob Lab editor. The current contract is
+Purpose: turn the proven single-creature PvE fixture into a validated, content-backed Monster authoring/runtime path. The current contract is
 [`MONSTER_AUTHORING_RUNTIME.md`](MONSTER_AUTHORING_RUNTIME.md).
 
 | Slice | Name | Status |
@@ -152,7 +151,7 @@ content-backed path before building the Mob Lab editor. The current contract is
 | M1 | Monster Content + Validation | complete + merged |
 | M2 | Content-backed Red Slime Runtime | complete + merged + manually verified |
 | M2.1 | Damage-triggered aggro + passive contact contract | complete + merged + manually verified |
-| M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | implemented on `forge/mob-lab-m3`; PR #72 draft |
+| M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | implemented; automated gate green; manual closeout smoke before PR #72 merge |
 | M4 | Multi-monster runtime identity + presentation + test-arena proof | next; tracked by #75 |
 | M5 | Hub integration + v0.1 closeout | partially landed; final closeout waits on M4 |
 
