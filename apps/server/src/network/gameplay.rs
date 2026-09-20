@@ -3901,6 +3901,7 @@ impl Default for GameplayOwner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use purgatory_common::MONSTER_MOSS_CRAB;
     use purgatory_protocol::{ReplicationRecord, SnapshotEntity, decode_replication_frame};
     use purgatory_simulation::{ActionKind, ActionPhase};
     use std::collections::HashMap;
