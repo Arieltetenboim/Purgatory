@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "purgatory_sprite_animation",
   "id": "creature.red_slime",
-  "atlas": "redslime.png",
+  "atlas": "redslime2.png",
   "frame_size_px": [
     64,
     64
