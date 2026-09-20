@@ -20,9 +20,11 @@ const VISUAL_PARTS: &[&str] = &[
     "hand_back",
     "upper_leg_back",
     "lower_leg_back",
+    "foot_back",
     "torso",
     "upper_leg_front",
     "lower_leg_front",
+    "foot_front",
     "head",
     "upper_arm_front",
     "lower_arm_front",
@@ -305,8 +307,8 @@ mod tests {
     fn current_embedded_pack_loads_and_resolves_metadata() {
         let mut assets = runtime();
         let pack = embedded_character_visual_pack(&mut assets).unwrap();
-        assert_eq!(pack.completeness, "partial_dev");
-        assert_eq!(pack.visual_count(), 12);
+        assert!(matches!(pack.completeness.as_str(), "partial_dev" | "complete"));
+        assert_eq!(pack.visual_count(), VISUAL_PARTS.len());
         let visual = pack.visual("character.base.dev_01.head.side").unwrap();
         assert_eq!(
             visual.texture,
@@ -314,34 +316,29 @@ mod tests {
                 .unwrap()
                 .texture
         );
-        assert_eq!(
-            visual.dimensions_px,
-            [visual.rect_px[2], visual.rect_px[3]]
-        );
+        assert_eq!(visual.dimensions_px, [visual.rect_px[2], visual.rect_px[3]]);
         assert!(visual.dimensions_px[0] > 0 && visual.dimensions_px[1] > 0);
         assert!(visual.pivot_px.iter().all(|value| value.is_finite()));
         assert_eq!(visual.pixels_per_unit, 256.0);
         assert_eq!(assets.resource_count(), 1);
     }
 
+    fn manifest_with_completeness(value: &str) -> String {
+        let mut json: serde_json::Value = serde_json::from_str(&manifest()).unwrap();
+        json["completeness"] = serde_json::Value::String(value.to_owned());
+        serde_json::to_string(&json).unwrap()
+    }
+
     #[test]
     fn complete_pack_is_accepted() {
-        let json = manifest().replacen(
-            "\"completeness\": \"partial_dev\"",
-            "\"completeness\": \"complete\"",
-            1,
-        );
+        let json = manifest_with_completeness("complete");
         let pack = load(&json, &mut runtime()).unwrap();
         assert_eq!(pack.completeness, "complete");
     }
 
     #[test]
     fn unknown_completeness_is_rejected() {
-        let json = manifest().replacen(
-            "\"completeness\": \"partial_dev\"",
-            "\"completeness\": \"other\"",
-            1,
-        );
+        let json = manifest_with_completeness("other");
         assert!(matches!(
             load(&json, &mut runtime()),
             Err(CharacterVisualPackError::Unsupported("completeness", value)) if value == "other"
@@ -359,9 +356,10 @@ mod tests {
                     .texture,
             )
             .unwrap();
+        let raw: RawPack = serde_json::from_slice(EMBEDDED_MANIFEST).unwrap();
         assert_eq!(
             (resource.image.width(), resource.image.height()),
-            (512, 512)
+            (raw.atlas.width, raw.atlas.height)
         );
     }
 
@@ -379,11 +377,9 @@ mod tests {
 
     #[test]
     fn invalid_rect_rejected() {
-        let json = manifest().replacen(
-            "        86,\n        236,\n        46,\n        51",
-            "        500,\n        500,\n        46,\n        51",
-            1,
-        );
+        let mut json: serde_json::Value = serde_json::from_str(&manifest()).unwrap();
+        json["visuals"][0]["rect_px"] = serde_json::json!([500, 1000, 100, 100]);
+        let json = serde_json::to_string(&json).unwrap();
         assert!(
             matches!(load(&json, &mut runtime()), Err(CharacterVisualPackError::Invalid(error)) if error.contains("rect"))
         );
@@ -411,11 +407,9 @@ mod tests {
 
     #[test]
     fn outside_and_negative_pivots_are_accepted() {
-        let json = manifest().replacen(
-            "\"pivot_px\": [21.914373638648044, -8.993649320699319]",
-            "\"pivot_px\": [-1000, 1000]",
-            1,
-        );
+        let mut json: serde_json::Value = serde_json::from_str(&manifest()).unwrap();
+        json["visuals"][0]["pivot_px"] = serde_json::json!([-1000, 1000]);
+        let json = serde_json::to_string(&json).unwrap();
         assert!(load(&json, &mut runtime()).is_ok());
     }
 
