@@ -631,20 +631,46 @@ mod tests {
 
     #[test]
     fn manifest_metadata_is_validated_by_the_resolved_sheet() {
-        let bytes = std::fs::read(
-            workspace_root()
-                .join("Graphic")
-                .join("creature")
-                .join("redslime")
-                .join("manifest.json"),
-        )
-        .unwrap();
+        let dir = workspace_root()
+            .join("Graphic")
+            .join("creature")
+            .join("redslime");
+        let bytes = std::fs::read(dir.join("manifest.json")).unwrap();
         let raw: RawManifest = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(raw.schema_version, 1);
         assert_eq!(raw.kind, "purgatory_sprite_animation");
         assert_eq!(raw.id, "creature.red_slime");
-        assert_eq!(raw.atlas, "redslime.png");
         assert_eq!(raw.authored_facing, "right");
+
+        // Atlas filename is data, not a frozen contract.
+        assert!(!raw.atlas.is_empty());
+        assert_eq!(Path::new(&raw.atlas).components().count(), 1);
+        let atlas_path = dir.join(&raw.atlas);
+        assert!(
+            atlas_path.is_file(),
+            "atlas file missing: {}",
+            atlas_path.display()
+        );
+        let png = std::fs::read(&atlas_path).unwrap();
+        assert!(
+            png.len() >= 24 && png.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "atlas is not a PNG: {}",
+            atlas_path.display()
+        );
+        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        let [fw, fh] = raw.frame_size_px;
+        assert!(fw > 0 && fh > 0);
+        assert_eq!(
+            width % fw,
+            0,
+            "atlas width {width} not divisible by frame width {fw}"
+        );
+        assert_eq!(
+            height % fh,
+            0,
+            "atlas height {height} not divisible by frame height {fh}"
+        );
     }
 
     #[test]
