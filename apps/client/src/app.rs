@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use purgatory_common::ContentId;
 use purgatory_content::{
     ContentRegistry, LoadMode, default_content_root, geometry_plan, load_registry,
 };
@@ -317,7 +318,7 @@ struct ClientApp {
     skeleton: crate::skeleton_debug::HumanoidDebug,
     characters: CharacterPresentationSet,
     presentation_oneshots: PresentationOneShotTable,
-    npc_sheet: SpriteSheet,
+    monster_sheets: HashMap<ContentId, SpriteSheet>,
     accept_sheet: OverheadSheet,
     turn_sheet: OverheadSheet,
     accept_player: SpriteAnimationPlayer,
@@ -375,19 +376,17 @@ impl ClientApp {
         let character_visual_pack =
             crate::character_assets::embedded_character_visual_pack(&mut asset_runtime)
                 .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
-        let monster_presentation = registry
-            .monster_presentation_by_id(purgatory_common::MONSTER_RED_SLIME)
-            .ok_or_else(|| {
-                "PURGATORY red slime presentation missing from shared content".to_owned()
-            })?;
-        let npc_sheet =
-            SpriteSheet::from_sprite_id(&mut asset_runtime, &monster_presentation.sprite_id)
+        let mut monster_sheets = HashMap::new();
+        for presentation in registry.iter_monster_presentations() {
+            let sheet = SpriteSheet::from_sprite_id(&mut asset_runtime, &presentation.sprite_id)
                 .map_err(|error| {
                     format!(
-                        "PURGATORY monster sprite '{}' error: {error}",
-                        monster_presentation.sprite_id
+                        "PURGATORY monster sprite '{}' ({}) error: {error}",
+                        presentation.sprite_id, presentation.authored_id
                     )
                 })?;
+            monster_sheets.insert(presentation.content_id, sheet);
+        }
         let accept_sheet = OverheadSheet::accept(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY accept animation error: {error}"))?;
         let turn_sheet = OverheadSheet::turn(&mut asset_runtime)
@@ -487,7 +486,7 @@ impl ClientApp {
             skeleton: crate::skeleton_debug::HumanoidDebug::new(),
             characters: CharacterPresentationSet::with_dialogue_animations(dialogue_animations),
             presentation_oneshots: PresentationOneShotTable::new(),
-            npc_sheet,
+            monster_sheets,
             accept_sheet,
             turn_sheet,
             accept_player: SpriteAnimationPlayer::new(),
@@ -2722,7 +2721,7 @@ impl ClientApp {
                     &self.replica,
                     &self.interp,
                     &self.presentation_oneshots,
-                    &self.npc_sheet,
+                    &self.monster_sheets,
                     &mut self.npc_players,
                     &self.accept_sheet,
                     &self.turn_sheet,
@@ -3963,7 +3962,7 @@ fn npc_quads(
     replica: &crate::replica::ReplicatedWorld,
     interp: &crate::interp::InterpolationBuffer,
     oneshots: &PresentationOneShotTable,
-    sheet: &crate::npc_presentation::SpriteSheet,
+    sheets: &HashMap<ContentId, crate::npc_presentation::SpriteSheet>,
     players: &mut HashMap<
         PresentationEntityKey,
         (
@@ -4043,9 +4042,12 @@ fn npc_quads(
             } else if entity.velocity[0] < -0.01 {
                 state.2 = true;
             }
+            let Some(sheet) = entity.content_id.and_then(|content_id| sheets.get(&content_id)) else {
+                return vec![aabb_quad(aabb, NPC_STATE_INDICATOR_COLOR)];
+            };
             let clip = sheet.clip(clip_name(state.1));
             state.0.advance(clip, frame_dt);
-            let frame = state.0.frame(clip).unwrap_or(8);
+            let frame = state.0.frame(clip).unwrap_or(0);
             let mut quads = vec![sheet.quad(position, frame, flash, state.2)];
             if !accept_shown {
                 accept_shown = true;
@@ -5443,16 +5445,19 @@ mod tests {
                     entity: pose(local, ReplicatedKind::Player, [-19.4, -2.9]),
                     health: None,
                     equipment: None,
+                                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: pose(combat_npc, ReplicatedKind::Npc, [-19.0, -2.9]),
                     health: None,
                     equipment: None,
+                                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: pose(traveler, ReplicatedKind::Npc, [-17.8, -2.9]),
                     health: None,
                     equipment: Some(ReplicatedEquipment::empty()),
+                                    content_id: None,
                 },
             ],
         );
