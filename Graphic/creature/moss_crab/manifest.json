@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "purgatory_sprite_animation",
   "id": "creature.moss_crab",
-  "atlas": "spider.png",
+  "atlas": "moss_crab.png",
   "frame_size_px": [
     256,
     256
