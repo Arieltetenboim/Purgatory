@@ -467,6 +467,14 @@
 <script src="humanoid_v0_contract.js"></script>
 <script>
 (() => {
+  window.addEventListener('error',event=>{
+    const el=document.getElementById('imageStatus');
+    if(el){
+      el.textContent=`Character Lab JS error: ${event.message||'unknown startup error'}`;
+      el.style.borderColor='#b45309';
+    }
+  });
+
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently:true });
   const workspace = document.getElementById('workspace');
@@ -795,6 +803,59 @@
     return true;
   }
 
+  function wireBasicInputs(){
+    fileInput.addEventListener('change',e=>{
+      const file=e.target.files?.[0];
+      imageStatus.textContent=file ? `Selected ${file.name} · decoding…` : 'No file selected.';
+      loadFile(file);
+    });
+
+    openTemplateBtn.addEventListener('click',()=>{
+      try{
+        const url=new URL('../../Graphic/character/CHARACTER_BASE_TEMPLATE_V1.svg',window.location.href);
+        const opened=window.open(url.href,'_blank');
+        if(!opened){
+          imageStatus.textContent='Template open was blocked by the browser. Allow pop-ups for this local page.';
+        }
+      }catch(err){
+        imageStatus.textContent=`Template open failed: ${err?.message||String(err)}`;
+      }
+    });
+
+    importTemplateBtn.addEventListener('click',()=>{
+      if(CONTRACT_LOAD_ERROR){
+        imageStatus.textContent=CONTRACT_LOAD_ERROR;
+        return;
+      }
+      templateImportInput.click();
+    });
+
+    templateImportInput.addEventListener('change',()=>{
+      const file=templateImportInput.files?.[0];
+      templateImportInput.value='';
+      if(!file) return;
+      imageStatus.textContent=`Selected Template V1 PNG ${file.name} · decoding…`;
+      const url=URL.createObjectURL(file);
+      const img=new Image();
+      img.onload=()=>{
+        try{importTemplateImage(img,file.name);}
+        catch(err){setProjectStatus(`Template import failed: ${err?.message||String(err)}`);}
+        finally{URL.revokeObjectURL(url);}
+      };
+      img.onerror=()=>{
+        URL.revokeObjectURL(url);
+        setProjectStatus('Template import failed: could not decode PNG.');
+      };
+      img.src=url;
+    });
+
+    imageStatus.textContent=CONTRACT_LOAD_ERROR
+      ? `Character Lab controls READY · ${CONTRACT_LOAD_ERROR}`
+      : 'Character Lab controls READY · no image loaded.';
+  }
+
+  wireBasicInputs();
+
   function resizeCanvas(){
     const r = workspace.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
@@ -804,7 +865,11 @@
     canvas.style.height = r.height+'px';
     redraw();
   }
-  new ResizeObserver(resizeCanvas).observe(workspace);
+  if('ResizeObserver' in window){
+    new ResizeObserver(resizeCanvas).observe(workspace);
+  }else{
+    window.addEventListener('resize',resizeCanvas);
+  }
 
   function setEnabled(v){
     [sampleBtn,applyBtn,restoreBtn,detectBtn,fitBtn,zoom100Btn].forEach(b=>b.disabled=!v);
@@ -842,22 +907,6 @@
     };
     img.src = url;
   }
-
-  openTemplateBtn.addEventListener('click',()=>{
-    const url=new URL('../../Graphic/character/CHARACTER_BASE_TEMPLATE_V1.svg',window.location.href);
-    const opened=window.open(url.href,'_blank');
-    if(!opened){
-      imageStatus.textContent='Template open was blocked by the browser. Allow pop-ups for this local page.';
-    }
-  });
-
-  importTemplateBtn.addEventListener('click',()=>{
-    if(CONTRACT_LOAD_ERROR){
-      imageStatus.textContent=CONTRACT_LOAD_ERROR;
-      return;
-    }
-    templateImportInput.click();
-  });
 
   function templateComponentForCell(data,cell){
     const w=workCanvas.width;
@@ -940,30 +989,6 @@
     }
   }
 
-  if(CONTRACT_LOAD_ERROR){
-    imageStatus.textContent=CONTRACT_LOAD_ERROR;
-    imageStatus.style.borderColor='#8a5a2f';
-  }
-
-  templateImportInput.addEventListener('change',()=>{
-    const file=templateImportInput.files?.[0];
-    templateImportInput.value='';
-    if(!file) return;
-    const url=URL.createObjectURL(file);
-    const img=new Image();
-    img.onload=()=>{
-      try{importTemplateImage(img,file.name);}
-      catch(err){setProjectStatus(`Template import failed: ${err?.message||String(err)}`);}
-      finally{URL.revokeObjectURL(url);}
-    };
-    img.onerror=()=>{
-      URL.revokeObjectURL(url);
-      setProjectStatus('Template import failed: could not decode PNG.');
-    };
-    img.src=url;
-  });
-
-  fileInput.addEventListener('change', e=>loadFile(e.target.files[0]));
   ['dragenter','dragover'].forEach(ev=>dropZone.addEventListener(ev,e=>{
     e.preventDefault(); dropZone.classList.add('drag');
   }));
@@ -2992,6 +3017,9 @@
   setProjectStatus('Save the editor state to continue later.');
   renderRuntimeStatus();
   resizeCanvas();
+  if(!hasImage && imageStatus.textContent.startsWith('Character Lab controls READY')){
+    imageStatus.style.borderColor=CONTRACT_LOAD_ERROR?'#8a5a2f':'#3f6b5d';
+  }
 })();
 </script>
 </body>
