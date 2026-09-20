@@ -2827,8 +2827,7 @@ mod tests {
     fn start_server_build_does_not_filter_out_server_binary() {
         let mut backend = FakeProcessBackend::new();
         backend.hold_cargo = true;
-        let (mut session, now) =
-            harness("start-build-targets", backend, FakeHealthSource::none());
+        let (mut session, now) = harness("start-build-targets", backend, FakeHealthSource::none());
 
         assert_eq!(
             session.command(HubCommand::Start, now),
