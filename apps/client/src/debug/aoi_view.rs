@@ -355,7 +355,7 @@ mod tests {
             },
             health: None,
             equipment: None,
-                    content_id: None,
+            content_id: None,
         }
     }
 
