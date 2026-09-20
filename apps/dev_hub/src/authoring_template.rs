@@ -30,8 +30,7 @@ pub const ORIGIN_Y: f32 = 768.0;
 pub const SAFE_MARGIN_WU: f32 = 0.12;
 
 const OUTPUT_REL: &str = "Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg";
-const CHARACTER_LAB_CONTRACT_REL: &str =
-    "tools/Character part lab/humanoid_v0_contract.js";
+const CHARACTER_LAB_CONTRACT_REL: &str = "tools/Character part lab/humanoid_v0_contract.js";
 
 /// Default repository path for the generated template.
 #[must_use]
@@ -40,7 +39,6 @@ pub fn default_output_path() -> PathBuf {
         .join("../../")
         .join(OUTPUT_REL)
 }
-
 
 /// Repository path for the generated Character Lab runtime-bind contract.
 #[must_use]
@@ -67,7 +65,9 @@ window.PURGATORY_HUMANOID_V0_CONTRACT = {\n  version: 1,\n  rig: 'humanoid_v0',\
         let bone = BoneIndex::from_u8(i as u8);
         let label = HUMANOID_V0_BONE_LABELS[i];
         let xf = local.get(bone).expect("bind bone");
-        let parent = def.parent(bone).map(|p| HUMANOID_V0_BONE_LABELS[p.as_usize()]);
+        let parent = def
+            .parent(bone)
+            .map(|p| HUMANOID_V0_BONE_LABELS[p.as_usize()]);
         let parent_js = parent
             .map(|p| format!("'{p}'"))
             .unwrap_or_else(|| "null".to_owned());
@@ -588,7 +588,6 @@ mod tests {
             "re-export with PURGATORY_WRITE_AUTHORING_TEMPLATE=1 cargo test -p purgatory-dev-hub --bin purgatory-dev-hub write_authoring_template_if_requested"
         );
     }
-
 
     #[test]
     fn character_lab_contract_is_generated_from_live_bind() {
