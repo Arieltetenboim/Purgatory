@@ -3525,10 +3525,11 @@ async fn client_receives_authoritative_snapshot() {
     {
         let mut g = lock_sim(&sim);
         assert!(g.owner.set_player_x(id, -8.0));
-        g.owner.apply_input(super::gameplay::InputUpdate::DevSpawnMonster {
-            connection_id: id,
-            monster_content_id: purgatory_common::MONSTER_MOSS_CRAB,
-        });
+        g.owner
+            .apply_input(super::gameplay::InputUpdate::DevSpawnMonster {
+                connection_id: id,
+                monster_content_id: purgatory_common::MONSTER_MOSS_CRAB,
+            });
         g.tick_n(8);
     }
     let mut uni = accept_snapshot_stream(&client).await;
