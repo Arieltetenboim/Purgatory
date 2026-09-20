@@ -711,7 +711,7 @@ def presentation_payload(item: dict[str, Any]) -> dict[str, Any]:
 def new_monster_document(
     authored_id: str,
     debug_name: str,
-    sprite_id: str = "creature.red_slime",
+    sprite_id: str,
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
