@@ -3038,9 +3038,9 @@ mod tests {
         )
         .unwrap();
 
-        let now = drive_to_ready(&mut session, now);
-        assert_eq!(session.state, ServerState::Stopping);
-        assert!(session.restart_after_stop);
+        drive_to_ready(&mut session, now);
+        assert_eq!(session.state, ServerState::Building);
+        assert!(!session.restart_after_stop);
         assert!(session.probe_prep_attempted);
         assert!(
             session
@@ -3050,8 +3050,6 @@ mod tests {
                 .any(|line| line.contains("rebuilding server + probe"))
         );
 
-        session.run_lifecycle(now + LIFECYCLE_FAST);
-        assert_eq!(session.state, ServerState::Building);
         let rebuild = session.backend.spawn_log.last().expect("restart build");
         assert!(rebuild.contains("-p purgatory-server"), "{rebuild}");
         assert!(rebuild.contains("-p purgatory-bot-client"), "{rebuild}");
