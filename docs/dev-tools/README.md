@@ -17,7 +17,7 @@ Developer Tools owns local development runtime control:
 - run the quality gate and load harness
 - surface logs, metrics, and failure detail
 
-It is not a production admin console. It is not a Map/NPC editor. Animation Lab is a Hub-launched standalone window (A7.0, ADR-0058), not an in-Hub editor.
+It is not a production admin console. Authoring tools remain standalone: Animation Lab is a native launched window; NPC Lab and Mob Lab are local web tools launched from the Hub. The Hub also exposes bounded DEV-authoritative Server Commands, but those are development controls rather than production administration.
 
 ## CURRENT
 
@@ -41,6 +41,8 @@ Implemented in this pass:
 | Environment | Log level combo applies to **new** processes: `RUST_BACKTRACE=1`, optional `RUST_LOG`, `PURGATORY_NET_LOG`, `PURGATORY_NET_VERBOSE`. |
 | Autostart | Starts the server on first show unless a server is already present or `PURGATORY_LAUNCHER_NO_AUTOSTART` is set. |
 | Kill All | Workspace-scoped cargo (command line contains this repo root) plus owned server/client/load. |
+| Authoring tools | Content launches Animation Lab, NPC Lab, and Mob Lab as standalone tools. Mob Lab runs in its own visible PowerShell window so closing that window stops its local server. |
+| Server Commands | DEV-only selected-player commands use the typed loopback admin path and bounded gameplay handoff. Current authored spawn controls include NPC, Monster, and Item; simulation/server authority remains the owner. |
 | Authoring template | Content → **Export authoring template** writes [`Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg`](../../Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg) from live Humanoid v0 contracts. **Export AI modular reference** writes [`HUMANOID_V0_AI_MODULAR_REFERENCE_V1.svg`](../../Graphic/character/HUMANOID_V0_AI_MODULAR_REFERENCE_V1.svg). **Export Headwear Side master** writes [`Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg`](../../Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg) (empty 2×2 grid + Crown `+`). **Extract Headwear Side cells** crops `HEADWEAR_SIDE_MASTER_V1.png` by grid only. Animation Lab can DEV-load one extracted Headwear Side PNG (`equipment.debug.headwear_proof.a.side`). The game client compile-embeds the four extracted Side cells (`a`–`d`); Player debug overlay selects HEADWEAR 1–4. Photoshop / AI reference files are not filesystem-loaded by the client. |
 
 ### Metrics vs Health vs Readiness
@@ -70,7 +72,7 @@ Developer Tools
 └── Settings       CURRENT (profile / log level / quality gate / rebuild / Kill All)
 ```
 
-Maps, NPC, dialogue, item, and gameplay-admin editors remain out of scope. Animation Lab is A7.0 (launched binary). Do not start A7.1 from Developer Tools work.
+Map editing and broader dialogue/item authoring remain future work. NPC Lab and Mob Lab already exist as standalone local authoring tools. Server Commands are DEV-only control-plane operations and must not be generalized into a production admin console without a separate design.
 
 ## How to run
 

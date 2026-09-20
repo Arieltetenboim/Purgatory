@@ -9,10 +9,10 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **ERA II — Combat & First Playable Loop**
 - **Phase 11 — Item Loop: complete + closeout**
 - **Root `PHASE`: `11.closeout`**
-- **Active parallel track:** FORGE M — Monster Authoring & Runtime on `forge/mob-lab-v01`
+- **Active parallel track:** FORGE M — Monster Authoring & Runtime on `forge/mob-lab-m3`
 - **Completed parallel presentation foundation:** Production UI I1 — read-only Inventory window
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
-- **Protocol: v27**
+- **Protocol: v29**
 
 ---
 
@@ -152,13 +152,12 @@ content-backed path before building the Mob Lab editor. The current contract is
 | M1 | Monster Content + Validation | complete + merged |
 | M2 | Content-backed Red Slime Runtime | complete + merged + manually verified |
 | M2.1 | Damage-triggered aggro + passive contact contract | complete + merged + manually verified |
-| M3 | Mob Lab v0.1 Editor | implementation on `master` |
-| M4 | Real-runtime Test Arena + observations | planned |
-| M5 | Hub integration + v0.1 closeout | planned |
+| M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | implemented on `forge/mob-lab-m3`; PR #72 draft |
+| M4 | Multi-monster runtime identity + presentation + test-arena proof | next; tracked by #75 |
+| M5 | Hub integration + v0.1 closeout | partially landed; final closeout waits on M4 |
 
 The old `forge/mob-lab` and recovered `forge/mob-lab-v01` branches are historical
-reference only. Active FORGE M work starts from current `master`. Do not add unused ability, loot, placement,
-AI-tree or presentation fields before a real runtime consumer requires them.
+reference only. Active FORGE M work is `forge/mob-lab-m3`, currently based on the latest `master` at the time of this update. M3 now includes direct Mob Lab launch from the Hub and authored Monster spawn commands, but M4 still owns per-entity Monster presentation identity and per-Monster approach/contact geometry. Do not add unused ability, loot, placement, AI-tree or presentation fields before a real runtime consumer requires them.
 
 ## ART-R — Character ART Integration v1
 
