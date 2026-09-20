@@ -435,6 +435,20 @@ fn quick_actions(
         });
 
         ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            let response = ui.add(btn_ghost("Character Lab").min_size(button_size));
+            if action_response(
+                response,
+                "Open the local Character Part Authoring Tool in the default browser.",
+            )
+            .clicked()
+            {
+                let _ = tool_launch::launch_character_lab();
+            }
+        });
+
+        ui.add_space(6.0);
         ui.separator();
         ui.add_space(6.0);
 
