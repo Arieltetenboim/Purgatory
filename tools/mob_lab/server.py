@@ -201,10 +201,14 @@ def prepare_monster_allocation(
     ledger_path = repo_root / "content" / "CONTENT_ID_CATALOG.md"
     catalog_old = catalog_path.read_bytes()
     ledger_old = ledger_path.read_bytes()
-    catalog = catalog_old.decode("utf-8")
-    ledger = ledger_old.decode("utf-8")
-    catalog_newline = "\r\n" if "\r\n" in catalog else "\n"
-    ledger_newline = "\r\n" if "\r\n" in ledger else "\n"
+    # Authoring output must be repository-stable LF even on Windows.
+    # Preserve the original bytes only for rollback; do not propagate a CRLF
+    # checkout into generated catalog/ledger content because git diff --check
+    # treats the staged CR bytes as trailing whitespace.
+    catalog = catalog_old.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    ledger = ledger_old.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    catalog_newline = "\n"
+    ledger_newline = "\n"
 
     if re.search(rf"\b{re.escape(constant)}\b", catalog):
         raise ValueError(f"Catalog constant {constant} already exists.")
