@@ -31,6 +31,29 @@ pub const SAFE_MARGIN_WU: f32 = 0.12;
 
 const OUTPUT_REL: &str = "Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg";
 const CHARACTER_LAB_CONTRACT_REL: &str = "tools/Character part lab/humanoid_v0_contract.js";
+const CHARACTER_BASE_TEMPLATE_REL: &str = "Graphic/character/CHARACTER_BASE_TEMPLATE_V1.svg";
+
+pub const CHARACTER_BASE_TEMPLATE_W: u32 = 2048;
+pub const CHARACTER_BASE_TEMPLATE_H: u32 = 2048;
+pub const CHARACTER_BASE_TEMPLATE_PPU: f32 = 512.0;
+pub const CHARACTER_BASE_TEMPLATE_CELL: u32 = 512;
+
+const CHARACTER_BASE_TEMPLATE_CELLS: [(&str, u32, u32, u32, u32); 14] = [
+    ("head", 0, 0, 256, 384),
+    ("torso", 1, 0, 256, 384),
+    ("upper_arm_back", 2, 0, 256, 128),
+    ("upper_arm_front", 3, 0, 256, 128),
+    ("lower_arm_back", 0, 1, 256, 128),
+    ("lower_arm_front", 1, 1, 256, 128),
+    ("hand_back", 2, 1, 256, 128),
+    ("hand_front", 3, 1, 256, 128),
+    ("upper_leg_back", 0, 2, 256, 96),
+    ("upper_leg_front", 1, 2, 256, 96),
+    ("lower_leg_back", 2, 2, 256, 96),
+    ("lower_leg_front", 3, 2, 256, 96),
+    ("foot_back", 0, 3, 160, 128),
+    ("foot_front", 1, 3, 160, 128),
+];
 
 /// Default repository path for the generated template.
 #[must_use]
@@ -46,6 +69,14 @@ pub fn character_lab_contract_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../")
         .join(CHARACTER_LAB_CONTRACT_REL)
+}
+
+
+#[must_use]
+pub fn character_base_template_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../")
+        .join(CHARACTER_BASE_TEMPLATE_REL)
 }
 
 /// Canonical Humanoid v0 bind data for the browser Character Lab.
@@ -82,7 +113,26 @@ window.PURGATORY_HUMANOID_V0_CONTRACT = {\n  version: 1,\n  rig: 'humanoid_v0',\
             r = fmt_num(xf.rotation),
         );
     }
-    out.push_str("  }\n};\n");
+    out.push_str("  },\n  template_v1: {\n");
+    let _ = writeln!(
+        out,
+        "    width: {w}, height: {h}, pixels_per_unit: {ppu}, cell_size: {cell},",
+        w = CHARACTER_BASE_TEMPLATE_W,
+        h = CHARACTER_BASE_TEMPLATE_H,
+        ppu = fmt_num(CHARACTER_BASE_TEMPLATE_PPU),
+        cell = CHARACTER_BASE_TEMPLATE_CELL,
+    );
+    out.push_str("    cells: [\n");
+    for (part, col, row, pivot_x, pivot_y) in CHARACTER_BASE_TEMPLATE_CELLS {
+        let x = col * CHARACTER_BASE_TEMPLATE_CELL;
+        let y = row * CHARACTER_BASE_TEMPLATE_CELL;
+        let _ = writeln!(
+            out,
+            "      {{ part: '{part}', x: {x}, y: {y}, w: {cell}, h: {cell}, pivot: [{pivot_x}, {pivot_y}] }},",
+            cell = CHARACTER_BASE_TEMPLATE_CELL,
+        );
+    }
+    out.push_str("    ]\n  }\n};\n");
     out
 }
 
@@ -93,6 +143,53 @@ pub fn export_character_lab_contract() -> Result<PathBuf, String> {
         std::fs::create_dir_all(parent).map_err(|err| format!("create dir: {err}"))?;
     }
     std::fs::write(&path, render_character_lab_contract_js())
+        .map_err(|err| format!("write {}: {err}", path.display()))?;
+    Ok(path)
+}
+
+
+#[must_use]
+pub fn render_character_base_template_v1_svg() -> String {
+    let mut out = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2048\" height=\"2048\" viewBox=\"0 0 2048 2048\">\n\
+  <title>PURGATORY Character Base Template V1</title>\n\
+  <desc>14 fixed body-part cells. Keep artwork inside its labeled cell, align the joint to the pivot cross, and export art-only transparent PNG at 2048x2048.</desc>\n\
+  <g id=\"instructions\" font-family=\"Segoe UI,Arial,sans-serif\" fill=\"#111827\">\n\
+    <text x=\"24\" y=\"32\" font-size=\"18\" font-weight=\"700\">CHARACTER_BASE_TEMPLATE_V1 · 2048×2048 · 512 px / presentation unit</text>\n\
+    <text x=\"24\" y=\"56\" font-size=\"13\">Paint on a separate layer. Hide/delete this guide before exporting the transparent PNG.</text>\n\
+  </g>\n\
+  <g id=\"cells\" fill=\"none\" stroke=\"#64748b\" stroke-width=\"2\" stroke-dasharray=\"10 8\">\n",
+    );
+    for (part, col, row, pivot_x, pivot_y) in CHARACTER_BASE_TEMPLATE_CELLS {
+        let x = col * CHARACTER_BASE_TEMPLATE_CELL;
+        let y = row * CHARACTER_BASE_TEMPLATE_CELL;
+        let px = x + pivot_x;
+        let py = y + pivot_y;
+        let _ = writeln!(
+            out,
+            "    <g id=\"cell-{part}\">\n      <rect x=\"{x}\" y=\"{y}\" width=\"{cell}\" height=\"{cell}\"/>\n      <text x=\"{tx}\" y=\"{ty}\" fill=\"#334155\" stroke=\"none\" font-family=\"Consolas,monospace\" font-size=\"18\">{part}</text>\n      <circle cx=\"{px}\" cy=\"{py}\" r=\"9\" stroke=\"#ef4444\" stroke-dasharray=\"none\"/>\n      <line x1=\"{px1}\" y1=\"{py}\" x2=\"{px2}\" y2=\"{py}\" stroke=\"#ef4444\" stroke-dasharray=\"none\"/>\n      <line x1=\"{px}\" y1=\"{py1}\" x2=\"{px}\" y2=\"{py2}\" stroke=\"#ef4444\" stroke-dasharray=\"none\"/>\n    </g>",
+            cell = CHARACTER_BASE_TEMPLATE_CELL,
+            tx = x + 18,
+            ty = y + 28,
+            px1 = px.saturating_sub(18),
+            px2 = px + 18,
+            py1 = py.saturating_sub(18),
+            py2 = py + 18,
+        );
+    }
+    out.push_str(
+        "  </g>\n  <g id=\"reserved\" fill=\"none\" stroke=\"#cbd5e1\" stroke-width=\"2\">\n    <rect x=\"1024\" y=\"1536\" width=\"512\" height=\"512\"/>\n    <rect x=\"1536\" y=\"1536\" width=\"512\" height=\"512\"/>\n  </g>\n</svg>\n",
+    );
+    out
+}
+
+pub fn export_character_base_template_v1() -> Result<PathBuf, String> {
+    let path = character_base_template_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("create dir: {err}"))?;
+    }
+    std::fs::write(&path, render_character_base_template_v1_svg())
         .map_err(|err| format!("write {}: {err}", path.display()))?;
     Ok(path)
 }
@@ -577,6 +674,7 @@ mod tests {
         }
         export_to(&default_output_path()).expect("write committed template");
         export_character_lab_contract().expect("write Character Lab Humanoid v0 contract");
+        export_character_base_template_v1().expect("write Character Base Template V1");
         crate::ai_modular_reference::export_to(&crate::ai_modular_reference::default_output_path())
             .expect("write committed AI modular reference");
     }
@@ -610,6 +708,41 @@ mod tests {
             on_disk.replace("\r\n", "\n"),
             render_character_lab_contract_js().replace("\r\n", "\n"),
             "regenerate the Character Lab Humanoid v0 contract from purgatory-skeleton"
+        );
+    }
+
+
+    #[test]
+    fn character_base_template_v1_has_all_required_parts() {
+        let svg = render_character_base_template_v1_svg();
+        for part in [
+            "head",
+            "torso",
+            "upper_arm_back",
+            "upper_arm_front",
+            "lower_arm_back",
+            "lower_arm_front",
+            "hand_back",
+            "hand_front",
+            "upper_leg_back",
+            "upper_leg_front",
+            "lower_leg_back",
+            "lower_leg_front",
+            "foot_back",
+            "foot_front",
+        ] {
+            assert!(svg.contains(&format!("id=\"cell-{part}\"")), "missing {part}");
+        }
+    }
+
+    #[test]
+    fn committed_character_base_template_matches_generator() {
+        let path = character_base_template_path();
+        let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            on_disk.replace("\r\n", "\n"),
+            render_character_base_template_v1_svg().replace("\r\n", "\n"),
+            "regenerate CHARACTER_BASE_TEMPLATE_V1.svg from the Developer Hub generator"
         );
     }
 }
