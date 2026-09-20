@@ -4661,6 +4661,10 @@ mod tests {
         let pipe_b = bind_pipe(&mut owner, b);
         assert!(owner.set_player_x(a, -8.0));
         assert!(owner.set_player_x(b, -8.0));
+        owner.apply_input(InputUpdate::DevSpawnMonster {
+            connection_id: a,
+            monster_content_id: MONSTER_MOSS_CRAB,
+        });
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
         for _ in 0..40 {
             owner.simulate_tick(dt);
@@ -4706,7 +4710,7 @@ mod tests {
                 .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Npc)
                 .count(),
             2,
-            "AOI at x=-8 must include the Social NPC and combat creature as NPCs"
+            "AOI at x=-8 must include the Social NPC and explicit DEV Monster as NPCs"
         );
         assert_eq!(
             view_a
