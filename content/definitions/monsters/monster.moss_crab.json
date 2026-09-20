@@ -1,0 +1,19 @@
+{
+  "schema_version": 4,
+  "id": "monster.moss_crab",
+  "debug_name": "Moss Crab",
+  "sprite": "creature.moss_crab",
+  "health_max": 20,
+  "collision_bounds": {
+    "left": 0.4,
+    "right": 0.4,
+    "bottom": 0.45,
+    "top": 0.3
+  },
+  "movement_speed": 2,
+  "behavior": {
+    "kind": "chase_contact",
+    "aggro": "when_attacked",
+    "home_leash_radius": 3
+  }
+}

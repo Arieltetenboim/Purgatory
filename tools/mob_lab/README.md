@@ -1,6 +1,6 @@
 # Mob Lab
 
-Status: FORGE M3 v0.1 editor foundation.
+Status: FORGE M3 implementation complete on `forge/mob-lab-m3`. Manual closeout smoke and the final PR quality gate remain before PR #72 merge.
 
 Mob Lab edits the **same Monster JSON files loaded by the game**:
 
@@ -24,17 +24,18 @@ Default URL: `http://127.0.0.1:8766/`.
 ## M3 scope
 
 - list runtime Monster definitions;
-- create a schema-v4 Monster for an already allocated stable ContentId;
+- create a schema-v4 Monster and atomically allocate the next permanent Monster ContentId;
 - edit identity/body/movement/behavior;
 - select the real runtime sprite discovered from `Graphic/creature/*/manifest.json`;
 - preview the actual runtime sprite with asymmetric Left/Right/Bottom/Top collision bounds in world-unit scale;
+- author creature manifest v1/v2 presentation data, including explicit v2 frames/origins, sockets, variable-duration animation steps, and annotations;
 - inspect/apply raw JSON;
 - local shape validation;
 - atomic save directly to `content/definitions/monsters`;
 - canonical Rust runtime-pack validation on every save;
 - automatic rollback if runtime validation fails.
 
-Test Arena/runtime spawning belongs to M4. Developer Hub integration belongs to M5.
+Developer Hub launch and DEV-authoritative Monster spawn-by-ContentId are already wired on this branch. M4 / issue #75 owns the remaining multi-monster runtime proof: per-entity presentation identity, per-Monster approach/contact geometry, and the real-runtime test arena. Final FORGE M closeout remains M5.
 
 ## Save safety
 
@@ -54,13 +55,11 @@ py -3 -m unittest discover -s .\tools\mob_lab -p "test_*.py"
 
 ## ContentId boundary
 
-M3 does **not** allocate new stable numeric ContentIds. That belongs to the
-shared migration/allocation work tracked by issue #24.
-
-Mob Lab reads the checked catalog and shows the numeric ContentId for existing
-Monster labels. NEW MONSTER refuses an unallocated label with an explicit
-message instead of silently creating a second identity scheme or editing Rust
-catalog source.
+Mob Lab allocates new Monster IDs only from the frozen Monster block
+(`10001–19999`) and writes the existing checked catalog/ledger owned by issue #24.
+It does not introduce a second identity scheme. NEW MONSTER updates the Rust catalog,
+the checked ledger, and the runtime Monster JSON as one validated transaction; a
+failed runtime validation rolls all of them back.
 
 ## Sprite selection
 

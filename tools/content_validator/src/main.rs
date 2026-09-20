@@ -34,6 +34,6 @@ mod tests {
             .expect("workspace content");
         assert!(registry.map_count() >= 2);
         assert!(registry.equipment_count() >= 8);
-        assert_eq!(registry.monster_count(), 1);
+        assert!(registry.monster_count() >= 1);
     }
 }

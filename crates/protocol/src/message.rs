@@ -14,8 +14,8 @@ use crate::equipment::{
     EquipRequest, EquipmentRejectReason, ServerEquipment, UnequipRequest, slot_valid,
 };
 use crate::interact::{
-    DevSetChannel, DevSetJump, DevSetSpeed, DevSpawnNpc, InteractClose, InteractOpen,
-    PortalActivate, ServerInteract,
+    DevSetChannel, DevSetJump, DevSetSpeed, DevSpawnMonster, DevSpawnNpc, InteractClose,
+    InteractOpen, PortalActivate, ServerInteract,
 };
 use crate::inventory::{
     INVENTORY_CAPACITY, InventoryEntry, ServerInventory, decode_inventory_entry,
@@ -73,6 +73,7 @@ const TAG_DIALOGUE_CHOICE_ACCEPTED: u8 = 39;
 const TAG_DROP: u8 = 40;
 const TAG_DROP_ACCEPTED: u8 = 41;
 const TAG_DROP_REJECTED: u8 = 42;
+const TAG_DEV_SPAWN_MONSTER: u8 = 43;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -295,6 +296,8 @@ pub enum ClientControl {
     DevSetJump(DevSetJump),
     /// DEV overlay NPC spawn request. Server resolves content and owns placement.
     DevSpawnNpc(DevSpawnNpc),
+    /// DEV overlay Monster spawn request. Server resolves content and owns placement.
+    DevSpawnMonster(DevSpawnMonster),
     Equip(EquipRequest),
     Unequip(UnequipRequest),
     /// DEV presentation Attack/Hurt oneshot request (protocol v13).
@@ -461,6 +464,19 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
             let mut out = Vec::with_capacity(1 + crate::DEV_SPAWN_NPC_BYTES);
             out.push(TAG_DEV_SPAWN_NPC);
             out.extend_from_slice(&npc_content_id.to_le_bytes());
+            Ok(out)
+        }
+        ClientControl::DevSpawnMonster(req) => {
+            if req.monster_content_id.kind() != Some(purgatory_common::ContentKind::Monster) {
+                return Err(CodecError::InvalidValue);
+            }
+            let monster_content_id = req
+                .monster_content_id
+                .raw()
+                .ok_or(CodecError::InvalidValue)?;
+            let mut out = Vec::with_capacity(1 + crate::DEV_SPAWN_MONSTER_BYTES);
+            out.push(TAG_DEV_SPAWN_MONSTER);
+            out.extend_from_slice(&monster_content_id.to_le_bytes());
             Ok(out)
         }
         ClientControl::Equip(req) => {
@@ -667,6 +683,17 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
                 return Err(CodecError::InvalidValue);
             }
             Ok(ClientControl::DevSpawnNpc(DevSpawnNpc { npc_content_id }))
+        }
+        TAG_DEV_SPAWN_MONSTER => {
+            let (monster_content_id, rest) = read_u32(rest)?;
+            expect_empty(rest)?;
+            let monster_content_id = purgatory_common::ContentId::from_raw(monster_content_id);
+            if monster_content_id.kind() != Some(purgatory_common::ContentKind::Monster) {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(ClientControl::DevSpawnMonster(DevSpawnMonster {
+                monster_content_id,
+            }))
         }
         TAG_EQUIP => {
             let (seq, rest) = read_u32(rest)?;

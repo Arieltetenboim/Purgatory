@@ -1,12 +1,17 @@
 {
   "schema_version": 1,
   "kind": "purgatory_sprite_animation",
-  "id": "creature.red_slime",
-  "atlas": "redslime2.png",
+  "id": "creature.shroom",
+  "atlas": "shroom.png",
   "frame_size_px": [
-    64,
-    64
+    192,
+    192
   ],
+  "world_size": [
+    1,
+    1
+  ],
+  "frame_seconds": 0.1,
   "authored_facing": "right",
   "clips": {
     "move": {
@@ -15,8 +20,7 @@
         1,
         2,
         3,
-        6,
-        7
+        4
       ],
       "loop": true
     },
@@ -29,23 +33,32 @@
       ],
       "loop": true
     },
-    "attack": {
+    "hit": {
       "frames": [
-        12,
-        13,
-        14,
-        15
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "loop": false
+    },
+    "death": {
+      "frames": [
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31
       ],
       "loop": false
     }
   },
-  "world_size": [
-    1,
-    1
-  ],
-  "frame_seconds": 0.1,
   "grid_size": [
-    4,
+    8,
     4
   ]
 }

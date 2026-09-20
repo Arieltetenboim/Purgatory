@@ -18,16 +18,16 @@
 //! followed by that many UTF-8 bytes. Field order is the declaration order.
 
 use purgatory_protocol::{
-    ClientControl, ConnectionId, DevSpawnNpc, DisconnectReason, DisconnectReasonCode, Hello,
-    InputCommand, InteractClose, InteractCloseReason, InteractOpen, InteractRejectReason,
-    MAX_CONTROL_MESSAGE_BYTES, MAX_GAMEPLAY_SNAPSHOT_BYTES, MoveAxis, PROTOCOL_VERSION,
-    PlatformSupportId, PortalActivate, ReplicatedKind, ReplicationFrame, ReplicationRecord,
-    ServerControl, ServerDatagram, ServerInteract, SnapshotEntity, WireEntityId, WorldSnapshot,
-    decode_client_control, decode_client_datagram, decode_gameplay_payload, decode_payload,
-    decode_replication_frame, decode_server_control, decode_server_datagram, decode_world_snapshot,
-    encode_client_control, encode_client_datagram, encode_frame, encode_gameplay_frame,
-    encode_replication_frame, encode_server_control, encode_server_datagram, encode_world_snapshot,
-    peek_frame_len, peek_gameplay_frame_len,
+    ClientControl, ConnectionId, DevSpawnMonster, DevSpawnNpc, DisconnectReason,
+    DisconnectReasonCode, Hello, InputCommand, InteractClose, InteractCloseReason, InteractOpen,
+    InteractRejectReason, MAX_CONTROL_MESSAGE_BYTES, MAX_GAMEPLAY_SNAPSHOT_BYTES, MoveAxis,
+    PROTOCOL_VERSION, PlatformSupportId, PortalActivate, ReplicatedKind, ReplicationFrame,
+    ReplicationRecord, ServerControl, ServerDatagram, ServerInteract, SnapshotEntity, WireEntityId,
+    WorldSnapshot, decode_client_control, decode_client_datagram, decode_gameplay_payload,
+    decode_payload, decode_replication_frame, decode_server_control, decode_server_datagram,
+    decode_world_snapshot, encode_client_control, encode_client_datagram, encode_frame,
+    encode_gameplay_frame, encode_replication_frame, encode_server_control, encode_server_datagram,
+    encode_world_snapshot, peek_frame_len, peek_gameplay_frame_len,
 };
 
 /// Protocol v1 wire compatibility vector: `ClientControl::Hello`.
@@ -698,8 +698,8 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_28() {
-    assert_eq!(PROTOCOL_VERSION, 28);
+fn current_protocol_version_is_29() {
+    assert_eq!(PROTOCOL_VERSION, 29);
 }
 
 #[test]
@@ -713,6 +713,21 @@ fn dev_spawn_npc_v26_matches_golden_bytes() {
     );
     assert_eq!(
         decode_client_control(DEV_SPAWN_NPC_V26).expect("decode"),
+        request
+    );
+}
+
+#[test]
+fn dev_spawn_monster_v29_matches_wire_bytes() {
+    let request = ClientControl::DevSpawnMonster(DevSpawnMonster {
+        monster_content_id: purgatory_common::ContentId::from_raw(10_003),
+    });
+    assert_eq!(
+        encode_client_control(&request).expect("encode"),
+        vec![43, 0x13, 0x27, 0x00, 0x00]
+    );
+    assert_eq!(
+        decode_client_control(&[43, 0x13, 0x27, 0x00, 0x00]).expect("decode"),
         request
     );
 }

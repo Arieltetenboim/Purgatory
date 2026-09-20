@@ -11,6 +11,8 @@ pub const ABILITY_PRACTICE_SWORD_STRIKE: ContentId = ContentId::from_raw(40_002)
 pub const MONSTER_RED_SLIME: ContentId = ContentId::from_raw(10_001);
 pub const MONSTER_MOSS_CRAB: ContentId = ContentId::from_raw(10_002);
 
+pub const MONSTER_SHROOM: ContentId = ContentId::from_raw(10_003);
+
 pub const NPC_WELCOME_TRAVELER_STAYED: ContentId = ContentId::from_raw(20_001);
 pub const NPC_WELCOME_GATE_WATCHMAN: ContentId = ContentId::from_raw(20_002);
 pub const NPC_WELCOME_SHOPKEEPER: ContentId = ContentId::from_raw(20_003);
@@ -44,6 +46,8 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
         "skill.debug.practice_sword_strike" => ABILITY_PRACTICE_SWORD_STRIKE,
         "monster.slime.red" => MONSTER_RED_SLIME,
         "monster.moss_crab" => MONSTER_MOSS_CRAB,
+
+        "monster.shroom" => MONSTER_SHROOM,
         "npc.welcome.traveler_stayed" => NPC_WELCOME_TRAVELER_STAYED,
         "npc.welcome.gate_watchman" => NPC_WELCOME_GATE_WATCHMAN,
         "npc.welcome.shopkeeper" => NPC_WELCOME_SHOPKEEPER,
@@ -74,6 +78,8 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
         ABILITY_PRACTICE_SWORD_STRIKE => "skill.debug.practice_sword_strike",
         MONSTER_RED_SLIME => "monster.slime.red",
         MONSTER_MOSS_CRAB => "monster.moss_crab",
+
+        MONSTER_SHROOM => "monster.shroom",
         NPC_WELCOME_TRAVELER_STAYED => "npc.welcome.traveler_stayed",
         NPC_WELCOME_GATE_WATCHMAN => "npc.welcome.gate_watchman",
         NPC_WELCOME_SHOPKEEPER => "npc.welcome.shopkeeper",

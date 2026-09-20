@@ -23,6 +23,7 @@ pub struct ServerCommandsState {
     snapshot: Option<DevAdminSnapshot>,
     selected_player: Option<u64>,
     selected_npc: Option<u64>,
+    selected_monster: Option<u64>,
     selected_item: Option<u64>,
     item_quantity: u32,
     narrative_fact_id: String,
@@ -43,6 +44,7 @@ impl Default for ServerCommandsState {
             snapshot: None,
             selected_player: None,
             selected_npc: None,
+            selected_monster: None,
             selected_item: None,
             item_quantity: 1,
             narrative_fact_id: "welcome.workshop.package_delivered".into(),
@@ -120,6 +122,14 @@ impl ServerCommandsState {
             {
                 self.selected_npc = snapshot.npcs.first().map(|n| n.content_id);
             }
+            if self.selected_monster.is_none_or(|selected| {
+                !snapshot
+                    .monsters
+                    .iter()
+                    .any(|monster| monster.content_id == selected)
+            }) {
+                self.selected_monster = snapshot.monsters.first().map(|monster| monster.content_id);
+            }
             if self.selected_item.is_none_or(|selected| {
                 !snapshot
                     .items
@@ -192,6 +202,40 @@ impl ServerCommandsState {
                     self.send(DevAdminRequest::SpawnNpc {
                         connection_id,
                         npc_content_id,
+                    });
+                }
+            });
+
+            ui.add_space(7.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Spawn Monster").strong());
+                egui::ComboBox::from_id_salt("server_commands_monster")
+                    .width(300.0)
+                    .selected_text(selected_content_label(
+                        &snapshot.monsters,
+                        self.selected_monster,
+                        if snapshot.monsters.is_empty() { "No authored monsters" } else { "Select monster" },
+                    ))
+                    .show_ui(ui, |ui| {
+                        for monster in &snapshot.monsters {
+                            ui.selectable_value(
+                                &mut self.selected_monster,
+                                Some(monster.content_id),
+                                format!("{}  ({})", monster.authored_id, monster.content_id),
+                            );
+                        }
+                    });
+                let enabled = ready && self.selected_player.is_some() && self.selected_monster.is_some();
+                if ui
+                    .add_enabled(enabled, btn_primary("Spawn near player"))
+                    .on_hover_text("Spawn the selected authored Monster near the selected player's authoritative position.")
+                    .clicked()
+                    && let (Some(connection_id), Some(monster_content_id)) =
+                        (self.selected_player, self.selected_monster)
+                {
+                    self.send(DevAdminRequest::SpawnMonster {
+                        connection_id,
+                        monster_content_id,
                     });
                 }
             });

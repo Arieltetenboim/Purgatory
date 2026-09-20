@@ -247,9 +247,15 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
 
     pub fn command(&mut self, cmd: HubCommand, now: Instant) -> CommandOutcome {
         match cmd {
-            HubCommand::Start => self.request_start(now),
+            HubCommand::Start => {
+                self.probe_prep_attempted = false;
+                self.request_start(now)
+            }
             HubCommand::Stop => self.request_stop(now, true),
-            HubCommand::Restart => self.request_restart(now),
+            HubCommand::Restart => {
+                self.probe_prep_attempted = false;
+                self.request_restart(now)
+            }
             HubCommand::StartValidation { spec } => self.request_start_validation(spec, now),
             HubCommand::StopValidation => self.request_stop_validation(now),
             HubCommand::StartLoad { spec } => self.request_start_load(spec, now),
@@ -1323,6 +1329,13 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             .map(|l| l.trim().to_string())
     }
 
+    fn probe_detail_indicates_protocol_skew(detail: &str) -> bool {
+        let detail = detail.to_ascii_lowercase();
+        detail.contains("version_mismatch")
+            || detail.contains("version mismatch")
+            || detail.contains("protocol mismatch")
+    }
+
     fn start_one_client(&mut self) -> bool {
         let exe = self.paths.client_exe();
         if !exe.is_file() {
@@ -1930,10 +1943,14 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         for pkg in packages {
             args.push("-p".to_string());
             args.push((*pkg).to_string());
-            if *pkg == LOAD_PACKAGE {
-                args.push("--bin".to_string());
-                args.push(LOAD_BIN.to_string());
-            }
+        }
+        // Cargo target-selection flags apply to every selected package. Adding
+        // `--bin purgatory-load` to the mixed server+load build would therefore
+        // skip the server binary and leave a stale purgatory-server.exe in place.
+        // Narrow the bin selector to the load-only build used by probe prep.
+        if packages == [LOAD_PACKAGE] {
+            args.push("--bin".to_string());
+            args.push(LOAD_BIN.to_string());
         }
         let spec = SpawnSpec {
             program: cargo,
@@ -2089,7 +2106,6 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                     exe_path: exe.clone(),
                 });
                 self.seen_alive = true;
-                self.probe_prep_attempted = false;
                 self.connection = CheckStatus::Unknown;
                 self.connection_reason.clear();
                 self.metrics_ok = false;
@@ -2389,11 +2405,21 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             if elapsed > READY_TIMEOUT {
                 self.stop_probe();
                 self.connection = CheckStatus::Fail;
-                self.connection_reason = "timed out".to_string();
-                let msg = self.format_readiness_failure(&format!(
-                    "readiness timed out after {}s",
-                    READY_TIMEOUT.as_secs()
-                ));
+                let last_probe = self.connection_reason.trim().to_string();
+                let reason = if last_probe.is_empty() {
+                    format!("readiness timed out after {}s", READY_TIMEOUT.as_secs())
+                } else {
+                    format!(
+                        "readiness timed out after {}s; last probe: {last_probe}",
+                        READY_TIMEOUT.as_secs()
+                    )
+                };
+                self.connection_reason = if last_probe.is_empty() {
+                    "timed out".to_string()
+                } else {
+                    last_probe
+                };
+                let msg = self.format_readiness_failure(&reason);
                 self.set_state(ServerState::Failed, Some(&msg));
                 self.clear_pending_clients_for_server_failure("server readiness timed out");
                 if self.validation_is_active() {
@@ -2422,37 +2448,50 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             if code == 0 {
                 self.connection = CheckStatus::Pass;
                 self.connection_reason.clear();
+                self.probe_prep_attempted = false;
                 self.set_state(ServerState::Ready, None);
                 let keep_job =
                     self.maybe_spawn_validation_harness() || self.maybe_spawn_load_harness();
                 if !keep_job {
                     self.clear_job();
                 }
-            } else if code == 2 && !self.probe_prep_attempted {
-                self.probe_prep_attempted = true;
-                self.log_hub(
-                    "Probe binary rejected --probe (exit 2); rebuilding purgatory-bot-client",
-                );
-                self.set_state(ServerState::Starting, None);
-                if let Some(cargo) = self.cargo_path.clone() {
-                    let id = self.job_id().unwrap_or_else(|| self.alloc_job());
-                    if !self.validation_is_active() && !self.load_is_active() {
-                        self.set_running(id, JobOp::Build);
-                    }
-                    let profile = self.profile_for_tracked_server();
-                    let _ = self.start_build_with_profile(
-                        cargo,
-                        &[LOAD_PACKAGE],
-                        BuildReason::ProbePrep,
-                        id,
-                        profile,
-                        now,
-                    );
-                }
             } else {
                 let detail = self
                     .last_probe_log_line()
                     .unwrap_or_else(|| format!("probe exit {code}"));
+                let stale_cli = code == 2;
+                let protocol_skew = Self::probe_detail_indicates_protocol_skew(&detail);
+                if protocol_skew && !self.probe_prep_attempted {
+                    self.probe_prep_attempted = true;
+                    self.log_hub(&format!(
+                        "Probe/server protocol skew ({detail}); restarting and rebuilding server + probe"
+                    ));
+                    let _ = self.request_restart(now);
+                    return;
+                }
+                if stale_cli && !self.probe_prep_attempted {
+                    self.probe_prep_attempted = true;
+                    self.log_hub(
+                        "Probe binary rejected --probe (exit 2); rebuilding purgatory-bot-client",
+                    );
+                    self.set_state(ServerState::Starting, None);
+                    if let Some(cargo) = self.cargo_path.clone() {
+                        let id = self.job_id().unwrap_or_else(|| self.alloc_job());
+                        if !self.validation_is_active() && !self.load_is_active() {
+                            self.set_running(id, JobOp::Build);
+                        }
+                        let profile = self.profile_for_tracked_server();
+                        let _ = self.start_build_with_profile(
+                            cargo,
+                            &[LOAD_PACKAGE],
+                            BuildReason::ProbePrep,
+                            id,
+                            profile,
+                            now,
+                        );
+                    }
+                    return;
+                }
                 if !self.probe_logged_fail {
                     self.log_hub(&format!(
                         "Probe unsuccessful ({detail}); retrying until Ready timeout"
@@ -2793,6 +2832,64 @@ mod tests {
     }
 
     #[test]
+    fn start_server_build_does_not_filter_out_server_binary() {
+        let mut backend = FakeProcessBackend::new();
+        backend.hold_cargo = true;
+        let (mut session, now) = harness("start-build-targets", backend, FakeHealthSource::none());
+
+        assert_eq!(
+            session.command(HubCommand::Start, now),
+            CommandOutcome::Accepted
+        );
+
+        let build = session.backend.spawn_log.first().expect("cargo build");
+        assert!(build.contains("-p purgatory-server"), "{build}");
+        assert!(build.contains("-p purgatory-bot-client"), "{build}");
+        assert!(
+            !build.contains("--bin purgatory-load"),
+            "mixed server+load build must not apply a global --bin filter: {build}"
+        );
+    }
+
+    #[test]
+    fn probe_prep_load_only_build_keeps_purgatory_load_bin_filter() {
+        let paths = test_root("probe-build-target");
+        let _ = fs::remove_file(paths.load_exe());
+        let mut backend = FakeProcessBackend::new();
+        backend.hold_cargo = true;
+        let now = Instant::now();
+        let mut session = HubSession::new(
+            paths,
+            backend,
+            FakeHealthSource::none(),
+            Some(PathBuf::from("cargo")),
+            now,
+        )
+        .unwrap();
+
+        session.command(HubCommand::Start, now);
+        session.backend.hold_cargo = false;
+        session.backend.cargo_exit = 0;
+        if let Some(pid) = session.build.as_ref().map(|b| b.pid)
+            && let Some(p) = session.backend.alive.get_mut(&pid)
+        {
+            p.pending_exit = Some(0);
+        }
+        session.run_lifecycle(now + LIFECYCLE_FAST);
+
+        let probe_build = session
+            .backend
+            .spawn_log
+            .iter()
+            .find(|line| line.contains("--bin purgatory-load"))
+            .expect("load-only probe build");
+        assert!(
+            probe_build.contains("-p purgatory-bot-client"),
+            "{probe_build}"
+        );
+    }
+
+    #[test]
     fn stop_supersedes_build() {
         let mut backend = FakeProcessBackend::new();
         backend.hold_cargo = true;
@@ -2902,10 +2999,61 @@ mod tests {
         backend.probe_exit = None;
         let (mut session, now) = harness("timeout", backend, FakeHealthSource::none());
         let now = drive_to_ready(&mut session, now);
+        session.connection_reason =
+            "purgatory-load --probe: server rejected: version_mismatch".into();
         session.run_lifecycle(now + READY_TIMEOUT + Duration::from_secs(1));
         assert_eq!(session.state, ServerState::Failed);
         assert!(session.tracked.is_some());
         assert!(session.server_alive());
+        assert!(session.last_failure.as_deref().is_some_and(
+            |reason| reason.contains("last probe:") && reason.contains("version_mismatch")
+        ));
+    }
+
+    #[test]
+    fn probe_protocol_skew_is_detected_from_probe_detail() {
+        assert!(HubSession::<FakeProcessBackend, FakeHealthSource>::probe_detail_indicates_protocol_skew(
+            "purgatory-load --probe: server rejected: version_mismatch"
+        ));
+        assert!(HubSession::<FakeProcessBackend, FakeHealthSource>::probe_detail_indicates_protocol_skew(
+            "protocol mismatch"
+        ));
+        assert!(!HubSession::<FakeProcessBackend, FakeHealthSource>::probe_detail_indicates_protocol_skew(
+            "QUIC connect timeout"
+        ));
+    }
+
+    #[test]
+    fn protocol_skew_restarts_and_rebuilds_server_and_probe_once() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(1);
+        let (mut session, now) = harness(
+            "protocol-skew-rebuild",
+            backend,
+            FakeHealthSource::healthy(),
+        );
+        std::fs::write(
+            session.paths.dev_log_dir().join("probe.log"),
+            "purgatory-load --probe: server rejected: version mismatch\n",
+        )
+        .unwrap();
+
+        drive_to_ready(&mut session, now);
+        assert_eq!(session.state, ServerState::Building);
+        assert!(!session.restart_after_stop);
+        assert!(session.probe_prep_attempted);
+        assert!(
+            session
+                .activity
+                .view_lines()
+                .iter()
+                .any(|line| line.contains("rebuilding server + probe"))
+        );
+
+        let rebuild = session.backend.spawn_log.last().expect("restart build");
+        assert!(rebuild.contains("-p purgatory-server"), "{rebuild}");
+        assert!(rebuild.contains("-p purgatory-bot-client"), "{rebuild}");
+        assert!(!rebuild.contains("--bin purgatory-load"), "{rebuild}");
     }
 
     #[test]

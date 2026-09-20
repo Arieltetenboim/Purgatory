@@ -17,6 +17,10 @@ pub enum DevAdminRequest {
         connection_id: u64,
         npc_content_id: u64,
     },
+    SpawnMonster {
+        connection_id: u64,
+        monster_content_id: u64,
+    },
     SpawnItem {
         connection_id: u64,
         item_content_id: u64,
@@ -62,6 +66,9 @@ pub struct DevAdminContentEntry {
 pub struct DevAdminSnapshot {
     pub players: Vec<DevAdminPlayer>,
     pub npcs: Vec<DevAdminContentEntry>,
+    /// Authored runtime Monsters available to DEV spawn controls.
+    #[serde(default)]
+    pub monsters: Vec<DevAdminContentEntry>,
     /// Added after the original DEV-admin snapshot contract. Old server binaries
     /// omit this field, so Hub clients must decode that snapshot as an empty item
     /// catalogue rather than treating the whole admin channel as unavailable.
@@ -111,6 +118,20 @@ mod tests {
         };
         let json = serde_json::to_string(&request).expect("encode");
         assert!(json.contains("spawn_item"));
+        assert_eq!(
+            serde_json::from_str::<DevAdminRequest>(&json).expect("decode"),
+            request
+        );
+    }
+
+    #[test]
+    fn monster_spawn_request_roundtrip_is_typed_json() {
+        let request = DevAdminRequest::SpawnMonster {
+            connection_id: 7,
+            monster_content_id: 10_003,
+        };
+        let json = serde_json::to_string(&request).expect("encode");
+        assert!(json.contains("spawn_monster"));
         assert_eq!(
             serde_json::from_str::<DevAdminRequest>(&json).expect("decode"),
             request

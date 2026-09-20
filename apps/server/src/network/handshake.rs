@@ -114,9 +114,10 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         stats.leave_handshake();
         stats.note_reject(reason.code);
         println!(
-            "handshake rejected {} reason={}",
+            "handshake rejected {} reason={} detail={}",
             sanitize_log_text(&remote.to_string()),
-            reason.code.as_str()
+            reason.code.as_str(),
+            sanitize_log_text(&reason.detail)
         );
         let _ = write_server_control(&mut send, &ServerControl::Disconnect(reason.clone())).await;
         connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
@@ -760,6 +761,38 @@ async fn serve_connection(live: LiveSession) {
                                 if let Some(tx) = &gameplay
                                     && !tx
                                         .send_dev_spawn_npc(id, req.npc_content_id)
+                                        .await
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(ClientControl::DevSpawnMonster(req)) => {
+                        println!(
+                            "DEV_MONSTER_SPAWN recv connection={id} monster={}",
+                            req.monster_content_id
+                        );
+                        match rate.note(Instant::now(), abuse_cfg) {
+                            RateDecision::Disconnect => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                connection.close(
+                                    DisconnectReasonCode::Malformed.as_u8().into(),
+                                    b"protocol",
+                                );
+                                break;
+                            }
+                            RateDecision::Drop => {
+                                stats
+                                    .rate_limited
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            RateDecision::Allow => {
+                                if let Some(tx) = &gameplay
+                                    && !tx
+                                        .send_dev_spawn_monster(id, req.monster_content_id)
                                         .await
                                 {
                                     break;

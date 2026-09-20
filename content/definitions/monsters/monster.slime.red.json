@@ -7,13 +7,13 @@
   "behavior": {
     "kind": "chase_contact",
     "aggro": "when_attacked",
-    "home_leash_radius": 3
+    "home_leash_radius": 20
   },
   "collision_bounds": {
-    "left": 0.4,
-    "right": 0.4,
-    "bottom": 0.6,
-    "top": 0.6
+    "left": 0.3,
+    "right": 0.3,
+    "bottom": 0.2,
+    "top": 0.4
   },
   "sprite": "creature.red_slime"
 }

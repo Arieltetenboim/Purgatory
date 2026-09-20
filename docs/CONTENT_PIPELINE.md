@@ -28,7 +28,7 @@ Human-editable JSON lives under `/content`:
   authoritative dialogue definitions in Full mode.
 - `server/entities/` — server-only entities (interactables, portals with `transition: { map, portal }`)
 - `server/placements/` — server-only placement lists keyed by map authored id
-- `definitions/monsters/` — server-only Monster schema v4 definitions. Loaded only in Full mode; edited directly now and by Mob Lab in a later slice.
+- `definitions/monsters/` — canonical Monster schema v4 definitions. Full mode loads authoritative gameplay fields; Shared mode projects only client-safe Monster presentation identity. Mob Lab edits these files directly.
 
 JSON must not contain numeric `MapId`, channel, or instance. The registry assigns `MapId` (FOOTNOTE / `map.dev.footnote` is pinned to `MapId` 1).
 
@@ -40,7 +40,7 @@ Presentation assets will later live under `/assets`. `/assets/dev` is reserved f
 
 Presentation assets will later live under `/assets`. `/assets/dev` is reserved for placeholder/dev assets.
 
-The existing `Graphic/` directory is not part of this pipeline yet. Phase 5.0B loads **only** `Graphic/LOGO.png` for the Connection Frontend (temporary filesystem path). Developer Hub can export `Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg` as a Photoshop reference from Humanoid v0 contracts, plus an empty Headwear Side master overlay at `Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg`. Animation Lab may load one DEV-only extracted Headwear Side PNG (`equipment.debug.headwear_proof.a.side`) for a compose proof. The game client compile-embeds the four extracted Side cells (`a`–`d`) via `include_bytes!` onto the existing Headwear Crown attachment; Player debug overlay selects cells 1–4. It must not scan or filesystem-load Graphic/ character files, and this is not an asset loader. Do not import, scan, or otherwise connect the rest of `Graphic/` to the runtime.
+`Graphic/` is not a general runtime scan. Specific presentation paths are integrated deliberately: the client uses `Graphic/LOGO.png` for the Connection Frontend, UI atlas assets for production windows, and creature sprite manifests/atlases under `Graphic/creature/*` through the validated Monster presentation path. Developer Hub can export `Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg` as a Photoshop reference from Humanoid v0 contracts, plus an empty Headwear Side master overlay at `Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg`. Animation Lab may load one DEV-only extracted Headwear Side PNG (`equipment.debug.headwear_proof.a.side`) for a compose proof. The game client compile-embeds the four extracted Side cells (`a`–`d`) via `include_bytes!` onto the existing Headwear Crown attachment; Player debug overlay selects cells 1–4. It must not scan or filesystem-load Graphic/ character files, and this is not an asset loader. Do not import, scan, or otherwise connect the rest of `Graphic/` to the runtime.
 
 ## IDs
 

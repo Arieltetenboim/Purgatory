@@ -54,7 +54,7 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
             ui.add_space(6.0);
             ui.colored_label(
                 theme::muted(),
-                "Runs hidden; output is written to logs/dev-tools/mob-lab.log.",
+                "Runs in its own PowerShell window. Closing that window stops the Mob Lab server.",
             );
             ui.add_space(8.0);
             if ui.add(btn_primary("Launch Mob Lab")).clicked() {

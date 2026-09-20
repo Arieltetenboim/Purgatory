@@ -9,10 +9,11 @@ This README is intentionally small. It is the project entry point, not the proje
 ## Current
 
 - **Phase:** `11.closeout` — Phase 11 Item Loop complete
-- **Active parallel work:** FORGE N — NPC authoring/runtime; N10a-N10f complete and merged
+- **Active parallel work:** FORGE M — Mob Lab M3 on `forge/mob-lab-m3`; authoring, creature manifest v2, DEV Monster spawn, and Hub wiring are implemented on the branch
+- **FORGE N:** NPC authoring/runtime N10a-N10f complete and merged
 - **Production UI:** Inventory window read-only foundation complete
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
-- **Protocol:** v27
+- **Protocol:** v29
 - **Simulation:** server authoritative
 - **Client:** native `winit` + `wgpu`
 - **Networking:** QUIC via Quinn
@@ -66,6 +67,8 @@ The server listens on `127.0.0.1:5001` by default.
 | `crates/animation` | Animation runtime |
 | `crates/dev_runtime` | Developer Hub orchestration |
 | `tools/animation_lab` | Animation authoring/debug tool |
+| `tools/mob_lab` | Monster authoring / creature-manifest tool |
+| `tools/npc_lab` | NPC authoring/test tool |
 | `tools/bot_client` | Headless load-testing client |
 | `tools/content_validator` | Content validation |
 

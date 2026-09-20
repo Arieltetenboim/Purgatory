@@ -1,18 +1,15 @@
 # Monster Authoring and Runtime
 
-Status: FORGE M foundation (`M0-M2`) merged to `master`; M2.1 aligns damage-triggered aggro before Mob Lab UI.
+Status: FORGE M0-M2.1 merged to `master`; M3 implementation is complete on `forge/mob-lab-m3` / PR #72 pending closeout smoke + final gate. M4 runtime identity/presentation proof is tracked by #75.
 
 ## Purpose
 
-Establish one content-backed monster path before building the Mob Lab user
-interface. The existing Red Slime PvE proof remains the runtime proof, but its
-gameplay identity and editable parameters come from validated repository JSON
-instead of server constants.
+Maintain one content-backed Monster authoring/runtime path. Mob Lab now edits that path directly; it does not export to a second model. The existing Red Slime PvE proof remains the normal-session baseline while M4 extends the proof to multiple authored Monster identities.
 
 ## Ownership
 
 ```text
-Mob Lab (future editor)
+Mob Lab
 → content/definitions/monsters/*.json
 → purgatory-content validation + ContentRegistry
 → server spawn/bootstrap adapter
@@ -21,16 +18,14 @@ Mob Lab (future editor)
 
 - Repository JSON is the source of truth. Mob Lab must not own a private
   database.
-- Monster definitions are server-only gameplay content. They are not loaded in
-  `LoadMode::Shared`.
+- `LoadMode::Shared` projects only client-safe Monster presentation identity (`ContentId`, authored id, sprite id). `LoadMode::Full` additionally loads the authoritative gameplay definition.
 - `ContentId` identifies the monster definition. `EntityId` identifies one live
   spawn. `NpcState::type_token` remains legacy workload classification and is
   not monster identity.
 - `World` and `NpcState` continue to own authoritative movement, targeting,
   contact, Health, death and scheduled respawn.
 - Placement belongs to map/server placement content, not `MonsterDefinition`.
-- Presentation belongs to a separate client-safe definition and asset path. It
-  is deliberately not part of schema v1.
+- Presentation identity (`sprite`) is projected client-side from the same Monster definition, while creature animation geometry/timing lives in `Graphic/creature/*/manifest.json`. Creature manifest schema v2 supports explicit frame rectangles/origins, sockets, variable-duration steps, and presentation annotations.
 
 ## Monster schema v4
 
@@ -68,9 +63,7 @@ with its stable Monster `ContentId`, and receives authored Health, collision
 half-extents, movement speed, behavior and home leash. Scheduled
 respawn preserves the same `ContentId` and runtime configuration.
 
-The bootstrap location, contact damage, approach contact geometry, respawn
-delay and visual asset remain existing runtime/proof policy. They have not been
-misrepresented as authored monster fields.
+The bootstrap location, contact-damage amount and respawn delay remain existing runtime/proof policy rather than authored Monster fields. Sprite identity is authored and resolves through the creature manifest path. One approach/contact path is still Red-Slime-derived globally; M4 / #75 owns making that geometry per Monster.
 
 ## Mob Lab sequence
 
@@ -80,22 +73,16 @@ misrepresented as authored monster fields.
 | M1 | JSON loader, validation, registry and stable Red Slime ID | rescued |
 | M2 | Content-backed normal-session runtime proof | complete + merged + manually verified |
 | M2.1 | Damage-triggered aggro + passive contact behavior | complete + merged + manually verified |
-| M3 | Mob Lab v0.1 editor: browse/create/duplicate/edit/save/validate | planned |
-| M4 | Real-runtime Test Arena: selected spawn, reset and observations | planned |
-| M5 | Hub integration + v0.1 closeout | planned |
+| M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | implemented on `forge/mob-lab-m3`; PR #72 draft |
+| M4 | Multi-monster runtime identity/presentation + test-arena proof | next; #75 |
+| M5 | Hub integration + v0.1 closeout | partially landed; final closeout pending M4 |
 
-M3 must edit schema v4 rather than create a second model. New behavior kinds,
-loot, ability loadouts, placement authoring and presentation require their own
-consumer-backed slices; they must not be added merely as unused form fields.
+M3 edits schema v4 directly rather than creating a second Monster model. It also authors creature manifest v1/v2 data used by the client presentation loader. New behavior kinds, loot, ability loadouts and placement authoring still require consumer-backed slices; they must not be added merely as unused form fields.
 
 
-## Branch recovery note
+## Branch history
 
-The original `forge/mob-lab` branch diverged far behind current `master`.
-It is retained only as historical evidence. M0-M2 were forward-ported onto
-`forge/mob-lab-v01` by applying the monster-specific delta to the current
-owners and APIs; no old branch history was merged. Future FORGE M work must
-continue from the recovered branch or a fresh branch based on a current master.
+The original `forge/mob-lab` and recovered `forge/mob-lab-v01` branches are historical evidence only. M0-M2 were forward-ported rather than merging stale branch history. Current M3 work lives on `forge/mob-lab-m3`; after PR #72 merges, M4 should start from the resulting current `master` on a fresh M4 branch.
 
 
 ### Collision bounds and presentation origin
@@ -121,7 +108,4 @@ gameplay fields remain server-owned. The client resolves the selected sprite fro
 `Graphic/creature/*/manifest.json`, and Mob Lab discovers the same manifests.
 There is no Monster-to-sprite hardcoded table in Mob Lab.
 
-Current limitation: live replication does not yet carry Monster ContentId per
-replicated NPC. The current single live combat Monster therefore uses the selected
-sprite correctly; per-entity selection for multiple simultaneous Monster types is
-part of the M4 identity/runtime slice rather than a protocol change hidden inside M3.
+Current limitation: DEV spawn-by-ContentId is implemented, but live replication still does not carry enough per-entity Monster presentation identity for the client to choose distinct authored sprites for multiple simultaneous Monster types. The server approach/contact envelope also still has a Red-Slime-derived global path. Both gaps are explicitly owned by M4 / issue #75 rather than hidden inside M3.

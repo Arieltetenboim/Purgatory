@@ -153,7 +153,12 @@ impl BotSession {
         let control_msg = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_server_control(&mut recv))
             .await
             .map_err(|_| "Welcome timeout".to_string())?
-            .map_err(|e| format!("read Welcome: {e}"))?;
+            .map_err(|e| {
+                connection.close_reason().map_or_else(
+                    || format!("read Welcome: {e}"),
+                    |reason| format!("read Welcome: {e}; connection closed: {reason}"),
+                )
+            })?;
 
         match control_msg {
             ServerControl::Welcome(welcome) => {

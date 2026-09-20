@@ -17,7 +17,7 @@ Developer Tools owns local development runtime control:
 - run the quality gate and load harness
 - surface logs, metrics, and failure detail
 
-It is not a production admin console. It is not a Map/NPC editor. Animation Lab is a Hub-launched standalone window (A7.0, ADR-0058), not an in-Hub editor.
+It is not a production admin console. Authoring tools remain standalone: Animation Lab is a native launched window; NPC Lab and Mob Lab are local web tools launched from the Hub. The Hub also exposes bounded DEV-authoritative Server Commands, but those are development controls rather than production administration.
 
 ## CURRENT
 
@@ -33,7 +33,7 @@ Implemented in this pass:
 | Phase 7 Stats | Testing → Phase 7 Stats: read-only Phase 7.8 gate summary from `logs/load/capacity_78/gate_*/phase78_gate_summary.json`. Verdict GREEN/YELLOW/RED/INVALID; HARNESS WARN ≠ SERVER WARN. |
 | Runtime Validation | Dialog (`--preset` smoke/mixed/stress/soak/…, optional `--duration` overlay, seed). Forwards the same CLI a headless run uses. Requires Server **Ready**. Always rebuilds `purgatory-load` first, then restarts a clean load-mode server with isolated `PURGATORY_DATA_DIR`. Refuses a second concurrent harness. Live status shows elapsed/duration, real-client count, and portal progress from `live_status.json` (no extra console window; 1 Hz dashboard writeln would ding). Pass/fail is Rust, not PowerShell. Mixed soak keeps a persistent real-QUIC baseline; churn is a separate role; portal bots walk into the activation zone. `--duration` without `--timeout` raises the wall-clock timeout in Rust (not in the GUI). ANALYZE LAST RUN uses a completed artifact (`last_finished.txt`), not an in-progress `current_run` or a future-dated folder. Exit 2 with `unexpected argument` rebuilds `-p purgatory-bot-client --bin purgatory-load`. Other CLI errors are shown as-is (not treated as a stale binary). |
 | Metrics | UDP `PURGSTAT` on `127.0.0.1:5002` (operational measurements + Health). |
-| Connection probe | `purgatory-load --probe` (Quinn Hello/Welcome, protocol v10, login `dev.probe`). |
+| Connection probe | `purgatory-load --probe` (Quinn Hello/Welcome using the current protocol contract; `dev.probe` login was introduced in v10). |
 | Single-instance | Mutex `Local\PurgatoryDevLauncher`. A second `DEV.BAT` focuses the existing window. |
 | Recovery | On open, adopt workspace `target\` server/client/load processes and **verify** before Ready. Duplicate servers for this workspace are stopped. |
 | Logging | Colored activity box (green server, cyan client) plus `logs/dev-tools/`. Server/client/probe stdout is shown live. The ACTIVITY expand control opens a separate resizable log window. Routine log/status/portal lines are silent. Windows dialog sounds still play only for blocking `MessageBox` calls (refusals, failures, already-running). |
@@ -41,6 +41,8 @@ Implemented in this pass:
 | Environment | Log level combo applies to **new** processes: `RUST_BACKTRACE=1`, optional `RUST_LOG`, `PURGATORY_NET_LOG`, `PURGATORY_NET_VERBOSE`. |
 | Autostart | Starts the server on first show unless a server is already present or `PURGATORY_LAUNCHER_NO_AUTOSTART` is set. |
 | Kill All | Workspace-scoped cargo (command line contains this repo root) plus owned server/client/load. |
+| Authoring tools | Content launches Animation Lab, NPC Lab, and Mob Lab as standalone tools. Mob Lab runs in its own visible PowerShell window so closing that window stops its local server. |
+| Server Commands | DEV-only selected-player commands use the typed loopback admin path and bounded gameplay handoff. Current authored spawn controls include NPC, Monster, and Item; simulation/server authority remains the owner. |
 | Authoring template | Content → **Export authoring template** writes [`Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg`](../../Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg) from live Humanoid v0 contracts. **Export AI modular reference** writes [`HUMANOID_V0_AI_MODULAR_REFERENCE_V1.svg`](../../Graphic/character/HUMANOID_V0_AI_MODULAR_REFERENCE_V1.svg). **Export Headwear Side master** writes [`Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg`](../../Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg) (empty 2×2 grid + Crown `+`). **Extract Headwear Side cells** crops `HEADWEAR_SIDE_MASTER_V1.png` by grid only. Animation Lab can DEV-load one extracted Headwear Side PNG (`equipment.debug.headwear_proof.a.side`). The game client compile-embeds the four extracted Side cells (`a`–`d`); Player debug overlay selects HEADWEAR 1–4. Photoshop / AI reference files are not filesystem-loaded by the client. |
 
 ### Metrics vs Health vs Readiness
@@ -53,7 +55,7 @@ These are not synonyms. See [RUNTIME_LIFECYCLE.md](RUNTIME_LIFECYCLE.md).
 
 ### Probe persistence (known debt)
 
-`--probe` uses the normal DEV login / persistence / enter path with reserved login `dev.probe`. A successful probe may **create or restore** that character under the persist root (`%LOCALAPPDATA%\Purgatory\` unless `PURGATORY_DATA_DIR` is set). This is not the long-term health design. Do not treat it as a reason to change protocol v10.
+`--probe` uses the normal DEV login / persistence / enter path with reserved login `dev.probe`. A successful probe may **create or restore** that character under the persist root (`%LOCALAPPDATA%\Purgatory\` unless `PURGATORY_DATA_DIR` is set). This is not the long-term health design. The probe must track the repository's current `PROTOCOL_VERSION`; the persistence debt does not by itself justify another wire change.
 
 ## PLANNED
 
@@ -70,7 +72,7 @@ Developer Tools
 └── Settings       CURRENT (profile / log level / quality gate / rebuild / Kill All)
 ```
 
-Maps, NPC, dialogue, item, and gameplay-admin editors remain out of scope. Animation Lab is A7.0 (launched binary). Do not start A7.1 from Developer Tools work.
+Map editing and broader dialogue/item authoring remain future work. NPC Lab and Mob Lab already exist as standalone local authoring tools. Server Commands are DEV-only control-plane operations and must not be generalized into a production admin console without a separate design.
 
 ## How to run
 

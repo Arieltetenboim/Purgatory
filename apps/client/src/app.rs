@@ -3645,6 +3645,20 @@ impl ClientApp {
                         }
                     }
                 }
+                DebugCommand::SpawnMonster(monster_content_id) => {
+                    if self.lifecycle.screen() == ClientScreen::Game
+                        && let Some(network) = &self.network
+                    {
+                        println!("DEV_MONSTER_SPAWN send monster={monster_content_id}");
+                        if network.try_send_dev_spawn_monster(monster_content_id) {
+                            if let Some(debug) = self.debug.as_mut() {
+                                debug.ui.note_dev_action_flash("Monster spawn request sent");
+                            }
+                        } else {
+                            eprintln!("DEV_MONSTER_SPAWN send failed");
+                        }
+                    }
+                }
                 DebugCommand::SetResolution(resolution) => {
                     if self.display.set_resolution(resolution).is_err() {
                         eprintln!(
