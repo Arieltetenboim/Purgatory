@@ -281,7 +281,7 @@ class MobLabContractTests(unittest.TestCase):
         self.assertTrue(any("home_leash_radius" in item for item in errors))
 
     def test_unknown_fields_are_rejected(self):
-        doc = new_monster_document("monster.test.slime", "Test Slime")
+        doc = new_monster_document("monster.test.slime", "Test Slime", "creature.moss_crab")
         doc["acquisition_radius"] = 3.0
         errors = validate_monster_document(doc)
         self.assertTrue(any("unknown top-level" in item for item in errors))
@@ -452,7 +452,7 @@ class MobLabContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             path = definitions / "monster.test.json"
-            original = new_monster_document("monster.test", "Test")
+            original = new_monster_document("monster.test", "Test", "creature.test")
             original["sprite"] = "creature.test"
             path.write_text(json.dumps(original), encoding="utf-8")
             edited = json.loads(json.dumps(original))
