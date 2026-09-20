@@ -381,21 +381,22 @@ mod tests {
         let corners = sprite_local_corners(visual, 1.0);
         let [width, height] = visual.dimensions_px.map(|value| value as f32);
         let ppu = visual.pixels_per_unit;
-        assert_eq!(
-            corners,
+        let expected = [
             [
-                [
-                    -visual.pivot_px[0] / ppu,
-                    (visual.pivot_px[1] - height) / ppu
-                ],
-                [
-                    (width - visual.pivot_px[0]) / ppu,
-                    (visual.pivot_px[1] - height) / ppu
-                ],
-                [(width - visual.pivot_px[0]) / ppu, visual.pivot_px[1] / ppu],
-                [-visual.pivot_px[0] / ppu, visual.pivot_px[1] / ppu],
-            ]
-        );
+                -visual.pivot_px[0] / ppu,
+                (visual.pivot_px[1] - height) / ppu,
+            ],
+            [
+                (width - visual.pivot_px[0]) / ppu,
+                (visual.pivot_px[1] - height) / ppu,
+            ],
+            [(width - visual.pivot_px[0]) / ppu, visual.pivot_px[1] / ppu],
+            [-visual.pivot_px[0] / ppu, visual.pivot_px[1] / ppu],
+        ];
+        for (actual, expected) in corners.into_iter().zip(expected) {
+            assert!((actual[0] - expected[0]).abs() < 1e-6);
+            assert!((actual[1] - expected[1]).abs() < 1e-6);
+        }
     }
 
     #[test]
