@@ -392,10 +392,7 @@ mod tests {
                     (width - visual.pivot_px[0]) / ppu,
                     (visual.pivot_px[1] - height) / ppu
                 ],
-                [
-                    (width - visual.pivot_px[0]) / ppu,
-                    visual.pivot_px[1] / ppu
-                ],
+                [(width - visual.pivot_px[0]) / ppu, visual.pivot_px[1] / ppu],
                 [-visual.pivot_px[0] / ppu, visual.pivot_px[1] / ppu],
             ]
         );
