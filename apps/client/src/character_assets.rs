@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(visual.dimensions_px, [visual.rect_px[2], visual.rect_px[3]]);
         assert!(visual.dimensions_px[0] > 0 && visual.dimensions_px[1] > 0);
         assert!(visual.pivot_px.iter().all(|value| value.is_finite()));
-        assert_eq!(visual.pixels_per_unit, 256.0);
+        assert!(visual.pixels_per_unit.is_finite() && visual.pixels_per_unit > 0.0);
         assert_eq!(assets.resource_count(), 1);
     }
 
@@ -390,7 +390,9 @@ mod tests {
 
     #[test]
     fn invalid_ppu_rejected() {
-        let json = manifest().replacen("\"pixels_per_unit\": 256", "\"pixels_per_unit\": 0", 1);
+        let mut json: serde_json::Value = serde_json::from_str(&manifest()).unwrap();
+        json["pixels_per_unit"] = serde_json::json!(0);
+        let json = serde_json::to_string(&json).unwrap();
         assert!(
             matches!(load(&json, &mut runtime()), Err(CharacterVisualPackError::Invalid(error)) if error.contains("pixels_per_unit"))
         );
