@@ -2,11 +2,88 @@ schema_version 1
 duration 0.40
 loop Once
 
+# Authored floppy death (not physics). Beats: impact → limbs break loose → ground pile → hold.
+# Distinct from Hurt (upright flinch): low pelvis + grounded heap.
+
 track pelvis
-rot 0.00 0.0 Linear
-rot 0.36 1.520754 Linear
-ty 0.00 0.4 Linear
-ty 0.36 0.4 Linear
+rot 0.00 0.05 Linear
+rot 0.08 0.50 Linear
+rot 0.22 1.15 Linear
+rot 0.40 1.45 Linear
+ty 0.00 0.40 Linear
+ty 0.08 0.28 Linear
+ty 0.22 0.12 Linear
+ty 0.40 0.05 Linear
+endtrack
+
+track torso
+rot 0.00 0.00 Linear
+rot 0.08 0.40 Linear
+rot 0.22 0.90 Linear
+rot 0.40 1.10 Linear
+endtrack
+
+track head
+rot 0.00 0.00 Linear
+rot 0.08 -0.30 Linear
+rot 0.22 0.50 Linear
+rot 0.40 0.95 Linear
+endtrack
+
+track upper_arm_front
+rot 0.00 0.00 Linear
+rot 0.06 0.90 Linear
+rot 0.18 1.60 Linear
+rot 0.40 1.30 Linear
+endtrack
+
+track lower_arm_front
+rot 0.00 0.00 Linear
+rot 0.10 1.25 Linear
+rot 0.24 2.15 Linear
+rot 0.40 1.90 Linear
+endtrack
+
+track upper_arm_back
+rot 0.00 0.00 Linear
+rot 0.08 -0.70 Linear
+rot 0.20 -1.40 Linear
+rot 0.40 -1.15 Linear
+endtrack
+
+track lower_arm_back
+rot 0.00 0.00 Linear
+rot 0.12 0.95 Linear
+rot 0.26 1.75 Linear
+rot 0.40 1.50 Linear
+endtrack
+
+track upper_leg_front
+rot 0.00 0.00 Linear
+rot 0.10 0.50 Linear
+rot 0.24 1.10 Linear
+rot 0.40 1.00 Linear
+endtrack
+
+track lower_leg_front
+rot 0.00 0.00 Linear
+rot 0.14 -0.60 Linear
+rot 0.28 -1.30 Linear
+rot 0.40 -1.10 Linear
+endtrack
+
+track upper_leg_back
+rot 0.00 0.00 Linear
+rot 0.12 -0.40 Linear
+rot 0.26 0.80 Linear
+rot 0.40 0.90 Linear
+endtrack
+
+track lower_leg_back
+rot 0.00 0.00 Linear
+rot 0.16 -0.45 Linear
+rot 0.30 -1.20 Linear
+rot 0.40 -1.00 Linear
 endtrack
 
 markers
