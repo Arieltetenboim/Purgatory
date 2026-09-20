@@ -455,6 +455,7 @@
   </aside>
 </main>
 
+<script src="humanoid_v0_contract.js"></script>
 <script>
 (() => {
   const canvas = document.getElementById('canvas');
@@ -577,26 +578,11 @@
   let runtimeCalibration = null;
   let runtimeCalibrationFileName = '';
 
-  // Current Humanoid v0 bind locals from purgatory-skeleton.
-  // Runtime coordinates: +X right, +Y up, presentation units.
-  const ENGINE_BIND_V0 = {
-    root:               {parent:null,              t:[ 0.00,  0.00]},
-    pelvis:             {parent:'root',            t:[ 0.00,  0.42]},
-    torso:              {parent:'pelvis',          t:[ 0.00,  0.30]},
-    head:               {parent:'torso',           t:[ 0.07,  0.24]},
-    upper_arm_front:    {parent:'torso',           t:[-0.10,  0.14]},
-    lower_arm_front:    {parent:'upper_arm_front', t:[ 0.00, -0.22]},
-    hand_front:         {parent:'lower_arm_front', t:[ 0.00, -0.10]},
-    upper_arm_back:     {parent:'torso',           t:[ 0.08,  0.14]},
-    lower_arm_back:     {parent:'upper_arm_back',  t:[ 0.00, -0.22]},
-    hand_back:          {parent:'lower_arm_back',  t:[ 0.00, -0.10]},
-    upper_leg_front:    {parent:'pelvis',          t:[-0.06, -0.04]},
-    lower_leg_front:    {parent:'upper_leg_front', t:[ 0.00, -0.20]},
-    foot_front:         {parent:'lower_leg_front', t:[ 0.00, -0.18]},
-    upper_leg_back:     {parent:'pelvis',          t:[ 0.04, -0.04]},
-    lower_leg_back:     {parent:'upper_leg_back',  t:[ 0.00, -0.20]},
-    foot_back:          {parent:'lower_leg_back',  t:[ 0.00, -0.18]}
-  };
+  // Canonical Humanoid v0 bind generated from purgatory-skeleton.
+  const ENGINE_BIND_V0 = window.PURGATORY_HUMANOID_V0_CONTRACT?.bones;
+  if(!ENGINE_BIND_V0){
+    throw new Error('Character Lab Humanoid v0 contract is missing. Regenerate humanoid_v0_contract.js from purgatory-skeleton.');
+  }
 
   // Authoring vocabulary. These are visual body-part identities, not extra pose nodes.
   // Multiple detected islands may share one identity.
@@ -1015,7 +1001,6 @@
   function runtimeWorldUnits(){
     const locals=runtimeBindLocals();
     const world=new Map();
-    world.set('root',{x:0,y:0,angle:0});
 
     const resolve=(id)=>{
       if(world.has(id)) return world.get(id);
@@ -1023,8 +1008,17 @@
       if(!def) return null;
       const parent=def.parent ? resolve(def.parent) : {x:0,y:0,angle:0};
       if(!parent) return null;
-      const p={x:parent.x+Number(def.t?.[0]||0),y:parent.y+Number(def.t?.[1]||0),angle:0};
-      world.set(id,p); return p;
+
+      const tx=Number(def.t?.[0]||0),ty=Number(def.t?.[1]||0);
+      const localAngle=Number(def.r||0);
+      const c=Math.cos(parent.angle),s=Math.sin(parent.angle);
+      const p={
+        x:parent.x + tx*c - ty*s,
+        y:parent.y + tx*s + ty*c,
+        angle:parent.angle + localAngle
+      };
+      world.set(id,p);
+      return p;
     };
 
     Object.keys(locals).forEach(resolve);
@@ -1096,9 +1090,13 @@
       const bx=offsetX+(bone.x*ppu)*scale;
       const by=offsetY+(-bone.y*ppu)*scale;
 
+      ctx.save();
+      ctx.translate(bx,by);
+      ctx.rotate(-bone.angle);
       ctx.drawImage(runtimeAtlasImage,
         x,y,w,h,
-        bx-px*scale,by-py*scale,w*scale,h*scale);
+        -px*scale,-py*scale,w*scale,h*scale);
+      ctx.restore();
     }
 
     // Runtime bone origins.
