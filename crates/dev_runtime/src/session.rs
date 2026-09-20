@@ -1937,10 +1937,14 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         for pkg in packages {
             args.push("-p".to_string());
             args.push((*pkg).to_string());
-            if *pkg == LOAD_PACKAGE {
-                args.push("--bin".to_string());
-                args.push(LOAD_BIN.to_string());
-            }
+        }
+        // Cargo target-selection flags apply to every selected package. Adding
+        // `--bin purgatory-load` to the mixed server+load build would therefore
+        // skip the server binary and leave a stale purgatory-server.exe in place.
+        // Narrow the bin selector to the load-only build used by probe prep.
+        if packages == [LOAD_PACKAGE] {
+            args.push("--bin".to_string());
+            args.push(LOAD_BIN.to_string());
         }
         let spec = SpawnSpec {
             program: cargo,
@@ -2817,6 +2821,61 @@ mod tests {
             CommandOutcome::Ignored
         );
         assert_eq!(session.backend.spawn_log.len(), 1);
+    }
+
+    #[test]
+    fn start_server_build_does_not_filter_out_server_binary() {
+        let mut backend = FakeProcessBackend::new();
+        backend.hold_cargo = true;
+        let (mut session, now) = harness("start-build-targets", backend, FakeHealthSource::none());
+
+        assert_eq!(
+            session.command(HubCommand::Start, now),
+            CommandOutcome::Accepted
+        );
+
+        let build = session.backend.spawn_log.first().expect("cargo build");
+        assert!(build.contains("-p purgatory-server"), "{build}");
+        assert!(build.contains("-p purgatory-bot-client"), "{build}");
+        assert!(
+            !build.contains("--bin purgatory-load"),
+            "mixed server+load build must not apply a global --bin filter: {build}"
+        );
+    }
+
+    #[test]
+    fn probe_prep_load_only_build_keeps_purgatory_load_bin_filter() {
+        let paths = test_root("probe-build-target");
+        let _ = fs::remove_file(paths.load_exe());
+        let mut backend = FakeProcessBackend::new();
+        backend.hold_cargo = true;
+        let now = Instant::now();
+        let mut session = HubSession::new(
+            paths,
+            backend,
+            FakeHealthSource::none(),
+            Some(PathBuf::from("cargo")),
+            now,
+        )
+        .unwrap();
+
+        session.command(HubCommand::Start, now);
+        session.backend.hold_cargo = false;
+        session.backend.cargo_exit = 0;
+        if let Some(pid) = session.build.as_ref().map(|b| b.pid)
+            && let Some(p) = session.backend.alive.get_mut(&pid)
+        {
+            p.pending_exit = Some(0);
+        }
+        session.run_lifecycle(now + LIFECYCLE_FAST);
+
+        let probe_build = session
+            .backend
+            .spawn_log
+            .iter()
+            .find(|line| line.contains("--bin purgatory-load"))
+            .expect("load-only probe build");
+        assert!(probe_build.contains("-p purgatory-bot-client"), "{probe_build}");
     }
 
     #[test]
