@@ -538,6 +538,13 @@ class MobLabContractTests(unittest.TestCase):
             )
             self.assertIn('"monster.shroom" => MONSTER_SHROOM,', catalog_new)
             self.assertIn('MONSTER_SHROOM => "monster.shroom",', catalog_new)
+            ledger_new = next(
+                new
+                for path, _old, new in writes
+                if path == content / "CONTENT_ID_CATALOG.md"
+            ).decode("utf-8")
+            self.assertNotIn("\r", catalog_new)
+            self.assertNotIn("\r", ledger_new)
 
     def test_monster_allocator_assigns_next_permanent_id_and_updates_catalog_and_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:
