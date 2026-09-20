@@ -378,14 +378,17 @@ impl ClientApp {
                 .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
         let mut monster_sheets = HashMap::new();
         for presentation in registry.iter_monster_presentations() {
-            let sheet = SpriteSheet::from_sprite_id(&mut asset_runtime, &presentation.sprite_id)
-                .map_err(|error| {
-                    format!(
-                        "PURGATORY monster sprite '{}' ({}) error: {error}",
+            match SpriteSheet::from_sprite_id(&mut asset_runtime, &presentation.sprite_id) {
+                Ok(sheet) => {
+                    monster_sheets.insert(presentation.content_id, sheet);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "PURGATORY monster sprite '{}' ({}) fallback: {error}",
                         presentation.sprite_id, presentation.authored_id
-                    )
-                })?;
-            monster_sheets.insert(presentation.content_id, sheet);
+                    );
+                }
+            }
         }
         let accept_sheet = OverheadSheet::accept(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY accept animation error: {error}"))?;
@@ -4042,7 +4045,10 @@ fn npc_quads(
             } else if entity.velocity[0] < -0.01 {
                 state.2 = true;
             }
-            let Some(sheet) = entity.content_id.and_then(|content_id| sheets.get(&content_id)) else {
+            let Some(sheet) = entity
+                .content_id
+                .and_then(|content_id| sheets.get(&content_id))
+            else {
                 return vec![aabb_quad(aabb, NPC_STATE_INDICATOR_COLOR)];
             };
             let clip = sheet.clip(clip_name(state.1));
@@ -5445,19 +5451,19 @@ mod tests {
                     entity: pose(local, ReplicatedKind::Player, [-19.4, -2.9]),
                     health: None,
                     equipment: None,
-                                    content_id: None,
+                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: pose(combat_npc, ReplicatedKind::Npc, [-19.0, -2.9]),
                     health: None,
                     equipment: None,
-                                    content_id: None,
+                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: pose(traveler, ReplicatedKind::Npc, [-17.8, -2.9]),
                     health: None,
                     equipment: Some(ReplicatedEquipment::empty()),
-                                    content_id: None,
+                    content_id: None,
                 },
             ],
         );
