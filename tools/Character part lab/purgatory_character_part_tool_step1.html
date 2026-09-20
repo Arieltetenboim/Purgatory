@@ -592,11 +592,11 @@
   let runtimeCalibrationFileName = '';
 
   // Canonical Humanoid v0 bind generated from purgatory-skeleton.
-  const ENGINE_BIND_V0 = window.PURGATORY_HUMANOID_V0_CONTRACT?.bones;
-  const TEMPLATE_V1 = window.PURGATORY_HUMANOID_V0_CONTRACT?.template_v1;
-  if(!ENGINE_BIND_V0 || !TEMPLATE_V1){
-    throw new Error('Character Lab Humanoid v0 contract/template is missing. Regenerate humanoid_v0_contract.js from purgatory-skeleton.');
-  }
+  const ENGINE_BIND_V0 = window.PURGATORY_HUMANOID_V0_CONTRACT?.bones || null;
+  const TEMPLATE_V1 = window.PURGATORY_HUMANOID_V0_CONTRACT?.template_v1 || null;
+  const CONTRACT_LOAD_ERROR = (!ENGINE_BIND_V0 || !TEMPLATE_V1)
+    ? 'Humanoid v0 contract/template did not load. Re-open Character Lab from the Dev Hub after rebuilding it, or verify humanoid_v0_contract.js exists beside this HTML.'
+    : '';
 
   // Authoring vocabulary. These are visual body-part identities, not extra pose nodes.
   // Multiple detected islands may share one identity.
@@ -844,10 +844,20 @@
   }
 
   openTemplateBtn.addEventListener('click',()=>{
-    window.open('../../Graphic/character/CHARACTER_BASE_TEMPLATE_V1.svg','_blank');
+    const url=new URL('../../Graphic/character/CHARACTER_BASE_TEMPLATE_V1.svg',window.location.href);
+    const opened=window.open(url.href,'_blank');
+    if(!opened){
+      imageStatus.textContent='Template open was blocked by the browser. Allow pop-ups for this local page.';
+    }
   });
 
-  importTemplateBtn.addEventListener('click',()=>templateImportInput.click());
+  importTemplateBtn.addEventListener('click',()=>{
+    if(CONTRACT_LOAD_ERROR){
+      imageStatus.textContent=CONTRACT_LOAD_ERROR;
+      return;
+    }
+    templateImportInput.click();
+  });
 
   function templateComponentForCell(data,cell){
     const w=workCanvas.width;
@@ -870,6 +880,7 @@
   }
 
   function importTemplateImage(img,fileName){
+    if(!TEMPLATE_V1) throw new Error(CONTRACT_LOAD_ERROR);
     if(img.naturalWidth!==Number(TEMPLATE_V1.width) || img.naturalHeight!==Number(TEMPLATE_V1.height)){
       throw new Error(`Template V1 PNG must be ${TEMPLATE_V1.width}×${TEMPLATE_V1.height}; got ${img.naturalWidth}×${img.naturalHeight}.`);
     }
@@ -927,6 +938,11 @@
         setRuntimeStatus(`Preview generation failed: ${err?.message||String(err)}`,'warn');
       });
     }
+  }
+
+  if(CONTRACT_LOAD_ERROR){
+    imageStatus.textContent=CONTRACT_LOAD_ERROR;
+    imageStatus.style.borderColor='#8a5a2f';
   }
 
   templateImportInput.addEventListener('change',()=>{
@@ -1102,18 +1118,19 @@
   function runtimeBindLocals(){
     if(runtimeBindSelect.value==='calibration' && runtimeCalibration?.rest_local){
       const out={
-        root:{parent:null,t:[0,0]}
+        root:{parent:null,t:[0,0],r:0}
       };
       for(const [id,v] of Object.entries(runtimeCalibration.rest_local)){
         if(!v || !Array.isArray(v.translation) || v.translation.length!==2) continue;
         out[id]={
           parent:v.parent||null,
-          t:[Number(v.translation[0]),Number(v.translation[1])]
+          t:[Number(v.translation[0]),Number(v.translation[1])],
+          r:Number(v.rotation||0)
         };
       }
       return out;
     }
-    return ENGINE_BIND_V0;
+    return ENGINE_BIND_V0 || {};
   }
 
   function runtimeWorldUnits(){
