@@ -799,9 +799,18 @@ mod tests {
     #[test]
     fn monster_content_identity_is_retained_across_updates() {
         let mut world = ReplicatedWorld::new();
-        let local = WireEntityId { index: 1, generation: 1 };
-        let moss = WireEntityId { index: 2, generation: 1 };
-        let shroom = WireEntityId { index: 3, generation: 1 };
+        let local = WireEntityId {
+            index: 1,
+            generation: 1,
+        };
+        let moss = WireEntityId {
+            index: 2,
+            generation: 1,
+        };
+        let shroom = WireEntityId {
+            index: 3,
+            generation: 1,
+        };
 
         world.apply_frame(frame(
             0,
