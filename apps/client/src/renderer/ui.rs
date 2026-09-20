@@ -11,6 +11,37 @@ use super::gpu::SpriteTextureId;
 const MAX_UI_RECTS: usize = 64;
 const MAX_UI_TEXTURED_RECTS: usize = 128;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct UiBudgetUsage {
+    pub(crate) requested_rects: usize,
+    pub(crate) accepted_rects: usize,
+    pub(crate) requested_textured_rects: usize,
+    pub(crate) accepted_textured_rects: usize,
+}
+
+impl UiBudgetUsage {
+    #[must_use]
+    fn from_counts(requested_rects: usize, requested_textured_rects: usize) -> Self {
+        Self {
+            requested_rects,
+            accepted_rects: requested_rects.min(MAX_UI_RECTS),
+            requested_textured_rects,
+            accepted_textured_rects: requested_textured_rects.min(MAX_UI_TEXTURED_RECTS),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn rect_overflow(self) -> usize {
+        self.requested_rects.saturating_sub(self.accepted_rects)
+    }
+
+    #[must_use]
+    pub(crate) fn textured_rect_overflow(self) -> usize {
+        self.requested_textured_rects
+            .saturating_sub(self.accepted_textured_rects)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct UiRect {
     pub min: [f32; 2],
@@ -104,6 +135,7 @@ struct UiBatch {
     count: u32,
     textured_buffer: wgpu::Buffer,
     textured_runs: Vec<UiTextureRun>,
+    budget_usage: UiBudgetUsage,
 }
 
 impl UiRenderer {
@@ -206,6 +238,9 @@ impl UiRenderer {
         textured_rects: &[UiTexturedRect],
         viewport: [u32; 2],
     ) -> usize {
+        let budget_usage = UiBudgetUsage::from_counts(rects.len(), textured_rects.len());
+        let rects = budgeted_slice(rects, MAX_UI_RECTS);
+        let textured_rects = budgeted_slice(textured_rects, MAX_UI_TEXTURED_RECTS);
         let mut batch = UiBatch {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("screen-ui-rect-batch"),
@@ -221,6 +256,7 @@ impl UiRenderer {
                 mapped_at_creation: false,
             }),
             textured_runs: Vec::new(),
+            budget_usage,
         };
         if viewport.contains(&0) {
             self.batches.push(batch);
@@ -234,8 +270,8 @@ impl UiRenderer {
             ]
         };
 
-        let mut vertices = Vec::with_capacity(rects.len().min(MAX_UI_RECTS) * 6);
-        for rect in rects.iter().take(MAX_UI_RECTS) {
+        let mut vertices = Vec::with_capacity(rects.len() * 6);
+        for rect in rects {
             if !valid_rect(rect) {
                 continue;
             }
@@ -257,9 +293,8 @@ impl UiRenderer {
             queue.write_buffer(&batch.buffer, 0, bytemuck::cast_slice(&vertices));
         }
 
-        let mut textured_vertices =
-            Vec::with_capacity(textured_rects.len().min(MAX_UI_TEXTURED_RECTS) * 6);
-        for rect in textured_rects.iter().take(MAX_UI_TEXTURED_RECTS) {
+        let mut textured_vertices = Vec::with_capacity(textured_rects.len() * 6);
+        for rect in textured_rects {
             if !valid_textured_rect(rect) {
                 continue;
             }
@@ -309,6 +344,12 @@ impl UiRenderer {
         }
         self.batches.push(batch);
         self.batches.len() - 1
+    }
+
+    #[must_use]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn budget_usage(&self, batch_index: usize) -> Option<UiBudgetUsage> {
+        self.batches.get(batch_index).map(|batch| batch.budget_usage)
     }
 
     pub(crate) fn draw_textured<'a>(
@@ -389,6 +430,10 @@ impl UiRenderer {
     }
 }
 
+fn budgeted_slice<T>(items: &[T], max: usize) -> &[T] {
+    &items[..items.len().min(max)]
+}
+
 fn valid_rect(rect: &UiRect) -> bool {
     rect.min
         .iter()
@@ -427,6 +472,29 @@ fn valid_textured_rect(rect: &UiTexturedRect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_budget_usage_caps_and_reports_overflow_independently() {
+        let rects = vec![(); MAX_UI_RECTS + 3];
+        let textured_rects = vec![(); MAX_UI_TEXTURED_RECTS + 5];
+        let usage = UiBudgetUsage::from_counts(rects.len(), textured_rects.len());
+
+        assert_eq!(budgeted_slice(&rects, MAX_UI_RECTS).len(), MAX_UI_RECTS);
+        assert_eq!(
+            budgeted_slice(&textured_rects, MAX_UI_TEXTURED_RECTS).len(),
+            MAX_UI_TEXTURED_RECTS
+        );
+        assert_eq!(usage.requested_rects, MAX_UI_RECTS + 3);
+        assert_eq!(usage.accepted_rects, MAX_UI_RECTS);
+        assert_eq!(usage.rect_overflow(), 3);
+        assert_eq!(usage.requested_textured_rects, MAX_UI_TEXTURED_RECTS + 5);
+        assert_eq!(usage.accepted_textured_rects, MAX_UI_TEXTURED_RECTS);
+        assert_eq!(usage.textured_rect_overflow(), 5);
+
+        let at_cap = UiBudgetUsage::from_counts(MAX_UI_RECTS, MAX_UI_TEXTURED_RECTS);
+        assert_eq!(at_cap.rect_overflow(), 0);
+        assert_eq!(at_cap.textured_rect_overflow(), 0);
+    }
 
     #[test]
     fn hit_bounds_include_edges() {
