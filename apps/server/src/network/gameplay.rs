@@ -1730,6 +1730,7 @@ impl GameplayOwner {
             | InputUpdate::DevSetSpeed { .. }
             | InputUpdate::DevSetJump { .. }
             | InputUpdate::DevSpawnNpc { .. }
+            | InputUpdate::DevSpawnMonster { .. }
             | InputUpdate::DevSpawnItem { .. }
             | InputUpdate::DevNarrative { .. }
             | InputUpdate::Equip { .. }

@@ -1126,25 +1126,47 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn manifest_metadata_is_validated_by_the_resolved_sheet() {
         let dir = workspace_root()
             .join("Graphic")
             .join("creature")
             .join("redslime");
         let bytes = std::fs::read(dir.join("manifest.json")).unwrap();
-        let raw: RawManifest = serde_json::from_slice(&bytes).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-        assert_eq!(raw.schema_version, 1);
-        assert_eq!(raw.kind, "purgatory_sprite_animation");
-        assert_eq!(raw.id, "creature.red_slime");
-        assert_eq!(raw.authored_facing, "right");
+        let schema_version = raw
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            .expect("manifest schema_version");
+        assert!(
+            matches!(schema_version, 1 | 2),
+            "unsupported manifest schema version: {schema_version}"
+        );
+
+        assert_eq!(
+            raw.get("kind").and_then(serde_json::Value::as_str),
+            Some("purgatory_sprite_animation")
+        );
+        assert_eq!(
+            raw.get("id").and_then(serde_json::Value::as_str),
+            Some("creature.red_slime")
+        );
+
+        let authored_facing = raw
+            .get("authored_facing")
+            .and_then(serde_json::Value::as_str)
+            .expect("manifest authored_facing");
+        assert!(matches!(authored_facing, "left" | "right"));
 
         // Atlas filename is authored data, not a frozen contract.
-        assert!(!raw.atlas.is_empty());
-        assert_eq!(Path::new(&raw.atlas).components().count(), 1);
+        let atlas = raw
+            .get("atlas")
+            .and_then(serde_json::Value::as_str)
+            .expect("manifest atlas");
+        assert!(!atlas.is_empty());
+        assert_eq!(std::path::Path::new(atlas).components().count(), 1);
 
-        let atlas_path = dir.join(&raw.atlas);
+        let atlas_path = dir.join(atlas);
         assert!(
             atlas_path.is_file(),
             "atlas file missing: {}",
@@ -1158,28 +1180,41 @@ mod tests {
             atlas_path.display()
         );
 
-        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
-        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        // V1 may still use frame_size/grid metadata. V2 owns explicit frame
+        // geometry, so divisibility is not a V2 contract.
+        if schema_version == 1 {
+            let frame_size = raw
+                .get("frame_size_px")
+                .and_then(serde_json::Value::as_array)
+                .expect("V1 manifest frame_size_px");
+            let fw = frame_size[0].as_u64().expect("frame width") as u32;
+            let fh = frame_size[1].as_u64().expect("frame height") as u32;
+            assert!(fw > 0 && fh > 0);
 
-        let [fw, fh] = raw.frame_size_px;
-        assert!(fw > 0 && fh > 0);
-
-        if let Some([columns, rows]) = raw.grid_size {
-            assert!(columns > 0 && rows > 0);
-        } else {
-            assert_eq!(
-                width % fw,
-                0,
-                "atlas width {width} not divisible by frame width {fw}"
-            );
-            assert_eq!(
-                height % fh,
-                0,
-                "atlas height {height} not divisible by frame height {fh}"
-            );
+            if let Some(grid) = raw.get("grid_size").and_then(serde_json::Value::as_array) {
+                let columns = grid[0].as_u64().expect("grid columns");
+                let rows = grid[1].as_u64().expect("grid rows");
+                assert!(columns > 0 && rows > 0);
+            } else {
+                let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+                let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+                assert_eq!(
+                    width % fw,
+                    0,
+                    "atlas width {width} not divisible by frame width {fw}"
+                );
+                assert_eq!(
+                    height % fh,
+                    0,
+                    "atlas height {height} not divisible by frame height {fh}"
+                );
+            }
         }
-    }
 
+        // The actual contract proof: the current V1/V2 loader must resolve it.
+        let mut assets = AssetRuntime::new();
+        SpriteSheet::from_sprite_id(&mut assets, "creature.red_slime").unwrap();
+    }
     #[test]
     fn overhead_manifests_resolve_eight_registered_frames() {
         let mut assets = AssetRuntime::new();
