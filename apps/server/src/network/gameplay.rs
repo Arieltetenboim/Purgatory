@@ -6419,6 +6419,66 @@ mod tests {
     }
 
     #[test]
+    fn dev_spawn_two_monster_types_preserve_identity_and_per_entity_geometry() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+
+        let content_ids = [MONSTER_MOSS_CRAB, purgatory_common::MONSTER_SHROOM];
+        for content_id in content_ids {
+            owner.apply_input(InputUpdate::DevSpawnMonster {
+                connection_id: connection,
+                monster_content_id: content_id,
+            });
+        }
+
+        let spawned = &owner.dev_spawned_monsters[owner.dev_spawned_monsters.len() - 2..];
+        for (&entity, content_id) in spawned.iter().zip(content_ids) {
+            let definition = owner
+                .registry
+                .monster_by_id(content_id)
+                .cloned()
+                .expect("authored Monster definition");
+            let npc = owner.world().npc_of(entity).expect("spawned Monster NPC");
+
+            assert_eq!(owner.world().content_id_of(entity), Some(content_id));
+            assert_eq!(
+                npc.runtime_config.half_extents,
+                definition.collision_bounds.half_extents()
+            );
+            assert_eq!(
+                npc.runtime_config.collision_center_offset,
+                definition.collision_bounds.center_offset()
+            );
+            assert_eq!(
+                npc.runtime_config.approach_bounds,
+                Some(NpcApproachBounds {
+                    left: (definition.collision_bounds.left + PLAYER_HALF_EXTENTS[0]
+                        - CONTACT_EPSILON)
+                        .max(0.0),
+                    right: (definition.collision_bounds.right + PLAYER_HALF_EXTENTS[0]
+                        - CONTACT_EPSILON)
+                        .max(0.0),
+                    bottom: (definition.collision_bounds.bottom + PLAYER_HALF_EXTENTS[1]
+                        - CONTACT_EPSILON)
+                        .max(0.0),
+                    top: (definition.collision_bounds.top + PLAYER_HALF_EXTENTS[1]
+                        - CONTACT_EPSILON)
+                        .max(0.0),
+                })
+            );
+        }
+
+        let moss = owner.world().npc_of(spawned[0]).unwrap().runtime_config;
+        let shroom = owner.world().npc_of(spawned[1]).unwrap().runtime_config;
+        assert_ne!(
+            moss.approach_bounds.unwrap().top,
+            shroom.approach_bounds.unwrap().top,
+            "distinct authored collision bounds must remain per Monster"
+        );
+    }
+
+    #[test]
     fn dev_spawn_npc_uses_authoritative_player_pose_and_stays_transient() {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
