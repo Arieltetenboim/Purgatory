@@ -1,0 +1,172 @@
+schema_version 1
+duration 0.50
+loop Loop
+
+track pelvis
+ty 0.00 0.425 Linear
+ty 0.06 0.355 Linear
+ty 0.13 0.335 Linear
+ty 0.19 0.400 Linear
+ty 0.25 0.445 Linear
+ty 0.31 0.355 Linear
+ty 0.38 0.335 Linear
+ty 0.44 0.400 Linear
+ty 0.50 0.425 Linear
+
+rot 0.00  0.000 Linear
+rot 0.06  0.020 Linear
+rot 0.13  0.028 Linear
+rot 0.19  0.012 Linear
+rot 0.25  0.000 Linear
+rot 0.31 -0.020 Linear
+rot 0.38 -0.028 Linear
+rot 0.44 -0.012 Linear
+rot 0.50  0.000 Linear
+endtrack
+
+track upper_leg_front
+rot 0.00  0.62 Linear
+rot 0.06  0.42 Linear
+rot 0.13  0.05 Linear
+rot 0.19 -0.42 Linear
+rot 0.25 -0.62 Linear
+rot 0.31 -0.45 Linear
+rot 0.38  0.05 Linear
+rot 0.44  0.45 Linear
+rot 0.50  0.62 Linear
+endtrack
+
+track lower_leg_front
+rot 0.00 -0.35 Linear
+rot 0.06 -0.70 Linear
+rot 0.13 -0.20 Linear
+rot 0.19 -0.05 Linear
+rot 0.25 -0.08 Linear
+rot 0.31 -0.92 Linear
+rot 0.38 -0.88 Linear
+rot 0.44 -0.55 Linear
+rot 0.50 -0.35 Linear
+endtrack
+
+track foot_front
+rot 0.00 -0.10 Linear
+rot 0.06  0.05 Linear
+rot 0.13 -0.02 Linear
+rot 0.19  0.08 Linear
+rot 0.25  0.12 Linear
+rot 0.31  0.55 Linear
+rot 0.38  0.42 Linear
+rot 0.44  0.05 Linear
+rot 0.50 -0.10 Linear
+endtrack
+
+track upper_leg_back
+rot 0.00 -0.62 Linear
+rot 0.06 -0.45 Linear
+rot 0.13  0.05 Linear
+rot 0.19  0.45 Linear
+rot 0.25  0.62 Linear
+rot 0.31  0.42 Linear
+rot 0.38  0.05 Linear
+rot 0.44 -0.42 Linear
+rot 0.50 -0.62 Linear
+endtrack
+
+track lower_leg_back
+rot 0.00 -0.08 Linear
+rot 0.06 -0.92 Linear
+rot 0.13 -0.88 Linear
+rot 0.19 -0.55 Linear
+rot 0.25 -0.35 Linear
+rot 0.31 -0.70 Linear
+rot 0.38 -0.20 Linear
+rot 0.44 -0.05 Linear
+rot 0.50 -0.08 Linear
+endtrack
+
+track foot_back
+rot 0.00  0.12 Linear
+rot 0.06  0.55 Linear
+rot 0.13  0.42 Linear
+rot 0.19  0.05 Linear
+rot 0.25 -0.10 Linear
+rot 0.31  0.05 Linear
+rot 0.38 -0.02 Linear
+rot 0.44  0.08 Linear
+rot 0.50  0.12 Linear
+endtrack
+
+track upper_arm_front
+rot 0.00 -0.58 Linear
+rot 0.06 -0.40 Linear
+rot 0.13 -0.08 Linear
+rot 0.19  0.40 Linear
+rot 0.25  0.58 Linear
+rot 0.31  0.42 Linear
+rot 0.38  0.08 Linear
+rot 0.44 -0.42 Linear
+rot 0.50 -0.58 Linear
+endtrack
+
+track lower_arm_front
+rot 0.00 0.28 Linear
+rot 0.06 0.32 Linear
+rot 0.13 0.36 Linear
+rot 0.19 0.30 Linear
+rot 0.25 0.24 Linear
+rot 0.31 0.20 Linear
+rot 0.38 0.18 Linear
+rot 0.44 0.22 Linear
+rot 0.50 0.28 Linear
+endtrack
+
+track upper_arm_back
+rot 0.00  0.58 Linear
+rot 0.06  0.42 Linear
+rot 0.13  0.08 Linear
+rot 0.19 -0.40 Linear
+rot 0.25 -0.58 Linear
+rot 0.31 -0.40 Linear
+rot 0.38 -0.08 Linear
+rot 0.44  0.40 Linear
+rot 0.50  0.58 Linear
+endtrack
+
+track lower_arm_back
+rot 0.00 0.24 Linear
+rot 0.06 0.20 Linear
+rot 0.13 0.18 Linear
+rot 0.19 0.22 Linear
+rot 0.25 0.28 Linear
+rot 0.31 0.32 Linear
+rot 0.38 0.36 Linear
+rot 0.44 0.30 Linear
+rot 0.50 0.24 Linear
+endtrack
+
+track torso
+rot 0.00 -0.120 Linear
+rot 0.06 -0.135 Linear
+rot 0.13 -0.150 Linear
+rot 0.19 -0.158 Linear
+rot 0.25 -0.160 Linear
+rot 0.31 -0.158 Linear
+rot 0.38 -0.150 Linear
+rot 0.44 -0.135 Linear
+rot 0.50 -0.120 Linear
+endtrack
+
+track head
+rot 0.00 0.020 Linear
+rot 0.06 0.024 Linear
+rot 0.13 0.028 Linear
+rot 0.19 0.032 Linear
+rot 0.25 0.034 Linear
+rot 0.31 0.032 Linear
+rot 0.38 0.028 Linear
+rot 0.44 0.024 Linear
+rot 0.50 0.020 Linear
+endtrack
+
+markers
+endmarkers

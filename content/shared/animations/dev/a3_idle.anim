@@ -1,31 +1,89 @@
 schema_version 1
-duration 2.0
+duration 12.00
 loop Loop
 
 track pelvis
-rot 0.0 0.0 Linear
-rot 0.5 0.03 Linear
-rot 1.0 0.0 Linear
-rot 1.5 -0.03 Linear
-rot 2.0 0.0 Linear
+ty 0.00 0.400 Linear
+ty 12.00 0.400 Linear
+rot 0.00 0.000 Linear
+rot 12.00 0.000 Linear
 endtrack
 
 track torso
-rot 0.0 0.0 Linear
-rot 0.5 -0.025 Linear
-rot 1.0 0.0 Linear
-rot 1.5 0.025 Linear
-rot 2.0 0.0 Linear
+rot 0.00 -0.010 Linear
+rot 1.20 -0.030 Linear
+rot 2.40 -0.018 Linear
+rot 3.60 -0.032 Linear
+rot 4.80 -0.012 Linear
+rot 6.20 -0.028 Linear
+rot 7.50 -0.016 Linear
+rot 8.80 -0.034 Linear
+rot 10.20 -0.014 Linear
+rot 11.40 -0.026 Linear
+rot 12.00 -0.010 Linear
 endtrack
 
 track head
-rot 0.0 0.0 Linear
-rot 0.5 0.06 Linear
-rot 1.0 0.0 Linear
-rot 1.5 -0.06 Linear
-rot 2.0 0.0 Linear
+rot 0.00 0.010 Linear
+rot 1.00 0.022 Linear
+rot 2.20 0.008 Linear
+rot 3.40 0.030 Linear
+rot 4.60 -0.006 Linear
+rot 5.80 0.018 Linear
+rot 7.00 0.004 Linear
+rot 8.40 0.028 Linear
+rot 9.60 -0.004 Linear
+rot 10.80 0.020 Linear
+rot 12.00 0.010 Linear
+endtrack
+
+track upper_arm_front
+rot 0.00 -0.040 Linear
+rot 1.50 -0.058 Linear
+rot 3.00 -0.045 Linear
+rot 4.50 -0.068 Linear
+rot 6.00 -0.042 Linear
+rot 7.80 -0.060 Linear
+rot 9.20 -0.048 Linear
+rot 10.60 -0.070 Linear
+rot 12.00 -0.040 Linear
+endtrack
+
+track lower_arm_front
+rot 0.00 0.080 Linear
+rot 1.50 0.092 Linear
+rot 3.00 0.084 Linear
+rot 4.50 0.098 Linear
+rot 6.00 0.082 Linear
+rot 7.80 0.094 Linear
+rot 9.20 0.086 Linear
+rot 10.60 0.100 Linear
+rot 12.00 0.080 Linear
+endtrack
+
+track upper_arm_back
+rot 0.00 0.040 Linear
+rot 1.80 0.052 Linear
+rot 3.40 0.044 Linear
+rot 5.20 0.066 Linear
+rot 6.80 0.046 Linear
+rot 8.40 0.058 Linear
+rot 10.00 0.042 Linear
+rot 11.20 0.064 Linear
+rot 12.00 0.040 Linear
+endtrack
+
+track lower_arm_back
+rot 0.00 0.080 Linear
+rot 1.80 0.090 Linear
+rot 3.40 0.084 Linear
+rot 5.20 0.096 Linear
+rot 6.80 0.086 Linear
+rot 8.40 0.092 Linear
+rot 10.00 0.082 Linear
+rot 11.20 0.098 Linear
+rot 12.00 0.080 Linear
 endtrack
 
 markers
 endmarkers
-
