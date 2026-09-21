@@ -36,7 +36,9 @@ pub(crate) fn launch_character_lab() -> Result<(), String> {
             .as_millis();
         let file_url = format!(
             "file:///{}?purgatory_reload={cache_bust}",
-            tool.to_string_lossy().replace('\\', "/").replace(' ', "%20")
+            tool.to_string_lossy()
+                .replace('\\', "/")
+                .replace(' ', "%20")
         );
 
         std::process::Command::new("rundll32.exe")
