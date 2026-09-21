@@ -201,6 +201,10 @@ impl BotSession {
                 self.state = SessionState::Failed;
                 Err("unexpected ability during handshake".into())
             }
+			ServerControl::AbilityGrants(_) => {
+    self.state = SessionState::Failed;
+    Err("unexpected ability grants during handshake".into())
+}
             ServerControl::Item(_) => {
                 self.state = SessionState::Failed;
                 Err("unexpected item result during handshake".into())
@@ -336,15 +340,16 @@ impl BotSession {
                         self.metrics.portal_out_of_range.saturating_add(1);
                 }
             }
-            ServerControl::Welcome(_)
-            | ServerControl::Interact(_)
-            | ServerControl::DialogueLine(_)
-            | ServerControl::DialogueChoiceAccepted(_)
-            | ServerControl::Equipment(_)
-            | ServerControl::PresentationOneShot(_)
-            | ServerControl::Ability(_)
-            | ServerControl::Item(_)
-            | ServerControl::Inventory(_) => {}
+ServerControl::Welcome(_)
+| ServerControl::Interact(_)
+| ServerControl::DialogueLine(_)
+| ServerControl::DialogueChoiceAccepted(_)
+| ServerControl::Equipment(_)
+| ServerControl::PresentationOneShot(_)
+| ServerControl::Ability(_)
+| ServerControl::AbilityGrants(_)
+| ServerControl::Item(_)
+| ServerControl::Inventory(_) => {}
         }
         Ok(poll)
     }

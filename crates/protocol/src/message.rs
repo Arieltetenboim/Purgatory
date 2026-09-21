@@ -30,7 +30,7 @@ use crate::presentation_oneshot::{
     decode_server_presentation_oneshot, encode_dev_presentation_oneshot,
     encode_server_presentation_oneshot,
 };
-use crate::snapshot::WireEntityId;
+use crate::snapshot::{WireEntityId, read_u16};
 use crate::{
     ConnectionId, HELLO_DEV_LOGIN_SINCE, MAX_DATAGRAM_BYTES, MAX_LABEL_BYTES, PROTOCOL_VERSION,
 };
