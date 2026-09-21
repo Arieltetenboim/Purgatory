@@ -41,6 +41,11 @@ function testGeneratedHumanoidContract() {
   assert.equal(contract.template_v1.height, 2048);
   assert.equal(contract.template_v1.cells.length, 14);
   assert.deepEqual(new Set(contract.template_v1.cells.map(cell => cell.part)), new Set(REQUIRED_PARTS));
+  assert.deepEqual(
+    contract.template_v1.cells.find(cell => cell.part === 'torso').pivot,
+    [256, 256],
+    'torso template pivot must leave room above and below the sprite-local pivot'
+  );
 
   const world = runtime.evaluateBoneWorld(contract.bones);
   close(world.get('torso').y, 0.72, 'torso world y');
@@ -216,6 +221,50 @@ function testTemplateConversionGeometry() {
   assert.ok(Object.values(overflow.overflow).some(value => value > 0));
 }
 
+function testCurrentVisualPackFitsTemplateAtPreservedWorldScale() {
+  const manifestPath = path.resolve(__dirname, '../../Graphic/character/base/character.base.dev_01.visual-pack.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const visuals = new Map(manifest.visuals.map(visual => [visual.part, visual]));
+
+  for (const cell of contract.template_v1.cells) {
+    const visual = visuals.get(cell.part);
+    assert.ok(visual, `current fixture is missing ${cell.part}`);
+    const [, , width, height] = visual.rect_px;
+    const placement = runtime.computeTemplatePlacement({
+      sourcePpu: manifest.pixels_per_unit,
+      targetPpu: contract.template_v1.pixels_per_unit,
+      width,
+      height,
+      pivot: visual.pivot_px,
+      cell,
+      margin: 8
+    });
+    assert.equal(
+      placement.fits,
+      true,
+      `${cell.part} must fit Template V1 at preserved world scale: ${JSON.stringify(placement.overflow)}`
+    );
+    close(
+      placement.dw / contract.template_v1.pixels_per_unit,
+      width / manifest.pixels_per_unit,
+      `${cell.part} world width`
+    );
+    close(
+      placement.dh / contract.template_v1.pixels_per_unit,
+      height / manifest.pixels_per_unit,
+      `${cell.part} world height`
+    );
+    closePoint(
+      [
+        placement.targetPivot[0] - placement.dx,
+        placement.targetPivot[1] - placement.dy
+      ].map(value => value / contract.template_v1.pixels_per_unit),
+      visual.pivot_px.map(value => value / manifest.pixels_per_unit),
+      `${cell.part} world pivot`
+    );
+  }
+}
+
 function testDeterministicAtlasAndManifest() {
   const rects = REQUIRED_PARTS.map((id, index) => ({ id, width: 20 + index, height: 30 + (index % 4) }));
   const firstPlan = runtime.planAtlas(rects);
@@ -254,6 +303,7 @@ testAssemblyRuntimeParity();
 testCurrentClientFixtureResolves();
 testTemplateValidation();
 testTemplateConversionGeometry();
+testCurrentVisualPackFitsTemplateAtPreservedWorldScale();
 testDeterministicAtlasAndManifest();
 testHtmlUsesTheSharedRuntimePath();
 console.log('Character Lab runtime parity tests: PASS');

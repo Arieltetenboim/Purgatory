@@ -40,7 +40,10 @@ pub const CHARACTER_BASE_TEMPLATE_CELL: u32 = 512;
 
 const CHARACTER_BASE_TEMPLATE_CELLS: [(&str, u32, u32, u32, u32); 14] = [
     ("head", 0, 0, 256, 384),
-    ("torso", 1, 0, 256, 384),
+    // Template pivots are transport coordinates, not rig transforms. Keep the
+    // torso pivot centered so artwork can preserve its sprite-local pivot and
+    // world scale without exhausting the lower half of the cell.
+    ("torso", 1, 0, 256, 256),
     ("upper_arm_back", 2, 0, 256, 128),
     ("upper_arm_front", 3, 0, 256, 128),
     ("lower_arm_back", 0, 1, 256, 128),
@@ -733,6 +736,15 @@ mod tests {
                 "missing {part}"
             );
         }
+    }
+
+    #[test]
+    fn character_base_template_v1_torso_pivot_leaves_two_sided_room() {
+        let torso = CHARACTER_BASE_TEMPLATE_CELLS
+            .iter()
+            .find(|(part, ..)| *part == "torso")
+            .expect("torso template cell");
+        assert_eq!((torso.3, torso.4), (256, 256));
     }
 
     #[test]

@@ -24,7 +24,7 @@ window.PURGATORY_HUMANOID_V0_CONTRACT = {
     width: 2048, height: 2048, pixels_per_unit: 512.00, cell_size: 512,
     cells: [
       { part: 'head', x: 0, y: 0, w: 512, h: 512, pivot: [256, 384] },
-      { part: 'torso', x: 512, y: 0, w: 512, h: 512, pivot: [256, 384] },
+      { part: 'torso', x: 512, y: 0, w: 512, h: 512, pivot: [256, 256] },
       { part: 'upper_arm_back', x: 1024, y: 0, w: 512, h: 512, pivot: [256, 128] },
       { part: 'upper_arm_front', x: 1536, y: 0, w: 512, h: 512, pivot: [256, 128] },
       { part: 'lower_arm_back', x: 0, y: 512, w: 512, h: 512, pivot: [256, 128] },
