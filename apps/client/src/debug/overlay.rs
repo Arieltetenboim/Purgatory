@@ -73,7 +73,7 @@ const SEC_NET_HIST: &str = "network.history";
 
 /// Arguments for drawing the Connection Frontend during an egui frame.
 pub struct ConnectionPaint<'a> {
-    pub frontend: &'a crate::frontend::ConnectionFrontend,
+    pub frontend: &'a mut crate::frontend::ConnectionFrontend,
     pub server: &'a str,
     pub login: &'a mut String,
     pub status: &'a str,
