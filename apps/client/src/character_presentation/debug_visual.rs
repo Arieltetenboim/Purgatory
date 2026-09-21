@@ -366,10 +366,10 @@ mod tests {
             .unwrap();
         assert_eq!(quad.sprite_texture_id(), Some(visual.texture));
         assert_eq!(quad.uvs(), visual.uv);
-        assert_eq!(
-            quad.world_corners()[0][0] - world.get(UPPER_ARM_BACK).unwrap().translation[0],
-            -visual.pivot_px[0] / visual.pixels_per_unit
-        );
+        let actual =
+            quad.world_corners()[0][0] - world.get(UPPER_ARM_BACK).unwrap().translation[0];
+        let expected = -visual.pivot_px[0] / visual.pixels_per_unit;
+        assert!((actual - expected).abs() < 1e-6);
     }
 
     #[test]
