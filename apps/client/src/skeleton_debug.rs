@@ -16,6 +16,7 @@ use purgatory_skeleton::{
     torso_local_corners,
 };
 
+use crate::character_presentation::skeleton_root;
 use crate::renderer::DrawQuad;
 
 const BONE_COLOR: [f32; 4] = [0.95, 0.82, 0.25, 1.0];
@@ -174,11 +175,11 @@ impl FrontArmProof {
 #[allow(unused_imports)] // DEV skeleton inspect / diagnostics assemble
 pub use purgatory_skeleton::HUMANOID_V0_BONE_LABELS;
 
-/// Presentation mapping: player draw AABB center → skeleton root (feet).
-/// Not a skeleton-core or collision contract.
+/// Presentation mapping: player AABB center → calibrated skeleton root near the feet.
+/// Not a skeleton-core or collision contract; this never moves the AABB.
 #[must_use]
 pub fn presented_root(body_center: [f32; 2]) -> [f32; 2] {
-    [body_center[0], body_center[1] - PLAYER_HALF_EXTENTS[1]]
+    skeleton_root(body_center)
 }
 
 /// Y-up NDC (`Camera::world_to_ndc`) → Y-down window pixels.
@@ -1040,11 +1041,17 @@ mod tests {
     }
 
     #[test]
-    fn presented_root_uses_body_aabb_feet() {
+    fn presented_root_applies_collision_foot_overlap() {
         let center = [3.0, 2.0];
         let root = presented_root(center);
         assert!((root[0] - 3.0).abs() < 1e-5);
-        assert!((root[1] - (2.0 - PLAYER_HALF_EXTENTS[1])).abs() < 1e-5);
+        assert!(
+            (root[1]
+                - (2.0 - PLAYER_HALF_EXTENTS[1]
+                    + crate::character_presentation::CHARACTER_COLLISION_FOOT_OVERLAP))
+                .abs()
+                < 1e-5
+        );
     }
 
     #[test]
@@ -1358,7 +1365,10 @@ mod tests {
         let center = [1.5, 2.5];
         let root = presented_root(center);
         let c1 = preview_local_player_center(center, CHARACTER_VISUAL_SCALE_1);
-        assert!(tr_eq(c1, center));
+        assert!(tr_eq(
+            c1,
+            [root[0], root[1] + PLAYER_HALF_EXTENTS[1]]
+        ));
         let c125 = preview_local_player_center(center, CHARACTER_VISUAL_SCALE_115);
         let size125 = preview_local_player_size(CHARACTER_VISUAL_SCALE_115);
         let feet_125 = [c125[0], c125[1] - size125[1] * 0.5];

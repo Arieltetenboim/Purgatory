@@ -89,8 +89,12 @@ pub struct DebugUiState {
     /// Overlay 8F-C proof: inject ClimbBack into every player entry this client
     /// presents (local + remotes). Not a World/network climb. Not replicated.
     pub presentation_force_climb_back: bool,
-    /// Legacy local-player cyan AABB. Independent of simulation and skeleton draw.
-    pub show_local_player_quad: bool,
+    /// Red collision AABBs for local and remote players. Off by default.
+    pub show_player_aabbs: bool,
+    /// Red debug bounds for replicated NPCs / mobs. Off by default.
+    pub show_npc_aabbs: bool,
+    /// Temporary accept / turn overhead animation proofs. Off by default.
+    pub show_overhead_animation_proofs: bool,
     /// Selected Humanoid v0 bone index for overlay local/world/screen readout (0..=15).
     pub skeleton_inspect_index: u8,
     /// Front-leg proof pose. Default Off. Not an animation system.
@@ -205,7 +209,9 @@ impl Default for DebugUiState {
             show_placeholder_character: true,
             presentation_view_back: false,
             presentation_force_climb_back: false,
-            show_local_player_quad: true,
+            show_player_aabbs: false,
+            show_npc_aabbs: false,
+            show_overhead_animation_proofs: false,
             skeleton_inspect_index: 0,
             skeleton_front_leg_proof: crate::skeleton_debug::FrontLegProof::Off,
             skeleton_front_arm_proof: crate::skeleton_debug::FrontArmProof::Off,
@@ -338,10 +344,10 @@ pub const RESET_TO_SPAWN_LABEL: &str = "Reset to Spawn Point";
 pub const RESET_TO_SPAWN_HELP: &str = "Connected: server-authoritative spawn reset (DevResetPlayer). Offline: local World spawn and camera center.";
 pub const RESET_TO_SPAWN_FLASH: &str = "RESET TO SPAWN POINT";
 
-pub const DEBUG_MOVE_SPEED_DEFAULT: f32 = 3.5;
+pub const DEBUG_MOVE_SPEED_DEFAULT: f32 = 3.0;
 pub const DEBUG_MOVE_SPEED_MIN: f32 = 0.5;
 pub const DEBUG_MOVE_SPEED_MAX: f32 = 24.0;
-pub const DEBUG_JUMP_SPEED_DEFAULT: f32 = 13.0;
+pub const DEBUG_JUMP_SPEED_DEFAULT: f32 = 11.0;
 pub const DEBUG_JUMP_SPEED_MIN: f32 = 1.0;
 pub const DEBUG_JUMP_SPEED_MAX: f32 = 30.0;
 pub const DEBUG_TUNING_SEND_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
@@ -451,5 +457,19 @@ mod tests {
                 .abs()
                 < f32::EPSILON
         );
+        assert!(
+            (DEBUG_JUMP_SPEED_DEFAULT
+                - purgatory_simulation::FootnoteConfig::DEFAULT.jump_velocity)
+                .abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn collision_and_overhead_proofs_are_off_by_default() {
+        let ui = DebugUiState::default();
+        assert!(!ui.show_player_aabbs);
+        assert!(!ui.show_npc_aabbs);
+        assert!(!ui.show_overhead_animation_proofs);
     }
 }

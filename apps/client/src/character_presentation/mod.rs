@@ -35,6 +35,7 @@ pub(crate) use collection::{
 };
 pub(crate) use debug_visual::presentation_debug_quads_with_assets;
 pub(crate) use oneshot_table::PresentationOneShotTable;
+pub(crate) use skeleton_input::{CHARACTER_COLLISION_FOOT_OVERLAP, skeleton_root};
 pub(crate) use state::{Facing, PresentationActivity, PresentationView, immunity_flash_visible};
 
 #[cfg(test)]

@@ -103,8 +103,9 @@ use crate::ui_panel::{
 };
 use crate::ui_runtime::UIRuntimeState;
 
-const PLAYER_COLOR: [f32; 4] = [0.19, 0.55, 0.66, 1.0];
 const REMOTE_PLAYER_COLOR: [f32; 4] = [0.72, 0.32, 0.38, 1.0];
+const COLLISION_AABB_COLOR: [f32; 4] = [1.0, 0.12, 0.12, 1.0];
+const COLLISION_AABB_THICKNESS: f32 = 0.04;
 /// Magenta body: distinct from cyan players, brown/green platforms, and the floor.
 const INTERACTABLE_BODY_COLOR: [f32; 4] = [0.92, 0.18, 0.72, 1.0];
 const INTERACTABLE_CAP_COLOR: [f32; 4] = [1.0, 0.86, 0.12, 1.0];
@@ -2542,12 +2543,12 @@ impl ClientApp {
                     {
                         self.debug
                             .as_ref()
-                            .map(|d| d.ui.show_local_player_quad)
-                            .unwrap_or(true)
+                            .map(|d| d.ui.show_player_aabbs)
+                            .unwrap_or(false)
                     }
                     #[cfg(not(feature = "dev-diagnostics"))]
                     {
-                        true
+                        false
                     }
                 },
             ));
@@ -2732,6 +2733,19 @@ impl ClientApp {
                     &mut self.turn_player,
                     local_pose,
                     frame_dt,
+                    {
+                        #[cfg(feature = "dev-diagnostics")]
+                        {
+                            self.debug
+                                .as_ref()
+                                .map(|debug| debug.ui.show_overhead_animation_proofs)
+                                .unwrap_or(false)
+                        }
+                        #[cfg(not(feature = "dev-diagnostics"))]
+                        {
+                            false
+                        }
+                    },
                 )
             };
             let interactable_n = replica_interactable_quads.len() + replica_portal_quads.len();
@@ -2739,6 +2753,15 @@ impl ClientApp {
             quads.extend(replica_portal_quads);
             quads.extend(item_drop_quads(&self.replica));
             quads.extend(replica_npc_quads);
+            #[cfg(feature = "dev-diagnostics")]
+            if replica_live
+                && self
+                    .debug
+                    .as_ref()
+                    .is_some_and(|debug| debug.ui.show_npc_aabbs)
+            {
+                quads.extend(npc_debug_aabb_quads(&self.replica, &self.interp));
+            }
             self.trace_scene_once(&camera, local_pose, interactable_n, quads.len());
             #[cfg(feature = "dev-diagnostics")]
             if overlay_open {
@@ -3913,7 +3936,7 @@ fn scene_quads(
     local_pose: Option<[f32; 2]>,
     remote_poses: &[PresentationPose],
     _local_preview_scale: f32,
-    show_local_player: bool,
+    show_player_aabbs: bool,
 ) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(8);
     for view in world.iter_platforms() {
@@ -3930,20 +3953,20 @@ fn scene_quads(
         };
         quads.push(aabb_quad(view.aabb(), color));
     }
-    if show_local_player && let Some(position) = local_pose {
-        let center = crate::skeleton_debug::preview_local_player_center(
-            position,
-            crate::skeleton_debug::CHARACTER_VISUAL_SCALE_1,
-        );
-        let size = crate::skeleton_debug::preview_local_player_size(
-            crate::skeleton_debug::CHARACTER_VISUAL_SCALE_1,
-        );
-        quads.push(DrawQuad::rect(center, size, PLAYER_COLOR));
-    }
-    for pose in remote_poses {
-        // NPC poses are drawn via npc_quads; remotes here are remote players only.
-        let aabb = Aabb::new(pose.position, PLAYER_HALF_EXTENTS);
-        quads.push(aabb_quad(aabb, REMOTE_PLAYER_COLOR));
+    if show_player_aabbs {
+        if let Some(position) = local_pose {
+            push_collision_aabb_outline(
+                Aabb::new(position, PLAYER_HALF_EXTENTS),
+                &mut quads,
+            );
+        }
+        for pose in remote_poses {
+            // NPC poses are drawn via npc_quads; remotes here are remote players only.
+            push_collision_aabb_outline(
+                Aabb::new(pose.position, PLAYER_HALF_EXTENTS),
+                &mut quads,
+            );
+        }
     }
     let b = world.bounds();
     quads.push(DrawQuad::rect(
@@ -3980,6 +4003,7 @@ fn npc_quads(
     turn_player: &mut crate::npc_presentation::SpriteAnimationPlayer,
     local_player_position: Option<[f32; 2]>,
     frame_dt: f32,
+    show_overhead_animation_proofs: bool,
 ) -> Vec<DrawQuad> {
     let poses = interp.poses();
     let server_tick = replica.last_server_tick();
@@ -4055,7 +4079,7 @@ fn npc_quads(
             state.0.advance(clip, frame_dt);
             let frame = state.0.frame(clip).unwrap_or(0);
             let mut quads = vec![sheet.quad(position, frame, flash, state.2)];
-            if !accept_shown {
+            if show_overhead_animation_proofs && !accept_shown {
                 accept_shown = true;
                 accept_sheet.advance(accept_player, frame_dt);
                 quads.push(accept_sheet.quad(accept_player, [position[0], position[1] + 0.72]));
@@ -4082,11 +4106,40 @@ fn npc_quads(
             quads
         })
         .collect::<Vec<_>>();
-    if let Some(position) = local_player_position {
+    if show_overhead_animation_proofs && let Some(position) = local_player_position {
         turn_sheet.advance(turn_player, frame_dt);
         quads.push(turn_sheet.quad(turn_player, [position[0], position[1] + 1.0]));
     }
     players.retain(|key, _| visible.contains(key));
+    quads
+}
+
+/// Replica v19 does not carry authored collision bounds or content identity.
+/// These DEV outlines therefore use the current presentation-class bounds
+/// without changing or claiming authority over server collision.
+#[cfg(feature = "dev-diagnostics")]
+fn npc_debug_aabb_quads(
+    replica: &ReplicatedWorld,
+    interp: &InterpolationBuffer,
+) -> Vec<DrawQuad> {
+    let poses = interp.poses();
+    let mut quads = Vec::new();
+    for entity in replica
+        .iter()
+        .filter(|entity| entity.kind == ReplicatedKind::Npc)
+    {
+        let position = poses
+            .iter()
+            .find(|pose| pose.entity_id == entity.entity_id)
+            .map(|pose| pose.position)
+            .unwrap_or(entity.position);
+        let aabb = if is_humanoid_social_npc(entity) {
+            Aabb::new(position, PLAYER_HALF_EXTENTS)
+        } else {
+            Aabb::new([position[0], position[1] + 0.10], [0.30, 0.30])
+        };
+        push_collision_aabb_outline(aabb, &mut quads);
+    }
     quads
 }
 
@@ -4476,6 +4529,33 @@ fn aabb_quad(aabb: Aabb, color: [f32; 4]) -> DrawQuad {
     DrawQuad::rect(aabb.center, aabb.size(), color)
 }
 
+fn push_collision_aabb_outline(aabb: Aabb, quads: &mut Vec<DrawQuad>) {
+    let [width, height] = aabb.size();
+    let [center_x, center_y] = aabb.center;
+    let half_width = width * 0.5;
+    let half_height = height * 0.5;
+    quads.push(DrawQuad::rect(
+        [center_x, center_y + half_height],
+        [width, COLLISION_AABB_THICKNESS],
+        COLLISION_AABB_COLOR,
+    ));
+    quads.push(DrawQuad::rect(
+        [center_x, center_y - half_height],
+        [width, COLLISION_AABB_THICKNESS],
+        COLLISION_AABB_COLOR,
+    ));
+    quads.push(DrawQuad::rect(
+        [center_x - half_width, center_y],
+        [COLLISION_AABB_THICKNESS, height],
+        COLLISION_AABB_COLOR,
+    ));
+    quads.push(DrawQuad::rect(
+        [center_x + half_width, center_y],
+        [COLLISION_AABB_THICKNESS, height],
+        COLLISION_AABB_COLOR,
+    ));
+}
+
 impl ApplicationHandler for ClientApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -4676,26 +4756,12 @@ impl ApplicationHandler for ClientApp {
                         if self.inventory_window.is_visible() {
                             self.focus_normal_window(NormalWindowKind::Inventory);
                         }
-                        if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() {
-                            self.inventory_window.arrange_side_by_side(
-                                viewport,
-                                pixels_per_unit,
-                                false,
-                            );
-                        }
                         window.request_redraw();
                         return;
                     }
                     if equipment_key {
                         if self.equipment_window.is_visible() {
                             self.focus_normal_window(NormalWindowKind::Equipment);
-                        }
-                        if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() {
-                            self.equipment_window.arrange_side_by_side(
-                                viewport,
-                                pixels_per_unit,
-                                true,
-                            );
                         }
                         window.request_redraw();
                         return;
@@ -5158,21 +5224,31 @@ mod tests {
     }
 
     #[test]
-    fn scene_quads_use_presentation_local_and_static_platforms() {
+    fn scene_quads_use_presentation_local_collision_outline_and_static_platforms() {
         use purgatory_simulation::PLAYER_HALF_EXTENTS;
 
         let world = World::dev_stage();
         let local_pose = Some([1.5, 2.5]);
         let quads = super::scene_quads(&world, local_pose, &[], 1.0, true);
-        assert!(quads.len() >= 5);
-        let player_quad = quads
+        let player_outline: Vec<_> = quads
             .iter()
-            .find(|quad| quad.center == [1.5, 2.5])
-            .expect("presentation local player quad");
-        assert_eq!(
-            player_quad.size,
-            [PLAYER_HALF_EXTENTS[0] * 2.0, PLAYER_HALF_EXTENTS[1] * 2.0]
+            .filter(|quad| quad.color == super::COLLISION_AABB_COLOR)
+            .collect();
+        assert_eq!(player_outline.len(), 4);
+        assert!(
+            player_outline.iter().all(|quad| {
+                quad.size[0] == super::COLLISION_AABB_THICKNESS
+                    || quad.size[1] == super::COLLISION_AABB_THICKNESS
+            }),
+            "player collision visualization must not contain a filled quad"
         );
+        assert!(player_outline.iter().any(|quad| {
+            quad.size
+                == [
+                    PLAYER_HALF_EXTENTS[0] * 2.0,
+                    super::COLLISION_AABB_THICKNESS,
+                ]
+        }));
     }
 
     #[test]
@@ -5189,18 +5265,25 @@ mod tests {
             crate::skeleton_debug::CHARACTER_VISUAL_SCALE_115,
             true,
         );
-        let expect_size = [PLAYER_HALF_EXTENTS[0] * 2.0, PLAYER_HALF_EXTENTS[1] * 2.0];
-        let q1 = shown_1
+        let outline_1: Vec<_> = shown_1
             .iter()
-            .find(|quad| quad.center == local_pose)
-            .expect("local player quad");
-        let q110 = shown_110
+            .filter(|quad| quad.color == super::COLLISION_AABB_COLOR)
+            .map(|quad| (quad.center, quad.size))
+            .collect();
+        let outline_110: Vec<_> = shown_110
             .iter()
-            .find(|quad| quad.center == local_pose)
-            .expect("local player quad at 1.15 argument");
-        assert_eq!(q1.size, expect_size);
-        assert_eq!(q110.size, expect_size);
-        assert_eq!(q1.center, q110.center);
+            .filter(|quad| quad.color == super::COLLISION_AABB_COLOR)
+            .map(|quad| (quad.center, quad.size))
+            .collect();
+        assert_eq!(outline_1, outline_110);
+        assert!(outline_1.iter().any(|(center, size)| {
+            *center == [local_pose[0], local_pose[1] - PLAYER_HALF_EXTENTS[1]]
+                && *size
+                    == [
+                        PLAYER_HALF_EXTENTS[0] * 2.0,
+                        super::COLLISION_AABB_THICKNESS,
+                    ]
+        }));
     }
 
     #[test]
@@ -5217,14 +5300,22 @@ mod tests {
     }
 
     #[test]
-    fn scene_quads_can_hide_local_player_body_quad() {
+    fn scene_quads_can_hide_player_collision_outlines() {
         let world = World::dev_stage();
         let local_pose = Some([1.5, 2.5]);
         let shown = super::scene_quads(&world, local_pose, &[], 1.0, true);
         let hidden = super::scene_quads(&world, local_pose, &[], 1.0, false);
-        assert!(shown.iter().any(|quad| quad.center == [1.5, 2.5]));
-        assert!(hidden.iter().all(|quad| quad.center != [1.5, 2.5]));
-        assert_eq!(shown.len(), hidden.len() + 1);
+        assert!(
+            shown
+                .iter()
+                .any(|quad| quad.color == super::COLLISION_AABB_COLOR)
+        );
+        assert!(
+            hidden
+                .iter()
+                .all(|quad| quad.color != super::COLLISION_AABB_COLOR)
+        );
+        assert_eq!(shown.len(), hidden.len() + 4);
     }
 
     #[test]
@@ -6001,7 +6092,7 @@ mod tests {
         }];
         let with_remotes = super::scene_quads(&world, Some([-8.0, -3.0]), &remotes, 1.0, true);
         let without = super::scene_quads(&world, Some([-8.0, -3.0]), &[], 1.0, true);
-        assert!(with_remotes.len() > without.len());
+        assert_eq!(with_remotes.len(), without.len() + 4);
     }
 
     #[test]

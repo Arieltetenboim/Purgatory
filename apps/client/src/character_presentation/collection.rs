@@ -18,9 +18,10 @@ use super::resolve::{BoundAttachment, MissingPresentation, resolve_equipment};
 use super::skeleton_input::{SkeletonInput, skeleton_input_from_state};
 use super::state::{CharacterPresentationState, EquipmentView, Facing, PresentationActivity};
 
-/// Authored Move clip cadence is calibrated to the normal ground locomotion speed.
-/// This is presentation metadata, not gameplay authority or root motion.
-const MOVE_CLIP_REFERENCE_SPEED: f32 = 3.5;
+/// Runtime ground-speed reference for Move cadence. Presentation only; never root motion.
+const MOVE_CLIP_REFERENCE_SPEED: f32 = 3.0;
+/// Slightly faster feet at canonical speed to reduce visible ground sliding.
+const MOVE_CLIP_BASE_PLAYBACK_SPEED: f32 = 1.10;
 
 /// Generational presentation key. Copied from replica identity at the adapter
 /// edge so [`CharacterPresentationState`] does not store protocol types.
@@ -313,7 +314,7 @@ impl CharacterPresentationSet {
         self.sync_with_dialogue_motion(
             items.into_iter().map(|(key, state, dialogue_request)| {
                 let horizontal_speed = if state.activity == PresentationActivity::Move {
-                    MOVE_CLIP_REFERENCE_SPEED
+                    MOVE_CLIP_REFERENCE_SPEED / MOVE_CLIP_BASE_PLAYBACK_SPEED
                 } else {
                     0.0
                 };
@@ -562,7 +563,7 @@ fn playback_speed_for(
     if !horizontal_speed.is_finite() {
         return 1.0;
     }
-    horizontal_speed.abs() / MOVE_CLIP_REFERENCE_SPEED
+    horizontal_speed.abs() / MOVE_CLIP_REFERENCE_SPEED * MOVE_CLIP_BASE_PLAYBACK_SPEED
 }
 
 fn apply_resolve(

@@ -17,7 +17,7 @@ The 30 Hz / ~33.33 ms figures below are **tick spacing**, not permission for sim
 | Ground deceleration | 50 world units / s² | `ground_deceleration` | Idle friction on ground only |
 | Air acceleration | 20 world units / s² | `air_acceleration` | Air idle does not kill horizontal velocity |
 | Gravity | 36 world units / s² | `FootnoteConfig::gravity` | `+Y` up; gravity decreases `velocity.y` |
-| Jump velocity | 13 world units / s | `FootnoteConfig::jump_velocity` | Instantaneous; grounded only; preserves `vx` |
+| Jump velocity | 11 world units / s | `FootnoteConfig::jump_velocity` | Instantaneous; grounded only; preserves `vx` |
 | Player FOOTNOTE tick allocations | 0 heap | stack `PlatformScratch` (cap 64) | No `Vec` in ordinary player movement path; cap raised for Phase 4.6 arena |
 | Contact epsilon | 0.001 wu | `CONTACT_EPSILON` | Touch ≠ penetrate; ceiling snap separates by epsilon |
 | Max Solid recovery translation | 0.5 wu | `MAX_RECOVERY_TRANSLATION` | Exceptional path only |

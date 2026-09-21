@@ -8,6 +8,10 @@ use purgatory_skeleton::{
 
 use super::state::{CharacterPresentationState, Facing, PresentationActivity, PresentationView};
 
+/// Presentation-only overlap above the collision body's bottom edge, in world units.
+/// Increase this value to raise the whole character artwork without moving its collider.
+pub const CHARACTER_COLLISION_FOOT_OVERLAP: f32 = 0.02;
+
 /// Equipment-independent pose input. Skeleton math still sees only Definition + local Pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SkeletonInput {
@@ -36,10 +40,13 @@ impl PreparedSkeleton {
     }
 }
 
-/// Body-center AABB → skeleton root (planted feet). Same mapping as S2 debug draw.
+/// Body-center AABB → skeleton root with a small authored foot overlap.
 #[must_use]
 pub fn skeleton_root(body_center: [f32; 2]) -> [f32; 2] {
-    [body_center[0], body_center[1] - PLAYER_HALF_EXTENTS[1]]
+    [
+        body_center[0],
+        body_center[1] - PLAYER_HALF_EXTENTS[1] + CHARACTER_COLLISION_FOOT_OVERLAP,
+    ]
 }
 
 #[must_use]

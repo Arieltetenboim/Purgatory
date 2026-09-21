@@ -4975,7 +4975,7 @@ mod tests {
         for _ in 0..40 {
             owner.simulate_tick(dt);
         }
-        assert!((owner.world().get_player(actor).unwrap().1.velocity[0] - 3.5).abs() < 0.05);
+        assert!((owner.world().get_player(actor).unwrap().1.velocity[0] - 3.0).abs() < 0.05);
     }
 
     #[test]

@@ -1367,8 +1367,16 @@ fn draw_now_tab(
             );
             ui.checkbox(&mut ui_state.show_skeleton, "Show Skeleton");
             ui.checkbox(
-                &mut ui_state.show_local_player_quad,
-                "Show legacy blue AABB",
+                &mut ui_state.show_player_aabbs,
+                "Show Player AABBs",
+            );
+            ui.checkbox(
+                &mut ui_state.show_npc_aabbs,
+                "Show NPC / Mob AABBs",
+            );
+            ui.checkbox(
+                &mut ui_state.show_overhead_animation_proofs,
+                "Show overhead animation proofs",
             );
             ui.separator();
             ui.checkbox(&mut ui_state.show_overlay_gizmos, "Show overlay gizmos");
@@ -1488,8 +1496,8 @@ fn draw_skeleton_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut
             );
             ui.checkbox(&mut ui_state.show_skeleton, "Show Skeleton");
             ui.checkbox(
-                &mut ui_state.show_local_player_quad,
-                "Show legacy blue AABB",
+                &mut ui_state.show_player_aabbs,
+                "Show Player AABBs",
             );
             ui.checkbox(
                 &mut ui_state.skeleton_debug_preview_2x,
@@ -1497,9 +1505,9 @@ fn draw_skeleton_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut
             );
             ui.small("Base presentation: 1.15× about planted feet. 2× Debug Preview is diagnostic only; it does not change the 1.15 baseline, bind, evaluate, or simulation AABB.");
             ui.small("Joints are small opaque circular dots under the placeholders.");
-            ui.small("Uncheck legacy blue AABB to hide the cyan body rectangle.");
+            ui.small("Player collision AABBs use red outlines and are off by default.");
             ui.small("P4.2 placeholders and 8E attachment debug quads come from CharacterPresentationSet (local and remote share one path). Stage D joints remain the local S2 overlay.");
-            ui.small("Force Back / Force ClimbBack apply on this client to every CharacterPresentationSet player (local + remotes this client interpolates). They are not local-only. They do not change the other client's overlay, Stage D joints, or the remote magenta AABB.");
+            ui.small("Force Back / Force ClimbBack apply on this client to every CharacterPresentationSet player (local + remotes this client interpolates). They are not local-only. They do not change the other client's overlay, Stage D joints, or collision AABB toggles.");
             ui.small("8F-A draw order (far → near): ArmBack → LegBack → Core → LegFront → Head → ArmFront. Attachments emit after their layer's base pieces. No per-item z.");
             ui.small("8F-B Back view hides authored ArmFront/LegFront (and their attachments). ArmBack/LegBack paint in the near Front slots. Force Back is draw-only and does not change activity.");
             ui.small("8F-C ClimbBack sets PresentationView::Back from semantic activity. Force ClimbBack injects that activity on this client's local and remote player entries. Not a network climb.");
@@ -3234,7 +3242,7 @@ fn draw_network_tab(ui: &mut egui::Ui, frame: &DiagnosticsFrame, ui_state: &mut 
             ui.small("Gizmo legend (Prediction Gizmos ON):");
             ui.small("• Orange marker = Authoritative replica pose (server snapshot)");
             ui.small("• Green marker = Predicted local pose (simulation/prediction)");
-            ui.small("Cyan player quad = local presentation pose. Camera follows that same pose.");
+            ui.small("Player AABB outline = local presentation pose. Camera follows that same pose.");
         });
     }
     let impair_summary = format!(

@@ -22,7 +22,7 @@ const PORTAL_OUTLINE: [f32; 4] = [0.25, 1.0, 0.75, 1.0];
 const HYSTERESIS_OUTLINE: [f32; 4] = [1.0, 0.9, 0.2, 1.0];
 const ENTERED_FLASH: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const GRID_COLOR: [f32; 4] = [0.35, 0.4, 0.5, 1.0];
-const COLLIDER_TINT: [f32; 4] = [0.8, 0.8, 0.2, 0.25];
+const COLLIDER_OUTLINE: [f32; 4] = [1.0, 0.12, 0.12, 1.0];
 
 const VEL_SCALE: f32 = 0.12;
 const BAR_THICKNESS: f32 = 0.06;
@@ -61,11 +61,12 @@ pub fn footnote_debug_quads(
     if ui.show_colliders {
         for view in world.iter_platforms() {
             let aabb = view.aabb();
-            quads.push(DrawQuad::rect(
+            push_aabb_outline(
                 aabb.center,
-                [aabb.size()[0] * 1.02, aabb.size()[1] * 1.02],
-                COLLIDER_TINT,
-            ));
+                aabb.size(),
+                COLLIDER_OUTLINE,
+                &mut quads,
+            );
         }
     }
 
@@ -473,8 +474,15 @@ mod tests {
         };
         let quads = footnote_debug_quads(&world, &ui, None);
         assert!(
-            quads.iter().any(|q| q.color == COLLIDER_TINT),
+            quads.iter().any(|q| q.color == COLLIDER_OUTLINE),
             "colliders must not early-return when player_body is missing"
+        );
+        assert!(
+            quads
+                .iter()
+                .filter(|q| q.color == COLLIDER_OUTLINE)
+                .all(|q| q.size[0] <= 0.06 || q.size[1] <= 0.06),
+            "collision AABBs must be outlines without filled interiors"
         );
     }
 
@@ -500,12 +508,12 @@ mod tests {
     #[test]
     fn append_debug_gizmos_keeps_gizmos_when_over_budget() {
         let filler = DrawQuad::rect([0.0, 0.0], [1.0, 1.0], [0.0, 0.0, 0.0, 1.0]);
-        let gizmo = DrawQuad::rect([9.0, 9.0], [0.5, 0.5], COLLIDER_TINT);
+        let gizmo = DrawQuad::rect([9.0, 9.0], [0.5, 0.5], COLLIDER_OUTLINE);
         let mut world = vec![filler; 4];
         append_debug_gizmos(&mut world, vec![gizmo], 4);
         assert_eq!(world.len(), 4);
         assert!(
-            world.iter().any(|q| q.color == COLLIDER_TINT),
+            world.iter().any(|q| q.color == COLLIDER_OUTLINE),
             "gizmos must win the last slots"
         );
     }

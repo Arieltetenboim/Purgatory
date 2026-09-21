@@ -465,20 +465,20 @@ fn move_playback_scales_with_horizontal_speed() {
     let state = move_state(pose(0.0, 0.0));
 
     let mut normal = CharacterPresentationSet::new();
-    normal.sync_with_dialogue_motion([(key, state, None, 3.5)], &registry, 0.20);
+    normal.sync_with_dialogue_motion([(key, state, None, 3.0)], &registry, 0.20);
     let normal_t = normal.get(key).unwrap().selected_sample_t();
 
     let mut half = CharacterPresentationSet::new();
-    half.sync_with_dialogue_motion([(key, state, None, 1.75)], &registry, 0.20);
+    half.sync_with_dialogue_motion([(key, state, None, 1.5)], &registry, 0.20);
     let half_t = half.get(key).unwrap().selected_sample_t();
 
     assert!(
-        (normal_t - 0.20).abs() < 1e-4,
-        "reference locomotion speed must keep authored 1x cadence, got {normal_t}"
+        (normal_t - 0.22).abs() < 1e-4,
+        "canonical locomotion speed must use the tuned 1.10x cadence, got {normal_t}"
     );
     assert!(
-        (half_t - 0.10).abs() < 1e-4,
-        "half locomotion speed must produce half playback cadence, got {half_t}"
+        (half_t - 0.11).abs() < 1e-4,
+        "half locomotion speed must produce half the tuned playback cadence, got {half_t}"
     );
 }
 

@@ -33,7 +33,7 @@ Full 16-bone pose is still **evaluated** every presented frame. Stage D draws ev
 
 **P3** (torso + head): pale-orange torso panel attached to `torso` (hip→head-joint span from rig geometry, not `torso` parent-relative local); cyan head panel pivoted at `head` extending +Y. Draw order: **back leg** → torso → front leg → head → front arm. Back-leg placeholders use the same child-span rule as P2 (darker greens). Not Slots, not back arm, not a full character.
 
-**P3.1** (2026-09-02): head placeholder visual is 2× the prior 0.14×0.16 panel; bind `head` is unchanged. Legacy cyan AABB hide/show remains on the Skeleton tab (`Show legacy blue AABB`). Not animation, not Slots.
+**P3.1** (2026-09-02): head placeholder visual is 2× the prior 0.14×0.16 panel; bind `head` is unchanged. Current Debug UI exposes off-by-default red-outline player AABBs. Not animation, not Slots.
 
 **Proportion calibration** (2026-09-02): client presentation scale moved to **1.15×** about planted feet (2× debug preview is diagnostic only). Simulation AABB / collision / world position unchanged.
 

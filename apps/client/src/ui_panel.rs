@@ -68,6 +68,8 @@ const INVENTORY_TOOLTIP_LINE_GAP_UNITS: f32 = 4.0;
 const INVENTORY_TOOLTIP_BACKGROUND_TINT: [f32; 4] = [0.93, 0.94, 0.95, 0.98];
 const INVENTORY_TOOLTIP_TITLE_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
 const INVENTORY_TOOLTIP_DETAIL_COLOR: [f32; 4] = [0.16, 0.21, 0.28, 1.0];
+const INVENTORY_INITIAL_CENTER_OFFSET_UNITS: [f32; 2] = [-56.0, -24.0];
+const EQUIPMENT_INITIAL_CENTER_OFFSET_UNITS: [f32; 2] = [56.0, 24.0];
 const ITEM_PLACEHOLDER_VISUAL_KEY: &str = "item.placeholder";
 const ITEM_PLACEHOLDER_SIZE_PX: u32 = 32;
 const INVENTORY_TAB_CATEGORIES: [ItemCategory; 5] = [
@@ -587,7 +589,11 @@ impl UiWindowAssets {
             ((viewport_size_units[0] - window_size_units[0]) * 0.5).max(0.0),
             ((viewport_size_units[1] - window_size_units[1]) * 0.5).max(0.0),
         ];
-        let top_left_units = window.top_left_units.get_or_insert(centered);
+        let initial = [
+            centered[0] + window.initial_center_offset_units[0],
+            centered[1] + window.initial_center_offset_units[1],
+        ];
+        let top_left_units = window.top_left_units.get_or_insert(initial);
         *top_left_units = clamp_top_left(*top_left_units, window_size_units, viewport_size_units);
 
         let window_min = [
@@ -1137,13 +1143,17 @@ pub(crate) struct InventoryWindow {
 impl Default for InventoryWindow {
     fn default() -> Self {
         Self {
-            chrome: ProofPanelWindow::with_size([
-                2.0 * INVENTORY_CONTENT_SIDE_INSET_UNITS
-                    + INVENTORY_SLOT_COLUMNS as f32 * INVENTORY_SLOT_SIZE_UNITS
-                    + INVENTORY_SLOT_COLUMNS.saturating_sub(1) as f32 * INVENTORY_SLOT_GAP_UNITS
-                    + INVENTORY_RIGHT_PADDING_UNITS,
-                440.0,
-            ]),
+            chrome: ProofPanelWindow::with_size_and_center_offset(
+                [
+                    2.0 * INVENTORY_CONTENT_SIDE_INSET_UNITS
+                        + INVENTORY_SLOT_COLUMNS as f32 * INVENTORY_SLOT_SIZE_UNITS
+                        + INVENTORY_SLOT_COLUMNS.saturating_sub(1) as f32
+                            * INVENTORY_SLOT_GAP_UNITS
+                        + INVENTORY_RIGHT_PADDING_UNITS,
+                    440.0,
+                ],
+                INVENTORY_INITIAL_CENTER_OFFSET_UNITS,
+            ),
             tabs: UiTabs::default(),
             slots: UiSlotGrid::new(
                 INVENTORY_SLOT_COLUMNS,
@@ -1194,16 +1204,6 @@ impl InventoryWindow {
             return false;
         }
         self.chrome.apply_key(physical_key, state, repeat)
-    }
-
-    pub(crate) fn arrange_side_by_side(
-        &mut self,
-        viewport: PixelViewport,
-        pixels_per_unit: f32,
-        right: bool,
-    ) {
-        self.chrome
-            .set_side_by_side_position(viewport, pixels_per_unit, right);
     }
 
     pub(crate) fn frame(
@@ -1583,7 +1583,10 @@ pub(crate) struct EquipmentWindowFrameInput<'a> {
 impl Default for EquipmentWindow {
     fn default() -> Self {
         Self {
-            chrome: ProofPanelWindow::with_size([250.0, 300.0]),
+            chrome: ProofPanelWindow::with_size_and_center_offset(
+                [250.0, 300.0],
+                EQUIPMENT_INITIAL_CENTER_OFFSET_UNITS,
+            ),
             slots: UiSlotGrid::new(
                 EQUIPMENT_SLOT_COLUMNS,
                 EQUIPMENT_SLOT_ROWS,
@@ -1620,16 +1623,6 @@ impl EquipmentWindow {
         }
         self.chrome
             .apply_key(PhysicalKey::Code(KeyCode::KeyI), state, repeat)
-    }
-
-    pub(crate) fn arrange_side_by_side(
-        &mut self,
-        viewport: PixelViewport,
-        pixels_per_unit: f32,
-        right: bool,
-    ) {
-        self.chrome
-            .set_side_by_side_position(viewport, pixels_per_unit, right);
     }
 
     pub(crate) fn frame(
@@ -2541,6 +2534,8 @@ enum CloseButtonVisual {
 pub(crate) struct ProofPanelWindow {
     mode: ProofPanelMode,
     size_units: [f32; 2],
+    /// Applied once, relative to a perfectly centered window.
+    initial_center_offset_units: [f32; 2],
     /// Relative to the gameplay viewport in logical UI units.
     top_left_units: Option<[f32; 2]>,
     interaction: PointerInteraction,
@@ -2554,35 +2549,20 @@ impl Default for ProofPanelWindow {
 
 impl ProofPanelWindow {
     fn with_size(size_units: [f32; 2]) -> Self {
+        Self::with_size_and_center_offset(size_units, [0.0, 0.0])
+    }
+
+    fn with_size_and_center_offset(
+        size_units: [f32; 2],
+        initial_center_offset_units: [f32; 2],
+    ) -> Self {
         Self {
             mode: ProofPanelMode::Hidden,
             size_units,
+            initial_center_offset_units,
             top_left_units: None,
             interaction: PointerInteraction::None,
         }
-    }
-
-    fn set_side_by_side_position(
-        &mut self,
-        viewport: PixelViewport,
-        pixels_per_unit: f32,
-        right: bool,
-    ) {
-        if self.top_left_units.is_some() {
-            return;
-        }
-        if validate_pixels_per_unit(pixels_per_unit).is_err() {
-            return;
-        }
-        let viewport_width = viewport.width as f32 / pixels_per_unit;
-        let gap = 12.0;
-        let x = if right {
-            viewport_width - self.size_units[0]
-        } else {
-            0.0
-        };
-        let x = if right { (x - gap).max(0.0) } else { gap };
-        self.top_left_units = Some([x, 0.0]);
     }
 
     /// Applies one physical-key event. Returns true only when this proof owns it.
@@ -3987,6 +3967,33 @@ mod tests {
             [179.5 / 192.0, 122.5 / 192.0]
         );
         assert_eq!(frame.title.content.0, "Inventory");
+    }
+
+    #[test]
+    fn normal_windows_start_staggered_around_viewport_center() {
+        let assets = embedded_assets();
+        let mut inventory = InventoryWindow::default();
+        inventory.chrome.mode = ProofPanelMode::Normal;
+        let inventory_layout = assets
+            .layout(&mut inventory.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap();
+        let mut equipment = EquipmentWindow::default();
+        equipment.chrome.mode = ProofPanelMode::Normal;
+        let equipment_layout = assets
+            .layout(&mut equipment.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap();
+        let center = |rect: ScreenRect| {
+            [
+                (rect.min[0] + rect.max[0]) * 0.5,
+                (rect.min[1] + rect.max[1]) * 0.5,
+            ]
+        };
+
+        assert_eq!(center(inventory_layout.window), [584.0, 336.0]);
+        assert_eq!(center(equipment_layout.window), [696.0, 384.0]);
+        assert_ne!(inventory_layout.window.min, equipment_layout.window.min);
     }
 
     #[test]

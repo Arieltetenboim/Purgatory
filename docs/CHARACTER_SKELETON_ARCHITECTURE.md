@@ -158,7 +158,7 @@ S3+ adapter tests (client): bind to a presented root without ticking `World` bon
 
 ## Relationship to current presentation
 
-S2 evaluates **one** Humanoid v0 on the **local presented pose** (same `frame_local.presented` used by the player AABB). The adapter maps AABB center → skeleton root at the body feet (`center.y - PLAYER_HALF_EXTENTS[1]`). That mapping is presentation-only; skeleton rest proportions stay independent of collision.
+S2 evaluates **one** Humanoid v0 on the **local presented pose** (same `frame_local.presented` used by the player AABB). The adapter maps AABB center → skeleton root near the body feet (`center.y - PLAYER_HALF_EXTENTS[1] + CHARACTER_COLLISION_FOOT_OVERLAP`). The small positive overlap is presentation-only and raises the artwork without moving collision; skeleton rest proportions stay independent of collision.
 
 Evaluate runs whenever that presented pose exists. Debug-draw is a separate client flag (`show_skeleton`); it is not an animation eligibility contract. Overlay `~` is not required to evaluate.
 
@@ -172,11 +172,11 @@ Evaluate runs whenever that presented pose exists. Debug-draw is a separate clie
 
 **P2** (front-leg placeholders; owner-accepted): `upper_leg_front`, `lower_leg_front`, `foot_front`. Same child-span rule. `foot_front` bind is the vertical knee→ankle span; forward foot length is the ankle-pivoted placeholder. Foot Independent is rotation about the ankle (no shin→ankle gap). Back-leg placeholders (`upper_leg_back`, `lower_leg_back`, `foot_back`) use the same rule and darker colors; no back-leg proofs. Not Slots, not S3.
 
-**P3** (torso + head): inverted-trapezoid chest from hip Y to head joint Y (rig geometry, not `torso` parent-relative local); head panel pivoted at `head` extending +Y. **P3.1:** head visual is 2× the prior panel. **P4:** complete placeholder humanoid including back arm/hand; draw order back arm → back leg → torso → front leg → head → front arm. **P4.1:** canonical RIGHT-facing 3/4 bind X and torso-corner skew (neutral hang; no stance rotations). **P4.2:** directional read and near/far value cues (inward back hip, 3/4 head silhouette, torso far-half shade). Baseline presentation **1.15×** about planted feet; 2× is diagnostic only. Legacy cyan AABB hide/show (`show_local_player_quad`); the AABB itself stays simulation size. Not Slots, not S3, not animation.
+**P3** (torso + head): inverted-trapezoid chest from hip Y to head joint Y (rig geometry, not `torso` parent-relative local); head panel pivoted at `head` extending +Y. **P3.1:** head visual is 2× the prior panel. **P4:** complete placeholder humanoid including back arm/hand; draw order back arm → back leg → torso → front leg → head → front arm. **P4.1:** canonical RIGHT-facing 3/4 bind X and torso-corner skew (neutral hang; no stance rotations). **P4.2:** directional read and near/far value cues (inward back hip, 3/4 head silhouette, torso far-half shade). Baseline presentation **1.15×** about planted feet; 2× is diagnostic only. Player collision AABBs are red outlines controlled by the Debug toggle and are off by default; the AABBs themselves stay simulation size. Not Slots, not S3, not animation.
 
 Animation/rig policy (not a `purgatory-skeleton` math restriction): rigid cutout limbs keep connecting-joint offsets; independent proofs rotate about the existing joint. See [`HUMANOID_RIG_SPEC.md`](HUMANOID_RIG_SPEC.md).
 
-S3 generalizes to remotes/NPCs and lifecycle. The local cyan AABB can be hidden from the Skeleton tab (`Show legacy blue AABB`); whether it stays as a default beside the skeleton is still a product choice.
+S3 generalizes to remotes/NPCs and lifecycle. Player collision AABBs use one red-outline Debug toggle and are off by default; NPC/Mob debug bounds have a separate off-by-default toggle.
 
 ## Explicitly out of scope (all current roadmap stages)
 
