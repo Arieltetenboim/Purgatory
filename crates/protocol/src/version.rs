@@ -44,8 +44,11 @@
 /// Monster `ContentId`; the server owns lookup, placement and runtime identity.
 /// Protocol v30 adds optional stable `ContentId` to replication Enter records so
 /// client presentation can resolve each authored runtime entity independently.
+/// Protocol v31 anchors ability activation to an input epoch/sequence, adds
+/// owner-private grant baselines, admits semantic Dash presentation, and adds
+/// authoritative local Dash state to replication frames for restore+replay.
 /// Historical golden vectors remain frozen.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;

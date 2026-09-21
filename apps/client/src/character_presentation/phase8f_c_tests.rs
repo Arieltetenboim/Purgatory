@@ -81,7 +81,7 @@ fn attachment_ids(plan: &[PlannedKind], bound: &[BoundAttachment]) -> Vec<String
 
 #[test]
 fn protocol_unchanged() {
-    assert_eq!(PROTOCOL_VERSION, 30);
+    assert_eq!(PROTOCOL_VERSION, 31);
 }
 
 #[test]
@@ -93,6 +93,7 @@ fn activity_maps_to_presentation_view() {
         PresentationActivity::Fall,
         PresentationActivity::Attack,
         PresentationActivity::Hurt,
+        PresentationActivity::Dash,
         PresentationActivity::Dead,
     ] {
         assert_eq!(view_for_activity(activity), PresentationView::Side);

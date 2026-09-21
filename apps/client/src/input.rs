@@ -21,6 +21,7 @@ pub enum Action {
     Escape,
     ActivatePortal,
     BasicStrike,
+    Dash,
 }
 
 /// Held buttons plus a jump edge queued for the next simulation tick.
@@ -36,6 +37,7 @@ pub struct ActionState {
     portal_edge: bool,
     portal_held: bool,
     ability_edge: bool,
+    dash_edge: bool,
 }
 
 impl ActionState {
@@ -114,6 +116,11 @@ impl ActionState {
                     self.ability_edge = true;
                 }
             }
+            Action::Dash => {
+                if !repeat && pressed {
+                    self.dash_edge = true;
+                }
+            }
         }
     }
 
@@ -164,9 +171,10 @@ impl ActionState {
         self.portal_edge = false;
         self.portal_held = false;
         self.ability_edge = false;
+        self.dash_edge = false;
     }
 
-    /// Drop jump/interact/portal edges without releasing held movement.
+    /// Drop discrete gameplay edges without releasing held movement.
     /// Used while a transition input barrier is active so discrete actions
     /// cannot replay on unlock.
     pub fn discard_locked_edges(&mut self) {
@@ -174,6 +182,7 @@ impl ActionState {
         self.interact_edge = false;
         self.portal_edge = false;
         self.ability_edge = false;
+        self.dash_edge = false;
     }
 
     /// Drop gameplay actions suppressed by an active dialogue while retaining
@@ -182,6 +191,7 @@ impl ActionState {
         self.jump_edge = false;
         self.portal_edge = false;
         self.ability_edge = false;
+        self.dash_edge = false;
     }
 
     /// Edge-triggered interact. Not movement. Not authoritative eligibility.
@@ -204,6 +214,14 @@ impl ActionState {
     pub fn consume_ability_edge(&mut self) -> bool {
         let edge = self.ability_edge;
         self.ability_edge = false;
+        edge
+    }
+
+    /// Edge-triggered grantable Dash. Eligibility and outcome remain authoritative.
+    #[must_use]
+    pub fn consume_dash_edge(&mut self) -> bool {
+        let edge = self.dash_edge;
+        self.dash_edge = false;
         edge
     }
 
@@ -261,6 +279,7 @@ pub fn map_key(code: KeyCode) -> Option<Action> {
         KeyCode::KeyE => Some(Action::Interact),
         KeyCode::Escape => Some(Action::Escape),
         KeyCode::KeyJ => Some(Action::BasicStrike),
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => Some(Action::Dash),
         KeyCode::ArrowUp => Some(Action::ActivatePortal),
         _ => None,
     }
@@ -282,6 +301,8 @@ mod tests {
         assert_eq!(map_key(KeyCode::KeyE), Some(Action::Interact));
         assert_eq!(map_key(KeyCode::Escape), Some(Action::Escape));
         assert_eq!(map_key(KeyCode::KeyJ), Some(Action::BasicStrike));
+        assert_eq!(map_key(KeyCode::ShiftLeft), Some(Action::Dash));
+        assert_eq!(map_key(KeyCode::ShiftRight), Some(Action::Dash));
         assert_eq!(map_key(KeyCode::ArrowUp), Some(Action::ActivatePortal));
         assert_eq!(map_key(KeyCode::KeyW), None);
         assert_eq!(map_key(KeyCode::Backquote), None);
@@ -314,6 +335,18 @@ mod tests {
     }
 
     #[test]
+    fn dash_edge_is_non_repeating_and_cleared_by_locks() {
+        let mut state = ActionState::default();
+        state.set_action(Action::Dash, true, false);
+        state.set_action(Action::Dash, true, true);
+        assert!(state.consume_dash_edge());
+        assert!(!state.consume_dash_edge());
+        state.set_action(Action::Dash, true, false);
+        state.discard_locked_edges();
+        assert!(!state.consume_dash_edge());
+    }
+
+    #[test]
     fn dialogue_lock_keeps_advance_and_escape_but_drops_gameplay_edges() {
         let mut state = ActionState::default();
         state.set_action(Action::Jump, true, false);
@@ -321,6 +354,7 @@ mod tests {
         state.set_action(Action::Escape, true, false);
         state.set_action(Action::ActivatePortal, true, false);
         state.set_action(Action::BasicStrike, true, false);
+        state.set_action(Action::Dash, true, false);
         state.discard_dialogue_gameplay_edges();
 
         assert!(!state.consume_tick_input().jump_pressed);
@@ -328,6 +362,7 @@ mod tests {
         assert!(state.consume_escape_edge());
         assert!(!state.consume_portal_edge());
         assert!(!state.consume_ability_edge());
+        assert!(!state.consume_dash_edge());
     }
 
     #[test]

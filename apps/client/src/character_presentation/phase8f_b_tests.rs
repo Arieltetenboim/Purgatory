@@ -95,7 +95,7 @@ const BACK_BASES: [BasePiece; 9] = [
 
 #[test]
 fn protocol_unchanged() {
-    assert_eq!(PROTOCOL_VERSION, 30);
+    assert_eq!(PROTOCOL_VERSION, 31);
 }
 
 #[test]
@@ -107,6 +107,7 @@ fn current_activities_remain_side_view() {
         PresentationActivity::Fall,
         PresentationActivity::Attack,
         PresentationActivity::Hurt,
+        PresentationActivity::Dash,
         PresentationActivity::Dead,
     ] {
         assert_eq!(view_for_activity(activity), PresentationView::Side);

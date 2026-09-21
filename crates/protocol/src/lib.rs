@@ -42,7 +42,8 @@ mod version;
 
 pub use ability::{
     ABILITY_ACCEPTED_BYTES, ABILITY_ACTIVATE_INDEPENDENT_BYTES, ABILITY_ACTIVATE_SELECTED_BYTES,
-    ABILITY_REJECTED_BYTES, AbilityActivateRequest, AbilityCommandReject, ServerAbility,
+    ABILITY_REJECTED_BYTES, MAX_GRANTED_ABILITIES, AbilityActivateRequest,
+    AbilityCommandReject, ServerAbility, ServerAbilityGrants,
 };
 pub use config::{
     ALPN_PROTOCOL, DEFAULT_DEV_HOST, DEFAULT_DEV_PORT, HANDSHAKE_TIMEOUT, IDLE_TIMEOUT,
@@ -64,8 +65,9 @@ pub use equipment::{
     decode_equipment_full, encode_equipment_delta, encode_equipment_full, slot_valid,
 };
 pub use frame::{
-    DomainMask, ObserverAoiDebug, ReplicatedHealth, ReplicationFrame, ReplicationRecord,
-    decode_replication_frame, encode_replication_frame, encode_replication_record,
+    DomainMask, ObserverAoiDebug, ReplicatedDash, ReplicatedHealth, ReplicationFrame,
+    ReplicationRecord, decode_replication_frame, encode_replication_frame,
+    encode_replication_record,
 };
 pub use framing::{
     FrameError, decode_gameplay_payload, decode_payload, encode_frame, encode_gameplay_frame,
@@ -121,7 +123,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 30);
+        assert_eq!(PROTOCOL_VERSION, 31);
     }
 
     #[test]

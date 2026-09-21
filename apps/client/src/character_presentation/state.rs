@@ -23,8 +23,10 @@ pub enum PresentationActivity {
     Attack,
     /// Authoritative Hurt one-shot (A5). Not inferred from locomotion.
     Hurt,
+    /// Authoritative/predicted grantable movement ability.
+    Dash,
     /// Persistent dead presentation from replicated Health (`current <= 0`).
-    /// Not a oneshot. Overrides Attack/Hurt until Alive again.
+    /// Not a oneshot. Overrides transient activities until Alive again.
     Dead,
     /// Rear-facing climb presentation. Not inferred from velocity.
     ClimbBack,
@@ -59,7 +61,7 @@ pub const fn immunity_flash_visible(
     alive && (!damage_immunity_active || server_tick % 4 < 2)
 }
 
-/// Idle / Move / Jump / Fall / Attack / Hurt / Dead → Side. ClimbBack → Back.
+/// Locomotion, combat, Dash and Dead → Side. ClimbBack → Back.
 #[must_use]
 pub const fn view_for_activity(activity: PresentationActivity) -> PresentationView {
     match activity {
@@ -70,6 +72,7 @@ pub const fn view_for_activity(activity: PresentationActivity) -> PresentationVi
         | PresentationActivity::Fall
         | PresentationActivity::Attack
         | PresentationActivity::Hurt
+        | PresentationActivity::Dash
         | PresentationActivity::Dead => PresentationView::Side,
     }
 }

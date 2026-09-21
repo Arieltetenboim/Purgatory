@@ -8,7 +8,9 @@ use purgatory_common::ContentId;
 use purgatory_content::{
     ContentRegistry, LoadMode, default_content_root, geometry_plan, load_registry,
 };
-use purgatory_protocol::{ReplicatedKind, ReplicationFrame, ServerInteract, move_axis_from_i8};
+use purgatory_protocol::{
+    InputCommand, ReplicatedKind, ReplicationFrame, ServerInteract, move_axis_from_i8,
+};
 use purgatory_simulation::{
     Aabb, ChannelId, INTERACT_RANGE, InstanceId, MapId, PLAYER_HALF_EXTENTS, PlatformKind,
     PlayerInput, PlayerState, SimulationClock, World, WorldAddress, in_portal_activation_zone,
@@ -698,6 +700,7 @@ impl ClientApp {
         }
         self.lifecycle.set_events_dropped(dropped);
         for event in events {
+            let active_attempt = event.attempt_id() == self.lifecycle.view().active_attempt;
             if let crate::network::state::NetworkEvent::Interact { event, .. } = &event {
                 let before = self.ui_runtime.to_string();
                 println!("6B_INTERACT client_recv {event:?}");
@@ -736,6 +739,18 @@ impl ClientApp {
             if let crate::network::state::NetworkEvent::PresentationOneShot { event, .. } = &event {
                 println!("A5_ONESHOT client_recv {event:?}");
                 self.presentation_oneshots.apply_server_event(*event);
+            }
+            if active_attempt
+                && let crate::network::state::NetworkEvent::Ability { event, .. } = &event
+                && let purgatory_protocol::ServerAbility::Rejected { seq, .. } = *event
+            {
+                self.prediction.reject_predicted_ability(
+                    seq,
+                    &self.replica,
+                    &mut self.world,
+                    self.clock.tick().get(),
+                );
+                self.local_presentation.request_snap();
             }
             self.lifecycle.apply(event);
         }
@@ -860,7 +875,17 @@ impl ClientApp {
                 PresentationEntityKey::new(entity.entity_id.index, entity.entity_id.generation);
             let held = self.characters.facing_of(key);
             let equipment = equipment_view_from_replica(entity.equipment);
-            let oneshot = self.presentation_oneshots.activity_of(key, server_tick);
+            let mut oneshot = self.presentation_oneshots.activity_of(key, server_tick);
+            if Some(entity.entity_id) == local_id
+                && self
+                    .world
+                    .player_id()
+                    .and_then(|id| self.world.player_dash_of(id))
+                    .is_some()
+                && oneshot != Some(PresentationActivity::Hurt)
+            {
+                oneshot = Some(PresentationActivity::Dash);
+            }
             let dead = entity.health.is_some_and(|h| h.current <= 0.0);
             let climb_back = {
                 #[cfg(feature = "dev-diagnostics")]
@@ -1700,15 +1725,15 @@ impl ClientApp {
     }
 
     /// Send one per-tick command from the PlayerInput sample applied on this sim tick.
-    fn send_intent_for_tick_input(&mut self, input: PlayerInput) {
+    fn send_intent_for_tick_input(&mut self, input: PlayerInput) -> Option<InputCommand> {
         if !self.lifecycle.gameplay_actions_allowed() {
-            return;
+            return None;
         }
         if !self.prediction.active() {
-            return;
+            return None;
         }
         let Some(network) = self.network.as_ref() else {
-            return;
+            return None;
         };
         self.intent.set_epoch(self.replica.input_epoch());
         let Some(command) = self.intent.emit_tick_with_portal(
@@ -1717,12 +1742,13 @@ impl ClientApp {
             input.down_held,
             self.actions.portal_held(),
         ) else {
-            return;
+            return None;
         };
         if !self.prediction.try_push_pending(command) {
-            return;
+            return None;
         }
         let _ = network.try_send_input(command);
+        Some(command)
     }
 
     /// General UI escape. Dialogue uses the existing InteractionSession close
@@ -1950,8 +1976,10 @@ impl ClientApp {
         self.ability_seq
     }
 
-    fn poll_ability_request(&mut self) {
-        if !self.actions.consume_ability_edge() {
+    fn send_ability_for_tick(&mut self, command: InputCommand) {
+        let dash_requested = self.actions.consume_dash_edge();
+        let strike_requested = self.actions.consume_ability_edge();
+        if !dash_requested && !strike_requested {
             return;
         }
         if !self.lifecycle.gameplay_actions_allowed() {
@@ -1966,11 +1994,43 @@ impl ClientApp {
         if self.network.is_none() {
             return;
         }
-        let Some(def) = self.registry.ability("skill.debug.practice_sword_strike") else {
-            eprintln!("11E_ABILITY missing skill.debug.practice_sword_strike in pack");
+        let requested = [
+            (dash_requested, "skill.movement.dash"),
+            (strike_requested, "skill.debug.practice_sword_strike"),
+        ];
+        let mut selected = None;
+        for (pressed, authored) in requested {
+            if !pressed {
+                continue;
+            }
+            let Some(definition) = self.registry.ability(authored) else {
+                eprintln!("ABILITY missing {authored} in pack");
+                continue;
+            };
+            if self
+                .lifecycle
+                .view()
+                .ability_grants
+                .contains(&definition.id)
+            {
+                let dash = definition.effects.iter().find_map(|effect| {
+                    if let purgatory_simulation::AbilityEffect::Dash {
+                        speed,
+                        duration_ticks,
+                    } = *effect
+                    {
+                        Some((speed, duration_ticks))
+                    } else {
+                        None
+                    }
+                });
+                selected = Some((authored, definition.id, dash));
+                break;
+            }
+        }
+        let Some((authored, ability_id, dash)) = selected else {
             return;
         };
-        let ability_id = def.id;
         let seq = self.next_ability_seq();
         let sent = self
             .network
@@ -1978,11 +2038,25 @@ impl ClientApp {
             .expect("checked")
             .try_send_ability_activate(purgatory_protocol::AbilityActivateRequest {
                 seq,
+                input_epoch: command.input_epoch,
+                input_sequence: command.sequence,
                 ability_id,
                 selected: None,
             });
         if !sent {
             eprintln!("9C_ABILITY send failed seq={seq}");
+            return;
+        }
+        if authored == "skill.movement.dash"
+            && let Some((speed, duration_ticks)) = dash
+        {
+            let _ = self.prediction.try_predict_dash(
+                &mut self.world,
+                seq,
+                command,
+                speed,
+                duration_ticks,
+            );
         }
     }
 
@@ -2128,8 +2202,10 @@ impl ClientApp {
             if !self.prediction.pending_window_full() {
                 let input = self.sample_tick_input();
                 self.last_input = input;
+                if let Some(command) = self.send_intent_for_tick_input(input) {
+                    self.send_ability_for_tick(command);
+                }
                 self.prediction.tick(&mut self.world, input, tick_after);
-                self.send_intent_for_tick_input(input);
             } else {
                 self.prediction.note_input_stall();
             }
@@ -2144,8 +2220,10 @@ impl ClientApp {
             let input = self.sample_tick_input();
             self.last_input = input;
             let client_tick = tick_base.saturating_add(u64::from(step) + 1);
+            if let Some(command) = self.send_intent_for_tick_input(input) {
+                self.send_ability_for_tick(command);
+            }
             self.prediction.tick(&mut self.world, input, client_tick);
-            self.send_intent_for_tick_input(input);
             let tick = client_tick;
             let motion = self.world.last_motion_debug();
             if verbose && (motion.correction[0].abs() > 1e-5 || motion.correction[1].abs() > 1e-5) {
@@ -2486,7 +2564,6 @@ impl ClientApp {
         self.poll_bubble_click_request();
         self.poll_interact_request();
         self.poll_portal_request();
-        self.poll_ability_request();
 
         #[cfg(not(feature = "dev-diagnostics"))]
         self.maybe_shipping_auto_connect();
@@ -5490,6 +5567,7 @@ mod tests {
             local_grounded_on: purgatory_protocol::PlatformSupportId::NONE,
             local_ignored_platform: purgatory_protocol::PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_dash: None,
             local_map: 1,
             local_channel: 0,
             local_instance: 0,

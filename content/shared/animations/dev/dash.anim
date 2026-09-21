@@ -1,0 +1,75 @@
+schema_version 1
+duration 0.27
+loop Once
+
+track pelvis
+ty 0.00 0.405 Linear
+ty 0.06 0.365 Linear
+ty 0.27 0.375 Linear
+rot 0.00 0.00 Linear
+rot 0.06 -0.10 Linear
+rot 0.27 -0.08 Linear
+endtrack
+
+track torso
+rot 0.00 0.00 Linear
+rot 0.06 -0.32 Linear
+rot 0.27 -0.26 Linear
+endtrack
+
+track head
+rot 0.00 0.00 Linear
+rot 0.06 0.16 Linear
+rot 0.27 0.12 Linear
+endtrack
+
+track upper_leg_front
+rot 0.00 0.00 Linear
+rot 0.06 -0.55 Linear
+rot 0.27 -0.48 Linear
+endtrack
+
+track lower_leg_front
+rot 0.00 0.00 Linear
+rot 0.06 0.70 Linear
+rot 0.27 0.62 Linear
+endtrack
+
+track upper_leg_back
+rot 0.00 0.00 Linear
+rot 0.06 0.42 Linear
+rot 0.27 0.36 Linear
+endtrack
+
+track lower_leg_back
+rot 0.00 0.00 Linear
+rot 0.06 -0.38 Linear
+rot 0.27 -0.32 Linear
+endtrack
+
+track upper_arm_front
+rot 0.00 0.00 Linear
+rot 0.06 -0.70 Linear
+rot 0.27 -0.62 Linear
+endtrack
+
+track lower_arm_front
+rot 0.00 0.00 Linear
+rot 0.06 0.55 Linear
+rot 0.27 0.48 Linear
+endtrack
+
+track upper_arm_back
+rot 0.00 0.00 Linear
+rot 0.06 0.55 Linear
+rot 0.27 0.48 Linear
+endtrack
+
+track lower_arm_back
+rot 0.00 0.00 Linear
+rot 0.06 -0.45 Linear
+rot 0.27 -0.38 Linear
+endtrack
+
+markers
+endmarkers

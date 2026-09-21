@@ -25,6 +25,7 @@ fn restoration_ability() -> AbilityDefinition {
             max_targets: 1,
         },
         effects: vec![AbilityEffect::Damage { amount: 1.0 }],
+        presentation: crate::AbilityPresentation::Attack,
     }
 }
 

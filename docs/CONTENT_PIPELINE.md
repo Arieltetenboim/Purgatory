@@ -103,18 +103,21 @@ Runtime contract lives in `purgatory-simulation` (`AbilityId` = `ContentId`). Pa
   "timing": { "windup_ticks": 3, "active_ticks": 2, "recovery_ticks": 4, "cooldown_ticks": 12 },
   "activation": "independent",
   "delivery": { "kind": "forward_query", "range": 1.5, "half_height": 0.8, "max_targets": 8 },
-  "effects": [{ "type": "damage", "amount": 5.0 }]
+  "effects": [{ "type": "damage", "amount": 5.0 }],
+  "presentation": "attack"
 }
 ```
 
 - `id` uses the existing authored-id rules.
 - Timing is simulation ticks (30 Hz). Zero skips that live Action phase.
 - `activation` is who is required to **start** (`independent` | `selected_entity`). It is not the hit list.
-- `delivery` is who is affected at Active (`forward_query` | `selected_entity`). Zero hits is valid.
-- `effects[]` is an ordered closed enum. v1 is `damage` only. Do not add heal/buff fields onto the definition struct.
+- `delivery` is who is affected at Active (`self` | `forward_query` | `selected_entity`). Zero hits is valid.
+- `effects[]` is an ordered closed enum. Current effects are `damage` and `dash { speed, duration_ticks }`. Do not add heal/buff fields onto the definition struct.
+- `presentation` is semantic (`attack` | `dash`), never a clip path or skeleton instruction. Omitted legacy values default to `attack`.
 - Engine source changes are required only for new effect kinds or delivery/activation kinds.
 - Basic Attack is this data, not hardcoded combat constants. 7.2 `STRIKE_*` constants are workload placeholders.
 - Phase **9C** authorization is a World `AbilityGrantTable`, not a content skill-book. Pack membership is not a grant.
+- `skill.movement.dash` is loaded with the pack but is not part of the spawn loadout. An authoritative progression/NPC reward grants it through the learned-grant seam and republishes the private grant baseline.
 
 ## Equipment Content Schema v1
 

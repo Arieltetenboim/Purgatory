@@ -45,6 +45,10 @@ const A5_HURT_ASSET: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../content/shared/animations/dev/a5_hurt.anim"
 ));
+const DASH_ASSET: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../content/shared/animations/dev/dash.anim"
+));
 const DEAD_ASSET: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../content/shared/animations/dev/dead.anim"
@@ -68,6 +72,8 @@ pub const A5_ATTACK_CLIP_DURATION: f32 = 0.40;
 
 /// Duration of the A5 debug Hurt one-shot (seconds).
 pub const A5_HURT_CLIP_DURATION: f32 = 0.35;
+/// Duration of the first authored Dash one-shot (seconds).
+pub const DASH_CLIP_DURATION: f32 = 0.27;
 
 /// Duration of the debug Dead one-shot (seconds).
 pub const DEAD_CLIP_DURATION: f32 = 0.40;
@@ -216,6 +222,21 @@ pub fn a5_hurt_clip() -> &'static AnimationClip {
             .unwrap_or_else(|err| {
                 eprintln!("A5 hurt asset invalid: {err}; falling back to bind/no-animation");
                 bind_rotation_noop_clip(def, A5_HURT_CLIP_DURATION, LoopPolicy::Once)
+            })
+    })
+}
+
+/// First authored Dash pose: compact forward lean with braced limbs. No root motion.
+#[must_use]
+pub fn dash_clip() -> &'static AnimationClip {
+    static CLIP: OnceLock<AnimationClip> = OnceLock::new();
+    CLIP.get_or_init(|| {
+        let def = humanoid_v0();
+        parse_animation_asset_v1("dash.anim", DASH_ASSET, def)
+            .map(|asset| asset.clip)
+            .unwrap_or_else(|err| {
+                eprintln!("Dash asset invalid: {err}; falling back to bind/no-animation");
+                bind_rotation_noop_clip(def, DASH_CLIP_DURATION, LoopPolicy::Once)
             })
     })
 }

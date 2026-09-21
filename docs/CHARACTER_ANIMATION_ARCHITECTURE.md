@@ -71,7 +71,7 @@ Rejected for the sampler:
 
 **A4 presentation ownership:** `CharacterPresentationSet` maps `PresentationActivity` to Idle/Move/Jump/Fall clips. Local activity uses predicted body velocity **and** grounded together when prediction is active (do not pair predicted velocity with lagged `replica.local_grounded`). Remotes infer Jump/Fall from replica `|vy|` (no per-remote grounded on the wire). Airborne classification precedes Idle/Move; apex while known-airborne is Fall.
 
-**A5 one-shot ownership:** Simulation owns Attack/Hurt semantic duration and interruption (`Hurt` may interrupt `Attack`; `Attack` does not interrupt `Hurt`; locomotion never clears an active oneshot). Protocol v13 carries start events only (`DevPresentationOneShot` / `ServerPresentationOneShot`); clients overlay oneshot on locomotion activity. `LoopPolicy::Once` holds the final pose while semantic state remains active. Leaving Attack/Hurt returns to the current locomotion activity with the existing A4 ~0.10s blend. Clip completion / sample time / animation frames never grant gameplay authority.
+**One-shot ownership:** Simulation owns Attack/Hurt/Dash semantic duration and interruption (`Hurt` may interrupt `Attack` or `Dash`; Attack/Dash do not interrupt `Hurt`; locomotion never clears an active oneshot). Protocol v13 introduced start events (`DevPresentationOneShot` / `ServerPresentationOneShot`); protocol v31 adds Dash kind 3. Clients overlay the semantic one-shot on locomotion activity. `LoopPolicy::Once` holds the final pose while semantic state remains active. Leaving a one-shot returns to current locomotion with the existing A4 ~0.10s blend. Clip completion, sample time and animation frames never grant gameplay authority.
 
 **Phase 9A gameplay→presentation:** Ability/combat emits semantic cues (`Attack` / `Hurt` / `Dead`). Character Presentation consumes Attack/Hurt as oneshots. Dead is Health-derived (`current <= 0`) as persistent `PresentationActivity::Dead` (Hurt-clip placeholder). Ability code must not name clips or bones. Animation Runtime is unchanged.
 
@@ -300,7 +300,7 @@ A2 Stage D proof still resolves one debug `selected_animation_sample_t` (Manual 
 
 `blend_local_poses` lives in `purgatory-animation` (shortest-angle rotation; linear translation; alpha clamped; no per-frame heap). Not a general mixer.
 
-Hard-coded debug clips: A3 Idle/Move, A4 Jump/Fall, A5 Attack/Hurt, plus authored `climb_back.anim` for ClimbBack. LoopPolicy placement may be reassessed before broader clip authoring.
+Data-driven debug clips include A3 Idle/Move, A4 Jump/Fall, A5 Attack/Hurt, `dash.anim`, and `climb_back.anim`. LoopPolicy placement may be reassessed before broader clip authoring.
 
 ## Presentation time
 
@@ -321,7 +321,7 @@ Exact insert point in the client frame: `CharacterPresentationSet::sync(..., fra
 
 Phase 8 direction is Character Presentation + Equipment Runtime, with **minimal semantic replication** and **no replicated bone/frame transforms**.
 
-Today `PresentationActivity` is `Idle | Move | Jump | Fall | Attack | Hurt | ClimbBack`. Attack/Hurt are authoritative overlays (not velocity-inferred). ClimbBack selects `PresentationView::Back` and samples `climb_back.anim` (not Idle).
+Today `PresentationActivity` is `Idle | Move | Jump | Fall | Attack | Hurt | Dash | Dead | ClimbBack`. Attack/Hurt/Dash are semantic overlays (Dash may also be locally predicted from replicated gameplay state, never inferred from speed alone). Dead is Health-derived. ClimbBack selects `PresentationView::Back` and samples `climb_back.anim` (not Idle).
 
 | May exist later on server / wire | Must never be replicated |
 |---|---|

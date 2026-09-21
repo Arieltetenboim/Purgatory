@@ -232,6 +232,9 @@ impl EventSink {
                 NetworkEvent::Ability { attempt_id, event } => {
                     self.trace(&format!("attempt={attempt_id} Ability {event:?}"));
                 }
+                NetworkEvent::AbilityGrants { attempt_id, event } => {
+                    self.trace(&format!("attempt={attempt_id} AbilityGrants {event:?}"));
+                }
             }
         }
         if !event.is_lifecycle() {
@@ -1045,6 +1048,13 @@ async fn handshake_and_live(
                 kind: NetworkFailureKind::UnexpectedMessage,
             });
         }
+        Ok(ServerControl::AbilityGrants(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
         Err(kind) => {
             connection.close(0u32.into(), b"handshake");
             return Err(NetworkEvent::Disconnected { attempt_id, kind });
@@ -1323,6 +1333,14 @@ async fn live_loop(
                         events
                             .emit(
                                 NetworkEvent::Ability { attempt_id, event },
+                                control,
+                            )
+                            .await;
+                    }
+                    Ok(ServerControl::AbilityGrants(event)) => {
+                        events
+                            .emit(
+                                NetworkEvent::AbilityGrants { attempt_id, event },
                                 control,
                             )
                             .await;
@@ -2190,6 +2208,7 @@ mod tests {
             local_grounded_on: PlatformSupportId::NONE,
             local_ignored_platform: PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_dash: None,
             local_map: 1,
             local_channel: 0,
             local_instance: 0,

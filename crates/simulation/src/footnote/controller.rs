@@ -154,12 +154,26 @@ impl World {
             // collision response), but no longer contributes player control.
             // Clear horizontal control velocity immediately so momentum from
             // the lethal tick cannot continue as locomotion.
+            let active_dash = if dead {
+                player.dash = None;
+                None
+            } else {
+                player.dash
+            };
             let control_input = if dead {
                 player.velocity[0] = 0.0;
+                PlayerInput::idle()
+            } else if active_dash.is_some() {
                 PlayerInput::idle()
             } else {
                 input
             };
+            if let Some(dash) = active_dash {
+                player.velocity[0] = f32::from(dash.direction) * dash.speed;
+                // A jump edge buffered before Dash must not launch during the
+                // locked movement window.
+                player.jump_buffer_ticks = 0;
+            }
             if control_input.jump_pressed && !control_input.down_held {
                 player.jump_buffer_ticks = crate::footnote::JUMP_BUFFER_TICKS;
             }
@@ -180,7 +194,9 @@ impl World {
                 player.jump_buffer_ticks = 0;
                 player.coyote_ticks = 0;
             }
-            apply_horizontal(player, control_input, &config, dt_seconds);
+            if active_dash.is_none() {
+                apply_horizontal(player, control_input, &config, dt_seconds);
+            }
 
             // Grounded characters must not sink-then-snap from gravity each tick.
             let stay_grounded = player.grounded;
@@ -192,6 +208,7 @@ impl World {
             pre_integrate_velocity = player.velocity;
 
             integrate_axis(&mut transform.position[0], player.velocity[0], dt_seconds);
+            let mut dash_hit_wall = false;
             if let Some((id, dx)) = resolve_horizontal(
                 transform,
                 player,
@@ -204,6 +221,7 @@ impl World {
                 correction[0] = dx;
                 correction_axis = CorrectionAxis::Horizontal;
                 response_kind = ResponseKind::Normal;
+                dash_hit_wall = active_dash.is_some();
             }
 
             if stay_grounded {
@@ -222,6 +240,9 @@ impl World {
                         apply_grounding(player, prev_grounded_on, Some(id));
                     }
                     None => {
+                        if player.dash.take().is_some() {
+                            player.velocity[0] = 0.0;
+                        }
                         apply_grounding(player, prev_grounded_on, None);
                         apply_gravity(player, &config, dt_seconds);
                         pre_integrate_velocity = player.velocity;
@@ -263,6 +284,20 @@ impl World {
                 }
                 apply_grounding(player, prev_grounded_on, contact.landing());
             }
+            if let Some(mut dash) = player.dash {
+                if dash_hit_wall || !player.grounded {
+                    player.dash = None;
+                    player.velocity[0] = 0.0;
+                } else {
+                    dash.remaining_ticks = dash.remaining_ticks.saturating_sub(1);
+                    if dash.remaining_ticks > 0 {
+                        player.dash = Some(dash);
+                    } else {
+                        player.dash = None;
+                        player.velocity[0] = 0.0;
+                    }
+                }
+            }
             expire_ignored(player, transform.position, &scratch);
         }
 
@@ -279,6 +314,12 @@ impl World {
                 correction[1] += bdy;
                 correction_axis = CorrectionAxis::WorldBound;
                 response_kind = ResponseKind::Normal;
+            }
+            if bdx.abs() > 1e-6
+                && let Some((_, player)) = self.player_parts_mut_for(id)
+                && player.dash.take().is_some()
+            {
+                player.velocity[0] = 0.0;
             }
         }
 

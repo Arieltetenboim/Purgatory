@@ -1,4 +1,4 @@
-//! Protocol v13 DEV presentation one-shot (Attack/Hurt) control envelopes.
+//! Presentation one-shot control envelopes (v13 Attack/Hurt; v31 Dash).
 //!
 //! Semantic state only — no bones, sample_t, or animation events on the wire.
 //! Snapshot Enter/Update paths are unchanged (0 per-frame animation traffic).
@@ -12,7 +12,7 @@ pub(crate) const TAG_SERVER_PRESENTATION_ONESHOT: u8 = 23;
 /// Client → server DEV request to start an authoritative presentation oneshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DevPresentationOneShot {
-    /// `1` = Attack, `2` = Hurt. Other values are malformed.
+    /// `1` = Attack, `2` = Hurt, `3` = Dash. Other values are malformed.
     pub kind: u8,
 }
 
@@ -20,7 +20,7 @@ pub struct DevPresentationOneShot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServerPresentationOneShot {
     pub entity: WireEntityId,
-    /// `0` = cleared / inactive. `1` = Attack. `2` = Hurt.
+    /// `0` = cleared. `1` = Attack. `2` = Hurt. `3` = Dash.
     pub kind: u8,
     /// Exclusive end tick. Client treats `current_tick >= until_tick` as inactive.
     pub until_tick: u32,
@@ -29,7 +29,14 @@ pub struct ServerPresentationOneShot {
 impl DevPresentationOneShot {
     #[must_use]
     pub const fn kind_valid(kind: u8) -> bool {
-        matches!(kind, 1 | 2)
+        matches!(kind, 1 | 2 | 3)
+    }
+}
+
+impl ServerPresentationOneShot {
+    #[must_use]
+    pub const fn kind_valid(kind: u8) -> bool {
+        matches!(kind, 0 | 1 | 2 | 3)
     }
 }
 
@@ -70,6 +77,9 @@ pub fn decode_server_presentation_oneshot(
     let index = u32::from_le_bytes(rest[0..4].try_into().unwrap());
     let generation = u32::from_le_bytes(rest[4..8].try_into().unwrap());
     let kind = rest[8];
+    if !ServerPresentationOneShot::kind_valid(kind) {
+        return Err(CodecError::InvalidValue);
+    }
     let until_tick = u32::from_le_bytes(rest[9..13].try_into().unwrap());
     Ok(ServerPresentationOneShot {
         entity: WireEntityId { index, generation },
@@ -102,6 +112,19 @@ mod tests {
         assert_eq!(
             decode_server_presentation_oneshot(&bytes[1..]).unwrap(),
             evt
+        );
+
+        let dash = ServerPresentationOneShot { kind: 3, ..evt };
+        let bytes = encode_server_presentation_oneshot(&dash);
+        assert_eq!(
+            decode_server_presentation_oneshot(&bytes[1..]).unwrap(),
+            dash
+        );
+        let mut invalid = bytes;
+        invalid[9] = 4;
+        assert_eq!(
+            decode_server_presentation_oneshot(&invalid[1..]),
+            Err(CodecError::InvalidValue)
         );
     }
 }

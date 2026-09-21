@@ -1,6 +1,6 @@
 # Protocol
 
-Current protocol version is **30**. The historical phase summary below
+Current protocol version is **31**. The historical phase summary below
 retains its original version references.
 
 Phase 5.2 adds **authoritative gameplay replication**. Protocol version is **15**. The client sends per-tick `InputCommand` values identified by `(input_epoch, sequence)`. Phase 5.3 is client-only remote interpolation. Phase 5.4 is client-only local prediction. Phase 5.5 adds acknowledgement, continuation debt, late-collapse compaction, and local restore+replay. Phase 5.6 adds a **development-only** network impairment lab (delay/stall/HOL on the existing reliable streams). Phase 5.7 adds off-protocol localhost load metrics and raises the mechanical entity decode bound to 256. Phase 6.0 adds runtime/replication **contracts**; 6A composition; **6B** adds reliable interaction control envelopes and optional `ReplicatedKind::Interactable`; **6C** adds observer `WorldAddress`, `ReplicatedKind::Portal`, and `PortalActivate`. **6D** replaces full `WorldSnapshot` on the gameplay uni stream with `ReplicationFrame` (Enter/Update/Leave) and server interest-policy AOI, then adds DEV-only `DevSetChannel` (tag 17) so a Channel change is an authoritative `WorldAddress` boundary. **6E** adds DEV `Hello.dev_login` (temporary lookup identity) and `DisconnectReasonCode::AlreadyConnected`. Phase **6F** adds server-side runtime services without a protocol bump. Phase **7.2** adds `ReplicatedKind::Npc` (kind `4`) so visible Generics/NPCs Enter AOI on the wire (ADR-0054). Protocol **v12** adds equipment request envelopes and an optional equipment domain on Enter/Update. Protocol **v13** adds DEV presentation Attack/Hurt oneshot control envelopes (tags 22/23); Enter/Update snapshot layout is unchanged. Historical v1–v12 Hello/Welcome and earlier snapshot goldens stay frozen. Health on v8+ frames proves multi-domain deltas; 7.2 uses Health as a workload mutation domain. Phase **9A** locks ability authority (client requests ability id + targeting; server applies `AbilityEffect`) without adding wire tags. Phase **9B** executes `skill.basic.strike` in simulation only. Protocol **v15** adds ability activation envelopes (tags 25–27).
@@ -40,7 +40,7 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 29` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 31` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
 v26 is an intentional incompatible bump: v1–v25 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
@@ -266,19 +266,21 @@ Server (`ServerControl::Equipment`) — request lifecycle only; **not** persiste
 
 Persistent truth is replicated `EquipmentState` on Enter/Update. Remotes reconstruct from baseline, not by replaying Accepted events.
 
-Ability `seq` is **per-connection**, independent of `InputCommand` and equipment sequence, with the same Accept/duplicate/stale/gap rules as equipment. First Accept must be `1`.
+Ability `seq` is **per-connection** and independent of equipment sequence. It retains its own Accept/duplicate/stale/gap rules, while each request is anchored to the `InputCommand` step on which the client activated it. First Accept must be `1`.
 
 Client (`ClientControl::AbilityActivate`) — tag **25**:
 
-- Independent: `seq u32` + ability token `u64` + flag `0` (13 bytes + tag)
-- SelectedEntity: same + `WireEntityId` (21 bytes + tag)
+- Independent: `seq u32` + `input_epoch u16` + `input_sequence u32` + ability token `u64` + flag `0` (19 bytes + tag)
+- SelectedEntity: same + `WireEntityId` (27 bytes + tag)
 
 The client must not send hits, damage, range, facing, or Health. Independent Basic Strike sends `selected = None`. Extra selected data on an Independent ability is `InvalidActivation`.
 
 Server (`ServerControl::Ability`) — request lifecycle only; **not** hit results:
 
 - Accepted — tag **26** — `seq` (5 bytes with tag)
-- Rejected — tag **27** — `seq` + reason `u8` (6 bytes with tag). Reasons: `UnknownAbility=1`, `NotGranted=2`, `InvalidActivation=3`, `StaleRequest=4`, `InvalidRequest=5`, `ActorDead=6`, `Busy=7`, `OnCooldown=8`, `StateBlocked=9`.
+- Rejected — tag **27** — `seq` + reason `u8` (6 bytes with tag). Reasons: `UnknownAbility=1`, `NotGranted=2`, `InvalidActivation=3`, `StaleRequest=4`, `InvalidRequest=5`, `ActorDead=6`, `Busy=7`, `OnCooldown=8`, `StateBlocked=9`, `StaleInputAnchor=10`, `InvalidInputAnchor=11`, `RequiresGrounded=12`.
+
+`AbilityGrants` — tag **44** — is an owner-private canonical baseline: `count u8` followed by sorted, unique ability tokens (`u64` each), bounded by `MAX_GRANTED_ABILITIES = 32`. It is sent after authoritative attach and whenever the grant set changes. Pack membership is not authorization.
 
 Authoritative affected entities, damage, and Health come from `World::request_ability` + authored `AbilityDefinition`. An empty swing is a valid Accepted lifecycle.
 
@@ -313,7 +315,7 @@ Load bots only need the version bump; they do not send interact.
 
 **Late-collapse is intentional authoritative input compaction.** After Continuation starvation (`unmatched_continuation_ticks` / continuation debt), a prefix of delayed commands is applied as one `tick_player` (latest held + `jump_pressed` OR). Intermediate historical held commands may be acknowledged without receiving individual physics steps. Continuation debt saturates (`saturating_add` / `saturating_sub`) and never integer-wraps. Remainder debt is `K - N`.
 
-`jump_pressed` OR during late-collapse is not a generic future skill-action policy. Future actions require explicit late-arrival semantics (ADR-0031).
+Anchored ability requests whose input sequences fall inside one late-collapsed prefix execute on that single authoritative simulation step, in accepted request order, after the collapsed held direction is adopted and before `tick_player`. Stale anchors and anchors beyond the last received command reject explicitly. `HeldCancel`, respawn, and transition barriers reject queued activations instead of carrying them across the boundary.
 
 ### Server → client (control)
 
@@ -360,6 +362,7 @@ local_grounded: u8
 local_grounded_on: u16
 local_ignored_platform: u16
 continuation_debt: u16
+local_dash: flag u8; when set: direction i8, speed f32, remaining_ticks u16
 local_map: u32
 local_channel: u32
 local_instance: u32
@@ -555,3 +558,7 @@ The client never sends snapshot or transform state back as input. Seeing another
 ## Protocol v30 — replicated authored content identity
 
 Replication Enter records carry an optional stable `ContentId` after the entity transform payload. The authoritative server sources it from the runtime entity. The client retains it as immutable presentation identity; transform, health and equipment Updates do not resend it.
+
+## Protocol v31 — input-anchored abilities and Dash state
+
+`AbilityActivate` now carries `(input_epoch, input_sequence)`. The server queues a valid request until that authoritative input boundary, so direction-sensitive abilities use the same tick intent that the client predicted. `AbilityGrants` (tag 44) synchronizes owner-private authorization. The recipient-specific `ReplicationFrame` header carries optional active Dash state for restore-and-replay reconciliation. Existing presentation one-shot envelopes admit semantic kind `3` = Dash (`0` remains clear, `1` Attack, `2` Hurt). Dash direction, speed, collision results, cooldowns, hits and grants remain server-owned; the client never submits them as authoritative results.

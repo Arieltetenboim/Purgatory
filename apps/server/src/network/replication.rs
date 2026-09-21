@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use purgatory_protocol::{
     DomainMask, MAX_GAMEPLAY_SNAPSHOT_BYTES, ObserverAoiDebug, PlatformSupportId,
-    ReplicatedEquipment, ReplicatedEquipmentDelta, ReplicatedHealth, ReplicatedKind,
-    ReplicationFrame, ReplicationRecord, SnapshotEntity, encode_gameplay_frame,
+    ReplicatedDash, ReplicatedEquipment, ReplicatedEquipmentDelta, ReplicatedHealth,
+    ReplicatedKind, ReplicationFrame, ReplicationRecord, SnapshotEntity, encode_gameplay_frame,
     encode_replication_frame, encode_replication_record,
 };
 use purgatory_simulation::{
@@ -811,6 +811,11 @@ fn header_frame(
     records: Vec<ReplicationRecord>,
 ) -> ReplicationFrame {
     let (grounded, on, ign) = contact_header(world, local);
+    let local_dash = world.player_dash_of(local).map(|dash| ReplicatedDash {
+        direction: dash.direction,
+        speed: dash.speed,
+        remaining_ticks: dash.remaining_ticks,
+    });
     let addr = world.address_of(local);
     ReplicationFrame {
         snapshot_sequence: sequence,
@@ -822,6 +827,7 @@ fn header_frame(
         local_grounded_on: on,
         local_ignored_platform: ign,
         continuation_debt: debt,
+        local_dash,
         local_map: addr.map(|a| a.map.raw()).unwrap_or(1),
         local_channel: addr.map(|a| a.channel.raw()).unwrap_or(0),
         local_instance: addr.map(|a| a.instance.raw()).unwrap_or(0),

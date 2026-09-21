@@ -1,7 +1,7 @@
-//! Protocol v15 ability activation envelopes.
+//! Protocol v31 ability activation and owner-private grant envelopes.
 //!
-//! Client sends ability id + optional selected entity. Never damage, hits,
-//! query dimensions, facing, or Health.
+//! Client sends an input anchor, ability id, and optional selected entity.
+//! Never damage, hits, query dimensions, facing, or Health.
 
 use std::fmt;
 
@@ -10,14 +10,25 @@ use purgatory_common::ContentId;
 use crate::snapshot::WireEntityId;
 
 /// Payload sizes (no control tag). Independent activation omits the entity.
-pub const ABILITY_ACTIVATE_INDEPENDENT_BYTES: usize = 4 + 8 + 1;
+pub const ABILITY_ACTIVATE_INDEPENDENT_BYTES: usize = 4 + 2 + 4 + 8 + 1;
 pub const ABILITY_ACTIVATE_SELECTED_BYTES: usize = ABILITY_ACTIVATE_INDEPENDENT_BYTES + 8;
 pub const ABILITY_ACCEPTED_BYTES: usize = 4;
 pub const ABILITY_REJECTED_BYTES: usize = 4 + 1;
+pub const MAX_GRANTED_ABILITIES: usize = 32;
+
+/// Owner-private authoritative baseline. Resent after attach and grant changes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServerAbilityGrants {
+    pub abilities: Vec<ContentId>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AbilityActivateRequest {
+    /// Per-ability request identity.
     pub seq: u32,
+    /// Input epoch and sequence whose simulation step owns activation.
+    pub input_epoch: u16,
+    pub input_sequence: u32,
     pub ability_id: ContentId,
     /// Present only when the ability's activation contract requires a selected entity.
     pub selected: Option<WireEntityId>,
@@ -36,6 +47,9 @@ pub enum AbilityCommandReject {
     Busy = 7,
     OnCooldown = 8,
     StateBlocked = 9,
+    StaleInputAnchor = 10,
+    InvalidInputAnchor = 11,
+    RequiresGrounded = 12,
 }
 
 impl AbilityCommandReject {
@@ -56,6 +70,9 @@ impl AbilityCommandReject {
             7 => Some(Self::Busy),
             8 => Some(Self::OnCooldown),
             9 => Some(Self::StateBlocked),
+            10 => Some(Self::StaleInputAnchor),
+            11 => Some(Self::InvalidInputAnchor),
+            12 => Some(Self::RequiresGrounded),
             _ => None,
         }
     }
@@ -73,6 +90,9 @@ impl fmt::Display for AbilityCommandReject {
             Self::Busy => "Busy",
             Self::OnCooldown => "OnCooldown",
             Self::StateBlocked => "StateBlocked",
+            Self::StaleInputAnchor => "StaleInputAnchor",
+            Self::InvalidInputAnchor => "InvalidInputAnchor",
+            Self::RequiresGrounded => "RequiresGrounded",
         })
     }
 }

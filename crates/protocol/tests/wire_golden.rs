@@ -506,9 +506,11 @@ const WELCOME_V15: &[u8] = &[
     0x64, 0x65, 0x76, // "dev"
 ];
 
-const ABILITY_ACTIVATE_INDEPENDENT_V15: &[u8] = &[
+const ABILITY_ACTIVATE_INDEPENDENT_V31: &[u8] = &[
     0x19, // tag 25 AbilityActivate
     0x01, 0x00, 0x00, 0x00, // seq = 1
+    0x00, 0x00, // input_epoch = 0
+    0x01, 0x00, 0x00, 0x00, // input_sequence = 1
     0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // content token 9
     0x00, // no selected entity
 ];
@@ -698,8 +700,8 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_29() {
-    assert_eq!(PROTOCOL_VERSION, 30);
+fn current_protocol_version_is_31() {
+    assert_eq!(PROTOCOL_VERSION, 31);
 }
 
 #[test]
@@ -1752,18 +1754,20 @@ fn welcome_v15_matches_golden_bytes() {
 }
 
 #[test]
-fn ability_activate_v15_matches_golden_bytes() {
+fn ability_activate_v31_matches_golden_bytes() {
     let req = ClientControl::AbilityActivate(purgatory_protocol::AbilityActivateRequest {
         seq: 1,
+        input_epoch: 0,
+        input_sequence: 1,
         ability_id: purgatory_common::ContentId::from_token(9),
         selected: None,
     });
     assert_eq!(
         encode_client_control(&req).expect("encode"),
-        ABILITY_ACTIVATE_INDEPENDENT_V15
+        ABILITY_ACTIVATE_INDEPENDENT_V31
     );
     assert_eq!(
-        decode_client_control(ABILITY_ACTIVATE_INDEPENDENT_V15).expect("decode"),
+        decode_client_control(ABILITY_ACTIVATE_INDEPENDENT_V31).expect("decode"),
         req
     );
     let accepted = ServerControl::Ability(purgatory_protocol::ServerAbility::Accepted { seq: 1 });
@@ -1840,6 +1844,7 @@ fn sample_v8_replication_frame() -> ReplicationFrame {
         local_grounded_on: PlatformSupportId::NONE,
         local_ignored_platform: PlatformSupportId::NONE,
         continuation_debt: 0,
+        local_dash: None,
         local_map: 1,
         local_channel: 0,
         local_instance: 0,

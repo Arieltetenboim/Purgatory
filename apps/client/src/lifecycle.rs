@@ -193,6 +193,9 @@ impl ClientLifecycle {
             NetworkEvent::Ability { event, .. } => {
                 self.emit_log(&format!("Ability {event:?}"));
             }
+            NetworkEvent::AbilityGrants { event, .. } => {
+                self.emit_log(&format!("AbilityGrants {event:?}"));
+            }
         }
     }
 
@@ -235,7 +238,8 @@ impl ClientLifecycle {
             | NetworkEvent::Item { .. }
             | NetworkEvent::Inventory { .. }
             | NetworkEvent::PresentationOneShot { .. }
-            | NetworkEvent::Ability { .. } => {
+            | NetworkEvent::Ability { .. }
+            | NetworkEvent::AbilityGrants { .. } => {
                 matches!(state, ConnectionState::Connected)
             }
         }
@@ -1080,5 +1084,25 @@ mod tests {
         assert!(life.view().history.is_empty());
         assert_eq!(life.view().counters.lifecycle_events, events);
         assert_eq!(life.view().connection_id.map(|c| c.get()), Some(3));
+    }
+
+    #[test]
+    fn ability_grant_baseline_is_session_owned_and_clears_on_disconnect() {
+        let mut life = ClientLifecycle::new(SERVER);
+        let id = start_handshaking(&mut life);
+        life.apply(welcome(id.get(), 3));
+        let dash = purgatory_common::ContentId::from_authored("skill.movement.dash").unwrap();
+        life.apply(NetworkEvent::AbilityGrants {
+            attempt_id: id,
+            event: purgatory_protocol::ServerAbilityGrants {
+                abilities: vec![dash],
+            },
+        });
+        assert_eq!(life.view().ability_grants, vec![dash]);
+        life.apply(disconnected(
+            id.get(),
+            NetworkFailureKind::TransportLost,
+        ));
+        assert!(life.view().ability_grants.is_empty());
     }
 }

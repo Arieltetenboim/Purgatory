@@ -30,7 +30,8 @@ use crate::schema::{
 };
 use purgatory_common::{ContentId, ContentKind, allocated_id_for_label, validate_authored_id};
 use purgatory_simulation::{
-    AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityTiming,
+    AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityPresentation,
+    AbilityTiming,
     EquipmentSlot, InteractableKind, PlatformKind, WorldBounds,
 };
 
@@ -708,6 +709,12 @@ struct RawAbility {
     activation: String,
     delivery: RawAbilityDelivery,
     effects: Vec<RawAbilityEffect>,
+    #[serde(default = "default_ability_presentation")]
+    presentation: String,
+}
+
+fn default_ability_presentation() -> String {
+    "attack".to_owned()
 }
 
 #[derive(Deserialize)]
@@ -738,6 +745,10 @@ struct RawAbilityEffect {
     kind: String,
     #[serde(default)]
     amount: Option<f32>,
+    #[serde(default)]
+    speed: Option<f32>,
+    #[serde(default)]
+    duration_ticks: Option<u16>,
 }
 
 impl RawAbility {
@@ -757,6 +768,7 @@ impl RawAbility {
             }
         };
         let delivery = match self.delivery.kind.as_str() {
+            "self" => AbilityDelivery::SelfTarget,
             "forward_query" => AbilityDelivery::ForwardQuery {
                 range: self.delivery.range.ok_or_else(|| {
                     ContentError::from_path(
@@ -807,6 +819,28 @@ impl RawAbility {
                     })?;
                     effects.push(AbilityEffect::Damage { amount });
                 }
+                "dash" => {
+                    let speed = raw.speed.ok_or_else(|| {
+                        ContentError::from_path(
+                            path.to_path_buf(),
+                            &self.id,
+                            "effects.speed",
+                            "required for dash",
+                        )
+                    })?;
+                    let duration_ticks = raw.duration_ticks.ok_or_else(|| {
+                        ContentError::from_path(
+                            path.to_path_buf(),
+                            &self.id,
+                            "effects.duration_ticks",
+                            "required for dash",
+                        )
+                    })?;
+                    effects.push(AbilityEffect::Dash {
+                        speed,
+                        duration_ticks,
+                    });
+                }
                 other => {
                     return Err(ContentError::from_path(
                         path.to_path_buf(),
@@ -817,6 +851,18 @@ impl RawAbility {
                 }
             }
         }
+        let presentation = match self.presentation.as_str() {
+            "attack" => AbilityPresentation::Attack,
+            "dash" => AbilityPresentation::Dash,
+            other => {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    &self.id,
+                    "presentation",
+                    format!("unknown presentation '{other}'"),
+                ));
+            }
+        };
         let def = AbilityDefinition {
             id: ContentId::from_authored(&self.id).expect("validated"),
             timing: AbilityTiming {
@@ -828,6 +874,7 @@ impl RawAbility {
             activation,
             delivery,
             effects,
+            presentation,
         };
         def.validate().map_err(|e| {
             ContentError::from_path(path.to_path_buf(), &self.id, "ability", format!("{e:?}"))
@@ -1671,6 +1718,20 @@ mod tests {
         assert!(shared.equipment_count() >= 8);
         assert!(shared.ability_count() >= 1);
         assert!(shared.ability("skill.basic.strike").is_some());
+        let dash = shared
+            .ability("skill.movement.dash")
+            .expect("grantable Dash ability");
+        assert_eq!(dash.presentation, AbilityPresentation::Dash);
+        assert_eq!(dash.delivery, AbilityDelivery::SelfTarget);
+        let [AbilityEffect::Dash {
+            speed,
+            duration_ticks,
+        }] = dash.effects.as_slice()
+        else {
+            panic!("Dash pack definition must contain exactly one Dash effect");
+        };
+        assert!((*speed - 9.0).abs() < f32::EPSILON);
+        assert_eq!(*duration_ticks, 5);
         assert!(
             registry
                 .entity("entity.portal.to_second")

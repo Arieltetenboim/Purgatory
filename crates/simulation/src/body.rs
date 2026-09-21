@@ -10,6 +10,14 @@ use crate::transform::Transform;
 /// Player collider half-extents in world units.
 pub const PLAYER_HALF_EXTENTS: [f32; 2] = [0.4, 0.6];
 
+/// Authoritative short-lived horizontal movement owned by a Dash ability.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DashState {
+    pub direction: i8,
+    pub speed: f32,
+    pub remaining_ticks: u16,
+}
+
 /// State required by the shared FOOTNOTE collision resolvers.
 pub trait CollisionBody {
     fn velocity(&self) -> [f32; 2];
@@ -50,6 +58,8 @@ pub struct PlayerState {
     pub coyote_ticks: u8,
     /// Fixed-tick countdown for a jump pressed before landing.
     pub jump_buffer_ticks: u8,
+    /// Active ability-driven movement. `None` is ordinary FOOTNOTE locomotion.
+    pub dash: Option<DashState>,
 }
 
 impl PlayerState {
@@ -75,6 +85,7 @@ impl PlayerState {
                 jump_speed_override: None,
                 coyote_ticks: 0,
                 jump_buffer_ticks: 0,
+                dash: None,
             },
         )
     }

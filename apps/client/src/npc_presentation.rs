@@ -948,6 +948,7 @@ pub(crate) fn clip_name(activity: PresentationActivity) -> &'static str {
     match activity {
         PresentationActivity::Attack => "attack",
         PresentationActivity::Hurt => "hit",
+        PresentationActivity::Dash => "move",
         PresentationActivity::Dead => "death",
         PresentationActivity::Move => "move",
         _ => "idle",

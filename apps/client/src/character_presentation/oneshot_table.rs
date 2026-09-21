@@ -16,7 +16,7 @@ struct ActiveOneShot {
     until_tick: u64,
 }
 
-/// Per-entity authoritative Attack/Hurt overlay. Independent of AnimationPlayer.
+/// Per-entity authoritative semantic overlay. Independent of AnimationPlayer.
 #[derive(Clone, Debug, Default)]
 pub struct PresentationOneShotTable {
     by_entity: HashMap<PresentationEntityKey, ActiveOneShot>,
@@ -82,6 +82,7 @@ fn activity_from_kind(kind: u8) -> Option<PresentationActivity> {
     match kind {
         1 => Some(PresentationActivity::Attack),
         2 => Some(PresentationActivity::Hurt),
+        3 => Some(PresentationActivity::Dash),
         _ => None,
     }
 }
@@ -130,6 +131,24 @@ mod tests {
         assert_eq!(
             table.activity_of(PresentationEntityKey::new(2, 1), 30),
             Some(PresentationActivity::Hurt)
+        );
+    }
+
+    #[test]
+    fn dash_kind_maps_to_dash_activity() {
+        let mut table = PresentationOneShotTable::new();
+        let entity = WireEntityId {
+            index: 7,
+            generation: 2,
+        };
+        table.apply_server_event(ServerPresentationOneShot {
+            entity,
+            kind: 3,
+            until_tick: 25,
+        });
+        assert_eq!(
+            table.activity_of(PresentationEntityKey::new(7, 2), 24),
+            Some(PresentationActivity::Dash)
         );
     }
 

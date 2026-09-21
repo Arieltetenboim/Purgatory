@@ -1,4 +1,4 @@
-//! Authoritative presentation one-shot (Attack/Hurt) semantic state.
+//! Authoritative presentation one-shot (Attack/Hurt/Dash) semantic state.
 //!
 //! Duration and interruption are simulation-owned. Clip completion must never
 //! clear or grant this state. Not combat hit detection.
@@ -10,6 +10,7 @@ use crate::time::SimulationTick;
 pub enum PresentationOneShotKind {
     Attack,
     Hurt,
+    Dash,
 }
 
 impl PresentationOneShotKind {
@@ -18,6 +19,7 @@ impl PresentationOneShotKind {
         match self {
             Self::Attack => 1,
             Self::Hurt => 2,
+            Self::Dash => 3,
         }
     }
 
@@ -26,6 +28,7 @@ impl PresentationOneShotKind {
         match v {
             1 => Some(Self::Attack),
             2 => Some(Self::Hurt),
+            3 => Some(Self::Dash),
             _ => None,
         }
     }
@@ -45,16 +48,19 @@ pub enum PresentationOneShotError {
     BlockedByHurt,
 }
 
-/// Attack / Hurt duration in simulation ticks (30 Hz). Slightly longer than the
-/// debug clip so presentation can hold the final pose while semantic state remains.
+/// One-shot durations in simulation ticks (30 Hz). Attack/Hurt are slightly
+/// longer than their debug clips so presentation may hold the final pose.
 pub const ATTACK_DURATION_TICKS: u64 = 18; // 0.60 s (> 0.40 s clip)
 pub const HURT_DURATION_TICKS: u64 = 17; // 0.566… s (> 0.35 s clip)
+/// Dash v1 active movement plus recovery presentation window.
+pub const DASH_DURATION_TICKS: u64 = 8;
 
 #[must_use]
 pub const fn duration_ticks(kind: PresentationOneShotKind) -> u64 {
     match kind {
         PresentationOneShotKind::Attack => ATTACK_DURATION_TICKS,
         PresentationOneShotKind::Hurt => HURT_DURATION_TICKS,
+        PresentationOneShotKind::Dash => DASH_DURATION_TICKS,
     }
 }
 
@@ -72,7 +78,8 @@ pub fn try_start_oneshot(
 ) -> Result<PresentationOneShot, PresentationOneShotError> {
     let active = current.filter(|o| now.get() < o.until_tick.get());
     match (active.map(|o| o.kind), kind) {
-        (Some(PresentationOneShotKind::Hurt), PresentationOneShotKind::Attack) => {
+        (Some(PresentationOneShotKind::Hurt), PresentationOneShotKind::Attack)
+        | (Some(PresentationOneShotKind::Hurt), PresentationOneShotKind::Dash) => {
             Err(PresentationOneShotError::BlockedByHurt)
         }
         _ => Ok(PresentationOneShot {
@@ -109,6 +116,10 @@ mod tests {
         let hurt = try_start_oneshot(None, PresentationOneShotKind::Hurt, now).unwrap();
         assert_eq!(
             try_start_oneshot(Some(hurt), PresentationOneShotKind::Attack, now),
+            Err(PresentationOneShotError::BlockedByHurt)
+        );
+        assert_eq!(
+            try_start_oneshot(Some(hurt), PresentationOneShotKind::Dash, now),
             Err(PresentationOneShotError::BlockedByHurt)
         );
     }

@@ -374,6 +374,7 @@ mod tests {
             local_grounded_on: purgatory_protocol::PlatformSupportId(0),
             local_ignored_platform: purgatory_protocol::PlatformSupportId(0),
             continuation_debt: 0,
+            local_dash: None,
             local_map: 1,
             local_channel: 0,
             local_instance: 0,

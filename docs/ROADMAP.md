@@ -12,7 +12,7 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **Active parallel track:** FORGE M — Monster Authoring & Runtime on `forge/mob-lab-m4`
 - **Completed parallel presentation foundation:** Production UI I1 — read-only Inventory window
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
-- **Protocol: v30**
+- **Protocol: v31**
 
 ---
 
@@ -489,6 +489,16 @@ This phase produced several of the project's most useful “measure first” les
 - Server authorizes ownership/grant/activation shape before requesting the ability from World.
 - Ability execution produces Attack presentation; authoritative non-lethal damage produces Hurt; Health <= 0 produces persistent Dead.
 - Dead presentation overrides transient Attack/Hurt.
+
+## First movement ability — Dash v1
+
+- Dash is a content-authored, server-authoritative ability built on the existing Action Runtime; it is not a special input-only movement mode.
+- It is ground-only, locks the current horizontal facing, ignores jump/steering while active, resolves through FOOTNOTE collision, stops at walls/edges, has an authoritative cooldown, and is interrupted by actual damage.
+- The client predicts Dash at its anchored input step and reconciles from recipient-local replicated Dash state.
+- Dash is deliberately not granted at spawn. The future teaching NPC uses the learned ability-grant seam. Persistence of learned progression is Phase 12 work.
+- Crouch remains deferred and is not part of Dash v1. Its accepted first contract is a held,
+  stationary state: no lateral movement, no jump until Down is released, state-specific attack
+  behavior/presentation, and actual damage interrupts the crouch. Later interactions may extend it.
 
 ## PvE loop — Phase 10
 
