@@ -7,6 +7,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
+use purgatory_common::ContentId;
 use purgatory_protocol::{
     ObserverAoiDebug, PlatformSupportId, ReplicatedEquipment, ReplicatedHealth, ReplicatedKind,
     ReplicationFrame, ReplicationRecord, SnapshotEntity, WireEntityId, WorldSnapshot,
@@ -34,6 +35,7 @@ pub struct ReplicatedEntity {
     pub position: [f32; 2],
     #[allow(dead_code)]
     pub velocity: [f32; 2],
+    pub content_id: Option<ContentId>,
     pub health: Option<ReplicatedHealth>,
     /// `None` = no equipment domain. `Some` (including all-empty) = domain present.
     pub equipment: Option<ReplicatedEquipment>,
@@ -170,6 +172,7 @@ impl ReplicatedWorld {
                     kind: entity.kind,
                     position: entity.position,
                     velocity: entity.velocity,
+                    content_id: None,
                     health: None,
                     equipment: None,
                     last_transform_tick: snap.server_tick,
@@ -222,6 +225,7 @@ impl ReplicatedWorld {
             match rec {
                 ReplicationRecord::Enter {
                     entity,
+                    content_id,
                     health,
                     equipment,
                 } => {
@@ -242,6 +246,7 @@ impl ReplicatedWorld {
                             kind: entity.kind,
                             position: entity.position,
                             velocity: entity.velocity,
+                            content_id,
                             health,
                             equipment,
                             last_transform_tick: frame.server_tick,
@@ -533,6 +538,7 @@ impl From<SnapshotEntity> for ReplicatedEntity {
             kind: entity.kind,
             position: entity.position,
             velocity: entity.velocity,
+            content_id: None,
             health: None,
             equipment: None,
             last_transform_tick: 0,
@@ -747,11 +753,13 @@ mod tests {
                     entity: entity(1, 1, 1.0),
                     health: None,
                     equipment: None,
+                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: entity(2, 1, 2.0),
                     health: None,
                     equipment: None,
+                    content_id: None,
                 },
             ],
         );
@@ -789,6 +797,79 @@ mod tests {
     }
 
     #[test]
+    fn monster_content_identity_is_retained_across_updates() {
+        let mut world = ReplicatedWorld::new();
+        let local = WireEntityId {
+            index: 1,
+            generation: 1,
+        };
+        let moss = WireEntityId {
+            index: 2,
+            generation: 1,
+        };
+        let shroom = WireEntityId {
+            index: 3,
+            generation: 1,
+        };
+
+        world.apply_frame(frame(
+            0,
+            1,
+            local,
+            vec![
+                ReplicationRecord::Enter {
+                    entity: entity(2, 1, 2.0),
+                    health: None,
+                    equipment: None,
+                    content_id: Some(purgatory_common::MONSTER_MOSS_CRAB),
+                },
+                ReplicationRecord::Enter {
+                    entity: entity(3, 1, 3.0),
+                    health: None,
+                    equipment: None,
+                    content_id: Some(purgatory_common::MONSTER_SHROOM),
+                },
+            ],
+        ));
+
+        assert_eq!(
+            world.get(moss).and_then(|entity| entity.content_id),
+            Some(purgatory_common::MONSTER_MOSS_CRAB)
+        );
+        assert_eq!(
+            world.get(shroom).and_then(|entity| entity.content_id),
+            Some(purgatory_common::MONSTER_SHROOM)
+        );
+
+        world.apply_frame(frame(
+            0,
+            2,
+            local,
+            vec![ReplicationRecord::Update {
+                entity_id: moss,
+                domains: purgatory_protocol::DomainMask {
+                    transform: true,
+                    health: false,
+                    equipment: false,
+                },
+                position: Some([9.0, 0.0]),
+                velocity: Some([0.0, 0.0]),
+                health: None,
+                equipment: None,
+            }],
+        ));
+
+        assert_eq!(
+            world.get(moss).and_then(|entity| entity.content_id),
+            Some(purgatory_common::MONSTER_MOSS_CRAB)
+        );
+        assert_eq!(
+            world.get(shroom).and_then(|entity| entity.content_id),
+            Some(purgatory_common::MONSTER_SHROOM)
+        );
+    }
+
+    #[test]
     fn health_update_applies_immunity_expiry_to_replica() {
         let mut world = ReplicatedWorld::new();
         let local = WireEntityId {
@@ -811,6 +892,7 @@ mod tests {
                     damage_immunity_active: true,
                 }),
                 equipment: None,
+                content_id: None,
             }],
         ));
         assert!(
@@ -868,6 +950,7 @@ mod tests {
                 entity: entity(1, 1, 1.0),
                 health: None,
                 equipment: None,
+                content_id: None,
             }],
         );
         world.apply_frame(enter);
@@ -896,11 +979,13 @@ mod tests {
                     entity: entity(1, 1, 0.0),
                     health: None,
                     equipment: None,
+                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: entity(2, 1, 2.0),
                     health: None,
                     equipment: None,
+                    content_id: None,
                 },
             ],
         );
@@ -958,6 +1043,7 @@ mod tests {
                 entity: entity(1, 1, 1.0),
                 health: None,
                 equipment: None,
+                content_id: None,
             }],
         ));
         world.apply_frame(frame(
@@ -1004,11 +1090,13 @@ mod tests {
                     entity: entity(1, 1, 1.0),
                     health: None,
                     equipment: None,
+                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: entity(8, 1, 80.0),
                     health: None,
                     equipment: None,
+                    content_id: None,
                 },
             ],
         ));
@@ -1021,6 +1109,7 @@ mod tests {
                 entity: entity(1, 1, 3.0),
                 health: None,
                 equipment: None,
+                content_id: None,
             }],
         ));
         assert_eq!(decision, FrameDecision::Applied { epoch_reset: true });
@@ -1053,6 +1142,7 @@ mod tests {
                 entity: entity(1, 1, 1.0),
                 health: None,
                 equipment: None,
+                content_id: None,
             }],
         ));
         assert!(world.get(a).unwrap().equipment.is_none());
@@ -1087,6 +1177,7 @@ mod tests {
                 entity: entity(1, 1, 1.0),
                 health: None,
                 equipment: Some(empty),
+                content_id: None,
             }],
         ));
         assert_eq!(world.get(a).unwrap().equipment.unwrap().get(5), Some(sword));

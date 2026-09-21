@@ -925,17 +925,21 @@ impl World {
             {
                 npc.target = None;
             }
-            let approach_target = approach.and_then(|bounds| {
-                npc.target.and_then(|target| {
-                    let actor_position = self.transform_of(id)?.position;
-                    let target_position = self.transform_of(target)?.position;
-                    let dx = target_position[0] - actor_position[0];
-                    let dy = target_position[1] - actor_position[1];
-                    let hittable =
-                        bounds.contains_target(actor_position, target_position, dx < 0.0);
-                    Some((target_position, dx * dx + dy * dy, hittable))
-                })
-            });
+            let approach_target =
+                npc.runtime_config
+                    .approach_bounds
+                    .or(approach)
+                    .and_then(|bounds| {
+                        npc.target.and_then(|target| {
+                            let actor_position = self.transform_of(id)?.position;
+                            let target_position = self.transform_of(target)?.position;
+                            let dx = target_position[0] - actor_position[0];
+                            let dy = target_position[1] - actor_position[1];
+                            let hittable =
+                                bounds.contains_target(actor_position, target_position, dx < 0.0);
+                            Some((target_position, dx * dx + dy * dy, hittable))
+                        })
+                    });
             if let Some((target_position, _distance_sq, hittable)) = approach_target {
                 let Some(transform) = self.transform_of(id) else {
                     let _ = self.set_npc(id, npc);

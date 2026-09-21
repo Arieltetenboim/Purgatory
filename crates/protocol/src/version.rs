@@ -42,8 +42,10 @@
 /// rejected results (tags 40–42).
 /// Protocol v29 adds DEV-only `DevSpawnMonster` (tag 43), carrying stable
 /// Monster `ContentId`; the server owns lookup, placement and runtime identity.
+/// Protocol v30 adds optional stable `ContentId` to replication Enter records so
+/// client presentation can resolve each authored runtime entity independently.
 /// Historical golden vectors remain frozen.
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;

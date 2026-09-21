@@ -1354,24 +1354,40 @@ mod tests {
 
     #[test]
     fn monster_projection_separates_gameplay_from_client_sprite_selection() {
-        use purgatory_common::MONSTER_RED_SLIME;
+        use purgatory_common::{MONSTER_MOSS_CRAB, MONSTER_SHROOM};
 
         let full = load_registry(&default_content_root(), LoadMode::Full).expect("full pack");
-        let monster = full
-            .monster_by_id(MONSTER_RED_SLIME)
-            .expect("server Monster gameplay definition");
-        let presentation = full
-            .monster_presentation_by_id(MONSTER_RED_SLIME)
-            .expect("Monster presentation projection");
-        assert_eq!(monster.authored_id, presentation.authored_id);
-        assert_eq!(presentation.sprite_id, "creature.red_slime");
+        let moss = full
+            .monster_by_id(MONSTER_MOSS_CRAB)
+            .expect("server Moss Crab gameplay definition");
+        let moss_presentation = full
+            .monster_presentation_by_id(MONSTER_MOSS_CRAB)
+            .expect("Moss Crab presentation projection");
+        assert_eq!(moss.authored_id, moss_presentation.authored_id);
+        assert_eq!(moss_presentation.sprite_id, "creature.moss_crab");
+
+        let shroom_presentation = full
+            .monster_presentation_by_id(MONSTER_SHROOM)
+            .expect("Shroom presentation projection");
+        assert_eq!(shroom_presentation.sprite_id, "creature.shroom");
+        assert_ne!(moss_presentation.sprite_id, shroom_presentation.sprite_id);
 
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared pack");
         assert_eq!(shared.monster_count(), 0);
-        let presentation = shared
-            .monster_presentation_by_id(MONSTER_RED_SLIME)
-            .expect("client-safe Monster presentation");
-        assert_eq!(presentation.sprite_id, "creature.red_slime");
+        assert_eq!(
+            shared
+                .monster_presentation_by_id(MONSTER_MOSS_CRAB)
+                .expect("client-safe Moss Crab presentation")
+                .sprite_id,
+            "creature.moss_crab"
+        );
+        assert_eq!(
+            shared
+                .monster_presentation_by_id(MONSTER_SHROOM)
+                .expect("client-safe Shroom presentation")
+                .sprite_id,
+            "creature.shroom"
+        );
     }
 
     #[test]

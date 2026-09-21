@@ -388,6 +388,7 @@ mod tests {
                     },
                     health: None,
                     equipment: None,
+                    content_id: None,
                 },
                 ReplicationRecord::Enter {
                     entity: SnapshotEntity {
@@ -398,6 +399,7 @@ mod tests {
                     },
                     health: None,
                     equipment: None,
+                    content_id: None,
                 },
             ],
             aoi_debug: None,

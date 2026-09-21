@@ -1104,6 +1104,7 @@ mod tests {
                     damage_immunity_active: false,
                 }),
                 equipment: None,
+                content_id: None,
             }],
             aoi_debug: None,
         }

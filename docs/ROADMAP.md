@@ -9,10 +9,10 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **ERA II — Combat & First Playable Loop**
 - **Phase 11 — Item Loop: complete + closeout**
 - **Root `PHASE`: `11.closeout`**
-- **Active parallel track:** FORGE M — Monster Authoring & Runtime on `forge/mob-lab-m3`
+- **Active parallel track:** FORGE M — Monster Authoring & Runtime on `forge/mob-lab-m4`
 - **Completed parallel presentation foundation:** Production UI I1 — read-only Inventory window
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
-- **Protocol: v29**
+- **Protocol: v30**
 
 ---
 
@@ -151,8 +151,8 @@ Purpose: turn the proven single-creature PvE fixture into a validated, content-b
 | M1 | Monster Content + Validation | complete + merged |
 | M2 | Content-backed Red Slime Runtime | complete + merged + manually verified |
 | M2.1 | Damage-triggered aggro + passive contact contract | complete + merged + manually verified |
-| M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | implementation complete; manual closeout smoke + final PR gate before merge |
-| M4 | Multi-monster runtime identity + presentation + test-arena proof | next; tracked by #75 |
+| M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | complete + merged |
+| M4 | Multi-monster runtime identity + presentation + test-arena proof | automated implementation/proof landed; manual smoke pending; #75 |
 | M5 | Hub integration + v0.1 closeout | partially landed; final closeout waits on M4 |
 
 The old `forge/mob-lab` and recovered `forge/mob-lab-v01` branches are historical
