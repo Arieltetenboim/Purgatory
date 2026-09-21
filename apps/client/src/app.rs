@@ -3033,7 +3033,7 @@ impl ClientApp {
                 }
                 renderer.set_rf_ab_proof(show_ab.then_some(self.rf_ab_elapsed));
                 let overlay = self.debug.as_mut();
-                let frontend = self.frontend.as_ref();
+                let frontend = self.frontend.as_mut();
                 let server = format!("{}", self.lifecycle.view().server);
                 let line = self.lifecycle.view().frontend_status();
                 let can_connect = self.lifecycle.can_connect();
