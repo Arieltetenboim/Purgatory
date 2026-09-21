@@ -10,7 +10,7 @@ use super::state::{CharacterPresentationState, Facing, PresentationActivity, Pre
 
 /// Presentation-only overlap above the collision body's bottom edge, in world units.
 /// Increase this value to raise the whole character artwork without moving its collider.
-pub const CHARACTER_COLLISION_FOOT_OVERLAP: f32 = 0.02;
+pub const CHARACTER_COLLISION_FOOT_OVERLAP: f32 = 0.04;
 
 /// Equipment-independent pose input. Skeleton math still sees only Definition + local Pose.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -158,7 +158,7 @@ S3+ adapter tests (client): bind to a presented root without ticking `World` bon
 
 ## Relationship to current presentation
 
-S2 evaluates **one** Humanoid v0 on the **local presented pose** (same `frame_local.presented` used by the player AABB). The adapter maps AABB center → skeleton root near the body feet (`center.y - PLAYER_HALF_EXTENTS[1] + CHARACTER_COLLISION_FOOT_OVERLAP`). The small positive overlap is presentation-only and raises the artwork without moving collision; skeleton rest proportions stay independent of collision.
+S2 evaluates **one** Humanoid v0 on the **local presented pose** (same `frame_local.presented` used by the player AABB). The adapter maps AABB center → skeleton root near the body feet (`center.y - PLAYER_HALF_EXTENTS[1] + CHARACTER_COLLISION_FOOT_OVERLAP`). The positive overlap (currently `0.04` world units) is presentation-only and raises the artwork without moving collision; skeleton rest proportions stay independent of collision.
 
 Evaluate runs whenever that presented pose exists. Debug-draw is a separate client flag (`show_skeleton`); it is not an animation eligibility contract. Overlay `~` is not required to evaluate.
 
