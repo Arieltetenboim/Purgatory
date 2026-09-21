@@ -4133,7 +4133,7 @@ fn npc_debug_aabb_quads(
             .find(|pose| pose.entity_id == entity.entity_id)
             .map(|pose| pose.position)
             .unwrap_or(entity.position);
-        let aabb = if is_humanoid_social_npc(entity) {
+        let aabb = if is_humanoid_social_npc(&entity) {
             Aabb::new(position, PLAYER_HALF_EXTENTS)
         } else {
             Aabb::new([position[0], position[1] + 0.10], [0.30, 0.30])
