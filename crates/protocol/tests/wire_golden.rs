@@ -699,7 +699,7 @@ fn v3_golden_vectors_remain_frozen() {
 
 #[test]
 fn current_protocol_version_is_29() {
-    assert_eq!(PROTOCOL_VERSION, 29);
+    assert_eq!(PROTOCOL_VERSION, 30);
 }
 
 #[test]
@@ -1853,6 +1853,7 @@ fn sample_v8_replication_frame() -> ReplicationFrame {
             },
             health: None,
             equipment: None,
+            content_id: None,
         }],
         aoi_debug: None,
     }

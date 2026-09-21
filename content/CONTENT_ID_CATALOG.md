@@ -54,7 +54,7 @@ The matching equipment gameplay and equipment-presentation facets use the same I
 
 | ID | Label | Status |
 | ---: | --- | --- |
-| `10001` | `monster.slime.red` | active |
+| `10001` | `monster.slime.red` | retired (reserved; never reuse) |
 | `10002` | `monster.moss_crab` | active |
 
 | `10003` | `monster.shroom` | active |

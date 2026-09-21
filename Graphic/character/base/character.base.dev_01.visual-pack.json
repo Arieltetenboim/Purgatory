@@ -5,12 +5,12 @@
   "rig": "humanoid_v0",
   "view": "side",
   "authored_facing": "right",
-  "pixels_per_unit": 256,
-  "completeness": "partial_dev",
+  "pixels_per_unit": 677,
+  "completeness": "complete",
   "atlas": {
     "file": "character.base.dev_01.side.atlas.png",
     "width": 512,
-    "height": 512,
+    "height": 1024,
     "padding_px": 4
   },
   "visuals": [
@@ -19,14 +19,14 @@
       "bone": "upper_arm_back",
       "visual_key": "character.base.dev_01.upper_arm_back.side",
       "rect_px": [
-        289,
-        4,
-        32,
-        53
+        249,
+        515,
+        75,
+        108
       ],
       "pivot_px": [
-        15.057745620924468,
-        4.841685320519559
+        17.291112058095678,
+        -51.87334427179013
       ]
     },
     {
@@ -34,14 +34,14 @@
       "bone": "lower_arm_back",
       "visual_key": "character.base.dev_01.lower_arm_back.side",
       "rect_px": [
-        435,
         4,
-        34,
-        47
+        627,
+        66,
+        98
       ],
       "pivot_px": [
-        18.947053372149824,
-        13.584441881265036
+        10.34882815560377,
+        -25.112167818838373
       ]
     },
     {
@@ -49,14 +49,14 @@
       "bone": "hand_back",
       "visual_key": "character.base.dev_01.hand_back.side",
       "rect_px": [
-        41,
-        217,
-        46,
-        45
+        177,
+        627,
+        98,
+        97
       ],
       "pivot_px": [
-        23.113687269264375,
-        23.230083533369964
+        28.965421991142875,
+        -50.50859952261271
       ]
     },
     {
@@ -64,14 +64,14 @@
       "bone": "upper_leg_back",
       "visual_key": "character.base.dev_01.upper_leg_back.side",
       "rect_px": [
-        4,
-        217,
-        33,
-        46
+        181,
+        363,
+        89,
+        147
       ],
       "pivot_px": [
-        12.839569569284606,
-        2.9670139010031793
+        23.543163753979343,
+        33.0315735509098
       ]
     },
     {
@@ -79,14 +79,29 @@
       "bone": "lower_leg_back",
       "visual_key": "character.base.dev_01.lower_leg_back.side",
       "rect_px": [
-        325,
-        4,
-        33,
-        53
+        274,
+        363,
+        78,
+        147
       ],
       "pivot_px": [
-        16.707568949645236,
-        14.580330335933176
+        7.822442391490085,
+        24.870158134716803
+      ]
+    },
+    {
+      "part": "foot_back",
+      "bone": "foot_back",
+      "visual_key": "character.base.dev_01.foot_back.side",
+      "rect_px": [
+        328,
+        515,
+        171,
+        107
+      ],
+      "pivot_px": [
+        21.146401616119874,
+        4.101382612082489
       ]
     },
     {
@@ -94,14 +109,14 @@
       "bone": "torso",
       "visual_key": "character.base.dev_01.torso.side",
       "rect_px": [
-        205,
         4,
-        80,
-        95
+        4,
+        192,
+        355
       ],
       "pivot_px": [
-        43.76354029062088,
-        58.92998678996037
+        94.97362023692654,
+        126.37227140420515
       ]
     },
     {
@@ -109,14 +124,14 @@
       "bone": "upper_leg_front",
       "visual_key": "character.base.dev_01.upper_leg_front.side",
       "rect_px": [
-        141,
-        217,
-        33,
-        44
+        86,
+        363,
+        91,
+        147
       ],
       "pivot_px": [
-        20.160430430715394,
-        2.838013296611738
+        67.57272443748752,
+        37.427188064326515
       ]
     },
     {
@@ -124,14 +139,29 @@
       "bone": "lower_leg_front",
       "visual_key": "character.base.dev_01.lower_leg_front.side",
       "rect_px": [
-        398,
         4,
-        33,
-        52
+        363,
+        78,
+        148
       ],
       "pivot_px": [
-        16.292431050354764,
-        14.30522976355708
+        69.39286287126811,
+        25.882756274981602
+      ]
+    },
+    {
+      "part": "foot_front",
+      "bone": "foot_front",
+      "visual_key": "character.base.dev_01.foot_front.side",
+      "rect_px": [
+        4,
+        515,
+        161,
+        108
+      ],
+      "pivot_px": [
+        92.15134774643502,
+        4.271156417663178
       ]
     },
     {
@@ -139,14 +169,14 @@
       "bone": "head",
       "visual_key": "character.base.dev_01.head.side",
       "rect_px": [
+        200,
         4,
-        4,
-        197,
-        209
+        308,
+        329
       ],
       "pivot_px": [
-        103.90752972258917,
-        178.40819022457066
+        193.70375209583074,
+        238.01863209597707
       ]
     },
     {
@@ -154,14 +184,14 @@
       "bone": "upper_arm_front",
       "visual_key": "character.base.dev_01.upper_arm_front.side",
       "rect_px": [
-        362,
-        4,
-        32,
-        53
+        169,
+        515,
+        76,
+        108
       ],
       "pivot_px": [
-        16.942254379075536,
-        4.841685320519559
+        61.1721646370861,
+        -52.37343551980183
       ]
     },
     {
@@ -169,14 +199,14 @@
       "bone": "lower_arm_front",
       "visual_key": "character.base.dev_01.lower_arm_front.side",
       "rect_px": [
-        473,
-        4,
-        32,
-        47
+        279,
+        627,
+        66,
+        97
       ],
       "pivot_px": [
-        14.167479179153105,
-        13.584441881265036
+        71.39238356684632,
+        -6.387015836179273
       ]
     },
     {
@@ -184,14 +214,14 @@
       "bone": "hand_front",
       "visual_key": "character.base.dev_01.hand_front.side",
       "rect_px": [
-        91,
-        217,
-        46,
-        45
+        74,
+        627,
+        99,
+        97
       ],
       "pivot_px": [
-        22.886312730735654,
-        23.230083533369964
+        90.60642750930015,
+        -32.699321086243344
       ]
     }
   ],
@@ -201,9 +231,11 @@
     "hand_back": "character.base.dev_01.hand_back.side",
     "upper_leg_back": "character.base.dev_01.upper_leg_back.side",
     "lower_leg_back": "character.base.dev_01.lower_leg_back.side",
+    "foot_back": "character.base.dev_01.foot_back.side",
     "torso": "character.base.dev_01.torso.side",
     "upper_leg_front": "character.base.dev_01.upper_leg_front.side",
     "lower_leg_front": "character.base.dev_01.lower_leg_front.side",
+    "foot_front": "character.base.dev_01.foot_front.side",
     "head": "character.base.dev_01.head.side",
     "upper_arm_front": "character.base.dev_01.upper_arm_front.side",
     "lower_arm_front": "character.base.dev_01.lower_arm_front.side",
@@ -215,9 +247,11 @@
     "hand_back",
     "upper_leg_back",
     "lower_leg_back",
+    "foot_back",
     "torso",
     "upper_leg_front",
     "lower_leg_front",
+    "foot_front",
     "head",
     "upper_arm_front",
     "lower_arm_front",

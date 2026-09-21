@@ -2,6 +2,8 @@
 //!
 //! Historical v1–v7 `WorldSnapshot` bytes stay frozen. v8 is incompatible.
 
+use purgatory_common::ContentId;
+
 use crate::equipment::{
     ReplicatedEquipment, ReplicatedEquipmentDelta, decode_equipment_delta, decode_equipment_full,
     encode_equipment_delta, encode_equipment_full,
@@ -72,6 +74,8 @@ impl DomainMask {
 pub enum ReplicationRecord {
     Enter {
         entity: SnapshotEntity,
+        /// Stable authored identity when this runtime entity originates from content.
+        content_id: Option<ContentId>,
         health: Option<ReplicatedHealth>,
         /// `None` = no equipment domain. `Some` (including all-empty) = domain present.
         equipment: Option<ReplicatedEquipment>,
@@ -134,6 +138,7 @@ pub fn encode_replication_record(record: &ReplicationRecord) -> Result<Vec<u8>, 
     match record {
         ReplicationRecord::Enter {
             entity,
+            content_id,
             health,
             equipment,
         } => {
@@ -144,6 +149,7 @@ pub fn encode_replication_record(record: &ReplicationRecord) -> Result<Vec<u8>, 
             write_f32(&mut out, entity.position[1])?;
             write_f32(&mut out, entity.velocity[0])?;
             write_f32(&mut out, entity.velocity[1])?;
+            write_content_id_opt(&mut out, *content_id);
             write_health_opt(&mut out, *health)?;
             write_equipment_opt(&mut out, *equipment);
         }
@@ -320,6 +326,7 @@ fn decode_record(bytes: &[u8]) -> Result<(ReplicationRecord, &[u8]), CodecError>
             let (py, rest) = read_finite_f32(rest)?;
             let (vx, rest) = read_finite_f32(rest)?;
             let (vy, rest) = read_finite_f32(rest)?;
+            let (content_id, rest) = read_content_id_opt(rest)?;
             let (health, rest) = read_health_opt(rest)?;
             let (equipment, rest) = read_equipment_opt(rest)?;
             Ok((
@@ -332,6 +339,7 @@ fn decode_record(bytes: &[u8]) -> Result<(ReplicationRecord, &[u8]), CodecError>
                     },
                     health,
                     equipment,
+                    content_id,
                 },
                 rest,
             ))
@@ -385,6 +393,30 @@ fn decode_record(bytes: &[u8]) -> Result<(ReplicationRecord, &[u8]), CodecError>
             Ok((ReplicationRecord::Leave { entity_id }, rest))
         }
         other => Err(CodecError::UnknownDiscriminant(other)),
+    }
+}
+
+fn write_content_id_opt(out: &mut Vec<u8>, content_id: Option<ContentId>) {
+    match content_id {
+        None => out.push(0),
+        Some(content_id) => {
+            out.push(1);
+            out.extend_from_slice(&content_id.token().to_le_bytes());
+        }
+    }
+}
+
+fn read_content_id_opt(bytes: &[u8]) -> Result<(Option<ContentId>, &[u8]), CodecError> {
+    if bytes.is_empty() {
+        return Err(CodecError::Truncated);
+    }
+    match bytes[0] {
+        0 => Ok((None, &bytes[1..])),
+        1 => {
+            let (token, rest) = read_u64(&bytes[1..])?;
+            Ok((Some(ContentId::from_token(token)), rest))
+        }
+        _ => Err(CodecError::InvalidValue),
     }
 }
 
@@ -517,6 +549,7 @@ mod tests {
                     damage_immunity_active: true,
                 }),
                 equipment: None,
+                content_id: None,
             },
             ReplicationRecord::Update {
                 entity_id: sample_entity().entity_id,

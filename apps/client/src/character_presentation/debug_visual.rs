@@ -220,14 +220,16 @@ fn textured_base_quad(
         BasePiece::HandBack => "character.base.dev_01.hand_back.side",
         BasePiece::UpperLegBack => "character.base.dev_01.upper_leg_back.side",
         BasePiece::LowerLegBack => "character.base.dev_01.lower_leg_back.side",
+        BasePiece::FootBack => "character.base.dev_01.foot_back.side",
         BasePiece::TorsoNear => "character.base.dev_01.torso.side",
         BasePiece::UpperLegFront => "character.base.dev_01.upper_leg_front.side",
         BasePiece::LowerLegFront => "character.base.dev_01.lower_leg_front.side",
+        BasePiece::FootFront => "character.base.dev_01.foot_front.side",
         BasePiece::Head => "character.base.dev_01.head.side",
         BasePiece::UpperArmFront => "character.base.dev_01.upper_arm_front.side",
         BasePiece::LowerArmFront => "character.base.dev_01.lower_arm_front.side",
         BasePiece::HandFront => "character.base.dev_01.hand_front.side",
-        BasePiece::FootBack | BasePiece::FootFront | BasePiece::TorsoFar => return None,
+        BasePiece::TorsoFar => return None,
     };
     let visual = *visual_pack.visual(key)?;
     let xf = world.get(bone)?;
@@ -364,10 +366,9 @@ mod tests {
             .unwrap();
         assert_eq!(quad.sprite_texture_id(), Some(visual.texture));
         assert_eq!(quad.uvs(), visual.uv);
-        assert_eq!(
-            quad.world_corners()[0][0] - world.get(UPPER_ARM_BACK).unwrap().translation[0],
-            -visual.pivot_px[0] / visual.pixels_per_unit
-        );
+        let actual = quad.world_corners()[0][0] - world.get(UPPER_ARM_BACK).unwrap().translation[0];
+        let expected = -visual.pivot_px[0] / visual.pixels_per_unit;
+        assert!((actual - expected).abs() < 1e-6);
     }
 
     #[test]
@@ -377,33 +378,43 @@ mod tests {
             .visual("character.base.dev_01.upper_arm_back.side")
             .unwrap();
         let corners = sprite_local_corners(visual, 1.0);
-        assert_eq!(
-            corners,
+        let [width, height] = visual.dimensions_px.map(|value| value as f32);
+        let ppu = visual.pixels_per_unit;
+        let expected = [
             [
-                [
-                    -visual.pivot_px[0] / 256.0,
-                    (visual.pivot_px[1] - 51.0) / 256.0
-                ],
-                [
-                    (46.0 - visual.pivot_px[0]) / 256.0,
-                    (visual.pivot_px[1] - 51.0) / 256.0
-                ],
-                [
-                    (46.0 - visual.pivot_px[0]) / 256.0,
-                    visual.pivot_px[1] / 256.0
-                ],
-                [-visual.pivot_px[0] / 256.0, visual.pivot_px[1] / 256.0],
-            ]
-        );
+                -visual.pivot_px[0] / ppu,
+                (visual.pivot_px[1] - height) / ppu,
+            ],
+            [
+                (width - visual.pivot_px[0]) / ppu,
+                (visual.pivot_px[1] - height) / ppu,
+            ],
+            [(width - visual.pivot_px[0]) / ppu, visual.pivot_px[1] / ppu],
+            [-visual.pivot_px[0] / ppu, visual.pivot_px[1] / ppu],
+        ];
+        for (actual, expected) in corners.into_iter().zip(expected) {
+            assert!((actual[0] - expected[0]).abs() < 1e-6);
+            assert!((actual[1] - expected[1]).abs() < 1e-6);
+        }
     }
 
     #[test]
-    fn partial_pack_does_not_fabricate_feet_or_duplicate_torso() {
+    fn complete_pack_uses_authored_feet_without_duplicating_torso() {
         let (_assets, pack) = pack();
         let world = bind_world();
-        let bone = purgatory_skeleton::TORSO;
-        assert!(textured_base_quad(&pack, &world, 1.0, BasePiece::TorsoNear, bone,).is_some());
-        assert!(textured_base_quad(&pack, &world, 1.0, BasePiece::TorsoFar, bone,).is_none());
+        let torso = purgatory_skeleton::TORSO;
+        assert!(textured_base_quad(&pack, &world, 1.0, BasePiece::TorsoNear, torso).is_some());
+        assert!(textured_base_quad(&pack, &world, 1.0, BasePiece::TorsoFar, torso).is_none());
+        assert!(
+            textured_base_quad(
+                &pack,
+                &world,
+                1.0,
+                BasePiece::FootBack,
+                purgatory_skeleton::FOOT_BACK,
+            )
+            .is_some()
+        );
         assert!(
             textured_base_quad(
                 &pack,
@@ -412,7 +423,7 @@ mod tests {
                 BasePiece::FootFront,
                 purgatory_skeleton::FOOT_FRONT,
             )
-            .is_none()
+            .is_some()
         );
     }
 

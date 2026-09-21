@@ -3,7 +3,7 @@
   "kind": "purgatory_humanoid_rest_calibration",
   "rig": "humanoid_v0",
   "source_visual_pack": "character.base.dev_01",
-  "pixels_per_unit": 256,
+  "pixels_per_unit": 677,
   "coordinate_note": "authoring +Y down; exported translations use runtime +Y up",
   "runtime_use": "AUTHORING_CALIBRATION_ONLY_DO_NOT_APPLY_AS_SKIN_OVERRIDE",
   "rest_local": {
@@ -11,150 +11,172 @@
       "parent": "root",
       "translation": [
         0,
-        0.411795584625261
+        0.5306617058153204
       ]
     },
     "upper_arm_back": {
       "parent": "torso",
       "translation": [
-        0.11875,
-        0.08906249999999999
+        0.10776957163958642,
+        0.12584933530280648
       ]
     },
     "lower_arm_back": {
       "parent": "upper_arm_back",
       "translation": [
-        0.012500000000000011,
-        -0.21484375
+        0.011344165435745927,
+        -0.12443131462333827
       ]
     },
     "hand_back": {
       "parent": "lower_arm_back",
       "translation": [
         0,
-        -0.17578125
+        -0.1085672082717873
       ]
     },
     "upper_leg_back": {
       "parent": "pelvis",
       "translation": [
-        0.046875,
-        -0.03125
+        0.034032496307237814,
+        -0.03670605612998523
       ]
     },
     "lower_leg_back": {
       "parent": "upper_leg_back",
       "translation": [
         0,
-        -0.234375
+        -0.16936484490398823
+      ]
+    },
+    "foot_back": {
+      "parent": "lower_leg_back",
+      "translation": [
+        0,
+        -0.16936484490398818
       ]
     },
     "torso": {
       "parent": "pelvis",
       "translation": [
         0,
-        0.10390625
+        0.14682422451994093
       ]
     },
     "upper_leg_front": {
       "parent": "pelvis",
       "translation": [
-        -0.0546875,
-        -0.0234375
+        -0.04537666174298375,
+        -0.02621861152141802
       ]
     },
     "lower_leg_front": {
       "parent": "upper_leg_front",
       "translation": [
         0,
-        -0.234375
+        -0.16936484490398823
+      ]
+    },
+    "foot_front": {
+      "parent": "lower_leg_front",
+      "translation": [
+        0,
+        -0.17051698670605614
       ]
     },
     "head": {
       "parent": "torso",
       "translation": [
-        0.03125,
-        0.2486328125
+        0.017016248153618907,
+        0.35132939438700145
       ]
     },
     "upper_arm_front": {
       "parent": "torso",
       "translation": [
-        -0.15,
-        0.10390625
+        -0.13612998522895126,
+        0.14682422451994093
       ]
     },
     "lower_arm_front": {
       "parent": "upper_arm_front",
       "translation": [
-        -0.012500000000000011,
-        -0.21484375
+        -0.011344165435745948,
+        -0.12443131462333827
       ]
     },
     "hand_front": {
       "parent": "lower_arm_front",
       "translation": [
         0,
-        -0.17578125
+        -0.10745937961595273
       ]
     }
   },
   "authoring_world_px": {
     "root": [
       0,
-      105.41966966406682
+      359.25797483697187
     ],
     "pelvis": [
       0,
       0
     ],
     "upper_arm_back": [
-      30.4,
-      -49.4
+      72.96000000000001,
+      -184.6
     ],
     "lower_arm_back": [
-      33.6,
-      5.600000000000001
+      80.64,
+      -100.35999999999999
     ],
     "hand_back": [
-      33.6,
-      50.6
+      80.64,
+      -26.859999999999985
     ],
     "upper_leg_back": [
-      12,
-      8
+      23.04,
+      24.85
     ],
     "lower_leg_back": [
-      12,
-      68
+      23.04,
+      139.51000000000002
+    ],
+    "foot_back": [
+      23.04,
+      254.17000000000002
     ],
     "torso": [
       0,
-      -26.6
+      -99.4
     ],
     "upper_leg_front": [
-      -14,
-      6
+      -30.72,
+      17.75
     ],
     "lower_leg_front": [
-      -14,
-      66
+      -30.72,
+      132.41000000000003
+    ],
+    "foot_front": [
+      -30.72,
+      247.85000000000002
     ],
     "head": [
-      8,
-      -90.25
+      11.52,
+      -337.25
     ],
     "upper_arm_front": [
-      -38.4,
-      -53.2
+      -92.16,
+      -198.8
     ],
     "lower_arm_front": [
-      -41.6,
-      1.7999999999999972
+      -99.84,
+      -114.56
     ],
     "hand_front": [
-      -41.6,
-      46.8
+      -99.84,
+      -41.81
     ]
   }
 }

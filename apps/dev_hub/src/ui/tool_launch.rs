@@ -15,6 +15,8 @@ pub(crate) fn launch_mob_lab() -> Result<(), String> {
 
 pub(crate) fn launch_character_lab() -> Result<(), String> {
     let root = workspace_root()?;
+    crate::authoring_template::export_character_lab_contract()?;
+    crate::authoring_template::export_character_base_template_v1()?;
     let tool = root
         .join("tools")
         .join("Character part lab")
@@ -26,12 +28,26 @@ pub(crate) fn launch_character_lab() -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer.exe")
-            .arg(&tool)
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let cache_bust = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("character lab launch clock: {err}"))?
+            .as_millis();
+        let file_url = format!(
+            "file:///{}?purgatory_reload={cache_bust}",
+            tool.to_string_lossy()
+                .replace('\\', "/")
+                .replace(' ', "%20")
+        );
+
+        std::process::Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(&file_url)
             .current_dir(&root)
             .spawn()
             .map(|_| ())
-            .map_err(|err| format!("launch {}: {err}", tool.display()))
+            .map_err(|err| format!("launch {file_url}: {err}"))
     }
 
     #[cfg(not(windows))]

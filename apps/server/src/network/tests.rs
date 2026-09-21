@@ -3522,8 +3522,16 @@ async fn client_receives_authoritative_snapshot() {
         )
         .await
     );
-    assert!(lock_sim(&sim).owner.set_player_x(id, -8.0));
-    lock_sim(&sim).tick_n(8);
+    {
+        let mut g = lock_sim(&sim);
+        assert!(g.owner.set_player_x(id, -8.0));
+        g.owner
+            .apply_input(super::gameplay::InputUpdate::DevSpawnMonster {
+                connection_id: id,
+                monster_content_id: purgatory_common::MONSTER_MOSS_CRAB,
+            });
+        g.tick_n(8);
+    }
     let mut uni = accept_snapshot_stream(&client).await;
     let snap = read_latest_view(&mut uni).await;
     assert_eq!(snap.player_count(), 1);
@@ -3545,7 +3553,7 @@ async fn client_receives_authoritative_snapshot() {
     assert_eq!(
         snap.kind_count(ReplicatedKind::Npc),
         2,
-        "AOI at x=-8 must include the Social NPC and combat creature as NPCs"
+        "AOI at x=-8 must include the Social NPC and explicit DEV Monster as NPCs"
     );
     assert_eq!(
         snap.kind_count(ReplicatedKind::Portal),
@@ -3577,7 +3585,13 @@ async fn two_clients_see_both_entities_and_distinct_local_ids() {
         )
         .await
     );
-    lock_sim(&sim).tick_n(12);
+    // This test validates shared replication, not writer-queue saturation.
+    // Yield between manual ticks so the async QUIC writers can drain their
+    // bounded queues and the observed remote positions can catch up.
+    for _ in 0..12 {
+        lock_sim(&sim).tick_n(1);
+        tokio::task::yield_now().await;
+    }
     let mut uni_a = accept_snapshot_stream(&client_a).await;
     let mut uni_b = accept_snapshot_stream(&client_b).await;
     let snap_a = read_latest_view(&mut uni_a).await;

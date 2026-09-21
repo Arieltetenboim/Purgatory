@@ -181,7 +181,7 @@
   .runtimeRow{display:grid;grid-template-columns:92px 1fr;gap:7px;align-items:center}
   .runtimeRow label{font-size:11px;color:var(--muted)}
   .runtimeRow select{font-size:11px;padding:6px}
-  #runtimeAtlasInput,#runtimeManifestInput,#runtimeRigInput{display:none}
+  #runtimeAtlasInput,#runtimeManifestInput,#runtimeRigInput,#templateImportInput{display:none}
   .runtimeLegend{
     position:absolute;left:10px;bottom:10px;max-width:560px;padding:8px 10px;
     border:1px solid var(--line);border-radius:8px;background:rgba(22,27,33,.92);
@@ -207,10 +207,21 @@
     <div class="section">
       <h2>1. Source image</h2>
       <label class="drop" id="dropZone" for="fileInput">
-        <strong>Load PNG / JPG / WebP</strong>
+        <strong>Load any source PNG / JPG / WebP</strong>
         <span class="small">Drop image here or click to browse</span>
       </label>
       <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" />
+      <div class="row" style="margin-top:8px">
+        <button id="openTemplateBtn">Open Template V1</button>
+        <button class="primary" id="importTemplateBtn">Import Template V1 PNG (2048×2048 only)</button>
+      </div>
+      <div class="row">
+        <button class="primary" id="convertTemplateBtn" disabled>Convert Current → Template V1 PNG</button>
+      </div>
+      <input id="templateImportInput" type="file" accept="image/png" />
+      <div class="hint">
+        Golden path: use the actual Template V1 guide. Resolution alone is not enough: each body part must stay isolated inside its assigned cell with clear transparent margin. Hide the guide, export a transparent 2048×2048 PNG, then import it here.
+      </div>
       <div class="status" id="imageStatus" style="margin-top:8px">No image loaded.</div>
     </div>
 
@@ -293,13 +304,13 @@
       <div class="badge" id="zoomBadge">100%</div>
     </div>
     <div class="assemblyControls" id="assemblyControls" style="display:none">
-      <button id="autoAssembleBtn">Auto layout</button>
-      <button id="resetAssemblyBtn">Reset layout</button>
+      <button id="autoAssembleBtn" style="display:none">Legacy auto layout</button>
+      <button id="resetAssemblyBtn" style="display:none">Legacy reset layout</button>
       <button id="toggleSkeletonBtn">Skeleton: on</button>
     </div>
     <div class="precisionBar" id="precisionBar" style="display:none">
-      <label for="snapSelect">Snap</label>
-      <select id="snapSelect">
+      <label for="snapSelect" style="display:none">Snap</label>
+      <select id="snapSelect" style="display:none">
         <option value="0">Off</option>
         <option value="1">1 px</option>
         <option value="2" selected>2 px</option>
@@ -307,21 +318,21 @@
       </select>
       <button id="focusPartBtn">Focus selected</button>
       <button id="ghostPairBtn">Ghost pair: off</button>
-      <span class="sep"></span>
-      <button id="undoBtn" disabled>Undo</button>
-      <button id="redoBtn" disabled>Redo</button>
-      <span class="sep"></span>
+      <span class="sep" style="display:none"></span>
+      <button id="undoBtn" style="display:none" disabled>Undo</button>
+      <button id="redoBtn" style="display:none" disabled>Redo</button>
       <button id="motionBtn">Motion test: off</button>
       <select id="motionSpeedSelect" aria-label="Motion speed">
         <option value="0.5">0.5×</option>
         <option value="1" selected>1×</option>
         <option value="2">2×</option>
       </select>
-      <div class="coordReadout" id="coordReadout">No part selected</div>
+      <div class="coordReadout" id="coordReadout">Select artwork to adjust its pivot</div>
     </div>
     <div class="assemblyInfo" id="assemblyInfo" style="display:none">
-      <b>Assembly:</b> yellow/turquoise markers are bone origins, purple is Pelvis, green diamond is Root/Ground.
-      Drag parts or markers; Arrow keys nudge the selected part. <b>Motion test</b> never edits the rest pose.
+      <b>Runtime-faithful Assembly:</b> Humanoid v0 owns every bone origin and rotation. Dragging artwork changes its
+      sprite pivot relative to that fixed bone; Arrow keys nudge artwork without moving the skeleton.
+      <b>Motion test</b> never edits the bind pose.
     </div>
     <div class="runtimeLegend" id="runtimeLegend" style="display:none">
       <b>Runtime round-trip:</b> this view draws only the loaded Atlas PNG + Runtime JSON.
@@ -383,9 +394,10 @@
       <h2>Runtime round-trip</h2>
       <div class="runtimePanel">
         <div class="runtimeFiles">
+          <button class="primary wide" id="previewCurrentBtn">Preview Current Export</button>
           <button id="loadRuntimeAtlasBtn">Load Atlas PNG</button>
           <button id="loadRuntimeManifestBtn">Load Runtime JSON</button>
-          <button id="loadRuntimeRigBtn" class="wide">Load Rig Calibration (optional)</button>
+          <button id="loadRuntimeRigBtn" class="wide">Load Legacy Calibration (debug only)</button>
         </div>
         <input id="runtimeAtlasInput" type="file" accept="image/png">
         <input id="runtimeManifestInput" type="file" accept=".json,application/json">
@@ -394,14 +406,14 @@
           <label for="runtimeBindSelect">Bind source</label>
           <select id="runtimeBindSelect">
             <option value="engine">Engine Humanoid v0</option>
-            <option value="calibration" disabled>Loaded calibration</option>
+            <option value="calibration" disabled>Legacy calibration (debug only)</option>
           </select>
         </div>
         <div id="runtimeStatus" class="runtimeStatus">
           Load the exported Atlas PNG and Runtime JSON.
         </div>
         <div class="hint">
-          PASS means the exported files are internally usable. Compare Engine bind vs Calibration visually before wiring the Rust asset registry.
+          PASS means the generated atlas and manifest resolve through the same Humanoid v0 preview path. Legacy calibration is diagnostic only and is never part of runtime export.
         </div>
       </div>
     </div>
@@ -438,7 +450,7 @@
         <div class="exportGrid">
           <button id="downloadAtlasBtn" disabled>Atlas PNG</button>
           <button id="downloadRuntimeBtn" disabled>Runtime JSON</button>
-          <button id="downloadRigBtn" class="wide" disabled>Rig calibration JSON</button>
+          <button id="downloadRigBtn" class="wide" disabled>Legacy rig calibration JSON (debug)</button>
         </div>
         <div class="hint">
           Runtime JSON contains sprite regions + pivots only. Rig calibration is a separate authoring artifact and must not override the skeleton per frame.
@@ -455,12 +467,26 @@
   </aside>
 </main>
 
+<script src="humanoid_v0_contract.js"></script>
+<script src="character_lab_runtime.js"></script>
 <script>
 (() => {
+  window.addEventListener('error',event=>{
+    const el=document.getElementById('imageStatus');
+    if(el){
+      el.textContent=`Character Lab JS error: ${event.message||'unknown startup error'}`;
+      el.style.borderColor='#b45309';
+    }
+  });
+
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently:true });
   const workspace = document.getElementById('workspace');
   const fileInput = document.getElementById('fileInput');
+  const openTemplateBtn = document.getElementById('openTemplateBtn');
+  const importTemplateBtn = document.getElementById('importTemplateBtn');
+  const convertTemplateBtn = document.getElementById('convertTemplateBtn');
+  const templateImportInput = document.getElementById('templateImportInput');
   const dropZone = document.getElementById('dropZone');
   const imageStatus = document.getElementById('imageStatus');
   const sampleBtn = document.getElementById('sampleBtn');
@@ -524,6 +550,7 @@
   const projectFileInput = document.getElementById('projectFileInput');
   const projectStatus = document.getElementById('projectStatus');
   const runtimeLegend = document.getElementById('runtimeLegend');
+  const previewCurrentBtn = document.getElementById('previewCurrentBtn');
   const loadRuntimeAtlasBtn = document.getElementById('loadRuntimeAtlasBtn');
   const loadRuntimeManifestBtn = document.getElementById('loadRuntimeManifestBtn');
   const loadRuntimeRigBtn = document.getElementById('loadRuntimeRigBtn');
@@ -577,26 +604,13 @@
   let runtimeCalibration = null;
   let runtimeCalibrationFileName = '';
 
-  // Current Humanoid v0 bind locals from purgatory-skeleton.
-  // Runtime coordinates: +X right, +Y up, presentation units.
-  const ENGINE_BIND_V0 = {
-    root:               {parent:null,              t:[ 0.00,  0.00]},
-    pelvis:             {parent:'root',            t:[ 0.00,  0.42]},
-    torso:              {parent:'pelvis',          t:[ 0.00,  0.30]},
-    head:               {parent:'torso',           t:[ 0.07,  0.24]},
-    upper_arm_front:    {parent:'torso',           t:[-0.10,  0.14]},
-    lower_arm_front:    {parent:'upper_arm_front', t:[ 0.00, -0.22]},
-    hand_front:         {parent:'lower_arm_front', t:[ 0.00, -0.10]},
-    upper_arm_back:     {parent:'torso',           t:[ 0.08,  0.14]},
-    lower_arm_back:     {parent:'upper_arm_back',  t:[ 0.00, -0.22]},
-    hand_back:          {parent:'lower_arm_back',  t:[ 0.00, -0.10]},
-    upper_leg_front:    {parent:'pelvis',          t:[-0.06, -0.04]},
-    lower_leg_front:    {parent:'upper_leg_front', t:[ 0.00, -0.20]},
-    foot_front:         {parent:'lower_leg_front', t:[ 0.00, -0.18]},
-    upper_leg_back:     {parent:'pelvis',          t:[ 0.04, -0.04]},
-    lower_leg_back:     {parent:'upper_leg_back',  t:[ 0.00, -0.20]},
-    foot_back:          {parent:'lower_leg_back',  t:[ 0.00, -0.18]}
-  };
+  // Canonical Humanoid v0 bind generated from purgatory-skeleton.
+  const LAB_RUNTIME = window.PURGATORY_CHARACTER_LAB_RUNTIME || null;
+  const ENGINE_BIND_V0 = window.PURGATORY_HUMANOID_V0_CONTRACT?.bones || null;
+  const TEMPLATE_V1 = window.PURGATORY_HUMANOID_V0_CONTRACT?.template_v1 || null;
+  const CONTRACT_LOAD_ERROR = (!LAB_RUNTIME || !ENGINE_BIND_V0 || !TEMPLATE_V1)
+    ? 'Humanoid v0 contract/runtime helpers did not load. Re-open Character Lab from the Dev Hub after rebuilding it, or verify humanoid_v0_contract.js and character_lab_runtime.js exist beside this HTML.'
+    : '';
 
   // Authoring vocabulary. These are visual body-part identities, not extra pose nodes.
   // Multiple detected islands may share one identity.
@@ -671,23 +685,22 @@
     foot_front:'lower_leg_front'
   };
 
-  const ASSEMBLY_DRAW_ORDER = [
-    'hair_back',
+  const RUNTIME_DRAW_ORDER = [
     'upper_arm_back','lower_arm_back','hand_back',
     'upper_leg_back','lower_leg_back','foot_back',
     'torso',
     'upper_leg_front','lower_leg_front','foot_front',
     'head',
-    'upper_arm_front','lower_arm_front','hand_front',
-    'hair_front'
+    'upper_arm_front','lower_arm_front','hand_front'
   ];
+  const ASSEMBLY_DRAW_ORDER = ['hair_back',...RUNTIME_DRAW_ORDER,'hair_front'];
 
   function assignedPartIds(){
     return [...new Set(components.map(c=>c.partId).filter(Boolean))];
   }
 
   function assemblyReady(){
-    return assignedPartIds().some(id=>pivots.has(id));
+    return Boolean(LAB_RUNTIME && ENGINE_BIND_V0 && assignedPartIds().some(id=>pivots.has(id)));
   }
 
   function snapValue(v){
@@ -747,22 +760,31 @@
       coordReadout.textContent='Assembly only';
       return;
     }
-    const p=pivotPartId ? assemblyPos.get(pivotPartId) : null;
+    const p=pivotPartId ? pivots.get(pivotPartId) : null;
     if(!p){
       coordReadout.textContent='No part selected';
       return;
     }
-    coordReadout.textContent=`${partLabel(pivotPartId)} · x ${p.x.toFixed(1)} · y ${p.y.toFixed(1)}`;
+    const bounds=unionBoundsForPart(pivotPartId);
+    const local=bounds ? [p.x-bounds.minX,p.y-bounds.minY] : [p.x,p.y];
+    coordReadout.textContent=`${partLabel(pivotPartId)} pivot · x ${local[0].toFixed(1)} · y ${local[1].toFixed(1)}`;
   }
 
   function nudgeSelected(dx,dy){
     if(viewMode!=='assembly'||motionRunning) return;
-    const p=pivotPartId ? assemblyPos.get(pivotPartId) : null;
+    const p=pivotPartId ? pivots.get(pivotPartId) : null;
     if(!p) return;
-    pushHistory();
-    p.x=snapValue(p.x+dx);
-    p.y=snapValue(p.y+dy);
+    const entry=assemblyPreviewFrame().entries.find(item=>item.part===pivotPartId);
+    if(!entry) return;
+    const bone=LAB_RUNTIME.worldToCanvasBone(entry.boneWorld,pixelsPerUnit());
+    const c=Math.cos(-bone.angle),s=Math.sin(-bone.angle);
+    const localDx=dx*c-dy*s,localDy=dx*s+dy*c;
+    // Moving artwork right/down is represented by moving its pivot left/up.
+    p.x-=localDx;
+    p.y-=localDy;
     updateCoordReadout();
+    renderPivotEditor();
+    renderExportStatus();
     redraw();
   }
 
@@ -795,6 +817,67 @@
     return true;
   }
 
+  function wireBasicInputs(){
+    fileInput.addEventListener('change',e=>{
+      const file=e.target.files?.[0];
+      imageStatus.textContent=file ? `Selected ${file.name} · decoding…` : 'No file selected.';
+      loadFile(file);
+    });
+
+    openTemplateBtn.addEventListener('click',()=>{
+      try{
+        const url=new URL('../../Graphic/character/CHARACTER_BASE_TEMPLATE_V1.svg',window.location.href);
+        const opened=window.open(url.href,'_blank');
+        if(!opened){
+          imageStatus.textContent='Template open was blocked by the browser. Allow pop-ups for this local page.';
+        }
+      }catch(err){
+        imageStatus.textContent=`Template open failed: ${err?.message||String(err)}`;
+      }
+    });
+
+    importTemplateBtn.addEventListener('click',()=>{
+      if(CONTRACT_LOAD_ERROR){
+        imageStatus.textContent=CONTRACT_LOAD_ERROR;
+        return;
+      }
+      templateImportInput.click();
+    });
+
+    templateImportInput.addEventListener('change',()=>{
+      const file=templateImportInput.files?.[0];
+      templateImportInput.value='';
+      if(!file) return;
+      imageStatus.textContent=`Selected Template V1 PNG ${file.name} · decoding…`;
+      const url=URL.createObjectURL(file);
+      const img=new Image();
+      img.onload=()=>{
+        try{importTemplateImage(img,file.name);}
+        catch(err){
+          const message=`Template import failed: ${err?.message||String(err)}`;
+          setProjectStatus(message);
+          imageStatus.textContent=message;
+          imageStatus.style.borderColor='#b45309';
+        }
+        finally{URL.revokeObjectURL(url);}
+      };
+      img.onerror=()=>{
+        URL.revokeObjectURL(url);
+        const message='Template import failed: could not decode PNG.';
+        setProjectStatus(message);
+        imageStatus.textContent=message;
+        imageStatus.style.borderColor='#b45309';
+      };
+      img.src=url;
+    });
+
+    imageStatus.textContent=CONTRACT_LOAD_ERROR
+      ? `Character Lab controls READY · ${CONTRACT_LOAD_ERROR}`
+      : 'Character Lab controls READY · no image loaded.';
+  }
+
+  wireBasicInputs();
+
   function resizeCanvas(){
     const r = workspace.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
@@ -804,7 +887,11 @@
     canvas.style.height = r.height+'px';
     redraw();
   }
-  new ResizeObserver(resizeCanvas).observe(workspace);
+  if('ResizeObserver' in window){
+    new ResizeObserver(resizeCanvas).observe(workspace);
+  }else{
+    window.addEventListener('resize',resizeCanvas);
+  }
 
   function setEnabled(v){
     [sampleBtn,applyBtn,restoreBtn,detectBtn,fitBtn,zoom100Btn].forEach(b=>b.disabled=!v);
@@ -831,9 +918,12 @@
       pivotPartId = '';
       renderParts();
       sourceFileName = file.name;
-      imageStatus.textContent = `${file.name} · ${img.naturalWidth} × ${img.naturalHeight}`;
+      imageStatus.textContent = `${file.name} · ${img.naturalWidth} × ${img.naturalHeight} · source loaded`;
+      imageStatus.style.borderColor='#3f6b5d';
       setEnabled(true);
       setProjectStatus('New source loaded. Save a project to preserve this session.');
+      setViewMode('source');
+      resizeCanvas();
       fitImage();
     };
     img.onerror = () => {
@@ -843,7 +933,109 @@
     img.src = url;
   }
 
-  fileInput.addEventListener('change', e=>loadFile(e.target.files[0]));
+  function templateComponentForCell(data,cell){
+    const w=workCanvas.width;
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity,count=0;
+    const pixels=[];
+    const x0=Number(cell.x),y0=Number(cell.y);
+    const x1=x0+Number(cell.w),y1=y0+Number(cell.h);
+    for(let y=y0;y<y1;y++){
+      for(let x=x0;x<x1;x++){
+        const idx=y*w+x;
+        if(data[idx*4+3]===0) continue;
+        pixels.push(idx);
+        count++;
+        if(x<minX)minX=x;if(x>maxX)maxX=x;
+        if(y<minY)minY=y;if(y>maxY)maxY=y;
+      }
+    }
+    if(!count) return null;
+    return {minX,minY,maxX,maxY,count,partId:cell.part,pixels};
+  }
+
+  function validateTemplateV1Sheet(data,width=workCanvas.width,height=workCanvas.height){
+    const result=LAB_RUNTIME.validateTemplatePixels(
+      data,width,height,TEMPLATE_V1,
+      {expectedParts:[...REQUIRED_BASE],edgeMargin:8}
+    );
+    return {issues:result.issues};
+  }
+
+  function importTemplateImage(img,fileName){
+    if(!TEMPLATE_V1) throw new Error(CONTRACT_LOAD_ERROR);
+    if(img.naturalWidth!==Number(TEMPLATE_V1.width) || img.naturalHeight!==Number(TEMPLATE_V1.height)){
+      throw new Error(`Template V1 PNG must be ${TEMPLATE_V1.width}×${TEMPLATE_V1.height}; got ${img.naturalWidth}×${img.naturalHeight}.`);
+    }
+
+    const probe=document.createElement('canvas');
+    probe.width=img.naturalWidth;probe.height=img.naturalHeight;
+    const probeCtx=probe.getContext('2d',{willReadFrequently:true});
+    probeCtx.drawImage(img,0,0);
+    const probeData=probeCtx.getImageData(0,0,probe.width,probe.height).data;
+    const checked=validateTemplateV1Sheet(probeData,probe.width,probe.height);
+    if(checked.issues.length){
+      throw new Error(
+        `Not a valid Template V1 sheet. ${checked.issues.slice(0,4).join(' · ')}`+
+        (checked.issues.length>4 ? ` · +${checked.issues.length-4} more` : '')+
+        ' · Use “Load any source” for freeform/existing sheets.'
+      );
+    }
+
+    stopMotion();
+    sourceCanvas.width=workCanvas.width=img.naturalWidth;
+    sourceCanvas.height=workCanvas.height=img.naturalHeight;
+    sourceCtx.clearRect(0,0,img.naturalWidth,img.naturalHeight);
+    workCtx.clearRect(0,0,img.naturalWidth,img.naturalHeight);
+    sourceCtx.drawImage(img,0,0);
+    workCtx.drawImage(img,0,0);
+    hasImage=true;
+    sourceFileName=fileName||'CHARACTER_BASE_TEMPLATE_V1_ART.png';
+
+    const data=workCtx.getImageData(0,0,workCanvas.width,workCanvas.height).data;
+    components=[];
+    pivots.clear();
+    const missing=[];
+    for(const cell of TEMPLATE_V1.cells){
+      const comp=templateComponentForCell(data,cell);
+      if(!comp){missing.push(cell.part);continue;}
+      components.push(comp);
+      pivots.set(cell.part,{
+        x:Number(cell.x)+Number(cell.pivot[0]),
+        y:Number(cell.y)+Number(cell.pivot[1])
+      });
+    }
+
+    selected=new Set(components.map((_,i)=>i));
+    activeCandidate=components.length?0:null;
+    pivotPartId=components[0]?.partId||'';
+    pivotMode=false;
+    assemblyInitialized=false;
+    assemblyPos.clear();
+    undoStack.length=0;redoStack.length=0;
+    ppuInput.value=String(TEMPLATE_V1.pixels_per_unit);
+
+    setEnabled(true);
+    imageStatus.textContent=`${sourceFileName} · Template V1 · ${img.naturalWidth} × ${img.naturalHeight}`;
+    setProjectStatus(
+      missing.length
+        ? `Template imported · missing ${missing.length}: ${missing.join(', ')}`
+        : 'Template V1 imported · 14/14 parts mapped with canonical pivots',
+      missing.length===0
+    );
+    renderParts();
+    updateHistoryButtons();
+    updateViewAvailability();
+    setViewMode('source');
+    fitImage();
+    renderExportStatus();
+    redraw();
+    if(!missing.length){
+      previewCurrentExport().catch(err=>{
+        setRuntimeStatus(`Preview generation failed: ${err?.message||String(err)}`,'warn');
+      });
+    }
+  }
+
   ['dragenter','dragover'].forEach(ev=>dropZone.addEventListener(ev,e=>{
     e.preventDefault(); dropZone.classList.add('drag');
   }));
@@ -922,7 +1114,7 @@
 
 
   function runtimeReady(){
-    return Boolean(runtimeAtlasImage && runtimeManifest && runtimeManifest.kind==='purgatory_visual_pack');
+    return Boolean(runtimeAtlasImage && runtimeManifest && validateRuntimeFiles().length===0);
   }
 
   function setRuntimeStatus(text,kind=''){
@@ -934,40 +1126,27 @@
     const issues=[];
     if(!runtimeManifest) issues.push('Runtime JSON not loaded');
     if(!runtimeAtlasImage) issues.push('Atlas PNG not loaded');
-
-    if(runtimeManifest){
-      if(runtimeManifest.kind!=='purgatory_visual_pack') issues.push('JSON kind is not purgatory_visual_pack');
-      if(runtimeManifest.schema_version!==1) issues.push('Unsupported Runtime JSON schema');
-      if(!Array.isArray(runtimeManifest.visuals)||!runtimeManifest.visuals.length) issues.push('No visuals in manifest');
-      const ppu=Number(runtimeManifest.pixels_per_unit);
-      if(!Number.isFinite(ppu)||ppu<=0) issues.push('Invalid pixels_per_unit');
-
-      if(runtimeAtlasImage && runtimeManifest.atlas){
-        if(Number(runtimeManifest.atlas.width)!==runtimeAtlasImage.naturalWidth ||
-           Number(runtimeManifest.atlas.height)!==runtimeAtlasImage.naturalHeight){
-          issues.push(`Atlas size mismatch: JSON ${runtimeManifest.atlas.width}×${runtimeManifest.atlas.height}, PNG ${runtimeAtlasImage.naturalWidth}×${runtimeAtlasImage.naturalHeight}`);
-        }
-      }
-
-      if(runtimeAtlasImage && Array.isArray(runtimeManifest.visuals)){
-        for(const v of runtimeManifest.visuals){
-          const r=v.rect_px;
-          const p=v.pivot_px;
-          if(!Array.isArray(r)||r.length!==4||r.some(n=>!Number.isFinite(Number(n)))){
-            issues.push(`Invalid rect for ${v.part||v.visual_key||'visual'}`); continue;
-          }
-          if(!Array.isArray(p)||p.length!==2||p.some(n=>!Number.isFinite(Number(n)))){
-            issues.push(`Invalid pivot for ${v.part||v.visual_key||'visual'}`);
-          }
-          const [x,y,w,h]=r.map(Number);
-          if(w<=0||h<=0||x<0||y<0||
-             x+w>runtimeAtlasImage.naturalWidth||y+h>runtimeAtlasImage.naturalHeight){
-            issues.push(`Atlas rect outside PNG for ${v.part||v.visual_key||'visual'}`);
-          }
-        }
-      }
+    if(CONTRACT_LOAD_ERROR) issues.push(CONTRACT_LOAD_ERROR);
+    if(runtimeManifest&&runtimeAtlasImage&&LAB_RUNTIME&&ENGINE_BIND_V0){
+      issues.push(...resolvedRuntimePack().issues);
     }
-    return issues;
+    return [...new Set(issues)];
+  }
+
+  function runtimeAtlasDimensions(){
+    return {
+      width:Number(runtimeAtlasImage?.naturalWidth||runtimeAtlasImage?.width||0),
+      height:Number(runtimeAtlasImage?.naturalHeight||runtimeAtlasImage?.height||0)
+    };
+  }
+
+  function resolvedRuntimePack(){
+    const size=runtimeAtlasDimensions();
+    return LAB_RUNTIME.resolveVisualPack(runtimeManifest,size.width,size.height,{
+      requiredParts:[...REQUIRED_BASE],
+      drawOrder:RUNTIME_DRAW_ORDER,
+      boneLabels:Object.keys(ENGINE_BIND_V0||{})
+    });
   }
 
   function renderRuntimeStatus(){
@@ -975,7 +1154,7 @@
     runtimeViewBtn.disabled=!runtimeReady();
 
     const atlasLine=runtimeAtlasImage
-      ? `Atlas: ${runtimeAtlasFileName} · ${runtimeAtlasImage.naturalWidth}×${runtimeAtlasImage.naturalHeight}`
+      ? `Atlas: ${runtimeAtlasFileName} · ${runtimeAtlasDimensions().width}×${runtimeAtlasDimensions().height}`
       : 'Atlas: —';
     const manifestLine=runtimeManifest
       ? `Manifest: ${runtimeManifestFileName} · ${runtimeManifest.visuals?.length||0} visuals`
@@ -987,7 +1166,7 @@
     if(issues.length){
       setRuntimeStatus(`${atlasLine}<br>${manifestLine}<br>${rigLine}<br><b>${issues.length} issue(s):</b> ${issues.slice(0,3).join(' · ')}`,'warn');
     }else if(runtimeReady()){
-      setRuntimeStatus(`PASS · exported files are internally usable<br>${atlasLine}<br>${manifestLine}<br>${rigLine}`,'ok');
+      setRuntimeStatus(`PASS · atlas + manifest resolve through Humanoid v0<br>${atlasLine}<br>${manifestLine}<br>${rigLine}`,'ok');
     }else{
       setRuntimeStatus(`${atlasLine}<br>${manifestLine}<br>${rigLine}`);
     }
@@ -998,69 +1177,43 @@
   function runtimeBindLocals(){
     if(runtimeBindSelect.value==='calibration' && runtimeCalibration?.rest_local){
       const out={
-        root:{parent:null,t:[0,0]}
+        root:{parent:null,t:[0,0],r:0}
       };
       for(const [id,v] of Object.entries(runtimeCalibration.rest_local)){
         if(!v || !Array.isArray(v.translation) || v.translation.length!==2) continue;
         out[id]={
           parent:v.parent||null,
-          t:[Number(v.translation[0]),Number(v.translation[1])]
+          t:[Number(v.translation[0]),Number(v.translation[1])],
+          r:Number(v.rotation||0)
         };
       }
       return out;
     }
-    return ENGINE_BIND_V0;
+    return ENGINE_BIND_V0 || {};
   }
 
   function runtimeWorldUnits(){
-    const locals=runtimeBindLocals();
-    const world=new Map();
-    world.set('root',{x:0,y:0,angle:0});
-
-    const resolve=(id)=>{
-      if(world.has(id)) return world.get(id);
-      const def=locals[id];
-      if(!def) return null;
-      const parent=def.parent ? resolve(def.parent) : {x:0,y:0,angle:0};
-      if(!parent) return null;
-      const p={x:parent.x+Number(def.t?.[0]||0),y:parent.y+Number(def.t?.[1]||0),angle:0};
-      world.set(id,p); return p;
-    };
-
-    Object.keys(locals).forEach(resolve);
-    return world;
+    return LAB_RUNTIME.evaluateBoneWorld(runtimeBindLocals());
   }
 
   function runtimeVisualList(){
-    if(!runtimeManifest?.visuals) return [];
-    const byPart=new Map(runtimeManifest.visuals.map(v=>[v.part,v]));
-    const order=Array.isArray(runtimeManifest.draw_order) && runtimeManifest.draw_order.length
-      ? runtimeManifest.draw_order
-      : runtimeManifest.visuals.map(v=>v.part);
-    return order.map(id=>byPart.get(id)).filter(Boolean);
+    return runtimeManifest&&runtimeAtlasImage ? resolvedRuntimePack().visuals : [];
   }
 
-  function runtimeVisualBone(v){
-    if(v?.bone) return v.bone;
-    if(v?.part==='hair_front'||v?.part==='hair_back') return 'head';
-    return v?.part||'';
+  function runtimePreviewFrame(){
+    return LAB_RUNTIME.buildPreviewFrame(runtimeBindLocals(),runtimeVisualList());
   }
 
   function runtimePreviewBounds(){
     if(!runtimeReady()) return {minX:-100,maxX:100,minY:-100,maxY:100};
-    const world=runtimeWorldUnits();
     const ppu=Number(runtimeManifest.pixels_per_unit)||256;
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
-
-    for(const v of runtimeVisualList()){
-      const b=world.get(runtimeVisualBone(v));
-      if(!b) continue;
-      const [,,w,h]=v.rect_px.map(Number);
-      const [px,py]=v.pivot_px.map(Number);
-      const bx=b.x*ppu;
-      const by=-b.y*ppu; // runtime +Y up -> canvas +Y down
-      minX=Math.min(minX,bx-px); maxX=Math.max(maxX,bx-px+w);
-      minY=Math.min(minY,by-py); maxY=Math.max(maxY,by-py+h);
+    const frame=runtimePreviewFrame();
+    for(const entry of frame.entries){
+      const corners=LAB_RUNTIME.worldCornersToCanvas(entry.worldCorners,ppu);
+      const bounds=LAB_RUNTIME.boundsForCanvasCorners(corners);
+      minX=Math.min(minX,bounds.minX);maxX=Math.max(maxX,bounds.maxX);
+      minY=Math.min(minY,bounds.minY);maxY=Math.max(maxY,bounds.maxY);
     }
 
     if(!Number.isFinite(minX)) return {minX:-100,maxX:100,minY:-100,maxY:100};
@@ -1085,27 +1238,31 @@
 
   function drawRuntime(ctx){
     if(!runtimeReady()) return;
-    const world=runtimeWorldUnits();
     const ppu=Number(runtimeManifest.pixels_per_unit)||256;
+    const frame=runtimePreviewFrame();
 
-    for(const v of runtimeVisualList()){
-      const bone=world.get(runtimeVisualBone(v));
-      if(!bone) continue;
+    for(const entry of frame.entries){
+      const v=entry.visual;
       const [x,y,w,h]=v.rect_px.map(Number);
       const [px,py]=v.pivot_px.map(Number);
-      const bx=offsetX+(bone.x*ppu)*scale;
-      const by=offsetY+(-bone.y*ppu)*scale;
+      const bone=LAB_RUNTIME.worldToCanvasBone(entry.boneWorld,ppu);
+      const bx=offsetX+bone.x*scale;
+      const by=offsetY+bone.y*scale;
 
+      ctx.save();
+      ctx.translate(bx,by);
+      ctx.rotate(bone.angle);
       ctx.drawImage(runtimeAtlasImage,
         x,y,w,h,
-        bx-px*scale,by-py*scale,w*scale,h*scale);
+        -px*scale,-py*scale,w*scale,h*scale);
+      ctx.restore();
     }
 
     // Runtime bone origins.
     ctx.save();
     ctx.lineWidth=1.2;
     ctx.strokeStyle='rgba(101,212,199,.62)';
-    for(const [id,p] of world.entries()){
+    for(const [id,p] of frame.world.entries()){
       if(id==='root') continue;
       const x=offsetX+p.x*ppu*scale;
       const y=offsetY-p.y*ppu*scale;
@@ -1227,7 +1384,6 @@
       setPivotBtn.classList.remove('modeOn');
       setPivotBtn.textContent='Set pivot on canvas';
       sampleBtn.textContent='Pick on canvas';
-      if(!assemblyInitialized) autoLayoutAssembly();
       fitAssembly();
     } else if(mode==='runtime'){
       fitRuntime();
@@ -1265,8 +1421,9 @@
 
   focusPartBtn.addEventListener('click',()=>{
     if(viewMode!=='assembly'||!pivotPartId) return;
-    const p=assemblyPos.get(pivotPartId);
-    if(!p) return;
+    const entry=assemblyPreviewFrame().entries.find(item=>item.part===pivotPartId);
+    if(!entry) return;
+    const p=LAB_RUNTIME.worldToCanvasBone(entry.boneWorld,pixelsPerUnit());
     scale=Math.max(0.5,Math.min(4,scale));
     offsetX=workspace.clientWidth/2-p.x*scale;
     offsetY=workspace.clientHeight/2-p.y*scale;
@@ -1329,6 +1486,27 @@
     return b ? {w:b.w,h:b.h} : {w:70,h:90};
   }
 
+  function currentSourceVisuals(){
+    const ppu=pixelsPerUnit();
+    return ASSEMBLY_DRAW_ORDER.map(partId=>{
+      const bounds=unionBoundsForPart(partId);
+      const pivot=pivots.get(partId);
+      if(!bounds||!pivot) return null;
+      return {
+        part:partId,
+        bone:partBone(partId),
+        visual_key:`source.${partId}`,
+        rect_px:[bounds.minX,bounds.minY,bounds.w,bounds.h],
+        pivot_px:[pivot.x-bounds.minX,pivot.y-bounds.minY],
+        pixels_per_unit:ppu
+      };
+    }).filter(Boolean);
+  }
+
+  function assemblyPreviewFrame(){
+    return LAB_RUNTIME.buildPreviewFrame(ENGINE_BIND_V0,currentSourceVisuals(),motionAngles());
+  }
+
   function autoLayoutAssembly(){
     const ids=new Set(assignedPartIds().filter(id=>pivots.has(id)));
     if(!ids.size) return;
@@ -1383,16 +1561,13 @@
   }
 
   function assemblyBounds(){
-    let minX=Math.min(assemblyPelvis.x,assemblyRoot.x),maxX=Math.max(assemblyPelvis.x,assemblyRoot.x),
-        minY=Math.min(assemblyPelvis.y,assemblyRoot.y),maxY=Math.max(assemblyPelvis.y,assemblyRoot.y);
-    let any=false;
-    for(const id of assignedPartIds()){
-      const pos=assemblyPos.get(id), pv=pivots.get(id), b=unionBoundsForPart(id);
-      if(!pos||!pv||!b) continue;
-      const left=pos.x+(b.minX-pv.x), right=pos.x+(b.maxX-pv.x);
-      const top=pos.y+(b.minY-pv.y), bottom=pos.y+(b.maxY-pv.y);
-      minX=Math.min(minX,left); maxX=Math.max(maxX,right);
-      minY=Math.min(minY,top); maxY=Math.max(maxY,bottom);
+    let minX=0,maxX=0,minY=0,maxY=0,any=false;
+    const ppu=pixelsPerUnit();
+    for(const entry of assemblyPreviewFrame().entries){
+      const corners=LAB_RUNTIME.worldCornersToCanvas(entry.worldCorners,ppu);
+      const bounds=LAB_RUNTIME.boundsForCanvasCorners(corners);
+      minX=Math.min(minX,bounds.minX);maxX=Math.max(maxX,bounds.maxX);
+      minY=Math.min(minY,bounds.minY);maxY=Math.max(maxY,bounds.maxY);
       any=true;
     }
     if(!any) return {minX:-100,maxX:100,minY:-150,maxY:150};
@@ -1400,7 +1575,7 @@
   }
 
   function fitAssembly(){
-    if(!assemblyInitialized) autoLayoutAssembly();
+    if(!assemblyReady()) return;
     const b=assemblyBounds();
     const cssW=workspace.clientWidth,cssH=workspace.clientHeight;
     const margin=70;
@@ -1421,8 +1596,8 @@
     if(!hasImage && viewMode!=='runtime') return;
     scale = 1;
     if(viewMode==='assembly'){
-      offsetX=workspace.clientWidth/2-assemblyRoot.x;
-      offsetY=workspace.clientHeight/2-assemblyRoot.y;
+      offsetX=workspace.clientWidth/2;
+      offsetY=workspace.clientHeight/2;
     } else if(viewMode==='runtime'){
       offsetX=workspace.clientWidth/2;
       offsetY=workspace.clientHeight/2;
@@ -1458,21 +1633,23 @@
   function partHitAtAssembly(x,y){
     // Hit-test front-to-back so the visible topmost part wins.
     const order=[...ASSEMBLY_DRAW_ORDER].reverse();
+    const entries=new Map(assemblyPreviewFrame().entries.map(entry=>[entry.part,entry]));
+    const ppu=pixelsPerUnit();
     for(const id of order){
-      const pos=assemblyPos.get(id), pv=pivots.get(id);
-      if(!pos||!pv) continue;
+      const entry=entries.get(id),pv=pivots.get(id);
+      if(!entry||!pv) continue;
+      const bone=LAB_RUNTIME.worldToCanvasBone(entry.boneWorld,ppu);
+      const dx=x-bone.x,dy=y-bone.y;
+      const c=Math.cos(-bone.angle),s=Math.sin(-bone.angle);
+      const localX=dx*c-dy*s,localY=dx*s+dy*c;
+      const sx=Math.floor(pv.x+localX);
+      const sy=Math.floor(pv.y+localY);
       const list=componentsForPart(id);
       for(const c of list){
-        const left=pos.x+(c.minX-pv.x), right=pos.x+(c.maxX-pv.x);
-        const top=pos.y+(c.minY-pv.y), bottom=pos.y+(c.maxY-pv.y);
-        if(x>=left&&x<=right&&y>=top&&y<=bottom){
-          // Confirm actual alpha under the point instead of bounding-box only.
-          const sx=Math.floor(pv.x+(x-pos.x));
-          const sy=Math.floor(pv.y+(y-pos.y));
-          if(sx>=0&&sy>=0&&sx<workCanvas.width&&sy<workCanvas.height){
-            const a=workCtx.getImageData(sx,sy,1,1).data[3];
-            if(a>Number(alphaCut.value)) return id;
-          }
+        if(sx>=c.minX&&sx<=c.maxX&&sy>=c.minY&&sy<=c.maxY&&
+           sx>=0&&sy>=0&&sx<workCanvas.width&&sy<workCanvas.height){
+          const alpha=workCtx.getImageData(sx,sy,1,1).data[3];
+          if(alpha>Number(alphaCut.value)) return id;
         }
       }
     }
@@ -1495,29 +1672,16 @@
     if(viewMode==='assembly'){
       if(motionRunning) return;
       const p=screenToAssembly(e.clientX,e.clientY);
-      const markerRadius=14/Math.max(scale,0.001);
-
-      if(Math.hypot(p.x-assemblyRoot.x,p.y-assemblyRoot.y)<=markerRadius){
-        pushHistory();
-        assemblyDrag={root:true,startX:p.x,startY:p.y,originX:assemblyRoot.x,originY:assemblyRoot.y};
-        canvas.style.cursor='grabbing';
-        return;
-      }
-
-      const pelvisRadius=12/Math.max(scale,0.001);
-      if(Math.hypot(p.x-assemblyPelvis.x,p.y-assemblyPelvis.y)<=pelvisRadius){
-        pushHistory();
-        assemblyDrag={pelvis:true,startX:p.x,startY:p.y,originX:assemblyPelvis.x,originY:assemblyPelvis.y};
-        canvas.style.cursor='grabbing';
-        return;
-      }
-
       const id=partHitAtAssembly(p.x,p.y);
       if(id){
         pivotPartId=id;
-        const pos=assemblyPos.get(id);
-        pushHistory();
-        assemblyDrag={partId:id,startX:p.x,startY:p.y,originX:pos.x,originY:pos.y};
+        const pivot=pivots.get(id);
+        const entry=assemblyPreviewFrame().entries.find(item=>item.part===id);
+        const bone=LAB_RUNTIME.worldToCanvasBone(entry.boneWorld,pixelsPerUnit());
+        assemblyDrag={
+          partId:id,startX:p.x,startY:p.y,pivotX:pivot.x,pivotY:pivot.y,
+          canvasAngle:bone.angle
+        };
         renderPivotEditor();
         updateCoordReadout();
         redraw();
@@ -1591,34 +1755,15 @@
     if(assemblyDrag && viewMode==='assembly'){
       const p=screenToAssembly(e.clientX,e.clientY);
       const dx=p.x-assemblyDrag.startX, dy=p.y-assemblyDrag.startY;
-      if(assemblyDrag.root){
-        assemblyRoot={
-          x:snapValue(assemblyDrag.originX+dx),
-          y:snapValue(assemblyDrag.originY+dy)
-        };
-        redraw();
-        return;
-      }
-
-      if(assemblyDrag.pelvis){
-        const old={...assemblyPelvis};
-        assemblyPelvis={x:assemblyDrag.originX+dx,y:assemblyDrag.originY+dy};
-
-        // Moving the pelvis is a body-root move: translate every authored bone origin.
-        const ddx=assemblyPelvis.x-old.x, ddy=assemblyPelvis.y-old.y;
-        for(const pos of assemblyPos.values()){
-          pos.x+=ddx; pos.y+=ddy;
-        }
-        assemblyDrag.originX+=ddx;
-        assemblyDrag.originY+=ddy;
-        assemblyDrag.startX=p.x;
-        assemblyDrag.startY=p.y;
-      } else if(assemblyDrag.partId){
-        assemblyPos.set(assemblyDrag.partId,{
-          x:snapValue(assemblyDrag.originX+dx),
-          y:snapValue(assemblyDrag.originY+dy)
+      if(assemblyDrag.partId){
+        const c=Math.cos(-assemblyDrag.canvasAngle),s=Math.sin(-assemblyDrag.canvasAngle);
+        const localDx=dx*c-dy*s,localDy=dx*s+dy*c;
+        pivots.set(assemblyDrag.partId,{
+          x:snapValue(assemblyDrag.pivotX-localDx),
+          y:snapValue(assemblyDrag.pivotY-localDy)
         });
         updateCoordReadout();
+        renderPivotEditor();
       }
       redraw();
     }
@@ -2075,48 +2220,14 @@
     };
   }
 
-  function rotateVec(v,angle){
-    const c=Math.cos(angle),s=Math.sin(angle);
-    return {x:v.x*c-v.y*s,y:v.x*s+v.y*c};
-  }
-
-  function computeMotionPose(){
-    const angles=motionAngles();
-    const pose=new Map();
-    pose.set('root',{x:assemblyRoot.x,y:assemblyRoot.y,angle:0});
-    pose.set('pelvis',{x:assemblyPelvis.x,y:assemblyPelvis.y,angle:0});
-
-    const resolve=(id)=>{
-      if(pose.has(id)) return pose.get(id);
-      const base=assemblyPos.get(id);
-      if(!base) return null;
-
-      // Hair follows Head as a visual layer; it keeps its authored local offset.
-      const parentId=PARENT[id];
-      const parentPose=parentId==='pelvis' ? pose.get('pelvis') : resolve(parentId);
-      const parentBase=parentId==='pelvis' ? assemblyPelvis : assemblyPos.get(parentId);
-      if(!parentPose||!parentBase){
-        const lone={x:base.x,y:base.y,angle:angles[id]||0};
-        pose.set(id,lone); return lone;
-      }
-
-      const local={x:base.x-parentBase.x,y:base.y-parentBase.y};
-      const moved=rotateVec(local,parentPose.angle);
-      const worldAngle=parentPose.angle+(angles[id]||0);
-      const out={x:parentPose.x+moved.x,y:parentPose.y+moved.y,angle:worldAngle};
-      pose.set(id,out);
-      return out;
-    };
-
-    assignedPartIds().forEach(resolve);
-    return pose;
-  }
-
   function drawAssembly(ctx){
-    if(!assemblyInitialized) autoLayoutAssembly();
-
-    const toScreen=(p)=>({x:offsetX+p.x*scale,y:offsetY+p.y*scale});
-    const motionPose=computeMotionPose();
+    const ppu=pixelsPerUnit();
+    const frame=assemblyPreviewFrame();
+    const entries=new Map(frame.entries.map(entry=>[entry.part,entry]));
+    const toScreen=bone=>{
+      const p=LAB_RUNTIME.worldToCanvasBone(bone,ppu);
+      return {x:offsetX+p.x*scale,y:offsetY+p.y*scale,angle:p.angle};
+    };
 
     // Skeleton first, behind artwork.
     if(assemblyShowSkeleton){
@@ -2125,14 +2236,10 @@
       ctx.strokeStyle='rgba(160,174,190,.55)';
       ctx.setLineDash([5,5]);
 
-      const rootS=toScreen(motionPose.get('root')||assemblyRoot);
-      const pelvisS=toScreen(motionPose.get('pelvis')||assemblyPelvis);
-      ctx.beginPath();ctx.moveTo(rootS.x,rootS.y);ctx.lineTo(pelvisS.x,pelvisS.y);ctx.stroke();
-
-      for(const [child,parent] of Object.entries(PARENT)){
-        const cp=motionPose.get(child);
-        if(!cp) continue;
-        const pp=parent==='pelvis' ? motionPose.get('pelvis') : motionPose.get(parent);
+      for(const [child,local] of Object.entries(ENGINE_BIND_V0)){
+        if(!local.parent) continue;
+        const cp=frame.world.get(child);
+        const pp=frame.world.get(local.parent);
         if(!pp) continue;
         const a=toScreen(pp), b=toScreen(cp);
         ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
@@ -2141,15 +2248,15 @@
     }
 
     // Artwork: crop each assigned island from the cleaned source and place all
-    // islands for that semantic part relative to the shared authored pivot.
+    // islands for that semantic part relative to its runtime bone and pivot.
     for(const id of ASSEMBLY_DRAW_ORDER){
-      const rest=assemblyPos.get(id), pv=pivots.get(id), pos=motionPose.get(id);
-      if(!rest||!pv||!pos) continue;
-      const ps=toScreen(pos);
+      const entry=entries.get(id),pv=pivots.get(id);
+      if(!entry||!pv) continue;
+      const ps=toScreen(entry.boneWorld);
 
       ctx.save();
       ctx.translate(ps.x,ps.y);
-      ctx.rotate(pos.angle);
+      ctx.rotate(ps.angle);
 
       for(const c of componentsForPart(id)){
         const sw=c.maxX-c.minX+1, sh=c.maxY-c.minY+1;
@@ -2166,9 +2273,9 @@
     // dimmed, while editing the selected part.
     if(assemblyGhostPair && pivotPartId && PAIRS[pivotPartId]){
       const gid=PAIRS[pivotPartId];
-      const gp=motionPose.get(gid), gpv=pivots.get(gid);
+      const gp=entries.get(gid),gpv=pivots.get(gid);
       if(gp&&gpv){
-        const gs=toScreen(gp);
+        const gs=toScreen(gp.boneWorld);
         ctx.save();
         ctx.globalAlpha=0.22;
         ctx.translate(gs.x,gs.y);
@@ -2184,9 +2291,9 @@
 
     // Bone origins / selection marker.
     for(const id of assignedPartIds()){
-      const p=motionPose.get(id);
-      if(!p || !pivots.has(id)) continue;
-      const s=toScreen(p);
+      const entry=entries.get(id);
+      if(!entry || !pivots.has(id)) continue;
+      const s=toScreen(entry.boneWorld);
       const active=id===pivotPartId;
       const r=active?7:5;
       ctx.save();
@@ -2209,8 +2316,8 @@
       ctx.restore();
     }
 
-    // Presentation Root / ground anchor. This stays fixed during diagnostic motion.
-    const rs=toScreen(motionPose.get('root')||assemblyRoot);
+    // Canonical Presentation Root / ground anchor.
+    const rs=toScreen(frame.world.get('root'));
     ctx.save();
     ctx.lineWidth=2;
     ctx.strokeStyle='rgba(110,220,160,.95)';
@@ -2223,8 +2330,8 @@
     ctx.fillStyle='#b9f1cf';ctx.fillText('Root / Ground',rs.x+13,rs.y+16);
     ctx.restore();
 
-    // Virtual pelvis body root.
-    const ps=toScreen(motionPose.get('pelvis')||assemblyPelvis);
+    // Canonical Humanoid v0 pelvis.
+    const ps=toScreen(frame.world.get('pelvis'));
     ctx.save();
     ctx.lineWidth=2;
     ctx.strokeStyle='rgba(190,130,255,.95)';
@@ -2465,8 +2572,8 @@
   }
 
   function exportableParts(){
-    return ASSEMBLY_DRAW_ORDER.filter(id=>
-      componentsForPart(id).length>0 && pivots.has(id) && assemblyPos.has(id)
+    return RUNTIME_DRAW_ORDER.filter(id=>
+      componentsForPart(id).length>0 && pivots.has(id)
     );
   }
 
@@ -2475,13 +2582,22 @@
     const missingParts=[...REQUIRED_BASE].filter(id=>!assigned.has(id));
     const missingPivots=[...REQUIRED_BASE].filter(id=>assigned.has(id)&&!pivots.has(id));
     const missingAssembly=[...REQUIRED_BASE].filter(id=>pivots.has(id)&&!assemblyPos.has(id));
+    const outsidePivots=[];
+    for(const id of assigned){
+      const b=unionBoundsForPart(id),p=pivots.get(id);
+      if(!b||!p) continue;
+      if(p.x<b.minX||p.x>b.maxX||p.y<b.minY||p.y>b.maxY){
+        outsidePivots.push(id);
+      }
+    }
     const parts=exportableParts();
     return {
       parts,
       missingParts,
       missingPivots,
       missingAssembly,
-      complete:missingParts.length===0&&missingPivots.length===0&&missingAssembly.length===0,
+      outsidePivots,
+      complete:missingParts.length===0&&missingPivots.length===0,
       canExport:parts.length>0
     };
   }
@@ -2491,17 +2607,18 @@
     const v=exportValidation();
     downloadAtlasBtn.disabled=!v.canExport;
     downloadRuntimeBtn.disabled=!v.canExport;
-    downloadRigBtn.disabled=!v.canExport;
+    downloadRigBtn.disabled=!v.canExport || !assemblyInitialized;
+    convertTemplateBtn.disabled=!v.complete || !TEMPLATE_V1;
 
     if(!v.canExport){
       exportStatus.className='exportStatus';
-      exportStatus.textContent='Nothing exportable yet: assign at least one part, set its pivot, and open Assembly.';
+      exportStatus.textContent='Nothing exportable yet: assign at least one part and set its pivot.';
       return;
     }
 
     if(v.complete){
       exportStatus.className='exportStatus ready';
-      exportStatus.innerHTML=`READY · ${v.parts.length} visual parts · Humanoid v0 base complete`;
+      exportStatus.innerHTML=`READY · ${v.parts.length} visual parts · Humanoid v0 runtime base complete`;
       return;
     }
 
@@ -2509,7 +2626,8 @@
     const items=[];
     if(v.missingParts.length) items.push(`${v.missingParts.length} missing part assignments`);
     if(v.missingPivots.length) items.push(`${v.missingPivots.length} missing pivots`);
-    if(v.missingAssembly.length) items.push(`${v.missingAssembly.length} missing assembly origins`);
+    if(v.missingAssembly.length) items.push(`${v.missingAssembly.length} assembly origins missing (optional debug calibration)`);
+    if(v.outsidePivots.length) items.push(`${v.outsidePivots.length} pivot(s) outside artwork bounds (allowed; inspect if unexpected): ${v.outsidePivots.join(', ')}`);
     exportStatus.innerHTML=`PARTIAL DEV EXPORT · ${v.parts.length} visual parts<br>${items.join(' · ')}`;
   }
 
@@ -2556,86 +2674,138 @@
     return {canvas:c,bounds:b};
   }
 
-  function nextPow2(n){
-    let p=1;while(p<n)p*=2;return p;
+  function buildTemplateV1FromCurrent(){
+    if(!TEMPLATE_V1) throw new Error(CONTRACT_LOAD_ERROR || 'Template V1 contract unavailable.');
+
+    const validation=exportValidation();
+    if(!validation.complete){
+      throw new Error(
+        `Current project is not complete: ${validation.missingParts.length} missing parts, `+
+        `${validation.missingPivots.length} missing pivots.`
+      );
+    }
+
+    const sourcePpu=pixelsPerUnit();
+    const targetPpu=Number(TEMPLATE_V1.pixels_per_unit);
+    if(!Number.isFinite(sourcePpu)||sourcePpu<=0||!Number.isFinite(targetPpu)||targetPpu<=0){
+      throw new Error('Invalid source/template pixels-per-unit.');
+    }
+    const scale=targetPpu/sourcePpu;
+    const margin=8;
+
+    const out=document.createElement('canvas');
+    out.width=Number(TEMPLATE_V1.width);
+    out.height=Number(TEMPLATE_V1.height);
+    const octx=out.getContext('2d');
+    octx.clearRect(0,0,out.width,out.height);
+    octx.imageSmoothingEnabled=true;
+
+    for(const cell of TEMPLATE_V1.cells){
+      const partId=cell.part;
+      const made=makePartCanvas(partId);
+      const sourcePivot=pivots.get(partId);
+      if(!made||!sourcePivot){
+        throw new Error(`${partId}: missing artwork or pivot.`);
+      }
+
+      const pivotLocalX=sourcePivot.x-made.bounds.minX;
+      const pivotLocalY=sourcePivot.y-made.bounds.minY;
+
+      const placement=LAB_RUNTIME.computeTemplatePlacement({
+        sourcePpu,targetPpu,
+        width:made.canvas.width,height:made.canvas.height,
+        pivot:[pivotLocalX,pivotLocalY],cell,margin
+      });
+      if(!placement.fits){
+        const overflow=Object.entries(placement.overflow)
+          .filter(([,value])=>value>1e-7)
+          .map(([edge,value])=>`${edge} ${value.toFixed(1)}px`)
+          .join(', ');
+        throw new Error(
+          `${partId}: converted artwork does not fit its Template V1 cell at preserved world scale `+
+          `(${made.canvas.width}×${made.canvas.height}px → ${placement.dw.toFixed(1)}×${placement.dh.toFixed(1)}px; `+
+          `${sourcePpu.toFixed(2)} → ${targetPpu.toFixed(2)} px/unit; overflow: ${overflow}).`
+        );
+      }
+
+      octx.drawImage(made.canvas,placement.dx,placement.dy,placement.dw,placement.dh);
+    }
+
+    return {canvas:out,sourcePpu,targetPpu,scale};
   }
 
-  function packSprites(sprites,width){
-    const padding=4;
-    let x=padding,y=padding,rowH=0,maxY=padding;
-    const packed=[];
-    for(const s of sprites){
-      if(x+s.canvas.width+padding>width && x>padding){
-        x=padding;y+=rowH+padding;rowH=0;
-      }
-      packed.push({...s,x,y});
-      x+=s.canvas.width+padding;
-      rowH=Math.max(rowH,s.canvas.height);
-      maxY=Math.max(maxY,y+s.canvas.height+padding);
+  convertTemplateBtn.addEventListener('click',()=>{
+    try{
+      const converted=buildTemplateV1FromCurrent();
+      converted.canvas.toBlob(blob=>{
+        if(!blob){
+          setProjectStatus('Template conversion failed: browser did not create PNG.');
+          return;
+        }
+        const filename=`${sanitizedAssetId()}.template-v1.png`;
+        downloadBlob(blob,filename);
+        const message=
+          `Converted to Template V1 · 14/14 parts · scale ${converted.scale.toFixed(4)} `+
+          `(${converted.sourcePpu.toFixed(2)} → ${converted.targetPpu.toFixed(2)} px/unit) · ${filename}`;
+        setProjectStatus(message,true);
+        imageStatus.textContent=message;
+        imageStatus.style.borderColor='#3f6b5d';
+      },'image/png');
+    }catch(err){
+      const message=`Template conversion failed: ${err?.message||String(err)}`;
+      setProjectStatus(message);
+      imageStatus.textContent=message;
+      imageStatus.style.borderColor='#b45309';
     }
-    return {packed,height:nextPow2(Math.max(64,maxY)),padding};
-  }
+  });
 
   function buildAtlas(){
     const parts=exportableParts();
-    const sprites=parts.map(id=>{
+    const sprites=new Map(parts.map(id=>{
       const made=makePartCanvas(id);
-      return made ? {id,...made} : null;
-    }).filter(Boolean).sort((a,b)=>b.canvas.height-a.canvas.height);
+      return [id,made ? {id,...made} : null];
+    }).filter(([,sprite])=>Boolean(sprite)));
 
-    if(!sprites.length) return null;
-    const maxW=Math.max(...sprites.map(s=>s.canvas.width+8));
-    let width=nextPow2(Math.max(512,maxW));
-    let pack=packSprites(sprites,width);
-    while(pack.height>2048 && width<4096){
-      width*=2;pack=packSprites(sprites,width);
-    }
+    if(!sprites.size) return null;
+    const plan=LAB_RUNTIME.planAtlas([...sprites.values()].map(sprite=>({
+      id:sprite.id,width:sprite.canvas.width,height:sprite.canvas.height
+    })),{padding:4,minWidth:512,targetHeight:2048,maxDimension:4096});
 
     const atlas=document.createElement('canvas');
-    atlas.width=width;atlas.height=pack.height;
+    atlas.width=plan.width;atlas.height=plan.height;
     const actx=atlas.getContext('2d');
     actx.clearRect(0,0,atlas.width,atlas.height);
 
     const entries=new Map();
-    for(const s of pack.packed){
-      actx.drawImage(s.canvas,s.x,s.y);
+    for(const placed of plan.placements){
+      const s=sprites.get(placed.id);
+      const x=placed.x,y=placed.y;
+      actx.drawImage(s.canvas,x,y);
       entries.set(s.id,{
-        x:s.x,y:s.y,w:s.canvas.width,h:s.canvas.height,
+        x,y,w:s.canvas.width,h:s.canvas.height,
         bounds:s.bounds
       });
     }
-    return {atlas,entries,padding:pack.padding};
+    return {atlas,entries,padding:plan.padding};
   }
 
   function buildRuntimeManifest(atlasData){
     const id=sanitizedAssetId(),ppu=pixelsPerUnit();
     const parts=[];
-    const baseAppearance={};
     for(const partId of exportableParts()){
       const e=atlasData.entries.get(partId);
       const pv=pivots.get(partId);
       if(!e||!pv) continue;
-      const key=`${id}.${partId}.side`;
       const pivotLocal=[pv.x-e.bounds.minX,pv.y-e.bounds.minY];
       parts.push({
         part:partId,
         bone:partBone(partId),
-        visual_key:key,
         rect_px:[e.x,e.y,e.w,e.h],
         pivot_px:pivotLocal
       });
-      baseAppearance[partId]=key;
     }
-
-    return {
-      schema_version:1,
-      kind:'purgatory_visual_pack',
-      id,
-      rig:'humanoid_v0',
-      view:'side',
-      authored_facing:'right',
-      pixels_per_unit:ppu,
-      completeness:exportValidation().complete?'complete':'partial_dev',
+    return LAB_RUNTIME.buildVisualPackManifest({
+      id,pixelsPerUnit:ppu,
       atlas:{
         file:`${id}.side.atlas.png`,
         width:atlasData.atlas.width,
@@ -2643,10 +2813,58 @@
         padding_px:atlasData.padding
       },
       visuals:parts,
-      base_appearance:baseAppearance,
-      draw_order:ASSEMBLY_DRAW_ORDER.filter(id=>baseAppearance[id])
-    };
+      complete:exportValidation().complete,
+      drawOrder:RUNTIME_DRAW_ORDER
+    });
   }
+
+  function imageFromCanvas(canvasEl){
+    return new Promise((resolve,reject)=>{
+      const img=new Image();
+      img.onload=()=>resolve(img);
+      img.onerror=()=>reject(new Error('Could not decode generated atlas preview.'));
+      img.src=canvasEl.toDataURL('image/png');
+    });
+  }
+
+  async function previewCurrentExport({switchView=true}={}){
+    const validation=exportValidation();
+    if(!validation.complete){
+      setRuntimeStatus('Current authoring state is not a complete Humanoid v0 runtime base.','warn');
+      return false;
+    }
+    const built=buildAtlas();
+    if(!built){
+      setRuntimeStatus('Current authoring state produced no atlas.','warn');
+      return false;
+    }
+
+    const previewImage=await imageFromCanvas(built.atlas);
+    const previewManifest=buildRuntimeManifest(built);
+    const resolved=LAB_RUNTIME.resolveVisualPack(
+      previewManifest,previewImage.naturalWidth,previewImage.naturalHeight,
+      {requiredParts:[...REQUIRED_BASE],drawOrder:RUNTIME_DRAW_ORDER,boneLabels:Object.keys(ENGINE_BIND_V0)}
+    );
+    if(resolved.issues.length){
+      throw new Error(`Generated runtime pack is invalid: ${resolved.issues.join(' · ')}`);
+    }
+    runtimeAtlasImage=previewImage;
+    runtimeAtlasFileName='generated current atlas';
+    runtimeManifest=previewManifest;
+    runtimeManifestFileName='generated current manifest';
+    runtimeCalibration=null;
+    runtimeCalibrationFileName='';
+    runtimeBindSelect.value='engine';
+    renderRuntimeStatus();
+    updateViewAvailability();
+    if(switchView) setViewMode('runtime');
+    return true;
+  }
+
+  previewCurrentBtn.addEventListener('click',async()=>{
+    try{await previewCurrentExport();}
+    catch(err){setRuntimeStatus(`Preview generation failed: ${err?.message||String(err)}`,'warn');}
+  });
 
   function buildRigCalibration(){
     const id=sanitizedAssetId(),ppu=pixelsPerUnit();
@@ -2706,20 +2924,34 @@
     downloadBlob(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}),filename);
   }
 
+  function reportExportFailure(error){
+    const message=`Export failed: ${error?.message||String(error)}`;
+    exportStatus.className='exportStatus warn';
+    exportStatus.textContent=message;
+    setProjectStatus(message);
+  }
+
   downloadAtlasBtn.addEventListener('click',()=>{
-    const built=buildAtlas();if(!built)return;
-    built.atlas.toBlob(blob=>{
-      if(blob) downloadBlob(blob,`${sanitizedAssetId()}.side.atlas.png`);
-    },'image/png');
+    try{
+      const built=buildAtlas();if(!built)return;
+      built.atlas.toBlob(blob=>{
+        if(blob) downloadBlob(blob,`${sanitizedAssetId()}.side.atlas.png`);
+        else reportExportFailure(new Error('browser did not create Atlas PNG'));
+      },'image/png');
+    }catch(err){reportExportFailure(err);}
   });
 
   downloadRuntimeBtn.addEventListener('click',()=>{
-    const built=buildAtlas();if(!built)return;
-    downloadJson(buildRuntimeManifest(built),`${sanitizedAssetId()}.visual-pack.json`);
+    try{
+      const built=buildAtlas();if(!built)return;
+      downloadJson(buildRuntimeManifest(built),`${sanitizedAssetId()}.visual-pack.json`);
+    }catch(err){reportExportFailure(err);}
   });
 
   downloadRigBtn.addEventListener('click',()=>{
-    downloadJson(buildRigCalibration(),`${sanitizedAssetId()}.rig-calibration.json`);
+    try{
+      downloadJson(buildRigCalibration(),`${sanitizedAssetId()}.rig-calibration.json`);
+    }catch(err){reportExportFailure(err);}
   });
 
   assetIdInput.addEventListener('input',renderExportStatus);
@@ -2810,6 +3042,9 @@
   setProjectStatus('Save the editor state to continue later.');
   renderRuntimeStatus();
   resizeCanvas();
+  if(!hasImage && imageStatus.textContent.startsWith('Character Lab controls READY')){
+    imageStatus.style.borderColor=CONTRACT_LOAD_ERROR?'#8a5a2f':'#3f6b5d';
+  }
 })();
 </script>
 </body>

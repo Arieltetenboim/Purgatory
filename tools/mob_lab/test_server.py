@@ -231,10 +231,12 @@ class MobLabContractTests(unittest.TestCase):
             ))
 
     def test_default_document_matches_schema_v4_contract(self):
-        doc = new_monster_document("monster.test.slime", "Test Slime")
+        doc = new_monster_document(
+            "monster.test.creature", "Test Creature", "creature.moss_crab"
+        )
         self.assertEqual([], validate_monster_document(doc))
         self.assertEqual(4, doc["schema_version"])
-        self.assertEqual("creature.red_slime", doc["sprite"])
+        self.assertEqual("creature.moss_crab", doc["sprite"])
         self.assertEqual(
             {"left": 0.4, "right": 0.4, "bottom": 0.6, "top": 0.6},
             doc["collision_bounds"],
@@ -242,27 +244,31 @@ class MobLabContractTests(unittest.TestCase):
         self.assertEqual("when_attacked", doc["behavior"]["aggro"])
 
     def test_clone_monster_document_preserves_runtime_values(self):
-        source = new_monster_document("monster.slime.red", "Red Slime")
+        source = new_monster_document(
+            "monster.test.source", "Source Monster", "creature.shroom"
+        )
         source["health_max"] = 77.0
         source["movement_speed"] = 3.25
         source["collision_bounds"]["left"] = 0.7
         clone = clone_monster_document(
             source,
-            "monster.slime.red.copy",
-            "Red Slime Copy",
+            "monster.test.copy",
+            "Monster Copy",
             "creature.moss_crab",
         )
-        self.assertEqual("monster.slime.red.copy", clone["id"])
-        self.assertEqual("Red Slime Copy", clone["debug_name"])
+        self.assertEqual("monster.test.copy", clone["id"])
+        self.assertEqual("Monster Copy", clone["debug_name"])
         self.assertEqual("creature.moss_crab", clone["sprite"])
         self.assertEqual(77.0, clone["health_max"])
         self.assertEqual(3.25, clone["movement_speed"])
         self.assertEqual(0.7, clone["collision_bounds"]["left"])
-        self.assertEqual("monster.slime.red", source["id"])
+        self.assertEqual("monster.test.source", source["id"])
 
 
     def test_invalid_runtime_values_are_rejected_before_save(self):
-        doc = new_monster_document("monster.test.slime", "Test Slime")
+        doc = new_monster_document(
+            "monster.test.invalid", "Invalid Monster", "creature.moss_crab"
+        )
         doc["health_max"] = 0
         doc["sprite"] = ""
         doc["collision_bounds"]["bottom"] = -0.1
@@ -275,7 +281,7 @@ class MobLabContractTests(unittest.TestCase):
         self.assertTrue(any("home_leash_radius" in item for item in errors))
 
     def test_unknown_fields_are_rejected(self):
-        doc = new_monster_document("monster.test.slime", "Test Slime")
+        doc = new_monster_document("monster.test.slime", "Test Slime", "creature.moss_crab")
         doc["acquisition_radius"] = 3.0
         errors = validate_monster_document(doc)
         self.assertTrue(any("unknown top-level" in item for item in errors))
@@ -446,7 +452,7 @@ class MobLabContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             path = definitions / "monster.test.json"
-            original = new_monster_document("monster.test", "Test")
+            original = new_monster_document("monster.test", "Test", "creature.test")
             original["sprite"] = "creature.test"
             path.write_text(json.dumps(original), encoding="utf-8")
             edited = json.loads(json.dumps(original))

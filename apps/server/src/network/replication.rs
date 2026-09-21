@@ -691,6 +691,7 @@ fn committed_from_world(world: &World, id: EntityId) -> Option<CommittedRevs> {
 fn enter_record(world: &World, id: EntityId) -> Option<ReplicationRecord> {
     Some(ReplicationRecord::Enter {
         entity: snapshot_entity(world, id)?,
+        content_id: world.content_id_of(id),
         health: wire_health(world, id),
         equipment: world.equipment_of(id).map(wire_equipment_state),
     })
