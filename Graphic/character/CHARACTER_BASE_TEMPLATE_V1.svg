@@ -17,9 +17,9 @@
     <g id="cell-torso">
       <rect x="512" y="0" width="512" height="512"/>
       <text x="530" y="28" fill="#334155" stroke="none" font-family="Consolas,monospace" font-size="18">torso</text>
-      <circle cx="768" cy="384" r="9" stroke="#ef4444" stroke-dasharray="none"/>
-      <line x1="750" y1="384" x2="786" y2="384" stroke="#ef4444" stroke-dasharray="none"/>
-      <line x1="768" y1="366" x2="768" y2="402" stroke="#ef4444" stroke-dasharray="none"/>
+      <circle cx="768" cy="256" r="9" stroke="#ef4444" stroke-dasharray="none"/>
+      <line x1="750" y1="256" x2="786" y2="256" stroke="#ef4444" stroke-dasharray="none"/>
+      <line x1="768" y1="238" x2="768" y2="274" stroke="#ef4444" stroke-dasharray="none"/>
     </g>
     <g id="cell-upper_arm_back">
       <rect x="1024" y="0" width="512" height="512"/>
