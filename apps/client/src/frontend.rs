@@ -32,6 +32,8 @@ const CONTROLS_FADE_START_SECONDS: f32 = 0.30;
 const CONTROLS_FADE_END_SECONDS: f32 = 1.05;
 const LOGO_FLOAT_AMPLITUDE_POINTS: f32 = 4.0;
 const LOGO_FLOAT_PERIOD_SECONDS: f32 = 4.4;
+const LOGO_FLOAT_X_AMPLITUDE_POINTS: f32 = 3.0;
+const LOGO_FLOAT_X_PERIOD_SECONDS: f32 = 6.7;
 const SPLASH_FADE_IN_SECONDS: f32 = 0.65;
 const SPLASH_HOLD_SECONDS: f32 = 0.85;
 const SPLASH_FADE_OUT_SECONDS: f32 = 0.65;
@@ -222,8 +224,8 @@ impl ConnectionFrontend {
                     ui.add_space((screen.height() * 0.105).clamp(32.0, 104.0));
                     ui.scope(|ui| {
                         ui.set_opacity((logo_alpha * foreground_exit_alpha).clamp(0.0, 1.0));
-                        let float_y = logo_float_offset(elapsed);
-                        paint_logo_or_title(ui, self.logo.as_ref(), float_y);
+                        let float_offset = logo_float_offset(elapsed);
+                        paint_logo_or_title(ui, self.logo.as_ref(), float_offset);
                     });
 
                     ui.add_space((screen.height() * 0.052).clamp(22.0, 54.0));
@@ -312,12 +314,12 @@ impl ConnectionFrontend {
                 MOON_DRIFT_PERIOD_SECONDS,
                 0.8,
             );
-            paint_cover_texture(
+            paint_centered_texture(
                 painter,
                 layer,
                 screen,
                 egui::vec2(0.0, dy),
-                1.0,
+                0.24,
                 alpha,
             );
         }
@@ -373,7 +375,7 @@ fn paint_splash(ctx: &Context, elapsed: f32) {
                 screen.center() + egui::vec2(0.0, -18.0),
                 Align2::CENTER_CENTER,
                 "TEST",
-                FontId::proportional(72.0),
+                FontId::proportional(216.0),
                 Color32::from_white_alpha(alpha),
             );
             ui.painter().text(
@@ -638,7 +640,7 @@ fn source_uv(source: SourceRectPx, atlas: [u32; 2]) -> Rect {
     )
 }
 
-fn paint_logo_or_title(ui: &mut egui::Ui, logo: Option<&TextureHandle>, float_y: f32) {
+fn paint_logo_or_title(ui: &mut egui::Ui, logo: Option<&TextureHandle>, float_offset: Vec2) {
     if let Some(logo) = logo {
         let size = logo.size_vec2();
         if size.x > 1.0 && size.y > 1.0 {
@@ -647,7 +649,7 @@ fn paint_logo_or_title(ui: &mut egui::Ui, logo: Option<&TextureHandle>, float_y:
             let scale = (max_w / size.x).min(max_h / size.y);
             let draw = egui::vec2(size.x * scale, size.y * scale);
             let (allocated, _) = ui.allocate_exact_size(draw, Sense::hover());
-            let rect = allocated.translate(egui::vec2(0.0, float_y));
+            let rect = allocated.translate(float_offset);
             ui.painter().image(
                 logo.id(),
                 rect,
@@ -658,6 +660,30 @@ fn paint_logo_or_title(ui: &mut egui::Ui, logo: Option<&TextureHandle>, float_y:
         }
     }
     ui.heading("PURGATORY");
+}
+
+fn paint_centered_texture(
+    painter: &egui::Painter,
+    texture: &TextureHandle,
+    screen: Rect,
+    offset: Vec2,
+    screen_height_fraction: f32,
+    opacity: f32,
+) {
+    let source = texture.size_vec2();
+    if source.x <= 0.0 || source.y <= 0.0 {
+        return;
+    }
+    let target_height = screen.height() * screen_height_fraction.clamp(0.01, 1.0);
+    let scale = target_height / source.y;
+    let draw_size = source * scale;
+    let rect = Rect::from_center_size(screen.center() + offset, draw_size);
+    painter.image(
+        texture.id(),
+        rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        Color32::from_white_alpha((opacity.clamp(0.0, 1.0) * 255.0) as u8),
+    );
 }
 
 fn paint_cover_texture(
@@ -736,9 +762,13 @@ fn horizontal_drift(elapsed: f32, amplitude: f32, period: f32, phase: f32) -> f3
     amplitude * (elapsed * std::f32::consts::TAU / period + phase).sin()
 }
 
-fn logo_float_offset(elapsed: f32) -> f32 {
-    LOGO_FLOAT_AMPLITUDE_POINTS
+fn logo_float_offset(elapsed: f32) -> Vec2 {
+    let x = LOGO_FLOAT_X_AMPLITUDE_POINTS
+        * (elapsed * std::f32::consts::TAU / LOGO_FLOAT_X_PERIOD_SECONDS + 1.13).sin();
+    let y = LOGO_FLOAT_AMPLITUDE_POINTS
         * (elapsed * std::f32::consts::TAU / LOGO_FLOAT_PERIOD_SECONDS).sin()
+        + 1.2 * (elapsed * std::f32::consts::TAU / 8.9 + 0.47).sin();
+    egui::vec2(x, y)
 }
 
 #[cfg(test)]
@@ -766,7 +796,9 @@ mod tests {
     fn logo_float_is_small_and_bounded() {
         for step in 0..=120 {
             let t = step as f32 * 0.1;
-            assert!(logo_float_offset(t).abs() <= LOGO_FLOAT_AMPLITUDE_POINTS + 0.001);
+            let offset = logo_float_offset(t);
+            assert!(offset.x.abs() <= LOGO_FLOAT_X_AMPLITUDE_POINTS + 0.001);
+            assert!(offset.y.abs() <= LOGO_FLOAT_AMPLITUDE_POINTS + 1.201);
         }
     }
 
