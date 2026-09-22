@@ -288,7 +288,7 @@ impl ConnectionFrontend {
                 screen,
                 egui::vec2(dx, 0.0),
                 1.0,
-                alpha * 0.32,
+                alpha * 0.85,
             );
         }
 
@@ -315,7 +315,7 @@ impl ConnectionFrontend {
                 screen,
                 egui::vec2(dx, 0.0),
                 1.0,
-                alpha * 0.22,
+                alpha * 1.0,
             );
         }
 
