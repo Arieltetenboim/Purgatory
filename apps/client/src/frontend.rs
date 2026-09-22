@@ -18,7 +18,6 @@ const BACKGROUND_BASE_PNG: &[u8] =
     include_bytes!("../assets/frontend/background_base.png");
 const CLOUDS_FAR_PNG: &[u8] = include_bytes!("../assets/frontend/clouds_far.png");
 const CLOUDS_NEAR_PNG: &[u8] = include_bytes!("../assets/frontend/clouds_near.png");
-const ECLIPSE_GLOW_PNG: &[u8] = include_bytes!("../assets/frontend/eclipse_glow.png");
 const FOG_NEAR_PNG: &[u8] = include_bytes!("../assets/frontend/fog_near.png");
 const UI_ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
 const UI_ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
@@ -52,7 +51,6 @@ enum FrontendPhase {
 struct BackgroundTextures {
     base: Option<TextureHandle>,
     clouds_far: Option<TextureHandle>,
-    eclipse_glow: Option<TextureHandle>,
     clouds_near: Option<TextureHandle>,
     fog_near: Option<TextureHandle>,
 }
@@ -123,11 +121,6 @@ impl ConnectionFrontend {
                     ctx,
                     "purgatory-menu-clouds-far",
                     CLOUDS_FAR_PNG,
-                ),
-                eclipse_glow: load_embedded_texture(
-                    ctx,
-                    "purgatory-menu-eclipse-glow",
-                    ECLIPSE_GLOW_PNG,
                 ),
                 clouds_near: load_embedded_texture(
                     ctx,
@@ -281,7 +274,7 @@ impl ConnectionFrontend {
 
         let px_scale = screen.height() / REFERENCE_HEIGHT_PX;
         if let Some(layer) = self.background.clouds_far.as_ref() {
-            let dx = horizontal_drift(elapsed, 34.0, 21.0, 0.25) * px_scale;
+            let dx = horizontal_drift(elapsed, 30.0, 24.0, 0.25) * px_scale;
             paint_cover_texture(
                 painter,
                 layer,
@@ -292,23 +285,8 @@ impl ConnectionFrontend {
             );
         }
 
-        if let Some(layer) = self.background.eclipse_glow.as_ref() {
-            let wave = unit_sine(elapsed, 7.2, 0.0);
-            let opacity = 0.10 + wave * 0.08;
-            let scale = 0.9985 + wave * 0.0030;
-            let dy = horizontal_drift(elapsed, 1.0, 18.0, 1.2) * px_scale;
-            paint_cover_texture(
-                painter,
-                layer,
-                screen,
-                egui::vec2(0.0, dy),
-                scale,
-                alpha * opacity,
-            );
-        }
-
         if let Some(layer) = self.background.clouds_near.as_ref() {
-            let dx = horizontal_drift(elapsed, 58.0, 14.0, 1.7) * px_scale;
+            let dx = -horizontal_drift(elapsed, 52.0, 15.0, 1.7) * px_scale;
             paint_cover_texture(
                 painter,
                 layer,
@@ -408,6 +386,7 @@ fn paint_dev_strip(ctx: &Context, server: &str, status: &str, opacity: f32) {
         .anchor(Align2::LEFT_BOTTOM, [14.0, -14.0])
         .show(ctx, |ui| {
             ui.set_opacity(opacity.clamp(0.0, 1.0));
+            ui.set_min_width(320.0);
             egui::Frame::new()
                 .fill(Color32::from_rgba_unmultiplied(6, 7, 9, 185))
                 .stroke(Stroke::new(
@@ -673,13 +652,6 @@ fn fade_window(elapsed: f32, start: f32, end: f32) -> f32 {
 fn smoothstep01(value: f32) -> f32 {
     let t = value.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-fn unit_sine(elapsed: f32, period: f32, phase: f32) -> f32 {
-    if !elapsed.is_finite() || !period.is_finite() || period <= 0.0 {
-        return 0.5;
-    }
-    ((elapsed * std::f32::consts::TAU / period + phase).sin() + 1.0) * 0.5
 }
 
 fn horizontal_drift(elapsed: f32, amplitude: f32, period: f32, phase: f32) -> f32 {
