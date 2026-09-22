@@ -18,6 +18,7 @@ const BACKGROUND_BASE_PNG: &[u8] =
     include_bytes!("../assets/frontend/background_base.png");
 const CLOUDS_FAR_PNG: &[u8] = include_bytes!("../assets/frontend/clouds_far.png");
 const CLOUDS_NEAR_PNG: &[u8] = include_bytes!("../assets/frontend/clouds_near.png");
+const MOON_PNG: &[u8] = include_bytes!("../assets/frontend/moon.png");
 const FOG_NEAR_PNG: &[u8] = include_bytes!("../assets/frontend/fog_near.png");
 const UI_ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
 const UI_ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
@@ -31,6 +32,13 @@ const CONTROLS_FADE_START_SECONDS: f32 = 0.30;
 const CONTROLS_FADE_END_SECONDS: f32 = 1.05;
 const LOGO_FLOAT_AMPLITUDE_POINTS: f32 = 4.0;
 const LOGO_FLOAT_PERIOD_SECONDS: f32 = 4.4;
+const SPLASH_FADE_IN_SECONDS: f32 = 0.65;
+const SPLASH_HOLD_SECONDS: f32 = 0.85;
+const SPLASH_FADE_OUT_SECONDS: f32 = 0.65;
+const SPLASH_TOTAL_SECONDS: f32 =
+    SPLASH_FADE_IN_SECONDS + SPLASH_HOLD_SECONDS + SPLASH_FADE_OUT_SECONDS;
+const MOON_DRIFT_AMPLITUDE_POINTS: f32 = 1.5;
+const MOON_DRIFT_PERIOD_SECONDS: f32 = 18.0;
 
 /// In-window connection screen. Owns presentation textures for the process lifetime.
 pub struct ConnectionFrontend {
@@ -52,6 +60,7 @@ struct BackgroundTextures {
     base: Option<TextureHandle>,
     clouds_far: Option<TextureHandle>,
     clouds_near: Option<TextureHandle>,
+    moon: Option<TextureHandle>,
     fog_near: Option<TextureHandle>,
 }
 
@@ -127,6 +136,11 @@ impl ConnectionFrontend {
                     "purgatory-menu-clouds-near",
                     CLOUDS_NEAR_PNG,
                 ),
+                moon: load_embedded_texture(
+                    ctx,
+                    "purgatory-menu-moon",
+                    MOON_PNG,
+                ),
                 fog_near: load_embedded_texture(
                     ctx,
                     "purgatory-menu-fog-near",
@@ -158,6 +172,12 @@ impl ConnectionFrontend {
         }
 
         let elapsed = now.duration_since(self.entered_at).as_secs_f32();
+        if elapsed < SPLASH_TOTAL_SECONDS {
+            ctx.request_repaint_after(Duration::from_millis(16));
+            paint_splash(ctx, elapsed);
+            return false;
+        }
+        let elapsed = elapsed - SPLASH_TOTAL_SECONDS;
         let background_alpha = smoothstep01(elapsed / BACKGROUND_FADE_IN_SECONDS);
         let logo_alpha = fade_window(
             elapsed,
@@ -285,6 +305,23 @@ impl ConnectionFrontend {
             );
         }
 
+        if let Some(layer) = self.background.moon.as_ref() {
+            let dy = horizontal_drift(
+                elapsed,
+                MOON_DRIFT_AMPLITUDE_POINTS,
+                MOON_DRIFT_PERIOD_SECONDS,
+                0.8,
+            );
+            paint_cover_texture(
+                painter,
+                layer,
+                screen,
+                egui::vec2(0.0, dy),
+                1.0,
+                alpha,
+            );
+        }
+
         if let Some(layer) = self.background.clouds_near.as_ref() {
             let dx = -horizontal_drift(elapsed, 52.0, 15.0, 1.7) * px_scale;
             paint_cover_texture(
@@ -309,6 +346,44 @@ impl ConnectionFrontend {
             );
         }
     }
+}
+
+fn paint_splash(ctx: &Context, elapsed: f32) {
+    let screen = ctx.content_rect();
+    let opacity = if elapsed < SPLASH_FADE_IN_SECONDS {
+        smoothstep01(elapsed / SPLASH_FADE_IN_SECONDS)
+    } else if elapsed < SPLASH_FADE_IN_SECONDS + SPLASH_HOLD_SECONDS {
+        1.0
+    } else {
+        1.0 - smoothstep01(
+            (elapsed - SPLASH_FADE_IN_SECONDS - SPLASH_HOLD_SECONDS)
+                / SPLASH_FADE_OUT_SECONDS,
+        )
+    };
+
+    egui::Area::new(Id::new("purgatory-company-splash"))
+        .order(Order::Foreground)
+        .fixed_pos(screen.min)
+        .interactable(false)
+        .show(ctx, |ui| {
+            ui.set_min_size(screen.size());
+            ui.painter().rect_filled(screen, 0.0, Color32::BLACK);
+            let alpha = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
+            ui.painter().text(
+                screen.center() + egui::vec2(0.0, -18.0),
+                Align2::CENTER_CENTER,
+                "TEST",
+                FontId::proportional(72.0),
+                Color32::from_white_alpha(alpha),
+            );
+            ui.painter().text(
+                screen.center() + egui::vec2(0.0, 42.0),
+                Align2::CENTER_CENTER,
+                "PURGATORY",
+                FontId::proportional(16.0),
+                Color32::from_white_alpha((alpha as f32 * 0.72) as u8),
+            );
+        });
 }
 
 fn paint_login_controls(
