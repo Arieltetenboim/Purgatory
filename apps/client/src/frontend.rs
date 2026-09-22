@@ -25,8 +25,9 @@ const UI_ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json"
 
 const REFERENCE_WIDTH_PX: f32 = 800.0;
 const REFERENCE_HEIGHT_PX: f32 = 450.0;
-const MOON_ANCHOR_X_PX: f32 = 900.0;
-const MOON_ANCHOR_Y_PX: f32 = 81.0;
+const MOON_ANCHOR_X_PX: f32 = 562.5;
+const MOON_ANCHOR_Y_PX: f32 = 50.625;
+const MOON_HEIGHT_PX: f32 = 108.0;
 const FOREGROUND_FADE_OUT: Duration = Duration::from_millis(280);
 const BACKGROUND_FADE_IN_SECONDS: f32 = 0.75;
 const LOGO_FADE_START_SECONDS: f32 = 0.08;
@@ -220,7 +221,8 @@ impl ConnectionFrontend {
             .fixed_pos(screen.min)
             .interactable(true)
             .show(ctx, |ui| {
-                ui.set_min_size(screen.size());
+                ui.set_width(screen.width());
+                ui.set_height(screen.height());
                 ui.painter()
                     .rect_filled(screen, 0.0, Color32::from_rgb(6, 5, 7));
                 self.paint_background(ui.painter(), screen, elapsed, background_alpha);
@@ -322,7 +324,7 @@ impl ConnectionFrontend {
                     egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX),
                 ),
                 moon_drift_offset(elapsed),
-                0.24,
+                MOON_HEIGHT_PX,
                 alpha,
             );
         }
@@ -371,7 +373,8 @@ fn paint_splash(ctx: &Context, elapsed: f32) {
         .fixed_pos(screen.min)
         .interactable(false)
         .show(ctx, |ui| {
-            ui.set_min_size(screen.size());
+            ui.set_width(screen.width());
+            ui.set_height(screen.height());
             ui.painter().rect_filled(screen, 0.0, Color32::BLACK);
             let alpha = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
             ui.painter().text(
@@ -665,15 +668,19 @@ fn paint_logo_or_title(ui: &mut egui::Ui, logo: Option<&TextureHandle>, float_of
     ui.heading("PURGATORY");
 }
 
+fn reference_cover_scale(screen: Rect) -> f32 {
+    (screen.width() / REFERENCE_WIDTH_PX)
+        .max(screen.height() / REFERENCE_HEIGHT_PX)
+}
+
 fn reference_cover_point(screen: Rect, reference_point: Vec2) -> Pos2 {
-    let cover_scale = (screen.width() / REFERENCE_WIDTH_PX)
-        .max(screen.height() / REFERENCE_HEIGHT_PX);
+    let cover_scale = reference_cover_scale(screen);
     let reference_size = egui::vec2(
         REFERENCE_WIDTH_PX * cover_scale,
         REFERENCE_HEIGHT_PX * cover_scale,
     );
     let reference_min = screen.center() - reference_size * 0.5;
-    reference_min + reference_point
+    reference_min + reference_point * cover_scale
 }
 
 fn paint_anchored_texture(
@@ -682,14 +689,14 @@ fn paint_anchored_texture(
     screen: Rect,
     anchor: Pos2,
     offset: Vec2,
-    screen_height_fraction: f32,
+    reference_height_px: f32,
     opacity: f32,
 ) {
     let source = texture.size_vec2();
     if source.x <= 0.0 || source.y <= 0.0 {
         return;
     }
-    let target_height = screen.height() * screen_height_fraction.clamp(0.01, 1.0);
+    let target_height = reference_height_px.max(1.0) * reference_cover_scale(screen);
     let scale = target_height / source.y;
     let draw_size = source * scale;
     let rect = Rect::from_center_size(anchor + offset, draw_size);
@@ -843,6 +850,14 @@ mod tests {
         );
         assert!((point.x - MOON_ANCHOR_X_PX).abs() < 0.001);
         assert!((point.y - MOON_ANCHOR_Y_PX).abs() < 0.001);
+
+        let default_screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(1280.0, 720.0));
+        let default_point = reference_cover_point(
+            default_screen,
+            egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX),
+        );
+        assert!((default_point.x - 900.0).abs() < 0.01);
+        assert!((default_point.y - 81.0).abs() < 0.01);
     }
 
     #[test]
