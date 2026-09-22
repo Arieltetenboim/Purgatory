@@ -366,7 +366,7 @@ fn paint_login_controls(
             ui.add_sized(
                 [268.0, 26.0],
                 egui::TextEdit::singleline(login)
-                    .frame(false)
+                    .frame(egui::Frame::NONE)
                     .char_limit(32)
                     .hint_text("Enter username"),
             );
