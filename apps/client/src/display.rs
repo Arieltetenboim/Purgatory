@@ -8,7 +8,7 @@
 //! file yet). Dynamic resolution / DLSS / FSR are not implemented.
 
 use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::window::Window;
+use winit::window::{Fullscreen, Window};
 
 /// Physical pixel width × height. Zero on either axis is invalid.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -55,12 +55,13 @@ impl Resolution {
 
 /// Native window presentation mode.
 ///
-/// Borderless / exclusive fullscreen are deferred. Do not invent a fake
-/// fullscreen path; add a variant here when a real apply path exists.
+/// Exclusive fullscreen is intentionally not supported. Borderless fullscreen
+/// uses the current monitor and keeps the selected windowed resolution intact.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WindowMode {
     #[default]
     Windowed,
+    BorderlessFullscreen,
 }
 
 impl WindowMode {
@@ -68,6 +69,7 @@ impl WindowMode {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Windowed => "Windowed",
+            Self::BorderlessFullscreen => "Borderless Fullscreen",
         }
     }
 }
@@ -80,6 +82,10 @@ impl WindowMode {
 pub struct UiScale(f32);
 
 impl UiScale {
+    pub const P90: Self = Self(0.9);
+    pub const P100: Self = Self(1.0);
+    pub const P110: Self = Self(1.1);
+    pub const P125: Self = Self(1.25);
     pub const DEFAULT: Self = Self(1.0);
     pub const MIN: f32 = 0.5;
     pub const MAX: f32 = 2.0;
@@ -94,6 +100,11 @@ impl UiScale {
     pub const fn get(self) -> f32 {
         self.0
     }
+
+    #[must_use]
+    pub fn percent(self) -> u16 {
+        (self.0 * 100.0).round() as u16
+    }
 }
 
 impl Default for UiScale {
@@ -101,6 +112,10 @@ impl Default for UiScale {
         Self::DEFAULT
     }
 }
+
+/// Player-facing UI scale presets. Independent of resolution and world render scale.
+pub const UI_SCALE_PRESETS: [UiScale; 4] =
+    [UiScale::P90, UiScale::P100, UiScale::P110, UiScale::P125];
 
 /// World-pass internal resolution as a percent of the gameplay pixel rect.
 ///
@@ -142,7 +157,7 @@ impl Default for RenderScale {
     }
 }
 
-/// Supported render-scale presets. Debug UI and a future Settings menu share this list.
+/// Supported render-scale presets. Debug UI and the game Settings window share this list.
 /// 150% is not a quality-policy preset. 400% is RF diagnostic only.
 pub const RENDER_SCALE_PRESETS: [RenderScale; 5] = [
     RenderScale::P50,
@@ -461,7 +476,7 @@ pub enum WindowFlush {
 
 /// Owns display intent and the pending window-apply request.
 ///
-/// Debug UI and a future Settings menu call [`Self::set_resolution`].
+/// Debug UI and the game Settings window call [`Self::set_resolution`].
 /// Only this type talks to `winit` about inner size. The renderer still owns
 /// wgpu surface reconfiguration, driven by [`classify_framebuffer_resize`].
 #[derive(Clone, Debug)]
@@ -469,6 +484,7 @@ pub struct DisplayController {
     settings: DisplaySettings,
     configured_surface: (u32, u32),
     pending_window_resolution: Option<Resolution>,
+    pending_window_mode: Option<WindowMode>,
 }
 
 impl DisplayController {
@@ -478,6 +494,7 @@ impl DisplayController {
             settings: DisplaySettings::default_dev(),
             configured_surface: (0, 0),
             pending_window_resolution: None,
+            pending_window_mode: None,
         }
     }
 
@@ -496,10 +513,12 @@ impl DisplayController {
     pub fn note_surface_configured(&mut self, surface: (u32, u32)) {
         if surface.0 > 0 && surface.1 > 0 {
             self.configured_surface = surface;
-            self.settings.resolution = Resolution {
-                width: surface.0,
-                height: surface.1,
-            };
+            if self.settings.window_mode == WindowMode::Windowed {
+                self.settings.resolution = Resolution {
+                    width: surface.0,
+                    height: surface.1,
+                };
+            }
         }
     }
 
@@ -511,14 +530,34 @@ impl DisplayController {
                 return Ok(());
             }
         }
-        self.pending_window_resolution = Some(resolution);
+        if self.settings.window_mode == WindowMode::Windowed {
+            self.pending_window_resolution = Some(resolution);
+        }
         Ok(())
     }
 
-    /// Future Settings menu uses this; Debug UI currently shows scale as diagnostics.
-    #[allow(dead_code)]
+    /// Settings intent. Applies UI layout scale only.
     pub fn set_ui_scale(&mut self, scale: UiScale) {
         self.settings.set_ui_scale(scale);
+    }
+
+    /// Settings intent. Borderless fullscreen always uses the current monitor.
+    /// Returning to windowed mode queues the selected windowed resolution.
+    pub fn set_window_mode(&mut self, mode: WindowMode) -> bool {
+        if self.settings.window_mode == mode {
+            return false;
+        }
+        self.settings.window_mode = mode;
+        self.pending_window_mode = Some(mode);
+        match mode {
+            WindowMode::Windowed => {
+                self.pending_window_resolution = Some(self.settings.resolution);
+            }
+            WindowMode::BorderlessFullscreen => {
+                self.pending_window_resolution = None;
+            }
+        }
+        true
     }
 
     /// UI / Settings intent. Does not resize the window or change camera FOV.
@@ -531,6 +570,19 @@ impl DisplayController {
     /// If winit applies immediately, the new physical size is returned so the
     /// caller can run the same framebuffer path as `WindowEvent::Resized`.
     pub fn flush_window(&mut self, window: &Window) -> WindowFlush {
+        if let Some(mode) = self.pending_window_mode.take() {
+            match mode {
+                WindowMode::Windowed => {
+                    window.set_fullscreen(None);
+                    self.pending_window_resolution = Some(self.settings.resolution);
+                }
+                WindowMode::BorderlessFullscreen => {
+                    window.set_fullscreen(Some(Fullscreen::Borderless(window.current_monitor())));
+                    self.pending_window_resolution = None;
+                    return WindowFlush::PendingEvent;
+                }
+            }
+        }
         let Some(requested) = self.pending_window_resolution.take() else {
             return WindowFlush::Idle;
         };
@@ -549,7 +601,9 @@ impl DisplayController {
         let action = classify_framebuffer_resize(self.configured_surface, (width, height));
         if let SurfaceResizeAction::Reconfigure { width, height } = action {
             self.configured_surface = (width, height);
-            self.settings.resolution = Resolution { width, height };
+            if self.settings.window_mode == WindowMode::Windowed {
+                self.settings.resolution = Resolution { width, height };
+            }
             if self
                 .pending_window_resolution
                 .is_some_and(|pending| pending.width == width && pending.height == height)
@@ -797,6 +851,62 @@ mod tests {
         let mut controller = DisplayController::new();
         controller.set_ui_scale(UiScale::new(1.25));
         assert!((controller.settings().ui_scale.get() - 1.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn player_ui_scale_presets_are_unique_and_include_default() {
+        let percents = UI_SCALE_PRESETS.map(UiScale::percent);
+        assert_eq!(percents, [90, 100, 110, 125]);
+        assert_eq!(UiScale::DEFAULT, UiScale::P100);
+    }
+
+    #[test]
+    fn fullscreen_preserves_selected_windowed_resolution() {
+        let mut controller = DisplayController::new();
+        controller.note_surface_configured((1280, 720));
+        let selected = Resolution {
+            width: 1920,
+            height: 1080,
+        };
+        controller.set_resolution(selected).expect("valid");
+        assert!(controller.set_window_mode(WindowMode::BorderlessFullscreen));
+        assert_eq!(
+            controller.settings().window_mode,
+            WindowMode::BorderlessFullscreen
+        );
+        assert_eq!(
+            controller.pending_window_mode,
+            Some(WindowMode::BorderlessFullscreen)
+        );
+        assert!(controller.pending_window_resolution.is_none());
+
+        assert_eq!(
+            controller.observe_framebuffer(2560, 1440),
+            SurfaceResizeAction::Reconfigure {
+                width: 2560,
+                height: 1440,
+            }
+        );
+        assert_eq!(controller.settings().resolution, selected);
+
+        assert!(controller.set_window_mode(WindowMode::Windowed));
+        assert_eq!(controller.pending_window_mode, Some(WindowMode::Windowed));
+        assert_eq!(controller.pending_window_resolution, Some(selected));
+        assert_eq!(controller.settings().resolution, selected);
+    }
+
+    #[test]
+    fn resolution_selection_in_fullscreen_is_retained_without_window_resize() {
+        let mut controller = DisplayController::new();
+        controller.note_surface_configured((1280, 720));
+        assert!(controller.set_window_mode(WindowMode::BorderlessFullscreen));
+        let selected = Resolution {
+            width: 1600,
+            height: 900,
+        };
+        controller.set_resolution(selected).expect("valid");
+        assert_eq!(controller.settings().resolution, selected);
+        assert!(controller.pending_window_resolution.is_none());
     }
 
     #[test]

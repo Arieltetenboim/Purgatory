@@ -11,6 +11,10 @@ use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::asset_runtime::{AssetRuntime, ResolvedVisual};
+use crate::display::{
+    DisplaySettings, RESOLUTION_PRESETS, RenderScale, Resolution, UI_SCALE_PRESETS, UiScale,
+    WindowMode,
+};
 use crate::renderer::{
     PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle,
     UiTexturedRect,
@@ -23,6 +27,27 @@ const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 4.0;
 const HEADER_CONTENT_OFFSET_UNITS: f32 = 2.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 5.0;
+const HEADER_ICON_SIZE_UNITS: f32 = 16.0;
+const HEADER_ICON_GAP_UNITS: f32 = 3.0;
+const SETTINGS_WINDOW_SIZE_UNITS: [f32; 2] = [360.0, 232.0];
+const SETTINGS_SECTION_FONT_SIZE_UNITS: f32 = 14.0;
+const SETTINGS_ROW_FONT_SIZE_UNITS: f32 = 12.0;
+const SETTINGS_VALUE_FONT_SIZE_UNITS: f32 = 11.0;
+const SETTINGS_CONTENT_SIDE_INSET_UNITS: f32 = 24.0;
+const SETTINGS_VALUE_WIDTH_UNITS: f32 = 136.0;
+const SETTINGS_ROW_HEIGHT_UNITS: f32 = 18.0;
+const SETTINGS_DISPLAY_HEADING_Y_UNITS: f32 = 39.0;
+const SETTINGS_FULLSCREEN_Y_UNITS: f32 = 62.0;
+const SETTINGS_RESOLUTION_Y_UNITS: f32 = 91.0;
+const SETTINGS_GRAPHICS_HEADING_Y_UNITS: f32 = 128.0;
+const SETTINGS_RENDER_QUALITY_Y_UNITS: f32 = 151.0;
+const SETTINGS_UI_SCALE_Y_UNITS: f32 = 180.0;
+const SETTINGS_LAUNCHER_WIDTH_UNITS: f32 = 104.0;
+const SETTINGS_LAUNCHER_INSET_UNITS: f32 = 10.0;
+const SETTINGS_LAUNCHER_ICON_SIZE_UNITS: f32 = 13.0;
+const SETTINGS_LAUNCHER_FONT_SIZE_UNITS: f32 = 11.0;
+const SETTINGS_TEXT_COLOR: [f32; 4] = [0.05, 0.07, 0.1, 1.0];
+const SETTINGS_DISABLED_TEXT_COLOR: [f32; 4] = [0.36, 0.39, 0.43, 1.0];
 const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 23.0;
 const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
 const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 4.0;
@@ -330,8 +355,16 @@ const ATLAS_ICON_NAMES: [&str; 8] = [
 
 #[derive(Clone, Copy, Debug)]
 struct AtlasIcons {
-    #[allow(dead_code)]
     regions: [SourceRectPx; 8],
+}
+
+impl AtlasIcons {
+    fn source(self, name: &str) -> Option<SourceRectPx> {
+        ATLAS_ICON_NAMES
+            .iter()
+            .position(|candidate| *candidate == name)
+            .map(|index| self.regions[index])
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -464,6 +497,20 @@ impl UiWindowAssets {
         self.panels.selected(self.panel_style)
     }
 
+    fn icon_rect(self, name: &str, bounds: ScreenRect, tint: [f32; 4]) -> Option<UiTexturedRect> {
+        let source = self.icons.source(name)?;
+        let panel = self.panel();
+        let (uv_min, uv_max) = source.uv_bounds(panel.source_size_px);
+        Some(UiTexturedRect {
+            min: bounds.min,
+            max: bounds.max,
+            texture: panel.texture,
+            uv_min,
+            uv_max,
+            tint,
+        })
+    }
+
     pub(crate) fn proof_frame(
         self,
         window: &mut ProofPanelWindow,
@@ -515,8 +562,28 @@ impl UiWindowAssets {
             uv_max,
             tint: [1.0; 4],
         });
-        let title_anchor_x = layout.header.min[0] + TITLE_LEFT_INSET_UNITS * pixels_per_unit;
-        let _ = icon;
+        let mut title_anchor_x = layout.header.min[0] + TITLE_LEFT_INSET_UNITS * pixels_per_unit;
+        if let Some(icon) = icon {
+            let icon_size = HEADER_ICON_SIZE_UNITS * pixels_per_unit;
+            let icon_min = [
+                title_anchor_x,
+                layout.header.min[1]
+                    + ((layout.header.height() - icon_size) * 0.5).max(0.0)
+                    + HEADER_CONTENT_OFFSET_UNITS * pixels_per_unit,
+            ];
+            if let Some(icon_rect) = self.icon_rect(
+                icon,
+                ScreenRect {
+                    min: icon_min,
+                    max: [icon_min[0] + icon_size, icon_min[1] + icon_size],
+                },
+                [1.0; 4],
+            ) {
+                textured_rects.push(icon_rect);
+                title_anchor_x +=
+                    (HEADER_ICON_SIZE_UNITS + HEADER_ICON_GAP_UNITS) * pixels_per_unit;
+            }
+        }
 
         let title_font_size = TITLE_FONT_SIZE_UNITS * pixels_per_unit;
         let title_anchor = [
@@ -898,6 +965,487 @@ impl UiButtonAssets {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SettingsControl {
+    Fullscreen,
+    Resolution,
+    RenderQuality,
+    UiScale,
+}
+
+const SETTINGS_CONTROLS: [SettingsControl; 4] = [
+    SettingsControl::Fullscreen,
+    SettingsControl::Resolution,
+    SettingsControl::RenderQuality,
+    SettingsControl::UiScale,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SettingsAction {
+    SetWindowMode(WindowMode),
+    SetResolution(Resolution),
+    SetRenderScale(RenderScale),
+    SetUiScale(UiScale),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SettingsWindow {
+    chrome: ProofPanelWindow,
+    pressed_control: Option<SettingsControl>,
+    completed_action: Option<SettingsAction>,
+}
+
+impl Default for SettingsWindow {
+    fn default() -> Self {
+        Self {
+            chrome: ProofPanelWindow::with_size(SETTINGS_WINDOW_SIZE_UNITS),
+            pressed_control: None,
+            completed_action: None,
+        }
+    }
+}
+
+impl SettingsWindow {
+    pub(crate) fn open(&mut self) {
+        self.chrome.open();
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.chrome.close();
+        self.pressed_control = None;
+        self.completed_action = None;
+    }
+
+    pub(crate) fn is_visible(&self) -> bool {
+        self.chrome.is_visible()
+    }
+
+    pub(crate) fn frame(
+        &mut self,
+        window_assets: UiWindowAssets,
+        button_assets: UiButtonAssets,
+        settings: DisplaySettings,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+        cursor: Option<[f32; 2]>,
+    ) -> Result<Option<SettingsWindowFrame>, String> {
+        let Some(layout) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)?
+        else {
+            return Ok(None);
+        };
+        let Some(window_frame) = window_assets.proof_frame_with_icon(
+            &mut self.chrome,
+            "SETTINGS",
+            Some("gear"),
+            viewport,
+            pixels_per_unit,
+            cursor,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        let mut textured_rects = window_frame.textured_rects;
+        let mut texts = vec![window_frame.title];
+        texts.push(settings_text(
+            "Display",
+            SETTINGS_SECTION_FONT_SIZE_UNITS * pixels_per_unit,
+            SETTINGS_TEXT_COLOR,
+            [
+                layout.window.min[0] + SETTINGS_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
+                layout.window.min[1] + SETTINGS_DISPLAY_HEADING_Y_UNITS * pixels_per_unit,
+            ],
+            TextAlignment::Left,
+            None,
+        ));
+        texts.push(settings_text(
+            "Graphics",
+            SETTINGS_SECTION_FONT_SIZE_UNITS * pixels_per_unit,
+            SETTINGS_TEXT_COLOR,
+            [
+                layout.window.min[0] + SETTINGS_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
+                layout.window.min[1] + SETTINGS_GRAPHICS_HEADING_Y_UNITS * pixels_per_unit,
+            ],
+            TextAlignment::Left,
+            None,
+        ));
+
+        for control in SETTINGS_CONTROLS {
+            let bounds = settings_control_bounds(layout.window, control, pixels_per_unit);
+            let enabled = settings_control_enabled(control, settings);
+            let hovered = enabled && cursor.is_some_and(|cursor| bounds.contains(cursor));
+            let state = if hovered && self.pressed_control == Some(control) {
+                UiButtonState::Pressed
+            } else if hovered {
+                UiButtonState::Hover
+            } else {
+                UiButtonState::Normal
+            };
+            let mut button_rects = button_assets.frame(bounds, state, pixels_per_unit)?;
+            if !enabled {
+                for rect in &mut button_rects {
+                    rect.tint = [0.62, 0.64, 0.67, 1.0];
+                }
+            }
+            textured_rects.extend(button_rects);
+
+            let label_y = bounds.min[1]
+                + ((bounds.height() - SETTINGS_ROW_FONT_SIZE_UNITS * pixels_per_unit) * 0.5)
+                    .max(0.0);
+            texts.push(settings_text(
+                settings_control_name(control),
+                SETTINGS_ROW_FONT_SIZE_UNITS * pixels_per_unit,
+                if enabled {
+                    SETTINGS_TEXT_COLOR
+                } else {
+                    SETTINGS_DISABLED_TEXT_COLOR
+                },
+                [
+                    layout.window.min[0] + SETTINGS_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
+                    label_y,
+                ],
+                TextAlignment::Left,
+                Some(
+                    (bounds.min[0]
+                        - layout.window.min[0]
+                        - (SETTINGS_CONTENT_SIDE_INSET_UNITS + 8.0) * pixels_per_unit)
+                        .max(1.0),
+                ),
+            ));
+            let value_font_size = SETTINGS_VALUE_FONT_SIZE_UNITS * pixels_per_unit;
+            texts.push(settings_text(
+                &settings_control_value(control, settings),
+                value_font_size,
+                if enabled {
+                    SETTINGS_TEXT_COLOR
+                } else {
+                    SETTINGS_DISABLED_TEXT_COLOR
+                },
+                [
+                    (bounds.min[0] + bounds.max[0]) * 0.5,
+                    bounds.min[1] + ((bounds.height() - value_font_size) * 0.5).max(0.0),
+                ],
+                TextAlignment::Center,
+                Some((bounds.width() - 8.0 * pixels_per_unit).max(1.0)),
+            ));
+        }
+
+        Ok(Some(SettingsWindowFrame {
+            textured_rects,
+            texts,
+        }))
+    }
+
+    pub(crate) fn apply_pointer_button(
+        &mut self,
+        window_assets: UiWindowAssets,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+        settings: DisplaySettings,
+    ) -> bool {
+        let Ok(Some(layout)) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)
+        else {
+            self.cancel_pointer_interaction();
+            return false;
+        };
+        let hit = cursor.and_then(|point| {
+            SETTINGS_CONTROLS.into_iter().find(|control| {
+                settings_control_enabled(*control, settings)
+                    && settings_control_bounds(layout.window, *control, pixels_per_unit)
+                        .contains(point)
+            })
+        });
+        match state {
+            ElementState::Pressed if hit.is_some() => {
+                self.pressed_control = hit;
+                true
+            }
+            ElementState::Released if self.pressed_control.is_some() => {
+                let pressed = self.pressed_control.take();
+                if pressed == hit {
+                    self.completed_action =
+                        pressed.and_then(|control| settings_action(control, settings));
+                }
+                true
+            }
+            _ => self.chrome.apply_pointer_button(
+                window_assets,
+                state,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
+        }
+    }
+
+    pub(crate) fn pointer_moved(
+        &mut self,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        self.chrome.pointer_moved(cursor, viewport, pixels_per_unit)
+    }
+
+    pub(crate) fn contains_window(
+        &mut self,
+        window_assets: UiWindowAssets,
+        cursor: [f32; 2],
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        window_assets
+            .layout(&mut self.chrome, viewport, pixels_per_unit)
+            .ok()
+            .flatten()
+            .is_some_and(|layout| layout.window.contains(cursor))
+    }
+
+    pub(crate) fn cancel_pointer_interaction(&mut self) {
+        self.chrome.cancel_pointer_interaction();
+        self.pressed_control = None;
+    }
+
+    pub(crate) fn take_completed_action(&mut self) -> Option<SettingsAction> {
+        self.completed_action.take()
+    }
+}
+
+pub(crate) struct SettingsWindowFrame {
+    pub(crate) textured_rects: Vec<UiTexturedRect>,
+    pub(crate) texts: Vec<TextBlock>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SettingsLauncher {
+    pressed: bool,
+    open_requested: bool,
+}
+
+impl SettingsLauncher {
+    pub(crate) fn frame(
+        &self,
+        window_assets: UiWindowAssets,
+        button_assets: UiButtonAssets,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+        cursor: Option<[f32; 2]>,
+    ) -> Result<SettingsLauncherFrame, String> {
+        let bounds = settings_launcher_bounds(viewport, pixels_per_unit)?;
+        let hovered = cursor.is_some_and(|cursor| bounds.contains(cursor));
+        let state = if hovered && self.pressed {
+            UiButtonState::Pressed
+        } else if hovered {
+            UiButtonState::Hover
+        } else {
+            UiButtonState::Normal
+        };
+        let mut textured_rects = button_assets.frame(bounds, state, pixels_per_unit)?;
+        let icon_size = SETTINGS_LAUNCHER_ICON_SIZE_UNITS * pixels_per_unit;
+        let icon_min = [
+            bounds.min[0] + 7.0 * pixels_per_unit,
+            bounds.min[1] + ((bounds.height() - icon_size) * 0.5).max(0.0),
+        ];
+        if let Some(icon) = window_assets.icon_rect(
+            "gear",
+            ScreenRect {
+                min: icon_min,
+                max: [icon_min[0] + icon_size, icon_min[1] + icon_size],
+            },
+            [1.0; 4],
+        ) {
+            textured_rects.push(icon);
+        }
+        let font_size = SETTINGS_LAUNCHER_FONT_SIZE_UNITS * pixels_per_unit;
+        let text = settings_text(
+            "SETTINGS",
+            font_size,
+            SETTINGS_TEXT_COLOR,
+            [
+                bounds.min[0] + bounds.width() * 0.58,
+                bounds.min[1] + ((bounds.height() - font_size) * 0.5).max(0.0),
+            ],
+            TextAlignment::Center,
+            Some(bounds.width() * 0.72),
+        );
+        Ok(SettingsLauncherFrame {
+            textured_rects,
+            texts: vec![text],
+        })
+    }
+
+    pub(crate) fn apply_pointer_button(
+        &mut self,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        let Ok(bounds) = settings_launcher_bounds(viewport, pixels_per_unit) else {
+            self.pressed = false;
+            return false;
+        };
+        match state {
+            ElementState::Pressed => {
+                self.pressed = cursor.is_some_and(|cursor| bounds.contains(cursor));
+                self.pressed
+            }
+            ElementState::Released => {
+                if !self.pressed {
+                    return false;
+                }
+                self.pressed = false;
+                self.open_requested = cursor.is_some_and(|cursor| bounds.contains(cursor));
+                true
+            }
+        }
+    }
+
+    pub(crate) fn cancel_pointer_interaction(&mut self) {
+        self.pressed = false;
+    }
+
+    pub(crate) fn take_open_requested(&mut self) -> bool {
+        std::mem::take(&mut self.open_requested)
+    }
+}
+
+pub(crate) struct SettingsLauncherFrame {
+    pub(crate) textured_rects: Vec<UiTexturedRect>,
+    pub(crate) texts: Vec<TextBlock>,
+}
+
+fn settings_launcher_bounds(
+    viewport: PixelViewport,
+    pixels_per_unit: f32,
+) -> Result<ScreenRect, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let width = SETTINGS_LAUNCHER_WIDTH_UNITS * pixels_per_unit;
+    let height = SETTINGS_ROW_HEIGHT_UNITS * pixels_per_unit;
+    let inset = SETTINGS_LAUNCHER_INSET_UNITS * pixels_per_unit;
+    let max = [
+        viewport.x as f32 + viewport.width as f32 - inset,
+        viewport.y as f32 + inset + height,
+    ];
+    Ok(ScreenRect {
+        min: [max[0] - width, max[1] - height],
+        max,
+    })
+}
+
+fn settings_control_bounds(
+    window: ScreenRect,
+    control: SettingsControl,
+    pixels_per_unit: f32,
+) -> ScreenRect {
+    let y_units = match control {
+        SettingsControl::Fullscreen => SETTINGS_FULLSCREEN_Y_UNITS,
+        SettingsControl::Resolution => SETTINGS_RESOLUTION_Y_UNITS,
+        SettingsControl::RenderQuality => SETTINGS_RENDER_QUALITY_Y_UNITS,
+        SettingsControl::UiScale => SETTINGS_UI_SCALE_Y_UNITS,
+    };
+    let max_x = window.max[0] - SETTINGS_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
+    let min_y = window.min[1] + y_units * pixels_per_unit;
+    ScreenRect {
+        min: [max_x - SETTINGS_VALUE_WIDTH_UNITS * pixels_per_unit, min_y],
+        max: [max_x, min_y + SETTINGS_ROW_HEIGHT_UNITS * pixels_per_unit],
+    }
+}
+
+fn settings_control_enabled(control: SettingsControl, settings: DisplaySettings) -> bool {
+    control != SettingsControl::Resolution || settings.window_mode == WindowMode::Windowed
+}
+
+fn settings_control_name(control: SettingsControl) -> &'static str {
+    match control {
+        SettingsControl::Fullscreen => "Fullscreen",
+        SettingsControl::Resolution => "Resolution",
+        SettingsControl::RenderQuality => "Render Quality",
+        SettingsControl::UiScale => "UI Scale",
+    }
+}
+
+fn settings_control_value(control: SettingsControl, settings: DisplaySettings) -> String {
+    match control {
+        SettingsControl::Fullscreen => match settings.window_mode {
+            WindowMode::Windowed => "OFF".to_string(),
+            WindowMode::BorderlessFullscreen => "ON".to_string(),
+        },
+        SettingsControl::Resolution => format!("{} ▼", settings.resolution.label()),
+        SettingsControl::RenderQuality => {
+            format!("{} ▼", render_quality_label(settings.render_scale))
+        }
+        SettingsControl::UiScale => format!("{}% ▼", settings.ui_scale.percent()),
+    }
+}
+
+fn render_quality_label(scale: RenderScale) -> &'static str {
+    if scale == RenderScale::DEFAULT {
+        "High"
+    } else {
+        "Performance"
+    }
+}
+
+fn settings_action(control: SettingsControl, settings: DisplaySettings) -> Option<SettingsAction> {
+    match control {
+        SettingsControl::Fullscreen => {
+            Some(SettingsAction::SetWindowMode(match settings.window_mode {
+                WindowMode::Windowed => WindowMode::BorderlessFullscreen,
+                WindowMode::BorderlessFullscreen => WindowMode::Windowed,
+            }))
+        }
+        SettingsControl::Resolution if settings.window_mode != WindowMode::Windowed => None,
+        SettingsControl::Resolution => {
+            let current = RESOLUTION_PRESETS
+                .iter()
+                .position(|preset| *preset == settings.resolution)
+                .unwrap_or(0);
+            Some(SettingsAction::SetResolution(
+                RESOLUTION_PRESETS[(current + 1) % RESOLUTION_PRESETS.len()],
+            ))
+        }
+        SettingsControl::RenderQuality => Some(SettingsAction::SetRenderScale(
+            if settings.render_scale == RenderScale::DEFAULT {
+                RenderScale::PERFORMANCE_FALLBACK
+            } else {
+                RenderScale::DEFAULT
+            },
+        )),
+        SettingsControl::UiScale => {
+            let current = UI_SCALE_PRESETS
+                .iter()
+                .position(|preset| (preset.get() - settings.ui_scale.get()).abs() < 0.001)
+                .unwrap_or(1);
+            Some(SettingsAction::SetUiScale(
+                UI_SCALE_PRESETS[(current + 1) % UI_SCALE_PRESETS.len()],
+            ))
+        }
+    }
+}
+
+fn settings_text(
+    text: &str,
+    font_size: f32,
+    color: [f32; 4],
+    anchor: [f32; 2],
+    alignment: TextAlignment,
+    max_width: Option<f32>,
+) -> TextBlock {
+    TextBlock {
+        content: TextContent(text.to_string()),
+        style: TextStyle {
+            font_size,
+            color,
+            alignment,
+        },
+        anchor,
+        max_width,
+    }
+}
+
 impl UiItemIconAssets {
     pub(crate) fn load_placeholder(
         assets: &mut AssetRuntime,
@@ -1227,10 +1775,9 @@ impl InventoryWindow {
             self.item_hit_regions.clear();
             return Ok(None);
         };
-        let Some(window_frame) = window_assets.proof_frame_with_icon(
+        let Some(window_frame) = window_assets.proof_frame(
             &mut self.chrome,
             "Item Inventory",
-            Some("bag"),
             viewport,
             pixels_per_unit,
             cursor,
@@ -1643,10 +2190,9 @@ impl EquipmentWindow {
             self.slot_hit_regions.clear();
             return Ok(None);
         };
-        let Some(window_frame) = window_assets.proof_frame_with_icon(
+        let Some(window_frame) = window_assets.proof_frame(
             &mut self.chrome,
             "Equipment",
-            Some("helmet"),
             viewport,
             pixels_per_unit,
             cursor,
@@ -2591,6 +3137,11 @@ impl ProofPanelWindow {
         self.mode == ProofPanelMode::Normal
     }
 
+    pub(crate) fn open(&mut self) {
+        self.mode = ProofPanelMode::Normal;
+        self.interaction = PointerInteraction::None;
+    }
+
     pub(crate) fn close(&mut self) {
         self.mode = ProofPanelMode::Hidden;
         self.interaction = PointerInteraction::None;
@@ -3097,6 +3648,129 @@ mod tests {
             assert_eq!(regions[2].size(), [8.0, 18.0]);
             assert_eq!(regions[1].size(), [184.0, 18.0]);
         }
+    }
+
+    #[test]
+    fn settings_actions_map_to_existing_display_types() {
+        let settings = DisplaySettings::default_dev();
+        assert_eq!(
+            settings_action(SettingsControl::Fullscreen, settings),
+            Some(SettingsAction::SetWindowMode(
+                WindowMode::BorderlessFullscreen
+            ))
+        );
+        assert_eq!(
+            settings_action(SettingsControl::RenderQuality, settings),
+            Some(SettingsAction::SetRenderScale(
+                RenderScale::PERFORMANCE_FALLBACK
+            ))
+        );
+        assert_eq!(
+            settings_action(SettingsControl::Resolution, settings),
+            Some(SettingsAction::SetResolution(RESOLUTION_PRESETS[1]))
+        );
+        assert_eq!(render_quality_label(RenderScale::DEFAULT), "High");
+        assert_eq!(
+            render_quality_label(RenderScale::PERFORMANCE_FALLBACK),
+            "Performance"
+        );
+        assert_eq!(
+            settings_action(SettingsControl::UiScale, settings),
+            Some(SettingsAction::SetUiScale(UiScale::P110))
+        );
+
+        let mut fullscreen = settings;
+        fullscreen.window_mode = WindowMode::BorderlessFullscreen;
+        assert!(!settings_control_enabled(
+            SettingsControl::Resolution,
+            fullscreen
+        ));
+        assert_eq!(
+            settings_action(SettingsControl::Resolution, fullscreen),
+            None
+        );
+    }
+
+    #[test]
+    fn settings_window_uses_game_chrome_gear_title_and_close_button() {
+        let assets = embedded_assets();
+        let buttons = embedded_button_assets();
+        let mut settings_window = SettingsWindow::default();
+        settings_window.open();
+        let frame = settings_window
+            .frame(
+                assets,
+                buttons,
+                DisplaySettings::default_dev(),
+                viewport(),
+                1.0,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(frame.texts.iter().any(|text| text.content.0 == "SETTINGS"));
+        assert!(
+            frame
+                .texts
+                .iter()
+                .any(|text| text.content.0 == "Render Quality")
+        );
+        let gear = assets.icons.source("gear").unwrap();
+        let gear_uv = gear.uv_bounds(assets.panel().source_size_px);
+        assert!(
+            frame
+                .textured_rects
+                .iter()
+                .any(|rect| rect.uv_min == gear_uv.0 && rect.uv_max == gear_uv.1)
+        );
+
+        let close = assets
+            .layout(&mut settings_window.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap()
+            .close_button;
+        let cursor = close.min;
+        assert!(settings_window.apply_pointer_button(
+            assets,
+            ElementState::Pressed,
+            Some(cursor),
+            viewport(),
+            1.0,
+            DisplaySettings::default_dev(),
+        ));
+        assert!(settings_window.apply_pointer_button(
+            assets,
+            ElementState::Released,
+            Some(cursor),
+            viewport(),
+            1.0,
+            DisplaySettings::default_dev(),
+        ));
+        assert!(!settings_window.is_visible());
+    }
+
+    #[test]
+    fn settings_launcher_requests_open_only_after_inside_click() {
+        let mut launcher = SettingsLauncher::default();
+        let bounds = settings_launcher_bounds(viewport(), 1.0).unwrap();
+        let cursor = [
+            (bounds.min[0] + bounds.max[0]) * 0.5,
+            (bounds.min[1] + bounds.max[1]) * 0.5,
+        ];
+        assert!(launcher.apply_pointer_button(
+            ElementState::Pressed,
+            Some(cursor),
+            viewport(),
+            1.0,
+        ));
+        assert!(launcher.apply_pointer_button(
+            ElementState::Released,
+            Some(cursor),
+            viewport(),
+            1.0,
+        ));
+        assert!(launcher.take_open_requested());
+        assert!(!launcher.take_open_requested());
     }
 
     #[test]

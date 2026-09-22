@@ -81,7 +81,8 @@ impl GlyphAtlas {
         })
     }
     fn resolve(&self, ch: char) -> char {
-        if ((' '..='~').contains(&ch) || ch == '—') && self.font.glyph_id(ch).0 != 0 {
+        if ((' '..='~').contains(&ch) || matches!(ch, '—' | '▼')) && self.font.glyph_id(ch).0 != 0
+        {
             ch
         } else {
             '?'
@@ -597,7 +598,7 @@ mod tests {
         atlas.pending.clear();
         assert_eq!(atlas.get('A'), first);
         assert!(atlas.pending.is_empty());
-        for ch in (' '..='~').chain(['—']) {
+        for ch in (' '..='~').chain(['—', '▼']) {
             assert_ne!(atlas.font.glyph_id(ch).0, 0);
             let g = atlas.get(ch);
             assert!(g.cell < (ATLAS_SIZE / CELL).pow(2));
@@ -605,7 +606,7 @@ mod tests {
                 assert!(g.bounds[2] > 0.0 && g.bounds[3] > 0.0);
             }
         }
-        assert_eq!(atlas.glyphs.len(), 96);
+        assert_eq!(atlas.glyphs.len(), 97);
     }
     #[test]
     fn layout_applies_size_color_and_bounds_work() {

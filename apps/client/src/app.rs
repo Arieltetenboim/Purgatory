@@ -99,6 +99,7 @@ use crate::ui_dialog::{
 use crate::ui_panel::{
     DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrame,
     EquipmentWindowFrameInput, InventoryWindow, InventoryWindowFrame, InventoryWindowFrameInput,
+    SettingsAction, SettingsLauncher, SettingsLauncherFrame, SettingsWindow, SettingsWindowFrame,
     UiButtonAssets, UiItemIconAssets, UiSlotAssets, UiTabAssets, UiWindowAssets, resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
@@ -276,6 +277,8 @@ struct ClientApp {
     ui_item_icon_assets: UiItemIconAssets,
     inventory_window: InventoryWindow,
     equipment_window: EquipmentWindow,
+    settings_window: SettingsWindow,
+    settings_launcher: SettingsLauncher,
     normal_window_order: Vec<NormalWindowKind>,
     pointer_window: Option<NormalWindowKind>,
     message_dialog: MessageDialog,
@@ -353,6 +356,7 @@ struct ClientApp {
 enum NormalWindowKind {
     Inventory,
     Equipment,
+    Settings,
 }
 
 fn reorder_normal_window(order: &mut Vec<NormalWindowKind>, kind: NormalWindowKind) {
@@ -447,7 +451,13 @@ impl ClientApp {
             ui_item_icon_assets,
             inventory_window: InventoryWindow::default(),
             equipment_window: EquipmentWindow::default(),
-            normal_window_order: vec![NormalWindowKind::Inventory, NormalWindowKind::Equipment],
+            settings_window: SettingsWindow::default(),
+            settings_launcher: SettingsLauncher::default(),
+            normal_window_order: vec![
+                NormalWindowKind::Inventory,
+                NormalWindowKind::Equipment,
+                NormalWindowKind::Settings,
+            ],
             pointer_window: None,
             message_dialog: MessageDialog::default(),
             pending_drop: None,
@@ -568,6 +578,12 @@ impl ClientApp {
                 viewport,
                 pixels_per_unit,
             ),
+            NormalWindowKind::Settings => self.settings_window.contains_window(
+                self.ui_window_assets,
+                cursor,
+                viewport,
+                pixels_per_unit,
+            ),
         }
     }
 
@@ -575,12 +591,14 @@ impl ClientApp {
         match kind {
             NormalWindowKind::Inventory => self.inventory_window.is_visible(),
             NormalWindowKind::Equipment => self.equipment_window.is_visible(),
+            NormalWindowKind::Settings => self.settings_window.is_visible(),
         }
     }
 
     fn close_all_normal_windows(&mut self) {
         self.inventory_window.close();
         self.equipment_window.close();
+        self.settings_window.close();
         self.pointer_window = None;
     }
 
@@ -615,6 +633,14 @@ impl ClientApp {
                 cursor,
                 viewport,
                 pixels_per_unit,
+            ),
+            NormalWindowKind::Settings => self.settings_window.apply_pointer_button(
+                self.ui_window_assets,
+                state,
+                cursor,
+                viewport,
+                pixels_per_unit,
+                self.display.settings(),
             ),
         }
     }
@@ -2364,6 +2390,45 @@ impl ClientApp {
         }
     }
 
+    fn apply_settings_action(&mut self, action: SettingsAction) {
+        match action {
+            SettingsAction::SetWindowMode(mode) => {
+                if self.display.set_window_mode(mode) {
+                    println!("PURGATORY settings: window mode {}", mode.label());
+                }
+            }
+            SettingsAction::SetResolution(resolution) => {
+                if self.display.set_resolution(resolution).is_err() {
+                    eprintln!(
+                        "PURGATORY settings: rejected invalid resolution {}x{}",
+                        resolution.width, resolution.height
+                    );
+                }
+            }
+            SettingsAction::SetRenderScale(scale) => {
+                if self.display.set_render_scale(scale) {
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        renderer.set_render_scale(scale);
+                    }
+                    println!(
+                        "PURGATORY settings: render quality scale={}%, fov unchanged",
+                        scale.percent()
+                    );
+                }
+            }
+            SettingsAction::SetUiScale(scale) => {
+                self.display.set_ui_scale(scale);
+                println!(
+                    "PURGATORY settings: UI scale={}%, world view unchanged",
+                    scale.percent()
+                );
+            }
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
     fn apply_framebuffer_size(&mut self, width: u32, height: u32) {
         match self.display.observe_framebuffer(width, height) {
             SurfaceResizeAction::SkipInvalid | SurfaceResizeAction::Unchanged => {}
@@ -2912,6 +2977,8 @@ impl ClientApp {
         };
         let mut inventory_frame: Option<InventoryWindowFrame> = None;
         let mut equipment_frame: Option<EquipmentWindowFrame> = None;
+        let mut settings_frame: Option<SettingsWindowFrame> = None;
+        let mut settings_launcher_frame: Option<SettingsLauncherFrame> = None;
         let mut message_frame: Option<MessageDialogFrame> = None;
         if !on_connection && let Some(viewport) = viewport {
             let pixels_per_unit = effective_pixels_per_point(
@@ -2959,6 +3026,28 @@ impl ClientApp {
                 })
                 .ok()
                 .flatten();
+            settings_frame = self
+                .settings_window
+                .frame(
+                    window_assets,
+                    self.ui_button_assets,
+                    self.display.settings(),
+                    viewport,
+                    pixels_per_unit,
+                    self.cursor_position,
+                )
+                .ok()
+                .flatten();
+            settings_launcher_frame = self
+                .settings_launcher
+                .frame(
+                    window_assets,
+                    self.ui_button_assets,
+                    viewport,
+                    pixels_per_unit,
+                    self.cursor_position,
+                )
+                .ok();
             message_frame = self
                 .message_dialog
                 .frame(
@@ -2971,8 +3060,11 @@ impl ClientApp {
                 .ok()
                 .flatten();
         }
-        let mut ui_compositions = Vec::with_capacity(4);
+        let mut ui_compositions = Vec::with_capacity(6);
         ui_compositions.push(UiComposition::new(&[], &ui_rects, &ui_text));
+        if let Some(frame) = settings_launcher_frame.as_ref() {
+            ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
+        }
         for kind in &self.normal_window_order {
             match kind {
                 NormalWindowKind::Inventory => {
@@ -2986,6 +3078,15 @@ impl ClientApp {
                 }
                 NormalWindowKind::Equipment => {
                     if let Some(frame) = equipment_frame.as_ref() {
+                        ui_compositions.push(UiComposition::new(
+                            &frame.textured_rects,
+                            &[],
+                            &frame.texts,
+                        ));
+                    }
+                }
+                NormalWindowKind::Settings => {
+                    if let Some(frame) = settings_frame.as_ref() {
                         ui_compositions.push(UiComposition::new(
                             &frame.textured_rects,
                             &[],
@@ -4795,6 +4896,8 @@ impl ApplicationHandler for ClientApp {
                     self.on_focus_loss_input();
                     self.inventory_window.cancel_pointer_interaction();
                     self.equipment_window.cancel_pointer_interaction();
+                    self.settings_window.cancel_pointer_interaction();
+                    self.settings_launcher.cancel_pointer_interaction();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -4820,6 +4923,11 @@ impl ApplicationHandler for ClientApp {
                             .inventory_window
                             .pointer_moved(cursor, viewport, pixels_per_unit)
                             || self.equipment_window.pointer_moved(
+                                cursor,
+                                viewport,
+                                pixels_per_unit,
+                            )
+                            || self.settings_window.pointer_moved(
                                 cursor,
                                 viewport,
                                 pixels_per_unit,
@@ -4854,6 +4962,8 @@ impl ApplicationHandler for ClientApp {
                 {
                     self.inventory_window.cancel_pointer_interaction();
                     self.equipment_window.cancel_pointer_interaction();
+                    self.settings_window.cancel_pointer_interaction();
+                    self.settings_launcher.cancel_pointer_interaction();
                 }
                 if self.lifecycle.gameplay_actions_allowed()
                     && gameplay_mouse
@@ -4876,6 +4986,21 @@ impl ApplicationHandler for ClientApp {
                     } else {
                         self.pointer_window
                     };
+                    if (state == ElementState::Released || selected.is_none())
+                        && self.settings_launcher.apply_pointer_button(
+                            state,
+                            self.cursor_position,
+                            viewport,
+                            pixels_per_unit,
+                        )
+                    {
+                        if self.settings_launcher.take_open_requested() {
+                            self.settings_window.open();
+                            self.focus_normal_window(NormalWindowKind::Settings);
+                        }
+                        window.request_redraw();
+                        return;
+                    }
                     if state == ElementState::Pressed {
                         self.pointer_window = selected;
                         if let Some(kind) = selected {
@@ -4912,6 +5037,9 @@ impl ApplicationHandler for ClientApp {
                         }
                         if let Some(slot) = self.equipment_window.take_completed_click() {
                             self.handle_item_click(ItemClickTarget::Equipped(slot));
+                        }
+                        if let Some(action) = self.settings_window.take_completed_action() {
+                            self.apply_settings_action(action);
                         }
                     }
                     if handled {
