@@ -25,7 +25,7 @@ const UI_ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json"
 
 const REFERENCE_WIDTH_PX: f32 = 800.0;
 const REFERENCE_HEIGHT_PX: f32 = 450.0;
-const MOON_ANCHOR_X_PX: f32 = 610.0;
+const MOON_ANCHOR_X_PX: f32 = 900.0;
 const MOON_ANCHOR_Y_PX: f32 = 81.0;
 const FOREGROUND_FADE_OUT: Duration = Duration::from_millis(280);
 const BACKGROUND_FADE_IN_SECONDS: f32 = 0.75;
@@ -42,10 +42,10 @@ const SPLASH_HOLD_SECONDS: f32 = 0.85;
 const SPLASH_FADE_OUT_SECONDS: f32 = 0.65;
 const SPLASH_TOTAL_SECONDS: f32 =
     SPLASH_FADE_IN_SECONDS + SPLASH_HOLD_SECONDS + SPLASH_FADE_OUT_SECONDS;
-const MOON_DRIFT_X_AMPLITUDE_POINTS: f32 = 0.9;
-const MOON_DRIFT_Y_AMPLITUDE_POINTS: f32 = 1.4;
-const MOON_DRIFT_X_PERIOD_SECONDS: f32 = 23.0;
-const MOON_DRIFT_Y_PERIOD_SECONDS: f32 = 18.0;
+const MOON_DRIFT_X_AMPLITUDE_POINTS: f32 = 0.2;
+const MOON_DRIFT_Y_AMPLITUDE_POINTS: f32 = 0.3;
+const MOON_DRIFT_X_PERIOD_SECONDS: f32 = 32.0;
+const MOON_DRIFT_Y_PERIOD_SECONDS: f32 = 27.0;
 
 /// In-window connection screen. Owns presentation textures for the process lifetime.
 pub struct ConnectionFrontend {
@@ -308,7 +308,7 @@ impl ConnectionFrontend {
                 screen,
                 egui::vec2(dx, 0.0),
                 1.0,
-                alpha * 0.85,
+                alpha * 1.0,
             );
         }
 
