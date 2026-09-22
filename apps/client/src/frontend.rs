@@ -23,6 +23,7 @@ const FOG_NEAR_PNG: &[u8] = include_bytes!("../assets/frontend/fog_near.png");
 const UI_ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
 const UI_ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
 
+const DEBUG_FRONTEND_LAYER_BOUNDS: bool = true; // TEMP: remove after layer diagnosis.
 const REFERENCE_WIDTH_PX: f32 = 800.0;
 const REFERENCE_HEIGHT_PX: f32 = 450.0;
 const MOON_ANCHOR_X_PX: f32 = 562.5;
@@ -299,23 +300,33 @@ impl ConnectionFrontend {
         let Some(base) = self.background.base.as_ref() else {
             return;
         };
-        paint_cover_texture(painter, base, screen, Vec2::ZERO, 1.0, alpha);
+        if let Some(rect) = paint_cover_texture(painter, base, screen, Vec2::ZERO, 1.0, alpha) {
+            debug_layer_bounds(painter, screen, rect, "BASE", 0);
+        }
 
         let px_scale = screen.height() / REFERENCE_HEIGHT_PX;
         if let Some(layer) = self.background.clouds_far.as_ref() {
             let dx = horizontal_drift(elapsed, 30.0, 40.0, 0.25) * px_scale;
-            paint_cover_texture(
+            if let Some(rect) = paint_cover_texture(
                 painter,
                 layer,
                 screen,
                 egui::vec2(dx, 0.0),
                 1.0,
                 alpha * 1.0,
-            );
+            ) {
+                debug_layer_bounds(
+                    painter,
+                    screen,
+                    rect,
+                    &format!("FAR CLOUDS  dx={dx:.1}"),
+                    1,
+                );
+            }
         }
 
         if let Some(layer) = self.background.moon.as_ref() {
-            paint_anchored_texture(
+            if let Some(rect) = paint_anchored_texture(
                 painter,
                 layer,
                 screen,
@@ -326,31 +337,49 @@ impl ConnectionFrontend {
                 moon_drift_offset(elapsed),
                 MOON_HEIGHT_PX,
                 alpha,
-            );
+            ) {
+                debug_layer_bounds(painter, screen, rect, "MOON", 2);
+            }
         }
 
         if let Some(layer) = self.background.clouds_near.as_ref() {
             let dx = -horizontal_drift(elapsed, 52.0, 25.0, 1.7) * px_scale;
-            paint_cover_texture(
+            if let Some(rect) = paint_cover_texture(
                 painter,
                 layer,
                 screen,
                 egui::vec2(dx, 0.0),
                 1.0,
                 alpha * 1.0,
-            );
+            ) {
+                debug_layer_bounds(
+                    painter,
+                    screen,
+                    rect,
+                    &format!("NEAR CLOUDS  dx={dx:.1}"),
+                    3,
+                );
+            }
         }
 
         if let Some(layer) = self.background.fog_near.as_ref() {
             let dx = horizontal_drift(elapsed, 6.0, 63.0, 3.0) * px_scale;
-            paint_cover_texture(
+            if let Some(rect) = paint_cover_texture(
                 painter,
                 layer,
                 screen,
                 egui::vec2(dx, 0.0),
                 1.0,
                 alpha * 0.28,
-            );
+            ) {
+                debug_layer_bounds(
+                    painter,
+                    screen,
+                    rect,
+                    &format!("FOG  dx={dx:.1}"),
+                    4,
+                );
+            }
         }
     }
 }
@@ -691,10 +720,10 @@ fn paint_anchored_texture(
     offset: Vec2,
     reference_height_px: f32,
     opacity: f32,
-) {
+) -> Option<Rect> {
     let source = texture.size_vec2();
     if source.x <= 0.0 || source.y <= 0.0 {
-        return;
+        return None;
     }
     let target_height = reference_height_px.max(1.0) * reference_cover_scale(screen);
     let scale = target_height / source.y;
@@ -706,6 +735,7 @@ fn paint_anchored_texture(
         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
         Color32::from_white_alpha((opacity.clamp(0.0, 1.0) * 255.0) as u8),
     );
+    Some(rect)
 }
 
 fn paint_cover_texture(
@@ -715,10 +745,10 @@ fn paint_cover_texture(
     offset: Vec2,
     scale_multiplier: f32,
     opacity: f32,
-) {
+) -> Option<Rect> {
     let source = texture.size_vec2();
     if source.x <= 0.0 || source.y <= 0.0 {
-        return;
+        return None;
     }
     let cover_scale = (screen.width() / source.x)
         .max(screen.height() / source.y)
@@ -730,6 +760,40 @@ fn paint_cover_texture(
         rect,
         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
         Color32::from_white_alpha((opacity.clamp(0.0, 1.0) * 255.0) as u8),
+    );
+    Some(rect)
+}
+
+fn debug_layer_bounds(
+    painter: &egui::Painter,
+    screen: Rect,
+    texture_rect: Rect,
+    label: &str,
+    row: usize,
+) {
+    if !DEBUG_FRONTEND_LAYER_BOUNDS {
+        return;
+    }
+
+    let visible = texture_rect.intersect(screen);
+    if visible.is_positive() {
+        painter.rect_stroke(
+            visible.shrink(2.0),
+            0.0,
+            Stroke::new(4.0, Color32::BLACK),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let label_pos = screen.left_top() + egui::vec2(10.0, 10.0 + row as f32 * 22.0);
+    let label_rect = Rect::from_min_size(label_pos, egui::vec2(210.0, 18.0));
+    painter.rect_filled(label_rect, 1.0, Color32::BLACK);
+    painter.text(
+        label_rect.left_center() + egui::vec2(5.0, 0.0),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::monospace(11.0),
+        Color32::WHITE,
     );
 }
 
