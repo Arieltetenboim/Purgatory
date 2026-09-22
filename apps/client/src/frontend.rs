@@ -281,7 +281,7 @@ impl ConnectionFrontend {
 
         let px_scale = screen.height() / REFERENCE_HEIGHT_PX;
         if let Some(layer) = self.background.clouds_far.as_ref() {
-            let dx = horizontal_drift(elapsed, 7.0, 52.0, 0.25) * px_scale;
+            let dx = horizontal_drift(elapsed, 34.0, 21.0, 0.25) * px_scale;
             paint_cover_texture(
                 painter,
                 layer,
@@ -308,7 +308,7 @@ impl ConnectionFrontend {
         }
 
         if let Some(layer) = self.background.clouds_near.as_ref() {
-            let dx = horizontal_drift(elapsed, 10.0, 37.0, 1.7) * px_scale;
+            let dx = horizontal_drift(elapsed, 58.0, 14.0, 1.7) * px_scale;
             paint_cover_texture(
                 painter,
                 layer,
@@ -341,33 +341,34 @@ fn paint_login_controls(
     phase: &mut FrontendPhase,
     now: Instant,
 ) {
-    ui.label(
-        egui::RichText::new("USERNAME")
-            .size(12.0)
-            .strong()
-            .color(Color32::from_gray(225)),
-    );
-    ui.add_space(6.0);
-
     let login_valid = DevLogin::parse(login).is_ok();
     egui::Frame::new()
-        .fill(Color32::from_rgba_unmultiplied(7, 8, 11, 205))
+        .fill(Color32::from_rgba_unmultiplied(15, 17, 21, 220))
         .stroke(Stroke::new(
             1.0,
             if login_valid {
-                Color32::from_rgba_unmultiplied(160, 168, 178, 150)
+                Color32::from_rgba_unmultiplied(147, 165, 176, 185)
             } else {
                 Color32::from_rgb(176, 74, 66)
             },
         ))
-        .corner_radius(3.0)
-        .inner_margin(egui::Margin::symmetric(8, 5))
+        .corner_radius(5.0)
+        .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
+            ui.set_width(268.0);
+            ui.label(
+                egui::RichText::new("USERNAME")
+                    .size(10.0)
+                    .strong()
+                    .color(Color32::from_gray(165)),
+            );
+            ui.add_space(2.0);
             ui.add_sized(
-                [250.0, 28.0],
+                [268.0, 26.0],
                 egui::TextEdit::singleline(login)
+                    .frame(false)
                     .char_limit(32)
-                    .hint_text("username"),
+                    .hint_text("Enter username"),
             );
         });
 
@@ -586,8 +587,8 @@ fn paint_logo_or_title(ui: &mut egui::Ui, logo: Option<&TextureHandle>, float_y:
     if let Some(logo) = logo {
         let size = logo.size_vec2();
         if size.x > 1.0 && size.y > 1.0 {
-            let max_w = (ui.available_width() * 0.48).clamp(240.0, 690.0);
-            let max_h = (ui.available_height() * 0.25).clamp(82.0, 230.0);
+            let max_w = (ui.available_width() * 0.72).clamp(360.0, 1035.0);
+            let max_h = (ui.available_height() * 0.375).clamp(123.0, 345.0);
             let scale = (max_w / size.x).min(max_h / size.y);
             let draw = egui::vec2(size.x * scale, size.y * scale);
             let (allocated, _) = ui.allocate_exact_size(draw, Sense::hover());
@@ -706,10 +707,10 @@ mod tests {
 
     #[test]
     fn background_drift_never_exceeds_authored_amplitude() {
-        let amplitude = 10.0;
+        let amplitude = 58.0;
         for step in 0..=240 {
             let t = step as f32 * 0.25;
-            assert!(horizontal_drift(t, amplitude, 37.0, 1.7).abs() <= amplitude + 0.001);
+            assert!(horizontal_drift(t, amplitude, 14.0, 1.7).abs() <= amplitude + 0.001);
         }
     }
 
