@@ -25,7 +25,7 @@ const UI_ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json"
 
 const REFERENCE_WIDTH_PX: f32 = 800.0;
 const REFERENCE_HEIGHT_PX: f32 = 450.0;
-const MOON_ANCHOR_X_PX: f32 = 581.0;
+const MOON_ANCHOR_X_PX: f32 = 610.0;
 const MOON_ANCHOR_Y_PX: f32 = 81.0;
 const FOREGROUND_FADE_OUT: Duration = Duration::from_millis(280);
 const BACKGROUND_FADE_IN_SECONDS: f32 = 0.75;
@@ -34,9 +34,9 @@ const LOGO_FADE_END_SECONDS: f32 = 0.85;
 const CONTROLS_FADE_START_SECONDS: f32 = 0.30;
 const CONTROLS_FADE_END_SECONDS: f32 = 1.05;
 const LOGO_FLOAT_AMPLITUDE_POINTS: f32 = 4.0;
-const LOGO_FLOAT_PERIOD_SECONDS: f32 = 4.4;
+const LOGO_FLOAT_PERIOD_SECONDS: f32 = 17.6;
 const LOGO_FLOAT_X_AMPLITUDE_POINTS: f32 = 3.0;
-const LOGO_FLOAT_X_PERIOD_SECONDS: f32 = 6.7;
+const LOGO_FLOAT_X_PERIOD_SECONDS: f32 = 26.8;
 const SPLASH_FADE_IN_SECONDS: f32 = 0.65;
 const SPLASH_HOLD_SECONDS: f32 = 0.85;
 const SPLASH_FADE_OUT_SECONDS: f32 = 0.65;
@@ -301,7 +301,7 @@ impl ConnectionFrontend {
 
         let px_scale = screen.height() / REFERENCE_HEIGHT_PX;
         if let Some(layer) = self.background.clouds_far.as_ref() {
-            let dx = horizontal_drift(elapsed, 30.0, 24.0, 0.25) * px_scale;
+            let dx = horizontal_drift(elapsed, 30.0, 40.0, 0.25) * px_scale;
             paint_cover_texture(
                 painter,
                 layer,
@@ -328,7 +328,7 @@ impl ConnectionFrontend {
         }
 
         if let Some(layer) = self.background.clouds_near.as_ref() {
-            let dx = -horizontal_drift(elapsed, 52.0, 15.0, 1.7) * px_scale;
+            let dx = -horizontal_drift(elapsed, 52.0, 25.0, 1.7) * px_scale;
             paint_cover_texture(
                 painter,
                 layer,
@@ -796,10 +796,10 @@ fn moon_drift_offset(elapsed: f32) -> Vec2 {
 fn logo_float_offset(elapsed: f32) -> Vec2 {
     let x = LOGO_FLOAT_X_AMPLITUDE_POINTS
         * (elapsed * std::f32::consts::TAU / LOGO_FLOAT_X_PERIOD_SECONDS + 1.13).sin()
-        + 1.1 * (elapsed * std::f32::consts::TAU / 3.1 + 0.38).sin();
+        + 1.1 * (elapsed * std::f32::consts::TAU / 12.4 + 0.38).sin();
     let y = LOGO_FLOAT_AMPLITUDE_POINTS
         * (elapsed * std::f32::consts::TAU / LOGO_FLOAT_PERIOD_SECONDS).sin()
-        + 1.2 * (elapsed * std::f32::consts::TAU / 8.9 + 0.47).sin();
+        + 1.2 * (elapsed * std::f32::consts::TAU / 35.6 + 0.47).sin();
     egui::vec2(x, y)
 }
 
