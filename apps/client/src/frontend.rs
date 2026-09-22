@@ -23,7 +23,10 @@ const FOG_NEAR_PNG: &[u8] = include_bytes!("../assets/frontend/fog_near.png");
 const UI_ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
 const UI_ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
 
+const REFERENCE_WIDTH_PX: f32 = 800.0;
 const REFERENCE_HEIGHT_PX: f32 = 450.0;
+const MOON_ANCHOR_X_PX: f32 = 581.0;
+const MOON_ANCHOR_Y_PX: f32 = 81.0;
 const FOREGROUND_FADE_OUT: Duration = Duration::from_millis(280);
 const BACKGROUND_FADE_IN_SECONDS: f32 = 0.75;
 const LOGO_FADE_START_SECONDS: f32 = 0.08;
@@ -39,8 +42,10 @@ const SPLASH_HOLD_SECONDS: f32 = 0.85;
 const SPLASH_FADE_OUT_SECONDS: f32 = 0.65;
 const SPLASH_TOTAL_SECONDS: f32 =
     SPLASH_FADE_IN_SECONDS + SPLASH_HOLD_SECONDS + SPLASH_FADE_OUT_SECONDS;
-const MOON_DRIFT_AMPLITUDE_POINTS: f32 = 1.5;
-const MOON_DRIFT_PERIOD_SECONDS: f32 = 18.0;
+const MOON_DRIFT_X_AMPLITUDE_POINTS: f32 = 0.9;
+const MOON_DRIFT_Y_AMPLITUDE_POINTS: f32 = 1.4;
+const MOON_DRIFT_X_PERIOD_SECONDS: f32 = 23.0;
+const MOON_DRIFT_Y_PERIOD_SECONDS: f32 = 18.0;
 
 /// In-window connection screen. Owns presentation textures for the process lifetime.
 pub struct ConnectionFrontend {
@@ -308,17 +313,15 @@ impl ConnectionFrontend {
         }
 
         if let Some(layer) = self.background.moon.as_ref() {
-            let dy = horizontal_drift(
-                elapsed,
-                MOON_DRIFT_AMPLITUDE_POINTS,
-                MOON_DRIFT_PERIOD_SECONDS,
-                0.8,
-            );
-            paint_centered_texture(
+            paint_anchored_texture(
                 painter,
                 layer,
                 screen,
-                egui::vec2(0.0, dy),
+                reference_cover_point(
+                    screen,
+                    egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX),
+                ),
+                moon_drift_offset(elapsed),
                 0.24,
                 alpha,
             );
@@ -662,10 +665,22 @@ fn paint_logo_or_title(ui: &mut egui::Ui, logo: Option<&TextureHandle>, float_of
     ui.heading("PURGATORY");
 }
 
-fn paint_centered_texture(
+fn reference_cover_point(screen: Rect, reference_point: Vec2) -> Pos2 {
+    let cover_scale = (screen.width() / REFERENCE_WIDTH_PX)
+        .max(screen.height() / REFERENCE_HEIGHT_PX);
+    let reference_size = egui::vec2(
+        REFERENCE_WIDTH_PX * cover_scale,
+        REFERENCE_HEIGHT_PX * cover_scale,
+    );
+    let reference_min = screen.center() - reference_size * 0.5;
+    reference_min + reference_point
+}
+
+fn paint_anchored_texture(
     painter: &egui::Painter,
     texture: &TextureHandle,
     screen: Rect,
+    anchor: Pos2,
     offset: Vec2,
     screen_height_fraction: f32,
     opacity: f32,
@@ -677,7 +692,7 @@ fn paint_centered_texture(
     let target_height = screen.height() * screen_height_fraction.clamp(0.01, 1.0);
     let scale = target_height / source.y;
     let draw_size = source * scale;
-    let rect = Rect::from_center_size(screen.center() + offset, draw_size);
+    let rect = Rect::from_center_size(anchor + offset, draw_size);
     painter.image(
         texture.id(),
         rect,
@@ -762,9 +777,26 @@ fn horizontal_drift(elapsed: f32, amplitude: f32, period: f32, phase: f32) -> f3
     amplitude * (elapsed * std::f32::consts::TAU / period + phase).sin()
 }
 
+fn moon_drift_offset(elapsed: f32) -> Vec2 {
+    let x = horizontal_drift(
+        elapsed,
+        MOON_DRIFT_X_AMPLITUDE_POINTS,
+        MOON_DRIFT_X_PERIOD_SECONDS,
+        0.35,
+    );
+    let y = horizontal_drift(
+        elapsed,
+        MOON_DRIFT_Y_AMPLITUDE_POINTS,
+        MOON_DRIFT_Y_PERIOD_SECONDS,
+        1.15,
+    );
+    egui::vec2(x, y)
+}
+
 fn logo_float_offset(elapsed: f32) -> Vec2 {
     let x = LOGO_FLOAT_X_AMPLITUDE_POINTS
-        * (elapsed * std::f32::consts::TAU / LOGO_FLOAT_X_PERIOD_SECONDS + 1.13).sin();
+        * (elapsed * std::f32::consts::TAU / LOGO_FLOAT_X_PERIOD_SECONDS + 1.13).sin()
+        + 1.1 * (elapsed * std::f32::consts::TAU / 3.1 + 0.38).sin();
     let y = LOGO_FLOAT_AMPLITUDE_POINTS
         * (elapsed * std::f32::consts::TAU / LOGO_FLOAT_PERIOD_SECONDS).sin()
         + 1.2 * (elapsed * std::f32::consts::TAU / 8.9 + 0.47).sin();
@@ -797,8 +829,28 @@ mod tests {
         for step in 0..=120 {
             let t = step as f32 * 0.1;
             let offset = logo_float_offset(t);
-            assert!(offset.x.abs() <= LOGO_FLOAT_X_AMPLITUDE_POINTS + 0.001);
+            assert!(offset.x.abs() <= LOGO_FLOAT_X_AMPLITUDE_POINTS + 1.101);
             assert!(offset.y.abs() <= LOGO_FLOAT_AMPLITUDE_POINTS + 1.201);
+        }
+    }
+
+    #[test]
+    fn moon_anchor_tracks_reference_cover_space() {
+        let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 450.0));
+        let point = reference_cover_point(
+            screen,
+            egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX),
+        );
+        assert!((point.x - MOON_ANCHOR_X_PX).abs() < 0.001);
+        assert!((point.y - MOON_ANCHOR_Y_PX).abs() < 0.001);
+    }
+
+    #[test]
+    fn moon_drift_stays_within_two_points() {
+        for step in 0..=240 {
+            let offset = moon_drift_offset(step as f32 * 0.25);
+            assert!(offset.x.abs() <= MOON_DRIFT_X_AMPLITUDE_POINTS + 0.001);
+            assert!(offset.y.abs() <= MOON_DRIFT_Y_AMPLITUDE_POINTS + 0.001);
         }
     }
 
