@@ -415,8 +415,9 @@ fn paint_dev_strip(ctx: &Context, server: &str, status: &str, opacity: f32) {
                     Color32::from_rgba_unmultiplied(135, 145, 158, 90),
                 ))
                 .corner_radius(3.0)
-                .inner_margin(egui::Margin::symmetric(8, 6))
+                .inner_margin(egui::Margin::symmetric(12, 8))
                 .show(ui, |ui| {
+                    ui.set_min_width(360.0);
                     ui.collapsing(
                         egui::RichText::new("DEV")
                             .strong()
