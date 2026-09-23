@@ -157,9 +157,13 @@ Each action contains exactly one operation:
 | `mark_npc_met` | `NarrativeRuntime::mark_npc_met` |
 | `give_item` | Existing inventory grant path |
 | `remove_item` | Existing inventory removal path |
+| `grant_ability` | Existing authoritative ability-grant path |
 
 Item quantities must be nonzero. Item references must resolve, and a Give Item
-quantity cannot exceed the target definition's `stack_limit`.
+quantity cannot exceed the target definition's `stack_limit`. `grant_ability`
+references must resolve to an authored ability; the authoritative World grant
+owner applies it. Learned grants are currently session-only until character
+progression persistence is implemented.
 
 ### Pools and ENTRY selection
 
