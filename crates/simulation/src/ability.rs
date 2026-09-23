@@ -242,9 +242,7 @@ pub enum GameplayPresentationCue {
 }
 
 #[must_use]
-pub const fn cue_for_ability_cast(
-    presentation: AbilityPresentation,
-) -> GameplayPresentationCue {
+pub const fn cue_for_ability_cast(presentation: AbilityPresentation) -> GameplayPresentationCue {
     match presentation {
         AbilityPresentation::Attack => GameplayPresentationCue::Attack,
         AbilityPresentation::Dash => GameplayPresentationCue::Dash,
@@ -436,11 +434,9 @@ impl AbilityGrantTable {
         id: AbilityId,
         source: AbilityGrantSource,
     ) -> bool {
-        self.grants
-            .iter()
-            .any(|(entity, ability, existing)| {
-                *entity == owner && *ability == id && *existing == source
-            })
+        self.grants.iter().any(|(entity, ability, existing)| {
+            *entity == owner && *ability == id && *existing == source
+        })
     }
 
     /// Canonical owner-private grant baseline for replication. Multiple grant
