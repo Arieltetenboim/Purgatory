@@ -11,6 +11,7 @@ Scoped workflows: [`.cursor/skills/`](.cursor/skills/) (`purgatory-implement`, `
 ## Documents (consult when relevant)
 
 - `PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md` — master execution specification
+- `docs/PURGATORY_PROJECT_CONTEXT.md` — durable development/AI reasoning doctrine; current repo evidence still wins
 - `README.md` — workspace map, current status, how to run
 - `docs/ARCHITECTURE.md` — structural rules and ownership
 - `docs/DECISIONS.md` — Architecture Decision Records
