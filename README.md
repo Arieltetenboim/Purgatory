@@ -9,11 +9,12 @@ This README is intentionally small. It is the project entry point, not the proje
 ## Current
 
 - **Phase:** `11.closeout` — Phase 11 Item Loop complete
-- **Active parallel work:** FORGE M — Mob Lab M3 on `forge/mob-lab-m3`; authoring, creature manifest v2, DEV Monster spawn, and Hub wiring are implemented on the branch
+- **FORGE M:** M4 implementation is merged to `master`; GitHub Issue #75 remains open for the recorded manual two-Monster visual smoke and final M4/M5 closeout evidence
 - **FORGE N:** NPC authoring/runtime N10a-N10f complete and merged
-- **Production UI:** Inventory window read-only foundation complete
+- **Character Lab:** integrated on `master`; Hub launch, Humanoid v0 contract export, Template V1 (2048×2048) import/validation/conversion, and the current visual-pack/atlas path are present
+- **Production client UI:** Inventory foundation, player-facing Settings, and the Glyphon production-text foundation are merged
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
-- **Protocol:** v29
+- **Protocol:** v30
 - **Simulation:** server authoritative
 - **Client:** native `winit` + `wgpu`
 - **Networking:** QUIC via Quinn
@@ -67,6 +68,7 @@ The server listens on `127.0.0.1:5001` by default.
 | `crates/animation` | Animation runtime |
 | `crates/dev_runtime` | Developer Hub orchestration |
 | `tools/animation_lab` | Animation authoring/debug tool |
+| `tools/Character part lab` | Character Lab authoring/conversion tool |
 | `tools/mob_lab` | Monster authoring / creature-manifest tool |
 | `tools/npc_lab` | NPC authoring/test tool |
 | `tools/bot_client` | Headless load-testing client |
@@ -117,7 +119,9 @@ The detailed validation policy and extended network/load gates live in the docs 
 |---|---|
 | [`PHASE`](PHASE) | Exact current gameplay phase |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Development roadmap and active parallel tracks |
+| [`docs/PURGATORY_PROJECT_CONTEXT.md`](docs/PURGATORY_PROJECT_CONTEXT.md) | Durable AI/development reasoning doctrine; never a substitute for current repo evidence |
 | [`docs/PROJECT_ENGINEERING_NOTES.md`](docs/PROJECT_ENGINEERING_NOTES.md) | Engineering context, manual observations, rejected hypotheses, tool constraints and deferred polish |
+| [`docs/QUALITY.md`](docs/QUALITY.md) | Repository quality, ownership and refactoring policy |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Architecture Decision Records (ADRs) and frozen decisions |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Network protocol contract |
