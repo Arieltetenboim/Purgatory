@@ -1099,10 +1099,7 @@ mod tests {
             },
         });
         assert_eq!(life.view().ability_grants, vec![dash]);
-        life.apply(disconnected(
-            id.get(),
-            NetworkFailureKind::TransportLost,
-        ));
+        life.apply(disconnected(id.get(), NetworkFailureKind::TransportLost));
         assert!(life.view().ability_grants.is_empty());
     }
 }
