@@ -1365,10 +1365,7 @@ mod tests {
         let center = [1.5, 2.5];
         let root = presented_root(center);
         let c1 = preview_local_player_center(center, CHARACTER_VISUAL_SCALE_1);
-        assert!(tr_eq(
-            c1,
-            [root[0], root[1] + PLAYER_HALF_EXTENTS[1]]
-        ));
+        assert!(tr_eq(c1, [root[0], root[1] + PLAYER_HALF_EXTENTS[1]]));
         let c125 = preview_local_player_center(center, CHARACTER_VISUAL_SCALE_115);
         let size125 = preview_local_player_size(CHARACTER_VISUAL_SCALE_115);
         let feet_125 = [c125[0], c125[1] - size125[1] * 0.5];
