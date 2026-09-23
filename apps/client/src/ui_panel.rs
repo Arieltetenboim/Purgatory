@@ -30,7 +30,10 @@ const HEADER_CONTENT_OFFSET_UNITS: f32 = 2.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 5.0;
 const HEADER_ICON_SIZE_UNITS: f32 = 16.0;
 const HEADER_ICON_GAP_UNITS: f32 = 3.0;
-const SETTINGS_WINDOW_SIZE_UNITS: [f32; 2] = [360.0, 232.0];
+#[cfg(feature = "dev-diagnostics")]
+const SETTINGS_WINDOW_SIZE_UNITS: [f32; 2] = [360.0, 290.0];
+#[cfg(not(feature = "dev-diagnostics"))]
+const SETTINGS_WINDOW_SIZE_UNITS: [f32; 2] = [360.0, 261.0];
 const SETTINGS_SECTION_FONT_SIZE_UNITS: f32 = 14.0;
 const SETTINGS_ROW_FONT_SIZE_UNITS: f32 = 12.0;
 const SETTINGS_VALUE_FONT_SIZE_UNITS: f32 = 11.0;
@@ -43,6 +46,13 @@ const SETTINGS_RESOLUTION_Y_UNITS: f32 = 91.0;
 const SETTINGS_GRAPHICS_HEADING_Y_UNITS: f32 = 128.0;
 const SETTINGS_RENDER_QUALITY_Y_UNITS: f32 = 151.0;
 const SETTINGS_UI_SCALE_Y_UNITS: f32 = 180.0;
+const SETTINGS_SESSION_HEADING_Y_UNITS: f32 = 209.0;
+#[cfg(feature = "dev-diagnostics")]
+const SETTINGS_RETURN_TO_LOGIN_Y_UNITS: f32 = 232.0;
+#[cfg(feature = "dev-diagnostics")]
+const SETTINGS_EXIT_GAME_Y_UNITS: f32 = 261.0;
+#[cfg(not(feature = "dev-diagnostics"))]
+const SETTINGS_EXIT_GAME_Y_UNITS: f32 = 232.0;
 const SETTINGS_LAUNCHER_WIDTH_UNITS: f32 = 104.0;
 const SETTINGS_LAUNCHER_INSET_UNITS: f32 = 10.0;
 const SETTINGS_LAUNCHER_ICON_SIZE_UNITS: f32 = 13.0;
@@ -984,13 +994,19 @@ enum SettingsControl {
     Resolution,
     RenderQuality,
     UiScale,
+    #[cfg(feature = "dev-diagnostics")]
+    ReturnToLogin,
+    ExitGame,
 }
 
-const SETTINGS_CONTROLS: [SettingsControl; 4] = [
+const SETTINGS_CONTROLS: &[SettingsControl] = &[
     SettingsControl::Fullscreen,
     SettingsControl::Resolution,
     SettingsControl::RenderQuality,
     SettingsControl::UiScale,
+    #[cfg(feature = "dev-diagnostics")]
+    SettingsControl::ReturnToLogin,
+    SettingsControl::ExitGame,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -999,6 +1015,9 @@ pub(crate) enum SettingsAction {
     SetResolution(Resolution),
     SetRenderScale(RenderScale),
     SetUiScale(UiScale),
+    #[cfg(feature = "dev-diagnostics")]
+    ReturnToLogin,
+    ExitGame,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1082,8 +1101,19 @@ impl SettingsWindow {
             TextAlignment::Left,
             None,
         ));
+        texts.push(settings_text(
+            "Session",
+            SETTINGS_SECTION_FONT_SIZE_UNITS * pixels_per_unit,
+            SETTINGS_TEXT_COLOR,
+            [
+                layout.window.min[0] + SETTINGS_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
+                layout.window.min[1] + SETTINGS_SESSION_HEADING_Y_UNITS * pixels_per_unit,
+            ],
+            TextAlignment::Left,
+            None,
+        ));
 
-        for control in SETTINGS_CONTROLS {
+        for control in SETTINGS_CONTROLS.iter().copied() {
             let bounds = settings_control_bounds(layout.window, control, pixels_per_unit);
             let enabled = settings_control_enabled(control, settings);
             let hovered = enabled && cursor.is_some_and(|cursor| bounds.contains(cursor));
@@ -1164,7 +1194,7 @@ impl SettingsWindow {
             return false;
         };
         let hit = cursor.and_then(|point| {
-            SETTINGS_CONTROLS.into_iter().find(|control| {
+            SETTINGS_CONTROLS.iter().copied().find(|control| {
                 settings_control_enabled(*control, settings)
                     && settings_control_bounds(layout.window, *control, pixels_per_unit)
                         .contains(point)
@@ -1358,6 +1388,9 @@ fn settings_control_bounds(
         SettingsControl::Resolution => SETTINGS_RESOLUTION_Y_UNITS,
         SettingsControl::RenderQuality => SETTINGS_RENDER_QUALITY_Y_UNITS,
         SettingsControl::UiScale => SETTINGS_UI_SCALE_Y_UNITS,
+        #[cfg(feature = "dev-diagnostics")]
+        SettingsControl::ReturnToLogin => SETTINGS_RETURN_TO_LOGIN_Y_UNITS,
+        SettingsControl::ExitGame => SETTINGS_EXIT_GAME_Y_UNITS,
     };
     let max_x = window.max[0] - SETTINGS_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
     let min_y = window.min[1] + y_units * pixels_per_unit;
@@ -1377,6 +1410,9 @@ fn settings_control_name(control: SettingsControl) -> &'static str {
         SettingsControl::Resolution => "Resolution",
         SettingsControl::RenderQuality => "Render Quality",
         SettingsControl::UiScale => "UI Scale",
+        #[cfg(feature = "dev-diagnostics")]
+        SettingsControl::ReturnToLogin => "Return to Login",
+        SettingsControl::ExitGame => "Exit Game",
     }
 }
 
@@ -1391,6 +1427,9 @@ fn settings_control_value(control: SettingsControl, settings: DisplaySettings) -
             format!("{} ▼", render_quality_label(settings.render_scale))
         }
         SettingsControl::UiScale => format!("{}% ▼", settings.ui_scale.percent()),
+        #[cfg(feature = "dev-diagnostics")]
+        SettingsControl::ReturnToLogin => "RETURN".to_string(),
+        SettingsControl::ExitGame => "EXIT".to_string(),
     }
 }
 
@@ -1436,6 +1475,9 @@ fn settings_action(control: SettingsControl, settings: DisplaySettings) -> Optio
                 UI_SCALE_PRESETS[(current + 1) % UI_SCALE_PRESETS.len()],
             ))
         }
+        #[cfg(feature = "dev-diagnostics")]
+        SettingsControl::ReturnToLogin => Some(SettingsAction::ReturnToLogin),
+        SettingsControl::ExitGame => Some(SettingsAction::ExitGame),
     }
 }
 
@@ -3691,6 +3733,15 @@ mod tests {
             settings_action(SettingsControl::UiScale, settings),
             Some(SettingsAction::SetUiScale(UiScale::P110))
         );
+        #[cfg(feature = "dev-diagnostics")]
+        assert_eq!(
+            settings_action(SettingsControl::ReturnToLogin, settings),
+            Some(SettingsAction::ReturnToLogin)
+        );
+        assert_eq!(
+            settings_action(SettingsControl::ExitGame, settings),
+            Some(SettingsAction::ExitGame)
+        );
 
         let mut fullscreen = settings;
         fullscreen.window_mode = WindowMode::BorderlessFullscreen;
@@ -3728,6 +3779,15 @@ mod tests {
                 .iter()
                 .any(|text| text.content.0 == "Render Quality")
         );
+        assert!(frame.texts.iter().any(|text| text.content.0 == "Session"));
+        #[cfg(feature = "dev-diagnostics")]
+        assert!(
+            frame
+                .texts
+                .iter()
+                .any(|text| text.content.0 == "Return to Login")
+        );
+        assert!(frame.texts.iter().any(|text| text.content.0 == "Exit Game"));
         let gear = assets.icons.source("gear").unwrap();
         let gear_uv = gear.uv_bounds(assets.panel().source_size_px);
         assert!(
@@ -3760,6 +3820,54 @@ mod tests {
             DisplaySettings::default_dev(),
         ));
         assert!(!settings_window.is_visible());
+    }
+
+    #[test]
+    fn settings_session_buttons_emit_player_actions() {
+        let assets = embedded_assets();
+        let settings = DisplaySettings::default_dev();
+        let mut settings_window = SettingsWindow::default();
+        settings_window.open();
+        let layout = assets
+            .layout(&mut settings_window.chrome, viewport(), 1.0)
+            .unwrap()
+            .unwrap();
+
+        #[cfg(feature = "dev-diagnostics")]
+        let session_actions = [
+            (
+                SettingsControl::ReturnToLogin,
+                SettingsAction::ReturnToLogin,
+            ),
+            (SettingsControl::ExitGame, SettingsAction::ExitGame),
+        ];
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let session_actions = [(SettingsControl::ExitGame, SettingsAction::ExitGame)];
+
+        for (control, expected) in session_actions {
+            let bounds = settings_control_bounds(layout.window, control, 1.0);
+            let cursor = [
+                (bounds.min[0] + bounds.max[0]) * 0.5,
+                (bounds.min[1] + bounds.max[1]) * 0.5,
+            ];
+            assert!(settings_window.apply_pointer_button(
+                assets,
+                ElementState::Pressed,
+                Some(cursor),
+                viewport(),
+                1.0,
+                settings,
+            ));
+            assert!(settings_window.apply_pointer_button(
+                assets,
+                ElementState::Released,
+                Some(cursor),
+                viewport(),
+                1.0,
+                settings,
+            ));
+            assert_eq!(settings_window.take_completed_action(), Some(expected));
+        }
     }
 
     #[test]

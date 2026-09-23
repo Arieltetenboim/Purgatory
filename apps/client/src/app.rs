@@ -795,6 +795,7 @@ impl ClientApp {
         self.equipment_window.cancel_pointer_interaction();
         self.last_item_click = None;
         if self.lifecycle.screen() != ClientScreen::Game {
+            self.close_all_normal_windows();
             if let Some(network) = &mut self.network {
                 let _ = network.poll_frames();
             }
@@ -2390,7 +2391,9 @@ impl ClientApp {
         }
     }
 
-    fn apply_settings_action(&mut self, action: SettingsAction) {
+    /// Applies an in-game Settings action. Returns true when the application
+    /// should perform the normal full shutdown path.
+    fn apply_settings_action(&mut self, action: SettingsAction) -> bool {
         match action {
             SettingsAction::SetWindowMode(mode) => {
                 if self.display.set_window_mode(mode) {
@@ -2423,10 +2426,25 @@ impl ClientApp {
                     scale.percent()
                 );
             }
+            #[cfg(feature = "dev-diagnostics")]
+            SettingsAction::ReturnToLogin => {
+                self.request_disconnect();
+            }
+            SettingsAction::ExitGame => return true,
         }
         if let Some(window) = &self.window {
             window.request_redraw();
         }
+        false
+    }
+
+    fn exit_application(&mut self, event_loop: &ActiveEventLoop) {
+        println!("PURGATORY client closing");
+        if let Some(network) = &self.network {
+            let _ = network.try_send(NetworkCommand::Shutdown);
+        }
+        self.network = None;
+        event_loop.exit();
     }
 
     fn apply_framebuffer_size(&mut self, width: u32, height: u32) {
@@ -4794,12 +4812,7 @@ impl ApplicationHandler for ClientApp {
 
         match event {
             WindowEvent::CloseRequested => {
-                println!("PURGATORY client closing");
-                if let Some(network) = &self.network {
-                    let _ = network.try_send(NetworkCommand::Shutdown);
-                }
-                self.network = None;
-                event_loop.exit();
+                self.exit_application(event_loop);
             }
             WindowEvent::Resized(size) => {
                 self.apply_framebuffer_size(size.width, size.height);
@@ -5039,7 +5052,10 @@ impl ApplicationHandler for ClientApp {
                             self.handle_item_click(ItemClickTarget::Equipped(slot));
                         }
                         if let Some(action) = self.settings_window.take_completed_action() {
-                            self.apply_settings_action(action);
+                            if self.apply_settings_action(action) {
+                                self.exit_application(event_loop);
+                                return;
+                            }
                         }
                     }
                     if handled {
