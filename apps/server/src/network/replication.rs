@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use purgatory_protocol::{
-    DomainMask, MAX_GAMEPLAY_SNAPSHOT_BYTES, ObserverAoiDebug, PlatformSupportId,
-    ReplicatedDash, ReplicatedEquipment, ReplicatedEquipmentDelta, ReplicatedHealth,
-    ReplicatedKind, ReplicationFrame, ReplicationRecord, SnapshotEntity, encode_gameplay_frame,
+    DomainMask, MAX_GAMEPLAY_SNAPSHOT_BYTES, ObserverAoiDebug, PlatformSupportId, ReplicatedDash,
+    ReplicatedEquipment, ReplicatedEquipmentDelta, ReplicatedHealth, ReplicatedKind,
+    ReplicationFrame, ReplicationRecord, SnapshotEntity, encode_gameplay_frame,
     encode_replication_frame, encode_replication_record,
 };
 use purgatory_simulation::{
