@@ -9,8 +9,9 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **ERA II — Combat & First Playable Loop**
 - **Phase 11 — Item Loop: complete + closeout**
 - **Root `PHASE`: `11.closeout`**
-- **Active parallel track:** FORGE M — Monster Authoring & Runtime on `forge/mob-lab-m4`
-- **Completed parallel presentation foundation:** Production UI I1 — read-only Inventory window
+- **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
+- **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
+- **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
 - **Protocol: v30**
 
@@ -96,13 +97,15 @@ Further Phase 12+ slicing should be added only when the current design is agreed
 
 These tracks can progress beside the gameplay roadmap. They are deliberately separated so tools and visual-content work do not accidentally reopen gameplay phases.
 
-## Production UI I1 — Inventory window foundation
+## Production UI / frontend foundations
 
-- **Status:** complete; read-only foundation accepted for merge.
-- **Implemented scope:** production 9-slice panel, reusable header and close-button interaction, draggable window, reusable text tabs, inset slot grid, category-filtered projection of the owner's authoritative Inventory entries, quantity labels, placeholder item icon resolution, and reserved currency-footer presentation.
-- **Authority boundary:** opening, closing, dragging, and tab selection are client-local presentation state. Item ownership and quantities remain server-authoritative owner-private state.
-- **Explicit non-goals:** item use/equip/drag/drop interaction, bags and capacity policy, authoritative currency, persistence, shops/trading, and economy tuning.
-- **Tracked follow-up:** renderer ordering, visible-cell identity, icon assets, modular extraction, diagnostics/budgets, currency, and future storage policy are split into GitHub Issues #51–#57. Issue #52 must be resolved before adding inventory item interaction; Issue #54 should be resolved before adding a second production window.
+- **Inventory I1:** complete read-only production window foundation.
+- **Game Settings V1:** merged. It reuses the existing client-owned Display settings model rather than creating a second authority. The OS window is intentionally non-resizable; UI scale, display/render settings, return-to-login, and full exit actions are player-facing controls.
+- **Production text 2A:** merged. Production UI text uses the Glyphon/cosmic-text path documented in [`TEXT_RENDERING.md`](TEXT_RENDERING.md); the old fixed-raster path is retired.
+- **Authority boundary:** window state, tabs, dragging, settings interaction, and text presentation are client-local. Gameplay/item/display authority remains with the existing owners.
+- **Inventory deferred scope:** item use/equip/drag/drop interaction, bags/capacity policy, authoritative currency, persistence, shops/trading, and economy tuning.
+- **Tracked UI follow-ups:** Issues #51–#58 remain the place for unresolved renderer ordering, icon, budget, storage/currency, and chrome concerns. Do not infer that all UI debt is closed merely because Settings/text landed.
+
 
 ## FORGE N — NPC Authoring & Runtime
 
@@ -152,11 +155,10 @@ Purpose: turn the proven single-creature PvE fixture into a validated, content-b
 | M2 | Content-backed Red Slime Runtime | complete + merged + manually verified |
 | M2.1 | Damage-triggered aggro + passive contact contract | complete + merged + manually verified |
 | M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | complete + merged |
-| M4 | Multi-monster runtime identity + presentation + test-arena proof | automated implementation/proof landed; manual smoke pending; #75 |
-| M5 | Hub integration + v0.1 closeout | partially landed; final closeout waits on M4 |
+| M4 | Multi-monster runtime identity + presentation + test-arena proof | implementation merged; automated GREEN; manual visual smoke pending; #75 |
+| M5 | Hub integration + v0.1 closeout | Hub integration landed; final closeout waits on #75 acceptance evidence |
 
-The old `forge/mob-lab` and recovered `forge/mob-lab-v01` branches are historical
-reference only. Active FORGE M work is `forge/mob-lab-m3`, currently based on the latest `master` at the time of this update. M3 now includes direct Mob Lab launch from the Hub and authored Monster spawn commands, but M4 still owns per-entity Monster presentation identity and per-Monster approach/contact geometry. Do not add unused ability, loot, placement, AI-tree or presentation fields before a real runtime consumer requires them.
+The old `forge/mob-lab`, recovered `forge/mob-lab-v01`, M3, and M4 branches are historical reference only. M4's per-entity Monster identity, presentation selection, de-specialization, and per-Monster approach geometry are now on `master`. Issue #75 stays open only because the required manual two-Monster visual/runtime smoke has not been recorded. Continue new FORGE M work from current `master`; do not add unused ability, loot, placement, AI-tree or presentation fields before a real runtime consumer requires them.
 
 ## ART-R — Character ART Integration v1
 
@@ -196,56 +198,23 @@ ART-R is a presentation integration track. It does not redefine gameplay equipme
 
 ---
 
-## C — Character Lab / Cutting & Composition Tool
+## C — Character Lab / Character Visual Pack Tool
 
-Purpose: author the character sheet used by the runtime without manually encoding crop rectangles and presentation metadata in code.
+Purpose: maintain a near-automatic authoring path from Humanoid v0 artwork to the current client-consumable Character Visual Pack without inventing a second runtime model.
 
-Current design keeps the source art as a sheet and authors crop/source rectangles; it does not require exporting a separate PNG for every body part.
+**Current status: integrated on `master`.** The older C1–C8 planning list is superseded by the implemented tool and should not be used as execution status.
 
-| Slice | Name | Status |
-|---|---|---|
-| C1 | Character-sheet schema | planned |
-| C2 | Hub page + tool shell | planned |
-| C3 | Source-sheet loading, pan/zoom and crop authoring | planned |
-| C4 | Attachment / part inspector | planned |
-| C5 | Slot-driven character composer | planned |
-| C6 | Optional pair-link editing | planned |
-| C7 | Centralized draw-order data | planned |
-| C8 | Save/load `char.sheet.json` + quality gate | planned |
+Current proven path:
 
-### C1 — Schema
+- Hub launch opens the standalone browser-based Character Lab and refreshes the live Humanoid v0 authoring contract.
+- Template V1 is a fixed **2048×2048** authoring surface at **512 px per presentation unit**; import validates exact dimensions/cells and conversion rejects artwork that cannot fit at preserved world scale.
+- Character Lab can load/save its authoring project, import/convert Template V1 art, resolve the current runtime visual-pack shape, and validate the repository client fixture.
+- Current client fixture is `character.base.dev_01`: `Graphic/character/base/character.base.dev_01.visual-pack.json` plus its side atlas, compile-embedded and validated by `apps/client/src/character_assets.rs`.
+- The current visual pack exposes 14 authored visual parts; runtime skeleton/presentation remains the motion/draw owner. Character Lab does not move gameplay authority into authored art.
+- Authored project/calibration/atlas/visual-pack files are production assets. Do not overwrite current authored art as an incidental tool refactor.
 
-Define the durable authoring data model for body-part / attachment crops, identities, slots and source rectangles.
+Open work must be scoped from current `master` evidence. Recolor authoring remains a separate tracked direction; broader generic equipment/clothing authoring should reuse the visual-pack/asset-runtime path rather than create a parallel character renderer.
 
-### C2 — Tool shell
-
-Standalone Character Lab surface launched through the Developer Hub. Keep authoring state out of the game client.
-
-### C3 — Cutting / crop authoring
-
-Load the source character sheet, navigate it with pan/zoom, select a body region and author its source rectangle visually.
-
-### C4 — Inspector
-
-Edit the selected part/attachment metadata without manipulating raw JSON.
-
-### C5 — Composer
-
-Preview the authored parts together through slot semantics so crop mistakes, pivots and overlap problems are visible immediately.
-
-### C6 — Pair-link
-
-Optional authoring support for related front/back or paired parts where useful; not a new runtime ownership model.
-
-### C7 — Draw-order data
-
-Centralize semantic draw order. This is **not** unrestricted numeric Z-values and not a Z-order editor.
-
-### C8 — Persistence + gate
-
-Save/load the authoring document at `Graphic/character/authoring/char.sheet.json`, run the quality gate and stop.
-
-**Stop boundary:** C1–C8 only. Rigging, bones, sockets, animation authoring and atlas export are separate concerns and should not be silently folded into this tool track.
 
 ---
 
