@@ -67,3 +67,5 @@ jobs:
             text/production-foundation \
             ui/alpha-frontend-background-motion \
             ui/game-settings-window
+
+# verified-master: 122562bf7b503a7c54fc566157eb4102d1ce925f
