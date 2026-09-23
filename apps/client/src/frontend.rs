@@ -296,8 +296,8 @@ impl ConnectionFrontend {
             }
         }
 
-        if let Some(layer) = self.background.moon.as_ref() {
-            if let Some(rect) = paint_anchored_texture(
+        if let Some(layer) = self.background.moon.as_ref()
+            && let Some(rect) = paint_anchored_texture(
                 painter,
                 layer,
                 screen,
@@ -305,9 +305,9 @@ impl ConnectionFrontend {
                 moon_drift_offset(elapsed),
                 MOON_HEIGHT_PX,
                 alpha,
-            ) {
-                debug_layer_bounds(painter, screen, rect, "MOON", 2);
-            }
+            )
+        {
+            debug_layer_bounds(painter, screen, rect, "MOON", 2);
         }
 
         if let Some(layer) = self.background.clouds_near.as_ref() {
@@ -476,7 +476,7 @@ fn paint_dev_strip(ctx: &Context, server: &str, status: &str, opacity: f32) {
                             .size(11.0)
                             .color(Color32::from_gray(205)),
                         |ui| {
-                            ui.small(format!("Diagnostics: ON  (~ toggles full overlay)"));
+                            ui.small("Diagnostics: ON  (~ toggles full overlay)");
                             ui.small(format!("Server: {server}"));
                             ui.small(format!("Status: {status}"));
                             ui.small(format!(
