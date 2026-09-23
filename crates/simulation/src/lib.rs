@@ -96,8 +96,8 @@ pub use ability::{
     ABILITY_EFFECT_CAP, AbilityActivation, AbilityDefinition, AbilityDefinitionError,
     AbilityDelivery, AbilityEffect, AbilityGrantSource, AbilityGrantTable, AbilityId,
     AbilityPresentation, AbilityRejectReason, AbilityRequest, AbilityTiming, CooldownTable,
-    GameplayPresentationCue,
-    cue_for_ability_cast, cue_for_damage_outcome, forward_query_aabb, oneshot_kind_for_cue,
+    GameplayPresentationCue, cue_for_ability_cast, cue_for_damage_outcome, forward_query_aabb,
+    oneshot_kind_for_cue,
 };
 pub use action::{Action, ActionEnd, ActionError, ActionId, ActionKind, ActionPhase};
 pub use action_gate::{ActionDenialReason, ActionGateContext, evaluate_action_gate};
