@@ -31,8 +31,7 @@ use crate::schema::{
 use purgatory_common::{ContentId, ContentKind, allocated_id_for_label, validate_authored_id};
 use purgatory_simulation::{
     AbilityActivation, AbilityDefinition, AbilityDelivery, AbilityEffect, AbilityPresentation,
-    AbilityTiming,
-    EquipmentSlot, InteractableKind, PlatformKind, WorldBounds,
+    AbilityTiming, EquipmentSlot, InteractableKind, PlatformKind, WorldBounds,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1723,10 +1722,12 @@ mod tests {
             .expect("grantable Dash ability");
         assert_eq!(dash.presentation, AbilityPresentation::Dash);
         assert_eq!(dash.delivery, AbilityDelivery::SelfTarget);
-        let [AbilityEffect::Dash {
-            speed,
-            duration_ticks,
-        }] = dash.effects.as_slice()
+        let [
+            AbilityEffect::Dash {
+                speed,
+                duration_ticks,
+            },
+        ] = dash.effects.as_slice()
         else {
             panic!("Dash pack definition must contain exactly one Dash effect");
         };
