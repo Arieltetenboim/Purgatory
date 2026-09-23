@@ -395,6 +395,7 @@ impl LocalPrediction {
 
     /// Apply and remember one grantable Dash at the exact input step that owns it.
     /// Server rejection removes the event and restores/replays from authority.
+    #[allow(clippy::too_many_arguments)]
     pub fn try_predict_dash(
         &mut self,
         world: &mut World,
@@ -1260,7 +1261,7 @@ mod tests {
         assert!(pred.try_predict_dash(&mut world, 1, first, 9.0, 5, 18, 8, 10));
         assert!(!pred.dash_prediction_ready(27));
         assert!(
-            pred.dash_prediction_ready(28) == false,
+            !pred.dash_prediction_ready(28),
             "pending ack still owns Dash"
         );
 
