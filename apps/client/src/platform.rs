@@ -23,6 +23,7 @@ pub fn window_attributes() -> WindowAttributes {
     Window::default_attributes()
         .with_title(window_title())
         .with_inner_size(PhysicalSize::new(DEV_WINDOW_WIDTH, DEV_WINDOW_HEIGHT))
+        .with_resizable(false)
 }
 
 #[must_use]
@@ -41,5 +42,10 @@ mod tests {
     fn development_window_is_1280x720() {
         assert_eq!(DEV_WINDOW_WIDTH, 1280);
         assert_eq!(DEV_WINDOW_HEIGHT, 720);
+    }
+
+    #[test]
+    fn player_window_disables_manual_resize() {
+        assert!(!window_attributes().resizable);
     }
 }

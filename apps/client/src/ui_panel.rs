@@ -24,6 +24,7 @@ const ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
 const ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
 const ATLAS_TEXTURE_FILE: &str = "ATLAS.png";
 const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
+const TITLE_MAX_HEADER_HEIGHT_FRACTION: f32 = 2.0 / 3.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 4.0;
 const HEADER_CONTENT_OFFSET_UNITS: f32 = 2.0;
 const TITLE_CONTROL_GAP_UNITS: f32 = 5.0;
@@ -535,16 +536,17 @@ impl UiWindowAssets {
             return Ok(None);
         };
         let panel = self.panels.selected(self.panel_style);
+        let destination_borders = panel
+            .border_units
+            .scaled(pixels_per_unit)
+            .clamped_to_source(panel.slice_px);
         let mut textured_rects = assemble_nine_slice_region(
             layout.window,
             panel.texture,
             panel.source_size_px,
             panel.source_rect,
             panel.slice_px,
-            panel
-                .border_units
-                .scaled(pixels_per_unit)
-                .clamped_to_source(panel.slice_px),
+            destination_borders,
             panel.tint,
         )?;
 
@@ -563,13 +565,17 @@ impl UiWindowAssets {
             tint: [1.0; 4],
         });
         let mut title_anchor_x = layout.header.min[0] + TITLE_LEFT_INSET_UNITS * pixels_per_unit;
+        let header_content_scale =
+            destination_borders.top / panel.border_units.top.max(f32::EPSILON);
         if let Some(icon) = icon {
-            let icon_size = HEADER_ICON_SIZE_UNITS * pixels_per_unit;
+            let header_content_offset = HEADER_CONTENT_OFFSET_UNITS * header_content_scale;
+            let icon_size = (HEADER_ICON_SIZE_UNITS * pixels_per_unit)
+                .min((destination_borders.top - header_content_offset * 2.0).max(1.0));
             let icon_min = [
                 title_anchor_x,
                 layout.header.min[1]
                     + ((layout.header.height() - icon_size) * 0.5).max(0.0)
-                    + HEADER_CONTENT_OFFSET_UNITS * pixels_per_unit,
+                    + header_content_offset,
             ];
             if let Some(icon_rect) = self.icon_rect(
                 icon,
@@ -585,12 +591,13 @@ impl UiWindowAssets {
             }
         }
 
-        let title_font_size = TITLE_FONT_SIZE_UNITS * pixels_per_unit;
+        let title_font_size = (TITLE_FONT_SIZE_UNITS * pixels_per_unit)
+            .min(destination_borders.top * TITLE_MAX_HEADER_HEIGHT_FRACTION);
         let title_anchor = [
             title_anchor_x,
             layout.header.min[1]
                 + ((layout.header.height() - title_font_size) * 0.5).max(0.0)
-                + HEADER_CONTENT_OFFSET_UNITS * pixels_per_unit,
+                + HEADER_CONTENT_OFFSET_UNITS * header_content_scale,
         ];
         let title_max_width = (layout.close_button.min[0]
             - TITLE_CONTROL_GAP_UNITS * pixels_per_unit
@@ -672,6 +679,12 @@ impl UiWindowAssets {
             window_min[1] + window_size_units[1] * pixels_per_unit,
         ];
         let panel = self.panel();
+        let destination_borders = panel
+            .border_units
+            .scaled(pixels_per_unit)
+            .clamped_to_source(panel.slice_px);
+        let header_content_scale =
+            destination_borders.top / panel.border_units.top.max(f32::EPSILON);
         let header = ScreenRect {
             min: [
                 window_min[0] + panel.border_units.left * pixels_per_unit,
@@ -679,7 +692,7 @@ impl UiWindowAssets {
             ],
             max: [
                 window_max[0] - panel.border_units.right * pixels_per_unit,
-                window_min[1] + panel.border_units.top * pixels_per_unit,
+                window_min[1] + destination_borders.top,
             ],
         };
         let button_size = [
@@ -703,7 +716,7 @@ impl UiWindowAssets {
         let close_max_x = header.max[0] - self.close_button.right_inset_units * pixels_per_unit;
         let close_min_y = header.min[1]
             + ((header.height() - button_size[1]) * 0.5).max(0.0)
-            + HEADER_CONTENT_OFFSET_UNITS * pixels_per_unit;
+            + HEADER_CONTENT_OFFSET_UNITS * header_content_scale;
         let close_button = ScreenRect {
             min: [close_max_x - button_size[0], close_min_y],
             max: [close_max_x, close_min_y + button_size[1]],
@@ -4691,6 +4704,29 @@ mod tests {
         assert_eq!(dialog_frame.textured_rects[4].size(), [382.0, 147.0]);
         assert_eq!(equipment_frame.textured_rects[8].size(), [9.0, 9.0]);
         assert_eq!(dialog_frame.textured_rects[8].size(), [9.0, 9.0]);
+    }
+
+    #[test]
+    fn enlarged_ui_keeps_title_inside_fixed_header_chrome() {
+        let assets = embedded_assets();
+        let mut window = ProofPanelWindow::with_size([250.0, 300.0]);
+        window.mode = ProofPanelMode::Normal;
+        let frame = assets
+            .proof_frame(&mut window, "SETTINGS", viewport(), 1.25, None)
+            .unwrap()
+            .unwrap();
+        let layout = assets
+            .layout(&mut window, viewport(), 1.25)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(layout.header.height(), 24.0);
+        assert_eq!(frame.title.style.font_size, 16.0);
+        assert!(frame.title.style.font_size < TITLE_FONT_SIZE_UNITS * 1.25);
+        assert!(
+            frame.title.anchor[1] + frame.title.style.font_size <= layout.header.max[1],
+            "scaled title must remain inside the rendered header"
+        );
     }
 
     #[test]

@@ -310,7 +310,7 @@ impl Default for DisplaySettings {
 pub struct InvalidResolution;
 
 /// Supported windowed resolution presets. Not a claim that the monitor native
-/// mode matches; windowed resize may still apply.
+/// mode matches; the OS may still constrain an applied window size.
 pub const RESOLUTION_PRESETS: [Resolution; 5] = [
     Resolution {
         width: 1280,
@@ -343,7 +343,8 @@ pub enum SurfaceResizeAction {
 }
 
 /// Classify an OS / requested framebuffer size against the last configured
-/// surface. Preset apply and manual window dragging share this decision.
+/// surface. Preset apply, fullscreen transitions, and OS resize events share
+/// this decision even though manual window resizing is disabled.
 #[must_use]
 pub fn classify_framebuffer_resize(
     configured: (u32, u32),
