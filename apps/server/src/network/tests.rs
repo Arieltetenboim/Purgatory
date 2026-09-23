@@ -4074,6 +4074,24 @@ async fn ability_activate_empty_swing_over_quic() {
         }),
     )
     .await;
+    assert!(
+        wait_until(
+            || {
+                let mut g = lock_sim(&sim);
+                g.tick_n(1);
+                g.owner.entity_of(id).is_some_and(|actor| {
+                    g.owner.world().active_action(actor).is_some_and(|action| {
+                        action.kind
+                            == purgatory_simulation::ActionKind::Ability {
+                                id: basic_strike_id(),
+                            }
+                    })
+                })
+            },
+            Duration::from_secs(2),
+        )
+        .await
+    );
     assert_eq!(
         expect_ability(&mut recv).await,
         ServerAbility::Accepted { seq: 1 }
