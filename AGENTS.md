@@ -30,3 +30,12 @@ Scoped workflows: [`.cursor/skills/`](.cursor/skills/) (`purgatory-implement`, `
 - Honor the requested phase/sub-phase boundary. Do not start the next phase until instructed.
 - Respect the project-defined quality gate (`./scripts/check.ps1` or `./scripts/check.sh`). Compiling is not completion.
 - Surface architectural uncertainty rather than silently resolving it.
+
+
+## Branch policy
+
+- Work from current `master` unless a task explicitly requires a temporary branch.
+- `master` is canonical; root `VERSION` carries the human-facing master version.
+- `DEVELOPMENT` is a periodic stable checkpoint only. Do not develop independently on it or automatically fast-forward it after every master commit.
+- Delete temporary feature/fix/salvage branches after their useful work is merged, salvaged, or proven superseded.
+- Before deleting a divergent branch, prove its unique semantic changes are either present on `master` or intentionally rejected/superseded.
