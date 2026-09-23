@@ -58,12 +58,9 @@ Rules:
 
 ## Current proof boundary
 
-The normal-session Red Slime is resolved through `ContentRegistry`, spawned
-with its stable Monster `ContentId`, and receives authored Health, collision
-half-extents, movement speed, behavior and home leash. Scheduled
-respawn preserves the same `ContentId` and runtime configuration.
+Active authored Monsters resolve through `ContentRegistry` and are spawned with their own stable Monster `ContentId`. The current catalog keeps `10001 / monster.slime.red` retired and reserved; active examples include Moss Crab (`10002`) and Shroom (`10003`). Runtime Health, collision bounds, movement speed, behavior, home leash, sprite identity, and scheduled respawn configuration follow the selected authored Monster rather than a Red Slime default.
 
-The bootstrap location, contact-damage amount and respawn delay remain existing runtime/proof policy rather than authored Monster fields. Sprite identity is authored and resolves through the creature manifest path. M4 now projects per-entity Monster identity and collision-derived approach geometry; the remaining #75 work is acceptance evidence, not a known Red-Slime-derived runtime path.
+The bootstrap location, contact-damage amount and respawn delay remain existing runtime/proof policy rather than authored Monster fields. M4 projects per-entity Monster identity and collision-derived approach geometry; the remaining #75 work is manual acceptance evidence, not missing identity/geometry implementation.
 
 ## Mob Lab sequence
 
