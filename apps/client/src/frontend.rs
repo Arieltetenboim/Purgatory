@@ -481,7 +481,7 @@ fn paint_dev_strip(ctx: &Context, server: &str, status: &str, opacity: f32) {
                             ui.small(format!("Status: {status}"));
                             ui.small(format!(
                                 "Client: v{}  Protocol: {}",
-                                env!("CARGO_PKG_VERSION"),
+                                purgatory_common::version(),
                                 purgatory_protocol::PROTOCOL_VERSION
                             ));
                         },
