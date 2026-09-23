@@ -42,8 +42,8 @@ mod version;
 
 pub use ability::{
     ABILITY_ACCEPTED_BYTES, ABILITY_ACTIVATE_INDEPENDENT_BYTES, ABILITY_ACTIVATE_SELECTED_BYTES,
-    ABILITY_REJECTED_BYTES, MAX_GRANTED_ABILITIES, AbilityActivateRequest,
-    AbilityCommandReject, ServerAbility, ServerAbilityGrants,
+    ABILITY_REJECTED_BYTES, AbilityActivateRequest, AbilityCommandReject, MAX_GRANTED_ABILITIES,
+    ServerAbility, ServerAbilityGrants,
 };
 pub use config::{
     ALPN_PROTOCOL, DEFAULT_DEV_HOST, DEFAULT_DEV_PORT, HANDSHAKE_TIMEOUT, IDLE_TIMEOUT,
