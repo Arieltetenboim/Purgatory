@@ -17,7 +17,7 @@ Developer Tools owns local development runtime control:
 - run the quality gate and load harness
 - surface logs, metrics, and failure detail
 
-It is not a production admin console. Authoring tools remain standalone: Animation Lab is a native launched window; NPC Lab and Mob Lab are local web tools launched from the Hub. The Hub also exposes bounded DEV-authoritative Server Commands, but those are development controls rather than production administration.
+It is not a production admin console. Authoring tools remain standalone: Animation Lab is a native launched window; Character Lab, NPC Lab, and Mob Lab are launched independently from the Hub (Character Lab is the local browser-based character authoring/conversion tool). The Hub also exposes bounded DEV-authoritative Server Commands, but those are development controls rather than production administration.
 
 ## CURRENT
 
@@ -41,7 +41,7 @@ Implemented in this pass:
 | Environment | Log level combo applies to **new** processes: `RUST_BACKTRACE=1`, optional `RUST_LOG`, `PURGATORY_NET_LOG`, `PURGATORY_NET_VERBOSE`. |
 | Autostart | Starts the server on first show unless a server is already present or `PURGATORY_LAUNCHER_NO_AUTOSTART` is set. |
 | Kill All | Workspace-scoped cargo (command line contains this repo root) plus owned server/client/load. |
-| Authoring tools | Content launches Animation Lab, NPC Lab, and Mob Lab as standalone tools. Mob Lab runs in its own visible PowerShell window so closing that window stops its local server. |
+| Authoring tools | Content launches Animation Lab, Character Lab, NPC Lab, and Mob Lab as standalone tools. Character Lab exports/refreshes the live Humanoid v0 authoring contract and Template V1 before opening. Mob Lab runs in its own visible PowerShell window so closing that window stops its local server. |
 | Server Commands | DEV-only selected-player commands use the typed loopback admin path and bounded gameplay handoff. Current authored spawn controls include NPC, Monster, and Item; simulation/server authority remains the owner. |
 | Authoring template | Content → **Export authoring template** writes [`Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg`](../../Graphic/character/HUMANOID_V0_AUTHORING_TEMPLATE.svg) from live Humanoid v0 contracts. **Export AI modular reference** writes [`HUMANOID_V0_AI_MODULAR_REFERENCE_V1.svg`](../../Graphic/character/HUMANOID_V0_AI_MODULAR_REFERENCE_V1.svg). **Export Headwear Side master** writes [`Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg`](../../Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg) (empty 2×2 grid + Crown `+`). **Extract Headwear Side cells** crops `HEADWEAR_SIDE_MASTER_V1.png` by grid only. Animation Lab can DEV-load one extracted Headwear Side PNG (`equipment.debug.headwear_proof.a.side`). The game client compile-embeds the four extracted Side cells (`a`–`d`); Player debug overlay selects HEADWEAR 1–4. Photoshop / AI reference files are not filesystem-loaded by the client. |
 
@@ -66,7 +66,7 @@ Developer Tools
 ├── Runtime        CURRENT
 ├── Testing        CURRENT
 ├── Diagnostics    CURRENT
-├── Content        CURRENT (launches Animation Lab; Humanoid v0 authoring SVG export; Headwear Side master-sheet proof; not an in-Hub editor)
+├── Content        CURRENT (launches Animation Lab / Character Lab / NPC Lab / Mob Lab; authoring exports remain standalone, not in-Hub editors)
 ├── Maps           PLANNED (visual editor may be a native tool)
 ├── NPCs           PLANNED
 └── Settings       CURRENT (profile / log level / quality gate / rebuild / Kill All)
@@ -86,7 +86,7 @@ PowerShell fallback. Requires: Windows, PowerShell (STA), Rust/`cargo` on PATH f
 DEV_HUB.BAT
 ```
 
-Builds if needed, launches `purgatory-dev-hub.exe`, then the bootstrap exits. Live pages: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings, Content (Animation Lab launch, Humanoid v0 authoring-template export, Headwear Side master proof). World remains a placeholder. Closing the Hub / Kill All does **not** stop Animation Lab. The Hub window is **fixed size** (1280×800, non-resizable) until a full responsive layout pass exists.
+Builds if needed, launches `purgatory-dev-hub.exe`, then the bootstrap exits. Live pages: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings, Content (Animation Lab, Character Lab, NPC Lab and Mob Lab launches plus the maintained character authoring exports). World remains a placeholder. Closing the Hub / Kill All does **not** stop Animation Lab. The Hub window is **fixed size** (1280×800, non-resizable) until a full responsive layout pass exists.
 
 ### Hub UI presentation (current)
 
