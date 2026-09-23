@@ -584,8 +584,7 @@ impl World {
         // of hits, delivery shape, animation clips, or ability id.
         if let Some(kind) = crate::ability::oneshot_kind_for_cue(
             crate::ability::cue_for_ability_cast(request.definition.presentation),
-        )
-        {
+        ) {
             let _ = self.try_start_presentation_oneshot(request.actor, kind);
         }
         Ok(action)
