@@ -1,6 +1,6 @@
 # Mob Lab
 
-Status: FORGE M3 implementation complete on `forge/mob-lab-m3`. Manual closeout smoke and the final PR quality gate remain before PR #72 merge.
+Status: FORGE M3 authoring foundation and M4 runtime integration are merged to `master`. Automated M4 closeout is GREEN; GitHub Issue #75 remains open for the required manual two-Monster visual/runtime smoke before final M4/M5 closeout.
 
 Mob Lab edits the **same Monster JSON files loaded by the game**:
 
@@ -21,7 +21,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\mob_lab\run.ps1
 
 Default URL: `http://127.0.0.1:8766/`.
 
-## M3 scope
+## M3 authoring scope — merged
 
 - list runtime Monster definitions;
 - create a schema-v4 Monster and atomically allocate the next permanent Monster ContentId;
@@ -35,7 +35,7 @@ Default URL: `http://127.0.0.1:8766/`.
 - canonical Rust runtime-pack validation on every save;
 - automatic rollback if runtime validation fails.
 
-Developer Hub launch and DEV-authoritative Monster spawn-by-ContentId are already wired on this branch. M4 / issue #75 owns the remaining multi-monster runtime proof: per-entity presentation identity, per-Monster approach/contact geometry, and the real-runtime test arena. Final FORGE M closeout remains M5.
+Developer Hub launch and DEV-authoritative Monster spawn-by-ContentId are merged. M4 per-entity identity/presentation, Red Slime de-specialization, and per-Monster approach/contact geometry are also merged and automated GREEN. Issue #75 remains open only for the required manual two-Monster visual/runtime acceptance evidence. Final FORGE M closeout remains M5.
 
 ## Save safety
 
@@ -63,7 +63,7 @@ failed runtime validation rolls all of them back.
 
 ## Sprite selection
 
-Monster JSON stores only a stable sprite id such as `creature.red_slime`.
+Monster JSON stores only a stable authored sprite id such as a `creature.*` manifest id.
 Mob Lab discovers valid sprite manifests directly from `Graphic/creature/*/manifest.json`;
 there is no hardcoded Monster-to-sprite table in the Lab.
 
