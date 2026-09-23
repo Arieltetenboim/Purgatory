@@ -428,8 +428,7 @@ impl LocalPrediction {
             duration_ticks,
         });
         self.dash_cooldown_until_tick = client_tick.saturating_add(cooldown_ticks);
-        self.dash_activation_lock_until_tick =
-            client_tick.saturating_add(activation_lock_ticks);
+        self.dash_activation_lock_until_tick = client_tick.saturating_add(activation_lock_ticks);
         self.dash_cooldown_request_seq = Some(request_seq);
         true
     }
@@ -1260,10 +1259,16 @@ mod tests {
         assert!(pred.try_push_pending(first));
         assert!(pred.try_predict_dash(&mut world, 1, first, 9.0, 5, 18, 8, 10));
         assert!(!pred.dash_prediction_ready(27));
-        assert!(pred.dash_prediction_ready(28) == false, "pending ack still owns Dash");
+        assert!(
+            pred.dash_prediction_ready(28) == false,
+            "pending ack still owns Dash"
+        );
 
         assert!(pred.reject_predicted_ability(1, &replica, &mut world, 10));
-        assert!(pred.dash_prediction_ready(10), "server rejection clears speculative cooldown");
+        assert!(
+            pred.dash_prediction_ready(10),
+            "server rejection clears speculative cooldown"
+        );
     }
 
     #[test]
@@ -1283,7 +1288,10 @@ mod tests {
         assert!(pred.ability_activation_locked(10));
         assert!(pred.ability_activation_locked(17));
         assert!(!pred.ability_activation_locked(18));
-        assert!(!pred.dash_prediction_ready(18), "Dash cooldown outlives action lock");
+        assert!(
+            !pred.dash_prediction_ready(18),
+            "Dash cooldown outlives action lock"
+        );
         assert!(!pred.dash_prediction_ready(69));
     }
 
@@ -1305,11 +1313,7 @@ mod tests {
             !pred.try_predict_dash(&mut world, 2, second, 9.0, 5, 18, 8, 2),
             "one unacknowledged Dash prediction owns the local movement state"
         );
-        pred.tick(
-            &mut world,
-            PlayerInput::from_buttons(false, true, false),
-            2,
-        );
+        pred.tick(&mut world, PlayerInput::from_buttons(false, true, false), 2);
         let dashed_x = world.player_body().unwrap().position[0];
         assert!(world.player_dash_of(world.player_id().unwrap()).is_some());
 
@@ -1333,11 +1337,7 @@ mod tests {
         let command = cmd(1, PlayerInput::from_buttons(false, true, false));
         assert!(pred.try_push_pending(command));
         assert!(pred.try_predict_dash(&mut world, 1, command, 9.0, 5, 18, 8, 1));
-        pred.tick(
-            &mut world,
-            PlayerInput::from_buttons(false, true, false),
-            2,
-        );
+        pred.tick(&mut world, PlayerInput::from_buttons(false, true, false), 2);
 
         auth_at(&mut replica, 2, id, base);
         pred.sync_from_replica(&replica, &mut world, 2);
