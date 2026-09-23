@@ -29,14 +29,14 @@ pub struct ServerPresentationOneShot {
 impl DevPresentationOneShot {
     #[must_use]
     pub const fn kind_valid(kind: u8) -> bool {
-        matches!(kind, 1 | 2 | 3)
+        matches!(kind, 1..=3)
     }
 }
 
 impl ServerPresentationOneShot {
     #[must_use]
     pub const fn kind_valid(kind: u8) -> bool {
-        matches!(kind, 0 | 1 | 2 | 3)
+        matches!(kind, 0..=3)
     }
 }
 
