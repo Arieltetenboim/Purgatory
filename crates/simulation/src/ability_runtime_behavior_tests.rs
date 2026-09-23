@@ -294,11 +294,7 @@ fn dash_locks_direction_ignores_jump_and_stops_after_authored_ticks() {
 
     let dt = 1.0 / 30.0;
     for _ in 0..5 {
-        world.tick_player(
-            actor,
-            dt,
-            PlayerInput::from_buttons(false, true, true),
-        );
+        world.tick_player(actor, dt, PlayerInput::from_buttons(false, true, true));
     }
     let body = world.player_body_of(actor).unwrap();
     assert!((body.position[0] + 1.5).abs() < 1e-4);
@@ -315,7 +311,10 @@ fn dash_locks_facing_against_mid_dash_horizontal_input() {
 
     world.note_player_horizontal_intent(actor, 1);
     let (_, player) = world.player_parts_mut_for(actor).expect("player");
-    assert_eq!(player.facing_sign, -1, "Dash must own facing until movement ends");
+    assert_eq!(
+        player.facing_sign, -1,
+        "Dash must own facing until movement ends"
+    );
     assert_eq!(player.dash.expect("Dash active").direction, -1);
 
     world.tick_player(
@@ -325,14 +324,20 @@ fn dash_locks_facing_against_mid_dash_horizontal_input() {
     );
     let (_, player) = world.player_parts_mut_for(actor).expect("player");
     assert_eq!(player.facing_sign, -1);
-    assert!(player.velocity[0] < 0.0, "opposite held input must not steer Dash");
+    assert!(
+        player.velocity[0] < 0.0,
+        "opposite held input must not steer Dash"
+    );
 }
 
 #[test]
 fn dash_movement_blocks_other_abilities_even_without_action_table_state() {
     let (mut world, actor) = dash_stage(false);
     assert!(world.start_player_dash(actor, 9.0, 5));
-    assert!(world.active_action(actor).is_none(), "fixture isolates movement-state gate");
+    assert!(
+        world.active_action(actor).is_none(),
+        "fixture isolates movement-state gate"
+    );
 
     let strike = sample_ability();
     assert_eq!(
@@ -366,7 +371,11 @@ fn dash_uses_normal_collision_and_stops_at_wall() {
         world.tick_player(actor, 1.0 / 30.0, PlayerInput::idle());
     }
     let body = world.player_body_of(actor).unwrap();
-    assert!(body.position[0] <= 0.8001, "wall stop x={}", body.position[0]);
+    assert!(
+        body.position[0] <= 0.8001,
+        "wall stop x={}",
+        body.position[0]
+    );
     assert_eq!(body.velocity[0], 0.0);
     assert!(world.player_dash_of(actor).is_none());
 }
@@ -422,7 +431,10 @@ fn actual_damage_interrupts_dash_action_and_movement() {
     assert!(world.player_dash_of(actor).is_none());
     assert_eq!(world.player_body_of(actor).unwrap().velocity[0], 0.0);
     let dirty = world.dirty_of(actor).expect("player dirty flags");
-    assert!(dirty.transform, "Dash interruption must replicate zero velocity");
+    assert!(
+        dirty.transform,
+        "Dash interruption must replicate zero velocity"
+    );
     assert!(dirty.health);
     assert_eq!(
         world.presentation_oneshot_of(actor).unwrap().kind,
