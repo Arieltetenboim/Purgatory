@@ -162,39 +162,20 @@ The old `forge/mob-lab`, recovered `forge/mob-lab-v01`, M3, and M4 branches are 
 
 ## ART-R — Character ART Integration v1
 
-Purpose: replace geometric character placeholders with real authored character art through the existing skeleton / Character Presentation / Paper Doll architecture.
+Purpose: integrate authored base-character art through the existing skeleton / Character Presentation / Paper Doll architecture.
 
-| Slice | Name | Status |
+The original R1–R5 plan has been **partially overtaken by implementation already on `master`**. Do not execute the old table as if all slices were untouched.
+
+| Slice | Name | Current evidence |
 |---|---|---|
-| ART-R1 | Multi-Atlas Renderer Foundation | planned |
-| ART-R2 | VisualAssetRegistry + Visual Pack Loader | planned |
-| ART-R3 | Base Body → Textured Skeleton | planned |
-| ART-R4 | Character Presentation Proof | planned |
-| ART-R5 | Equipment Bridge | planned |
+| ART-R1 | Multi-Atlas Renderer Foundation | foundation present: renderer uses stable `SpriteTextureId` identities and can submit textured character/world quads from multiple registered resources |
+| ART-R2 | VisualAssetRegistry + Visual Pack Loader | present: client `AssetRuntime` + Character Visual Pack v1 resolve embedded visual keys to texture/atlas regions |
+| ART-R3 | Base Body → Textured Skeleton | present for the current Side `character.base.dev_01` pack; authored visuals are transformed by the existing Humanoid skeleton |
+| ART-R4 | Character Presentation Proof | partially proven in the shared local/remote presentation path; no separate ART-R4 closeout record was found, so treat broader acceptance as unclosed |
+| ART-R5 | Equipment Bridge | partial/proof-only: existing Headwear attachment proof uses the shared asset/texture machinery, but a generic equipment visual-pack bridge is not closed |
 
-### ART-R1 — Multi-Atlas Renderer Foundation
+**Current rule:** before starting more ART-R work, inspect the live Character Presentation / `AssetRuntime` / `character_assets.rs` path and scope only the remaining gap. Do not rebuild R1–R3 as parallel systems.
 
-Remove the assumption that every textured character quad uses one texture. Introduce a small texture identity and allow ordered draw ranges to rebind textures while preserving the existing Character Presentation draw order.
-
-**Gate:** existing Headwear still renders correctly; colored quads are unchanged; multiple atlases can interleave without changing semantic layer order.
-
-### ART-R2 — VisualAssetRegistry + Visual Pack Loader
-
-Own the mapping from authored visual keys to texture/atlas regions and load a defined visual pack instead of hard-wiring texture assumptions into rendering code.
-
-### ART-R3 — Base Body → Textured Skeleton
-
-Bind real base-character body visuals to the existing humanoid skeleton while keeping skeleton transforms and animation runtime as the motion source of truth.
-
-### ART-R4 — Character Presentation Proof
-
-Prove the complete local + remote Character Presentation path with real base-body art, existing activity/view selection, layering and animation.
-
-### ART-R5 — Equipment Bridge
-
-Connect equipment visuals to the same asset registry / multi-atlas path so base body and Paper Doll attachments share one presentation architecture rather than parallel render systems.
-
-ART-R is a presentation integration track. It does not redefine gameplay equipment ownership, animation authority or server contracts.
 
 ---
 
