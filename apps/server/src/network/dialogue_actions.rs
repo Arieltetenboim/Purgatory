@@ -140,7 +140,9 @@ fn resolve(
                 let ability = registry
                     .ability(ability_authored)
                     .ok_or_else(|| DialogueActionError::UnknownAbility(ability_authored.clone()))?;
-                Ok(ResolvedAction::GrantAbility { ability: ability.id })
+                Ok(ResolvedAction::GrantAbility {
+                    ability: ability.id,
+                })
             }
         })
         .collect()
