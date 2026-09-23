@@ -1,6 +1,6 @@
 # Protocol
 
-Current protocol version is **30**. The historical phase summary below
+Current protocol version is **31**. The historical phase summary below
 retains its original version references.
 
 Phase 5.2 adds **authoritative gameplay replication**. Protocol version is **15**. The client sends per-tick `InputCommand` values identified by `(input_epoch, sequence)`. Phase 5.3 is client-only remote interpolation. Phase 5.4 is client-only local prediction. Phase 5.5 adds acknowledgement, continuation debt, late-collapse compaction, and local restore+replay. Phase 5.6 adds a **development-only** network impairment lab (delay/stall/HOL on the existing reliable streams). Phase 5.7 adds off-protocol localhost load metrics and raises the mechanical entity decode bound to 256. Phase 6.0 adds runtime/replication **contracts**; 6A composition; **6B** adds reliable interaction control envelopes and optional `ReplicatedKind::Interactable`; **6C** adds observer `WorldAddress`, `ReplicatedKind::Portal`, and `PortalActivate`. **6D** replaces full `WorldSnapshot` on the gameplay uni stream with `ReplicationFrame` (Enter/Update/Leave) and server interest-policy AOI, then adds DEV-only `DevSetChannel` (tag 17) so a Channel change is an authoritative `WorldAddress` boundary. **6E** adds DEV `Hello.dev_login` (temporary lookup identity) and `DisconnectReasonCode::AlreadyConnected`. Phase **6F** adds server-side runtime services without a protocol bump. Phase **7.2** adds `ReplicatedKind::Npc` (kind `4`) so visible Generics/NPCs Enter AOI on the wire (ADR-0054). Protocol **v12** adds equipment request envelopes and an optional equipment domain on Enter/Update. Protocol **v13** adds DEV presentation Attack/Hurt oneshot control envelopes (tags 22/23); Enter/Update snapshot layout is unchanged. Historical v1–v12 Hello/Welcome and earlier snapshot goldens stay frozen. Health on v8+ frames proves multi-domain deltas; 7.2 uses Health as a workload mutation domain. Phase **9A** locks ability authority (client requests ability id + targeting; server applies `AbilityEffect`) without adding wire tags. Phase **9B** executes `skill.basic.strike` in simulation only. Protocol **v15** adds ability activation envelopes (tags 25–27).
@@ -40,7 +40,7 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 30` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 31` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
 v26 is an intentional incompatible bump: v1–v25 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
@@ -119,6 +119,8 @@ quantity, slot, or entity id; `seq == 0` is invalid.
 Protocol v29 adds DEV-only `DevSpawnMonster` (tag 43). The client sends one stable Monster `ContentId`; the server validates Monster-domain identity, resolves the authored Monster definition, chooses authoritative placement/address near the bound player, and creates only transient server-memory runtime identity. The request carries no position, address, runtime `EntityId`, health, collision, behavior or sprite data.
 
 Protocol v30 adds an optional stable authored `ContentId` to replication Enter records. The server projects identity from each live authored runtime entity; the client retains it per replica and resolves presentation from the corresponding client-safe content projection. This is identity/presentation metadata only: clients still do not author spawn, Health, collision, behavior, placement, or runtime `EntityId`. Historical golden vectors remain frozen.
+
+Protocol v31 makes Dash an input-anchored authoritative ability. `AbilityActivate` carries the owning input epoch/sequence, owner-private `AbilityGrants` publishes learned grants, and replication carries recipient-local Dash state needed for prediction restore/replay. Dash remains server-authoritative: the client does not author speed, direction, duration, collision results, cooldown truth, or grant state. v30 peers are rejected.
 
 ## Golden wire vectors
 
