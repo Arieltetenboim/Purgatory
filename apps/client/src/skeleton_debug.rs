@@ -900,24 +900,6 @@ pub fn sanitize_preview_scale(scale: f32) -> f32 {
     }
 }
 
-/// Local-player presentation AABB center. Simulation AABB is not scaled; feet stay at `presented_root`.
-#[must_use]
-pub fn preview_local_player_center(body_center: [f32; 2], scale: f32) -> [f32; 2] {
-    let s = sanitize_preview_scale(scale);
-    let root = presented_root(body_center);
-    [root[0], root[1] + PLAYER_HALF_EXTENTS[1] * s]
-}
-
-/// Full width/height of the local-player presentation quad at preview scale.
-#[must_use]
-pub fn preview_local_player_size(scale: f32) -> [f32; 2] {
-    let s = sanitize_preview_scale(scale);
-    [
-        PLAYER_HALF_EXTENTS[0] * 2.0 * s,
-        PLAYER_HALF_EXTENTS[1] * 2.0 * s,
-    ]
-}
-
 fn is_back_limb(idx: BoneIndex) -> bool {
     idx == UPPER_ARM_BACK
         || idx == LOWER_ARM_BACK
