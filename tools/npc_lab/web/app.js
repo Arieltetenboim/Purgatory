@@ -134,6 +134,9 @@ function dialogueErrors(doc) {
               if (typeof action.mark_npc_met !== "string" || !action.mark_npc_met.startsWith("npc.")) {
                 errors.push(`${actionLabel}: Mark NPC Met requires an npc.* ContentId.`);
               }
+            } else if (kind === "grant_ability") {
+              const data = action.grant_ability;
+              if (!data || typeof data.ability !== "string" || !data.ability.trim()) errors.push(`${actionLabel}: Grant Ability requires a non-empty ability authored id.`);
             } else {
               const data = action[kind];
               if (!data || typeof data.item !== "string" || !data.item.startsWith("item.")) errors.push(`${actionLabel}: item must use item.*.`);
@@ -334,6 +337,7 @@ function actionKind(action) {
   if (Object.prototype.hasOwnProperty.call(action, "mark_npc_met")) return "mark_npc_met";
   if (Object.prototype.hasOwnProperty.call(action, "give_item")) return "give_item";
   if (Object.prototype.hasOwnProperty.call(action, "remove_item")) return "remove_item";
+  if (Object.prototype.hasOwnProperty.call(action, "grant_ability")) return "grant_ability";
   return null;
 }
 
@@ -345,6 +349,7 @@ function actionTypeSelect(action, choice, actionIndex, beat) {
     ["mark_npc_met", "Mark NPC Met"],
     ["give_item", "Give Item"],
     ["remove_item", "Remove Item"],
+    ["grant_ability", "Grant Ability"],
   ]) {
     const option = document.createElement("option");
     option.value = value;
@@ -370,6 +375,7 @@ function actionTypeSelect(action, choice, actionIndex, beat) {
       mark_npc_met: { mark_npc_met: "npc." },
       give_item: { give_item: { item: "item.", quantity: 1 } },
       remove_item: { remove_item: { item: "item.", quantity: 1 } },
+      grant_ability: { grant_ability: { ability: "" } },
     };
     choice.actions[actionIndex] = replacements[select.value];
     renderChoices(beat);
@@ -468,6 +474,22 @@ function renderChoiceActions(choice, beat) {
       });
       npcLabel.append(npcTitle, npcInput);
       card.appendChild(npcLabel);
+    } else if (kind === "grant_ability") {
+      const data = action.grant_ability;
+      const abilityLabel = document.createElement("label");
+      abilityLabel.className = "field";
+      const abilityTitle = document.createElement("span");
+      abilityTitle.textContent = "Ability Authored ID";
+      const abilityInput = document.createElement("input");
+      abilityInput.className = "input monospace-input";
+      abilityInput.placeholder = "skill.movement.dash";
+      abilityInput.value = data?.ability || "";
+      abilityInput.addEventListener("input", () => {
+        data.ability = abilityInput.value;
+        changed();
+      });
+      abilityLabel.append(abilityTitle, abilityInput);
+      card.appendChild(abilityLabel);
     } else if (kind === "give_item" || kind === "remove_item") {
       const data = action[kind];
       const grid = document.createElement("div");

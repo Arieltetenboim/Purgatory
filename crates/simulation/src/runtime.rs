@@ -257,8 +257,15 @@ impl World {
         id: crate::action::ActionId,
         end: ActionEnd,
     ) -> Result<Action, ActionError> {
+        let ends_dash = self
+            .ability_runtime
+            .get(id)
+            .is_some_and(|live| live.is_dash());
         let action = self.actions.end(id, end)?;
         self.ability_runtime.remove(id);
+        if ends_dash {
+            self.clear_player_dash(action.owner);
+        }
         if matches!(end, ActionEnd::Completed) {
             self.runtime_stats.actions_completed_total =
                 self.runtime_stats.actions_completed_total.saturating_add(1);
@@ -391,6 +398,74 @@ impl World {
                 amount,
                 DamageImmunityPolicy::Bypass,
             ),
+            crate::ability::AbilityEffect::Dash {
+                speed,
+                duration_ticks,
+            } => source == target && self.start_player_dash(source, speed, duration_ticks),
+        }
+    }
+
+    /// Start authoritative/predicted Dash movement. The caller owns ability
+    /// authorization; this method owns only deterministic movement state.
+    pub fn start_player_dash(&mut self, actor: EntityId, speed: f32, duration_ticks: u16) -> bool {
+        if !speed.is_finite() || speed <= 0.0 || duration_ticks == 0 {
+            return false;
+        }
+        {
+            let Some((_, player)) = self.player_parts_mut_for(actor) else {
+                return false;
+            };
+            if !player.grounded {
+                return false;
+            }
+            let direction = if player.facing_sign < 0 { -1 } else { 1 };
+            player.velocity[0] = f32::from(direction) * speed;
+            player.dash = Some(crate::body::DashState {
+                direction,
+                speed,
+                remaining_ticks: duration_ticks,
+            });
+        }
+        self.bump_transform_rev(actor);
+        true
+    }
+
+    pub fn clear_player_dash(&mut self, actor: EntityId) -> bool {
+        let cleared = {
+            let Some((_, player)) = self.player_parts_mut_for(actor) else {
+                return false;
+            };
+            let cleared = player.dash.take().is_some();
+            if cleared {
+                player.velocity[0] = 0.0;
+            }
+            cleared
+        };
+        if cleared {
+            self.bump_transform_rev(actor);
+        }
+        cleared
+    }
+
+    #[must_use]
+    pub fn player_dash_of(&self, actor: EntityId) -> Option<crate::body::DashState> {
+        self.get_player(actor).and_then(|(_, player)| player.dash)
+    }
+
+    /// Apply the same-tick horizontal intent before an anchored ability is
+    /// evaluated. The client does not choose Dash direction on the wire.
+    pub fn note_player_horizontal_intent(&mut self, actor: EntityId, axis: i8) {
+        if axis == 0 {
+            return;
+        }
+        if let Some((_, player)) = self.player_parts_mut_for(actor) {
+            // Dash owns both horizontal drive and facing for its movement window.
+            // New A/D samples are still queued/acked, but cannot visually or
+            // mechanically turn the actor until Dash movement ends.
+            if player.dash.is_some() {
+                return;
+            }
+            player.facing_sign = axis.signum();
         }
     }
 
@@ -412,11 +487,32 @@ impl World {
         if self.ability_combatant_dead(request.actor) {
             return Err(AbilityRejectReason::ActorDead);
         }
+        // Ability-driven movement is an exclusive movement/action window even
+        // if the Action table is changed later. In particular, Basic Strike
+        // cannot start while Dash movement is active.
+        if self
+            .get_player(request.actor)
+            .is_some_and(|(_, player)| player.dash.is_some())
+        {
+            return Err(AbilityRejectReason::Busy);
+        }
         if !self
             .cooldowns
             .is_ready(request.actor, request.definition.id, self.tick)
         {
             return Err(AbilityRejectReason::OnCooldown);
+        }
+        let requires_grounded = request
+            .definition
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, crate::ability::AbilityEffect::Dash { .. }));
+        if requires_grounded
+            && !self
+                .get_player(request.actor)
+                .is_some_and(|(_, player)| player.grounded)
+        {
+            return Err(AbilityRejectReason::RequiresGrounded);
         }
 
         match request.definition.activation {
@@ -484,9 +580,11 @@ impl World {
             }
             _ => {}
         }
-        // Ability execution → Attack (independent of hits / delivery shape / ability id).
-        if let Some(kind) =
-            crate::ability::oneshot_kind_for_cue(crate::ability::cue_for_ability_cast())
+        // Ability execution requests its semantic presentation independently
+        // of hits, delivery shape, animation clips, or ability id.
+        if let Some(kind) = crate::ability::oneshot_kind_for_cue(
+            crate::ability::cue_for_ability_cast(request.definition.presentation),
+        )
         {
             let _ = self.try_start_presentation_oneshot(request.actor, kind);
         }
@@ -506,6 +604,31 @@ impl World {
         true
     }
 
+    /// Grant an ability from authoritative progression rather than an
+    /// intrinsic spawn loadout or equipment source.
+    pub fn grant_learned_ability(
+        &mut self,
+        owner: EntityId,
+        id: crate::ability::AbilityId,
+    ) -> bool {
+        if !self.contains(owner) {
+            return false;
+        }
+        if self.ability_grants.contains_from_source(
+            owner,
+            id,
+            crate::ability::AbilityGrantSource::Learned,
+        ) {
+            return false;
+        }
+        self.ability_grants.insert_from_source(
+            owner,
+            id,
+            crate::ability::AbilityGrantSource::Learned,
+        );
+        true
+    }
+
     pub fn revoke_ability(&mut self, owner: EntityId, id: crate::ability::AbilityId) {
         self.ability_grants.remove(owner, id);
     }
@@ -513,6 +636,14 @@ impl World {
     #[must_use]
     pub fn ability_granted(&self, owner: EntityId, id: crate::ability::AbilityId) -> bool {
         self.ability_grants.contains(owner, id)
+    }
+
+    /// Owner-private authoritative grant baseline. This is deliberately a
+    /// snapshot API so future NPC/progression grants use the same path as
+    /// intrinsic and equipment grants.
+    #[must_use]
+    pub fn granted_abilities(&self, owner: EntityId) -> Vec<crate::ability::AbilityId> {
+        self.ability_grants.ids_for_owner(owner)
     }
 
     fn ability_combatant_dead(&self, id: EntityId) -> bool {
@@ -545,6 +676,7 @@ impl World {
     fn resolve_ability_affected(&self, live: &crate::ability::AbilityLive) -> Vec<EntityId> {
         use crate::ability::{AbilityDelivery, forward_query_aabb};
         match live.delivery {
+            AbilityDelivery::SelfTarget => vec![live.owner],
             AbilityDelivery::ForwardQuery {
                 range,
                 half_height,
@@ -757,15 +889,31 @@ impl World {
             }
         }
         if health.current <= 0.0 {
+            self.interrupt_player_dash(target);
             let _ = self.clear_presentation_oneshot(target);
             self.handle_zero_health(target);
         } else if health.current < before
             && let Some(kind) =
                 crate::ability::oneshot_kind_for_cue(crate::ability::cue_for_damage_outcome(false))
         {
+            self.interrupt_player_dash(target);
             let _ = self.try_start_presentation_oneshot(target, kind);
         }
         true
+    }
+
+    fn interrupt_player_dash(&mut self, target: EntityId) {
+        let dash_action = self.active_action(target).and_then(|action| {
+            self.ability_runtime
+                .get(action.id)
+                .filter(|live| live.is_dash())
+                .map(|_| action.id)
+        });
+        if let Some(action_id) = dash_action {
+            let _ = self.end_action(action_id, ActionEnd::Interrupted);
+        } else if self.player_dash_of(target).is_some() {
+            let _ = self.clear_player_dash(target);
+        }
     }
 
     /// Server-authoritative action request (simulation-level; not wire control).

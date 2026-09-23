@@ -277,6 +277,10 @@ def _apply_actions(state: dict[str, Any], actions: list[Any]) -> None:
             _append_unique(state, "npc_met", action["mark_npc_met"])
             continue
 
+        if "grant_ability" in action:
+            _append_unique(state, "ability_granted", action["grant_ability"]["ability"])
+            continue
+
         for kind, state_key in (("give_item", "item_owned"), ("remove_item", "item_owned")):
             if kind not in action:
                 continue

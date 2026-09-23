@@ -22,17 +22,19 @@ use purgatory_protocol::{
     AbilityActivateRequest, AbilityCommandReject, ConnectionId, DEV_CHANNEL_MAX, DialogueAdvance,
     DialogueChoose, DropRejectReason, DropRequest, EquipRequest, EquipmentRejectReason,
     InputCommand, InteractCloseReason, InteractRejectReason, InventoryEntry, MoveAxis,
-    PickupRejectReason, PickupRequest, ServerAbility, ServerControl, ServerDialogueChoiceAccepted,
-    ServerDialogueLine, ServerEquipment, ServerInteract, ServerInventory, ServerItem,
-    ServerPresentationOneShot, UnequipRequest, WireEntityId,
+    MAX_GRANTED_ABILITIES, PickupRejectReason, PickupRequest, ServerAbility,
+    ServerAbilityGrants, ServerControl, ServerDialogueChoiceAccepted, ServerDialogueLine,
+    ServerEquipment, ServerInteract, ServerInventory, ServerItem, ServerPresentationOneShot,
+    UnequipRequest, WireEntityId,
 };
 use purgatory_simulation::{
-    AbilityActivation, AbilityRejectReason, AbilityRequest, ActionGateContext, CONTACT_EPSILON,
-    Cadence, CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot, FOOTNOTE_SPAWN_X,
-    Health, InputGateReason, InteractionCloseReason, InteractionReject, ItemRuntimeError,
-    NpcApproachBounds, NpcRuntimeConfig, P0, P0_POSITION, PLAYER_HALF_EXTENTS, PLAYER_HEALTH_MAX,
-    PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest, ScheduleOwner,
-    SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World, validate_command_preamble,
+    AbilityActivation, AbilityRejectReason, AbilityRequest, ActionEnd, ActionGateContext, ActionKind,
+    CONTACT_EPSILON, Cadence, CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot,
+    FOOTNOTE_SPAWN_X, Health, InputGateReason, InteractionCloseReason, InteractionReject,
+    ItemRuntimeError, NpcApproachBounds, NpcRuntimeConfig, P0, P0_POSITION, PLAYER_HALF_EXTENTS,
+    PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest,
+    ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
+    validate_command_preamble,
 };
 
 use super::dialogue::{
@@ -97,6 +99,10 @@ fn live_basic_strike_id() -> ContentId {
     ContentId::from_authored("skill.basic.strike").expect("authored basic strike id")
 }
 
+fn live_dash_id() -> ContentId {
+    ContentId::from_authored("skill.movement.dash").expect("authored Dash id")
+}
+
 fn dialogue_line(active: ActiveDialogue) -> ServerDialogueLine {
     ServerDialogueLine {
         session_id: active.session_id,
@@ -119,6 +125,7 @@ fn map_ability_reject(reason: AbilityRejectReason) -> AbilityCommandReject {
         AbilityRejectReason::OutOfRange => AbilityCommandReject::InvalidActivation,
         AbilityRejectReason::OnCooldown => AbilityCommandReject::OnCooldown,
         AbilityRejectReason::Busy => AbilityCommandReject::Busy,
+        AbilityRejectReason::RequiresGrounded => AbilityCommandReject::RequiresGrounded,
         AbilityRejectReason::Gate(_) => AbilityCommandReject::StateBlocked,
     }
 }
@@ -418,6 +425,7 @@ pub struct PlayerBinding {
     last_equipment_result: Option<ServerEquipment>,
     last_ability_seq: Option<u32>,
     last_ability_result: Option<ServerAbility>,
+    pending_abilities: VecDeque<AbilityActivateRequest>,
     last_pickup_seq: Option<u32>,
     last_pickup_result: Option<ServerItem>,
     last_drop_seq: Option<u32>,
@@ -1392,6 +1400,7 @@ impl GameplayOwner {
                 last_equipment_result: None,
                 last_ability_seq: None,
                 last_ability_result: None,
+                pending_abilities: VecDeque::new(),
                 last_pickup_seq: None,
                 last_pickup_result: None,
                 last_drop_seq: None,
@@ -1401,6 +1410,7 @@ impl GameplayOwner {
         );
         self.player_entity_spawned = self.player_entity_spawned.saturating_add(1);
         self.send_inventory_snapshot(connection_id);
+        self.send_ability_grants(connection_id);
         true
     }
 
@@ -1434,6 +1444,59 @@ impl GameplayOwner {
         {
             println!("11C_INVENTORY response dropped (interact channel full or closed)");
         }
+    }
+
+    fn send_ability_grants(&self, connection_id: ConnectionId) {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return;
+        };
+        let Some(tx) = &binding.interact else {
+            return;
+        };
+        let abilities = self.world.granted_abilities(binding.entity);
+        if abilities.len() > MAX_GRANTED_ABILITIES {
+            eprintln!(
+                "9C_ABILITY grant baseline refused: {} grants exceed protocol cap {}",
+                abilities.len(),
+                MAX_GRANTED_ABILITIES
+            );
+            return;
+        }
+        if tx
+            .try_send(ServerControl::AbilityGrants(ServerAbilityGrants {
+                abilities,
+            }))
+            .is_err()
+        {
+            println!("9C_ABILITY grant baseline dropped (interact channel full or closed)");
+        }
+    }
+
+    /// Authoritative progression seam for an NPC/reward system. The caller
+    /// decides that the reward was earned; this method validates content,
+    /// records a learned grant, and refreshes the owner-private baseline.
+    pub fn grant_player_ability(
+        &mut self,
+        connection_id: ConnectionId,
+        ability_id: ContentId,
+    ) -> bool {
+        if self.registry.ability_by_id(ability_id).is_none() {
+            return false;
+        }
+        let Some(actor) = self.bindings.get(&connection_id).map(|binding| binding.entity) else {
+            return false;
+        };
+        let grants_before = self.world.granted_abilities(actor);
+        if !grants_before.contains(&ability_id) && grants_before.len() >= MAX_GRANTED_ABILITIES {
+            return false;
+        }
+        if !self.world.grant_learned_ability(actor, ability_id) {
+            return false;
+        }
+        if self.world.granted_abilities(actor) != grants_before {
+            self.send_ability_grants(connection_id);
+        }
+        true
     }
 
     pub fn detach(&mut self, connection_id: ConnectionId) {
@@ -1628,6 +1691,10 @@ impl GameplayOwner {
                 };
                 let entity = binding.entity;
                 binding.input.held_cancel();
+                self.reject_pending_abilities(
+                    connection_id,
+                    AbilityCommandReject::StaleInputAnchor,
+                );
                 if self.world.release_portal_reentry(entity) {
                     println!(
                         "6C_PORTAL reentry_unlock actor={entity} reason=held_cancel tick={}",
@@ -1715,6 +1782,8 @@ impl GameplayOwner {
                         binding.replication = replication;
                         binding.interact = interact;
                     }
+                    self.send_inventory_snapshot(connection_id);
+                    self.send_ability_grants(connection_id);
                 }
                 LifecycleCmd::Enter {
                     connection_id,
@@ -1784,7 +1853,13 @@ impl GameplayOwner {
         }
 
         let input_t0 = std::time::Instant::now();
-        let ids: Vec<(ConnectionId, EntityId, PlayerInput, bool)> = self
+        let ids: Vec<(
+            ConnectionId,
+            EntityId,
+            PlayerInput,
+            bool,
+            Vec<AbilityActivateRequest>,
+        )> = self
             .bindings
             .iter_mut()
             .map(|(cid, binding)| {
@@ -1792,18 +1867,36 @@ impl GameplayOwner {
                 let reason = binding.input.input_gate_reason();
                 let entity = binding.entity;
                 let player_input = binding.input.take_for_tick();
+                let ack = binding.input.last_acknowledged();
+                let mut due_abilities = Vec::new();
+                while binding.pending_abilities.front().is_some_and(|request| {
+                    request.input_epoch == binding.input.input_epoch
+                        && request.input_sequence <= ack
+                }) {
+                    due_abilities.push(
+                        binding
+                            .pending_abilities
+                            .pop_front()
+                            .expect("front checked"),
+                    );
+                }
                 if gated && !binding.input.input_gated() {
                     println!("6D_INPUT unlock actor={entity} reason={reason:?}");
                 }
-                (*cid, entity, player_input, gated)
+                (*cid, entity, player_input, gated, due_abilities)
             })
             .collect();
         sample.commands_input += input_t0.elapsed();
 
         let move_t0 = std::time::Instant::now();
-        for (_, entity, player_input, gated) in ids {
+        for (connection_id, entity, player_input, gated, due_abilities) in ids {
             if gated && let Some((_, player)) = self.world.player_parts_mut_for(entity) {
                 player.velocity = [0.0, 0.0];
+            }
+            self.world
+                .note_player_horizontal_intent(entity, player_input.move_axis);
+            for request in due_abilities {
+                self.finish_ability_activation(connection_id, request);
             }
             self.world.tick_player(entity, dt, player_input);
         }
@@ -1954,11 +2047,15 @@ impl GameplayOwner {
         connection_id: ConnectionId,
         reason: InputGateReason,
     ) {
+        self.reject_pending_abilities(connection_id, AbilityCommandReject::StaleInputAnchor);
         let Some(binding) = self.bindings.get_mut(&connection_id) else {
             return;
         };
         let entity = binding.entity;
         binding.input.lock_transition(reason);
+        if let Some(action) = self.world.active_action(entity) {
+            let _ = self.world.end_action(action.id, ActionEnd::Interrupted);
+        }
         if let Some((_, player)) = self.world.player_parts_mut_for(entity) {
             player.velocity = [0.0, 0.0];
         }
@@ -2155,6 +2252,11 @@ impl GameplayOwner {
             SeqDecision::Accept => {}
         }
 
+        let grants_before = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| self.world.granted_abilities(binding.entity))
+            .unwrap_or_default();
         let result = self.apply_equipment_mutation(connection_id, slot, item_instance_id);
         let event = match result {
             Ok(()) => ServerEquipment::Accepted { seq },
@@ -2167,6 +2269,15 @@ impl GameplayOwner {
         Self::send_equipment_result(interact_tx.as_ref(), event);
         if matches!(event, ServerEquipment::Accepted { .. }) {
             self.send_inventory_snapshot(connection_id);
+            let grants_changed = self
+                .bindings
+                .get(&connection_id)
+                .is_some_and(|binding| {
+                    self.world.granted_abilities(binding.entity) != grants_before
+                });
+            if grants_changed {
+                self.send_ability_grants(connection_id);
+            }
         }
     }
 
@@ -2178,6 +2289,28 @@ impl GameplayOwner {
             && tx.try_send(ServerControl::Ability(event)).is_err()
         {
             println!("9C_ABILITY response dropped (interact channel full or closed)");
+        }
+    }
+
+    fn reject_pending_abilities(
+        &mut self,
+        connection_id: ConnectionId,
+        reason: AbilityCommandReject,
+    ) {
+        let Some(binding) = self.bindings.get_mut(&connection_id) else {
+            return;
+        };
+        let interact_tx = binding.interact.clone();
+        let pending = std::mem::take(&mut binding.pending_abilities);
+        for request in pending {
+            let event = ServerAbility::Rejected {
+                seq: request.seq,
+                reason,
+            };
+            if binding.last_ability_seq == Some(request.seq) {
+                binding.last_ability_result = Some(event);
+            }
+            Self::send_ability_result(interact_tx.as_ref(), event);
         }
     }
 
@@ -2223,6 +2356,80 @@ impl GameplayOwner {
             SeqDecision::Accept => {}
         }
 
+        let input_epoch = binding.input.input_epoch;
+        let last_ack = binding.input.last_acknowledged();
+        let last_received = binding.input.last_received_seq.unwrap_or(0);
+        let next_input = last_received.saturating_add(1);
+        let pending_full = binding.pending_abilities.len() >= 8;
+        let duplicate_pending_ability = binding
+            .pending_abilities
+            .iter()
+            .any(|pending| pending.ability_id == request.ability_id);
+        let dash_pending = binding
+            .pending_abilities
+            .iter()
+            .any(|pending| pending.ability_id == live_dash_id());
+        let actor = binding.entity;
+        let dash_action_active = self
+            .world
+            .active_action(actor)
+            .is_some_and(|action| matches!(
+                action.kind,
+                ActionKind::Ability { id } if id == live_dash_id()
+            ));
+        let reject = if request.input_epoch < input_epoch || request.input_sequence <= last_ack {
+            Some(AbilityCommandReject::StaleInputAnchor)
+        } else if request.input_epoch != input_epoch
+            || request.input_sequence > next_input
+            || pending_full
+        {
+            Some(AbilityCommandReject::InvalidInputAnchor)
+        } else if dash_pending
+            || duplicate_pending_ability
+            || self.world.player_dash_of(actor).is_some()
+            || dash_action_active
+        {
+            Some(AbilityCommandReject::Busy)
+        } else {
+            match self.registry.ability_by_id(request.ability_id) {
+                None => Some(AbilityCommandReject::UnknownAbility),
+                Some(def) if !self.world.ability_granted(actor, def.id) => {
+                    Some(AbilityCommandReject::NotGranted)
+                }
+                Some(def)
+                    if matches!(def.activation, AbilityActivation::Independent)
+                        != request.selected.is_none() =>
+                {
+                    Some(AbilityCommandReject::InvalidActivation)
+                }
+                Some(_) => None,
+            }
+        };
+        if let Some(reason) = reject {
+            let event = ServerAbility::Rejected {
+                seq: request.seq,
+                reason,
+            };
+            if let Some(binding) = self.bindings.get_mut(&connection_id) {
+                binding.last_ability_seq = Some(request.seq);
+                binding.last_ability_result = Some(event);
+            }
+            Self::send_ability_result(interact_tx.as_ref(), event);
+            return;
+        }
+
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.last_ability_seq = Some(request.seq);
+            binding.last_ability_result = None;
+            binding.pending_abilities.push_back(request);
+        }
+    }
+
+    fn finish_ability_activation(
+        &mut self,
+        connection_id: ConnectionId,
+        request: AbilityActivateRequest,
+    ) {
         let event = match self.apply_ability_activate(connection_id, request) {
             Ok(()) => ServerAbility::Accepted { seq: request.seq },
             Err(reason) => ServerAbility::Rejected {
@@ -2230,8 +2437,13 @@ impl GameplayOwner {
                 reason,
             },
         };
-        if let Some(binding) = self.bindings.get_mut(&connection_id) {
-            binding.last_ability_seq = Some(request.seq);
+        let interact_tx = self
+            .bindings
+            .get(&connection_id)
+            .and_then(|binding| binding.interact.clone());
+        if let Some(binding) = self.bindings.get_mut(&connection_id)
+            && binding.last_ability_seq == Some(request.seq)
+        {
             binding.last_ability_result = Some(event);
         }
         Self::send_ability_result(interact_tx.as_ref(), event);
@@ -2770,6 +2982,9 @@ impl GameplayOwner {
                 return;
             }
         };
+        for ability_id in action_outcome.abilities_to_grant.iter().copied() {
+            let _ = self.grant_player_ability(connection_id, ability_id);
+        }
         self.narrative.mark_dialogue_heard(
             actor,
             plan.accepted.npc_content_id,
@@ -2896,6 +3111,7 @@ impl GameplayOwner {
         if let Some(binding) = self.bindings.get_mut(&connection_id) {
             let _ = binding.input.bump_epoch();
         }
+        self.reject_pending_abilities(connection_id, AbilityCommandReject::StaleInputAnchor);
         println!("RESPAWN actor={actor} connection={connection_id}");
     }
 
@@ -7043,9 +7259,12 @@ mod tests {
     }
 
     fn recv_equipment(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerEquipment {
-        match rx.try_recv().expect("equipment result") {
-            ServerControl::Equipment(event) => event,
-            other => panic!("expected Equipment, got {other:?}"),
+        loop {
+            match rx.try_recv().expect("equipment result") {
+                ServerControl::Equipment(event) => return event,
+                ServerControl::AbilityGrants(_) => continue,
+                other => panic!("expected Equipment, got {other:?}"),
+            }
         }
     }
 
@@ -7350,6 +7569,10 @@ mod tests {
         ContentId::from_authored("skill.basic.strike").unwrap()
     }
 
+    fn dash_id() -> ContentId {
+        ContentId::from_authored("skill.movement.dash").unwrap()
+    }
+
     fn recv_ability(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerAbility {
         loop {
             match rx.try_recv().expect("ability result") {
@@ -7366,14 +7589,22 @@ mod tests {
         seq: u32,
         selected: Option<WireEntityId>,
     ) {
+        let input_sequence = owner.last_received(id).unwrap_or(0).saturating_add(1);
+        owner.apply_input(command_update(
+            id,
+            cmd(input_sequence, MoveAxis::Neutral, false, false),
+        ));
         owner.apply_input(InputUpdate::AbilityActivate {
             connection_id: id,
             request: AbilityActivateRequest {
                 seq,
+                input_epoch: 0,
+                input_sequence,
                 ability_id: basic_strike_id(),
                 selected,
             },
         });
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
     }
 
     fn tick_ability(owner: &mut GameplayOwner, n: u32) {
@@ -7410,6 +7641,10 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         assert!(owner.world().health_of(actor).is_some());
         assert!(owner.world().ability_granted(actor, basic_strike_id()));
+        assert!(!owner.world().ability_granted(
+            actor,
+            ContentId::from_authored("skill.movement.dash").unwrap()
+        ));
         let creatures: Vec<_> = owner
             .world()
             .iter()
@@ -7442,6 +7677,28 @@ mod tests {
                 .world()
                 .ability_granted(creatures[0], basic_strike_id())
         );
+    }
+
+    #[test]
+    fn learned_dash_grant_refreshes_owner_private_baseline_once() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+
+        assert!(owner.grant_player_ability(id, dash_id()));
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.world().ability_granted(actor, dash_id()));
+        let mut abilities = vec![basic_strike_id(), dash_id()];
+        abilities.sort_unstable_by_key(|ability| ability.token());
+        assert_eq!(
+            rx.try_recv().expect("grant baseline"),
+            ServerControl::AbilityGrants(ServerAbilityGrants { abilities })
+        );
+
+        assert!(!owner.grant_player_ability(id, dash_id()));
+        assert!(rx.try_recv().is_err(), "duplicate grant emits no baseline");
     }
 
     #[test]
@@ -7632,6 +7889,207 @@ mod tests {
     }
 
     #[test]
+    fn dash_waits_for_its_input_anchor_and_uses_same_tick_direction() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.world_mut().grant_ability(actor, dash_id()));
+        let start_x = owner.world().transform_of(actor).unwrap().position[0];
+
+        owner.apply_input(command_update(
+            id,
+            cmd(1, MoveAxis::Right, true, false),
+        ));
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: AbilityActivateRequest {
+                seq: 1,
+                input_epoch: 0,
+                input_sequence: 1,
+                ability_id: dash_id(),
+                selected: None,
+            },
+        });
+        assert!(owner.world().active_action(actor).is_none());
+        assert!(rx.try_recv().is_err(), "result waits for authoritative input step");
+
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
+        let dash = owner.world().player_dash_of(actor).expect("Dash active");
+        assert_eq!(dash.direction, 1);
+        assert_eq!(dash.remaining_ticks, 4);
+        let body = owner.world().player_body_of(actor).unwrap();
+        assert!(body.position[0] > start_x);
+        assert_eq!(body.velocity[1], 0.0, "same-tick jump is ignored by Dash");
+    }
+
+    #[test]
+    fn dash_spam_does_not_queue_while_pending_or_active() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.world_mut().grant_ability(actor, dash_id()));
+
+        let request = |seq, input_sequence| AbilityActivateRequest {
+            seq,
+            input_epoch: 0,
+            input_sequence,
+            ability_id: dash_id(),
+            selected: None,
+        };
+
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: request(1, 1),
+        });
+        assert!(rx.try_recv().is_err(), "first Dash waits for its input boundary");
+
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: request(2, 1),
+        });
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 2,
+                reason: AbilityCommandReject::Busy,
+            },
+            "same ability must not stack in pending_abilities"
+        );
+
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: AbilityActivateRequest {
+                seq: 3,
+                input_epoch: 0,
+                input_sequence: 1,
+                ability_id: basic_strike_id(),
+                selected: None,
+            },
+        });
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 3,
+                reason: AbilityCommandReject::Busy,
+            },
+            "pending Dash must lock other ability activation before its boundary"
+        );
+
+        owner.apply_input(command_update(
+            id,
+            cmd(1, MoveAxis::Right, false, false),
+        ));
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
+        assert!(owner.world().player_dash_of(actor).is_some());
+
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: request(4, 2),
+        });
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 4,
+                reason: AbilityCommandReject::Busy,
+            },
+            "Dash reactivation must be swallowed while Dash action/movement is active"
+        );
+    }
+
+    #[test]
+    fn ability_input_anchor_accepts_next_input_then_executes_on_boundary() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.world_mut().grant_ability(actor, dash_id()));
+
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: AbilityActivateRequest {
+                seq: 1,
+                input_epoch: 0,
+                input_sequence: 1,
+                ability_id: dash_id(),
+                selected: None,
+            },
+        });
+        assert!(rx.try_recv().is_err(), "request must wait for its input boundary");
+        assert!(owner.world().player_dash_of(actor).is_none());
+
+        owner.apply_input(command_update(
+            id,
+            cmd(1, MoveAxis::Right, false, false),
+        ));
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+
+        assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
+        let dash = owner.world().player_dash_of(actor).expect("Dash active");
+        assert_eq!(dash.direction, 1);
+        assert_eq!(dash.remaining_ticks, 4);
+    }
+
+    #[test]
+    fn ability_input_anchor_rejects_future_and_already_acknowledged_steps() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+
+        owner.apply_input(command_update(
+            id,
+            cmd(1, MoveAxis::Neutral, false, false),
+        ));
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: AbilityActivateRequest {
+                seq: 1,
+                input_epoch: 0,
+                input_sequence: 1,
+                ability_id: basic_strike_id(),
+                selected: None,
+            },
+        });
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 1,
+                reason: AbilityCommandReject::StaleInputAnchor,
+            }
+        );
+
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: AbilityActivateRequest {
+                seq: 2,
+                input_epoch: 0,
+                input_sequence: 3,
+                ability_id: basic_strike_id(),
+                selected: None,
+            },
+        });
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 2,
+                reason: AbilityCommandReject::InvalidInputAnchor,
+            }
+        );
+    }
+
+    #[test]
     fn ability_rejects_unknown_ungranted_duplicate_stale_dead_busy_cooldown() {
         let mut owner = GameplayOwner::new();
         let id = ConnectionId::from_raw(1);
@@ -7640,10 +8098,16 @@ mod tests {
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
 
+        owner.apply_input(command_update(
+            id,
+            cmd(1, MoveAxis::Neutral, false, false),
+        ));
         owner.apply_input(InputUpdate::AbilityActivate {
             connection_id: id,
             request: AbilityActivateRequest {
                 seq: 1,
+                input_epoch: 0,
+                input_sequence: 1,
                 ability_id: ContentId::from_authored("skill.does.not.exist").unwrap(),
                 selected: None,
             },
@@ -7655,6 +8119,7 @@ mod tests {
                 reason: AbilityCommandReject::UnknownAbility,
             }
         );
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
         assert!(owner.world().active_action(actor).is_none());
 
         owner.world_mut().revoke_ability(actor, basic_strike_id());

@@ -747,7 +747,19 @@ impl ContentRegistry {
                 }
                 for (choice_index, choice) in beat.choices.iter().enumerate() {
                     for (action_index, action) in choice.actions.iter().enumerate() {
-                        let (item_authored, quantity) = match action {
+                        let field = format!(
+                            "beats[{beat_index}].choices[{choice_index}].actions[{action_index}]"
+                        );
+                        match action {
+                            DialogueAction::GrantAbility { ability_authored } => {
+                                if !self.abilities.contains_key(ability_authored) {
+                                    issues.push(dialogue_ability_issue(
+                                        &dialogue.authored_id,
+                                        field,
+                                        ability_authored,
+                                    ));
+                                }
+                            }
                             DialogueAction::GiveItem {
                                 item_authored,
                                 quantity,
@@ -755,37 +767,30 @@ impl ContentRegistry {
                             | DialogueAction::RemoveItem {
                                 item_authored,
                                 quantity,
-                            } => (Some(item_authored), Some(*quantity)),
-                            DialogueAction::SetFact { .. } | DialogueAction::MarkNpcMet { .. } => {
-                                (None, None)
+                            } => {
+                                let Some(item) = self.items.get(item_authored) else {
+                                    issues.push(dialogue_item_issue(
+                                        &dialogue.authored_id,
+                                        field,
+                                        item_authored,
+                                    ));
+                                    continue;
+                                };
+                                if matches!(action, DialogueAction::GiveItem { .. })
+                                    && *quantity > item.stack_limit
+                                {
+                                    issues.push(ValidationIssue::new(
+                                        "npc_dialogue",
+                                        &dialogue.authored_id,
+                                        field,
+                                        format!(
+                                            "Give Item quantity exceeds '{}' stack_limit {}",
+                                            item.authored_id, item.stack_limit
+                                        ),
+                                    ));
+                                }
                             }
-                        };
-                        let Some(item_authored) = item_authored else {
-                            continue;
-                        };
-                        let field = format!(
-                            "beats[{beat_index}].choices[{choice_index}].actions[{action_index}]"
-                        );
-                        let Some(item) = self.items.get(item_authored) else {
-                            issues.push(dialogue_item_issue(
-                                &dialogue.authored_id,
-                                field,
-                                item_authored,
-                            ));
-                            continue;
-                        };
-                        if matches!(action, DialogueAction::GiveItem { .. })
-                            && quantity.is_some_and(|quantity| quantity > item.stack_limit)
-                        {
-                            issues.push(ValidationIssue::new(
-                                "npc_dialogue",
-                                &dialogue.authored_id,
-                                field,
-                                format!(
-                                    "Give Item quantity exceeds '{}' stack_limit {}",
-                                    item.authored_id, item.stack_limit
-                                ),
-                            ));
+                            DialogueAction::SetFact { .. } | DialogueAction::MarkNpcMet { .. } => {}
                         }
                     }
                 }
@@ -825,6 +830,19 @@ fn dialogue_item_issue(
         definition,
         field.to_string(),
         format!("unresolved item reference '{item_authored}'"),
+    )
+}
+
+fn dialogue_ability_issue(
+    definition: &str,
+    field: impl std::fmt::Display,
+    ability_authored: &str,
+) -> ValidationIssue {
+    ValidationIssue::new(
+        "npc_dialogue",
+        definition,
+        field.to_string(),
+        format!("unresolved ability reference '{ability_authored}'"),
     )
 }
 

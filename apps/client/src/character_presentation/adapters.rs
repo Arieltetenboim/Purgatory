@@ -144,12 +144,12 @@ pub fn apply_climb_back_overlay(
     state
 }
 
-/// Overlay authoritative Attack/Hurt and persistent Dead on locomotion.
+/// Overlay authoritative Attack/Hurt/Dash and persistent Dead on locomotion.
 ///
 /// Precedence (Character Presentation owns this policy):
 /// ```text
-/// Dead  → overrides Attack, Hurt, and locomotion
-/// Hurt / Attack oneshot → replaces Idle/Move/Jump/Fall/ClimbBack
+/// Dead  → overrides Attack, Hurt, Dash, and locomotion
+/// Hurt / Attack / Dash oneshot → replaces Idle/Move/Jump/Fall/ClimbBack
 /// locomotion otherwise
 /// ```
 /// Locomotion never clears an active oneshot (server duration owns that).
@@ -162,6 +162,7 @@ pub fn apply_oneshot_overlay(
     match oneshot {
         Some(PresentationActivity::Attack) => PresentationActivity::Attack,
         Some(PresentationActivity::Hurt) => PresentationActivity::Hurt,
+        Some(PresentationActivity::Dash) => PresentationActivity::Dash,
         Some(_) | None => locomotion,
     }
 }
@@ -403,6 +404,10 @@ mod resolve_tests {
         assert_eq!(
             apply_oneshot_overlay(PresentationActivity::Jump, Some(PresentationActivity::Hurt)),
             PresentationActivity::Hurt
+        );
+        assert_eq!(
+            apply_oneshot_overlay(PresentationActivity::Idle, Some(PresentationActivity::Dash)),
+            PresentationActivity::Dash
         );
         assert_eq!(
             apply_oneshot_overlay(PresentationActivity::Fall, None),

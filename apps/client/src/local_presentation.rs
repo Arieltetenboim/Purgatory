@@ -12,9 +12,6 @@ use crate::camera_follow::damp;
 /// Seconds to cover ~63% of a remaining visual offset.
 pub const PRESENTATION_SMOOTH_TIME: f32 = 0.08;
 
-/// World-unit offset (or single correction) at or above this snaps, not damps.
-pub const PRESENTATION_SNAP_DISTANCE: f32 = 1.0;
-
 /// Ignore remainder extra at or below this speed (wu/s). Walking (6) still extras.
 pub const EXTRAPOLATE_MIN_SPEED: f32 = 0.5;
 
@@ -89,11 +86,10 @@ impl LocalPresentation {
             self.snap_pending = false;
             return self.pose;
         }
-        if offset_length(self.offset) >= PRESENTATION_SNAP_DISTANCE {
-            self.offset = [0.0, 0.0];
-            self.pose = Some(target);
-            return self.pose;
-        }
+        // Ordinary prediction reconciliation is a visual offset, not
+        // a teleport. Structural discontinuities call request_snap() explicitly.
+        // Large but finite corrections (for example a fast Dash under RTT)
+        // therefore decay instead of turning into a one-frame warp.
         self.offset[0] = damp(self.offset[0], 0.0, dt, PRESENTATION_SMOOTH_TIME);
         self.offset[1] = damp(self.offset[1], 0.0, dt, PRESENTATION_SMOOTH_TIME);
         self.pose = Some([target[0] + self.offset[0], target[1] + self.offset[1]]);
@@ -333,17 +329,25 @@ mod tests {
     }
 
     #[test]
-    fn large_correction_snaps() {
+    fn large_finite_reconciliation_is_smoothed_not_snapped() {
         let mut pres = LocalPresentation::default();
         let _ = pres.step(Some([0.0, 0.0]), 1.0 / 60.0);
         pres.absorb_correction([1.5, 0.0]);
         let pose = pres.step(Some([1.5, 0.0]), 1.0 / 60.0).unwrap();
         assert!(
-            (pose[0] - 1.5).abs() < 1e-5,
-            "must snap to predicted, got {}",
+            pose[0] < 0.6,
+            "first frame should stay near the pre-correction visual pose, got {}",
             pose[0]
         );
-        assert_eq!(pres.offset(), [0.0, 0.0]);
+        assert!(
+            offset_length(pres.offset()) > 0.5,
+            "correction must remain as a decaying visual offset"
+        );
+        for _ in 0..120 {
+            let _ = pres.step(Some([1.5, 0.0]), 1.0 / 60.0);
+        }
+        assert!(offset_length(pres.offset()) < 0.02);
+        assert!((pres.pose().unwrap()[0] - 1.5).abs() < 0.02);
     }
 
     #[test]

@@ -30,6 +30,7 @@ fn strike_like(id: &str) -> AbilityDefinition {
             max_targets: 8,
         },
         effects: vec![AbilityEffect::Damage { amount: 5.0 }],
+        presentation: crate::AbilityPresentation::Attack,
     }
 }
 
@@ -205,7 +206,7 @@ fn ability_hit_path_emits_attack_then_hurt_not_tied_to_basic_strike_id() {
 #[test]
 fn presentation_cues_remain_semantic_not_delivery_specific() {
     assert_eq!(
-        oneshot_kind_for_cue(cue_for_ability_cast()),
+        oneshot_kind_for_cue(cue_for_ability_cast(crate::AbilityPresentation::Attack)),
         Some(PresentationOneShotKind::Attack)
     );
     assert_eq!(
@@ -218,7 +219,7 @@ fn presentation_cues_remain_semantic_not_delivery_specific() {
 #[test]
 fn presentation_boundary_uses_phase8_oneshot_vocabulary() {
     assert_eq!(
-        oneshot_kind_for_cue(cue_for_ability_cast()),
+        oneshot_kind_for_cue(cue_for_ability_cast(crate::AbilityPresentation::Attack)),
         Some(PresentationOneShotKind::Attack)
     );
     assert_eq!(

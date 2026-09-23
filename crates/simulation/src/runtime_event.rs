@@ -54,13 +54,13 @@ pub enum RuntimeEvent {
         key: u32,
         token: u32,
     },
-    /// Authoritative Attack/Hurt start. Clients overlay via `ServerPresentationOneShot`.
+    /// Authoritative semantic one-shot start. Clients overlay via `ServerPresentationOneShot`.
     PresentationOneShotStarted {
         entity: EntityId,
         kind: crate::presentation_oneshot::PresentationOneShotKind,
         until_tick: u64,
     },
-    /// Clears transient Attack/Hurt (e.g. on lethal damage). Kind 0 on the wire.
+    /// Clears a transient one-shot (e.g. on lethal damage). Kind 0 on the wire.
     PresentationOneShotCleared {
         entity: EntityId,
     },

@@ -87,7 +87,7 @@ def validate_action(value: Any, label: str = "action") -> list[str]:
 
     supported = [
         key
-        for key in ("set_fact", "mark_npc_met", "give_item", "remove_item")
+        for key in ("set_fact", "mark_npc_met", "give_item", "remove_item", "grant_ability")
         if key in value
     ]
     if len(supported) != 1:
@@ -116,6 +116,12 @@ def validate_action(value: Any, label: str = "action") -> list[str]:
             )
         if not isinstance(fact_value, bool):
             errors.append(f"{label}.set_fact.value must be true or false.")
+    elif kind == "grant_ability":
+        ability = data.get("ability")
+        if not isinstance(ability, str) or not ability.strip():
+            errors.append(
+                f"{label}.grant_ability.ability must be a non-empty ability authored id."
+            )
     else:
         item = data.get("item")
         quantity = data.get("quantity")

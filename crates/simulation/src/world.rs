@@ -71,7 +71,7 @@ pub(crate) struct EntityData {
     npc: Option<NpcState>,
     equipment: Option<EquipmentState>,
     equipment_dirty: EquipmentDirtyMask,
-    /// Authoritative Attack/Hurt presentation oneshot (A5). Not replicated as bones.
+    /// Authoritative semantic presentation oneshot. Not replicated as bones.
     presentation_oneshot: Option<PresentationOneShot>,
     dirty: DirtyFlags,
     domain_revs: DomainRevs,
@@ -1224,7 +1224,7 @@ impl World {
         Ok(next)
     }
 
-    /// Clear any live Attack/Hurt oneshot. Used when lethal damage takes over as Dead.
+    /// Clear any live presentation oneshot. Used when lethal damage takes over as Dead.
     pub fn clear_presentation_oneshot(&mut self, id: EntityId) -> bool {
         let Some(data) = self.slot_live_mut(id) else {
             return false;
@@ -1984,6 +1984,7 @@ impl World {
             player.last_contact = crate::footnote::ContactEvent::None;
             player.coyote_ticks = 0;
             player.jump_buffer_ticks = 0;
+            player.dash = None;
             if grounded {
                 if let Some(on) = grounded_on {
                     player.grounded = true;
@@ -2000,6 +2001,14 @@ impl World {
         };
         if let Some(id) = self.player_id() {
             self.refresh_spatial(id, previous);
+        }
+    }
+
+    /// Restore recipient-local authoritative Dash state after the ordinary
+    /// durable FOOTNOTE pose/contact restore.
+    pub fn restore_player_dash_state(&mut self, dash: Option<crate::body::DashState>) {
+        if let Some((_, player)) = self.player_parts_mut() {
+            player.dash = dash;
         }
     }
 

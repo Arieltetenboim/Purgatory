@@ -12,8 +12,9 @@ use crate::blend::{BlendError, blend_local_poses};
 use crate::clip::{AnimationClip, BoneTrack, ClipError, Interpolation, Keyframe, LoopPolicy};
 use crate::dev::{
     A1_HEAD_CLIP_DURATION, A3_MOVE_CLIP_DURATION, A5_ATTACK_CLIP_DURATION, A5_HURT_CLIP_DURATION,
-    DEAD_CLIP_DURATION, a1_head_loop_clip, a1_head_rotation_clip, a3_idle_clip, a3_move_clip,
-    a4_fall_clip, a4_jump_clip, a5_attack_clip, a5_hurt_clip, climb_back_clip, dead_clip,
+    DASH_CLIP_DURATION, DEAD_CLIP_DURATION, a1_head_loop_clip, a1_head_rotation_clip, a3_idle_clip,
+    a3_move_clip, a4_fall_clip, a4_jump_clip, a5_attack_clip, a5_hurt_clip, climb_back_clip,
+    dash_clip, dead_clip,
 };
 use crate::parse_animation_asset_v1;
 use crate::player::{AnimationPlayer, PlayerError};
@@ -488,6 +489,19 @@ fn a3_idle_clip_samples_and_evaluates() {
     let mut world = WorldPose::new(def);
     evaluate(def, &local, &mut world).unwrap();
     assert!(world.get(HEAD).unwrap().rotation.is_finite());
+}
+
+#[test]
+fn dash_clip_is_authored_once_without_root_motion() {
+    let clip = dash_clip();
+    assert_eq!(clip.loop_policy(), LoopPolicy::Once);
+    assert!((clip.duration() - DASH_CLIP_DURATION).abs() < EPS);
+    assert!(clip.tracks().iter().all(|track| track.bone != ROOT));
+    let def = humanoid_v0();
+    let mut local = LocalPose::from_bind(def);
+    let bind_torso = local.get(TORSO).unwrap().rotation;
+    sample(clip, 0.06, &mut local).unwrap();
+    assert!((local.get(TORSO).unwrap().rotation - bind_torso).abs() > 0.2);
 }
 
 #[test]

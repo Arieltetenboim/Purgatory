@@ -122,6 +122,16 @@ class NpcLabN4RepairTests(unittest.TestCase):
             ),
             [],
         )
+        self.assertEqual(
+            server.validate_action(
+                {"grant_ability": {"ability": "skill.movement.dash"}}
+            ),
+            [],
+        )
+
+    def test_grant_ability_requires_authored_id(self):
+        errors = server.validate_action({"grant_ability": {"ability": ""}})
+        self.assertTrue(any("grant_ability.ability" in error for error in errors))
 
     def test_beat_requires_explicit_entry_role(self):
         doc = server.new_npc_document("npc.welcome.test", "welcome")
@@ -175,6 +185,7 @@ class NpcLabN4RepairTests(unittest.TestCase):
                 "actions": [
                     {"give_item": {"item": "item.workshop.package", "quantity": 1}},
                     {"mark_npc_met": "npc.welcome.traveler_stayed"},
+                    {"grant_ability": {"ability": "skill.movement.dash"}},
                     {
                         "set_fact": {
                             "fact": "welcome.workshop.package_at_inn",
@@ -186,6 +197,24 @@ class NpcLabN4RepairTests(unittest.TestCase):
         ]
         doc["interaction"]["beats"] = [beat]
         self.assertEqual(server.validate_npc_document(doc), [])
+
+    def test_synthetic_grant_ability_records_learned_ability(self):
+        doc = server.new_npc_document("npc.welcome.test", "welcome")
+        beat = valid_beat("training", entry=True)
+        beat["choices"] = [
+            {
+                "id": "learn",
+                "text": "Show me.",
+                "next": None,
+                "actions": [
+                    {"grant_ability": {"ability": "skill.movement.dash"}}
+                ],
+            }
+        ]
+        doc["interaction"]["beats"] = [beat]
+        next_state, next_beat = selection.advance_choice(doc, {}, "training", "learn")
+        self.assertIsNone(next_beat)
+        self.assertEqual(next_state["ability_granted"], ["skill.movement.dash"])
 
     def test_hebrew_authored_content_is_rejected(self):
         doc = server.new_npc_document("npc.welcome.test", "welcome")

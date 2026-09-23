@@ -246,6 +246,9 @@ pub enum DialogueAction {
         item_authored: String,
         quantity: u32,
     },
+    GrantAbility {
+        ability_authored: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -781,6 +784,8 @@ struct RawAction {
     give_item: Option<RawItemMutation>,
     #[serde(default)]
     remove_item: Option<RawItemMutation>,
+    #[serde(default)]
+    grant_ability: Option<RawAbilityGrant>,
 }
 
 impl RawAction {
@@ -793,7 +798,8 @@ impl RawAction {
         let count = usize::from(self.set_fact.is_some())
             + usize::from(self.mark_npc_met.is_some())
             + usize::from(self.give_item.is_some())
-            + usize::from(self.remove_item.is_some());
+            + usize::from(self.remove_item.is_some())
+            + usize::from(self.grant_ability.is_some());
         if count != 1 {
             return Err(issue(
                 path,
@@ -823,9 +829,21 @@ impl RawAction {
         if let Some(action) = self.give_item {
             return action.into_definition(path, npc, field, true);
         }
-        self.remove_item
-            .expect("exactly one action")
-            .into_definition(path, npc, field, false)
+        if let Some(action) = self.remove_item {
+            return action.into_definition(path, npc, field, false);
+        }
+        let action = self.grant_ability.expect("exactly one action");
+        validate_authored_id(&action.ability).map_err(|error| {
+            issue(
+                path,
+                npc,
+                format!("{field}.grant_ability.ability"),
+                format!("invalid ability authored id: {error:?}"),
+            )
+        })?;
+        Ok(DialogueAction::GrantAbility {
+            ability_authored: action.ability,
+        })
     }
 }
 
@@ -841,6 +859,12 @@ struct RawSetFact {
 struct RawItemMutation {
     item: String,
     quantity: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAbilityGrant {
+    ability: String,
 }
 
 impl RawItemMutation {

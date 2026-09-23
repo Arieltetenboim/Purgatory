@@ -32,6 +32,15 @@ pub struct ReplicatedHealth {
     pub damage_immunity_active: bool,
 }
 
+/// Recipient-local authoritative Dash state required by prediction restore.
+/// Remote presentation uses the semantic one-shot channel instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReplicatedDash {
+    pub direction: i8,
+    pub speed: f32,
+    pub remaining_ticks: u16,
+}
+
 /// Domain bits on an Update record.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DomainMask {
@@ -117,6 +126,7 @@ pub struct ReplicationFrame {
     pub local_grounded_on: PlatformSupportId,
     pub local_ignored_platform: PlatformSupportId,
     pub continuation_debt: u16,
+    pub local_dash: Option<ReplicatedDash>,
     pub local_map: u32,
     pub local_channel: u32,
     pub local_instance: u32,
@@ -218,6 +228,22 @@ pub fn encode_replication_frame(frame: &ReplicationFrame) -> Result<Vec<u8>, Cod
     out.extend_from_slice(&frame.local_grounded_on.0.to_le_bytes());
     out.extend_from_slice(&frame.local_ignored_platform.0.to_le_bytes());
     out.extend_from_slice(&frame.continuation_debt.to_le_bytes());
+    match frame.local_dash {
+        None => out.push(0),
+        Some(dash) => {
+            if !matches!(dash.direction, -1 | 1)
+                || !dash.speed.is_finite()
+                || dash.speed <= 0.0
+                || dash.remaining_ticks == 0
+            {
+                return Err(CodecError::InvalidValue);
+            }
+            out.push(1);
+            out.push(dash.direction as u8);
+            write_f32(&mut out, dash.speed)?;
+            out.extend_from_slice(&dash.remaining_ticks.to_le_bytes());
+        }
+    }
     out.extend_from_slice(&frame.local_map.to_le_bytes());
     out.extend_from_slice(&frame.local_channel.to_le_bytes());
     out.extend_from_slice(&frame.local_instance.to_le_bytes());
@@ -262,6 +288,35 @@ pub fn decode_replication_frame(bytes: &[u8]) -> Result<ReplicationFrame, CodecE
     let (local_grounded_on, rest) = read_u16(&rest[1..])?;
     let (local_ignored_platform, rest) = read_u16(rest)?;
     let (continuation_debt, rest) = read_u16(rest)?;
+    let Some((&dash_flag, rest)) = rest.split_first() else {
+        return Err(CodecError::Truncated);
+    };
+    let (local_dash, rest) = match dash_flag {
+        0 => (None, rest),
+        1 => {
+            let Some((&direction_raw, rest)) = rest.split_first() else {
+                return Err(CodecError::Truncated);
+            };
+            let direction = direction_raw as i8;
+            if !matches!(direction, -1 | 1) {
+                return Err(CodecError::InvalidValue);
+            }
+            let (speed, rest) = read_finite_f32(rest)?;
+            let (remaining_ticks, rest) = read_u16(rest)?;
+            if speed <= 0.0 || remaining_ticks == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            (
+                Some(ReplicatedDash {
+                    direction,
+                    speed,
+                    remaining_ticks,
+                }),
+                rest,
+            )
+        }
+        _ => return Err(CodecError::InvalidValue),
+    };
     let (local_map, rest) = read_u32(rest)?;
     let (local_channel, rest) = read_u32(rest)?;
     let (local_instance, rest) = read_u32(rest)?;
@@ -304,6 +359,7 @@ pub fn decode_replication_frame(bytes: &[u8]) -> Result<ReplicationFrame, CodecE
         local_grounded_on: PlatformSupportId(local_grounded_on),
         local_ignored_platform: PlatformSupportId(local_ignored_platform),
         continuation_debt,
+        local_dash,
         local_map,
         local_channel,
         local_instance,
@@ -529,6 +585,7 @@ mod tests {
             local_grounded_on: PlatformSupportId(1),
             local_ignored_platform: PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_dash: None,
             local_map: 1,
             local_channel: 0,
             local_instance: 0,
@@ -595,6 +652,28 @@ mod tests {
                 .unwrap()
                 .aoi_debug
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn recipient_local_dash_roundtrips_and_rejects_invalid_state() {
+        let mut frame = sample_frame(vec![]);
+        frame.local_dash = Some(ReplicatedDash {
+            direction: -1,
+            speed: 9.0,
+            remaining_ticks: 4,
+        });
+        let encoded = encode_replication_frame(&frame).expect("encode Dash");
+        assert_eq!(decode_replication_frame(&encoded).unwrap(), frame);
+
+        frame.local_dash = Some(ReplicatedDash {
+            direction: 0,
+            speed: 9.0,
+            remaining_ticks: 4,
+        });
+        assert_eq!(
+            encode_replication_frame(&frame),
+            Err(CodecError::InvalidValue)
         );
     }
 

@@ -63,7 +63,7 @@ fn climb(equipment: EquipmentView) -> super::state::CharacterPresentationState {
 
 #[test]
 fn protocol_unchanged() {
-    assert_eq!(PROTOCOL_VERSION, 30);
+    assert_eq!(PROTOCOL_VERSION, 31);
 }
 
 #[test]
@@ -94,6 +94,10 @@ fn climb_back_selects_climb_back_clip_not_idle() {
     assert_eq!(
         clip_for_playback_activity(PresentationActivity::Hurt) as *const _,
         purgatory_animation::a5_hurt_clip() as *const _
+    );
+    assert_eq!(
+        clip_for_playback_activity(PresentationActivity::Dash) as *const _,
+        purgatory_animation::dash_clip() as *const _
     );
 }
 

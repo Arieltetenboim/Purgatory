@@ -169,6 +169,15 @@ struct PredSample {
     velocity: [f32; 2],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PredictedDash {
+    request_seq: u32,
+    input_epoch: u16,
+    input_sequence: u32,
+    speed: f32,
+    duration_ticks: u16,
+}
+
 /// Owns local-prediction lifecycle metadata. Simulation bodies live on [`World`].
 #[derive(Debug)]
 pub struct LocalPrediction {
@@ -181,6 +190,13 @@ pub struct LocalPrediction {
     last_auth_server_tick: u64,
     history: VecDeque<PredSample>,
     pending: VecDeque<InputCommand>,
+    pending_dashes: VecDeque<PredictedDash>,
+    /// Client-side mirror of the authored Dash cooldown. Prevents speculative
+    /// re-prediction while the authoritative server will deterministically
+    /// reject the request as OnCooldown.
+    dash_cooldown_until_tick: u64,
+    dash_activation_lock_until_tick: u64,
+    dash_cooldown_request_seq: Option<u32>,
     input_epoch: u16,
     last_sent_seq: u32,
     cancel_barrier: Option<CancelBarrier>,
@@ -231,6 +247,10 @@ impl LocalPrediction {
             last_auth_server_tick: 0,
             history: VecDeque::with_capacity(PREDICTION_HISTORY_CAP),
             pending: VecDeque::with_capacity(PREDICTION_PENDING_CAP),
+            pending_dashes: VecDeque::new(),
+            dash_cooldown_until_tick: 0,
+            dash_activation_lock_until_tick: 0,
+            dash_cooldown_request_seq: None,
             input_epoch: 0,
             last_sent_seq: 0,
             cancel_barrier: None,
@@ -370,6 +390,84 @@ impl LocalPrediction {
         self.input_epoch = cmd.input_epoch;
         self.last_sent_seq = cmd.sequence;
         self.pending.push_back(cmd);
+        true
+    }
+
+    /// Apply and remember one grantable Dash at the exact input step that owns it.
+    /// Server rejection removes the event and restores/replays from authority.
+    pub fn try_predict_dash(
+        &mut self,
+        world: &mut World,
+        request_seq: u32,
+        command: InputCommand,
+        speed: f32,
+        duration_ticks: u16,
+        cooldown_ticks: u64,
+        activation_lock_ticks: u64,
+        client_tick: u64,
+    ) -> bool {
+        if !self.active
+            || command.input_epoch != self.input_epoch
+            || !self.pending_dashes.is_empty()
+            || client_tick < self.dash_cooldown_until_tick
+        {
+            return false;
+        }
+        let Some(actor) = world.player_id() else {
+            return false;
+        };
+        world.note_player_horizontal_intent(actor, command.move_axis.to_i8());
+        if !world.start_player_dash(actor, speed, duration_ticks) {
+            return false;
+        }
+        self.pending_dashes.push_back(PredictedDash {
+            request_seq,
+            input_epoch: command.input_epoch,
+            input_sequence: command.sequence,
+            speed,
+            duration_ticks,
+        });
+        self.dash_cooldown_until_tick = client_tick.saturating_add(cooldown_ticks);
+        self.dash_activation_lock_until_tick =
+            client_tick.saturating_add(activation_lock_ticks);
+        self.dash_cooldown_request_seq = Some(request_seq);
+        true
+    }
+
+    #[must_use]
+    pub fn dash_prediction_ready(&self, client_tick: u64) -> bool {
+        client_tick >= self.dash_cooldown_until_tick && self.pending_dashes.is_empty()
+    }
+
+    #[must_use]
+    pub fn ability_activation_locked(&self, client_tick: u64) -> bool {
+        client_tick < self.dash_activation_lock_until_tick
+    }
+
+    /// Roll back a rejected predicted ability through the normal durable restore.
+    pub fn reject_predicted_ability(
+        &mut self,
+        request_seq: u32,
+        replica: &ReplicatedWorld,
+        world: &mut World,
+        client_tick: u64,
+    ) -> bool {
+        let before = self.pending_dashes.len();
+        self.pending_dashes
+            .retain(|dash| dash.request_seq != request_seq);
+        if self.dash_cooldown_request_seq == Some(request_seq) {
+            self.dash_cooldown_until_tick = 0;
+            self.dash_activation_lock_until_tick = 0;
+            self.dash_cooldown_request_seq = None;
+        }
+        if self.pending_dashes.len() == before || !self.active {
+            return false;
+        }
+        restore_durable(world, replica);
+        self.replay_pending(world);
+        self.capture_tick_velocity(world);
+        self.snap_tick_poses(world);
+        self.reset_history(client_tick, world);
         true
     }
 
@@ -523,6 +621,7 @@ impl LocalPrediction {
             Some(SnapReason::FirstActive | SnapReason::Generation)
         ) {
             self.pending.clear();
+            self.pending_dashes.clear();
             self.cancel_barrier = None;
             restore_durable(world, replica);
             self.reset_count = self.reset_count.saturating_add(1);
@@ -540,6 +639,7 @@ impl LocalPrediction {
 
         if reason == Some(SnapReason::Structural) {
             self.pending.clear();
+            self.pending_dashes.clear();
             self.cancel_barrier = None;
             restore_durable(world, replica);
             self.reset_count = self.reset_count.saturating_add(1);
@@ -682,11 +782,20 @@ impl LocalPrediction {
     fn trim_pending(&mut self, epoch: u16, ack: u32) {
         self.pending
             .retain(|cmd| cmd.input_epoch == epoch && cmd.sequence > ack);
+        self.pending_dashes
+            .retain(|dash| dash.input_epoch == epoch && dash.input_sequence > ack);
     }
 
     fn replay_pending(&mut self, world: &mut World) {
         let dt = TICK_DURATION.as_secs_f32();
         for cmd in self.pending.iter().copied() {
+            if let Some(dash) = self.pending_dashes.iter().find(|dash| {
+                dash.input_epoch == cmd.input_epoch && dash.input_sequence == cmd.sequence
+            }) && let Some(actor) = world.player_id()
+            {
+                world.note_player_horizontal_intent(actor, cmd.move_axis.to_i8());
+                let _ = world.start_player_dash(actor, dash.speed, dash.duration_ticks);
+            }
             world.tick_predicted_player(dt, player_input_from_command(cmd));
         }
     }
@@ -966,6 +1075,13 @@ fn restore_durable(world: &mut World, replica: &ReplicatedWorld) {
         replica.local_grounded_on().get(),
         replica.local_ignored_platform().get(),
     );
+    world.restore_player_dash_state(replica.local_dash().map(|dash| {
+        purgatory_simulation::DashState {
+            direction: dash.direction,
+            speed: dash.speed,
+            remaining_ticks: dash.remaining_ticks,
+        }
+    }));
 }
 
 fn sync_local_health(world: &mut World, health: Option<purgatory_protocol::ReplicatedHealth>) {
@@ -1087,6 +1203,7 @@ mod tests {
             local_grounded_on: PlatformSupportId(1),
             local_ignored_platform: PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_dash: None,
             local_map: 1,
             local_channel: 0,
             local_instance: 0,
@@ -1127,6 +1244,109 @@ mod tests {
             local_presentation_pose(&pred, &world, &replica, true),
             Some([4.0, 3.0])
         );
+    }
+
+    #[test]
+    fn predicted_dash_cooldown_blocks_speculative_spam_and_rejection_clears_it() {
+        let mut world = World::footnote_test_stage();
+        let base = world.player_body().unwrap().position;
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(3, 1);
+        auth_at(&mut replica, 1, id, base);
+        pred.sync_from_replica(&replica, &mut world, 1);
+
+        let first = cmd(1, PlayerInput::from_buttons(false, true, false));
+        assert!(pred.try_push_pending(first));
+        assert!(pred.try_predict_dash(&mut world, 1, first, 9.0, 5, 18, 8, 10));
+        assert!(!pred.dash_prediction_ready(27));
+        assert!(pred.dash_prediction_ready(28) == false, "pending ack still owns Dash");
+
+        assert!(pred.reject_predicted_ability(1, &replica, &mut world, 10));
+        assert!(pred.dash_prediction_ready(10), "server rejection clears speculative cooldown");
+    }
+
+    #[test]
+    fn dash_activation_lock_blocks_other_abilities_only_for_skill_window() {
+        let mut world = World::footnote_test_stage();
+        let base = world.player_body().unwrap().position;
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(8, 1);
+        auth_at(&mut replica, 1, id, base);
+        pred.sync_from_replica(&replica, &mut world, 1);
+
+        let command = cmd(1, PlayerInput::from_buttons(false, true, false));
+        assert!(pred.try_push_pending(command));
+        assert!(pred.try_predict_dash(&mut world, 1, command, 9.0, 5, 60, 8, 10));
+
+        assert!(pred.ability_activation_locked(10));
+        assert!(pred.ability_activation_locked(17));
+        assert!(!pred.ability_activation_locked(18));
+        assert!(!pred.dash_prediction_ready(18), "Dash cooldown outlives action lock");
+        assert!(!pred.dash_prediction_ready(69));
+    }
+
+    #[test]
+    fn rejected_predicted_dash_restores_and_replays_without_dash() {
+        let mut world = World::footnote_test_stage();
+        let base = world.player_body().unwrap().position;
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(3, 1);
+        auth_at(&mut replica, 1, id, base);
+        pred.sync_from_replica(&replica, &mut world, 1);
+
+        let command = cmd(1, PlayerInput::from_buttons(false, true, false));
+        assert!(pred.try_push_pending(command));
+        assert!(pred.try_predict_dash(&mut world, 1, command, 9.0, 5, 18, 8, 1));
+        let second = cmd(2, PlayerInput::from_buttons(false, true, false));
+        assert!(
+            !pred.try_predict_dash(&mut world, 2, second, 9.0, 5, 18, 8, 2),
+            "one unacknowledged Dash prediction owns the local movement state"
+        );
+        pred.tick(
+            &mut world,
+            PlayerInput::from_buttons(false, true, false),
+            2,
+        );
+        let dashed_x = world.player_body().unwrap().position[0];
+        assert!(world.player_dash_of(world.player_id().unwrap()).is_some());
+
+        assert!(pred.reject_predicted_ability(1, &replica, &mut world, 2));
+        let replayed = world.player_body().unwrap();
+        assert!(world.player_dash_of(world.player_id().unwrap()).is_none());
+        assert!(replayed.position[0] < dashed_x);
+        assert!(replayed.position[0] > base[0]);
+    }
+
+    #[test]
+    fn reconciliation_replays_unacknowledged_dash_at_its_input_step() {
+        let mut world = World::footnote_test_stage();
+        let base = world.player_body().unwrap().position;
+        let mut replica = ReplicatedWorld::new();
+        let mut pred = LocalPrediction::new();
+        let id = wire(4, 1);
+        auth_at(&mut replica, 1, id, base);
+        pred.sync_from_replica(&replica, &mut world, 1);
+
+        let command = cmd(1, PlayerInput::from_buttons(false, true, false));
+        assert!(pred.try_push_pending(command));
+        assert!(pred.try_predict_dash(&mut world, 1, command, 9.0, 5, 18, 8, 1));
+        pred.tick(
+            &mut world,
+            PlayerInput::from_buttons(false, true, false),
+            2,
+        );
+
+        auth_at(&mut replica, 2, id, base);
+        pred.sync_from_replica(&replica, &mut world, 2);
+        let dash = world
+            .player_dash_of(world.player_id().unwrap())
+            .expect("pending Dash replayed");
+        assert_eq!(dash.direction, 1);
+        assert_eq!(dash.remaining_ticks, 4);
+        assert!((world.player_body().unwrap().position[0] - (base[0] + 0.3)).abs() < 1e-4);
     }
 
     #[test]
@@ -2186,6 +2406,7 @@ mod tests {
             local_grounded_on: PlatformSupportId(1),
             local_ignored_platform: PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_dash: None,
             local_map: 1,
             local_channel: 0,
             local_instance: 0,

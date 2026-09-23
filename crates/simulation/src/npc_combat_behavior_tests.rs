@@ -36,6 +36,7 @@ fn strike() -> AbilityDefinition {
             max_targets: 8,
         },
         effects: vec![AbilityEffect::Damage { amount: 5.0 }],
+        presentation: crate::AbilityPresentation::Attack,
     }
 }
 

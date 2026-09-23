@@ -95,7 +95,8 @@ pub use aabb::Aabb;
 pub use ability::{
     ABILITY_EFFECT_CAP, AbilityActivation, AbilityDefinition, AbilityDefinitionError,
     AbilityDelivery, AbilityEffect, AbilityGrantSource, AbilityGrantTable, AbilityId,
-    AbilityRejectReason, AbilityRequest, AbilityTiming, CooldownTable, GameplayPresentationCue,
+    AbilityPresentation, AbilityRejectReason, AbilityRequest, AbilityTiming, CooldownTable,
+    GameplayPresentationCue,
     cue_for_ability_cast, cue_for_damage_outcome, forward_query_aabb, oneshot_kind_for_cue,
 };
 pub use action::{Action, ActionEnd, ActionError, ActionId, ActionKind, ActionPhase};
@@ -105,7 +106,7 @@ pub use aoi::{
     AOI_POLICY_HALF_EXTENTS, AOI_PREFETCH_MARGIN, AOI_VIEWPORT_ASPECT, AoiRects,
     aoi_clamp_camera_center, aoi_policy_rects, aoi_view_envelope, aoi_viewport_size, point_in_aabb,
 };
-pub use body::{PLAYER_HALF_EXTENTS, PlayerBody, PlayerState};
+pub use body::{DashState, PLAYER_HALF_EXTENTS, PlayerBody, PlayerState};
 pub use bounds::WorldBounds;
 pub use cadence::{
     Cadence, CadenceBinding, CadenceKey, CadenceTable, cadence_due, staggered_interval_due,

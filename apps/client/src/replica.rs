@@ -9,8 +9,9 @@ use std::time::Instant;
 
 use purgatory_common::ContentId;
 use purgatory_protocol::{
-    ObserverAoiDebug, PlatformSupportId, ReplicatedEquipment, ReplicatedHealth, ReplicatedKind,
-    ReplicationFrame, ReplicationRecord, SnapshotEntity, WireEntityId, WorldSnapshot,
+    ObserverAoiDebug, PlatformSupportId, ReplicatedDash, ReplicatedEquipment, ReplicatedHealth,
+    ReplicatedKind, ReplicationFrame, ReplicationRecord, SnapshotEntity, WireEntityId,
+    WorldSnapshot,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +76,7 @@ pub struct ReplicatedWorld {
     local_grounded_on: PlatformSupportId,
     local_ignored_platform: PlatformSupportId,
     continuation_debt: u16,
+    local_dash: Option<ReplicatedDash>,
     local_map: u32,
     local_channel: u32,
     local_instance: u32,
@@ -115,6 +117,7 @@ impl ReplicatedWorld {
             local_grounded_on: PlatformSupportId::NONE,
             local_ignored_platform: PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_dash: None,
             local_map: 0,
             local_channel: 0,
             local_instance: 0,
@@ -191,6 +194,7 @@ impl ReplicatedWorld {
         self.local_grounded_on = snap.local_grounded_on;
         self.local_ignored_platform = snap.local_ignored_platform;
         self.continuation_debt = snap.continuation_debt;
+        self.local_dash = None;
         self.local_map = snap.local_map;
         self.local_channel = snap.local_channel;
         self.local_instance = snap.local_instance;
@@ -330,6 +334,7 @@ impl ReplicatedWorld {
         self.local_grounded_on = frame.local_grounded_on;
         self.local_ignored_platform = frame.local_ignored_platform;
         self.continuation_debt = frame.continuation_debt;
+        self.local_dash = frame.local_dash;
         self.local_map = frame.local_map;
         self.local_channel = frame.local_channel;
         self.local_instance = frame.local_instance;
@@ -382,6 +387,7 @@ impl ReplicatedWorld {
         self.local_grounded_on = PlatformSupportId::NONE;
         self.local_ignored_platform = PlatformSupportId::NONE;
         self.continuation_debt = 0;
+        self.local_dash = None;
         self.local_map = 0;
         self.local_channel = 0;
         self.local_instance = 0;
@@ -445,6 +451,11 @@ impl ReplicatedWorld {
     #[must_use]
     pub fn continuation_debt(&self) -> u16 {
         self.continuation_debt
+    }
+
+    #[must_use]
+    pub fn local_dash(&self) -> Option<ReplicatedDash> {
+        self.local_dash
     }
 
     #[must_use]
@@ -724,6 +735,7 @@ mod tests {
             local_grounded_on: PlatformSupportId::NONE,
             local_ignored_platform: PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_dash: None,
             local_map: 1,
             local_channel: 0,
             local_instance: 0,

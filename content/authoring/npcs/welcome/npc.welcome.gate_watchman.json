@@ -135,8 +135,21 @@
             "animation": null
           }
         ],
-        "choices": [],
-        "notes": "Road-safety flavor only. No travel restriction or tracking mechanic is implied."
+        "choices": [
+          {
+            "id": "learn_dash",
+            "text": "Show me how to move fast when things go wrong.",
+            "next": null,
+            "actions": [
+              {
+                "grant_ability": {
+                  "ability": "skill.movement.dash"
+                }
+              }
+            ]
+          }
+        ],
+        "notes": "Road-safety guidance plus the first practical movement lesson. Choosing the training response teaches Dash through the authoritative Grant Ability action."
       },
       {
         "id": "intro_waiting",

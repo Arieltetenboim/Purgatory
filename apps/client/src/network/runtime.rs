@@ -67,6 +67,13 @@ enum RuntimeCommand {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ClientGameplayMsg {
     Input(InputCommand),
+    /// One local simulation boundary carrying a separate ability request.
+    /// Kept as one queue item so impairment/backpressure cannot split the pair.
+    /// Wire order is AbilityActivate first, then its Input anchor.
+    InputWithAbility {
+        command: InputCommand,
+        request: purgatory_protocol::AbilityActivateRequest,
+    },
     HeldCancel,
     InteractOpen(purgatory_protocol::WireEntityId),
     InteractClose(u32),
@@ -89,7 +96,6 @@ enum ClientGameplayMsg {
     DevPresentationOneShot(u8),
     DevResetPlayer,
     Respawn,
-    AbilityActivate(purgatory_protocol::AbilityActivateRequest),
 }
 
 struct ImpairmentNet {
@@ -231,6 +237,9 @@ impl EventSink {
                 }
                 NetworkEvent::Ability { attempt_id, event } => {
                     self.trace(&format!("attempt={attempt_id} Ability {event:?}"));
+                }
+                NetworkEvent::AbilityGrants { attempt_id, event } => {
+                    self.trace(&format!("attempt={attempt_id} AbilityGrants {event:?}"));
                 }
             }
         }
@@ -523,12 +532,19 @@ impl NetworkHandle {
         self.input.try_send(ClientGameplayMsg::Respawn).is_ok()
     }
 
-    pub fn try_send_ability_activate(
+    /// Atomically enqueue the ability request with the InputCommand that owns
+    /// its simulation boundary. They remain separate wire messages, preserving
+    /// ADR-0064, but the reliable stream sends the ability first so the server
+    /// can queue it before acknowledging the anchor input.
+    pub fn try_send_input_with_ability(
         &self,
+        command: InputCommand,
         request: purgatory_protocol::AbilityActivateRequest,
     ) -> bool {
+        debug_assert_eq!(command.input_epoch, request.input_epoch);
+        debug_assert_eq!(command.sequence, request.input_sequence);
         self.input
-            .try_send(ClientGameplayMsg::AbilityActivate(request))
+            .try_send(ClientGameplayMsg::InputWithAbility { command, request })
             .is_ok()
     }
 
@@ -1045,6 +1061,13 @@ async fn handshake_and_live(
                 kind: NetworkFailureKind::UnexpectedMessage,
             });
         }
+        Ok(ServerControl::AbilityGrants(_)) => {
+            connection.close(0u32.into(), b"handshake");
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
         Err(kind) => {
             connection.close(0u32.into(), b"handshake");
             return Err(NetworkEvent::Disconnected { attempt_id, kind });
@@ -1058,8 +1081,14 @@ async fn handshake_and_live(
     .await
 }
 
-fn to_control(msg: ClientGameplayMsg) -> ClientControl {
-    match msg {
+fn controls_for_msg(msg: ClientGameplayMsg) -> (ClientControl, Option<ClientControl>) {
+    let control = match msg {
+        ClientGameplayMsg::InputWithAbility { command, request } => {
+            return (
+                ClientControl::AbilityActivate(request),
+                Some(ClientControl::Input(command)),
+            );
+        }
         ClientGameplayMsg::Input(command) => ClientControl::Input(command),
         ClientGameplayMsg::HeldCancel => ClientControl::HeldCancel,
         ClientGameplayMsg::InteractOpen(target) => {
@@ -1103,8 +1132,20 @@ fn to_control(msg: ClientGameplayMsg) -> ClientControl {
         }
         ClientGameplayMsg::DevResetPlayer => ClientControl::DevResetPlayer,
         ClientGameplayMsg::Respawn => ClientControl::Respawn,
-        ClientGameplayMsg::AbilityActivate(request) => ClientControl::AbilityActivate(request),
+    };
+    (control, None)
+}
+
+async fn write_gameplay_msg(
+    send: &mut SendStream,
+    msg: ClientGameplayMsg,
+) -> Result<(), NetworkFailureKind> {
+    let (first, second) = controls_for_msg(msg);
+    write_client_control(send, &first).await?;
+    if let Some(second) = second {
+        write_client_control(send, &second).await?;
     }
+    Ok(())
 }
 
 async fn drain_due_inputs(
@@ -1118,7 +1159,7 @@ async fn drain_due_inputs(
         .input_mut()
         .poll_due(now, INPUT_DRAIN_PER_TURN);
     for msg in due {
-        write_client_control(send, &to_control(msg))
+        write_gameplay_msg(send, msg)
             .await
             .map_err(|kind| NetworkEvent::Disconnected { attempt_id, kind })?;
     }
@@ -1202,9 +1243,7 @@ async fn live_loop(
                                 kind: NetworkFailureKind::InternalNetworkError,
                             });
                         }
-                    } else if let Err(kind) =
-                        write_client_control(&mut send, &to_control(msg)).await
-                    {
+                    } else if let Err(kind) = write_gameplay_msg(&mut send, msg).await {
                         return Err(NetworkEvent::Disconnected { attempt_id, kind });
                     }
                 }
@@ -1323,6 +1362,14 @@ async fn live_loop(
                         events
                             .emit(
                                 NetworkEvent::Ability { attempt_id, event },
+                                control,
+                            )
+                            .await;
+                    }
+                    Ok(ServerControl::AbilityGrants(event)) => {
+                        events
+                            .emit(
+                                NetworkEvent::AbilityGrants { attempt_id, event },
                                 control,
                             )
                             .await;
@@ -1567,6 +1614,36 @@ mod tests {
 
     fn attempt() -> ConnectionAttemptId {
         ConnectionAttemptId::from_raw(1)
+    }
+
+    #[test]
+    fn input_with_ability_emits_ability_before_anchor_input() {
+        let command = InputCommand {
+            input_epoch: 7,
+            sequence: 11,
+            move_axis: purgatory_protocol::MoveAxis::Right,
+            jump_pressed: false,
+            down_held: false,
+            portal_held: false,
+        };
+        let request = purgatory_protocol::AbilityActivateRequest {
+            seq: 3,
+            input_epoch: 7,
+            input_sequence: 11,
+            ability_id: purgatory_common::ContentId::from_authored("skill.movement.dash")
+                .expect("dash id"),
+            selected: None,
+        };
+        let (first, second) =
+            controls_for_msg(ClientGameplayMsg::InputWithAbility { command, request });
+        assert!(matches!(
+            first,
+            ClientControl::AbilityActivate(got) if got == request
+        ));
+        assert!(matches!(
+            second,
+            Some(ClientControl::Input(got)) if got == command
+        ));
     }
 
     #[test]
@@ -2190,6 +2267,7 @@ mod tests {
             local_grounded_on: PlatformSupportId::NONE,
             local_ignored_platform: PlatformSupportId::NONE,
             continuation_debt: 0,
+            local_dash: None,
             local_map: 1,
             local_channel: 0,
             local_instance: 0,

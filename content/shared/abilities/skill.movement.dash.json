@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "id": "skill.movement.dash",
+  "timing": {
+    "windup_ticks": 0,
+    "active_ticks": 5,
+    "recovery_ticks": 3,
+    "cooldown_ticks": 60
+  },
+  "activation": "independent",
+  "delivery": {
+    "kind": "self"
+  },
+  "effects": [
+    {
+      "type": "dash",
+      "speed": 9,
+      "duration_ticks": 5
+    }
+  ],
+  "presentation": "dash"
+}

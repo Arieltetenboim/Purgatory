@@ -5,7 +5,7 @@
 
 use crate::ability::{
     ABILITY_ACTIVATE_INDEPENDENT_BYTES, ABILITY_ACTIVATE_SELECTED_BYTES, AbilityActivateRequest,
-    AbilityCommandReject, ServerAbility,
+    AbilityCommandReject, MAX_GRANTED_ABILITIES, ServerAbility, ServerAbilityGrants,
 };
 use crate::dialogue::{
     DialogueAdvance, DialogueChoose, ServerDialogueChoiceAccepted, ServerDialogueLine,
@@ -30,7 +30,7 @@ use crate::presentation_oneshot::{
     decode_server_presentation_oneshot, encode_dev_presentation_oneshot,
     encode_server_presentation_oneshot,
 };
-use crate::snapshot::WireEntityId;
+use crate::snapshot::{WireEntityId, read_u16};
 use crate::{
     ConnectionId, HELLO_DEV_LOGIN_SINCE, MAX_DATAGRAM_BYTES, MAX_LABEL_BYTES, PROTOCOL_VERSION,
 };
@@ -74,6 +74,7 @@ const TAG_DROP: u8 = 40;
 const TAG_DROP_ACCEPTED: u8 = 41;
 const TAG_DROP_REJECTED: u8 = 42;
 const TAG_DEV_SPAWN_MONSTER: u8 = 43;
+const TAG_ABILITY_GRANTS: u8 = 44;
 
 /// Codec failure. Never treated as a successful message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -300,11 +301,11 @@ pub enum ClientControl {
     DevSpawnMonster(DevSpawnMonster),
     Equip(EquipRequest),
     Unequip(UnequipRequest),
-    /// DEV presentation Attack/Hurt oneshot request (protocol v13).
+    /// DEV presentation one-shot request (v13 Attack/Hurt; v31 Dash).
     DevPresentationOneShot(DevPresentationOneShot),
     /// DEV overlay spawn reset. Server applies `DebugAction::ResetPlayer` to the bound actor.
     DevResetPlayer,
-    /// Ability activation intent (protocol v15). Ability id + optional selected entity.
+    /// Ability activation intent (v31 input anchor + ability id + optional target).
     AbilityActivate(AbilityActivateRequest),
     /// Request pickup of a visible world-drop manifestation.
     Pickup(PickupRequest),
@@ -323,10 +324,12 @@ pub enum ServerControl {
     DialogueLine(ServerDialogueLine),
     DialogueChoiceAccepted(ServerDialogueChoiceAccepted),
     Equipment(ServerEquipment),
-    /// Authoritative presentation oneshot start/clear (protocol v13).
+    /// Authoritative presentation one-shot start/clear (v13, Dash kind in v31).
     PresentationOneShot(ServerPresentationOneShot),
-    /// Ability request lifecycle only (protocol v15). Not a hit or Health write.
+    /// Ability request lifecycle only (v15 tags; v31 input-anchored request).
     Ability(ServerAbility),
+    /// Owner-private authoritative ability-grant baseline (protocol v31).
+    AbilityGrants(ServerAbilityGrants),
     /// Authoritative item transaction result.
     Item(ServerItem),
     /// Owner-private authoritative inventory baseline.
@@ -812,8 +815,14 @@ pub fn encode_server_control(msg: &ServerControl) -> Result<Vec<u8>, CodecError>
             Ok(out)
         }
         ServerControl::Equipment(event) => encode_server_equipment(event),
-        ServerControl::PresentationOneShot(event) => Ok(encode_server_presentation_oneshot(event)),
+        ServerControl::PresentationOneShot(event) => {
+            if !ServerPresentationOneShot::kind_valid(event.kind) {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(encode_server_presentation_oneshot(event))
+        }
         ServerControl::Ability(event) => encode_server_ability(event),
+        ServerControl::AbilityGrants(grants) => encode_ability_grants(grants),
         ServerControl::Item(event) => encode_server_item(event),
         ServerControl::Inventory(snapshot) => encode_server_inventory(snapshot),
     }
@@ -877,6 +886,7 @@ pub fn decode_server_control(bytes: &[u8]) -> Result<ServerControl, CodecError> 
         TAG_ABILITY_ACCEPTED | TAG_ABILITY_REJECTED => {
             Ok(ServerControl::Ability(decode_server_ability(tag, rest)?))
         }
+        TAG_ABILITY_GRANTS => Ok(ServerControl::AbilityGrants(decode_ability_grants(rest)?)),
         TAG_PICKUP_ACCEPTED | TAG_PICKUP_REJECTED => {
             Ok(ServerControl::Item(decode_server_item(tag, rest)?))
         }
@@ -1234,6 +1244,11 @@ fn encode_ability_activate(req: AbilityActivateRequest) -> Result<Vec<u8>, Codec
     let mut out = Vec::with_capacity(cap);
     out.push(TAG_ABILITY_ACTIVATE);
     out.extend_from_slice(&req.seq.to_le_bytes());
+    out.extend_from_slice(&req.input_epoch.to_le_bytes());
+    if req.input_sequence == 0 {
+        return Err(CodecError::InvalidValue);
+    }
+    out.extend_from_slice(&req.input_sequence.to_le_bytes());
     out.extend_from_slice(&req.ability_id.token().to_le_bytes());
     match req.selected {
         None => out.push(0),
@@ -1248,6 +1263,11 @@ fn encode_ability_activate(req: AbilityActivateRequest) -> Result<Vec<u8>, Codec
 fn decode_ability_activate(rest: &[u8]) -> Result<AbilityActivateRequest, CodecError> {
     let (seq, rest) = read_u32(rest)?;
     if seq == 0 {
+        return Err(CodecError::InvalidValue);
+    }
+    let (input_epoch, rest) = read_u16(rest)?;
+    let (input_sequence, rest) = read_u32(rest)?;
+    if input_sequence == 0 {
         return Err(CodecError::InvalidValue);
     }
     let (token, rest) = read_u64(rest)?;
@@ -1270,6 +1290,8 @@ fn decode_ability_activate(rest: &[u8]) -> Result<AbilityActivateRequest, CodecE
     };
     Ok(AbilityActivateRequest {
         seq,
+        input_epoch,
+        input_sequence,
         ability_id: purgatory_common::ContentId::from_token(token),
         selected,
     })
@@ -1311,6 +1333,47 @@ fn decode_server_ability(tag: u8, rest: &[u8]) -> Result<ServerAbility, CodecErr
         }
         other => Err(CodecError::UnknownDiscriminant(other)),
     }
+}
+
+fn encode_ability_grants(grants: &ServerAbilityGrants) -> Result<Vec<u8>, CodecError> {
+    if grants.abilities.len() > MAX_GRANTED_ABILITIES {
+        return Err(CodecError::InvalidValue);
+    }
+    let mut abilities = grants.abilities.clone();
+    abilities.sort_unstable_by_key(|ability| ability.token());
+    abilities.dedup();
+    if abilities.len() != grants.abilities.len() {
+        return Err(CodecError::InvalidValue);
+    }
+    let mut out = Vec::with_capacity(2 + abilities.len() * 8);
+    out.push(TAG_ABILITY_GRANTS);
+    out.push(u8::try_from(abilities.len()).map_err(|_| CodecError::InvalidValue)?);
+    for ability in abilities {
+        out.extend_from_slice(&ability.token().to_le_bytes());
+    }
+    Ok(out)
+}
+
+fn decode_ability_grants(rest: &[u8]) -> Result<ServerAbilityGrants, CodecError> {
+    let Some((&count, mut rest)) = rest.split_first() else {
+        return Err(CodecError::Truncated);
+    };
+    let count = usize::from(count);
+    if count > MAX_GRANTED_ABILITIES || rest.len() != count * 8 {
+        return Err(CodecError::InvalidValue);
+    }
+    let mut abilities = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (token, next) = read_u64(rest)?;
+        let ability = purgatory_common::ContentId::from_token(token);
+        if abilities.contains(&ability) {
+            return Err(CodecError::InvalidValue);
+        }
+        abilities.push(ability);
+        rest = next;
+    }
+    abilities.sort_unstable_by_key(|ability| ability.token());
+    Ok(ServerAbilityGrants { abilities })
 }
 
 fn split_tag(bytes: &[u8]) -> Result<(u8, &[u8]), CodecError> {
@@ -2152,6 +2215,8 @@ mod tests {
     fn ability_activate_roundtrip_and_sizes() {
         let independent = ClientControl::AbilityActivate(AbilityActivateRequest {
             seq: 1,
+            input_epoch: 0,
+            input_sequence: 1,
             ability_id: purgatory_common::ContentId::from_token(9),
             selected: None,
         });
@@ -2161,6 +2226,8 @@ mod tests {
 
         let selected = ClientControl::AbilityActivate(AbilityActivateRequest {
             seq: 2,
+            input_epoch: 0,
+            input_sequence: 2,
             ability_id: purgatory_common::ContentId::from_token(9),
             selected: Some(WireEntityId {
                 index: 4,
@@ -2187,8 +2254,50 @@ mod tests {
         assert!(
             encode_client_control(&ClientControl::AbilityActivate(AbilityActivateRequest {
                 seq: 0,
+                input_epoch: 0,
+                input_sequence: 1,
                 ability_id: purgatory_common::ContentId::from_token(1),
                 selected: None,
+            }))
+            .is_err()
+        );
+        assert!(
+            encode_client_control(&ClientControl::AbilityActivate(AbilityActivateRequest {
+                seq: 1,
+                input_epoch: 0,
+                input_sequence: 0,
+                ability_id: purgatory_common::ContentId::from_token(1),
+                selected: None,
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn owner_private_ability_grants_roundtrip_canonically() {
+        let grants = ServerControl::AbilityGrants(ServerAbilityGrants {
+            abilities: vec![
+                purgatory_common::ContentId::from_token(9),
+                purgatory_common::ContentId::from_token(3),
+            ],
+        });
+        let encoded = encode_server_control(&grants).expect("encode grants");
+        assert_eq!(encoded[0], TAG_ABILITY_GRANTS);
+        assert_eq!(
+            decode_server_control(&encoded).expect("decode grants"),
+            ServerControl::AbilityGrants(ServerAbilityGrants {
+                abilities: vec![
+                    purgatory_common::ContentId::from_token(3),
+                    purgatory_common::ContentId::from_token(9),
+                ],
+            })
+        );
+        assert!(
+            encode_server_control(&ServerControl::AbilityGrants(ServerAbilityGrants {
+                abilities: vec![
+                    purgatory_common::ContentId::from_token(3),
+                    purgatory_common::ContentId::from_token(3),
+                ],
             }))
             .is_err()
         );

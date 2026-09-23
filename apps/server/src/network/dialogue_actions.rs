@@ -6,6 +6,7 @@
 
 use purgatory_common::ContentId;
 use purgatory_content::{ContentRegistry, DialogueAction};
+use purgatory_protocol::MAX_GRANTED_ABILITIES;
 use purgatory_simulation::{EntityId, INVENTORY_CAPACITY, ItemRuntimeError, World};
 
 use super::narrative::NarrativeRuntime;
@@ -28,17 +29,23 @@ enum ResolvedAction {
         definition: ContentId,
         quantity: u32,
     },
+    GrantAbility {
+        ability: ContentId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum DialogueActionError {
     UnknownItem(String),
+    UnknownAbility(String),
+    AbilityGrantLimit,
     Inventory(ItemRuntimeError),
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DialogueActionOutcome {
     pub inventory_changed: bool,
+    pub abilities_to_grant: Vec<ContentId>,
 }
 
 pub(crate) fn execute_dialogue_actions(
@@ -50,6 +57,7 @@ pub(crate) fn execute_dialogue_actions(
 ) -> Result<DialogueActionOutcome, DialogueActionError> {
     let resolved = resolve(actions, registry)?;
     preflight_inventory(&resolved, actor, world)?;
+    preflight_ability_grants(&resolved, actor, world)?;
 
     let mut outcome = DialogueActionOutcome::default();
     for action in resolved {
@@ -78,6 +86,11 @@ pub(crate) fn execute_dialogue_actions(
                     .remove_inventory_definition(actor, definition, quantity)
                     .map_err(DialogueActionError::Inventory)?;
                 outcome.inventory_changed = true;
+            }
+            ResolvedAction::GrantAbility { ability } => {
+                if !outcome.abilities_to_grant.contains(&ability) {
+                    outcome.abilities_to_grant.push(ability);
+                }
             }
         }
     }
@@ -123,8 +136,35 @@ fn resolve(
                     quantity: *quantity,
                 })
             }
+            DialogueAction::GrantAbility { ability_authored } => {
+                let ability = registry
+                    .ability(ability_authored)
+                    .ok_or_else(|| DialogueActionError::UnknownAbility(ability_authored.clone()))?;
+                Ok(ResolvedAction::GrantAbility { ability: ability.id })
+            }
         })
         .collect()
+}
+
+fn preflight_ability_grants(
+    actions: &[ResolvedAction],
+    actor: EntityId,
+    world: &World,
+) -> Result<(), DialogueActionError> {
+    let mut abilities = world.granted_abilities(actor);
+    for action in actions {
+        let ResolvedAction::GrantAbility { ability } = action else {
+            continue;
+        };
+        if abilities.contains(ability) {
+            continue;
+        }
+        if abilities.len() >= MAX_GRANTED_ABILITIES {
+            return Err(DialogueActionError::AbilityGrantLimit);
+        }
+        abilities.push(*ability);
+    }
+    Ok(())
 }
 
 fn preflight_inventory(
@@ -189,7 +229,9 @@ fn preflight_inventory(
                 }
                 stacks.retain(|(_, amount)| *amount > 0);
             }
-            ResolvedAction::SetFact { .. } | ResolvedAction::MarkNpcMet { .. } => {}
+            ResolvedAction::SetFact { .. }
+            | ResolvedAction::MarkNpcMet { .. }
+            | ResolvedAction::GrantAbility { .. } => {}
         }
     }
     Ok(())
@@ -219,6 +261,9 @@ mod tests {
             DialogueAction::MarkNpcMet {
                 npc_authored: "npc.welcome.workshop_craftsperson".into(),
             },
+            DialogueAction::GrantAbility {
+                ability_authored: "skill.movement.dash".into(),
+            },
         ];
 
         let outcome =
@@ -226,9 +271,12 @@ mod tests {
                 .unwrap();
 
         assert!(outcome.inventory_changed);
+        let dash = registry.ability("skill.movement.dash").unwrap().id;
+        assert_eq!(outcome.abilities_to_grant, vec![dash]);
         assert_eq!(world.inventory_count(actor), 1);
         assert!(!narrative.fact(actor, "welcome.workshop.package_at_inn"));
         assert!(narrative.npc_met(actor, "npc.welcome.workshop_craftsperson"));
+        assert!(!world.ability_granted(actor, dash));
     }
 
     #[test]

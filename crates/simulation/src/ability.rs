@@ -37,6 +37,8 @@ pub enum AbilityActivation {
 /// How affected entities are chosen at Active. Not an activation requirement.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AbilityDelivery {
+    /// Affect the activating entity.
+    SelfTarget,
     /// Forward AABB along owner facing. Zero hits is a valid Active.
     ForwardQuery {
         range: f32,
@@ -53,6 +55,16 @@ pub enum AbilityDelivery {
 pub enum AbilityEffect {
     /// Flat damage. Executed via [`crate::World::apply_damage`], not ability code.
     Damage { amount: f32 },
+    /// Start collision-resolved horizontal movement for fixed simulation ticks.
+    Dash { speed: f32, duration_ticks: u16 },
+}
+
+/// Semantic character presentation requested by an authored ability.
+/// This vocabulary never names an animation clip or skeleton bone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AbilityPresentation {
+    Attack,
+    Dash,
 }
 
 /// Minimum content-driven ability shape. Shared JSON lives in `content/shared/abilities/`.
@@ -63,6 +75,7 @@ pub struct AbilityDefinition {
     pub activation: AbilityActivation,
     pub delivery: AbilityDelivery,
     pub effects: Vec<AbilityEffect>,
+    pub presentation: AbilityPresentation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +86,9 @@ pub enum AbilityDefinitionError {
     InvalidRange,
     InvalidHalfHeight,
     InvalidMaxTargets,
+    InvalidDashSpeed,
+    InvalidDashDuration,
+    InvalidDashDelivery,
 }
 
 impl AbilityDefinition {
@@ -90,9 +106,21 @@ impl AbilityDefinition {
                         return Err(AbilityDefinitionError::InvalidDamage);
                     }
                 }
+                AbilityEffect::Dash {
+                    speed,
+                    duration_ticks,
+                } => {
+                    if !speed.is_finite() || speed <= 0.0 {
+                        return Err(AbilityDefinitionError::InvalidDashSpeed);
+                    }
+                    if duration_ticks == 0 {
+                        return Err(AbilityDefinitionError::InvalidDashDuration);
+                    }
+                }
             }
         }
         match self.delivery {
+            AbilityDelivery::SelfTarget => {}
             AbilityDelivery::ForwardQuery {
                 range,
                 half_height,
@@ -109,6 +137,14 @@ impl AbilityDefinition {
                 }
             }
             AbilityDelivery::SelectedEntity => {}
+        }
+        if self
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, AbilityEffect::Dash { .. }))
+            && !matches!(self.delivery, AbilityDelivery::SelfTarget)
+        {
+            return Err(AbilityDefinitionError::InvalidDashDelivery);
         }
         Ok(())
     }
@@ -171,6 +207,7 @@ pub enum AbilityRejectReason {
     OutOfRange,
     OnCooldown,
     Busy,
+    RequiresGrounded,
     Gate(crate::action_gate::ActionDenialReason),
 }
 
@@ -186,16 +223,18 @@ impl AbilityRejectReason {
             Self::OutOfRange => "OutOfRange",
             Self::OnCooldown => "OnCooldown",
             Self::Busy => "Busy",
+            Self::RequiresGrounded => "RequiresGrounded",
             Self::Gate(_) => "Gate",
         }
     }
 }
 
-/// Semantic presentation cue. Character Presentation maps Attack/Hurt to clips.
+/// Semantic presentation cue. Character Presentation maps cues to clips.
 /// Combat/ability code must not name animation clips or bones.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GameplayPresentationCue {
     Attack,
+    Dash,
     Hurt,
     /// Derived from Health.current <= 0. Persistent Character Presentation
     /// activity — not a Phase 8 oneshot.
@@ -203,8 +242,13 @@ pub enum GameplayPresentationCue {
 }
 
 #[must_use]
-pub const fn cue_for_ability_cast() -> GameplayPresentationCue {
-    GameplayPresentationCue::Attack
+pub const fn cue_for_ability_cast(
+    presentation: AbilityPresentation,
+) -> GameplayPresentationCue {
+    match presentation {
+        AbilityPresentation::Attack => GameplayPresentationCue::Attack,
+        AbilityPresentation::Dash => GameplayPresentationCue::Dash,
+    }
 }
 
 #[must_use]
@@ -221,6 +265,7 @@ pub const fn cue_for_damage_outcome(target_dead: bool) -> GameplayPresentationCu
 pub const fn oneshot_kind_for_cue(cue: GameplayPresentationCue) -> Option<PresentationOneShotKind> {
     match cue {
         GameplayPresentationCue::Attack => Some(PresentationOneShotKind::Attack),
+        GameplayPresentationCue::Dash => Some(PresentationOneShotKind::Dash),
         GameplayPresentationCue::Hurt => Some(PresentationOneShotKind::Hurt),
         GameplayPresentationCue::Dead => None,
     }
@@ -236,6 +281,7 @@ pub(crate) struct AbilityLive {
     pub effect_count: u8,
     pub active_ticks: u64,
     pub recovery_ticks: u64,
+    pub presentation: AbilityPresentation,
     pub effects_applied: bool,
 }
 
@@ -258,12 +304,21 @@ impl AbilityLive {
             effect_count: n as u8,
             active_ticks: def.timing.active_ticks,
             recovery_ticks: def.timing.recovery_ticks,
+            presentation: def.presentation,
             effects_applied: false,
         }
     }
 
     pub(crate) fn effects(&self) -> &[AbilityEffect] {
         &self.effects[..self.effect_count as usize]
+    }
+
+    pub(crate) fn is_dash(&self) -> bool {
+        self.presentation == AbilityPresentation::Dash
+            || self
+                .effects()
+                .iter()
+                .any(|effect| matches!(effect, AbilityEffect::Dash { .. }))
     }
 }
 
@@ -280,6 +335,10 @@ impl AbilityRuntimeTable {
 
     pub fn insert(&mut self, live: AbilityLive) {
         self.live.push(live);
+    }
+
+    pub fn get(&self, action_id: ActionId) -> Option<&AbilityLive> {
+        self.live.iter().find(|live| live.action_id == action_id)
     }
 
     pub fn get_mut(&mut self, action_id: ActionId) -> Option<&mut AbilityLive> {
@@ -353,6 +412,9 @@ pub struct AbilityGrantTable {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AbilityGrantSource {
     Intrinsic,
+    /// Permanent progression learned from authoritative gameplay (for
+    /// example, an NPC teaching a movement skill).
+    Learned,
     Equipment(ItemInstanceId),
 }
 
@@ -365,6 +427,34 @@ impl AbilityGrantTable {
     #[must_use]
     pub fn contains(&self, owner: EntityId, id: AbilityId) -> bool {
         self.grants.iter().any(|(e, a, _)| *e == owner && *a == id)
+    }
+
+    #[must_use]
+    pub fn contains_from_source(
+        &self,
+        owner: EntityId,
+        id: AbilityId,
+        source: AbilityGrantSource,
+    ) -> bool {
+        self.grants
+            .iter()
+            .any(|(entity, ability, existing)| {
+                *entity == owner && *ability == id && *existing == source
+            })
+    }
+
+    /// Canonical owner-private grant baseline for replication. Multiple grant
+    /// sources for the same ability collapse to one ability id.
+    #[must_use]
+    pub fn ids_for_owner(&self, owner: EntityId) -> Vec<AbilityId> {
+        let mut ids: Vec<_> = self
+            .grants
+            .iter()
+            .filter_map(|(entity, ability, _)| (*entity == owner).then_some(*ability))
+            .collect();
+        ids.sort_unstable_by_key(|ability| ability.token());
+        ids.dedup();
+        ids
     }
 
     pub fn insert(&mut self, owner: EntityId, id: AbilityId) {
@@ -428,6 +518,7 @@ mod tests {
                 max_targets: 8,
             },
             effects: vec![AbilityEffect::Damage { amount: 5.0 }],
+            presentation: AbilityPresentation::Attack,
         }
     }
 
@@ -448,6 +539,21 @@ mod tests {
     }
 
     #[test]
+    fn dash_effect_requires_self_delivery() {
+        let mut def = sample_def();
+        def.effects = vec![AbilityEffect::Dash {
+            speed: 9.0,
+            duration_ticks: 5,
+        }];
+        assert_eq!(
+            def.validate(),
+            Err(AbilityDefinitionError::InvalidDashDelivery)
+        );
+        def.delivery = AbilityDelivery::SelfTarget;
+        assert!(def.validate().is_ok());
+    }
+
+    #[test]
     fn windup_is_initial_live_phase() {
         assert_eq!(sample_def().initial_phase(), ActionPhase::Windup);
         let mut instant = sample_def();
@@ -457,10 +563,17 @@ mod tests {
 
     #[test]
     fn presentation_cues_do_not_name_clips() {
-        assert_eq!(cue_for_ability_cast(), GameplayPresentationCue::Attack);
         assert_eq!(
-            oneshot_kind_for_cue(cue_for_ability_cast()),
+            cue_for_ability_cast(AbilityPresentation::Attack),
+            GameplayPresentationCue::Attack
+        );
+        assert_eq!(
+            oneshot_kind_for_cue(cue_for_ability_cast(AbilityPresentation::Attack)),
             Some(PresentationOneShotKind::Attack)
+        );
+        assert_eq!(
+            oneshot_kind_for_cue(cue_for_ability_cast(AbilityPresentation::Dash)),
+            Some(PresentationOneShotKind::Dash)
         );
         assert_eq!(
             oneshot_kind_for_cue(cue_for_damage_outcome(false)),
@@ -520,6 +633,18 @@ mod tests {
         table.remove_from_source(owner, ability, AbilityGrantSource::Equipment(item));
         assert!(table.contains(owner, ability));
         table.remove(owner, ability);
+        assert!(!table.contains(owner, ability));
+    }
+
+    #[test]
+    fn learned_grant_is_distinct_from_intrinsic_spawn_loadout() {
+        let mut table = AbilityGrantTable::new();
+        let owner = EntityId::from_raw(1, 1);
+        let ability = ContentId::from_token(10);
+        table.insert_from_source(owner, ability, AbilityGrantSource::Learned);
+        table.remove(owner, ability);
+        assert!(table.contains(owner, ability));
+        table.remove_from_source(owner, ability, AbilityGrantSource::Learned);
         assert!(!table.contains(owner, ability));
     }
 }

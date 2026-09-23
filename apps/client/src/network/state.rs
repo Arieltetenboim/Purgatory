@@ -137,6 +137,10 @@ pub enum NetworkEvent {
         attempt_id: ConnectionAttemptId,
         event: purgatory_protocol::ServerAbility,
     },
+    AbilityGrants {
+        attempt_id: ConnectionAttemptId,
+        event: purgatory_protocol::ServerAbilityGrants,
+    },
 }
 
 impl NetworkEvent {
@@ -156,7 +160,8 @@ impl NetworkEvent {
             | Self::Item { attempt_id, .. }
             | Self::Inventory { attempt_id, .. }
             | Self::PresentationOneShot { attempt_id, .. }
-            | Self::Ability { attempt_id, .. } => attempt_id,
+            | Self::Ability { attempt_id, .. }
+            | Self::AbilityGrants { attempt_id, .. } => attempt_id,
         }
     }
 
@@ -189,6 +194,8 @@ pub struct NetworkView {
     pub history: NetworkHistory,
     /// Owner-private inventory baseline received over the reliable control path.
     pub inventory: Vec<purgatory_protocol::InventoryEntry>,
+    /// Owner-private authoritative ability grants. Empty until the baseline arrives.
+    pub ability_grants: Vec<purgatory_common::ContentId>,
     next_attempt: u64,
 }
 
@@ -212,6 +219,7 @@ impl NetworkView {
             counters: NetworkCounters::default(),
             history: NetworkHistory::new(),
             inventory: Vec::new(),
+            ability_grants: Vec::new(),
             next_attempt: 0,
         }
     }
@@ -310,6 +318,7 @@ impl NetworkView {
         self.rtt_stats.reset();
         self.connected_since = None;
         self.inventory.clear();
+        self.ability_grants.clear();
     }
 
     pub fn apply_trusted(&mut self, event: NetworkEvent) {
@@ -401,6 +410,10 @@ impl NetworkView {
             }
             NetworkEvent::PresentationOneShot { .. } => {}
             NetworkEvent::Ability { .. } => {}
+            NetworkEvent::AbilityGrants { event, .. } => {
+                self.ability_grants = event.abilities;
+                self.messages_rx = self.messages_rx.saturating_add(1);
+            }
         }
     }
 
