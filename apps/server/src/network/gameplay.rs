@@ -21,19 +21,18 @@ use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
 use purgatory_protocol::{
     AbilityActivateRequest, AbilityCommandReject, ConnectionId, DEV_CHANNEL_MAX, DialogueAdvance,
     DialogueChoose, DropRejectReason, DropRequest, EquipRequest, EquipmentRejectReason,
-    InputCommand, InteractCloseReason, InteractRejectReason, InventoryEntry, MoveAxis,
-    MAX_GRANTED_ABILITIES, PickupRejectReason, PickupRequest, ServerAbility,
-    ServerAbilityGrants, ServerControl, ServerDialogueChoiceAccepted, ServerDialogueLine,
-    ServerEquipment, ServerInteract, ServerInventory, ServerItem, ServerPresentationOneShot,
-    UnequipRequest, WireEntityId,
+    InputCommand, InteractCloseReason, InteractRejectReason, InventoryEntry, MAX_GRANTED_ABILITIES,
+    MoveAxis, PickupRejectReason, PickupRequest, ServerAbility, ServerAbilityGrants, ServerControl,
+    ServerDialogueChoiceAccepted, ServerDialogueLine, ServerEquipment, ServerInteract,
+    ServerInventory, ServerItem, ServerPresentationOneShot, UnequipRequest, WireEntityId,
 };
 use purgatory_simulation::{
-    AbilityActivation, AbilityRejectReason, AbilityRequest, ActionEnd, ActionGateContext, ActionKind,
-    CONTACT_EPSILON, Cadence, CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot,
-    FOOTNOTE_SPAWN_X, Health, InputGateReason, InteractionCloseReason, InteractionReject,
-    ItemRuntimeError, NpcApproachBounds, NpcRuntimeConfig, P0, P0_POSITION, PLAYER_HALF_EXTENTS,
-    PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest,
-    ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
+    AbilityActivation, AbilityRejectReason, AbilityRequest, ActionEnd, ActionGateContext,
+    ActionKind, CONTACT_EPSILON, Cadence, CommandClass, CommandDenial, EntityId, EntityKind,
+    EquipmentSlot, FOOTNOTE_SPAWN_X, Health, InputGateReason, InteractionCloseReason,
+    InteractionReject, ItemRuntimeError, NpcApproachBounds, NpcRuntimeConfig, P0, P0_POSITION,
+    PLAYER_HALF_EXTENTS, PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind,
+    RuntimeSpawnRequest, ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
     validate_command_preamble,
 };
 
@@ -1483,7 +1482,11 @@ impl GameplayOwner {
         if self.registry.ability_by_id(ability_id).is_none() {
             return false;
         }
-        let Some(actor) = self.bindings.get(&connection_id).map(|binding| binding.entity) else {
+        let Some(actor) = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+        else {
             return false;
         };
         let grants_before = self.world.granted_abilities(actor);
@@ -2269,12 +2272,9 @@ impl GameplayOwner {
         Self::send_equipment_result(interact_tx.as_ref(), event);
         if matches!(event, ServerEquipment::Accepted { .. }) {
             self.send_inventory_snapshot(connection_id);
-            let grants_changed = self
-                .bindings
-                .get(&connection_id)
-                .is_some_and(|binding| {
-                    self.world.granted_abilities(binding.entity) != grants_before
-                });
+            let grants_changed = self.bindings.get(&connection_id).is_some_and(|binding| {
+                self.world.granted_abilities(binding.entity) != grants_before
+            });
             if grants_changed {
                 self.send_ability_grants(connection_id);
             }
@@ -2370,13 +2370,12 @@ impl GameplayOwner {
             .iter()
             .any(|pending| pending.ability_id == live_dash_id());
         let actor = binding.entity;
-        let dash_action_active = self
-            .world
-            .active_action(actor)
-            .is_some_and(|action| matches!(
+        let dash_action_active = self.world.active_action(actor).is_some_and(|action| {
+            matches!(
                 action.kind,
                 ActionKind::Ability { id } if id == live_dash_id()
-            ));
+            )
+        });
         let reject = if request.input_epoch < input_epoch || request.input_sequence <= last_ack {
             Some(AbilityCommandReject::StaleInputAnchor)
         } else if request.input_epoch != input_epoch
@@ -7899,10 +7898,7 @@ mod tests {
         assert!(owner.world_mut().grant_ability(actor, dash_id()));
         let start_x = owner.world().transform_of(actor).unwrap().position[0];
 
-        owner.apply_input(command_update(
-            id,
-            cmd(1, MoveAxis::Right, true, false),
-        ));
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, true, false)));
         owner.apply_input(InputUpdate::AbilityActivate {
             connection_id: id,
             request: AbilityActivateRequest {
@@ -7914,7 +7910,10 @@ mod tests {
             },
         });
         assert!(owner.world().active_action(actor).is_none());
-        assert!(rx.try_recv().is_err(), "result waits for authoritative input step");
+        assert!(
+            rx.try_recv().is_err(),
+            "result waits for authoritative input step"
+        );
 
         owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
         assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
@@ -7948,7 +7947,10 @@ mod tests {
             connection_id: id,
             request: request(1, 1),
         });
-        assert!(rx.try_recv().is_err(), "first Dash waits for its input boundary");
+        assert!(
+            rx.try_recv().is_err(),
+            "first Dash waits for its input boundary"
+        );
 
         owner.apply_input(InputUpdate::AbilityActivate {
             connection_id: id,
@@ -7982,10 +7984,7 @@ mod tests {
             "pending Dash must lock other ability activation before its boundary"
         );
 
-        owner.apply_input(command_update(
-            id,
-            cmd(1, MoveAxis::Right, false, false),
-        ));
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
         owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
         assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
         assert!(owner.world().player_dash_of(actor).is_some());
@@ -8024,13 +8023,13 @@ mod tests {
                 selected: None,
             },
         });
-        assert!(rx.try_recv().is_err(), "request must wait for its input boundary");
+        assert!(
+            rx.try_recv().is_err(),
+            "request must wait for its input boundary"
+        );
         assert!(owner.world().player_dash_of(actor).is_none());
 
-        owner.apply_input(command_update(
-            id,
-            cmd(1, MoveAxis::Right, false, false),
-        ));
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
         owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
 
         assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
@@ -8047,10 +8046,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
 
-        owner.apply_input(command_update(
-            id,
-            cmd(1, MoveAxis::Neutral, false, false),
-        ));
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Neutral, false, false)));
         owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
         owner.apply_input(InputUpdate::AbilityActivate {
             connection_id: id,
@@ -8098,10 +8094,7 @@ mod tests {
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
 
-        owner.apply_input(command_update(
-            id,
-            cmd(1, MoveAxis::Neutral, false, false),
-        ));
+        owner.apply_input(command_update(id, cmd(1, MoveAxis::Neutral, false, false)));
         owner.apply_input(InputUpdate::AbilityActivate {
             connection_id: id,
             request: AbilityActivateRequest {
