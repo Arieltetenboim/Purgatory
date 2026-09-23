@@ -218,7 +218,7 @@ impl MessageDialog {
             return Ok(None);
         };
         let content_width = (window.width() - 2.0 * SIDE_INSET * pixels_per_unit).max(1.0);
-        let body_font_size = BODY_FONT_SIZE * pixels_per_unit;
+
         let body_anchor = [
             window.min[0] + SIDE_INSET * pixels_per_unit,
             window.min[1] + BODY_TOP * pixels_per_unit,
@@ -249,11 +249,11 @@ impl MessageDialog {
             chrome.title,
             TextBlock {
                 content: TextContent(request.body.clone()),
-                style: TextStyle {
-                    font_size: body_font_size,
-                    color: [0.08, 0.11, 0.16, 1.0],
-                    alignment: TextAlignment::Left,
-                },
+                style: TextStyle::at_size(
+                    BODY_FONT_SIZE,
+                    [0.08, 0.11, 0.16, 1.0],
+                    TextAlignment::Left,
+                ),
                 anchor: body_anchor,
                 max_width: Some(content_width),
             },
@@ -271,11 +271,11 @@ impl MessageDialog {
             textured_rects.extend(button_assets.frame(bounds, state, pixels_per_unit)?);
             texts.push(TextBlock {
                 content: TextContent(button.label.clone()),
-                style: TextStyle {
-                    font_size: BUTTON_FONT_SIZE * pixels_per_unit,
-                    color: [0.05, 0.07, 0.11, 1.0],
-                    alignment: TextAlignment::Center,
-                },
+                style: TextStyle::at_size(
+                    BUTTON_FONT_SIZE,
+                    [0.05, 0.07, 0.11, 1.0],
+                    TextAlignment::Center,
+                ),
                 anchor: [
                     (bounds.min[0] + bounds.max[0]) * 0.5,
                     bounds.min[1] + (bounds.height() - BUTTON_FONT_SIZE * pixels_per_unit) * 0.5,

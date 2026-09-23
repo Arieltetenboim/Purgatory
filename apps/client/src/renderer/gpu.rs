@@ -780,7 +780,7 @@ impl Renderer {
             msaa_4x_supported
         );
 
-        let text = super::text::TextRenderer::new(&device, config.format)?;
+        let text = super::text::TextRenderer::new(&device, &queue, config.format);
         let ui = super::ui::UiRenderer::new(&device, config.format, &sprite_bind_group_layout);
         Ok(Self {
             text,
@@ -980,6 +980,7 @@ impl Renderer {
         &mut self,
         world_quads: &[DrawQuad],
         ui_compositions: &[super::ui::UiComposition<'_>],
+        pixels_per_unit: f32,
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         if !is_usable_surface(self.config.width, self.config.height) {
@@ -990,7 +991,8 @@ impl Renderer {
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                let status = self.draw_surface_texture(texture, ui_compositions, overlay);
+                let status =
+                    self.draw_surface_texture(texture, ui_compositions, pixels_per_unit, overlay);
                 return match status {
                     FrameStatus::Drawn => FrameStatus::NeedsReconfigure,
                     other => other,
@@ -1010,13 +1012,14 @@ impl Renderer {
             }
         };
 
-        self.draw_surface_texture(surface_texture, ui_compositions, overlay)
+        self.draw_surface_texture(surface_texture, ui_compositions, pixels_per_unit, overlay)
     }
 
     fn draw_surface_texture(
         &mut self,
         surface_texture: wgpu::SurfaceTexture,
         ui_compositions: &[super::ui::UiComposition<'_>],
+        pixels_per_unit: f32,
         overlay: impl FnOnce(OverlayPass<'_>) -> Vec<wgpu::CommandBuffer>,
     ) -> FrameStatus {
         self.ensure_world_target();
@@ -1132,8 +1135,29 @@ impl Renderer {
         }
 
         self.ui.clear();
-        self.text.clear();
-        for composition in ui_compositions {
+        self.text
+            .begin_frame(&self.queue, [self.config.width, self.config.height]);
+        let text_batches: Vec<_> = ui_compositions
+            .iter()
+            .map(|composition| {
+                if composition.text.is_empty() {
+                    return None;
+                }
+                match self.text.prepare_blocks(
+                    &self.device,
+                    &self.queue,
+                    composition.text,
+                    pixels_per_unit,
+                ) {
+                    Ok(batch) => Some(batch),
+                    Err(error) => {
+                        tracing::error!(%error, "text preparation failed");
+                        None
+                    }
+                }
+            })
+            .collect();
+        for (composition, text_batch) in ui_compositions.iter().zip(text_batches) {
             let ui_batch = self.ui.prepare(
                 &self.device,
                 &self.queue,
@@ -1150,13 +1174,7 @@ impl Renderer {
                         .map(|sprite| &sprite.ui_bind_group)
                 });
             self.ui.draw(ui_batch, &mut encoder, &view);
-            if !composition.text.is_empty() {
-                let text_batch = self.text.prepare_blocks(
-                    &self.device,
-                    &self.queue,
-                    composition.text,
-                    [self.config.width, self.config.height],
-                );
+            if let Some(text_batch) = text_batch {
                 self.text.draw(text_batch, &mut encoder, &view);
             }
         }

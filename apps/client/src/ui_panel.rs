@@ -617,11 +617,11 @@ impl UiWindowAssets {
             textured_rects,
             title: TextBlock {
                 content: TextContent(title.to_owned()),
-                style: TextStyle {
-                    font_size: title_font_size,
-                    color: [1.0; 4],
-                    alignment: TextAlignment::Left,
-                },
+                style: TextStyle::at_size(
+                    title_font_size / pixels_per_unit,
+                    [1.0; 4],
+                    TextAlignment::Left,
+                ),
                 anchor: title_anchor,
                 max_width: Some(title_max_width),
             },
@@ -833,13 +833,13 @@ impl UiTabAssets {
             let embolden_offset = TAB_EMBOLDEN_OFFSET_UNITS * pixels_per_unit;
             texts.push(tab_text_block(
                 label,
-                font_size,
+                self.font_size_units,
                 [center_x - embolden_offset, anchor_y],
                 max_width,
             ));
             emboldened_texts.push(tab_text_block(
                 label,
-                font_size,
+                self.font_size_units,
                 [center_x + embolden_offset, anchor_y],
                 max_width,
             ));
@@ -860,11 +860,7 @@ fn tab_text_block(
 ) -> TextBlock {
     TextBlock {
         content: TextContent(label.to_string()),
-        style: TextStyle {
-            font_size,
-            color: TAB_TEXT_COLOR,
-            alignment: TextAlignment::Center,
-        },
+        style: TextStyle::at_size(font_size, TAB_TEXT_COLOR, TextAlignment::Center),
         anchor,
         max_width,
     }
@@ -1081,7 +1077,7 @@ impl SettingsWindow {
         let mut texts = vec![window_frame.title];
         texts.push(settings_text(
             "Display",
-            SETTINGS_SECTION_FONT_SIZE_UNITS * pixels_per_unit,
+            SETTINGS_SECTION_FONT_SIZE_UNITS,
             SETTINGS_TEXT_COLOR,
             [
                 layout.window.min[0] + SETTINGS_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
@@ -1092,7 +1088,7 @@ impl SettingsWindow {
         ));
         texts.push(settings_text(
             "Graphics",
-            SETTINGS_SECTION_FONT_SIZE_UNITS * pixels_per_unit,
+            SETTINGS_SECTION_FONT_SIZE_UNITS,
             SETTINGS_TEXT_COLOR,
             [
                 layout.window.min[0] + SETTINGS_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
@@ -1103,7 +1099,7 @@ impl SettingsWindow {
         ));
         texts.push(settings_text(
             "Session",
-            SETTINGS_SECTION_FONT_SIZE_UNITS * pixels_per_unit,
+            SETTINGS_SECTION_FONT_SIZE_UNITS,
             SETTINGS_TEXT_COLOR,
             [
                 layout.window.min[0] + SETTINGS_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
@@ -1137,7 +1133,7 @@ impl SettingsWindow {
                     .max(0.0);
             texts.push(settings_text(
                 settings_control_name(control),
-                SETTINGS_ROW_FONT_SIZE_UNITS * pixels_per_unit,
+                SETTINGS_ROW_FONT_SIZE_UNITS,
                 if enabled {
                     SETTINGS_TEXT_COLOR
                 } else {
@@ -1158,7 +1154,7 @@ impl SettingsWindow {
             let value_font_size = SETTINGS_VALUE_FONT_SIZE_UNITS * pixels_per_unit;
             texts.push(settings_text(
                 &settings_control_value(control, settings),
-                value_font_size,
+                SETTINGS_VALUE_FONT_SIZE_UNITS,
                 if enabled {
                     SETTINGS_TEXT_COLOR
                 } else {
@@ -1304,7 +1300,7 @@ impl SettingsLauncher {
         let font_size = SETTINGS_LAUNCHER_FONT_SIZE_UNITS * pixels_per_unit;
         let text = settings_text(
             "SETTINGS",
-            font_size,
+            SETTINGS_LAUNCHER_FONT_SIZE_UNITS,
             SETTINGS_TEXT_COLOR,
             [
                 bounds.min[0] + bounds.width() * 0.58,
@@ -1491,11 +1487,7 @@ fn settings_text(
 ) -> TextBlock {
     TextBlock {
         content: TextContent(text.to_string()),
-        style: TextStyle {
-            font_size,
-            color,
-            alignment,
-        },
+        style: TextStyle::at_size(font_size, color, alignment),
         anchor,
         max_width,
     }
@@ -1665,21 +1657,21 @@ impl UiCurrencyDisplay {
         Ok(vec![
             TextBlock {
                 content: TextContent(format!("Gold: {}", self.gold)),
-                style: TextStyle {
-                    font_size,
-                    color: GOLD_TEXT_COLOR,
-                    alignment: TextAlignment::Center,
-                },
+                style: TextStyle::at_size(
+                    CURRENCY_FONT_SIZE_UNITS,
+                    GOLD_TEXT_COLOR,
+                    TextAlignment::Center,
+                ),
                 anchor: [bounds.min[0] + column_width * 0.5, anchor_y],
                 max_width: Some(column_width),
             },
             TextBlock {
                 content: TextContent(format!("Silver: {}", self.silver)),
-                style: TextStyle {
-                    font_size,
-                    color: SILVER_TEXT_COLOR,
-                    alignment: TextAlignment::Center,
-                },
+                style: TextStyle::at_size(
+                    CURRENCY_FONT_SIZE_UNITS,
+                    SILVER_TEXT_COLOR,
+                    TextAlignment::Center,
+                ),
                 anchor: [bounds.min[0] + column_width * 1.5, anchor_y],
                 max_width: Some(column_width),
             },
@@ -2291,17 +2283,17 @@ impl EquipmentWindow {
             pixels_per_unit,
             self.dragging_slot,
         )?;
-        let label_font_size = EQUIPMENT_LABEL_FONT_SIZE_UNITS * pixels_per_unit;
+
         let labels: Vec<_> = slot_rects
             .iter()
             .zip(EQUIPMENT_SLOT_LABELS)
             .map(|(slot, label)| TextBlock {
                 content: TextContent(label.to_string()),
-                style: TextStyle {
-                    font_size: label_font_size,
-                    color: EQUIPMENT_LABEL_COLOR,
-                    alignment: TextAlignment::Center,
-                },
+                style: TextStyle::at_size(
+                    EQUIPMENT_LABEL_FONT_SIZE_UNITS,
+                    EQUIPMENT_LABEL_COLOR,
+                    TextAlignment::Center,
+                ),
                 anchor: [
                     (slot.min[0] + slot.max[0]) * 0.5,
                     slot.max[1]
@@ -2512,11 +2504,11 @@ fn inventory_items_frame(
             let inset = INVENTORY_QUANTITY_INSET_UNITS * pixels_per_unit;
             texts.push(TextBlock {
                 content: TextContent(entry.quantity.to_string()),
-                style: TextStyle {
-                    font_size,
-                    color: INVENTORY_QUANTITY_COLOR,
-                    alignment: TextAlignment::Right,
-                },
+                style: TextStyle::at_size(
+                    INVENTORY_QUANTITY_FONT_SIZE_UNITS,
+                    INVENTORY_QUANTITY_COLOR,
+                    TextAlignment::Right,
+                ),
                 anchor: [slot.max[0] - inset, slot.max[1] - font_size - inset],
                 max_width: Some((slot.max[0] - slot.min[0] - inset * 2.0).max(1.0)),
             });
@@ -2659,21 +2651,21 @@ fn inventory_tooltip_frame(
         texts: vec![
             TextBlock {
                 content: TextContent(title),
-                style: TextStyle {
-                    font_size,
-                    color: INVENTORY_TOOLTIP_TITLE_COLOR,
-                    alignment: TextAlignment::Left,
-                },
+                style: TextStyle::at_size(
+                    INVENTORY_TOOLTIP_FONT_SIZE_UNITS,
+                    INVENTORY_TOOLTIP_TITLE_COLOR,
+                    TextAlignment::Left,
+                ),
                 anchor: title_anchor,
                 max_width: Some(text_width),
             },
             TextBlock {
                 content: TextContent(detail),
-                style: TextStyle {
-                    font_size,
-                    color: INVENTORY_TOOLTIP_DETAIL_COLOR,
-                    alignment: TextAlignment::Left,
-                },
+                style: TextStyle::at_size(
+                    INVENTORY_TOOLTIP_FONT_SIZE_UNITS,
+                    INVENTORY_TOOLTIP_DETAIL_COLOR,
+                    TextAlignment::Left,
+                ),
                 anchor: detail_anchor,
                 max_width: Some(text_width),
             },
@@ -4829,10 +4821,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(layout.header.height(), 24.0);
-        assert_eq!(frame.title.style.font_size, 16.0);
-        assert!(frame.title.style.font_size < TITLE_FONT_SIZE_UNITS * 1.25);
+        assert_eq!(frame.title.style.font_size * 1.25, 16.0);
+        assert!(frame.title.style.font_size < TITLE_FONT_SIZE_UNITS);
         assert!(
-            frame.title.anchor[1] + frame.title.style.font_size <= layout.header.max[1],
+            frame.title.anchor[1] + frame.title.style.font_size * 1.25 <= layout.header.max[1],
             "scaled title must remain inside the rendered header"
         );
     }
