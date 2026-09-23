@@ -100,7 +100,14 @@ The server listens on `127.0.0.1:5001` by default.
 | Left / Right Shift | Dash (when granted) |
 | `~` | Toggle debug overlay |
 
-## Quality
+## Branch & version policy
+
+- `master` is the canonical current development/release branch.
+- Root `VERSION` is the human-facing master version label (currently `0.11.F`).
+- `DEVELOPMENT` is a deliberate stable checkpoint/rollback branch. It is **not** a parallel development line and is advanced only after selected stable master versions.
+- Feature/fix/salvage branches are temporary. Once their useful work is integrated or explicitly superseded, delete them instead of keeping long-lived stale branches.
+- Cargo package versioning remains valid Semantic Versioning (SemVer); the master label may use the project's `0.11.F` scheme independently.
+
 
 Main local quality gate:
 
