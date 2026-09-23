@@ -14,8 +14,7 @@ use serde::Deserialize;
 
 use crate::assets::connection_logo_path;
 
-const BACKGROUND_BASE_PNG: &[u8] =
-    include_bytes!("../assets/frontend/background_base.png");
+const BACKGROUND_BASE_PNG: &[u8] = include_bytes!("../assets/frontend/background_base.png");
 const CLOUDS_FAR_PNG: &[u8] = include_bytes!("../assets/frontend/clouds_far.png");
 const CLOUDS_NEAR_PNG: &[u8] = include_bytes!("../assets/frontend/clouds_near.png");
 const MOON_PNG: &[u8] = include_bytes!("../assets/frontend/moon.png");
@@ -135,26 +134,14 @@ impl ConnectionFrontend {
                     "purgatory-menu-background-base",
                     BACKGROUND_BASE_PNG,
                 ),
-                clouds_far: load_embedded_texture(
-                    ctx,
-                    "purgatory-menu-clouds-far",
-                    CLOUDS_FAR_PNG,
-                ),
+                clouds_far: load_embedded_texture(ctx, "purgatory-menu-clouds-far", CLOUDS_FAR_PNG),
                 clouds_near: load_embedded_texture(
                     ctx,
                     "purgatory-menu-clouds-near",
                     CLOUDS_NEAR_PNG,
                 ),
-                moon: load_embedded_texture(
-                    ctx,
-                    "purgatory-menu-moon",
-                    MOON_PNG,
-                ),
-                fog_near: load_embedded_texture(
-                    ctx,
-                    "purgatory-menu-fog-near",
-                    FOG_NEAR_PNG,
-                ),
+                moon: load_embedded_texture(ctx, "purgatory-menu-moon", MOON_PNG),
+                fog_near: load_embedded_texture(ctx, "purgatory-menu-fog-near", FOG_NEAR_PNG),
             },
             buttons: ButtonAtlas::load(ctx),
             entered_at: Instant::now(),
@@ -188,11 +175,7 @@ impl ConnectionFrontend {
         }
         let elapsed = elapsed - SPLASH_TOTAL_SECONDS;
         let background_alpha = smoothstep01(elapsed / BACKGROUND_FADE_IN_SECONDS);
-        let logo_alpha = fade_window(
-            elapsed,
-            LOGO_FADE_START_SECONDS,
-            LOGO_FADE_END_SECONDS,
-        );
+        let logo_alpha = fade_window(elapsed, LOGO_FADE_START_SECONDS, LOGO_FADE_END_SECONDS);
         let controls_alpha = fade_window(
             elapsed,
             CONTROLS_FADE_START_SECONDS,
@@ -201,8 +184,10 @@ impl ConnectionFrontend {
         let foreground_exit_alpha = match self.phase {
             FrontendPhase::Ready => 1.0,
             FrontendPhase::Starting { started_at } => {
-                1.0 - smoothstep01(now.duration_since(started_at).as_secs_f32()
-                    / FOREGROUND_FADE_OUT.as_secs_f32())
+                1.0 - smoothstep01(
+                    now.duration_since(started_at).as_secs_f32()
+                        / FOREGROUND_FADE_OUT.as_secs_f32(),
+                )
             }
             FrontendPhase::AwaitingConnection => 0.0,
         };
@@ -238,9 +223,7 @@ impl ConnectionFrontend {
 
                     ui.add_space((screen.height() * 0.052).clamp(22.0, 54.0));
                     ui.scope(|ui| {
-                        ui.set_opacity(
-                            (controls_alpha * foreground_exit_alpha).clamp(0.0, 1.0),
-                        );
+                        ui.set_opacity((controls_alpha * foreground_exit_alpha).clamp(0.0, 1.0));
                         paint_login_controls(
                             ui,
                             self.buttons.as_ref(),
@@ -290,13 +273,7 @@ impl ConnectionFrontend {
         connect
     }
 
-    fn paint_background(
-        &self,
-        painter: &egui::Painter,
-        screen: Rect,
-        elapsed: f32,
-        alpha: f32,
-    ) {
+    fn paint_background(&self, painter: &egui::Painter, screen: Rect, elapsed: f32, alpha: f32) {
         let Some(base) = self.background.base.as_ref() else {
             return;
         };
@@ -315,13 +292,7 @@ impl ConnectionFrontend {
                 1.0,
                 alpha * 1.0,
             ) {
-                debug_layer_bounds(
-                    painter,
-                    screen,
-                    rect,
-                    &format!("FAR CLOUDS  dx={dx:.1}"),
-                    1,
-                );
+                debug_layer_bounds(painter, screen, rect, &format!("FAR CLOUDS  dx={dx:.1}"), 1);
             }
         }
 
@@ -330,10 +301,7 @@ impl ConnectionFrontend {
                 painter,
                 layer,
                 screen,
-                reference_cover_point(
-                    screen,
-                    egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX),
-                ),
+                reference_cover_point(screen, egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX)),
                 moon_drift_offset(elapsed),
                 MOON_HEIGHT_PX,
                 alpha,
@@ -372,13 +340,7 @@ impl ConnectionFrontend {
                 1.0,
                 alpha * 0.28,
             ) {
-                debug_layer_bounds(
-                    painter,
-                    screen,
-                    rect,
-                    &format!("FOG  dx={dx:.1}"),
-                    4,
-                );
+                debug_layer_bounds(painter, screen, rect, &format!("FOG  dx={dx:.1}"), 4);
             }
         }
     }
@@ -392,8 +354,7 @@ fn paint_splash(ctx: &Context, elapsed: f32) {
         1.0
     } else {
         1.0 - smoothstep01(
-            (elapsed - SPLASH_FADE_IN_SECONDS - SPLASH_HOLD_SECONDS)
-                / SPLASH_FADE_OUT_SECONDS,
+            (elapsed - SPLASH_FADE_IN_SECONDS - SPLASH_HOLD_SECONDS) / SPLASH_FADE_OUT_SECONDS,
         )
     };
 
@@ -582,7 +543,15 @@ impl ButtonAtlas {
         };
         self.paint_three_slice(ui.painter(), rect, source, tint_alpha);
         ui.painter().text(
-            rect.center() + egui::vec2(0.0, if pointer_down && response.hovered() { 1.0 } else { 0.0 }),
+            rect.center()
+                + egui::vec2(
+                    0.0,
+                    if pointer_down && response.hovered() {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                ),
             Align2::CENTER_CENTER,
             label,
             FontId::proportional(13.5),
@@ -608,14 +577,20 @@ impl ButtonAtlas {
             .slice_px
             .right
             .min(source.width.saturating_sub(source_left));
-        let source_middle = source.width.saturating_sub(source_left + source_right).max(1);
+        let source_middle = source
+            .width
+            .saturating_sub(source_left + source_right)
+            .max(1);
         let target_scale = destination.height() / source.height.max(1) as f32;
         let left_width = (source_left as f32 * target_scale).min(destination.width() * 0.5);
         let right_width = (source_right as f32 * target_scale).min(destination.width() * 0.5);
         let middle_width = (destination.width() - left_width - right_width).max(0.0);
         let tint = Color32::from_white_alpha((opacity.clamp(0.0, 1.0) * 255.0) as u8);
 
-        let left_dest = Rect::from_min_size(destination.min, egui::vec2(left_width, destination.height()));
+        let left_dest = Rect::from_min_size(
+            destination.min,
+            egui::vec2(left_width, destination.height()),
+        );
         let middle_dest = Rect::from_min_size(
             Pos2::new(destination.min.x + left_width, destination.min.y),
             egui::vec2(middle_width, destination.height()),
@@ -698,8 +673,7 @@ fn paint_logo_or_title(ui: &mut egui::Ui, logo: Option<&TextureHandle>, float_of
 }
 
 fn reference_cover_scale(screen: Rect) -> f32 {
-    (screen.width() / REFERENCE_WIDTH_PX)
-        .max(screen.height() / REFERENCE_HEIGHT_PX)
+    (screen.width() / REFERENCE_WIDTH_PX).max(screen.height() / REFERENCE_HEIGHT_PX)
 }
 
 fn reference_cover_point(screen: Rect, reference_point: Vec2) -> Pos2 {
@@ -750,9 +724,8 @@ fn paint_cover_texture(
     if source.x <= 0.0 || source.y <= 0.0 {
         return None;
     }
-    let cover_scale = (screen.width() / source.x)
-        .max(screen.height() / source.y)
-        * scale_multiplier.max(0.01);
+    let cover_scale =
+        (screen.width() / source.x).max(screen.height() / source.y) * scale_multiplier.max(0.01);
     let draw_size = source * cover_scale;
     let rect = Rect::from_center_size(screen.center() + offset, draw_size);
     painter.image(
@@ -908,10 +881,7 @@ mod tests {
     #[test]
     fn moon_anchor_tracks_reference_cover_space() {
         let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 450.0));
-        let point = reference_cover_point(
-            screen,
-            egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX),
-        );
+        let point = reference_cover_point(screen, egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX));
         assert!((point.x - MOON_ANCHOR_X_PX).abs() < 0.001);
         assert!((point.y - MOON_ANCHOR_Y_PX).abs() < 0.001);
 
