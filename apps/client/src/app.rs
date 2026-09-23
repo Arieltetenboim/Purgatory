@@ -768,15 +768,14 @@ impl ClientApp {
             if active_attempt
                 && let crate::network::state::NetworkEvent::Ability { event, .. } = &event
                 && let purgatory_protocol::ServerAbility::Rejected { seq, .. } = *event
-            {
-                if self.prediction.reject_predicted_ability(
+                && self.prediction.reject_predicted_ability(
                     seq,
                     &self.replica,
                     &mut self.world,
                     self.clock.tick().get(),
-                ) {
-                    self.local_presentation.request_snap();
-                }
+                )
+            {
+                self.local_presentation.request_snap();
             }
             self.lifecycle.apply(event);
         }
@@ -1757,18 +1756,14 @@ impl ClientApp {
         if !self.prediction.active() {
             return None;
         }
-        if self.network.is_none() {
-            return None;
-        }
+        self.network.as_ref()?;
         self.intent.set_epoch(self.replica.input_epoch());
-        let Some(command) = self.intent.emit_tick_with_portal(
+        let command = self.intent.emit_tick_with_portal(
             move_axis_from_i8(input.move_axis),
             input.jump_pressed,
             input.down_held,
             self.actions.portal_held(),
-        ) else {
-            return None;
-        };
+        )?;
         if !self.prediction.try_push_pending(command) {
             return None;
         }
@@ -5201,11 +5196,11 @@ impl ApplicationHandler for ClientApp {
                         if let Some(slot) = self.equipment_window.take_completed_click() {
                             self.handle_item_click(ItemClickTarget::Equipped(slot));
                         }
-                        if let Some(action) = self.settings_window.take_completed_action() {
-                            if self.apply_settings_action(action) {
-                                self.exit_application(event_loop);
-                                return;
-                            }
+                        if let Some(action) = self.settings_window.take_completed_action()
+                            && self.apply_settings_action(action)
+                        {
+                            self.exit_application(event_loop);
+                            return;
                         }
                     }
                     if handled {
