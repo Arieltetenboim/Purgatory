@@ -30,7 +30,7 @@ The root [`PHASE`](PHASE) file is the exact gameplay-phase marker. Parallel FORG
 DEV_HUB.BAT
 ```
 
-The Developer Hub is the normal development entry point for server/client lifecycle, validation, load tools, rebuilds, and Animation Lab.
+The Developer Hub is the normal development entry point for server/client lifecycle, validation, load tools, rebuilds, and standalone authoring-tool launch.
 
 Fallback developer shell:
 
