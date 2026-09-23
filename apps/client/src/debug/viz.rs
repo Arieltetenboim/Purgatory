@@ -61,12 +61,7 @@ pub fn footnote_debug_quads(
     if ui.show_colliders {
         for view in world.iter_platforms() {
             let aabb = view.aabb();
-            push_aabb_outline(
-                aabb.center,
-                aabb.size(),
-                COLLIDER_OUTLINE,
-                &mut quads,
-            );
+            push_aabb_outline(aabb.center, aabb.size(), COLLIDER_OUTLINE, &mut quads);
         }
     }
 
