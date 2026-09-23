@@ -12,9 +12,9 @@ use crate::blend::{BlendError, blend_local_poses};
 use crate::clip::{AnimationClip, BoneTrack, ClipError, Interpolation, Keyframe, LoopPolicy};
 use crate::dev::{
     A1_HEAD_CLIP_DURATION, A3_MOVE_CLIP_DURATION, A5_ATTACK_CLIP_DURATION, A5_HURT_CLIP_DURATION,
-    DEAD_CLIP_DURATION, a1_head_loop_clip, a1_head_rotation_clip, a3_idle_clip,
-    a3_move_clip, a4_fall_clip, a4_jump_clip, a5_attack_clip, a5_hurt_clip, climb_back_clip,
-    dash_clip, dead_clip,
+    DEAD_CLIP_DURATION, a1_head_loop_clip, a1_head_rotation_clip, a3_idle_clip, a3_move_clip,
+    a4_fall_clip, a4_jump_clip, a5_attack_clip, a5_hurt_clip, climb_back_clip, dash_clip,
+    dead_clip,
 };
 use crate::parse_animation_asset_v1;
 use crate::player::{AnimationPlayer, PlayerError};
