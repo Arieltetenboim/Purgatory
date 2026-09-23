@@ -8,13 +8,15 @@ This README is intentionally small. It is the project entry point, not the proje
 
 ## Current
 
+- **Master version:** `0.11.F`
 - **Phase:** `11.closeout` — Phase 11 Item Loop complete
 - **FORGE M:** M4 implementation is merged to `master`; GitHub Issue #75 remains open for the recorded manual two-Monster visual smoke and final M4/M5 closeout evidence
 - **FORGE N:** NPC authoring/runtime N10a-N10f complete and merged
 - **Character Lab:** integrated on `master`; Hub launch, Humanoid v0 contract export, Template V1 (2048×2048) import/validation/conversion, and the current visual-pack/atlas path are present
 - **Production client UI:** Inventory foundation, player-facing Settings, and the Glyphon production-text foundation are merged
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
-- **Protocol:** v30
+- **Dash / learned ability:** authoritative Dash + NPC `GrantAbility` integration restored on `master`; Shift activates Dash after it has been granted
+- **Protocol:** v31
 - **Simulation:** server authoritative
 - **Client:** native `winit` + `wgpu`
 - **Networking:** QUIC via Quinn
@@ -95,6 +97,7 @@ The server listens on `127.0.0.1:5001` by default.
 | `E` | Generic interact |
 | Up Arrow | Activate portal |
 | `J` | Basic Strike |
+| Left / Right Shift | Dash (when granted) |
 | `~` | Toggle debug overlay |
 
 ## Quality
