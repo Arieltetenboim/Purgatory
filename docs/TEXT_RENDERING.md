@@ -1,100 +1,152 @@
-# Text v0
+# Production text foundation (2A)
 
-Text v0 is client presentation only, implemented in `apps/client/src/renderer/text.rs`.
-It draws plain `TextContent(String)` into the framebuffer through wgpu, after the
-world blit and before the existing development overlay. It does not use egui or
-change Debug, Connection Frontend, gameplay, simulation, networking or persistence.
-The renderer accepts a generic `TextBlock`; it has no NPC, dialogue, bubble, or
-input concepts. Camera movement, world MSAA and internal Render Scale do not
-affect its framebuffer-pixel layout.
+Production UI text is owned by `renderer/text.rs` behind `TextBlock`. Glyphon
+**0.12.0** owns GPU rendering and atlas residency. Its re-exported cosmic-text
+**0.19.0** owns advanced shaping, font matching, wrapping and line layout, with
+Swash rasterization. wgpu remains 30.0.1; winit remains 0.30.13. There is one
+production text path, without a Text v0 toggle.
 
 ## Contract
 
-- `TextStyle`: font size in physical framebuffer pixels, linear RGBA color in
-  `[0, 1]`, and Left / Center / Right alignment around the supplied x anchor.
-  The y anchor is the top of the first font line. Each line aligns independently
-  using advance width, including spaces. Default: 24 pixels, white, Left.
-- `TextBlock` adds a framebuffer-pixel anchor and optional maximum width. With
-  no maximum width, only explicit `\n` breaks lines. With a maximum width, Text
-  performs word wrapping and falls back to glyph wrapping for an overlong token.
-  Empty authored lines retain vertical spacing. Layout reports width, height,
-  and line count from the font metrics. There is no shaping.
-- One unmodified embedded font: Hack Regular, with printable ASCII and em dash
-  enabled. Unsupported characters (including controls other than `\n`) use `?`
-  from the same font. No operating-system font discovery or fallback font.
-- Invalid size (nonfinite, nonpositive or above 128), invalid color, invalid
-  anchor or zero viewport produces no geometry. At most 4096 input glyphs and
-  4096 lines are processed per preparation; excess is truncated deliberately.
-- Layout emits internal glyph quads; content has no spans or markup.
+- `TextStyle.font_size` and `line_height` are logical UI units. The adapter
+  multiplies both once by `UI Scale * window.scale_factor()` before creating
+  cosmic-text metrics. Glyphon TextArea scale is 1.0.
+- Anchors and optional maximum widths are framebuffer pixels, never scaled again.
+  The y anchor is the top of the first line box. Left/Center/Right align each
+  line around the supplied x anchor, using cosmic-text's shaped positions.
+- `color` is linear straight-alpha RGBA. The adapter encodes RGB to sRGB bytes
+  for Glyphon's Accurate mode; alpha is encoded directly. Its shader converts
+  RGB back to linear before blending.
+- Without maximum width, only explicit newlines break lines. With width, cosmic
+  WordOrGlyph wrapping applies. Empty authored lines retain vertical spacing;
+  empty content has no layout. `at_size` defaults line height to 1.2 times size.
+- Measurement uses the same retained shaped buffer submitted to Glyphon. Width
+  is maximum line advance width; height and line count come from line boxes.
+  These are not ink bounds. Overhangs can extend beyond them. Maximum width is
+  wrapping, not scissoring; the framebuffer viewport clips drawing.
+- Invalid/nonfinite size, line height, scale, color, anchor or width is rejected.
+  The logical-size maximum remains 128. Preparation processes at most 4096
+  Unicode scalars and 4096 requests per composition. Truncation respects UTF-8
+  boundaries but need not preserve the final grapheme cluster.
+- PURGATORY does not independently snap shaped glyph positions.
 
-## Assets and resources
+Speech and choice text author 14.5 and 14 logical units after visual calibration.
+Window/dialog styles no longer pre-scale text. The existing window-header cap
+remains layout policy, expressed in logical units before submission.
 
-`assets::UI_FONT` is the single asset entry point. `apps/client/assets/fonts/`
-contains Hack-Regular.ttf and its full MIT / Bitstream Vera notices (with DejaVu
-contributions in the public domain). The license permits embedding and distribution
-with the game; retain the notices. The exact unmodified asset and notices were
-copied from the locally installed epaint_default_fonts 0.36.1 package. The new
-renderer has no runtime dependency on that package or on egui.
+Choice layout owns its row and hit geometry. The previous 28 physical-pixel
+row bypassed UI scaling; no frozen physical-row requirement exists in the N10
+presentation contract. Rows now use 28 logical units and the preferred width
+uses 420 logical units, still clamped to the assigned physical column. At UI
+1.25 × OS 1.5, a row is 52.5px and its single text line is 31.5px. No font
+shrinking is introduced. Very long choices/narrow columns can still wrap beyond
+one row; responsive multiline bubble layout remains separate work.
 
-The client directly depends on `ab_glyph` 0.2.32 for font metrics and CPU coverage
-rasterization. This small rasterizer already existed in the workspace lockfile;
-it avoids adding a shaping/UI stack for the deliberately limited v0 contract.
+## Fonts and resource ownership
 
-One 1024 x 1024 R8 GPU atlas uses padded 64 x 64 cells. The 96 supported glyphs
-fit without eviction or growth. Coverage is lazily rasterized at a fixed 48-pixel
-font scale and uploaded once per distinct resolved character. Requested font size
-scales those cached glyphs; large sizes may appear softer. A changed size, color,
-alignment or viewport does not create new glyph resources. One persistent pipeline,
-bind group and vertex buffer render one prepared text block. Repeated preparation
-recomputes CPU geometry and updates that buffer, but does not recreate GPU objects
-or upload cached glyphs. Device recreation constructs a fresh renderer/cache.
+`assets::UI_FONT` embeds the existing `assets/fonts/DejaVuSans-Bold.ttf`.
+Retain `DejaVuSans-LICENSE.txt` in distributions. `FontFamily::Ui` is a stable
+application identity; fontdb IDs remain internal. The database is populated
+explicitly from bundled bytes, with no operating-system font discovery. Only
+the existing Bold face is product-supported in 2A; full face coverage is 2B.
 
-## Verification and exclusions
+FontSystem, Swash context, atlas, viewport and the renderer pool persist.
+Unchanged requests retain their shaped buffers. Glyphon caches by face/glyph,
+physical size and fractional-position information, and manages atlas allocation,
+residency and growth. Renderer slots retain GPU buffers, growing as needed.
+There is no additional PURGATORY bitmap cache. Device recreation rebuilds GPU
+resources. The old 48px atlas, character substitution and custom shader are gone.
 
-Unit tests cover style validation, size/color application, explicit/empty lines,
-no wrapping, all three alignments per line, unsupported glyphs, supported atlas
-capacity and cache reuse. The GPU test prepares repeated text with changed size,
-alignment and viewport, verifies unchanged upload counts, and submits the actual
-text shader/pass to an offscreen target. Additional tests cover opt-in wrapping
-and layout metrics.
+## Ordered compositions
 
-The first production consumer is `SpeechBubble`, which remains a separate
-presentation component. `SpeechBubble` owns its panel, world anchor, gameplay
-viewport clamp and hit bounds; Text owns glyphs, metrics and wrapping. Generic
-screen-space panel rectangles use a UI draw budget separate from world
-`MAX_QUADS`.
+Text draws directly to the surface framebuffer after the world blit. All text
+batches are prepared first, using distinct persistent renderer slots. Each UI
+composition then draws its panels followed by its own text; later compositions
+can occlude earlier text, and the development overlay remains last. A slot is
+never re-prepared for another batch before submission. Atlas usage is trimmed
+once at the next frame's beginning, never between batches. World Render Scale
+and world MSAA do not enter typography metrics or text target resolution.
 
-Intentionally deferred: RichText/spans, bold/italic, custom spacing/line height,
-Hebrew/RTL, localisation, font fallback, emoji, outlines/shadows/effects,
-world-space labels, NPC names, chat, damage numbers and text animation. No new
-roadmap Phase or Stage is introduced.
+## Verification
 
-The GPU-dependent test is explicitly ignored by the headless workspace gate;
-run it with `cargo test -p purgatory-client renderer_repeated_text -- --ignored`.
-The default suite tests the same preparation/cache path without requiring an
-adapter. Run both `cargo test -p purgatory-client renderer::text` and the explicit
-GPU test when changing this renderer. N10c additionally requires a normal
-networked visual check that authored dialogue text is readable, remains clamped
-while the camera/window changes, and advances through both `E` and a bubble click.
+Run the focused tests before the project gate:
 
-## Historical Text v0 verification
+```text
+cargo +1.95.0 test -p purgatory-client renderer::text
+cargo +1.95.0 test -p purgatory-client renderer_repeated_text -- --ignored
+cargo +1.95.0 check -p purgatory-client --no-default-features
+```
 
-The original Text v0 proof at implementation commit `78dcc14` was manually accepted
-in-game by the project owner. At that checkpoint, the proof text remained fixed in
-screen space while the camera moved, remained centered through resize and
-minimize/restore, was unaffected by Render Scale, coexisted with Debug, and
-correctly disappeared/reappeared across disconnect/reconnect. This is historical
-owner-reported runtime evidence for that implementation, not a claim that the
-current renderer has been re-verified against the same checklist.
+CPU coverage includes empty/explicit lines, wrapping, alignment, measurement,
+validation, physical-size cache keys, scale conversion, color conversion and
+composed/decomposed accented-character shaping.
 
-The same checkpoint also reported passing Text v0 CPU tests, the explicit GPU text
-test, workspace check/tests, workspace Clippy with warnings denied, content
-validation, and client check without default features. The then-existing canonical
-PowerShell gate still stopped on unrelated pre-existing rustfmt drift in
-`crates/common`; that blocker was repository state at the time and must not be
-read as a current gate result.
+The ignored GPU test reads offscreen pixels from two text batches with an
+intervening production UI panel. It checks occlusion, earlier-batch survival,
+repeatability, translucent non-white blending, and identical UI pixels after
+changing the world target from full to half resolution through the production
+blit shader. Its multi-size workload exercises atlas pressure.
 
-Future text-system polish should continue from the current generic `TextBlock` /
-`SpeechBubble` architecture above rather than reviving the old proof-only branch.
-The deferred areas listed above remain the intended backlog unless superseded by a
-newer design or runtime contract.
+Set `PURGATORY_TEXT_SPECIMEN_DIR` before the ignored tests to export PNGs at
+12/13/14/16/18/24/32 effective pixels, UI scales 1/1.25 and simulated OS scales
+1/1.5. Samples include integer/fractional origins, Latin, digits, punctuation,
+accents, wrapping, empty lines, transparency and fixed logical sizing. Inspect
+at native resolution. This is an offscreen GPU proof, not live monitor-movement
+or exhaustive product-window QA. No specimen is added to product UI.
+
+## Deferred to 2B
+
+Explicit bundled fallback chains and complete Regular/Bold/Italic/Bold-Italic
+coverage remain unverified. Hebrew/RTL is not a PURGATORY product requirement.
+Generic Unicode/advanced shaping remains. Future localization may include
+English, Spanish (extended Latin/diacritics), and Chinese (requiring appropriate
+CJK assets/fallback in a separate slice); no localization is implemented here
+and Chinese/CJK is not production-ready.
+Rich spans/markup, localization, emoji, editing and effects are outside 2A.
+Advanced shaping already handles every production string; there is no temporary
+ASCII mode or manual reversal. Historical Text v0 verification remains in Git
+history and is not evidence for this backend.
+
+## Acceptance/calibration — 2026-09-23
+
+Current master was fetched at 17905da64cc9490fe747bbfca25af9c317c0ecf5.
+All remaining validation failures are baseline, not introduced:
+
+- Stable 1.98 formatter: app.rs collision-outline calls and NPC debug function
+  signature; debug/viz.rs outline call; frontend.rs wrapping throughout;
+  skeleton_debug.rs assertion wrapping. Formatter checks on temporary copies
+  of master reproduce these hunks. The three latter files are byte-identical
+  Git blobs; app changes are confined to the text/choice submission call sites.
+- Stable 1.98 Clippy (all client targets/features, warnings denied): unused
+  preview_local_player_center/size in skeleton_debug.rs; collapsible settings
+  conditional in app.rs; collapsible moon conditional and useless diagnostic
+  format call in frontend.rs. All five source locations and the helper usages
+  are unchanged from master. The current run reports only these five failures.
+- No introduced formatting or Clippy failures remain. Unrelated baseline
+  cleanup is explicitly not a push blocker for this acceptance slice.
+
+Static logical-size calibration preserves the hierarchy with approximately
+14% smaller em sizes: speech 17→14.5, choice 16→14; dialog body 14→12 and
+buttons 13→11; panel title 15→13, section 14→12, rows/currency/quantity/tabs
+12→10.5, values/launcher 11→9.5, equipment labels 8→7, tooltips 13→11.
+The canonical logical × UI × OS rule is unchanged.
+
+Direct-consumer GPU specimens were inspected at UI 1.0 and 1.25 / OS 1.0,
+plus combined scale 1.875 for choice sizing. Speech/choice use their real panels;
+settings/dialog use real consumer text positions and panel bounds with neutral
+fills (not atlas-art/color acceptance). Text fits the sampled geometry and
+retains the intended hierarchy. This is offscreen evidence, not a live monitor
+transition test or exhaustive authored-string/skin QA.
+
+Validation (all commands use --offline --locked):
+
+- cargo +1.95.0 test -p purgatory-client renderer::text: 7 passed, 3 ignored.
+- cargo +1.95.0 test -p purgatory-client: 736 passed, 4 ignored.
+- cargo +1.95.0 check -p purgatory-client --no-default-features: passed.
+- cargo +1.95.0 test -p purgatory-client renderer_repeated_text -- --ignored
+  --test-threads=1: 3 passed, with PURGATORY_TEXT_SPECIMEN_DIR set.
+- Choice measurement/hit-region coverage checks scales 1, 1.25 and 1.875;
+  existing choice, panel, dialog and adjacent-column tests pass in the client suite.
+- cargo fmt --all -- --check and cargo clippy -p purgatory-client --all-targets
+  --all-features --offline --locked -- -D warnings: baseline failures above.
+- git diff --check: passed. One wgpu 30.0.1; Glyphon 0.12.0/cosmic-text 0.19.0.

@@ -137,6 +137,7 @@ mod tests {
             camera,
             viewport,
             columns.player,
+            1.0,
         );
         assert!(choice_bubble.rects[0].max[0] < npc_bubble.hit_bounds.min[0]);
     }

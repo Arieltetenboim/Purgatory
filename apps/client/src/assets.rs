@@ -10,7 +10,7 @@ pub fn connection_logo_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Graphic/LOGO.png")
 }
 
-/// Single embedded Text v0 font; license accompanies the asset.
+/// Bundled production UI face (DejaVu Sans Bold); license accompanies the asset.
 pub const UI_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSans-Bold.ttf");
 
 #[cfg(test)]

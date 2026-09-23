@@ -2956,6 +2956,7 @@ impl ClientApp {
                 camera,
                 viewport,
                 column,
+                self.production_ui_metrics()?.1,
             ))
         });
         let player_response = viewport.and_then(|viewport| {
@@ -3158,35 +3159,51 @@ impl ClientApp {
                 let can_connect = self.lifecycle.can_connect();
                 let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
                 let login = &mut self.dev_login;
-                renderer.render(&quads, &ui_compositions, |pass| {
-                    let Some(overlay) = overlay else {
-                        return Vec::new();
-                    };
-                    let (extras, commands, _) = overlay.submit_frame(
-                        &window,
-                        pass,
-                        &frame,
-                        if on_connection {
-                            frontend.map(|frontend| ConnectionPaint {
-                                frontend,
-                                server: &server,
-                                login,
-                                status: line,
-                                can_connect,
-                            })
-                        } else {
-                            None
-                        },
-                        self.replica.local_entity().and_then(|entity| entity.health),
-                    );
-                    actions = commands;
-                    extras
-                })
+                renderer.render(
+                    &quads,
+                    &ui_compositions,
+                    effective_pixels_per_point(
+                        window.scale_factor() as f32,
+                        self.display.settings().ui_scale,
+                    ),
+                    |pass| {
+                        let Some(overlay) = overlay else {
+                            return Vec::new();
+                        };
+                        let (extras, commands, _) = overlay.submit_frame(
+                            &window,
+                            pass,
+                            &frame,
+                            if on_connection {
+                                frontend.map(|frontend| ConnectionPaint {
+                                    frontend,
+                                    server: &server,
+                                    login,
+                                    status: line,
+                                    can_connect,
+                                })
+                            } else {
+                                None
+                            },
+                            self.replica.local_entity().and_then(|entity| entity.health),
+                        );
+                        actions = commands;
+                        extras
+                    },
+                )
             }
             #[cfg(not(feature = "dev-diagnostics"))]
             {
                 let _ = (&window, on_connection);
-                renderer.render(&quads, &ui_compositions, |_| Vec::new())
+                renderer.render(
+                    &quads,
+                    &ui_compositions,
+                    effective_pixels_per_point(
+                        window.scale_factor() as f32,
+                        self.display.settings().ui_scale,
+                    ),
+                    |_| Vec::new(),
+                )
             }
         };
 
