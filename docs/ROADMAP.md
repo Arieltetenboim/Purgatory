@@ -9,11 +9,13 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **ERA II — Combat & First Playable Loop**
 - **Phase 11 — Item Loop: complete + closeout**
 - **Root `PHASE`: `11.closeout`**
+- **Master version:** `0.11.F`
 - **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
 - **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
 - **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
 - **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
-- **Protocol: v30**
+- **Dash / learned abilities:** authoritative Dash + NPC `GrantAbility` restored to current `master`; presentation polish remains tracked separately
+- **Protocol: v31**
 
 ---
 
