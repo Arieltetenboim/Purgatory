@@ -385,3 +385,118 @@ fn renderer_repeated_text_visual_specimen() {
         }
     }
 }
+#[test]
+#[ignore = "GPU typography calibration: exports direct-consumer geometry with neutral panel fills"]
+fn renderer_repeated_text_consumer_calibration() {
+    use crate::asset_runtime::AssetRuntime;
+    use crate::renderer::{Camera, PixelViewport, UiTexturedRect};
+    use crate::ui_dialog::{DialogAction, DialogButton, MessageDialog, MessageDialogRequest};
+    use crate::ui_panel::{SettingsWindow, UiButtonAssets, UiWindowAssets};
+    let Some(directory) = std::env::var_os("PURGATORY_TEXT_SPECIMEN_DIR") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    let viewport = PixelViewport {
+        x: 0,
+        y: 0,
+        width: SIZE[0],
+        height: SIZE[1],
+    };
+    let mut runtime = AssetRuntime::new();
+    let windows = UiWindowAssets::load_embedded(&mut runtime).unwrap();
+    let buttons = UiButtonAssets::load_embedded(&mut runtime).unwrap();
+    let (device, queue) = gpu();
+    let mut text = TextRenderer::new(&device, &queue, FORMAT);
+    let mut panels = panel_renderer(&device);
+    let neutral = |rects: Vec<UiTexturedRect>| {
+        rects
+            .into_iter()
+            .map(|r| UiRect {
+                min: r.min,
+                max: r.max,
+                color: [0.12, 0.10, 0.08, 1.0],
+            })
+            .collect::<Vec<_>>()
+    };
+    for scale in [1.0, 1.25, 1.875] {
+        let choice = crate::choice_bubble::layout_choice_bubble_in_column(
+            &[
+                purgatory_content::DialoguePresentationChoice {
+                    text: "Tell me about this place.".into(),
+                },
+                purgatory_content::DialoguePresentationChoice {
+                    text: "Goodbye.".into(),
+                },
+            ],
+            0,
+            [0.0, 0.0],
+            Camera::footnote_test_dev(),
+            viewport,
+            crate::dialogue_bubble_layout::BubbleColumn::full(viewport),
+            scale,
+        );
+        let speech = crate::speech_bubble::layout_speech_bubble(
+            "Welcome, traveler. There is more to this place than meets the eye.",
+            [0.0, 0.0],
+            Camera::footnote_test_dev(),
+            viewport,
+        );
+        let mut settings = SettingsWindow::default();
+        settings.open();
+        let settings = settings
+            .frame(
+                windows,
+                buttons,
+                crate::display::DisplaySettings::default_dev(),
+                viewport,
+                scale,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let mut dialog = MessageDialog::default();
+        dialog.open(MessageDialogRequest {
+            id: 1,
+            title: "Confirm".into(),
+            body: "Return to the character selection screen?".into(),
+            buttons: vec![
+                DialogButton::new("Cancel", DialogAction::Cancel),
+                DialogButton::new("OK", DialogAction::Ok),
+            ],
+            default_action: Some(DialogAction::Ok),
+            cancel_action: Some(DialogAction::Cancel),
+        });
+        let dialog = dialog
+            .frame(windows, buttons, viewport, scale, None)
+            .unwrap()
+            .unwrap();
+        for (name, rects, blocks) in [
+            ("choice", choice.rects, choice.texts),
+            ("speech", speech.rects, vec![speech.text]),
+            ("settings", neutral(settings.textured_rects), settings.texts),
+            ("dialog", neutral(dialog.textured_rects), dialog.texts),
+        ] {
+            text.begin_frame(&queue, SIZE);
+            panels.clear();
+            let batch = text
+                .prepare_blocks(&device, &queue, &blocks, scale)
+                .unwrap();
+            let panel = panels.prepare(&device, &queue, &rects, &[], SIZE);
+            let texture = target(&device);
+            let view = texture.create_view(&Default::default());
+            let mut encoder = device.create_command_encoder(&Default::default());
+            clear(&mut encoder, &view);
+            panels.draw(panel, &mut encoder, &view);
+            text.draw(batch, &mut encoder, &view);
+            let bytes = readback(&device, &queue, &texture, encoder);
+            image::save_buffer(
+                directory.join(format!("calibration-{name}-{scale}.png")),
+                &bytes,
+                SIZE[0],
+                SIZE[1],
+                image::ColorType::Rgba8,
+            )
+            .unwrap();
+        }
+    }
+}

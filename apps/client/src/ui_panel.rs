@@ -23,7 +23,7 @@ use crate::renderer::{
 const ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
 const ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
 const ATLAS_TEXTURE_FILE: &str = "ATLAS.png";
-const TITLE_FONT_SIZE_UNITS: f32 = 15.0;
+const TITLE_FONT_SIZE_UNITS: f32 = 13.0;
 const TITLE_MAX_HEADER_HEIGHT_FRACTION: f32 = 2.0 / 3.0;
 const TITLE_LEFT_INSET_UNITS: f32 = 4.0;
 const HEADER_CONTENT_OFFSET_UNITS: f32 = 2.0;
@@ -34,9 +34,9 @@ const HEADER_ICON_GAP_UNITS: f32 = 3.0;
 const SETTINGS_WINDOW_SIZE_UNITS: [f32; 2] = [360.0, 290.0];
 #[cfg(not(feature = "dev-diagnostics"))]
 const SETTINGS_WINDOW_SIZE_UNITS: [f32; 2] = [360.0, 261.0];
-const SETTINGS_SECTION_FONT_SIZE_UNITS: f32 = 14.0;
-const SETTINGS_ROW_FONT_SIZE_UNITS: f32 = 12.0;
-const SETTINGS_VALUE_FONT_SIZE_UNITS: f32 = 11.0;
+const SETTINGS_SECTION_FONT_SIZE_UNITS: f32 = 12.0;
+const SETTINGS_ROW_FONT_SIZE_UNITS: f32 = 10.5;
+const SETTINGS_VALUE_FONT_SIZE_UNITS: f32 = 9.5;
 const SETTINGS_CONTENT_SIDE_INSET_UNITS: f32 = 24.0;
 const SETTINGS_VALUE_WIDTH_UNITS: f32 = 136.0;
 const SETTINGS_ROW_HEIGHT_UNITS: f32 = 18.0;
@@ -56,7 +56,7 @@ const SETTINGS_EXIT_GAME_Y_UNITS: f32 = 232.0;
 const SETTINGS_LAUNCHER_WIDTH_UNITS: f32 = 104.0;
 const SETTINGS_LAUNCHER_INSET_UNITS: f32 = 10.0;
 const SETTINGS_LAUNCHER_ICON_SIZE_UNITS: f32 = 13.0;
-const SETTINGS_LAUNCHER_FONT_SIZE_UNITS: f32 = 11.0;
+const SETTINGS_LAUNCHER_FONT_SIZE_UNITS: f32 = 9.5;
 const SETTINGS_TEXT_COLOR: [f32; 4] = [0.05, 0.07, 0.1, 1.0];
 const SETTINGS_DISABLED_TEXT_COLOR: [f32; 4] = [0.36, 0.39, 0.43, 1.0];
 const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 23.0;
@@ -67,7 +67,7 @@ const INVENTORY_GRID_SIDE_PADDING_UNITS: f32 = 1.0;
 const INVENTORY_GRID_BOTTOM_PADDING_UNITS: f32 = 2.0;
 const INVENTORY_FOOTER_RESERVED_UNITS: f32 = 28.0;
 const INVENTORY_CURRENCY_VERTICAL_INSET_UNITS: f32 = 4.0;
-const CURRENCY_FONT_SIZE_UNITS: f32 = 12.0;
+const CURRENCY_FONT_SIZE_UNITS: f32 = 10.5;
 const TAB_EMBOLDEN_OFFSET_UNITS: f32 = 0.35;
 const TAB_TEXT_COLOR: [f32; 4] = [0.03, 0.045, 0.07, 1.0];
 const GOLD_TEXT_COLOR: [f32; 4] = [0.48, 0.3, 0.035, 1.0];
@@ -81,13 +81,13 @@ const INVENTORY_SLOT_SIZE_UNITS: f32 = 44.0;
 const INVENTORY_SLOT_GAP_UNITS: f32 = 2.0;
 const INVENTORY_RIGHT_PADDING_UNITS: f32 = 2.0;
 const INVENTORY_ICON_INSET_UNITS: f32 = 4.0;
-const INVENTORY_QUANTITY_FONT_SIZE_UNITS: f32 = 12.0;
+const INVENTORY_QUANTITY_FONT_SIZE_UNITS: f32 = 10.5;
 const INVENTORY_QUANTITY_INSET_UNITS: f32 = 3.0;
 const INVENTORY_QUANTITY_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
 const EQUIPMENT_SLOT_COLUMNS: usize = 2;
 const EQUIPMENT_SLOT_ROWS: usize = 3;
 const EQUIPMENT_SLOT_GAP_UNITS: f32 = 20.0;
-const EQUIPMENT_LABEL_FONT_SIZE_UNITS: f32 = 8.0;
+const EQUIPMENT_LABEL_FONT_SIZE_UNITS: f32 = 7.0;
 const EQUIPMENT_LABEL_GAP_UNITS: f32 = 2.0;
 const EQUIPMENT_LABEL_COLOR: [f32; 4] = [0.08, 0.11, 0.16, 1.0];
 const EQUIPMENT_SLOT_LABELS: [&str; EquipmentSlot::COUNT] =
@@ -99,7 +99,7 @@ const INVENTORY_TOOLTIP_WIDTH_UNITS: f32 = 218.0;
 const INVENTORY_TOOLTIP_HEIGHT_UNITS: f32 = 54.0;
 const INVENTORY_TOOLTIP_OFFSET_UNITS: f32 = 10.0;
 const INVENTORY_TOOLTIP_PADDING_UNITS: f32 = 7.0;
-const INVENTORY_TOOLTIP_FONT_SIZE_UNITS: f32 = 13.0;
+const INVENTORY_TOOLTIP_FONT_SIZE_UNITS: f32 = 11.0;
 const INVENTORY_TOOLTIP_LINE_GAP_UNITS: f32 = 4.0;
 const INVENTORY_TOOLTIP_BACKGROUND_TINT: [f32; 4] = [0.93, 0.94, 0.95, 0.98];
 const INVENTORY_TOOLTIP_TITLE_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
@@ -765,7 +765,7 @@ impl UiTabAssets {
             slice_px: metadata.button_slice_px,
             cap_units: metadata.button_cap_units,
             height_units: metadata.button_height_units,
-            font_size_units: 12.0,
+            font_size_units: 10.5,
             horizontal_text_padding_units: 4.0,
             gap_units: 1.0,
         })
@@ -4011,7 +4011,7 @@ mod tests {
         assert_eq!(assets.slice_px.left, 8);
         assert_eq!(assets.slice_px.right, 8);
         assert_eq!(assets.height_units, 18.0);
-        assert_eq!(assets.font_size_units, 12.0);
+        assert_eq!(assets.font_size_units, 10.5);
         assert_eq!(assets.gap_units, 1.0);
         assert_eq!(runtime.resource_count(), 1);
         assert_eq!(

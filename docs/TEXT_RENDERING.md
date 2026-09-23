@@ -30,14 +30,17 @@ production text path, without a Text v0 toggle.
   boundaries but need not preserve the final grapheme cluster.
 - PURGATORY does not independently snap shaped glyph positions.
 
-Speech and choice text now author 17 and 16 logical units. Window/dialog styles
-no longer pre-scale text. Geometry remains physical. The existing window-header
-size cap is retained as layout policy and expressed in logical units before
-submission; this cutover adds no automatic font shrinking.
+Speech and choice text author 14.5 and 14 logical units after visual calibration.
+Window/dialog styles no longer pre-scale text. The existing window-header cap
+remains layout policy, expressed in logical units before submission.
 
-Fixed bubble geometry is unchanged. At UI Scale 1.25 and OS scale 1.5, the choice
-line box is 36px, exceeding the existing 28px physical row. A measurement test
-makes this overflow explicit. A later layout decision is needed for that case.
+Choice layout owns its row and hit geometry. The previous 28 physical-pixel
+row bypassed UI scaling; no frozen physical-row requirement exists in the N10
+presentation contract. Rows now use 28 logical units and the preferred width
+uses 420 logical units, still clamped to the assigned physical column. At UI
+1.25 × OS 1.5, a row is 52.5px and its single text line is 31.5px. No font
+shrinking is introduced. Very long choices/narrow columns can still wrap beyond
+one row; responsive multiline bubble layout remains separate work.
 
 ## Fonts and resource ownership
 
@@ -93,26 +96,57 @@ or exhaustive product-window QA. No specimen is added to product UI.
 
 ## Deferred to 2B
 
-Hebrew visual QA, RTL/mixed-bidi product acceptance, explicit bundled fallback
-chains and complete Regular/Bold/Italic/Bold-Italic coverage remain unverified.
+Explicit bundled fallback chains and complete Regular/Bold/Italic/Bold-Italic
+coverage remain unverified. Hebrew/RTL is not a PURGATORY product requirement.
+Generic Unicode/advanced shaping remains. Future localization may include
+English, Spanish (extended Latin/diacritics), and Chinese (requiring appropriate
+CJK assets/fallback in a separate slice); no localization is implemented here
+and Chinese/CJK is not production-ready.
 Rich spans/markup, localization, emoji, editing and effects are outside 2A.
 Advanced shaping already handles every production string; there is no temporary
 ASCII mode or manual reversal. Historical Text v0 verification remains in Git
 history and is not evidence for this backend.
 
-## Cutover verification — 2026-09-23
+## Acceptance/calibration — 2026-09-23
 
-- Rust 1.95.0: focused CPU text suite passed (7); explicit GPU checks passed (2);
-  full client suite passed (736, 3 ignored); no-default-features check passed.
-- Dependency tree: one wgpu 30.0.1, Glyphon 0.12.0, cosmic-text 0.19.0.
-- GPU PNG specimens were compared with a temporary capture of the retired v0
-  backend using the same bundled font. Small text is more legible; the new
-  font metric convention also makes equal numeric sizes visibly larger. The
-  temporary baseline code was removed after capture. Product-window fit and a
-  real monitor transition have not been visually accepted.
-- The normal check.ps1 gate stops on existing formatting drift in unchanged
-  app sections, debug/viz.rs, frontend.rs and skeleton_debug.rs. Stable 1.98
-  client Clippy with warnings denied also fails on existing unused skeleton
-  helpers, collapsible conditionals and a useless frontend format call. Those
-  unrelated areas were not rewritten. Phase 2A acceptance/push remains pending
-  resolution of the validation blockers.
+Current master was fetched at 17905da64cc9490fe747bbfca25af9c317c0ecf5.
+All remaining validation failures are baseline, not introduced:
+
+- Stable 1.98 formatter: app.rs collision-outline calls and NPC debug function
+  signature; debug/viz.rs outline call; frontend.rs wrapping throughout;
+  skeleton_debug.rs assertion wrapping. Formatter checks on temporary copies
+  of master reproduce these hunks. The three latter files are byte-identical
+  Git blobs; app changes are confined to the text/choice submission call sites.
+- Stable 1.98 Clippy (all client targets/features, warnings denied): unused
+  preview_local_player_center/size in skeleton_debug.rs; collapsible settings
+  conditional in app.rs; collapsible moon conditional and useless diagnostic
+  format call in frontend.rs. All five source locations and the helper usages
+  are unchanged from master. The current run reports only these five failures.
+- No introduced formatting or Clippy failures remain. Unrelated baseline
+  cleanup is explicitly not a push blocker for this acceptance slice.
+
+Static logical-size calibration preserves the hierarchy with approximately
+14% smaller em sizes: speech 17→14.5, choice 16→14; dialog body 14→12 and
+buttons 13→11; panel title 15→13, section 14→12, rows/currency/quantity/tabs
+12→10.5, values/launcher 11→9.5, equipment labels 8→7, tooltips 13→11.
+The canonical logical × UI × OS rule is unchanged.
+
+Direct-consumer GPU specimens were inspected at UI 1.0 and 1.25 / OS 1.0,
+plus combined scale 1.875 for choice sizing. Speech/choice use their real panels;
+settings/dialog use real consumer text positions and panel bounds with neutral
+fills (not atlas-art/color acceptance). Text fits the sampled geometry and
+retains the intended hierarchy. This is offscreen evidence, not a live monitor
+transition test or exhaustive authored-string/skin QA.
+
+Validation (all commands use --offline --locked):
+
+- cargo +1.95.0 test -p purgatory-client renderer::text: 7 passed, 3 ignored.
+- cargo +1.95.0 test -p purgatory-client: 736 passed, 4 ignored.
+- cargo +1.95.0 check -p purgatory-client --no-default-features: passed.
+- cargo +1.95.0 test -p purgatory-client renderer_repeated_text -- --ignored
+  --test-threads=1: 3 passed, with PURGATORY_TEXT_SPECIMEN_DIR set.
+- Choice measurement/hit-region coverage checks scales 1, 1.25 and 1.875;
+  existing choice, panel, dialog and adjacent-column tests pass in the client suite.
+- cargo fmt --all -- --check and cargo clippy -p purgatory-client --all-targets
+  --all-features --offline --locked -- -D warnings: baseline failures above.
+- git diff --check: passed. One wgpu 30.0.1; Glyphon 0.12.0/cosmic-text 0.19.0.

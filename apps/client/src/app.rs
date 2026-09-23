@@ -2956,6 +2956,7 @@ impl ClientApp {
                 camera,
                 viewport,
                 column,
+                self.production_ui_metrics()?.1,
             ))
         });
         let player_response = viewport.and_then(|viewport| {

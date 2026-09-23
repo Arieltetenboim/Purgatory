@@ -11,8 +11,8 @@ use crate::renderer::{
     Camera, PixelViewport, TextAlignment, TextBlock, TextContent, TextStyle, UiRect,
 };
 
-const WIDTH_PX: f32 = 420.0;
-const ROW_HEIGHT_PX: f32 = 28.0;
+const WIDTH_UNITS: f32 = 420.0;
+const ROW_HEIGHT_UNITS: f32 = 28.0;
 const ROW_GAP_PX: f32 = 8.0;
 const PADDING_PX: f32 = 12.0;
 const BORDER_PX: f32 = 3.0;
@@ -41,6 +41,7 @@ pub(crate) fn layout_choice_bubble(
         camera,
         viewport,
         BubbleColumn::full(viewport),
+        1.0,
     )
 }
 
@@ -52,12 +53,15 @@ pub(crate) fn layout_choice_bubble_in_column(
     camera: Camera,
     viewport: PixelViewport,
     column: BubbleColumn,
+    pixels_per_unit: f32,
 ) -> ChoiceBubbleLayout {
+    // Row geometry and hit regions share the same UI/OS scale as typography.
+    let row_height = ROW_HEIGHT_UNITS * pixels_per_unit;
     let anchor = viewport
         .ndc_to_px(camera.world_to_ndc([player_world[0], player_world[1] + WORLD_ANCHOR_Y]));
-    let width = WIDTH_PX.min(column.width());
+    let width = (WIDTH_UNITS * pixels_per_unit).min(column.width());
     let row_gaps = choices.len().saturating_sub(1) as f32 * ROW_GAP_PX;
-    let height = PADDING_PX * 2.0 + ROW_HEIGHT_PX * choices.len() as f32 + row_gaps;
+    let height = PADDING_PX * 2.0 + row_height * choices.len() as f32 + row_gaps;
     let min_x = column.min_x;
     let max_x = column.max_x - width;
     let min_y = viewport.y as f32 + 8.0;
@@ -83,10 +87,10 @@ pub(crate) fn layout_choice_bubble_in_column(
         .iter()
         .enumerate()
         .map(|(index, _)| {
-            let min_y = panel_min[1] + PADDING_PX + index as f32 * (ROW_HEIGHT_PX + ROW_GAP_PX);
+            let min_y = panel_min[1] + PADDING_PX + index as f32 * (row_height + ROW_GAP_PX);
             UiRect {
                 min: [panel_min[0] + PADDING_PX, min_y],
-                max: [panel_max[0] - PADDING_PX, min_y + ROW_HEIGHT_PX],
+                max: [panel_max[0] - PADDING_PX, min_y + row_height],
                 color: [0.0; 4],
             }
         })
@@ -112,7 +116,7 @@ pub(crate) fn layout_choice_bubble_in_column(
                 if index == selected { "> " } else { "  " },
                 choice.text
             )),
-            style: TextStyle::at_size(16.0, [0.96, 0.93, 0.84, 1.0], TextAlignment::Left),
+            style: TextStyle::at_size(14.0, [0.96, 0.93, 0.84, 1.0], TextAlignment::Left),
             anchor: [hit.min[0] + 4.0, hit.min[1] + TEXT_TOP_INSET_PX],
             max_width: Some((hit.max[0] - hit.min[0] - 8.0).max(1.0)),
         })

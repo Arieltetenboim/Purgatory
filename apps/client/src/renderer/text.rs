@@ -431,12 +431,34 @@ mod tests {
         );
     }
     #[test]
-    fn fixed_choice_rows_report_scaled_typography_overflow_without_shrinking() {
-        let l = TextLayout::new(&mut font_system(), block("Choice", 16.0), 1.875).unwrap();
-        assert!(
-            l.metrics.height > 28.0,
-            "the existing physical choice row is 28px"
-        );
-        assert_eq!(l.buffer.metrics().font_size, 30.0);
+    fn choice_rows_scale_with_shaped_text_and_hit_regions() {
+        use crate::choice_bubble::layout_choice_bubble_in_column;
+        use crate::dialogue_bubble_layout::BubbleColumn;
+        use crate::renderer::{Camera, PixelViewport};
+        let viewport = PixelViewport {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 720,
+        };
+        for scale in [1.0, 1.25, 1.875] {
+            let choice = layout_choice_bubble_in_column(
+                &[purgatory_content::DialoguePresentationChoice {
+                    text: "Continue".into(),
+                }],
+                0,
+                [0.0, 0.0],
+                Camera::footnote_test_dev(),
+                viewport,
+                BubbleColumn::full(viewport),
+                scale,
+            );
+            let block = &choice.texts[0];
+            let layout = TextLayout::new(&mut font_system(), block.clone(), scale).unwrap();
+            let hit = choice.choice_hits[0];
+            assert_eq!(hit.max[1] - hit.min[1], 28.0 * scale);
+            assert!(block.anchor[1] + layout.metrics.height <= hit.max[1]);
+            assert_eq!(layout.buffer.metrics().font_size, 14.0 * scale);
+        }
     }
 }

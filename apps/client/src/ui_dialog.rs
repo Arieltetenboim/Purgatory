@@ -6,8 +6,8 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use crate::renderer::{PixelViewport, TextAlignment, TextBlock, TextContent, TextStyle};
 use crate::ui_panel::{ScreenRect, UiButtonAssets, UiButtonState, UiMessageChrome, UiWindowAssets};
 
-const BODY_FONT_SIZE: f32 = 14.0;
-const BUTTON_FONT_SIZE: f32 = 13.0;
+const BODY_FONT_SIZE: f32 = 12.0;
+const BUTTON_FONT_SIZE: f32 = 11.0;
 const SIDE_INSET: f32 = 24.0;
 const BODY_TOP: f32 = 52.0;
 const BUTTON_BOTTOM: f32 = 12.0;
