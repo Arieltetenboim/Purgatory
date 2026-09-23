@@ -40,7 +40,7 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 29` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 30` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
 v26 is an intentional incompatible bump: v1–v25 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
@@ -117,6 +117,8 @@ the four defined reject reasons. Drop carries no coordinates, address,
 quantity, slot, or entity id; `seq == 0` is invalid.
 
 Protocol v29 adds DEV-only `DevSpawnMonster` (tag 43). The client sends one stable Monster `ContentId`; the server validates Monster-domain identity, resolves the authored Monster definition, chooses authoritative placement/address near the bound player, and creates only transient server-memory runtime identity. The request carries no position, address, runtime `EntityId`, health, collision, behavior or sprite data.
+
+Protocol v30 adds an optional stable authored `ContentId` to replication Enter records. The server projects identity from each live authored runtime entity; the client retains it per replica and resolves presentation from the corresponding client-safe content projection. This is identity/presentation metadata only: clients still do not author spawn, Health, collision, behavior, placement, or runtime `EntityId`. Historical golden vectors remain frozen.
 
 ## Golden wire vectors
 
