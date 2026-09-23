@@ -4053,6 +4053,17 @@ async fn ability_activate_empty_swing_over_quic() {
     }
     write_control(
         &mut send,
+        ClientControl::AbilityActivate(AbilityActivateRequest {
+            seq: 1,
+            input_epoch: 0,
+            input_sequence: 1,
+            ability_id: basic_strike_id(),
+            selected: None,
+        }),
+    )
+    .await;
+    write_control(
+        &mut send,
         ClientControl::Input(InputCommand {
             input_epoch: 0,
             sequence: 1,
@@ -4060,17 +4071,6 @@ async fn ability_activate_empty_swing_over_quic() {
             jump_pressed: false,
             down_held: false,
             portal_held: false,
-        }),
-    )
-    .await;
-    write_control(
-        &mut send,
-        ClientControl::AbilityActivate(AbilityActivateRequest {
-            seq: 1,
-            input_epoch: 0,
-            input_sequence: 1,
-            ability_id: basic_strike_id(),
-            selected: None,
         }),
     )
     .await;
