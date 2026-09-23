@@ -937,7 +937,7 @@ async fn handshake_and_live(
 
     let hello = ClientControl::Hello(Hello {
         protocol_version: PROTOCOL_VERSION,
-        client_build: format!("purgatory-client-{}", env!("CARGO_PKG_VERSION")),
+        client_build: format!("purgatory-client-{}", purgatory_common::version()),
         dev_login: dev_login.to_string(),
     });
     write_client_control(&mut send, &hello)
