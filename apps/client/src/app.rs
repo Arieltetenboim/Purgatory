@@ -68,8 +68,7 @@ use crate::interp::{InterpolationBuffer, PresentationPose, interpolated_or_repli
 use crate::jitter_forensics::{CameraJitterMode, ForensicPush, ForensicTrace};
 use crate::lifecycle::{ClientLifecycle, ClientScreen};
 use crate::local_presentation::{
-    FrameLocalPose, LocalPresentation, compose_local_render_pose,
-remainder_alpha,
+    FrameLocalPose, LocalPresentation, compose_local_render_pose, remainder_alpha,
 };
 use crate::map_fade::{
     DestinationReady, MapFade, MembershipReady, ReadinessFlags, TransitionKind, pose_stable,
@@ -4234,17 +4233,11 @@ fn scene_quads(
     }
     if show_player_aabbs {
         if let Some(position) = local_pose {
-            push_collision_aabb_outline(
-                Aabb::new(position, PLAYER_HALF_EXTENTS),
-                &mut quads,
-            );
+            push_collision_aabb_outline(Aabb::new(position, PLAYER_HALF_EXTENTS), &mut quads);
         }
         for pose in remote_poses {
             // NPC poses are drawn via npc_quads; remotes here are remote players only.
-            push_collision_aabb_outline(
-                Aabb::new(pose.position, PLAYER_HALF_EXTENTS),
-                &mut quads,
-            );
+            push_collision_aabb_outline(Aabb::new(pose.position, PLAYER_HALF_EXTENTS), &mut quads);
         }
     }
     let b = world.bounds();
@@ -4397,10 +4390,7 @@ fn npc_quads(
 /// These DEV outlines therefore use the current presentation-class bounds
 /// without changing or claiming authority over server collision.
 #[cfg(feature = "dev-diagnostics")]
-fn npc_debug_aabb_quads(
-    replica: &ReplicatedWorld,
-    interp: &InterpolationBuffer,
-) -> Vec<DrawQuad> {
+fn npc_debug_aabb_quads(replica: &ReplicatedWorld, interp: &InterpolationBuffer) -> Vec<DrawQuad> {
     let poses = interp.poses();
     let mut quads = Vec::new();
     for entity in replica
