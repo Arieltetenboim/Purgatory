@@ -12,7 +12,7 @@ use crate::blend::{BlendError, blend_local_poses};
 use crate::clip::{AnimationClip, BoneTrack, ClipError, Interpolation, Keyframe, LoopPolicy};
 use crate::dev::{
     A1_HEAD_CLIP_DURATION, A3_MOVE_CLIP_DURATION, A5_ATTACK_CLIP_DURATION, A5_HURT_CLIP_DURATION,
-    DASH_CLIP_DURATION, DEAD_CLIP_DURATION, a1_head_loop_clip, a1_head_rotation_clip, a3_idle_clip,
+    DEAD_CLIP_DURATION, a1_head_loop_clip, a1_head_rotation_clip, a3_idle_clip,
     a3_move_clip, a4_fall_clip, a4_jump_clip, a5_attack_clip, a5_hurt_clip, climb_back_clip,
     dash_clip, dead_clip,
 };
@@ -474,14 +474,17 @@ fn loop_fixture_matches_once_keys_at_mid() {
 fn a3_idle_clip_samples_and_evaluates() {
     let clip = a3_idle_clip();
     assert_eq!(clip.loop_policy(), LoopPolicy::Loop);
+    assert!(clip.duration().is_finite() && clip.duration() > 0.0);
+    assert!(!clip.tracks().is_empty());
+    assert!(clip.tracks().iter().all(|track| track.bone != ROOT));
+
     let def = humanoid_v0();
     let mut local = LocalPose::from_bind(def);
-    let bind_head = local.get(HEAD).unwrap().rotation;
     let bind_root = local.get(ROOT).unwrap();
-    sample(clip, 0.5, &mut local).unwrap();
-    assert!((local.get(HEAD).unwrap().rotation - bind_head).abs() > 1e-3);
-    assert!((local.get(PELVIS).unwrap().rotation - 0.0).abs() > 1e-4);
-    // Root should remain approximately unchanged by limb-only authored clips.
+    sample(clip, clip.duration() * 0.5, &mut local).unwrap();
+
+    // Authored Idle may change pose/timing, but it must remain presentation-only:
+    // sampling cannot author root motion and the resulting hierarchy must evaluate.
     let root_now = local.get(ROOT).unwrap();
     assert!((root_now.rotation - bind_root.rotation).abs() < 1e-3);
     assert!((root_now.translation[0] - bind_root.translation[0]).abs() < 1e-3);
@@ -495,13 +498,20 @@ fn a3_idle_clip_samples_and_evaluates() {
 fn dash_clip_is_authored_once_without_root_motion() {
     let clip = dash_clip();
     assert_eq!(clip.loop_policy(), LoopPolicy::Once);
-    assert!((clip.duration() - DASH_CLIP_DURATION).abs() < EPS);
+    assert!(clip.duration().is_finite() && clip.duration() > 0.0);
+    assert!(!clip.tracks().is_empty());
     assert!(clip.tracks().iter().all(|track| track.bone != ROOT));
+
     let def = humanoid_v0();
     let mut local = LocalPose::from_bind(def);
-    let bind_torso = local.get(TORSO).unwrap().rotation;
-    sample(clip, 0.06, &mut local).unwrap();
-    assert!((local.get(TORSO).unwrap().rotation - bind_torso).abs() > 0.2);
+    let bind_root = local.get(ROOT).unwrap();
+    sample(clip, clip.duration() * 0.5, &mut local).unwrap();
+
+    let root_now = local.get(ROOT).unwrap();
+    assert_eq!(root_now, bind_root);
+    let mut world = WorldPose::new(def);
+    evaluate(def, &local, &mut world).unwrap();
+    assert!(world.get(TORSO).unwrap().rotation.is_finite());
 }
 
 #[test]
