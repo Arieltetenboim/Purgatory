@@ -1,6 +1,6 @@
 # Monster Authoring and Runtime
 
-Status: FORGE M0-M3 merged to `master`. M4 implementation is active on `forge/mob-lab-m4` under #75; automated identity/de-specialization proof is in place and manual two-Monster runtime smoke remains before closeout.
+Status: FORGE M0-M4 implementation is merged to `master`. Automated identity/de-specialization, per-Monster geometry, and removal of the active Red Slime fixture are proven. GitHub Issue #75 remains open until the manual two-Monster visual/runtime smoke is recorded; M5 closeout follows that evidence.
 
 ## Purpose
 
@@ -63,7 +63,7 @@ with its stable Monster `ContentId`, and receives authored Health, collision
 half-extents, movement speed, behavior and home leash. Scheduled
 respawn preserves the same `ContentId` and runtime configuration.
 
-The bootstrap location, contact-damage amount and respawn delay remain existing runtime/proof policy rather than authored Monster fields. Sprite identity is authored and resolves through the creature manifest path. One approach/contact path is still Red-Slime-derived globally; M4 / #75 owns making that geometry per Monster.
+The bootstrap location, contact-damage amount and respawn delay remain existing runtime/proof policy rather than authored Monster fields. Sprite identity is authored and resolves through the creature manifest path. M4 now projects per-entity Monster identity and collision-derived approach geometry; the remaining #75 work is acceptance evidence, not a known Red-Slime-derived runtime path.
 
 ## Mob Lab sequence
 
@@ -74,15 +74,15 @@ The bootstrap location, contact-damage amount and respawn delay remain existing 
 | M2 | Content-backed normal-session runtime proof | complete + merged + manually verified |
 | M2.1 | Damage-triggered aggro + passive contact behavior | complete + merged + manually verified |
 | M3 | Mob Lab v0.1 + creature manifest v2 + DEV spawn wiring | complete + merged |
-| M4 | Multi-monster runtime identity/presentation + test-arena proof | automated implementation/proof landed; manual smoke pending; #75 |
-| M5 | Hub integration + v0.1 closeout | partially landed; final closeout pending M4 |
+| M4 | Multi-monster runtime identity/presentation + test-arena proof | implementation merged; automated GREEN; manual visual smoke pending; #75 |
+| M5 | Hub integration + v0.1 closeout | Hub integration landed; final closeout waits on #75 acceptance evidence |
 
 M3 edits schema v4 directly rather than creating a second Monster model. It also authors creature manifest v1/v2 data used by the client presentation loader. New behavior kinds, loot, ability loadouts and placement authoring still require consumer-backed slices; they must not be added merely as unused form fields.
 
 
 ## Branch history
 
-The original `forge/mob-lab` and recovered `forge/mob-lab-v01` branches are historical evidence only. M0-M2 were forward-ported rather than merging stale branch history. Current M3 work lives on `forge/mob-lab-m3`; after PR #72 merges, M4 should start from the resulting current `master` on a fresh M4 branch.
+The original `forge/mob-lab`, recovered `forge/mob-lab-v01`, M3, and M4 working branches are historical evidence only. M4 was integrated with the latest Character Lab/art work and merged into `master`. Continue new Monster work from current `master`; do not revive an old FORGE branch as an execution baseline.
 
 
 ### Collision bounds and presentation origin
