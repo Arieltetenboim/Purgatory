@@ -57,8 +57,13 @@ pub use memory::{
 };
 pub use world_address::{ChannelId, InstanceId, MapId, WorldAddress};
 
-/// Cargo package version for this crate.
+/// Human-facing PURGATORY master version. Source of truth: repo-root `VERSION`.
 pub fn version() -> &'static str {
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../VERSION")).trim()
+}
+
+/// Technical Cargo package version for this crate.
+pub fn cargo_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
@@ -80,6 +85,7 @@ mod tests {
     #[test]
     fn version_is_nonempty() {
         assert!(!version().is_empty());
+        assert!(!cargo_version().is_empty());
     }
 
     #[test]
