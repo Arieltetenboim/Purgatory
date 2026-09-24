@@ -1,4 +1,4 @@
-//! Client-owned embedded sprite resources.
+//! Client-owned decoded sprite resources.
 //!
 //! This layer owns decoded resource data and stable client texture identities.
 //! Domain code owns what a visual means; the renderer owns submission.
@@ -34,6 +34,10 @@ pub(crate) struct AssetRuntime {
 }
 
 impl AssetRuntime {
+    pub(crate) fn texture_for_key(&self, key: &str) -> Option<SpriteTextureId> {
+        self.by_key.get(key).copied()
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             resources: Vec::new(),
