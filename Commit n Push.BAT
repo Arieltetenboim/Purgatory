@@ -20,7 +20,7 @@ set "MENU_FILE=%TEMP%\purgatory_git_menu_%RANDOM%_%RANDOM%.txt"
 if exist "%MENU_FILE%" del /q "%MENU_FILE%" >nul 2>&1
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$items=@('PULL','PUSH  (commit + push)','COMPARE BRANCHES');" ^
+  "$items=@('PULL','PUSH  (commit + push)','SWITCH BRANCH','COMPARE BRANCHES');" ^
   "$i=0;" ^
   "[Console]::CursorVisible=$false;" ^
   "try {" ^
@@ -56,7 +56,8 @@ del /q "%MENU_FILE%" >nul 2>&1
 
 if "%ACTION%"=="1" goto :helper_pull_mode
 if "%ACTION%"=="2" goto :push_mode
-if "%ACTION%"=="3" goto :helper_compare_mode
+if "%ACTION%"=="3" goto :helper_switch_mode
+if "%ACTION%"=="4" goto :helper_compare_mode
 goto :helper_menu_failed
 
 
@@ -123,6 +124,79 @@ echo ============================================
 echo.
 echo Branch: %TARGET%
 git log -1 --oneline
+echo.
+pause
+goto :helper_main_menu
+
+
+rem =================================================
+rem SWITCH BRANCH
+rem =================================================
+:helper_switch_mode
+cls
+echo.
+echo ============================================
+echo   PURGATORY - SWITCH BRANCH
+echo ============================================
+echo.
+
+call :helper_require_clean_worktree
+if errorlevel 1 (
+    pause
+    goto :helper_main_menu
+)
+
+echo Fetching origin so the branch list is current...
+git fetch origin --prune
+if errorlevel 1 goto :helper_fetch_failed
+
+rem SWITCH lists the union of local and origin branches, excluding current.
+call :helper_select_branch "SELECT BRANCH TO SWITCH TO" "1" "0"
+if errorlevel 20 goto :helper_main_menu
+if errorlevel 1 goto :helper_branch_select_failed
+
+echo.
+echo ============================================
+echo   CONFIRM SWITCH
+echo ============================================
+echo.
+echo Current branch : %BRANCH%
+echo Target branch  : %TARGET%
+echo.
+choice /C YN /N /M "Switch to this branch? [Y/N]: "
+if errorlevel 2 goto :helper_main_menu
+
+echo.
+echo Switching to "%TARGET%"...
+
+rem Prefer an existing local branch.
+git show-ref --verify --quiet "refs/heads/%TARGET%"
+if not errorlevel 1 (
+    git switch "%TARGET%"
+    if errorlevel 1 goto :helper_switch_failed
+    goto :helper_switch_complete
+)
+
+rem If it exists only on origin, create a local tracking branch.
+git show-ref --verify --quiet "refs/remotes/origin/%TARGET%"
+if errorlevel 1 goto :helper_switch_target_missing
+
+git switch --track "origin/%TARGET%"
+if errorlevel 1 goto :helper_switch_failed
+
+:helper_switch_complete
+echo.
+echo ============================================
+echo   DONE - BRANCH SWITCHED
+echo ============================================
+echo.
+echo Current branch:
+git branch --show-current
+echo.
+echo Latest commit:
+git log -1 --oneline
+echo.
+echo No pull, merge, rebase, reset, or stash was performed.
 echo.
 pause
 goto :helper_main_menu
@@ -363,6 +437,13 @@ goto :helper_main_menu
 :helper_switch_failed
 echo.
 echo ERROR: Could not switch to "%TARGET%".
+pause
+goto :helper_main_menu
+
+:helper_switch_target_missing
+echo.
+echo ERROR: Could not resolve branch "%TARGET%" locally or on origin.
+echo Nothing was switched.
 pause
 goto :helper_main_menu
 
