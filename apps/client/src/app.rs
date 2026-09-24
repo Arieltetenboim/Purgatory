@@ -246,6 +246,7 @@ struct ClientApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     asset_runtime: crate::asset_runtime::AssetRuntime,
+    frontend_runtime: crate::frontend_runtime::FrontendRuntime,
     frontend_scene: crate::frontend_scene::FrontendScene,
     frontend_scene_texture: crate::renderer::SpriteTextureId,
     character_visual_pack: crate::character_assets::CharacterVisualPack,
@@ -423,6 +424,7 @@ impl ClientApp {
             window: None,
             renderer: None,
             asset_runtime,
+            frontend_runtime: crate::frontend_runtime::FrontendRuntime::new(),
             frontend_scene: crate::frontend_scene::FrontendScene::new(),
             frontend_scene_texture,
             character_visual_pack,
@@ -2672,7 +2674,8 @@ impl ClientApp {
         self.dialogue_runtime
             .tick(Duration::from_secs_f32(frame_dt.max(0.0)));
         if self.lifecycle.screen() == ClientScreen::Connection {
-            self.frontend_scene.advance(frame_dt);
+            self.frontend_runtime
+                .advance(frame_dt, &mut self.frontend_scene);
         }
         let fade_dt = frame_dt;
         #[cfg(feature = "dev-diagnostics")]
@@ -3307,6 +3310,8 @@ impl ClientApp {
 
         #[cfg(feature = "dev-diagnostics")]
         let mut actions = Vec::new();
+        #[cfg(feature = "dev-diagnostics")]
+        let mut frontend_action = None;
         let status = {
             let Some(renderer) = self.renderer.as_mut() else {
                 return;
@@ -3326,7 +3331,7 @@ impl ClientApp {
                 let frontend = self.frontend.as_mut();
                 let server = format!("{}", self.lifecycle.view().server);
                 let line = self.lifecycle.view().frontend_status();
-                let can_connect = self.lifecycle.can_connect();
+                let frontend_runtime = &self.frontend_runtime;
                 let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
                 let login = &mut self.dev_login;
                 renderer.render(
@@ -3340,7 +3345,7 @@ impl ClientApp {
                         let Some(overlay) = overlay else {
                             return Vec::new();
                         };
-                        let (extras, commands, _) = overlay.submit_frame(
+                        let (extras, commands) = overlay.submit_frame(
                             &window,
                             pass,
                             &frame,
@@ -3350,7 +3355,8 @@ impl ClientApp {
                                     server: &server,
                                     login,
                                     status: line,
-                                    can_connect,
+                                    runtime: frontend_runtime,
+                                    action: &mut frontend_action,
                                 })
                             } else {
                                 None
@@ -3378,7 +3384,14 @@ impl ClientApp {
         };
 
         #[cfg(feature = "dev-diagnostics")]
-        self.apply_debug_commands(actions);
+        {
+            if self.lifecycle.screen() == ClientScreen::Connection
+                && let Some(action) = frontend_action
+            {
+                self.frontend_runtime.act(action, &mut self.frontend_scene);
+            }
+            self.apply_debug_commands(actions);
+        }
 
         self.flush_display_requests();
 
@@ -5007,16 +5020,17 @@ impl ApplicationHandler for ClientApp {
                     && event.state == ElementState::Pressed
                     && !event.repeat
                 {
-                    use crate::frontend_scene::FrontendSceneStop;
-                    let stop = match event.physical_key {
-                        PhysicalKey::Code(KeyCode::F5) => Some(FrontendSceneStop::Intro),
-                        PhysicalKey::Code(KeyCode::F6) => Some(FrontendSceneStop::Login),
-                        PhysicalKey::Code(KeyCode::F7) => Some(FrontendSceneStop::Channel),
-                        PhysicalKey::Code(KeyCode::F8) => Some(FrontendSceneStop::Character),
+                    use crate::frontend_runtime::FrontendStage;
+                    let stage = match event.physical_key {
+                        PhysicalKey::Code(KeyCode::F5) => Some(FrontendStage::Intro),
+                        PhysicalKey::Code(KeyCode::F6) => Some(FrontendStage::Login),
+                        PhysicalKey::Code(KeyCode::F7) => Some(FrontendStage::ChannelSelect),
+                        PhysicalKey::Code(KeyCode::F8) => Some(FrontendStage::CharacterSelect),
                         _ => None,
                     };
-                    if let Some(stop) = stop {
-                        self.frontend_scene.request(stop);
+                    if let Some(stage) = stage {
+                        self.frontend_runtime
+                            .request(stage, &mut self.frontend_scene);
                         window.request_redraw();
                         return;
                     }

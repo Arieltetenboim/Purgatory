@@ -57,6 +57,10 @@ impl FrontendScene {
         });
     }
 
+    pub(crate) fn is_at(&self, stop: FrontendSceneStop) -> bool {
+        self.target == stop && self.transition.is_none()
+    }
+
     pub(crate) fn advance(&mut self, dt: f32) {
         if !dt.is_finite() || dt <= 0.0 {
             return;

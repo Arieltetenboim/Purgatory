@@ -1,0 +1,302 @@
+//! Local frontend navigation. Lifecycle owns Connection/Game; the scene owns camera motion.
+
+use crate::frontend_scene::{FrontendScene, FrontendSceneStop};
+
+/// Intro presentation time, supplied by the client frame delta (never wall-clock reads).
+const INTRO_DELAY_SECONDS: f32 = 1.25;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FrontendStage {
+    Intro,
+    Login,
+    ChannelSelect,
+    CharacterSelect,
+}
+
+impl FrontendStage {
+    fn stop(self) -> FrontendSceneStop {
+        match self {
+            Self::Intro => FrontendSceneStop::Intro,
+            Self::Login => FrontendSceneStop::Login,
+            Self::ChannelSelect => FrontendSceneStop::Channel,
+            Self::CharacterSelect => FrontendSceneStop::Character,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FrontendAction {
+    ContinueFromLogin,
+    SelectChannel(u8),
+    SelectCharacter(u8),
+    Back,
+}
+
+pub(crate) struct FrontendRuntime {
+    stage: FrontendStage,
+    target: Option<FrontendStage>,
+    intro_elapsed: f32,
+    // Zero-based local placeholder slots, never authoritative identities.
+    selected_channel: Option<u8>,
+    selected_character: Option<u8>,
+}
+
+impl FrontendRuntime {
+    pub(crate) fn new() -> Self {
+        Self {
+            stage: FrontendStage::Intro,
+            target: None,
+            intro_elapsed: 0.0,
+            selected_channel: None,
+            selected_character: None,
+        }
+    }
+
+    /// No foreground is painted or accepts input during travel (or during Intro).
+    pub(crate) fn visible_stage(&self) -> Option<FrontendStage> {
+        (self.target.is_none() && self.stage != FrontendStage::Intro).then_some(self.stage)
+    }
+
+    pub(crate) fn selected_channel(&self) -> Option<u8> {
+        self.selected_channel
+    }
+
+    pub(crate) fn selected_character(&self) -> Option<u8> {
+        self.selected_character
+    }
+
+    /// Also used by diagnostic shortcuts; active transitions cannot be retargeted.
+    pub(crate) fn request(&mut self, stage: FrontendStage, scene: &mut FrontendScene) {
+        if self.target.is_some() || stage == self.stage {
+            return;
+        }
+        self.target = Some(stage);
+        scene.request(stage.stop());
+    }
+
+    pub(crate) fn act(&mut self, action: FrontendAction, scene: &mut FrontendScene) {
+        if self.target.is_some() {
+            return;
+        }
+        let next = match (self.stage, action) {
+            (FrontendStage::Login, FrontendAction::ContinueFromLogin) => {
+                FrontendStage::ChannelSelect
+            }
+            (FrontendStage::ChannelSelect, FrontendAction::SelectChannel(slot @ 0..=1)) => {
+                self.selected_channel = Some(slot);
+                FrontendStage::CharacterSelect
+            }
+            (FrontendStage::CharacterSelect, FrontendAction::SelectCharacter(slot @ 0..=2)) => {
+                self.selected_character = Some(slot);
+                return;
+            }
+            (FrontendStage::CharacterSelect, FrontendAction::Back) => FrontendStage::ChannelSelect,
+            (FrontendStage::ChannelSelect, FrontendAction::Back) => FrontendStage::Login,
+            _ => return,
+        };
+        self.request(next, scene);
+    }
+
+    pub(crate) fn advance(&mut self, dt: f32, scene: &mut FrontendScene) {
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
+        if let Some(target) = self.target {
+            scene.advance(dt);
+            if scene.is_at(target.stop()) {
+                self.stage = target;
+                self.target = None;
+                self.intro_elapsed = 0.0;
+            }
+        } else if self.stage == FrontendStage::Intro {
+            self.intro_elapsed += dt;
+            if self.intro_elapsed >= INTRO_DELAY_SECONDS {
+                self.request(FrontendStage::Login, scene);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(stage: FrontendStage) -> (FrontendRuntime, FrontendScene) {
+        let mut runtime = FrontendRuntime::new();
+        let mut scene = FrontendScene::new();
+        runtime.request(stage, &mut scene);
+        if stage != FrontendStage::Intro {
+            runtime.advance(1.0, &mut scene);
+        }
+        (runtime, scene)
+    }
+
+    #[test]
+    fn stages_use_the_locked_camera_stops() {
+        for (stage, stop) in [
+            (FrontendStage::Intro, FrontendSceneStop::Intro),
+            (FrontendStage::Login, FrontendSceneStop::Login),
+            (FrontendStage::ChannelSelect, FrontendSceneStop::Channel),
+            (FrontendStage::CharacterSelect, FrontendSceneStop::Character),
+        ] {
+            let (_, scene) = at(stage);
+            assert!(scene.is_at(stop));
+        }
+    }
+
+    #[test]
+    fn startup_and_intro_delay() {
+        let (mut runtime, mut scene) = at(FrontendStage::Intro);
+        assert_eq!(runtime.stage, FrontendStage::Intro);
+        assert!(scene.is_at(FrontendSceneStop::Intro));
+        assert_eq!(runtime.visible_stage(), None);
+        runtime.advance(INTRO_DELAY_SECONDS - 0.25, &mut scene);
+        assert_eq!(runtime.target, None);
+        runtime.advance(0.25, &mut scene);
+        assert_eq!(runtime.target, Some(FrontendStage::Login));
+        assert_eq!(runtime.stage, FrontendStage::Intro);
+        assert!(!scene.is_at(FrontendSceneStop::Login));
+        runtime.advance(1.0, &mut scene);
+        assert_eq!(runtime.visible_stage(), Some(FrontendStage::Login));
+    }
+
+    #[test]
+    fn forward_and_back_wait_for_camera_arrival() {
+        for (from, action, to) in [
+            (
+                FrontendStage::Login,
+                FrontendAction::ContinueFromLogin,
+                FrontendStage::ChannelSelect,
+            ),
+            (
+                FrontendStage::ChannelSelect,
+                FrontendAction::SelectChannel(1),
+                FrontendStage::CharacterSelect,
+            ),
+            (
+                FrontendStage::CharacterSelect,
+                FrontendAction::Back,
+                FrontendStage::ChannelSelect,
+            ),
+            (
+                FrontendStage::ChannelSelect,
+                FrontendAction::Back,
+                FrontendStage::Login,
+            ),
+        ] {
+            let (mut runtime, mut scene) = at(from);
+            runtime.act(action, &mut scene);
+            assert_eq!(runtime.target, Some(to));
+            assert_eq!(runtime.visible_stage(), None);
+            runtime.advance(0.5, &mut scene);
+            assert_eq!(runtime.stage, from);
+            assert!(!scene.is_at(to.stop()));
+            runtime.advance(0.5, &mut scene);
+            assert_eq!(runtime.stage, to);
+            assert_eq!(runtime.target, None);
+            assert_eq!(runtime.visible_stage(), Some(to));
+            assert!(scene.is_at(to.stop()));
+        }
+    }
+
+    #[test]
+    fn login_and_intro_back_and_current_stage_requests_are_noops() {
+        for stage in [
+            FrontendStage::Intro,
+            FrontendStage::Login,
+            FrontendStage::ChannelSelect,
+            FrontendStage::CharacterSelect,
+        ] {
+            let (mut runtime, mut scene) = at(stage);
+            runtime.request(stage, &mut scene);
+            assert_eq!(runtime.target, None);
+            assert!(scene.is_at(stage.stop()));
+            if matches!(stage, FrontendStage::Intro | FrontendStage::Login) {
+                runtime.act(FrontendAction::Back, &mut scene);
+                assert_eq!(runtime.target, None);
+            }
+        }
+    }
+
+    #[test]
+    fn transition_ignores_spam_back_selection_and_diagnostic_retarget() {
+        let (mut runtime, mut scene) = at(FrontendStage::ChannelSelect);
+        runtime.act(FrontendAction::SelectChannel(0), &mut scene);
+        runtime.advance(0.5, &mut scene);
+        let rect = scene.source_rect();
+        for action in [
+            FrontendAction::Back,
+            FrontendAction::ContinueFromLogin,
+            FrontendAction::SelectChannel(1),
+            FrontendAction::SelectCharacter(2),
+        ] {
+            runtime.act(action, &mut scene);
+        }
+        runtime.request(FrontendStage::Login, &mut scene);
+        assert_eq!(scene.source_rect(), rect);
+        assert_eq!(runtime.selected_channel(), Some(0));
+        assert_eq!(runtime.selected_character(), None);
+        assert_eq!(runtime.stage, FrontendStage::ChannelSelect);
+        runtime.advance(0.5, &mut scene);
+        assert_eq!(
+            runtime.visible_stage(),
+            Some(FrontendStage::CharacterSelect)
+        );
+    }
+
+    #[test]
+    fn local_selections_persist_through_forward_and_back() {
+        let (mut runtime, mut scene) = at(FrontendStage::Login);
+        for action in [
+            FrontendAction::ContinueFromLogin,
+            FrontendAction::SelectChannel(1),
+            FrontendAction::SelectCharacter(2),
+            FrontendAction::Back,
+            FrontendAction::Back,
+            FrontendAction::ContinueFromLogin,
+            FrontendAction::SelectChannel(1),
+        ] {
+            runtime.act(action, &mut scene);
+            runtime.advance(1.0, &mut scene);
+        }
+        assert_eq!(
+            runtime.visible_stage(),
+            Some(FrontendStage::CharacterSelect)
+        );
+        assert_eq!(runtime.selected_channel(), Some(1));
+        assert_eq!(runtime.selected_character(), Some(2));
+        assert_eq!(runtime.target, None); // Character selection never enters Game.
+    }
+
+    #[test]
+    fn invalid_dt_actions_and_slots_are_ignored() {
+        let (mut runtime, mut scene) = at(FrontendStage::Intro);
+        for dt in [f32::NAN, f32::INFINITY, -1.0, 0.0] {
+            runtime.advance(dt, &mut scene);
+        }
+        assert_eq!(runtime.intro_elapsed, 0.0);
+        for stage in [
+            FrontendStage::Intro,
+            FrontendStage::Login,
+            FrontendStage::ChannelSelect,
+            FrontendStage::CharacterSelect,
+        ] {
+            let (mut runtime, mut scene) = at(stage);
+            runtime.act(FrontendAction::SelectChannel(9), &mut scene);
+            runtime.act(FrontendAction::SelectCharacter(9), &mut scene);
+            assert_eq!(runtime.target, None);
+            assert_eq!(runtime.selected_channel(), None);
+            assert_eq!(runtime.selected_character(), None);
+        }
+    }
+
+    #[test]
+    fn diagnostic_intro_restarts_presentation_delay_after_arrival() {
+        let (mut runtime, mut scene) = at(FrontendStage::Login);
+        runtime.request(FrontendStage::Intro, &mut scene);
+        runtime.advance(1.0, &mut scene);
+        assert_eq!(runtime.intro_elapsed, 0.0);
+        runtime.advance(INTRO_DELAY_SECONDS, &mut scene);
+        assert_eq!(runtime.target, Some(FrontendStage::Login));
+    }
+}

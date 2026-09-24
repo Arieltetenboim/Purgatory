@@ -20,7 +20,7 @@ use crate::network::state::{
     ConnectionAttemptId, ConnectionState, NetworkEvent, NetworkSnapshot, NetworkView,
 };
 
-/// What the user is viewing. Intentionally small; no Login/Channel placeholders.
+/// Large lifecycle boundary. FrontendRuntime separately owns frontend navigation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientScreen {
     Connection,
@@ -61,6 +61,9 @@ impl ClientLifecycle {
         matches!(self.screen, ClientScreen::Game)
     }
 
+    // The temporary R2 foreground only navigates locally. This query remains for
+    // the existing shipping auto-connect path and lifecycle tests.
+    #[cfg(any(test, not(feature = "dev-diagnostics")))]
     #[must_use]
     pub fn can_connect(&self) -> bool {
         self.view.can_connect()

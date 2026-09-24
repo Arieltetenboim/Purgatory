@@ -77,7 +77,8 @@ pub struct ConnectionPaint<'a> {
     pub server: &'a str,
     pub login: &'a mut String,
     pub status: &'a str,
-    pub can_connect: bool,
+    pub runtime: &'a crate::frontend_runtime::FrontendRuntime,
+    pub action: &'a mut Option<crate::frontend_runtime::FrontendAction>,
 }
 
 /// GPU handles needed to construct the overlay. wgpu types only; no egui in `gpu.rs`.
@@ -228,14 +229,14 @@ impl DebugOverlay {
         frame: &DiagnosticsFrame,
         connection: Option<ConnectionPaint<'_>>,
         gameplay_health: Option<ReplicatedHealth>,
-    ) -> (Vec<wgpu::CommandBuffer>, Vec<DebugCommand>, bool) {
+    ) -> (Vec<wgpu::CommandBuffer>, Vec<DebugCommand>) {
         if connection.is_none()
             && !self.visible
             && !has_persistent_dev_warnings(&self.ui)
             && !self.ui.center_toast_live()
             && gameplay_health.is_none()
         {
-            return (Vec::new(), Vec::new(), false);
+            return (Vec::new(), Vec::new());
         }
 
         let raw_input = self.winit.take_egui_input(window);
@@ -245,7 +246,6 @@ impl DebugOverlay {
         );
         self.ctx.set_pixels_per_point(ppp);
         let mut actions = Vec::new();
-        let mut connect_clicked = false;
         let mut visible = self.visible;
         let mut tab = self.tab;
         let mut ui_state = self.ui.clone();
@@ -258,12 +258,12 @@ impl DebugOverlay {
                 draw_gameplay_hud(egui_ctx, health, &mut actions);
             }
             if let Some(paint) = connection.as_mut() {
-                connect_clicked = paint.frontend.paint(
+                *paint.action = paint.frontend.paint(
                     egui_ctx,
                     paint.server,
                     paint.login,
                     paint.status,
-                    paint.can_connect,
+                    paint.runtime,
                 );
             }
             if visible {
@@ -295,9 +295,6 @@ impl DebugOverlay {
         self.tab = tab;
         self.ui = ui_state;
         actions.extend(self.ui.drain_commands());
-        if connect_clicked {
-            actions.push(DebugCommand::Connect);
-        }
         self.winit
             .handle_platform_output(window, full_output.platform_output);
 
@@ -348,7 +345,7 @@ impl DebugOverlay {
             self.renderer.free_texture(&id);
         }
 
-        (extra, actions, connect_clicked)
+        (extra, actions)
     }
 }
 

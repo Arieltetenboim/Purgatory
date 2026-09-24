@@ -1,7 +1,8 @@
 //! Animated alpha-stage Connection Frontend.
 //!
 //! This remains presentation-only: connection lifecycle and identity stay owned by ClientApp /
-//! ClientLifecycle. The frontend owns only visual timing and egui textures.
+//! ClientLifecycle. Navigation belongs to FrontendRuntime; this view owns decorative timing
+//! and egui textures only.
 
 use std::time::{Duration, Instant};
 
@@ -13,11 +14,11 @@ use purgatory_common::DevLogin;
 use serde::Deserialize;
 
 use crate::assets::connection_logo_path;
+use crate::frontend_runtime::{FrontendAction, FrontendRuntime, FrontendStage};
 
 const UI_ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
 const UI_ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
 
-const FOREGROUND_FADE_OUT: Duration = Duration::from_millis(280);
 const LOGO_FADE_START_SECONDS: f32 = 0.08;
 const LOGO_FADE_END_SECONDS: f32 = 0.85;
 const CONTROLS_FADE_START_SECONDS: f32 = 0.30;
@@ -32,14 +33,6 @@ pub struct ConnectionFrontend {
     logo: Option<TextureHandle>,
     buttons: Option<ButtonAtlas>,
     entered_at: Instant,
-    phase: FrontendPhase,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum FrontendPhase {
-    Ready,
-    Starting { started_at: Instant },
-    AwaitingConnection,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -100,54 +93,27 @@ impl ConnectionFrontend {
             logo: load_logo(ctx),
             buttons: ButtonAtlas::load(ctx),
             entered_at: Instant::now(),
-            phase: FrontendPhase::Ready,
         }
     }
 
-    /// Draw the alpha Connection Frontend.
-    ///
-    /// Returns true once, after the short foreground fade, when a connection attempt should begin.
+    /// Temporary controls emit local actions; they never request a network connection.
     pub fn paint(
         &mut self,
         ctx: &Context,
         server: &str,
         login: &mut String,
         status: &str,
-        can_connect: bool,
-    ) -> bool {
-        let now = Instant::now();
-        if matches!(self.phase, FrontendPhase::AwaitingConnection) && can_connect {
-            // A failed/rejected/unsent attempt returned ownership to the Connection screen.
-            self.phase = FrontendPhase::Ready;
-            self.entered_at = now;
-        }
-
-        let elapsed = now.duration_since(self.entered_at).as_secs_f32();
+        runtime: &FrontendRuntime,
+    ) -> Option<FrontendAction> {
+        let stage = runtime.visible_stage()?;
+        let elapsed = self.entered_at.elapsed().as_secs_f32();
         let logo_alpha = fade_window(elapsed, LOGO_FADE_START_SECONDS, LOGO_FADE_END_SECONDS);
         let controls_alpha = fade_window(
             elapsed,
             CONTROLS_FADE_START_SECONDS,
             CONTROLS_FADE_END_SECONDS,
         );
-        let foreground_exit_alpha = match self.phase {
-            FrontendPhase::Ready => 1.0,
-            FrontendPhase::Starting { started_at } => {
-                1.0 - smoothstep01(
-                    now.duration_since(started_at).as_secs_f32()
-                        / FOREGROUND_FADE_OUT.as_secs_f32(),
-                )
-            }
-            FrontendPhase::AwaitingConnection => 0.0,
-        };
-
-        let mut connect = false;
-        if let FrontendPhase::Starting { started_at } = self.phase
-            && now.duration_since(started_at) >= FOREGROUND_FADE_OUT
-        {
-            self.phase = FrontendPhase::AwaitingConnection;
-            connect = true;
-        }
-
+        let mut action = None;
         ctx.request_repaint_after(Duration::from_millis(16));
         let screen = ctx.content_rect();
         egui::Area::new(Id::new("purgatory-connection-frontend"))
@@ -157,65 +123,68 @@ impl ConnectionFrontend {
             .show(ctx, |ui| {
                 ui.set_width(screen.width());
                 ui.set_height(screen.height());
-
                 ui.vertical_centered(|ui| {
                     ui.add_space((screen.height() * 0.105).clamp(32.0, 104.0));
-                    ui.scope(|ui| {
-                        ui.set_opacity((logo_alpha * foreground_exit_alpha).clamp(0.0, 1.0));
-                        let float_offset = logo_float_offset(elapsed);
-                        paint_logo_or_title(ui, self.logo.as_ref(), float_offset);
-                    });
-
-                    ui.add_space((screen.height() * 0.052).clamp(22.0, 54.0));
-                    ui.scope(|ui| {
-                        ui.set_opacity((controls_alpha * foreground_exit_alpha).clamp(0.0, 1.0));
-                        paint_login_controls(
-                            ui,
-                            self.buttons.as_ref(),
-                            login,
-                            can_connect && matches!(self.phase, FrontendPhase::Ready),
-                            &mut self.phase,
-                            now,
-                        );
-                    });
-
-                    match self.phase {
-                        FrontendPhase::Starting { .. } => {
-                            ui.add_space(12.0);
-                            ui.label(
-                                egui::RichText::new("Entering…")
-                                    .size(13.0)
-                                    .color(Color32::from_gray(205)),
-                            );
+                    match stage {
+                        FrontendStage::Login => {
+                            ui.scope(|ui| {
+                                ui.set_opacity(logo_alpha);
+                                paint_logo_or_title(
+                                    ui,
+                                    self.logo.as_ref(),
+                                    logo_float_offset(elapsed),
+                                );
+                            });
+                            ui.add_space((screen.height() * 0.052).clamp(22.0, 54.0));
+                            ui.scope(|ui| {
+                                ui.set_opacity(controls_alpha);
+                                if paint_login_controls(ui, self.buttons.as_ref(), login) {
+                                    action = Some(FrontendAction::ContinueFromLogin);
+                                }
+                            });
                         }
-                        FrontendPhase::AwaitingConnection => {
-                            ui.add_space(12.0);
-                            ui.label(
-                                egui::RichText::new(status)
-                                    .size(13.0)
-                                    .color(Color32::from_gray(205)),
-                            );
+                        FrontendStage::ChannelSelect => {
+                            ui.heading("SELECT CHANNEL");
+                            ui.label("Local placeholders");
+                            for slot in 0..2 {
+                                if ui
+                                    .selectable_label(
+                                        runtime.selected_channel() == Some(slot),
+                                        format!("Channel {}", slot + 1),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(FrontendAction::SelectChannel(slot));
+                                }
+                            }
+                            if ui.button("Back").clicked() {
+                                action = Some(FrontendAction::Back);
+                            }
                         }
-                        FrontendPhase::Ready if !can_connect => {
-                            ui.add_space(12.0);
-                            ui.label(
-                                egui::RichText::new(status)
-                                    .size(13.0)
-                                    .color(Color32::from_gray(205)),
-                            );
+                        FrontendStage::CharacterSelect => {
+                            ui.heading("SELECT CHARACTER");
+                            ui.label("Local placeholder slots — Enter World is not available yet");
+                            for slot in 0..3 {
+                                if ui
+                                    .selectable_label(
+                                        runtime.selected_character() == Some(slot),
+                                        format!("Character {}", slot + 1),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(FrontendAction::SelectCharacter(slot));
+                                }
+                            }
+                            if ui.button("Back").clicked() {
+                                action = Some(FrontendAction::Back);
+                            }
                         }
-                        FrontendPhase::Ready => {}
+                        FrontendStage::Intro => {}
                     }
                 });
             });
-
-        paint_dev_strip(
-            ctx,
-            server,
-            status,
-            (controls_alpha * foreground_exit_alpha).max(0.35),
-        );
-        connect
+        paint_dev_strip(ctx, server, status, controls_alpha.max(0.35));
+        action
     }
 }
 
@@ -223,10 +192,7 @@ fn paint_login_controls(
     ui: &mut egui::Ui,
     buttons: Option<&ButtonAtlas>,
     login: &mut String,
-    can_start: bool,
-    phase: &mut FrontendPhase,
-    now: Instant,
-) {
+) -> bool {
     let login_valid = DevLogin::parse(login).is_ok();
     egui::Frame::new()
         .fill(Color32::from_rgba_unmultiplied(15, 17, 21, 220))
@@ -268,24 +234,16 @@ fn paint_login_controls(
     }
 
     ui.add_space(16.0);
-    let enabled = can_start && login_valid;
+    let enabled = login_valid;
     let response = match buttons {
-        Some(buttons) => buttons.button(
-            ui,
-            "ENTER PURGATORY",
-            238.0,
-            AlphaButtonStyle::Primary,
-            enabled,
-        ),
+        Some(buttons) => buttons.button(ui, "CONTINUE", 238.0, AlphaButtonStyle::Primary, enabled),
         None => ui.add_enabled(
             enabled,
-            egui::Button::new("ENTER PURGATORY").min_size(egui::vec2(238.0, 36.0)),
+            egui::Button::new("CONTINUE").min_size(egui::vec2(238.0, 36.0)),
         ),
     };
     let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
-    if enabled && (response.clicked() || enter_pressed) {
-        *phase = FrontendPhase::Starting { started_at: now };
-    }
+    enabled && (response.clicked() || enter_pressed)
 }
 
 fn paint_dev_strip(ctx: &Context, server: &str, status: &str, opacity: f32) {
