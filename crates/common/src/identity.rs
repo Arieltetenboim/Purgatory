@@ -178,6 +178,67 @@ impl std::fmt::Display for CharacterId {
     }
 }
 
+/// Player-facing name. Display case is retained; uniqueness uses ASCII lowercase.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CharacterName(String);
+
+pub const CHARACTER_NAME_MIN_LEN: usize = 3;
+pub const CHARACTER_NAME_MAX_LEN: usize = 12;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CharacterNameError {
+    Length,
+    Characters,
+}
+
+impl CharacterName {
+    pub fn parse(raw: &str) -> Result<Self, CharacterNameError> {
+        if !raw.bytes().all(|ch| ch.is_ascii_alphanumeric()) {
+            return Err(CharacterNameError::Characters);
+        }
+        if !(CHARACTER_NAME_MIN_LEN..=CHARACTER_NAME_MAX_LEN).contains(&raw.len()) {
+            return Err(CharacterNameError::Length);
+        }
+        Ok(Self(raw.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn uniqueness_key(&self) -> String {
+        self.0.to_ascii_lowercase()
+    }
+}
+
+impl TryFrom<String> for CharacterName {
+    type Error = CharacterNameError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<CharacterName> for String {
+    fn from(value: CharacterName) -> Self {
+        value.0
+    }
+}
+
+impl std::fmt::Display for CharacterNameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Length => "character name must contain 3–12 characters",
+            Self::Characters => "character name must contain only ASCII letters and digits",
+        })
+    }
+}
+
+impl std::error::Error for CharacterNameError {}
+
 /// Server-minted authoritative item-instance identity.
 ///
 /// This identifies one economic item (or one stack), never its authored
@@ -349,6 +410,26 @@ pub fn validate_authored_id(id: &str) -> Result<(), AuthoredIdError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn character_name_boundaries_and_display_case() {
+        for raw in ["Ab3", "Abc123Def456", "Ariel"] {
+            assert_eq!(CharacterName::parse(raw).unwrap().as_str(), raw);
+        }
+        for raw in ["", "Ab", "Abc123Def4567"] {
+            assert_eq!(CharacterName::parse(raw), Err(CharacterNameError::Length));
+        }
+        for raw in ["A b", "Ab_", "Ab.", "Ab!", "Äbc", "名前名", "Ab\n"] {
+            assert_eq!(
+                CharacterName::parse(raw),
+                Err(CharacterNameError::Characters)
+            );
+        }
+        assert_eq!(
+            CharacterName::parse("Ariel").unwrap().uniqueness_key(),
+            CharacterName::parse("ARIEL").unwrap().uniqueness_key()
+        );
+    }
 
     #[test]
     fn content_and_persistent_ids_are_distinct_types() {

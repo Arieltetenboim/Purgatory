@@ -2,9 +2,21 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
+/// Expected create rejections, distinct from corrupt state and storage failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CreateCharacterRejection {
+    InvalidName(purgatory_common::CharacterNameError),
+    RosterFull,
+    NameTaken,
+}
+
 /// Persistence failure. Never panic on corrupt files.
 #[derive(Debug)]
 pub enum PersistError {
+    CreateRejected(CreateCharacterRejection),
+    CharacterIdsExhausted,
+    CompatibilityNamesExhausted,
+    Migration { path: PathBuf, reason: String },
     Io { path: PathBuf, source: io::Error },
     Json { path: PathBuf, source: String },
     Schema { path: PathBuf, found: u32 },
@@ -48,6 +60,14 @@ impl PersistError {
 impl fmt::Display for PersistError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CreateRejected(reason) => write!(f, "character creation rejected: {reason:?}"),
+            Self::CharacterIdsExhausted => f.write_str("character id namespace exhausted"),
+            Self::CompatibilityNamesExhausted => {
+                f.write_str("compatibility name namespace exhausted")
+            }
+            Self::Migration { path, reason } => {
+                write!(f, "{}: migration failed: {reason}", path.display())
+            }
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Json { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Schema { path, found } => {

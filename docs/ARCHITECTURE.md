@@ -384,6 +384,8 @@ Runtime identity is [`EntityId`]: `{ index, generation }`. It is cheap to copy. 
 
 **EntityId vs Content ID vs CharacterId vs Persistent ID:** `EntityId` (`RuntimeEntityId`) is a temporary runtime instance. `ContentId` is a stable authored definition string (compact FNV-1a storage is an implementation detail; ADR-0036). `CharacterId` is the server-minted persistent player identity (ADR-0043). `PersistentId` is an optional runtime-entity placeholder and is **not** a Character handle. Two green slimes share one content id and have two different `EntityId`s. Do not mix the namespaces. Do not map `CharacterId::raw()` onto `PersistentId`.
 
+R5A persistent identity uses a DEV login → ordered roster of zero to three `{ CharacterId, CharacterName }` entries, owned by the existing persistence service (ADR-0065). Names preserve display case and are globally unique under ASCII-case-insensitive comparison. `identity.json` v1 migrates to v2 while preserving IDs and leaving per-character gameplay files untouched. Roster reads return owned metadata; creation commits through the existing recoverable replacement path before changing memory. The temporary direct-play resolver selects slot zero or creates one compatibility entry if empty. Real accounts and selected-character networking remain deferred.
+
 Storage is a generational slot vector plus a free list. Live records sit in a contiguous `Vec`. Vacant slots are reused. This is not an ECS and not a general object graph.
 
 `EntityKind` is **derived** from capabilities: player → `Player`, else platform → `Platform`, else `Generic`. Monster, projectile, loot, and NPC **gameplay** are added when those systems exist; they are not separate storage families.

@@ -47,22 +47,11 @@ pub(crate) enum CharacterAreaMode {
     Creating { slot: u8 },
 }
 
-pub(crate) const CHARACTER_NAME_MAX: usize = 12;
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CharacterNameError {
-    Length,
-    Characters,
-}
+pub(crate) const CHARACTER_NAME_MAX: usize = purgatory_common::CHARACTER_NAME_MAX_LEN;
+pub(crate) use purgatory_common::CharacterNameError;
 
 pub(crate) fn validate_character_name(name: &str) -> Result<(), CharacterNameError> {
-    if !name.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-        return Err(CharacterNameError::Characters);
-    }
-    if !(3..=CHARACTER_NAME_MAX).contains(&name.len()) {
-        return Err(CharacterNameError::Length);
-    }
-    Ok(())
+    purgatory_common::CharacterName::parse(name).map(|_| ())
 }
 
 #[derive(Debug, PartialEq, Eq)]

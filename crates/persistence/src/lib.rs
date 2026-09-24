@@ -11,8 +11,11 @@ mod repository;
 mod service;
 
 pub use character::{PERSISTENCE_SCHEMA_VERSION, PersistentCharacter, PersistentCharacterSnapshot};
-pub use error::PersistError;
-pub use identity::{DevIdentityStore, IDENTITY_FILE_NAME, IDENTITY_SCHEMA_VERSION};
+pub use error::{CreateCharacterRejection, PersistError};
+pub use identity::{
+    CharacterRosterEntry, DevIdentityStore, IDENTITY_FILE_NAME, IDENTITY_SCHEMA_VERSION,
+    MAX_ROSTER_SIZE,
+};
 pub use repository::{FileCharacterRepository, character_file_name};
 pub use service::PersistenceService;
 
