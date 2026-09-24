@@ -18,7 +18,6 @@ use super::abuse::{
     ConnectionAbuse, ControlRateLimit, NetworkAbuseConfig, RateDecision, sanitize_log_text,
 };
 use super::connection_lifecycle::ConnectionLifecycleBook;
-#[cfg(test)]
 use super::gameplay::EnterError;
 use super::gameplay::GameplayTx;
 use super::network_pressure::NetworkPressureBook;
@@ -142,8 +141,6 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
     // Shipping builds have no legacy entry route, regardless of client_build.
     #[cfg(test)]
     let legacy = hello.client_build.starts_with("legacy-test:");
-    #[cfg(not(test))]
-    let legacy = false;
     #[cfg(test)]
     let (replication, interact_rx, occupancy) = {
         let mut snap_rx = None;
@@ -318,7 +315,7 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         lease,
         abuse_cfg: abuse,
         stats,
-        gameplay: gameplay.filter(|_| legacy),
+        gameplay,
         #[cfg(not(test))]
         replication: None,
         #[cfg(not(test))]
@@ -329,6 +326,8 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         interact_rx,
         #[cfg(test)]
         occupancy,
+        #[cfg(not(test))]
+        occupancy: None,
         login,
         persist,
         lifecycle,
@@ -339,22 +338,27 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
 
 /// Releases character occupancy if the connection task is dropped before
 /// the normal `send_detach` teardown (panic, abort, or skipped await).
-#[cfg(test)]
 struct OccupancyLease {
     tx: GameplayTx,
     id: purgatory_protocol::ConnectionId,
+    armed: bool,
 }
 
-#[cfg(test)]
 impl OccupancyLease {
     fn new(tx: GameplayTx, id: purgatory_protocol::ConnectionId) -> Self {
-        Self { tx, id }
+        Self {
+            tx,
+            id,
+            armed: true,
+        }
     }
 }
 
-#[cfg(test)]
 impl Drop for OccupancyLease {
     fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
         if self.tx.try_detach(self.id) {
             return;
         }
@@ -379,7 +383,6 @@ struct LiveSession {
     gameplay: Option<GameplayTx>,
     replication: Option<(ReplicationPipe, tokio::sync::watch::Receiver<u64>)>,
     interact_rx: Option<tokio::sync::mpsc::Receiver<ServerControl>>,
-    #[cfg(test)]
     occupancy: Option<OccupancyLease>,
     login: DevLogin,
     persist: Option<super::persist::PersistenceHandle>,
@@ -431,15 +434,13 @@ async fn serve_connection(live: LiveSession) {
         gameplay,
         mut replication,
         mut interact_rx,
-        #[cfg(test)]
-        occupancy,
+        mut occupancy,
         login,
         persist,
         lifecycle,
         pressure,
     } = live;
-    #[cfg(test)]
-    let _occupancy = occupancy;
+    let mut active = occupancy.is_some();
     let id = session.connection_id;
     let remote = session.remote;
     let mut transport_loss = false;
@@ -512,6 +513,51 @@ async fn serve_connection(live: LiveSession) {
             }
             control = read_client_control(&mut recv, &stats) => {
                 match control {
+                    Ok(ClientControl::EnterCharacter { character_id }) => {
+                        use purgatory_protocol::CharacterEnterRejection as R;
+                        if !matches!(rate.note(Instant::now(), abuse_cfg), RateDecision::Allow) {
+                            connection.close(DisconnectReasonCode::Malformed.as_u8().into(), b"rate");
+                            break;
+                        }
+                        // Control processing is serialized: a second request cannot race entry.
+                        let result = if active { Err(R::InvalidSelection) } else {
+                            match (&persist, &gameplay) {
+                                (Some(worker), Some(tx)) => {
+                                    match worker.load_owned_character(login.clone(), character_id).await {
+                                        Err(reason) => Err(reason),
+                                        Ok(character) => {
+                                            let (pipe, wake) = ReplicationPipe::new();
+                                            let (interact_tx, rx) = tokio::sync::mpsc::channel(16);
+                                            match tx.enter(id, character, Some(pipe.clone()), Some(interact_tx)).await {
+                                                Ok(Ok(())) => {
+                                                    occupancy = Some(OccupancyLease::new(tx.clone(), id));
+                                                    replication = Some((pipe, wake));
+                                                    interact_rx = Some(rx);
+                                                    active = true;
+                                                    uni_opened = false;
+                                                    Ok(())
+                                                }
+                                                Ok(Err(EnterError::Occupied)) => Err(R::Occupied),
+                                                _ => Err(R::GameplayEnterFailure),
+                                            }
+                                        }
+                                    }
+                                }
+                                (None, _) => Err(R::StorageFailure),
+                                _ => Err(R::GameplayEnterFailure),
+                            }
+                        };
+                        let response = match result {
+                            Ok(()) => ServerControl::Welcome(purgatory_protocol::Welcome {
+                                protocol_version: PROTOCOL_VERSION,
+                                connection_id: id,
+                                server_tick_rate: purgatory_simulation::TICK_RATE_HZ,
+                                server_label: "PURGATORY".into(),
+                            }),
+                            Err(reason) => ServerControl::EnterCharacterRejected(reason),
+                        };
+                        if write_server_control(&mut send, &response).await.is_err() { break; }
+                    }
                     Ok(ClientControl::CreateCharacter { name }) => {
                         if !matches!(rate.note(Instant::now(), abuse_cfg), RateDecision::Allow) {
                             connection.close(DisconnectReasonCode::Malformed.as_u8().into(), b"rate");
@@ -524,7 +570,7 @@ async fn serve_connection(live: LiveSession) {
                         if write_server_control(&mut send, &ServerControl::CreateCharacterResult(result)).await.is_err() { break; }
                     }
                     // No gameplay authority exists in a pre-game session.
-                    Ok(_) if gameplay.is_none() => {
+                    Ok(_) if !active => {
                         connection.close(DisconnectReasonCode::UnexpectedMessage.as_u8().into(), b"pre-game");
                         break;
                     }
@@ -1248,12 +1294,15 @@ async fn serve_connection(live: LiveSession) {
         }
     }
 
-    if let Some(tx) = &gameplay
-        && !tx.send_detach(id).await
-    {
-        stats
-            .lifecycle_handoff_dropped
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some(mut lease) = occupancy.take() {
+        // Disarm RAII only after the normal detach has completed.
+        if lease.tx.send_detach(id).await {
+            lease.armed = false;
+        } else {
+            stats
+                .lifecycle_handoff_dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     lease.remove_once();
     stats

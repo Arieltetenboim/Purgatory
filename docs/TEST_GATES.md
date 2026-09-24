@@ -688,3 +688,31 @@ New coverage includes empty/full/ordered bounded wire rosters, names-only reques
 Native manual evidence used clean `target/r5b-manual-data` as PURGATORY_DATA_DIR: startup remained Login; Continue connected and advanced to ChannelSelect; Channel 1 opened exactly three Empty slots; opening creation kept Connected and tick 0. The on-disk identity remained an empty roster after login and the probe. Manual text injection did not reach the native field, so manual CREATE/pending, visual NameTaken and restart-with-created-character remain unverified. Automated QUIC/worker/frontend tests cover those state and persistence contracts. The test client and server were stopped afterward. No full visual acceptance claim is made.
 
 Remaining boundary: gameplay load bots require the next selected-character entry slice and explicitly report this dependency. R5B adds no Enter World. A transport drop during creation is resolved by fetching the roster on reconnect, not automatic replay.
+
+
+## R5C selected character entry (2026-09-24)
+
+Focused verification on `frontend/enter-world-r5c`:
+
+- `cargo test -p purgatory-protocol`: 96 unit, 4 character-session, 75 frozen golden tests pass.
+- `cargo test -p purgatory-persistence`: 27 pass.
+- Client filters: `frontend` 42 pass; `lifecycle` 50 pass; `character_presentation` 129 pass.
+- `cargo test -p purgatory-server network`: 281 pass, 9 existing extended soaks ignored.
+- `cargo test -p purgatory-bot-client`: 104 pass.
+- Client default and no-default-features checks, server and bot checks pass.
+- Affected-package all-target/all-feature Clippy with warnings denied passes; touched Rust formatting and diff whitespace checks pass.
+
+The live QUIC entry test checks exact second-roster selection, ownership and occupancy
+rejections without losing the pre-game session, same ConnectionId on Welcome,
+replication, movement input, disconnect release and subsequent re-entry. The client
+network test starts the replication uni after a delayed post-entry Welcome on the
+same attempt. Deterministic frontend tests cover one request at full black, continued
+black after Welcome, readiness-gated reveal and rejection retry.
+
+Native client exercised through the Developer Hub: Login, Channel 1, occupied roster
+selection, Enter World, observed FadeOut, then the revealed playable map. Subsequent
+local input moved the character and camera. No frame-by-frame recording was made, so
+this does not certify the absence of every possible one-frame flash. Existing Idle
+preview changes are retained. A one-bot live connectivity run completed with zero
+errors, including empty-roster creation and explicit entry. No full-workspace gate
+or extended soak was run for this bounded slice.

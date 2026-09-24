@@ -12,6 +12,16 @@ use purgatory_persistence::{
 };
 
 enum PersistCmd {
+    LoadOwned {
+        login: DevLogin,
+        character_id: purgatory_common::CharacterId,
+        reply: tokio::sync::oneshot::Sender<
+            Result<
+                purgatory_persistence::PersistentCharacter,
+                purgatory_protocol::CharacterEnterRejection,
+            >,
+        >,
+    },
     #[cfg(test)]
     Resolve {
         login: DevLogin,
@@ -48,6 +58,18 @@ impl PersistenceHandle {
         tokio::task::spawn_blocking(move || {
             while let Some(cmd) = rx.blocking_recv() {
                 match cmd {
+                    PersistCmd::LoadOwned {
+                        login,
+                        character_id,
+                        reply,
+                    } => {
+                        use purgatory_protocol::CharacterEnterRejection as R;
+                        let result = service
+                            .load_owned_character(&login, character_id)
+                            .map_err(|_| R::StorageFailure)
+                            .and_then(|v| v.ok_or(R::NotOwned));
+                        let _ = reply.send(result);
+                    }
                     #[cfg(test)]
                     PersistCmd::Resolve { login, reply } => {
                         let _ = reply.send(service.resolve_or_create(&login));
@@ -112,6 +134,27 @@ impl PersistenceHandle {
             .await
             .map_err(|_| worker_closed())?;
         rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn load_owned_character(
+        &self,
+        login: DevLogin,
+        character_id: purgatory_common::CharacterId,
+    ) -> Result<
+        purgatory_persistence::PersistentCharacter,
+        purgatory_protocol::CharacterEnterRejection,
+    > {
+        use purgatory_protocol::CharacterEnterRejection as R;
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::LoadOwned {
+                login,
+                character_id,
+                reply,
+            })
+            .await
+            .map_err(|_| R::StorageFailure)?;
+        rx.await.map_err(|_| R::StorageFailure)?
     }
 
     pub async fn roster(

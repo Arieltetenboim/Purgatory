@@ -249,7 +249,7 @@ struct ClientApp {
     frontend_scene: crate::frontend_scene::FrontendScene,
     frontend_scene_texture: crate::renderer::SpriteTextureId,
     character_visual_pack: crate::character_assets::CharacterVisualPack,
-    frontend_base_preview: Vec<DrawQuad>,
+    frontend_base_preview: crate::character_presentation::FrontendCharacterPreview,
     #[cfg(feature = "dev-diagnostics")]
     debug: Option<DebugOverlay>,
     frontend_ui: FrontendUi,
@@ -436,9 +436,7 @@ impl ClientApp {
             frontend_runtime: crate::frontend_runtime::FrontendRuntime::new(),
             frontend_scene: crate::frontend_scene::FrontendScene::new(),
             frontend_scene_texture,
-            frontend_base_preview: crate::character_presentation::fixed_base_preview_quads(
-                &character_visual_pack,
-            ),
+            frontend_base_preview: crate::character_presentation::FrontendCharacterPreview::new(),
             character_visual_pack,
             #[cfg(feature = "dev-diagnostics")]
             debug: None,
@@ -808,6 +806,10 @@ impl ClientApp {
                     NetworkEvent::FrontendSessionReady { ready, .. } => self
                         .frontend_runtime
                         .session_ready(&ready.roster, &mut self.frontend_scene),
+                    NetworkEvent::GameplayReady { .. } => self.frontend_runtime.gameplay_ready(),
+                    NetworkEvent::CharacterEnterRejected { reason, .. } => {
+                        self.frontend_runtime.enter_rejected(reason)
+                    }
                     NetworkEvent::CharacterCreateResult { result, .. } => {
                         self.frontend_runtime.create_result(&result)
                     }
@@ -1734,6 +1736,9 @@ impl ClientApp {
     }
 
     fn frontend_action(&mut self, action: crate::frontend_runtime::FrontendAction) {
+        if self.frontend_runtime.handoff != crate::frontend_runtime::EnterHandoff::Idle {
+            return;
+        }
         use crate::frontend_runtime::{CreationState, FrontendAction, FrontendSession};
         if action == FrontendAction::ContinueFromLogin
             && self.frontend_runtime.session != FrontendSession::Ready
@@ -1813,12 +1818,13 @@ impl ClientApp {
 
     #[must_use]
     fn gameplay_input_locked(&self) -> bool {
-        transition_gameplay_input_locked(
-            self.map_fade.gameplay_input_locked(),
-            self.last_observer,
-            self.replica.observer_address(),
-            self.replica.last_sequence().is_some(),
-        )
+        self.frontend_runtime.gameplay_input_locked()
+            || transition_gameplay_input_locked(
+                self.map_fade.gameplay_input_locked(),
+                self.last_observer,
+                self.replica.observer_address(),
+                self.replica.last_sequence().is_some(),
+            )
     }
 
     fn sample_tick_input(&mut self) -> PlayerInput {
@@ -2289,6 +2295,9 @@ impl ClientApp {
     /// Focus-loss: ActionState is already released. Pair a Neutral clock step
     /// with a command, or send HeldCancel when the send window is full.
     fn on_focus_loss_input(&mut self) {
+        if self.frontend_runtime.gameplay_input_locked() {
+            return;
+        }
         if !self.lifecycle.gameplay_actions_allowed() {
             return;
         }
@@ -2752,10 +2761,25 @@ impl ClientApp {
             self.frontend_runtime
                 .advance(frame_dt, &mut self.frontend_scene);
         }
+        if let Some(character_id) = self.frontend_runtime.advance_handoff(frame_dt) {
+            let sent = self.network.as_ref().is_some_and(|net| {
+                net.try_send(NetworkCommand::EnterCharacter {
+                    attempt_id: self.lifecycle.view().active_attempt,
+                    character_id,
+                })
+            });
+            if !sent {
+                self.frontend_runtime.enter_rejected(
+                    purgatory_protocol::CharacterEnterRejection::GameplayEnterFailure,
+                );
+            }
+        }
         let fade_dt = frame_dt;
         #[cfg(feature = "dev-diagnostics")]
         self.resolve_selected_animation_sample_t(frame_dt);
-        if simulation_should_advance(self.lifecycle.screen()) {
+        if simulation_should_advance(self.lifecycle.screen())
+            && !self.frontend_runtime.gameplay_input_locked()
+        {
             self.advance_simulation();
         } else {
             let now = Instant::now();
@@ -2805,6 +2829,11 @@ impl ClientApp {
         #[cfg(not(feature = "dev-diagnostics"))]
         let overlay_open = false;
         let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
+        self.frontend_base_preview.advance(
+            on_connection && crate::frontend_ui::has_character_preview(&self.frontend_runtime),
+            &self.registry,
+            frame_dt,
+        );
         if on_connection {
             self.characters.clear();
         }
@@ -3130,6 +3159,17 @@ impl ClientApp {
             #[cfg(feature = "dev-diagnostics")]
             self.append_rf_scene(&mut quads, &camera, frame_dt);
         }
+        let ready = self.lifecycle.screen() == ClientScreen::Game
+            && self.readiness_flags().map_complete()
+            && self.replica.local_player().is_some_and(|id| {
+                self.characters
+                    .get(PresentationEntityKey {
+                        index: id.index,
+                        generation: id.generation,
+                    })
+                    .is_some()
+            });
+        self.frontend_runtime.world_ready(ready);
         if let Some(fade) = self.map_fade.overlay_quad(&camera) {
             quads.push(fade);
         }
@@ -3341,7 +3381,9 @@ impl ClientApp {
             frame.add_previews(
                 &self.frontend_runtime,
                 viewport,
-                &self.frontend_base_preview,
+                &self
+                    .frontend_base_preview
+                    .quads(&self.asset_runtime, &self.character_visual_pack),
             );
             frame
         });
@@ -3393,6 +3435,16 @@ impl ClientApp {
             // Message is outside normal focus order and always occupies the top group.
             ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
         }
+        let enter_overlay: Vec<UiRect> = viewport
+            .filter(|_| self.frontend_runtime.enter_alpha() > 0.0)
+            .map(|v| UiRect {
+                min: [v.x as f32, v.y as f32],
+                max: [(v.x + v.width) as f32, (v.y + v.height) as f32],
+                color: [0.0, 0.0, 0.0, self.frontend_runtime.enter_alpha()],
+            })
+            .into_iter()
+            .collect();
+        ui_compositions.push(UiComposition::new(&[], &enter_overlay, &[]));
         #[cfg(feature = "dev-diagnostics")]
         let demand = self.diagnostics_demand();
         #[cfg(feature = "dev-diagnostics")]

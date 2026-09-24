@@ -55,6 +55,10 @@ struct Control {
 }
 
 enum RuntimeCommand {
+    EnterCharacter {
+        attempt_id: ConnectionAttemptId,
+        character_id: purgatory_common::CharacterId,
+    },
     CreateCharacter {
         attempt_id: ConnectionAttemptId,
         name: String,
@@ -184,6 +188,7 @@ impl EventSink {
         if self.verbose() && event.is_lifecycle() {
             match &event {
                 NetworkEvent::FrontendSessionReady { .. }
+                | NetworkEvent::CharacterEnterRejected { .. }
                 | NetworkEvent::CharacterCreateResult { .. }
                 | NetworkEvent::GameplayReady { .. } => self.trace("frontend/gameplay control"),
                 NetworkEvent::Connecting { attempt_id } => {
@@ -390,6 +395,16 @@ impl NetworkHandle {
     /// Connect pressure.
     pub fn try_send(&self, command: NetworkCommand) -> bool {
         match command {
+            NetworkCommand::EnterCharacter {
+                attempt_id,
+                character_id,
+            } => self
+                .commands
+                .try_send(RuntimeCommand::EnterCharacter {
+                    attempt_id,
+                    character_id,
+                })
+                .is_ok(),
             NetworkCommand::CreateCharacter { attempt_id, name } => self
                 .commands
                 .try_send(RuntimeCommand::CreateCharacter { attempt_id, name })
@@ -693,7 +708,7 @@ async fn network_loop(
         tokio::select! {
             cmd = commands.recv() => {
                 match cmd {
-                    Some(RuntimeCommand::CreateCharacter { .. }) => {},
+                    Some(RuntimeCommand::EnterCharacter { .. } | RuntimeCommand::CreateCharacter { .. }) => {},
                     None => {
                         endpoint.close(0u32.into(), b"shutdown");
                         break;
@@ -822,7 +837,7 @@ async fn run_session(
             },
             cmd = commands.recv() => {
                 match cmd {
-                    Some(RuntimeCommand::CreateCharacter { .. }) => {},
+                    Some(RuntimeCommand::EnterCharacter { .. } | RuntimeCommand::CreateCharacter { .. }) => {},
                     None => {
                         return emit_closed(
                             attempt_id,
@@ -921,7 +936,7 @@ async fn handshake_and_live(
                 }
                 cmd = commands.recv() => {
                     match cmd {
-                    Some(RuntimeCommand::CreateCharacter { .. }) => {},
+                    Some(RuntimeCommand::EnterCharacter { .. } | RuntimeCommand::CreateCharacter { .. }) => {},
                         None => {
                             connection.close(0u32.into(), b"cancel");
                             return Ok(AfterSession::Shutdown);
@@ -975,7 +990,7 @@ async fn handshake_and_live(
             }
             cmd = commands.recv() => {
                 match cmd {
-                    Some(RuntimeCommand::CreateCharacter { .. }) => {},
+                    Some(RuntimeCommand::EnterCharacter { .. } | RuntimeCommand::CreateCharacter { .. }) => {},
                     None => {
                         connection.close(0u32.into(), b"cancel");
                         return Ok(AfterSession::Shutdown);
@@ -1002,6 +1017,11 @@ async fn handshake_and_live(
         }
     };
 
+    let session_id = match &control_msg {
+        Ok(ServerControl::FrontendSessionReady(ready)) => Some(ready.connection_id),
+        Ok(ServerControl::Welcome(welcome)) => Some(welcome.connection_id),
+        _ => None,
+    };
     let gameplay_ready = matches!(&control_msg, Ok(ServerControl::Welcome(_)));
     match control_msg {
         Ok(ServerControl::FrontendSessionReady(ready)) => {
@@ -1012,7 +1032,8 @@ async fn handshake_and_live(
                 )
                 .await;
         }
-        Ok(ServerControl::CreateCharacterResult(_)) => {
+        Ok(ServerControl::EnterCharacterRejected(_))
+        | Ok(ServerControl::CreateCharacterResult(_)) => {
             return Err(NetworkEvent::Disconnected {
                 attempt_id,
                 kind: NetworkFailureKind::UnexpectedMessage,
@@ -1120,6 +1141,7 @@ async fn handshake_and_live(
         control,
         impairment,
         gameplay_ready,
+        session_id.expect("accepted session identity"),
     )
     .await
 }
@@ -1232,7 +1254,8 @@ async fn live_loop(
     events: &EventSink,
     control: &mut watch::Receiver<Control>,
     impairment: &mut ImpairmentNet,
-    gameplay_ready: bool,
+    mut gameplay_ready: bool,
+    session_id: purgatory_protocol::ConnectionId,
 ) -> Result<AfterSession, NetworkEvent> {
     let mut ping = tokio::time::interval(PING_INTERVAL);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1240,6 +1263,7 @@ async fn live_loop(
     let mut outstanding: VecDeque<(u64, Instant)> = VecDeque::new();
     let mut snap_recv: Option<RecvStream> = None;
     let mut uni_accepted = false;
+    let mut entering = false;
 
     loop {
         impairment.sync_control();
@@ -1263,6 +1287,13 @@ async fn live_loop(
             biased;
             cmd = commands.recv() => {
                 match cmd {
+                    Some(RuntimeCommand::EnterCharacter { attempt_id: owner, character_id }) => {
+                        if owner == attempt_id && !gameplay_ready && !entering {
+                            write_client_control(&mut send, &ClientControl::EnterCharacter { character_id }).await
+                                .map_err(|kind| NetworkEvent::Disconnected { attempt_id, kind })?;
+                            entering = true;
+                        }
+                    }
                     Some(RuntimeCommand::CreateCharacter { attempt_id: owner, name }) => {
                         if owner == attempt_id {
                             write_client_control(&mut send, &ClientControl::CreateCharacter { name }).await
@@ -1356,7 +1387,17 @@ async fn live_loop(
                     Ok(ServerControl::CreateCharacterResult(result)) => {
                         events.emit(NetworkEvent::CharacterCreateResult { attempt_id, result }, control).await;
                     }
-                    Ok(ServerControl::FrontendSessionReady(_)) | Ok(ServerControl::Welcome(_)) => {
+                    Ok(ServerControl::Welcome(welcome)) if entering && !gameplay_ready
+                        && welcome.connection_id == session_id && welcome.protocol_version == PROTOCOL_VERSION => {
+                        entering = false;
+                        gameplay_ready = true;
+                        events.emit(NetworkEvent::GameplayReady { attempt_id }, control).await;
+                    }
+                    Ok(ServerControl::EnterCharacterRejected(reason)) if entering && !gameplay_ready => {
+                        entering = false;
+                        events.emit(NetworkEvent::CharacterEnterRejected { attempt_id, reason }, control).await;
+                    }
+                    Ok(ServerControl::EnterCharacterRejected(_)) | Ok(ServerControl::FrontendSessionReady(_)) | Ok(ServerControl::Welcome(_)) => {
                         return Err(NetworkEvent::Disconnected {
                             attempt_id,
                             kind: NetworkFailureKind::UnexpectedMessage,
@@ -2231,6 +2272,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum UniAfterWelcome {
         Frontend,
+        FrontendEnter,
         Immediate,
         Delayed,
         TwoFrames,
@@ -2413,7 +2455,10 @@ mod tests {
         if !read_framed_hello(&mut recv).await {
             return;
         }
-        if matches!(mode, UniAfterWelcome::Frontend) {
+        if matches!(
+            mode,
+            UniAfterWelcome::Frontend | UniAfterWelcome::FrontendEnter
+        ) {
             let ready =
                 ServerControl::FrontendSessionReady(purgatory_protocol::FrontendSessionReady {
                     connection_id: ConnectionId::from_raw(7),
@@ -2442,6 +2487,27 @@ mod tests {
             send.write_all(&encode_frame(&encode_server_control(&result).unwrap()).unwrap())
                 .await
                 .unwrap();
+            if matches!(mode, UniAfterWelcome::FrontendEnter) {
+                recv.read_exact(&mut prefix).await.unwrap();
+                let mut bytes = vec![0; peek_frame_len(&prefix).unwrap() as usize];
+                recv.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(
+                    purgatory_protocol::decode_client_control(&bytes).unwrap(),
+                    ClientControl::EnterCharacter {
+                        character_id: purgatory_common::CharacterId::from_raw(73)
+                    }
+                );
+                assert!(write_welcome_frame(&mut send).await);
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let mut uni = connection.open_uni().await.unwrap();
+                let bytes = encode_gameplay_frame(
+                    &encode_replication_frame(&sample_replication_frame()).unwrap(),
+                )
+                .unwrap();
+                uni.write_all(&bytes).await.unwrap();
+                let _ = connection.closed().await;
+                drop(uni);
+            }
             let _ = connection.closed().await;
             return;
         }
@@ -2449,7 +2515,7 @@ mod tests {
             return;
         }
         match mode {
-            UniAfterWelcome::Frontend => unreachable!(),
+            UniAfterWelcome::Frontend | UniAfterWelcome::FrontendEnter => unreachable!(),
             UniAfterWelcome::Immediate => {
                 let _ = write_snapshot_uni(&connection).await;
             }
@@ -2683,6 +2749,59 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(ready && created);
+        assert!(handle.try_send(NetworkCommand::Shutdown));
+        drop(handle);
+        server.stop();
+    }
+    #[test]
+    fn frontend_enter_welcome_keeps_attempt_and_starts_replication() {
+        let (mut server, mut handle) = connect_scripted(UniAfterWelcome::FrontendEnter);
+        let mut lifecycle = crate::lifecycle::ClientLifecycle::new(server.addr);
+        let expected = lifecycle.try_begin_connect().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut gameplay = false;
+        let mut received_frame = false;
+        while Instant::now() < deadline && !received_frame {
+            let mut events = Vec::new();
+            handle.poll(|event| events.push(event));
+            for event in events {
+                match &event {
+                    NetworkEvent::FrontendSessionReady { attempt_id, .. } => {
+                        assert!(handle.try_send(NetworkCommand::CreateCharacter {
+                            attempt_id: *attempt_id,
+                            name: "Hero".into()
+                        }));
+                    }
+                    NetworkEvent::CharacterCreateResult { attempt_id, .. } => {
+                        assert!(handle.try_send(NetworkCommand::EnterCharacter {
+                            attempt_id: *attempt_id,
+                            character_id: purgatory_common::CharacterId::from_raw(73)
+                        }));
+                    }
+                    NetworkEvent::GameplayReady { attempt_id } => {
+                        assert_eq!(*attempt_id, expected);
+                        gameplay = true;
+                    }
+                    NetworkEvent::Connected { .. } => panic!("must not emit a second Connected"),
+                    NetworkEvent::Disconnected { kind, .. } => {
+                        panic!("unexpected disconnect: {kind:?}")
+                    }
+                    _ => {}
+                }
+                assert!(lifecycle.apply(event));
+            }
+            for frame in handle.poll_frames() {
+                assert!(gameplay);
+                let mut replica = crate::replica::ReplicatedWorld::new();
+                replica.apply_frame(frame);
+                assert!(replica.local_entity().is_some());
+                received_frame = true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(gameplay && received_frame);
+        assert_eq!(lifecycle.screen(), crate::lifecycle::ClientScreen::Game);
+        assert_eq!(lifecycle.view().active_attempt, expected);
         assert!(handle.try_send(NetworkCommand::Shutdown));
         drop(handle);
         server.stop();

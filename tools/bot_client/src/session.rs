@@ -171,23 +171,51 @@ impl BotSession {
         });
         write_client_control(&mut send, &hello).await?;
 
-        let control_msg = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_server_control(&mut recv))
-            .await
-            .map_err(|_| "Welcome timeout".to_string())?
-            .map_err(|e| {
-                connection.close_reason().map_or_else(
-                    || format!("read Welcome: {e}"),
-                    |reason| format!("read Welcome: {e}; connection closed: {reason}"),
-                )
-            })?;
+        let mut control_msg =
+            tokio::time::timeout(HANDSHAKE_TIMEOUT, read_server_control(&mut recv))
+                .await
+                .map_err(|_| "Welcome timeout".to_string())?
+                .map_err(|e| {
+                    connection.close_reason().map_or_else(
+                        || format!("read Welcome: {e}"),
+                        |reason| format!("read Welcome: {e}; connection closed: {reason}"),
+                    )
+                })?;
+
+        if !frontend_only && let ServerControl::FrontendSessionReady(ready) = &control_msg {
+            let connection_id = ready.connection_id;
+            let character_id = if let Some(character) = ready.roster.first() {
+                character.character_id
+            } else {
+                let hash = dev_login.bytes().fold(0xcbf29ce484222325_u64, |h, b| {
+                    (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+                });
+                let name = format!("B{:011}", hash % 100_000_000_000);
+                write_client_control(&mut send, &ClientControl::CreateCharacter { name }).await?;
+                match tokio::time::timeout(HANDSHAKE_TIMEOUT, read_server_control(&mut recv))
+                    .await
+                    .map_err(|_| "create timeout")??
+                {
+                    ServerControl::CreateCharacterResult(
+                        purgatory_protocol::CreateCharacterResult::Created { roster },
+                    ) => roster.first().ok_or("empty created roster")?.character_id,
+                    result => return Err(format!("bot creation failed: {result:?}")),
+                }
+            };
+            write_client_control(&mut send, &ClientControl::EnterCharacter { character_id })
+                .await?;
+            control_msg = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_server_control(&mut recv))
+                .await
+                .map_err(|_| "entry timeout")??;
+            if let ServerControl::Welcome(welcome) = &control_msg
+                && welcome.connection_id != connection_id
+            {
+                return Err("entry changed connection identity".into());
+            }
+        }
 
         match control_msg {
             ServerControl::FrontendSessionReady(ready) => {
-                if !frontend_only {
-                    connection.close(0u32.into(), b"entry deferred");
-                    self.state = SessionState::Failed;
-                    return Err("R5B pre-game session ready; gameplay bots require the next selected-character entry slice".into());
-                }
                 self.connection_id = Some(ready.connection_id);
                 self.connection = Some(connection);
                 self.send_stream = Some(send);
@@ -195,7 +223,7 @@ impl BotSession {
                 self.state = SessionState::Connected;
                 Ok(())
             }
-            ServerControl::CreateCharacterResult(_) => {
+            ServerControl::EnterCharacterRejected(_) | ServerControl::CreateCharacterResult(_) => {
                 Err("unexpected create result during handshake".into())
             }
             ServerControl::Welcome(welcome) => {
@@ -377,7 +405,8 @@ impl BotSession {
                         self.metrics.portal_out_of_range.saturating_add(1);
                 }
             }
-            ServerControl::FrontendSessionReady(_)
+            ServerControl::EnterCharacterRejected(_)
+            | ServerControl::FrontendSessionReady(_)
             | ServerControl::CreateCharacterResult(_)
             | ServerControl::Welcome(_)
             | ServerControl::Interact(_)

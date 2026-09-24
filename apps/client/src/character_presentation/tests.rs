@@ -41,7 +41,7 @@ fn remote_idle(equipment: EquipmentView) -> RemoteMotion {
 
 #[test]
 fn protocol_version_is_current() {
-    assert_eq!(PROTOCOL_VERSION, 31);
+    assert_eq!(PROTOCOL_VERSION, 33);
 }
 
 #[test]

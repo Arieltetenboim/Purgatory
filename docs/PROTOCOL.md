@@ -40,7 +40,7 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 31` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 33` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
 
 v26 is an intentional incompatible bump: v1–v25 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 
@@ -578,3 +578,28 @@ Bounded invalid request names reach server CharacterName validation and return I
 The client tags control events with local ConnectionAttemptId and reliably delivers them independently of droppable RTT telemetry. Connected means session active, not Game. Disconnect retires local authority. Creation has no retry/idempotency token: after uncertain transport loss the client refetches the roster on a new login rather than retrying an old pending request automatically.
 
 `purgatory-load --probe` now checks pre-game readiness. Gameplay scenarios explicitly report that selected-character entry is deferred; they must not be used as gameplay load gates in R5B.
+
+
+## R5C / protocol v33: explicit selected-character entry
+
+The same reliable control stream accepts `EnterCharacter { character_id }` (tag 48,
+64-bit little-endian CharacterId). The session's validated DevLogin owns the lookup:
+entry verifies the existing roster and loads/defaults exactly that character; it
+never allocates an identity or implicitly selects slot zero.
+
+`EnterCharacterRejected` (tag 49, one-byte reason) distinguishes NotOwned (1),
+Occupied (2), StorageFailure (3), GameplayEnterFailure (4), and InvalidSelection (5).
+Expected rejections preserve the pre-game session. Successful `GameplayTx::enter`
+uses the existing Welcome and enables normal replication on that connection.
+Occupancy teardown is owned only after successful entry and is disarmed after
+normal detach, with the existing Drop fallback for interrupted tasks.
+
+The client sends entry once after its 0.30-second FadeOut. Welcome emits the existing
+GameplayReady, but the overlay stays black until applied local-player replication,
+map/prediction/camera alignment and Character Presentation are ready. A 0.40-second
+FadeIn then reveals gameplay. Normal input is paused before FadeIn. Preview Idle
+state is independent of gameplay presentation. No readiness wire message is added.
+
+Gameplay bots explicitly enter the first authoritative roster character, creating
+one deterministic valid name when their roster is empty. The readiness probe stays
+pre-game-only. Historical golden vectors remain unchanged.

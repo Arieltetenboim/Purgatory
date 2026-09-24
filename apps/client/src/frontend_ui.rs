@@ -66,7 +66,8 @@ impl FrontendUi {
         repeat: bool,
     ) -> Option<FrontendAction> {
         let stage = runtime.visible_stage()?;
-        if runtime.character_area.creation == CreationState::Pending
+        if runtime.handoff != crate::frontend_runtime::EnterHandoff::Idle
+            || runtime.character_area.creation == CreationState::Pending
             || runtime.session == FrontendSession::Pending
         {
             return None;
@@ -186,7 +187,7 @@ impl FrontendUi {
                 max_width: Some(width * layout.scale()),
             });
         };
-        label(status, 1040.0, 655.0, 340.0, 13.0);
+        label(status, 640.0, 655.0, 340.0, 13.0);
         match stage {
             FrontendStage::Login => {
                 let width = 460.0_f32.min(170.0 * assets.logo_aspect);
@@ -246,9 +247,29 @@ impl FrontendUi {
                 label("Local placeholder channels", 640.0, 270.0, 420.0, 16.0);
             }
             FrontendStage::CharacterSelect => {
+                if let Some(reason) = runtime.enter_rejection {
+                    let message = match reason {
+                        purgatory_protocol::CharacterEnterRejection::NotOwned => {
+                            "Character is not owned by this profile"
+                        }
+                        purgatory_protocol::CharacterEnterRejection::Occupied => {
+                            "Character is already in the world"
+                        }
+                        purgatory_protocol::CharacterEnterRejection::StorageFailure => {
+                            "Character storage unavailable. Try again"
+                        }
+                        purgatory_protocol::CharacterEnterRejection::GameplayEnterFailure => {
+                            "World entry failed. Try again"
+                        }
+                        purgatory_protocol::CharacterEnterRejection::InvalidSelection => {
+                            "Invalid character selection"
+                        }
+                    };
+                    label(message, 640.0, 610.0, 800.0, 16.0);
+                }
                 label("CHARACTERS", 640.0, 54.0, 1100.0, 28.0);
                 label(
-                    "Server roster — Enter World is not available",
+                    "Select a character to enter the world",
                     640.0,
                     99.0,
                     1100.0,
@@ -413,6 +434,7 @@ impl FrontendUi {
                 FrontendAction::BeginCreate(_) => "CREATE NEW CHARACTER".into(),
                 FrontendAction::CancelCreation => "CANCEL".into(),
                 FrontendAction::CreateCharacter => "CREATE".into(),
+                FrontendAction::EnterWorld => "ENTER WORLD".into(),
                 FrontendAction::Back => "BACK".into(),
             };
             let [x, y, width, height] = button_bounds;
@@ -437,6 +459,19 @@ pub(crate) struct FrontendFrame {
     pub(crate) textured_rects: Vec<UiTexturedRect>,
     pub(crate) texts: Vec<TextBlock>,
     pub(crate) preview_quads: Vec<UiTexturedQuad>,
+}
+
+pub(crate) fn has_character_preview(runtime: &FrontendRuntime) -> bool {
+    runtime.visible_stage() == Some(FrontendStage::CharacterSelect)
+        && (runtime
+            .character_area
+            .slots
+            .iter()
+            .any(|slot| *slot != CharacterSlotState::Empty)
+            || matches!(
+                runtime.character_area.mode,
+                CharacterAreaMode::Creating { .. }
+            ))
 }
 
 impl FrontendFrame {
@@ -520,7 +555,8 @@ fn cancel_button(slot: u8) -> [f32; 4] {
 }
 
 fn controls(runtime: &FrontendRuntime, login: &str) -> Vec<([f32; 4], Control)> {
-    if runtime.character_area.creation == CreationState::Pending
+    if runtime.handoff != crate::frontend_runtime::EnterHandoff::Idle
+        || runtime.character_area.creation == CreationState::Pending
         || runtime.session == FrontendSession::Pending
     {
         return Vec::new();
@@ -568,6 +604,12 @@ fn controls(runtime: &FrontendRuntime, login: &str) -> Vec<([f32; 4], Control)> 
                         action(slot_button(slot), FrontendAction::BeginCreate(slot)),
                     );
                 }
+                if runtime.enter_character().is_some() {
+                    controls.insert(
+                        0,
+                        action([950.0, 640.0, 270.0, 44.0], FrontendAction::EnterWorld),
+                    );
+                }
                 controls.push(action(BACK, FrontendAction::Back));
                 controls
             }
@@ -608,6 +650,65 @@ impl Layout {
 mod tests {
     use super::*;
     use crate::frontend_scene::FrontendScene;
+
+    #[test]
+    fn frontend_enter_click_sends_selected_id_once_at_black_and_waits_for_world() {
+        use crate::frontend_runtime::EnterHandoff;
+        let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+        let mut ui = FrontendUi::default();
+        assert!(runtime.enter_character().is_none());
+        runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+        assert!(runtime.enter_character().is_none());
+        runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+        assert!(runtime.enter_character().is_none());
+        runtime.act(FrontendAction::CancelCreation, &mut scene);
+        runtime.act(FrontendAction::SelectCharacter(2), &mut scene);
+        assert_eq!(runtime.enter_character().unwrap().raw(), 20);
+        assert_eq!(
+            click(&mut ui, &runtime, "dev.local", [1050.0, 660.0]),
+            Some(FrontendAction::EnterWorld)
+        );
+        runtime.act(FrontendAction::EnterWorld, &mut scene);
+        assert!(matches!(runtime.handoff, EnterHandoff::FadingOut { .. }));
+        assert!(controls(&runtime, "dev.local").is_empty());
+        assert!(runtime.gameplay_input_locked());
+        assert_eq!(runtime.advance_handoff(0.15), None);
+        assert!(runtime.enter_alpha() > 0.0 && runtime.enter_alpha() < 1.0);
+        assert_eq!(runtime.advance_handoff(0.15).unwrap().raw(), 20);
+        assert_eq!(runtime.enter_alpha(), 1.0);
+        assert_eq!(runtime.advance_handoff(50.0), None);
+        runtime.gameplay_ready();
+        runtime.world_ready(false);
+        runtime.advance_handoff(50.0);
+        assert_eq!(runtime.handoff, EnterHandoff::WaitingForWorldReady);
+        assert_eq!(runtime.enter_alpha(), 1.0);
+        assert!(runtime.gameplay_input_locked());
+        runtime.world_ready(true);
+        assert!(!runtime.gameplay_input_locked());
+        runtime.advance_handoff(0.2);
+        assert!((runtime.enter_alpha() - 0.5).abs() < 0.001);
+        runtime.advance_handoff(0.2);
+        assert_eq!(runtime.handoff, EnterHandoff::Idle);
+    }
+
+    #[test]
+    fn frontend_enter_rejection_preserves_roster_selection_and_allows_retry() {
+        let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+        runtime.act(FrontendAction::SelectCharacter(2), &mut scene);
+        let slots = runtime.character_area.slots.clone();
+        for reason in [
+            purgatory_protocol::CharacterEnterRejection::NotOwned,
+            purgatory_protocol::CharacterEnterRejection::Occupied,
+        ] {
+            runtime.act(FrontendAction::EnterWorld, &mut scene);
+            runtime.advance_handoff(0.3);
+            runtime.enter_rejected(reason);
+            runtime.advance_handoff(0.4);
+            assert_eq!(runtime.character_area.slots, slots);
+            assert_eq!(runtime.enter_character().unwrap().raw(), 20);
+            assert_eq!(runtime.enter_rejection, Some(reason));
+        }
+    }
 
     #[test]
     fn frontend_creation_input_focus_filter_backspace_enter_and_cancel() {
@@ -967,13 +1068,50 @@ mod tests {
     }
 
     #[test]
+    fn frontend_occupied_empty_and_creation_idle_previews() {
+        let (mut runtime, _) = at(FrontendStage::CharacterSelect);
+        let mut assets = crate::asset_runtime::AssetRuntime::new();
+        let pack = crate::character_assets::embedded_character_visual_pack(&mut assets).unwrap();
+        let registry = purgatory_content::ContentRegistry::new();
+        let mut preview = crate::character_presentation::FrontendCharacterPreview::new();
+        let viewport = crate::renderer::constrained_pixel_viewport(1280, 720).unwrap();
+        // Occupied slots share the ordinary Idle request, regardless of selection.
+        assert!(has_character_preview(&runtime));
+        preview.advance(has_character_preview(&runtime), &registry, 0.125);
+        let mut frame = FrontendFrame::default();
+        frame.add_previews(&runtime, viewport, &preview.quads(&assets, &pack));
+        assert_eq!(frame.preview_quads.len(), 28);
+        runtime.character_area.slots.fill(CharacterSlotState::Empty);
+        assert!(!has_character_preview(&runtime));
+        preview.advance(has_character_preview(&runtime), &registry, 0.125);
+        assert!(preview.quads(&assets, &pack).is_empty());
+        runtime.character_area.mode = CharacterAreaMode::Creating { slot: 1 };
+        assert!(has_character_preview(&runtime));
+        preview.advance(has_character_preview(&runtime), &registry, 0.125);
+        let first = preview.quads(&assets, &pack);
+        preview.advance(true, &registry, 0.25);
+        let second = preview.quads(&assets, &pack);
+        assert!(
+            first
+                .iter()
+                .zip(&second)
+                .any(|(a, b)| a.world_corners() != b.world_corners())
+        );
+        let mut frame = FrontendFrame::default();
+        frame.add_previews(&runtime, viewport, &second);
+        assert_eq!(frame.preview_quads.len(), 14);
+    }
+
+    #[test]
     fn frontend_frames_and_hits_fit_resized_constrained_viewports() {
         let mut assets = crate::asset_runtime::AssetRuntime::new();
         let logo = assets
             .register_image("test.logo", image::RgbaImage::new(4, 1))
             .unwrap();
         let pack = crate::character_assets::embedded_character_visual_pack(&mut assets).unwrap();
-        let preview = crate::character_presentation::fixed_base_preview_quads(&pack);
+        let mut presentation = crate::character_presentation::FrontendCharacterPreview::new();
+        presentation.advance(true, &purgatory_content::ContentRegistry::new(), 0.1);
+        let preview = presentation.quads(&assets, &pack);
         assert_eq!(preview.len(), 14);
         assert!(preview.iter().all(|quad| quad.is_textured()));
         let assets = FrontendUiAssets {

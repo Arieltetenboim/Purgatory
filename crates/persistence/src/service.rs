@@ -32,6 +32,19 @@ impl PersistenceService {
         self.repo.load_or_default(id)
     }
 
+    /// Check the authoritative roster before touching the exact character file.
+    /// None means not owned; no identity is allocated by entry.
+    pub fn load_owned_character(
+        &self,
+        login: &DevLogin,
+        id: CharacterId,
+    ) -> Result<Option<PersistentCharacter>, PersistError> {
+        if !self.owns_character(login, id) {
+            return Ok(None);
+        }
+        self.repo.load_or_default(id).map(Some)
+    }
+
     pub fn save_snapshot(
         &mut self,
         snapshot: PersistentCharacterSnapshot,
@@ -78,6 +91,38 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn load_owned_character_selects_exact_id_and_never_allocates() {
+        let dir = unique_dir();
+        let mut service = PersistenceService::open(&dir).unwrap();
+        let alice = DevLogin::parse("alice").unwrap();
+        let bob = DevLogin::parse("bob").unwrap();
+        let first = service.create_character(&alice, "First").unwrap();
+        let second = service.create_character(&alice, "Second").unwrap();
+        assert!(
+            service
+                .load_owned_character(&bob, second.character_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(service.roster(&bob).is_empty());
+        assert!(!dir.join(character_file_name(second.character_id)).exists());
+        let loaded = service
+            .load_owned_character(&alice, second.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.character_id, second.character_id);
+        assert_ne!(loaded.character_id, first.character_id);
+        assert!(
+            service
+                .load_owned_character(&alice, CharacterId::from_raw(99999))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(service.roster(&alice), vec![first, second]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

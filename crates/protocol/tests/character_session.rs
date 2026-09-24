@@ -12,7 +12,7 @@ fn roster(count: usize) -> Vec<CharacterSummary> {
 
 #[test]
 fn v32_rosters_preserve_empty_full_order_ids_and_names() {
-    assert_eq!(PROTOCOL_VERSION, 32);
+    assert_eq!(PROTOCOL_VERSION, 33);
     for count in 0..=3 {
         for msg in [
             ServerControl::FrontendSessionReady(FrontendSessionReady {
@@ -78,4 +78,36 @@ fn invalid_roster_boundaries_are_rejected() {
     assert!(encode_server_control(&message(bad_name)).is_err());
     assert!(decode_server_control(&[47, 0, 4]).is_err());
     assert!(decode_server_control(&[47, 9]).is_err());
+}
+
+#[test]
+fn character_enter_v33_carries_only_identity_and_typed_rejections() {
+    assert_eq!(PROTOCOL_VERSION, 33);
+    let msg = ClientControl::EnterCharacter {
+        character_id: CharacterId::from_raw(79),
+    };
+    let bytes = encode_client_control(&msg).unwrap();
+    assert_eq!(bytes, [48, 79, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(decode_client_control(&bytes).unwrap(), msg);
+    for len in 0..bytes.len() {
+        assert!(decode_client_control(&bytes[..len]).is_err());
+    }
+    let mut extra = bytes;
+    extra.push(1);
+    assert!(decode_client_control(&extra).is_err());
+    for reason in [
+        CharacterEnterRejection::NotOwned,
+        CharacterEnterRejection::Occupied,
+        CharacterEnterRejection::StorageFailure,
+        CharacterEnterRejection::GameplayEnterFailure,
+        CharacterEnterRejection::InvalidSelection,
+    ] {
+        let msg = ServerControl::EnterCharacterRejected(reason);
+        assert_eq!(
+            decode_server_control(&encode_server_control(&msg).unwrap()).unwrap(),
+            msg
+        );
+    }
+    assert!(decode_server_control(&[49, 0]).is_err());
+    assert!(decode_server_control(&[49, 1, 0]).is_err());
 }

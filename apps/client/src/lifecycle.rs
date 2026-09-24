@@ -146,6 +146,7 @@ impl ClientLifecycle {
         }
         match event {
             NetworkEvent::FrontendSessionReady { .. }
+            | NetworkEvent::CharacterEnterRejected { .. }
             | NetworkEvent::CharacterCreateResult { .. }
             | NetworkEvent::GameplayReady { .. } => self.emit_log("frontend/gameplay control"),
             NetworkEvent::RttUpdated { .. } => {}
@@ -236,7 +237,8 @@ impl ClientLifecycle {
                     | ConnectionState::Handshaking
                     | ConnectionState::Connected
             ),
-            NetworkEvent::CharacterCreateResult { .. }
+            NetworkEvent::CharacterEnterRejected { .. }
+            | NetworkEvent::CharacterCreateResult { .. }
             | NetworkEvent::GameplayReady { .. }
             | NetworkEvent::RttUpdated { .. } => {
                 matches!(state, ConnectionState::Connected)

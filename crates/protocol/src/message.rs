@@ -281,6 +281,9 @@ impl InputCommand {
 /// Client → server reliable control.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientControl {
+    EnterCharacter {
+        character_id: purgatory_common::CharacterId,
+    },
     CreateCharacter {
         name: String,
     },
@@ -322,6 +325,7 @@ pub enum ClientControl {
 /// Server → client reliable control.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServerControl {
+    EnterCharacterRejected(CharacterEnterRejection),
     FrontendSessionReady(FrontendSessionReady),
     CreateCharacterResult(CreateCharacterResult),
     Welcome(Welcome),
@@ -373,6 +377,11 @@ pub fn validate_hello(hello: &Hello) -> Result<(), DisconnectReason> {
 
 pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError> {
     match msg {
+        ClientControl::EnterCharacter { character_id } => {
+            let mut out = vec![TAG_ENTER_CHARACTER];
+            out.extend_from_slice(&character_id.raw().to_le_bytes());
+            Ok(out)
+        }
         ClientControl::CreateCharacter { name } => {
             let mut out = vec![TAG_CREATE_CHARACTER];
             write_bounded_string(&mut out, name)?;
@@ -549,6 +558,12 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
 pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> {
     let (tag, rest) = split_tag(bytes)?;
     match tag {
+        TAG_ENTER_CHARACTER => {
+            let (id, rest) = read_u64(rest)?;
+            expect_empty(rest)?;
+            let character_id = purgatory_common::CharacterId::from_raw(id);
+            Ok(ClientControl::EnterCharacter { character_id })
+        }
         TAG_CREATE_CHARACTER => {
             let (name, rest) = read_bounded_string(rest)?;
             expect_empty(rest)?;
@@ -807,6 +822,9 @@ pub fn encode_server_control(msg: &ServerControl) -> Result<Vec<u8>, CodecError>
             encode_roster(&mut out, &ready.roster)?;
             Ok(out)
         }
+        ServerControl::EnterCharacterRejected(reason) => {
+            Ok(vec![TAG_ENTER_REJECTED, *reason as u8])
+        }
         ServerControl::CreateCharacterResult(result) => {
             let mut out = vec![TAG_CREATE_RESULT];
             match result {
@@ -873,6 +891,20 @@ pub fn decode_server_control(bytes: &[u8]) -> Result<ServerControl, CodecError> 
                 connection_id: ConnectionId::from_raw(id),
                 roster: decode_roster(rest)?,
             }))
+        }
+        TAG_ENTER_REJECTED => {
+            if rest.len() != 1 {
+                return Err(CodecError::InvalidValue);
+            }
+            let reason = match rest[0] {
+                1 => CharacterEnterRejection::NotOwned,
+                2 => CharacterEnterRejection::Occupied,
+                3 => CharacterEnterRejection::StorageFailure,
+                4 => CharacterEnterRejection::GameplayEnterFailure,
+                5 => CharacterEnterRejection::InvalidSelection,
+                _ => return Err(CodecError::InvalidValue),
+            };
+            Ok(ServerControl::EnterCharacterRejected(reason))
         }
         TAG_CREATE_RESULT => Ok(ServerControl::CreateCharacterResult(decode_result(rest)?)),
         TAG_WELCOME => {

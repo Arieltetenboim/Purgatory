@@ -49,7 +49,8 @@
 /// authoritative local Dash state to replication frames for restore+replay.
 /// Historical golden vectors remain frozen.
 /// Protocol v32 adds pre-game session readiness and authoritative roster/create.
-pub const PROTOCOL_VERSION: u32 = 32;
+/// Protocol v33 adds explicit owned-character entry on the live pre-game session.
+pub const PROTOCOL_VERSION: u32 = 33;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;

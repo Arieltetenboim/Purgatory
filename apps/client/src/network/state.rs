@@ -71,6 +71,10 @@ impl ConnectionState {
 /// be stranded behind Connect pressure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkCommand {
+    EnterCharacter {
+        attempt_id: ConnectionAttemptId,
+        character_id: purgatory_common::CharacterId,
+    },
     CreateCharacter {
         attempt_id: ConnectionAttemptId,
         name: String,
@@ -86,6 +90,10 @@ pub enum NetworkCommand {
 /// Semantic events consumed by presentation. No Quinn types.
 #[derive(Clone, Debug)]
 pub enum NetworkEvent {
+    CharacterEnterRejected {
+        attempt_id: ConnectionAttemptId,
+        reason: purgatory_protocol::CharacterEnterRejection,
+    },
     FrontendSessionReady {
         attempt_id: ConnectionAttemptId,
         ready: purgatory_protocol::FrontendSessionReady,
@@ -165,6 +173,7 @@ impl NetworkEvent {
     pub const fn attempt_id(&self) -> ConnectionAttemptId {
         match *self {
             Self::FrontendSessionReady { attempt_id, .. }
+            | Self::CharacterEnterRejected { attempt_id, .. }
             | Self::CharacterCreateResult { attempt_id, .. }
             | Self::GameplayReady { attempt_id }
             | Self::Connecting { attempt_id }
@@ -352,7 +361,9 @@ impl NetworkView {
                 });
                 self.server_tick_rate = None;
             }
-            NetworkEvent::CharacterCreateResult { .. } | NetworkEvent::GameplayReady { .. } => {}
+            NetworkEvent::CharacterEnterRejected { .. }
+            | NetworkEvent::CharacterCreateResult { .. }
+            | NetworkEvent::GameplayReady { .. } => {}
             NetworkEvent::Connecting { attempt_id } => {
                 self.state = ConnectionState::Connecting;
                 self.clear_session_local();

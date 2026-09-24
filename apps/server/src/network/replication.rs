@@ -255,10 +255,6 @@ pub struct ReplicationPipe {
 
 impl ReplicationPipe {
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Gameplay entry deferred after pre-game R5B")
-    )]
     pub fn new() -> (Self, watch::Receiver<u64>) {
         let (wake, rx) = watch::channel(0);
         (

@@ -4260,3 +4260,130 @@ async fn frontend_session_roster_create_rejections_reconnect_without_gameplay_or
     assert_eq!(again.roster, full);
     server.shutdown();
 }
+
+#[tokio::test]
+async fn frontend_enter_exact_owned_character_same_connection_replication_and_detach() {
+    use purgatory_protocol::{CharacterEnterRejection as R, CreateCharacterResult};
+    let (server, sim) = spawn_gameplay().await;
+    let (alice, mut send, mut recv, ready) = frontend_peer(server.addr, "r5c.alice").await;
+    create_frontend(&mut send, &mut recv, "FirstR5c").await;
+    let CreateCharacterResult::Created { roster } =
+        create_frontend(&mut send, &mut recv, "SecondR5c").await
+    else {
+        panic!("roster")
+    };
+    let selected = roster[1].character_id;
+    let (other, mut os, mut or, other_ready) = frontend_peer(server.addr, "r5c.alice").await;
+    let (_bob, mut bs, mut br, _) = frontend_peer(server.addr, "r5c.bob").await;
+    write_control(
+        &mut bs,
+        ClientControl::EnterCharacter {
+            character_id: selected,
+        },
+    )
+    .await;
+    assert_eq!(
+        read_server_control(&mut br).await.unwrap(),
+        ServerControl::EnterCharacterRejected(R::NotOwned)
+    );
+    assert_eq!(lock_sim(&sim).owner.player_count(), 0);
+    write_control(
+        &mut send,
+        ClientControl::EnterCharacter {
+            character_id: selected,
+        },
+    )
+    .await;
+    let ServerControl::Welcome(welcome) =
+        timeout(Duration::from_secs(3), read_server_control(&mut recv))
+            .await
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("welcome")
+    };
+    assert_eq!(welcome.connection_id, ready.connection_id);
+    assert!(wait_attached(&sim, ready.connection_id).await);
+    write_control(
+        &mut os,
+        ClientControl::EnterCharacter {
+            character_id: selected,
+        },
+    )
+    .await;
+    assert_eq!(
+        read_server_control(&mut or).await.unwrap(),
+        ServerControl::EnterCharacterRejected(R::Occupied)
+    );
+    assert_eq!(lock_sim(&sim).owner.player_count(), 1);
+    // Slot zero was not selected: it can enter simultaneously on the rejected session.
+    write_control(
+        &mut os,
+        ClientControl::EnterCharacter {
+            character_id: roster[0].character_id,
+        },
+    )
+    .await;
+    assert!(matches!(
+        read_server_control(&mut or).await.unwrap(),
+        ServerControl::Welcome(_)
+    ));
+    assert!(wait_attached(&sim, other_ready.connection_id).await);
+    assert_eq!(lock_sim(&sim).owner.player_count(), 2);
+    lock_sim(&sim).tick_n(8);
+    let mut uni = accept_snapshot_stream(&alice).await;
+    let frame = timeout(Duration::from_secs(2), read_replication_frame(&mut uni))
+        .await
+        .unwrap();
+    let mut view = ReplicaView::new();
+    view.apply(frame);
+    assert!(view.player_count() > 0);
+    write_input(&mut send, 1, MoveAxis::Right, false, false).await;
+    assert!(
+        wait_until(
+            || { lock_sim(&sim).owner.last_received(ready.connection_id) == Some(1) },
+            Duration::from_secs(2)
+        )
+        .await
+    );
+    let entity = lock_sim(&sim).owner.entity_of(ready.connection_id).unwrap();
+    let before = lock_sim(&sim)
+        .owner
+        .world()
+        .player_body_of(entity)
+        .unwrap()
+        .position;
+    lock_sim(&sim).tick_n(8);
+    let after = lock_sim(&sim)
+        .owner
+        .world()
+        .player_body_of(entity)
+        .unwrap()
+        .position;
+    assert!(after[0] > before[0]);
+    alice.conn.close(0u32.into(), b"done");
+    assert!(
+        wait_until(
+            || lock_sim(&sim)
+                .owner
+                .entity_of(ready.connection_id)
+                .is_none(),
+            Duration::from_secs(2)
+        )
+        .await
+    );
+    let (_again, mut gs, mut gr, _) = frontend_peer(server.addr, "r5c.alice").await;
+    write_control(
+        &mut gs,
+        ClientControl::EnterCharacter {
+            character_id: selected,
+        },
+    )
+    .await;
+    assert!(matches!(
+        read_server_control(&mut gr).await.unwrap(),
+        ServerControl::Welcome(_)
+    ));
+    other.conn.close(0u32.into(), b"done");
+    server.shutdown();
+}

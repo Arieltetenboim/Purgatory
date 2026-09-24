@@ -42,8 +42,8 @@ mod snapshot;
 mod version;
 
 pub use character::{
-    CharacterCreateRejection, CharacterSummary, CreateCharacterResult, FrontendSessionReady,
-    MAX_CHARACTER_ROSTER,
+    CharacterCreateRejection, CharacterEnterRejection, CharacterSummary, CreateCharacterResult,
+    FrontendSessionReady, MAX_CHARACTER_ROSTER,
 };
 
 pub use ability::{
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod compose;
 mod debug_visual;
 mod draw_order;
 mod oneshot_table;
+mod preview;
 mod resolve;
 mod skeleton_input;
 mod state;
@@ -33,7 +34,7 @@ pub(crate) use adapters::{
 pub(crate) use collection::{
     CharacterPresentationSet, DialogueAnimationRequest, PresentationEntityKey,
 };
-pub(crate) use debug_visual::{fixed_base_preview_quads, presentation_debug_quads_with_assets};
+pub(crate) use debug_visual::presentation_debug_quads_with_assets;
 pub(crate) use oneshot_table::PresentationOneShotTable;
 #[cfg(test)]
 pub(crate) use skeleton_input::CHARACTER_COLLISION_FOOT_OVERLAP;
@@ -60,3 +61,5 @@ mod phase8f_e_tests;
 mod phase8f_f_tests;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use preview::FrontendCharacterPreview;

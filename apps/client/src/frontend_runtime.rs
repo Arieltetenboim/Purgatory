@@ -34,6 +34,7 @@ pub(crate) enum FrontendAction {
     BeginCreate(u8),
     CancelCreation,
     CreateCharacter,
+    EnterWorld,
     Back,
 }
 
@@ -124,7 +125,23 @@ impl CharacterArea {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum EnterHandoff {
+    Idle,
+    FadingOut {
+        character_id: CharacterId,
+        elapsed: f32,
+    },
+    WaitingForGameplay,
+    WaitingForWorldReady,
+    FadingIn {
+        elapsed: f32,
+    },
+}
+
 pub(crate) struct FrontendRuntime {
+    pub(crate) handoff: EnterHandoff,
+    pub(crate) enter_rejection: Option<purgatory_protocol::CharacterEnterRejection>,
     pub(crate) session: FrontendSession,
     stage: FrontendStage,
     target: Option<FrontendStage>,
@@ -137,6 +154,8 @@ pub(crate) struct FrontendRuntime {
 impl FrontendRuntime {
     pub(crate) fn new() -> Self {
         Self {
+            handoff: EnterHandoff::Idle,
+            enter_rejection: None,
             session: FrontendSession::Disconnected,
             stage: FrontendStage::Intro,
             target: None,
@@ -166,7 +185,8 @@ impl FrontendRuntime {
 
     /// Also used by diagnostic shortcuts; active transitions cannot be retargeted.
     pub(crate) fn request(&mut self, stage: FrontendStage, scene: &mut FrontendScene) {
-        if self.character_area.creation == CreationState::Pending
+        if self.handoff != EnterHandoff::Idle
+            || self.character_area.creation == CreationState::Pending
             || self.target.is_some()
             || stage == self.stage
         {
@@ -178,6 +198,19 @@ impl FrontendRuntime {
     }
 
     pub(crate) fn act(&mut self, action: FrontendAction, scene: &mut FrontendScene) {
+        if self.handoff != EnterHandoff::Idle {
+            return;
+        }
+        if action == FrontendAction::EnterWorld {
+            if let Some(character_id) = self.enter_character() {
+                self.enter_rejection = None;
+                self.handoff = EnterHandoff::FadingOut {
+                    character_id,
+                    elapsed: 0.0,
+                };
+            }
+            return;
+        }
         if self.character_area.creation == CreationState::Pending || self.target.is_some() {
             return;
         }
@@ -281,7 +314,92 @@ impl FrontendRuntime {
         }
     }
 
+    pub(crate) fn enter_character(&self) -> Option<CharacterId> {
+        if self.visible_stage() != Some(FrontendStage::CharacterSelect)
+            || self.session != FrontendSession::Ready
+            || self.character_area.mode != CharacterAreaMode::Browsing
+            || self.character_area.creation == CreationState::Pending
+            || self.handoff != EnterHandoff::Idle
+        {
+            return None;
+        }
+        let id = self.character_area.selected_id?;
+        self.character_area.slots.iter().any(|s| matches!(s, CharacterSlotState::Occupied { character_id, .. } if *character_id == id)).then_some(id)
+    }
+
+    pub(crate) fn gameplay_input_locked(&self) -> bool {
+        matches!(
+            self.handoff,
+            EnterHandoff::FadingOut { .. }
+                | EnterHandoff::WaitingForGameplay
+                | EnterHandoff::WaitingForWorldReady
+        )
+    }
+
+    pub(crate) fn enter_alpha(&self) -> f32 {
+        match self.handoff {
+            EnterHandoff::Idle => 0.0,
+            EnterHandoff::FadingOut { elapsed, .. } => (elapsed / 0.30).min(1.0),
+            EnterHandoff::WaitingForGameplay | EnterHandoff::WaitingForWorldReady => 1.0,
+            EnterHandoff::FadingIn { elapsed } => (1.0 - elapsed / 0.40).max(0.0),
+        }
+    }
+
+    /// Yield entry once at black. World readiness comes from applied presentation.
+    pub(crate) fn advance_handoff(&mut self, dt: f32) -> Option<CharacterId> {
+        if !dt.is_finite() || dt <= 0.0 {
+            return None;
+        }
+        match self.handoff {
+            EnterHandoff::FadingOut {
+                character_id,
+                elapsed,
+            } => {
+                let elapsed = elapsed + dt;
+                if elapsed >= 0.30 {
+                    self.handoff = EnterHandoff::WaitingForGameplay;
+                    return Some(character_id);
+                }
+                self.handoff = EnterHandoff::FadingOut {
+                    character_id,
+                    elapsed,
+                };
+            }
+            EnterHandoff::FadingIn { elapsed } => {
+                let elapsed = elapsed + dt;
+                self.handoff = if elapsed >= 0.40 {
+                    EnterHandoff::Idle
+                } else {
+                    EnterHandoff::FadingIn { elapsed }
+                };
+            }
+            _ => {}
+        }
+        None
+    }
+
+    pub(crate) fn gameplay_ready(&mut self) {
+        if self.handoff == EnterHandoff::WaitingForGameplay {
+            self.handoff = EnterHandoff::WaitingForWorldReady;
+        }
+    }
+
+    pub(crate) fn world_ready(&mut self, ready: bool) {
+        if ready && self.handoff == EnterHandoff::WaitingForWorldReady {
+            self.handoff = EnterHandoff::FadingIn { elapsed: 0.0 };
+        }
+    }
+
+    pub(crate) fn enter_rejected(&mut self, reason: purgatory_protocol::CharacterEnterRejection) {
+        if self.handoff == EnterHandoff::WaitingForGameplay {
+            self.enter_rejection = Some(reason);
+            self.handoff = EnterHandoff::FadingIn { elapsed: 0.0 };
+        }
+    }
+
     pub(crate) fn disconnected(&mut self, scene: &mut FrontendScene) {
+        self.handoff = EnterHandoff::Idle;
+        self.enter_rejection = None;
         self.session = FrontendSession::Disconnected;
         self.character_area = CharacterArea::new();
         self.selected_channel = None;

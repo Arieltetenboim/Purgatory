@@ -3,6 +3,19 @@ use crate::message::{read_bounded_string, read_u64, write_bounded_string};
 use crate::{CodecError, ConnectionId};
 use purgatory_common::{CharacterId, CharacterName};
 
+pub(crate) const TAG_ENTER_CHARACTER: u8 = 48;
+pub(crate) const TAG_ENTER_REJECTED: u8 = 49;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CharacterEnterRejection {
+    NotOwned = 1,
+    Occupied = 2,
+    StorageFailure = 3,
+    GameplayEnterFailure = 4,
+    InvalidSelection = 5,
+}
+
 pub const MAX_CHARACTER_ROSTER: usize = 3;
 pub(crate) const TAG_SESSION_READY: u8 = 45;
 pub(crate) const TAG_CREATE_CHARACTER: u8 = 46;
