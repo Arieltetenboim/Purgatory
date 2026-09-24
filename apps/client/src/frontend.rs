@@ -14,22 +14,10 @@ use serde::Deserialize;
 
 use crate::assets::connection_logo_path;
 
-const BACKGROUND_BASE_PNG: &[u8] = include_bytes!("../assets/frontend/background_base.png");
-const CLOUDS_FAR_PNG: &[u8] = include_bytes!("../assets/frontend/clouds_far.png");
-const CLOUDS_NEAR_PNG: &[u8] = include_bytes!("../assets/frontend/clouds_near.png");
-const MOON_PNG: &[u8] = include_bytes!("../assets/frontend/moon.png");
-const FOG_NEAR_PNG: &[u8] = include_bytes!("../assets/frontend/fog_near.png");
 const UI_ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
 const UI_ATLAS_METADATA: &str = include_str!("../../../Graphic/ui/ATLAS.ui.json");
 
-const DEBUG_FRONTEND_LAYER_BOUNDS: bool = true; // TEMP: remove after layer diagnosis.
-const REFERENCE_WIDTH_PX: f32 = 800.0;
-const REFERENCE_HEIGHT_PX: f32 = 450.0;
-const MOON_ANCHOR_X_PX: f32 = 562.5;
-const MOON_ANCHOR_Y_PX: f32 = 50.625;
-const MOON_HEIGHT_PX: f32 = 108.0;
 const FOREGROUND_FADE_OUT: Duration = Duration::from_millis(280);
-const BACKGROUND_FADE_IN_SECONDS: f32 = 0.75;
 const LOGO_FADE_START_SECONDS: f32 = 0.08;
 const LOGO_FADE_END_SECONDS: f32 = 0.85;
 const CONTROLS_FADE_START_SECONDS: f32 = 0.30;
@@ -38,20 +26,10 @@ const LOGO_FLOAT_AMPLITUDE_POINTS: f32 = 4.0;
 const LOGO_FLOAT_PERIOD_SECONDS: f32 = 17.6;
 const LOGO_FLOAT_X_AMPLITUDE_POINTS: f32 = 3.0;
 const LOGO_FLOAT_X_PERIOD_SECONDS: f32 = 26.8;
-const SPLASH_FADE_IN_SECONDS: f32 = 0.65;
-const SPLASH_HOLD_SECONDS: f32 = 0.85;
-const SPLASH_FADE_OUT_SECONDS: f32 = 0.65;
-const SPLASH_TOTAL_SECONDS: f32 =
-    SPLASH_FADE_IN_SECONDS + SPLASH_HOLD_SECONDS + SPLASH_FADE_OUT_SECONDS;
-const MOON_DRIFT_X_AMPLITUDE_POINTS: f32 = 0.2;
-const MOON_DRIFT_Y_AMPLITUDE_POINTS: f32 = 0.3;
-const MOON_DRIFT_X_PERIOD_SECONDS: f32 = 32.0;
-const MOON_DRIFT_Y_PERIOD_SECONDS: f32 = 27.0;
 
 /// In-window connection screen. Owns presentation textures for the process lifetime.
 pub struct ConnectionFrontend {
     logo: Option<TextureHandle>,
-    background: BackgroundTextures,
     buttons: Option<ButtonAtlas>,
     entered_at: Instant,
     phase: FrontendPhase,
@@ -62,14 +40,6 @@ enum FrontendPhase {
     Ready,
     Starting { started_at: Instant },
     AwaitingConnection,
-}
-
-struct BackgroundTextures {
-    base: Option<TextureHandle>,
-    clouds_far: Option<TextureHandle>,
-    clouds_near: Option<TextureHandle>,
-    moon: Option<TextureHandle>,
-    fog_near: Option<TextureHandle>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -128,21 +98,6 @@ impl ConnectionFrontend {
     pub fn load(ctx: &Context) -> Self {
         Self {
             logo: load_logo(ctx),
-            background: BackgroundTextures {
-                base: load_embedded_texture(
-                    ctx,
-                    "purgatory-menu-background-base",
-                    BACKGROUND_BASE_PNG,
-                ),
-                clouds_far: load_embedded_texture(ctx, "purgatory-menu-clouds-far", CLOUDS_FAR_PNG),
-                clouds_near: load_embedded_texture(
-                    ctx,
-                    "purgatory-menu-clouds-near",
-                    CLOUDS_NEAR_PNG,
-                ),
-                moon: load_embedded_texture(ctx, "purgatory-menu-moon", MOON_PNG),
-                fog_near: load_embedded_texture(ctx, "purgatory-menu-fog-near", FOG_NEAR_PNG),
-            },
             buttons: ButtonAtlas::load(ctx),
             entered_at: Instant::now(),
             phase: FrontendPhase::Ready,
@@ -168,13 +123,6 @@ impl ConnectionFrontend {
         }
 
         let elapsed = now.duration_since(self.entered_at).as_secs_f32();
-        if elapsed < SPLASH_TOTAL_SECONDS {
-            ctx.request_repaint_after(Duration::from_millis(16));
-            paint_splash(ctx, elapsed);
-            return false;
-        }
-        let elapsed = elapsed - SPLASH_TOTAL_SECONDS;
-        let background_alpha = smoothstep01(elapsed / BACKGROUND_FADE_IN_SECONDS);
         let logo_alpha = fade_window(elapsed, LOGO_FADE_START_SECONDS, LOGO_FADE_END_SECONDS);
         let controls_alpha = fade_window(
             elapsed,
@@ -209,9 +157,6 @@ impl ConnectionFrontend {
             .show(ctx, |ui| {
                 ui.set_width(screen.width());
                 ui.set_height(screen.height());
-                ui.painter()
-                    .rect_filled(screen, 0.0, Color32::from_rgb(6, 5, 7));
-                self.paint_background(ui.painter(), screen, elapsed, background_alpha);
 
                 ui.vertical_centered(|ui| {
                     ui.add_space((screen.height() * 0.105).clamp(32.0, 104.0));
@@ -272,116 +217,6 @@ impl ConnectionFrontend {
         );
         connect
     }
-
-    fn paint_background(&self, painter: &egui::Painter, screen: Rect, elapsed: f32, alpha: f32) {
-        let Some(base) = self.background.base.as_ref() else {
-            return;
-        };
-        if let Some(rect) = paint_cover_texture(painter, base, screen, Vec2::ZERO, 1.0, alpha) {
-            debug_layer_bounds(painter, screen, rect, "BASE", 0);
-        }
-
-        let px_scale = screen.height() / REFERENCE_HEIGHT_PX;
-        if let Some(layer) = self.background.clouds_far.as_ref() {
-            let dx = horizontal_drift(elapsed, 30.0, 40.0, 0.25) * px_scale;
-            if let Some(rect) = paint_cover_texture(
-                painter,
-                layer,
-                screen,
-                egui::vec2(dx, 0.0),
-                1.0,
-                alpha * 1.0,
-            ) {
-                debug_layer_bounds(painter, screen, rect, &format!("FAR CLOUDS  dx={dx:.1}"), 1);
-            }
-        }
-
-        if let Some(layer) = self.background.moon.as_ref()
-            && let Some(rect) = paint_anchored_texture(
-                painter,
-                layer,
-                screen,
-                reference_cover_point(screen, egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX)),
-                moon_drift_offset(elapsed),
-                MOON_HEIGHT_PX,
-                alpha,
-            )
-        {
-            debug_layer_bounds(painter, screen, rect, "MOON", 2);
-        }
-
-        if let Some(layer) = self.background.clouds_near.as_ref() {
-            let dx = -horizontal_drift(elapsed, 52.0, 25.0, 1.7) * px_scale;
-            if let Some(rect) = paint_cover_texture(
-                painter,
-                layer,
-                screen,
-                egui::vec2(dx, 0.0),
-                1.0,
-                alpha * 1.0,
-            ) {
-                debug_layer_bounds(
-                    painter,
-                    screen,
-                    rect,
-                    &format!("NEAR CLOUDS  dx={dx:.1}"),
-                    3,
-                );
-            }
-        }
-
-        if let Some(layer) = self.background.fog_near.as_ref() {
-            let dx = horizontal_drift(elapsed, 6.0, 63.0, 3.0) * px_scale;
-            if let Some(rect) = paint_cover_texture(
-                painter,
-                layer,
-                screen,
-                egui::vec2(dx, 0.0),
-                1.0,
-                alpha * 0.28,
-            ) {
-                debug_layer_bounds(painter, screen, rect, &format!("FOG  dx={dx:.1}"), 4);
-            }
-        }
-    }
-}
-
-fn paint_splash(ctx: &Context, elapsed: f32) {
-    let screen = ctx.content_rect();
-    let opacity = if elapsed < SPLASH_FADE_IN_SECONDS {
-        smoothstep01(elapsed / SPLASH_FADE_IN_SECONDS)
-    } else if elapsed < SPLASH_FADE_IN_SECONDS + SPLASH_HOLD_SECONDS {
-        1.0
-    } else {
-        1.0 - smoothstep01(
-            (elapsed - SPLASH_FADE_IN_SECONDS - SPLASH_HOLD_SECONDS) / SPLASH_FADE_OUT_SECONDS,
-        )
-    };
-
-    egui::Area::new(Id::new("purgatory-company-splash"))
-        .order(Order::Foreground)
-        .fixed_pos(screen.min)
-        .interactable(false)
-        .show(ctx, |ui| {
-            ui.set_width(screen.width());
-            ui.set_height(screen.height());
-            ui.painter().rect_filled(screen, 0.0, Color32::BLACK);
-            let alpha = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
-            ui.painter().text(
-                screen.center() + egui::vec2(0.0, -18.0),
-                Align2::CENTER_CENTER,
-                "TEST",
-                FontId::proportional(216.0),
-                Color32::from_white_alpha(alpha),
-            );
-            ui.painter().text(
-                screen.center() + egui::vec2(0.0, 42.0),
-                Align2::CENTER_CENTER,
-                "PURGATORY",
-                FontId::proportional(16.0),
-                Color32::from_white_alpha((alpha as f32 * 0.72) as u8),
-            );
-        });
 }
 
 fn paint_login_controls(
@@ -672,104 +507,6 @@ fn paint_logo_or_title(ui: &mut egui::Ui, logo: Option<&TextureHandle>, float_of
     ui.heading("PURGATORY");
 }
 
-fn reference_cover_scale(screen: Rect) -> f32 {
-    (screen.width() / REFERENCE_WIDTH_PX).max(screen.height() / REFERENCE_HEIGHT_PX)
-}
-
-fn reference_cover_point(screen: Rect, reference_point: Vec2) -> Pos2 {
-    let cover_scale = reference_cover_scale(screen);
-    let reference_size = egui::vec2(
-        REFERENCE_WIDTH_PX * cover_scale,
-        REFERENCE_HEIGHT_PX * cover_scale,
-    );
-    let reference_min = screen.center() - reference_size * 0.5;
-    reference_min + reference_point * cover_scale
-}
-
-fn paint_anchored_texture(
-    painter: &egui::Painter,
-    texture: &TextureHandle,
-    screen: Rect,
-    anchor: Pos2,
-    offset: Vec2,
-    reference_height_px: f32,
-    opacity: f32,
-) -> Option<Rect> {
-    let source = texture.size_vec2();
-    if source.x <= 0.0 || source.y <= 0.0 {
-        return None;
-    }
-    let target_height = reference_height_px.max(1.0) * reference_cover_scale(screen);
-    let scale = target_height / source.y;
-    let draw_size = source * scale;
-    let rect = Rect::from_center_size(anchor + offset, draw_size);
-    painter.image(
-        texture.id(),
-        rect,
-        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-        Color32::from_white_alpha((opacity.clamp(0.0, 1.0) * 255.0) as u8),
-    );
-    Some(rect)
-}
-
-fn paint_cover_texture(
-    painter: &egui::Painter,
-    texture: &TextureHandle,
-    screen: Rect,
-    offset: Vec2,
-    scale_multiplier: f32,
-    opacity: f32,
-) -> Option<Rect> {
-    let source = texture.size_vec2();
-    if source.x <= 0.0 || source.y <= 0.0 {
-        return None;
-    }
-    let cover_scale =
-        (screen.width() / source.x).max(screen.height() / source.y) * scale_multiplier.max(0.01);
-    let draw_size = source * cover_scale;
-    let rect = Rect::from_center_size(screen.center() + offset, draw_size);
-    painter.image(
-        texture.id(),
-        rect,
-        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-        Color32::from_white_alpha((opacity.clamp(0.0, 1.0) * 255.0) as u8),
-    );
-    Some(rect)
-}
-
-fn debug_layer_bounds(
-    painter: &egui::Painter,
-    screen: Rect,
-    texture_rect: Rect,
-    label: &str,
-    row: usize,
-) {
-    if !DEBUG_FRONTEND_LAYER_BOUNDS {
-        return;
-    }
-
-    let visible = texture_rect.intersect(screen);
-    if visible.is_positive() {
-        painter.rect_stroke(
-            visible.shrink(2.0),
-            0.0,
-            Stroke::new(4.0, Color32::BLACK),
-            egui::StrokeKind::Inside,
-        );
-    }
-
-    let label_pos = screen.left_top() + egui::vec2(10.0, 10.0 + row as f32 * 22.0);
-    let label_rect = Rect::from_min_size(label_pos, egui::vec2(210.0, 18.0));
-    painter.rect_filled(label_rect, 1.0, Color32::BLACK);
-    painter.text(
-        label_rect.left_center() + egui::vec2(5.0, 0.0),
-        Align2::LEFT_CENTER,
-        label,
-        FontId::monospace(11.0),
-        Color32::WHITE,
-    );
-}
-
 fn load_logo(ctx: &Context) -> Option<TextureHandle> {
     let path = connection_logo_path();
     let bytes = match std::fs::read(&path) {
@@ -814,29 +551,6 @@ fn smoothstep01(value: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn horizontal_drift(elapsed: f32, amplitude: f32, period: f32, phase: f32) -> f32 {
-    if !elapsed.is_finite() || !amplitude.is_finite() || !period.is_finite() || period <= 0.0 {
-        return 0.0;
-    }
-    amplitude * (elapsed * std::f32::consts::TAU / period + phase).sin()
-}
-
-fn moon_drift_offset(elapsed: f32) -> Vec2 {
-    let x = horizontal_drift(
-        elapsed,
-        MOON_DRIFT_X_AMPLITUDE_POINTS,
-        MOON_DRIFT_X_PERIOD_SECONDS,
-        0.35,
-    );
-    let y = horizontal_drift(
-        elapsed,
-        MOON_DRIFT_Y_AMPLITUDE_POINTS,
-        MOON_DRIFT_Y_PERIOD_SECONDS,
-        1.15,
-    );
-    egui::vec2(x, y)
-}
-
 fn logo_float_offset(elapsed: f32) -> Vec2 {
     let x = LOGO_FLOAT_X_AMPLITUDE_POINTS
         * (elapsed * std::f32::consts::TAU / LOGO_FLOAT_X_PERIOD_SECONDS + 1.13).sin()
@@ -860,46 +574,12 @@ mod tests {
     }
 
     #[test]
-    fn background_drift_never_exceeds_authored_amplitude() {
-        let amplitude = 58.0;
-        for step in 0..=240 {
-            let t = step as f32 * 0.25;
-            assert!(horizontal_drift(t, amplitude, 14.0, 1.7).abs() <= amplitude + 0.001);
-        }
-    }
-
-    #[test]
     fn logo_float_is_small_and_bounded() {
         for step in 0..=120 {
             let t = step as f32 * 0.1;
             let offset = logo_float_offset(t);
             assert!(offset.x.abs() <= LOGO_FLOAT_X_AMPLITUDE_POINTS + 1.101);
             assert!(offset.y.abs() <= LOGO_FLOAT_AMPLITUDE_POINTS + 1.201);
-        }
-    }
-
-    #[test]
-    fn moon_anchor_tracks_reference_cover_space() {
-        let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 450.0));
-        let point = reference_cover_point(screen, egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX));
-        assert!((point.x - MOON_ANCHOR_X_PX).abs() < 0.001);
-        assert!((point.y - MOON_ANCHOR_Y_PX).abs() < 0.001);
-
-        let default_screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(1280.0, 720.0));
-        let default_point = reference_cover_point(
-            default_screen,
-            egui::vec2(MOON_ANCHOR_X_PX, MOON_ANCHOR_Y_PX),
-        );
-        assert!((default_point.x - 900.0).abs() < 0.01);
-        assert!((default_point.y - 81.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn moon_drift_stays_within_two_points() {
-        for step in 0..=240 {
-            let offset = moon_drift_offset(step as f32 * 0.25);
-            assert!(offset.x.abs() <= MOON_DRIFT_X_AMPLITUDE_POINTS + 0.001);
-            assert!(offset.y.abs() <= MOON_DRIFT_Y_AMPLITUDE_POINTS + 0.001);
         }
     }
 

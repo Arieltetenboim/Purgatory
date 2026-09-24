@@ -246,6 +246,8 @@ struct ClientApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     asset_runtime: crate::asset_runtime::AssetRuntime,
+    frontend_scene: crate::frontend_scene::FrontendScene,
+    frontend_scene_texture: crate::renderer::SpriteTextureId,
     character_visual_pack: crate::character_assets::CharacterVisualPack,
     #[cfg(feature = "dev-diagnostics")]
     debug: Option<DebugOverlay>,
@@ -378,6 +380,13 @@ impl ClientApp {
         dialogue_animations: DialogueAnimationCatalog,
     ) -> Result<Self, String> {
         let mut asset_runtime = crate::asset_runtime::AssetRuntime::new();
+        let frontend_scene_texture = crate::assets::ClientAssetLoader::new(&mut asset_runtime)
+            .load_png("frontend.scene.guide", "frontend/frontend_scene_guide.png")?;
+        let scene_image = &asset_runtime
+            .resource(frontend_scene_texture)
+            .ok_or("frontend.scene.guide: registered texture missing")?
+            .image;
+        crate::frontend_scene::validate_dimensions([scene_image.width(), scene_image.height()])?;
         crate::headwear_proof::register_assets(&mut asset_runtime)?;
         let character_visual_pack =
             crate::character_assets::embedded_character_visual_pack(&mut asset_runtime)
@@ -414,6 +423,8 @@ impl ClientApp {
             window: None,
             renderer: None,
             asset_runtime,
+            frontend_scene: crate::frontend_scene::FrontendScene::new(),
+            frontend_scene_texture,
             character_visual_pack,
             #[cfg(feature = "dev-diagnostics")]
             debug: None,
@@ -2660,6 +2671,9 @@ impl ClientApp {
             .as_secs_f32();
         self.dialogue_runtime
             .tick(Duration::from_secs_f32(frame_dt.max(0.0)));
+        if self.lifecycle.screen() == ClientScreen::Connection {
+            self.frontend_scene.advance(frame_dt);
+        }
         let fade_dt = frame_dt;
         #[cfg(feature = "dev-diagnostics")]
         self.resolve_selected_animation_sample_t(frame_dt);
@@ -3216,7 +3230,26 @@ impl ClientApp {
                 .ok()
                 .flatten();
         }
-        let mut ui_compositions = Vec::with_capacity(6);
+        let scene_rects: Vec<_> = viewport
+            .filter(|_| on_connection)
+            .map(|viewport| {
+                let [uv_min, uv_max] = self.frontend_scene.uv_rect();
+                crate::renderer::UiTexturedRect {
+                    min: [viewport.x as f32, viewport.y as f32],
+                    max: [
+                        (viewport.x + viewport.width) as f32,
+                        (viewport.y + viewport.height) as f32,
+                    ],
+                    texture: self.frontend_scene_texture,
+                    uv_min,
+                    uv_max,
+                    tint: [1.0; 4],
+                }
+            })
+            .into_iter()
+            .collect();
+        let mut ui_compositions = Vec::with_capacity(7);
+        ui_compositions.push(UiComposition::new(&scene_rects, &[], &[]));
         ui_compositions.push(UiComposition::new(&[], &ui_rects, &ui_text));
         if let Some(frame) = settings_launcher_frame.as_ref() {
             ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
@@ -4969,6 +5002,25 @@ impl ApplicationHandler for ClientApp {
                 window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                #[cfg(feature = "dev-diagnostics")]
+                if self.lifecycle.screen() == ClientScreen::Connection
+                    && event.state == ElementState::Pressed
+                    && !event.repeat
+                {
+                    use crate::frontend_scene::FrontendSceneStop;
+                    let stop = match event.physical_key {
+                        PhysicalKey::Code(KeyCode::F5) => Some(FrontendSceneStop::Intro),
+                        PhysicalKey::Code(KeyCode::F6) => Some(FrontendSceneStop::Login),
+                        PhysicalKey::Code(KeyCode::F7) => Some(FrontendSceneStop::Channel),
+                        PhysicalKey::Code(KeyCode::F8) => Some(FrontendSceneStop::Character),
+                        _ => None,
+                    };
+                    if let Some(stop) = stop {
+                        self.frontend_scene.request(stop);
+                        window.request_redraw();
+                        return;
+                    }
+                }
                 if event.state == ElementState::Pressed
                     && !event.repeat
                     && event.physical_key == PhysicalKey::Code(KeyCode::Escape)

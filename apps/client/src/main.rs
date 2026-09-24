@@ -15,6 +15,7 @@ mod dialogue_runtime;
 mod display;
 #[cfg(feature = "dev-diagnostics")]
 mod frontend;
+mod frontend_scene;
 mod headwear_proof;
 mod input;
 mod interp;

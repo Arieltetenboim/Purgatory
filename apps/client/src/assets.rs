@@ -18,13 +18,11 @@ fn graphic_root() -> PathBuf {
 /// embedded registrations. Once registered, a key is returned without I/O or
 /// decode, even if a different source path is supplied. Use a new key for a
 /// different asset; this API does not replace or hot-reload existing resources.
-#[cfg_attr(not(test), allow(dead_code))] // A0 proof is a focused fixture; consumers follow later.
 pub(crate) struct ClientAssetLoader<'a> {
     runtime: &'a mut AssetRuntime,
     root: PathBuf,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<'a> ClientAssetLoader<'a> {
     pub(crate) fn new(runtime: &'a mut AssetRuntime) -> Self {
         Self {
@@ -33,7 +31,7 @@ impl<'a> ClientAssetLoader<'a> {
         }
     }
 
-    /// `path` is relative to Graphic/, e.g. `frontend_scene_guide.png`.
+    /// `path` is relative to Graphic/, e.g. `frontend/frontend_scene_guide.png`.
     /// Keys are nonempty ASCII letters/digits plus `.`, `_`, or `-`.
     /// Absolute paths and traversal components are rejected.
     pub(crate) fn load_png(
@@ -81,7 +79,7 @@ impl<'a> ClientAssetLoader<'a> {
 /// Development path to the Connection Frontend logo, sharing the source root.
 #[must_use]
 pub fn connection_logo_path() -> PathBuf {
-    graphic_root().join("LOGO.png")
+    graphic_root().join("frontend/LOGO.png")
 }
 
 /// Bundled production UI face (DejaVu Sans Bold); license accompanies the asset.
@@ -236,6 +234,19 @@ mod tests {
     }
 
     #[test]
+    fn asset_frontend_scene_guide_decodes_from_canonical_root() {
+        let mut runtime = AssetRuntime::new();
+        let id = ClientAssetLoader::new(&mut runtime)
+            .load_png("frontend.scene.guide", "frontend/frontend_scene_guide.png")
+            .unwrap();
+        let image = &runtime.resource(id).unwrap().image;
+        crate::frontend_scene::validate_dimensions([image.width(), image.height()]).unwrap();
+        assert_eq!(runtime.texture_for_key("frontend.scene.guide"), Some(id));
+        assert_eq!(runtime.resources().len(), 1);
+        assert!(connection_logo_path().is_file());
+    }
+
+    #[test]
     fn asset_default_root_is_checkout_graphic_not_working_directory() {
         let mut runtime = AssetRuntime::new();
         let loader = ClientAssetLoader::new(&mut runtime);
@@ -249,6 +260,9 @@ mod tests {
             loader.root.canonicalize().unwrap(),
             checkout.join("Graphic").canonicalize().unwrap()
         );
-        assert_eq!(connection_logo_path(), loader.root.join("LOGO.png"));
+        assert_eq!(
+            connection_logo_path(),
+            loader.root.join("frontend/LOGO.png")
+        );
     }
 }
