@@ -71,16 +71,6 @@ const SEC_NET_IMPAIR: &str = "network.impairment";
 const SEC_NET_FAIL: &str = "network.failure";
 const SEC_NET_HIST: &str = "network.history";
 
-/// Arguments for drawing the Connection Frontend during an egui frame.
-pub struct ConnectionPaint<'a> {
-    pub frontend: &'a mut crate::frontend::ConnectionFrontend,
-    pub server: &'a str,
-    pub login: &'a mut String,
-    pub status: &'a str,
-    pub runtime: &'a crate::frontend_runtime::FrontendRuntime,
-    pub action: &'a mut Option<crate::frontend_runtime::FrontendAction>,
-}
-
 /// GPU handles needed to construct the overlay. wgpu types only; no egui in `gpu.rs`.
 pub struct OverlayInit<'a> {
     pub device: &'a wgpu::Device,
@@ -192,11 +182,6 @@ impl DebugOverlay {
     }
 
     #[must_use]
-    pub fn context(&self) -> &Context {
-        &self.ctx
-    }
-
-    #[must_use]
     pub fn wants_pointer(&self) -> bool {
         self.ctx.egui_wants_pointer_input()
     }
@@ -221,17 +206,15 @@ impl DebugOverlay {
         draw_debug_window(ctx, frame, visible, tab, ui_state, resources, actions);
     }
 
-    /// One egui frame: optional [`ConnectionFrontend::paint`] plus debug overlay.
+    /// Diagnostic egui frame and existing gameplay HUD.
     pub fn submit_frame(
         &mut self,
         window: &Window,
         pass: OverlayPass<'_>,
         frame: &DiagnosticsFrame,
-        connection: Option<ConnectionPaint<'_>>,
         gameplay_health: Option<ReplicatedHealth>,
     ) -> (Vec<wgpu::CommandBuffer>, Vec<DebugCommand>) {
-        if connection.is_none()
-            && !self.visible
+        if !self.visible
             && !has_persistent_dev_warnings(&self.ui)
             && !self.ui.center_toast_live()
             && gameplay_health.is_none()
@@ -252,19 +235,9 @@ impl DebugOverlay {
         let history = &mut self.collision_history;
         let npc_spawn_options = &self.npc_spawn_options;
         let monster_spawn_options = &self.monster_spawn_options;
-        let mut connection = connection;
         let mut full_output = self.ctx.run_ui(raw_input, |egui_ctx| {
             if let Some(health) = gameplay_health {
                 draw_gameplay_hud(egui_ctx, health, &mut actions);
-            }
-            if let Some(paint) = connection.as_mut() {
-                *paint.action = paint.frontend.paint(
-                    egui_ctx,
-                    paint.server,
-                    paint.login,
-                    paint.status,
-                    paint.runtime,
-                );
             }
             if visible {
                 Self::paint(

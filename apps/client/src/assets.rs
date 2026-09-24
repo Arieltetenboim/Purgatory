@@ -76,12 +76,6 @@ impl<'a> ClientAssetLoader<'a> {
     }
 }
 
-/// Development path to the Connection Frontend logo, sharing the source root.
-#[must_use]
-pub fn connection_logo_path() -> PathBuf {
-    graphic_root().join("frontend/LOGO.png")
-}
-
 /// Bundled production UI face (DejaVu Sans Bold); license accompanies the asset.
 pub const UI_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSans-Bold.ttf");
 
@@ -243,7 +237,12 @@ mod tests {
         crate::frontend_scene::validate_dimensions([image.width(), image.height()]).unwrap();
         assert_eq!(runtime.texture_for_key("frontend.scene.guide"), Some(id));
         assert_eq!(runtime.resources().len(), 1);
-        assert!(connection_logo_path().is_file());
+        let logo = ClientAssetLoader::new(&mut runtime)
+            .load_png("frontend.logo", "frontend/LOGO.png")
+            .unwrap();
+        assert_eq!(runtime.texture_for_key("frontend.logo"), Some(logo));
+        assert!(runtime.resource(logo).unwrap().image.width() > 0);
+        assert_eq!(runtime.resources().len(), 2);
     }
 
     #[test]
@@ -259,10 +258,6 @@ mod tests {
         assert_eq!(
             loader.root.canonicalize().unwrap(),
             checkout.join("Graphic").canonicalize().unwrap()
-        );
-        assert_eq!(
-            connection_logo_path(),
-            loader.root.join("frontend/LOGO.png")
         );
     }
 }

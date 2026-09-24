@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [features]
 default = ["dev-diagnostics"]
-# In-window egui Debug overlay, Connection Frontend, DebugCommand, impairment UI,
+# In-window egui Debug overlay, DebugCommand, impairment UI,
 # jitter isolation, DiagnosticsFrame assembly, and privileged proof surfaces.
 # Shipping: `cargo build -p purgatory-client --release --no-default-features`
 dev-diagnostics = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]

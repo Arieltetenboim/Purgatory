@@ -29,7 +29,53 @@ pub(crate) enum FrontendAction {
     ContinueFromLogin,
     SelectChannel(u8),
     SelectCharacter(u8),
+    BeginCreate(u8),
+    CancelCreation,
     Back,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CharacterSlotState {
+    Empty,
+    Occupied { name: &'static str },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CharacterAreaMode {
+    Browsing,
+    Creating { slot: u8 },
+}
+
+/// Local R3 proof roster, not server identities or persisted characters.
+pub(crate) struct CharacterArea {
+    pub(crate) slots: [CharacterSlotState; 3],
+    pub(crate) mode: CharacterAreaMode,
+    pub(crate) selected_slot: Option<u8>,
+}
+
+impl CharacterArea {
+    fn new() -> Self {
+        Self {
+            slots: [
+                CharacterSlotState::Occupied {
+                    name: "Local Wanderer",
+                },
+                CharacterSlotState::Empty,
+                CharacterSlotState::Occupied {
+                    name: "Local Warden",
+                },
+            ],
+            mode: CharacterAreaMode::Browsing,
+            selected_slot: None,
+        }
+    }
+
+    pub(crate) fn create_slot(&self) -> Option<u8> {
+        self.selected_slot.filter(|&slot| {
+            self.mode == CharacterAreaMode::Browsing
+                && self.slots.get(usize::from(slot)) == Some(&CharacterSlotState::Empty)
+        })
+    }
 }
 
 pub(crate) struct FrontendRuntime {
@@ -38,7 +84,7 @@ pub(crate) struct FrontendRuntime {
     intro_elapsed: f32,
     // Zero-based local placeholder slots, never authoritative identities.
     selected_channel: Option<u8>,
-    selected_character: Option<u8>,
+    pub(crate) character_area: CharacterArea,
 }
 
 impl FrontendRuntime {
@@ -48,7 +94,7 @@ impl FrontendRuntime {
             target: None,
             intro_elapsed: 0.0,
             selected_channel: None,
-            selected_character: None,
+            character_area: CharacterArea::new(),
         }
     }
 
@@ -62,7 +108,12 @@ impl FrontendRuntime {
     }
 
     pub(crate) fn selected_character(&self) -> Option<u8> {
-        self.selected_character
+        self.character_area.selected_slot.filter(|&slot| {
+            matches!(
+                self.character_area.slots.get(usize::from(slot)),
+                Some(CharacterSlotState::Occupied { .. })
+            )
+        })
     }
 
     /// Also used by diagnostic shortcuts; active transitions cannot be retargeted.
@@ -71,11 +122,23 @@ impl FrontendRuntime {
             return;
         }
         self.target = Some(stage);
+        self.character_area.mode = CharacterAreaMode::Browsing;
         scene.request(stage.stop());
     }
 
     pub(crate) fn act(&mut self, action: FrontendAction, scene: &mut FrontendScene) {
         if self.target.is_some() {
+            return;
+        }
+        if self.stage == FrontendStage::CharacterSelect
+            && matches!(self.character_area.mode, CharacterAreaMode::Creating { .. })
+        {
+            if matches!(
+                action,
+                FrontendAction::Back | FrontendAction::CancelCreation
+            ) {
+                self.character_area.mode = CharacterAreaMode::Browsing;
+            }
             return;
         }
         let next = match (self.stage, action) {
@@ -87,7 +150,13 @@ impl FrontendRuntime {
                 FrontendStage::CharacterSelect
             }
             (FrontendStage::CharacterSelect, FrontendAction::SelectCharacter(slot @ 0..=2)) => {
-                self.selected_character = Some(slot);
+                self.character_area.selected_slot = Some(slot);
+                return;
+            }
+            (FrontendStage::CharacterSelect, FrontendAction::BeginCreate(slot)) => {
+                if self.character_area.create_slot() == Some(slot) {
+                    self.character_area.mode = CharacterAreaMode::Creating { slot };
+                }
                 return;
             }
             (FrontendStage::CharacterSelect, FrontendAction::Back) => FrontendStage::ChannelSelect,
@@ -298,5 +367,74 @@ mod tests {
         assert_eq!(runtime.intro_elapsed, 0.0);
         runtime.advance(INTRO_DELAY_SECONDS, &mut scene);
         assert_eq!(runtime.target, Some(FrontendStage::Login));
+    }
+
+    #[test]
+    fn character_roster_distinguishes_area_selection_from_playable_selection() {
+        let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+        assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+        assert_eq!(runtime.character_area.slots.len(), 3);
+        assert!(matches!(
+            runtime.character_area.slots[0],
+            CharacterSlotState::Occupied { .. }
+        ));
+        assert_eq!(runtime.character_area.slots[1], CharacterSlotState::Empty);
+        runtime.act(FrontendAction::SelectCharacter(0), &mut scene);
+        assert_eq!(runtime.selected_character(), Some(0));
+        assert_eq!(runtime.character_area.create_slot(), None);
+        runtime.act(FrontendAction::BeginCreate(0), &mut scene);
+        assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+        runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+        assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+        runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+        assert_eq!(runtime.character_area.selected_slot, Some(1));
+        assert_eq!(runtime.selected_character(), None);
+        assert_eq!(runtime.character_area.create_slot(), Some(1));
+    }
+
+    #[test]
+    fn creation_cancel_and_back_stay_at_character_camera_then_browsing_back_travels() {
+        for cancel in [FrontendAction::CancelCreation, FrontendAction::Back] {
+            let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+            runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+            let rect = scene.source_rect();
+            runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+            assert_eq!(
+                runtime.character_area.mode,
+                CharacterAreaMode::Creating { slot: 1 }
+            );
+            assert_eq!(runtime.character_area.create_slot(), None);
+            runtime.act(FrontendAction::SelectCharacter(0), &mut scene);
+            runtime.act(FrontendAction::BeginCreate(2), &mut scene);
+            assert_eq!(runtime.character_area.selected_slot, Some(1));
+            runtime.advance(2.0, &mut scene);
+            assert_eq!(scene.source_rect(), rect);
+            assert!(scene.is_at(FrontendSceneStop::Character));
+            runtime.act(cancel, &mut scene);
+            assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+            assert_eq!(
+                runtime.visible_stage(),
+                Some(FrontendStage::CharacterSelect)
+            );
+            assert_eq!(scene.source_rect(), rect);
+            runtime.act(FrontendAction::Back, &mut scene);
+            assert_eq!(runtime.target, Some(FrontendStage::ChannelSelect));
+            assert_eq!(runtime.visible_stage(), None);
+            runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+            assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+        }
+    }
+
+    #[test]
+    fn diagnostic_departure_discards_creation_mode() {
+        let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+        runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+        runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+        runtime.request(FrontendStage::Login, &mut scene);
+        assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+        runtime.advance(1.0, &mut scene);
+        runtime.request(FrontendStage::CharacterSelect, &mut scene);
+        runtime.advance(1.0, &mut scene);
+        assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
     }
 }

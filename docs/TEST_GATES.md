@@ -615,3 +615,22 @@ Legacy Gate 7 (client reconciliation / input replay) already shipped as Phase 5.
 Phase 7 (capacity, parallelism & production scaling) is **7.closeout complete — Phase 7 complete + closeout**. Sub-stage gates (7.1–7.8) are defined in [`docs/PHASE_7_PLAN.md`](PHASE_7_PLAN.md). Canonical regression command: `./scripts/phase_78_gate.ps1`. Closeout: Hub Phase 7 Stats + [`docs/PHASE_7_WEAK_CLIENT_AUTHORITY_AUDIT.md`](PHASE_7_WEAK_CLIENT_AUTHORITY_AUDIT.md). Post-7 **Phase 8** is Character Presentation + Equipment Runtime. **8A** is the equipment data model. **8B** is the equipment content schema. **8C** is authoritative equip/unequip (protocol v12). **8D** is the character presentation bridge. **8E** is attachment composition + debug placeholders. **8F-A** is the Character Presentation draw-order contract. **8F-B** is Front/Back visibility. **8F-C** is activity → PresentationView. **8F-D** is ClimbBack clip wiring. **8F-E** is equipment Side/Back visual keys. **8F-F** is the 8F closeout/audit. **8F is complete + closed.** **Phase 8 closeout complete** ([`docs/PHASE_8_CLOSEOUT_REPORT.md`](PHASE_8_CLOSEOUT_REPORT.md)). **Phase 9A complete** ([`docs/PHASE_9A_REPORT.md`](PHASE_9A_REPORT.md)). **Phase 9B complete** ([`docs/PHASE_9B_REPORT.md`](PHASE_9B_REPORT.md)). Do not begin **9C**. Standing jitter is **closed** (presentation-path fix; quiet-play Δx not observed; owner visual confirmation 2026-09-01). Floor-clip / landing is **closed** (falling extra holds tick Y; owner confirmation 2026-08-31 landing no longer sinks; Y lerp is the jump-smooth follow-up already in tree). Duration overlay (`timeout >= duration`) is **closed** in CLI tests. The previously observed ~128-client load stall is **not** an unresolved server bottleneck; later 6G.7B/C evidence showed cheap replication at 128 and healthy server-side 256 under the validated workload. Higher-load timeouts remain unattributed unless 7.1 classification has exclusive evidence (`simulation_tick` / `server_transport_backpressure` / `harness_client`); otherwise the class is `unknown_unattributed`. 7.1F harness issuance (114/384) is addressed in **7.3A**. A 30-minute soak is **not** required for every Phase 7 sub-stage. Do not invent capacity targets here.
 
 Phase 5 is GREEN; Phase 6.0 / 6A / 6B / 6C / 6D / 6E / 6F / 6G are GREEN (architecture closed).
+
+
+## Production Frontend R3 — local UI and Character area
+
+- Date: 2026-09-24
+- Status: automated pass; manual checks below, with explicit remaining coverage.
+- Base: owner-selected R2 commit `3e82fd7e6559ac1584c4b0acc067bcaba9e65a5c`; branch `frontend/production-ui-r3`.
+- `cargo test -p purgatory-client frontend`: pass, 27 tests.
+- `cargo test -p purgatory-client frontend_runtime`: pass, 11 tests.
+- `cargo test -p purgatory-client frontend_scene`: pass, 6 tests.
+- `cargo check -p purgatory-client`: pass.
+- `cargo check -p purgatory-client --no-default-features`: pass.
+- `cargo clippy -p purgatory-client --all-targets --all-features -- -D warnings`: pass.
+- `cargo build -p purgatory-client`: pass; used for Windows runtime checks.
+- `rustfmt --edition 2024 --check --config skip_children=true apps/client/src/app.rs apps/client/src/assets.rs apps/client/src/debug/mod.rs apps/client/src/debug/overlay.rs apps/client/src/frontend_runtime.rs apps/client/src/frontend_ui.rs apps/client/src/main.rs`: pass.
+- `git diff --check`: pass.
+- Scope: user-requested client gates only; full workspace gate not run.
+- Runtime observed: startup reached production Login, logo and controls rendered without visible egui; click focus, numeric typing, Backspace and Enter worked; stage travel hid controls; channel selection reached three broad Character regions; Occupied selection and two-step Empty/Create worked; creation displayed all four placeholders in the selected region; other slots ignored clicks; Cancel and Escape returned to Browsing without camera movement; Browsing Back returned to Channel with selection retained. Gameplay tick stayed at zero throughout and status stayed Disconnected. Debug overlay still opened independently. Windowed 1280x720 and maximized 1920x1009 constrained layouts were inspected, including resized pointer hits.
+- Remaining manual coverage: true fullscreen switching (only exposed by existing Game settings), complete alphabet/length entry through physical keyboard, and a shipping-build runtime launch. Automated tests cover username acceptance/validation/length, viewport layouts and both compile configurations. No live server/gameplay regression session was run.

@@ -44,11 +44,11 @@ use crate::debug::entity_inspector::{self, WorldEntityInput};
 use crate::debug::interact_status::{InteractStatusView, note_kind_change, trail_display};
 #[cfg(feature = "dev-diagnostics")]
 use crate::debug::{
-    CameraDiagnostics, CameraMotionDebug, CollisionHistoryEvent, ConnectionPaint, DebugCommand,
-    DebugOverlay, DiagnosticsDemand, DiagnosticsFrame, DiscSubject, NetworkDiagnostics,
-    OverlayInit, PresentationDiagnostics, RESET_TO_SPAWN_FLASH, RemoteMotionProbe,
-    RuntimeDiagnostics, WorldDiagnostics, WorldRosterDiagnostics, aoi_entity_debug_quads,
-    append_debug_gizmos, camera_deadzone_quads, footnote_debug_quads, gameplay_receives_keyboard,
+    CameraDiagnostics, CameraMotionDebug, CollisionHistoryEvent, DebugCommand, DebugOverlay,
+    DiagnosticsDemand, DiagnosticsFrame, DiscSubject, NetworkDiagnostics, OverlayInit,
+    PresentationDiagnostics, RESET_TO_SPAWN_FLASH, RemoteMotionProbe, RuntimeDiagnostics,
+    WorldDiagnostics, WorldRosterDiagnostics, aoi_entity_debug_quads, append_debug_gizmos,
+    camera_deadzone_quads, footnote_debug_quads, gameplay_receives_keyboard,
     gameplay_receives_pointer, has_persistent_dev_warnings, is_debug_toggle, reset_action_flash,
     reset_player_uses_replica,
 };
@@ -60,8 +60,7 @@ use crate::display::collect_display_debug;
 use crate::display::{
     DisplayController, SurfaceResizeAction, WindowFlush, effective_pixels_per_point,
 };
-#[cfg(feature = "dev-diagnostics")]
-use crate::frontend::ConnectionFrontend;
+use crate::frontend_ui::{FrontendUi, FrontendUiAssets, FrontendView};
 use crate::input::{ActionState, IntentNet};
 use crate::interp::{InterpolationBuffer, PresentationPose, interpolated_or_replica_pose};
 #[cfg(feature = "dev-diagnostics")]
@@ -252,8 +251,8 @@ struct ClientApp {
     character_visual_pack: crate::character_assets::CharacterVisualPack,
     #[cfg(feature = "dev-diagnostics")]
     debug: Option<DebugOverlay>,
-    #[cfg(feature = "dev-diagnostics")]
-    frontend: Option<ConnectionFrontend>,
+    frontend_ui: FrontendUi,
+    frontend_ui_assets: FrontendUiAssets,
     lifecycle: ClientLifecycle,
     clock: SimulationClock,
     world: World,
@@ -345,9 +344,7 @@ struct ClientApp {
     drop_seq: u32,
     display: DisplayController,
     dev_login: String,
-    /// Shipping: auto-connect once when the window is ready on Connection.
-    #[cfg(not(feature = "dev-diagnostics"))]
-    shipping_connect_requested: bool,
+
     #[cfg(feature = "dev-diagnostics")]
     rf_elapsed: f32,
     #[cfg(feature = "dev-diagnostics")]
@@ -414,6 +411,17 @@ impl ClientApp {
             .map_err(|error| format!("PURGATORY UI window asset error: {error}"))?;
         let ui_button_assets = UiButtonAssets::load_embedded(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI button asset error: {error}"))?;
+        let logo = crate::assets::ClientAssetLoader::new(&mut asset_runtime)
+            .load_png("frontend.logo", "frontend/LOGO.png")?;
+        let image = &asset_runtime
+            .resource(logo)
+            .ok_or("frontend.logo: registered texture missing")?
+            .image;
+        let frontend_ui_assets = FrontendUiAssets {
+            logo,
+            logo_aspect: image.width() as f32 / image.height() as f32,
+        };
+
         let ui_tab_assets = UiTabAssets::load_embedded(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI tab asset error: {error}"))?;
         let ui_slot_assets = UiSlotAssets::load_embedded(&mut asset_runtime)
@@ -442,8 +450,8 @@ impl ClientApp {
             #[cfg(feature = "dev-diagnostics")]
             last_camera_motion: CameraMotionDebug::default(),
             lifecycle: ClientLifecycle::new(ClientEndpointConfig::dev().server),
-            #[cfg(feature = "dev-diagnostics")]
-            frontend: None,
+            frontend_ui: FrontendUi::default(),
+            frontend_ui_assets,
             network: match NetworkHandle::start(ClientEndpointConfig::dev()) {
                 Ok(handle) => Some(handle),
                 Err(err) => {
@@ -530,8 +538,7 @@ impl ClientApp {
             drop_seq: 0,
             display: DisplayController::new(),
             dev_login: purgatory_common::DEFAULT_DEV_LOGIN.to_string(),
-            #[cfg(not(feature = "dev-diagnostics"))]
-            shipping_connect_requested: false,
+
             #[cfg(feature = "dev-diagnostics")]
             rf_elapsed: 0.0,
             #[cfg(feature = "dev-diagnostics")]
@@ -2725,9 +2732,6 @@ impl ClientApp {
         self.poll_interact_request();
         self.poll_portal_request();
 
-        #[cfg(not(feature = "dev-diagnostics"))]
-        self.maybe_shipping_auto_connect();
-
         #[cfg(feature = "dev-diagnostics")]
         let overlay_open = self.debug_overlay_visible();
         #[cfg(not(feature = "dev-diagnostics"))]
@@ -3251,8 +3255,29 @@ impl ClientApp {
             })
             .into_iter()
             .collect();
+        let frontend_frame = viewport.filter(|_| on_connection).map(|viewport| {
+            self.frontend_ui.frame(
+                FrontendView {
+                    runtime: &self.frontend_runtime,
+                    login: &self.dev_login,
+                    status: self.lifecycle.view().frontend_status(),
+                },
+                viewport,
+                effective_pixels_per_point(
+                    window.scale_factor() as f32,
+                    self.display.settings().ui_scale,
+                ),
+                self.frontend_ui_assets,
+                self.cursor_position,
+            )
+        });
         let mut ui_compositions = Vec::with_capacity(7);
         ui_compositions.push(UiComposition::new(&scene_rects, &[], &[]));
+        if let Some(frame) = &frontend_frame {
+            ui_compositions.push(UiComposition::new(&[], &frame.rects, &[]));
+            ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
+        }
+
         ui_compositions.push(UiComposition::new(&[], &ui_rects, &ui_text));
         if let Some(frame) = settings_launcher_frame.as_ref() {
             ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
@@ -3310,8 +3335,7 @@ impl ClientApp {
 
         #[cfg(feature = "dev-diagnostics")]
         let mut actions = Vec::new();
-        #[cfg(feature = "dev-diagnostics")]
-        let mut frontend_action = None;
+
         let status = {
             let Some(renderer) = self.renderer.as_mut() else {
                 return;
@@ -3328,12 +3352,6 @@ impl ClientApp {
                 }
                 renderer.set_rf_ab_proof(show_ab.then_some(self.rf_ab_elapsed));
                 let overlay = self.debug.as_mut();
-                let frontend = self.frontend.as_mut();
-                let server = format!("{}", self.lifecycle.view().server);
-                let line = self.lifecycle.view().frontend_status();
-                let frontend_runtime = &self.frontend_runtime;
-                let on_connection = self.lifecycle.screen() == ClientScreen::Connection;
-                let login = &mut self.dev_login;
                 renderer.render(
                     &quads,
                     &ui_compositions,
@@ -3349,18 +3367,6 @@ impl ClientApp {
                             &window,
                             pass,
                             &frame,
-                            if on_connection {
-                                frontend.map(|frontend| ConnectionPaint {
-                                    frontend,
-                                    server: &server,
-                                    login,
-                                    status: line,
-                                    runtime: frontend_runtime,
-                                    action: &mut frontend_action,
-                                })
-                            } else {
-                                None
-                            },
                             self.replica.local_entity().and_then(|entity| entity.health),
                         );
                         actions = commands;
@@ -3385,11 +3391,6 @@ impl ClientApp {
 
         #[cfg(feature = "dev-diagnostics")]
         {
-            if self.lifecycle.screen() == ClientScreen::Connection
-                && let Some(action) = frontend_action
-            {
-                self.frontend_runtime.act(action, &mut self.frontend_scene);
-            }
             self.apply_debug_commands(actions);
         }
 
@@ -3409,28 +3410,6 @@ impl ClientApp {
             }
         }
         self.update_title();
-    }
-
-    #[cfg(not(feature = "dev-diagnostics"))]
-    fn maybe_shipping_auto_connect(&mut self) {
-        if self.shipping_connect_requested {
-            return;
-        }
-        if self.window.is_none() {
-            return;
-        }
-        if self.lifecycle.screen() != ClientScreen::Connection {
-            return;
-        }
-        if !self.lifecycle.can_connect() {
-            return;
-        }
-        self.shipping_connect_requested = true;
-        println!(
-            "PURGATORY shipping build: auto-connecting with login={} (no Connection Frontend)",
-            self.dev_login
-        );
-        self.request_connect();
     }
 
     #[cfg(feature = "dev-diagnostics")]
@@ -4902,7 +4881,7 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(feature = "dev-diagnostics")]
                 {
                     println!(
-                        "PURGATORY connection frontend: CONNECT to 127.0.0.1:5001. No auto-connect."
+                        "PURGATORY production frontend: local navigation; DEV connection is available in the debug overlay."
                     );
                     println!(
                         "PURGATORY controls (in Game): A/Left=MoveLeft D/Right=MoveRight S/Down=Down Space=Jump | Down+Jump=drop through OneWay | camera follows player"
@@ -4919,14 +4898,12 @@ impl ApplicationHandler for ClientApp {
                         },
                         &self.registry,
                     );
-                    let frontend = ConnectionFrontend::load(overlay.context());
                     self.debug = Some(overlay);
-                    self.frontend = Some(frontend);
                 }
                 #[cfg(not(feature = "dev-diagnostics"))]
                 {
                     println!(
-                        "PURGATORY shipping client: no Connection Frontend / Debug overlay; will auto-connect once."
+                        "PURGATORY production frontend: local navigation only; no auto-connect."
                     );
                     println!(
                         "PURGATORY controls (in Game): A/Left=MoveLeft D/Right=MoveRight S/Down=Down Space=Jump | Down+Jump=drop through OneWay | camera follows player"
@@ -5029,11 +5006,34 @@ impl ApplicationHandler for ClientApp {
                         _ => None,
                     };
                     if let Some(stage) = stage {
+                        self.frontend_ui.reset_input();
                         self.frontend_runtime
                             .request(stage, &mut self.frontend_scene);
                         window.request_redraw();
                         return;
                     }
+                }
+                if self.lifecycle.screen() == ClientScreen::Connection {
+                    #[cfg(feature = "dev-diagnostics")]
+                    let blocked = self.debug_overlay_visible();
+                    #[cfg(not(feature = "dev-diagnostics"))]
+                    let blocked = false;
+                    if blocked {
+                        self.frontend_ui.reset_input();
+                    } else if event.state == ElementState::Pressed {
+                        let action = self.frontend_ui.key(
+                            &self.frontend_runtime,
+                            &mut self.dev_login,
+                            &event.logical_key,
+                            event.text.as_deref(),
+                            event.repeat,
+                        );
+                        if let Some(action) = action {
+                            self.frontend_runtime.act(action, &mut self.frontend_scene);
+                        }
+                    }
+                    window.request_redraw();
+                    return;
                 }
                 if event.state == ElementState::Pressed
                     && !event.repeat
@@ -5114,6 +5114,7 @@ impl ApplicationHandler for ClientApp {
             }
             WindowEvent::Focused(focused) => {
                 if !focused {
+                    self.frontend_ui.reset_input();
                     // Missed key-ups while unfocused leave ActionState latched.
                     // Clear held input and push Neutral immediately.
                     self.actions.release_on_focus_loss();
@@ -5125,6 +5126,11 @@ impl ApplicationHandler for ClientApp {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                if self.lifecycle.screen() == ClientScreen::Connection {
+                    self.cursor_position = Some([position.x as f32, position.y as f32]);
+                    window.request_redraw();
+                    return;
+                }
                 if self.message_dialog.is_active() {
                     self.cursor_position = Some([position.x as f32, position.y as f32]);
                     self.message_dialog
@@ -5166,6 +5172,30 @@ impl ApplicationHandler for ClientApp {
                 window.request_redraw();
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if self.lifecycle.screen() == ClientScreen::Connection {
+                    #[cfg(feature = "dev-diagnostics")]
+                    let blocked = self.debug_overlay_visible();
+                    #[cfg(not(feature = "dev-diagnostics"))]
+                    let blocked = false;
+                    if blocked {
+                        self.frontend_ui.reset_input();
+                    } else if button == MouseButton::Left
+                        && let Some((viewport, _)) = self.production_ui_metrics()
+                    {
+                        let action = self.frontend_ui.pointer(
+                            &self.frontend_runtime,
+                            &self.dev_login,
+                            viewport,
+                            self.cursor_position,
+                            state == ElementState::Pressed,
+                        );
+                        if let Some(action) = action {
+                            self.frontend_runtime.act(action, &mut self.frontend_scene);
+                        }
+                    }
+                    window.request_redraw();
+                    return;
+                }
                 if self.message_dialog.is_active() {
                     if button == MouseButton::Left {
                         self.message_dialog

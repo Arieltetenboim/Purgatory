@@ -34,7 +34,7 @@ pub use frame::{
     CameraDiagnostics, DiagnosticsFrame, NetworkDiagnostics, PresentationDiagnostics,
     RuntimeDiagnostics, WorldDiagnostics,
 };
-pub use overlay::{ConnectionPaint, DebugOverlay, OverlayInit, is_debug_toggle};
+pub use overlay::{DebugOverlay, OverlayInit, is_debug_toggle};
 #[allow(unused_imports)] // public debug API
 pub use snapshot::{
     PhysicsDiagnostics, RemoteMotionProbe, SkeletonInspectDebug, WorldRosterDiagnostics,

@@ -13,10 +13,9 @@ mod dialogue_animation;
 mod dialogue_bubble_layout;
 mod dialogue_runtime;
 mod display;
-#[cfg(feature = "dev-diagnostics")]
-mod frontend;
 mod frontend_runtime;
 mod frontend_scene;
+mod frontend_ui;
 mod headwear_proof;
 mod input;
 mod interp;
