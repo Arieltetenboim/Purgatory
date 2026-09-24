@@ -1,4 +1,4 @@
-//! Hello / Welcome handshake. All client bytes are untrusted.
+//! Hello / pre-game session handshake. All client bytes are untrusted.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -7,19 +7,20 @@ use quinn::{Connection, RecvStream, SendStream};
 
 use purgatory_common::DevLogin;
 use purgatory_protocol::{
-    ClientControl, DisconnectReason, DisconnectReasonCode, Hello, PROTOCOL_VERSION, ServerControl,
-    ServerDatagram, Welcome, decode_client_control, decode_client_datagram, encode_frame,
-    encode_gameplay_frame, encode_server_control, encode_server_datagram, peek_frame_len,
-    validate_hello,
+    ClientControl, DisconnectReason, DisconnectReasonCode, FrontendSessionReady, Hello,
+    PROTOCOL_VERSION, ServerControl, ServerDatagram, decode_client_control, decode_client_datagram,
+    encode_frame, encode_gameplay_frame, encode_server_control, encode_server_datagram,
+    peek_frame_len, validate_hello,
 };
-use purgatory_simulation::TICK_RATE_HZ;
 use tokio::time::timeout;
 
 use super::abuse::{
     ConnectionAbuse, ControlRateLimit, NetworkAbuseConfig, RateDecision, sanitize_log_text,
 };
 use super::connection_lifecycle::ConnectionLifecycleBook;
-use super::gameplay::{EnterError, GameplayTx};
+#[cfg(test)]
+use super::gameplay::EnterError;
+use super::gameplay::GameplayTx;
 use super::network_pressure::NetworkPressureBook;
 use super::replication::ReplicationPipe;
 use super::session::{ConnectionSession, SessionLease};
@@ -28,8 +29,6 @@ use super::stats::ServerNetStats;
 fn us(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
-
-const SERVER_LABEL: &str = "purgatory-server-dev";
 
 enum ControlReadError {
     Closed,
@@ -139,90 +138,142 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         }
     };
 
-    let mut snap_rx = None;
-    let mut occupancy = None;
-    match (persist.as_ref(), gameplay.as_ref()) {
-        (Some(persist), Some(tx)) => {
-            let character = match persist.resolve(login).await {
-                Ok(character) => character,
-                Err(err) => {
-                    eprintln!("PURGATORY persist resolve failed: {err}");
-                    lifecycle.note_enter_fail();
-                    stats.leave_handshake();
-                    let reason = DisconnectReason::new(DisconnectReasonCode::Malformed, "identity");
-                    stats.note_reject(reason.code);
-                    let _ =
-                        write_server_control(&mut send, &ServerControl::Disconnect(reason.clone()))
-                            .await;
-                    connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
-                    return;
+    // Historical gameplay integration fixtures opt in only in test binaries.
+    // Shipping builds have no legacy entry route, regardless of client_build.
+    #[cfg(test)]
+    let legacy = hello.client_build.starts_with("legacy-test:");
+    #[cfg(not(test))]
+    let legacy = false;
+    #[cfg(test)]
+    let (replication, interact_rx, occupancy) = {
+        let mut snap_rx = None;
+        let mut occupancy = None;
+        match (
+            persist.as_ref().filter(|_| legacy),
+            gameplay.as_ref().filter(|_| legacy),
+        ) {
+            (Some(persist), Some(tx)) => {
+                let character = match persist.resolve(login.clone()).await {
+                    Ok(character) => character,
+                    Err(err) => {
+                        eprintln!("PURGATORY persist resolve failed: {err}");
+                        lifecycle.note_enter_fail();
+                        stats.leave_handshake();
+                        let reason =
+                            DisconnectReason::new(DisconnectReasonCode::Malformed, "identity");
+                        stats.note_reject(reason.code);
+                        let _ = write_server_control(
+                            &mut send,
+                            &ServerControl::Disconnect(reason.clone()),
+                        )
+                        .await;
+                        connection
+                            .close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+                        return;
+                    }
+                };
+                let (pipe, wake_rx) = ReplicationPipe::new();
+                let (interact_tx, interact_rx) = tokio::sync::mpsc::channel(16);
+                match tx
+                    .enter(
+                        connection_id,
+                        character,
+                        Some(pipe.clone()),
+                        Some(interact_tx),
+                    )
+                    .await
+                {
+                    Ok(Ok(())) => {
+                        occupancy = Some(OccupancyLease::new(tx.clone(), connection_id));
+                        snap_rx = Some((pipe, wake_rx, interact_rx));
+                    }
+                    Ok(Err(EnterError::Occupied)) => {
+                        lifecycle.note_enter_fail();
+                        stats.leave_handshake();
+                        let reason = DisconnectReason::new(
+                            DisconnectReasonCode::AlreadyConnected,
+                            "character",
+                        );
+                        stats.note_reject(reason.code);
+                        let _ = write_server_control(
+                            &mut send,
+                            &ServerControl::Disconnect(reason.clone()),
+                        )
+                        .await;
+                        connection
+                            .close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+                        return;
+                    }
+                    Ok(Err(_)) | Err(()) => {
+                        lifecycle.note_enter_fail();
+                        stats.leave_handshake();
+                        let reason =
+                            DisconnectReason::new(DisconnectReasonCode::Malformed, "enter");
+                        stats.note_reject(reason.code);
+                        let _ = write_server_control(
+                            &mut send,
+                            &ServerControl::Disconnect(reason.clone()),
+                        )
+                        .await;
+                        connection
+                            .close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+                        return;
+                    }
                 }
-            };
-            let (pipe, wake_rx) = ReplicationPipe::new();
-            let (interact_tx, interact_rx) = tokio::sync::mpsc::channel(16);
-            match tx
-                .enter(
-                    connection_id,
-                    character,
-                    Some(pipe.clone()),
-                    Some(interact_tx),
-                )
-                .await
-            {
-                Ok(Ok(())) => {
+            }
+            (None, Some(tx)) => {
+                let (pipe, wake_rx) = ReplicationPipe::new();
+                let (interact_tx, interact_rx) = tokio::sync::mpsc::channel(16);
+                if !tx.attach_with_snapshots(connection_id, Some(pipe.clone()), Some(interact_tx)) {
+                    stats
+                        .lifecycle_handoff_dropped
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                } else {
                     occupancy = Some(OccupancyLease::new(tx.clone(), connection_id));
-                    snap_rx = Some((pipe, wake_rx, interact_rx));
                 }
-                Ok(Err(EnterError::Occupied)) => {
-                    lifecycle.note_enter_fail();
-                    stats.leave_handshake();
-                    let reason =
-                        DisconnectReason::new(DisconnectReasonCode::AlreadyConnected, "character");
-                    stats.note_reject(reason.code);
-                    let _ =
-                        write_server_control(&mut send, &ServerControl::Disconnect(reason.clone()))
-                            .await;
-                    connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
-                    return;
-                }
-                Ok(Err(_)) | Err(()) => {
-                    lifecycle.note_enter_fail();
-                    stats.leave_handshake();
-                    let reason = DisconnectReason::new(DisconnectReasonCode::Malformed, "enter");
-                    stats.note_reject(reason.code);
-                    let _ =
-                        write_server_control(&mut send, &ServerControl::Disconnect(reason.clone()))
-                            .await;
-                    connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
-                    return;
-                }
+                snap_rx = Some((pipe, wake_rx, interact_rx));
             }
+            _ => {}
         }
-        (None, Some(tx)) => {
-            let (pipe, wake_rx) = ReplicationPipe::new();
-            let (interact_tx, interact_rx) = tokio::sync::mpsc::channel(16);
-            if !tx.attach_with_snapshots(connection_id, Some(pipe.clone()), Some(interact_tx)) {
-                stats
-                    .lifecycle_handoff_dropped
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            } else {
-                occupancy = Some(OccupancyLease::new(tx.clone(), connection_id));
-            }
-            snap_rx = Some((pipe, wake_rx, interact_rx));
-        }
-        _ => {}
-    }
 
-    let welcome = Welcome {
-        protocol_version: PROTOCOL_VERSION,
-        connection_id,
-        server_tick_rate: TICK_RATE_HZ,
-        server_label: SERVER_LABEL.to_string(),
+        let (replication, interact_rx) = match snap_rx {
+            Some((pipe, wake, i)) => (Some((pipe, wake)), Some(i)),
+            None => (None, None),
+        };
+        (replication, interact_rx, occupancy)
     };
-    if write_server_control(&mut send, &ServerControl::Welcome(welcome))
-        .await
-        .is_err()
-    {
+    let roster = match &persist {
+        Some(worker) => match worker.roster(login.clone()).await {
+            Ok(roster) => roster,
+            Err(err) => {
+                eprintln!("PURGATORY roster failed: {err}");
+                stats.leave_handshake();
+                connection.close(
+                    DisconnectReasonCode::ServerShutdown.as_u8().into(),
+                    b"storage unavailable",
+                );
+                return;
+            }
+        },
+        None => Vec::new(),
+    };
+    let ready = FrontendSessionReady {
+        connection_id,
+        roster,
+    };
+    let response = ServerControl::FrontendSessionReady(ready);
+    #[cfg(test)]
+    let response = if legacy {
+        ServerControl::Welcome(purgatory_protocol::Welcome {
+            protocol_version: PROTOCOL_VERSION,
+            connection_id,
+            server_tick_rate: purgatory_simulation::TICK_RATE_HZ,
+            server_label: "test-only legacy entry".into(),
+        })
+    } else {
+        response
+    };
+    if write_server_control(&mut send, &response).await.is_err() {
         lifecycle.note_welcome_fail();
         stats.leave_handshake();
         stats
@@ -233,9 +284,6 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
             sanitize_log_text(&remote.to_string())
         );
         connection.close(0u32.into(), b"welcome");
-        if let Some(tx) = &gameplay {
-            let _ = tx.send_detach(connection_id).await;
-        }
         return;
     }
     let welcome_at = Instant::now();
@@ -262,11 +310,6 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         session.connection_id, session.protocol_version
     );
 
-    let (replication, interact_rx) = match snap_rx {
-        Some((pipe, wake, i)) => (Some((pipe, wake)), Some(i)),
-        None => (None, None),
-    };
-
     serve_connection(LiveSession {
         connection,
         send,
@@ -275,10 +318,19 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         lease,
         abuse_cfg: abuse,
         stats,
-        gameplay,
+        gameplay: gameplay.filter(|_| legacy),
+        #[cfg(not(test))]
+        replication: None,
+        #[cfg(not(test))]
+        interact_rx: None,
+        #[cfg(test)]
         replication,
+        #[cfg(test)]
         interact_rx,
+        #[cfg(test)]
         occupancy,
+        login,
+        persist,
         lifecycle,
         pressure,
     })
@@ -287,17 +339,20 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
 
 /// Releases character occupancy if the connection task is dropped before
 /// the normal `send_detach` teardown (panic, abort, or skipped await).
+#[cfg(test)]
 struct OccupancyLease {
     tx: GameplayTx,
     id: purgatory_protocol::ConnectionId,
 }
 
+#[cfg(test)]
 impl OccupancyLease {
     fn new(tx: GameplayTx, id: purgatory_protocol::ConnectionId) -> Self {
         Self { tx, id }
     }
 }
 
+#[cfg(test)]
 impl Drop for OccupancyLease {
     fn drop(&mut self) {
         if self.tx.try_detach(self.id) {
@@ -324,7 +379,10 @@ struct LiveSession {
     gameplay: Option<GameplayTx>,
     replication: Option<(ReplicationPipe, tokio::sync::watch::Receiver<u64>)>,
     interact_rx: Option<tokio::sync::mpsc::Receiver<ServerControl>>,
+    #[cfg(test)]
     occupancy: Option<OccupancyLease>,
+    login: DevLogin,
+    persist: Option<super::persist::PersistenceHandle>,
     lifecycle: Arc<ConnectionLifecycleBook>,
     pressure: Arc<NetworkPressureBook>,
 }
@@ -373,10 +431,15 @@ async fn serve_connection(live: LiveSession) {
         gameplay,
         mut replication,
         mut interact_rx,
+        #[cfg(test)]
         occupancy,
+        login,
+        persist,
         lifecycle,
         pressure,
     } = live;
+    #[cfg(test)]
+    let _occupancy = occupancy;
     let id = session.connection_id;
     let remote = session.remote;
     let mut transport_loss = false;
@@ -449,6 +512,22 @@ async fn serve_connection(live: LiveSession) {
             }
             control = read_client_control(&mut recv, &stats) => {
                 match control {
+                    Ok(ClientControl::CreateCharacter { name }) => {
+                        if !matches!(rate.note(Instant::now(), abuse_cfg), RateDecision::Allow) {
+                            connection.close(DisconnectReasonCode::Malformed.as_u8().into(), b"rate");
+                            break;
+                        }
+                        let result = match &persist {
+                            Some(worker) => worker.create_character(login.clone(), name).await,
+                            None => purgatory_protocol::CreateCharacterResult::Rejected(purgatory_protocol::CharacterCreateRejection::StorageFailure),
+                        };
+                        if write_server_control(&mut send, &ServerControl::CreateCharacterResult(result)).await.is_err() { break; }
+                    }
+                    // No gameplay authority exists in a pre-game session.
+                    Ok(_) if gameplay.is_none() => {
+                        connection.close(DisconnectReasonCode::UnexpectedMessage.as_u8().into(), b"pre-game");
+                        break;
+                    }
                     Ok(ClientControl::Input(command)) => match input_rate.note_input(Instant::now(), abuse_cfg) {
                         RateDecision::Disconnect => {
                             stats
@@ -1196,7 +1275,6 @@ async fn serve_connection(live: LiveSession) {
     );
     lifecycle.note_disconnect(us(session.connected_since.elapsed()));
     pressure.remove_client(id.get());
-    drop(occupancy);
 }
 
 async fn read_client_control(

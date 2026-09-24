@@ -655,3 +655,36 @@ Phase 5 is GREEN; Phase 6.0 / 6A / 6B / 6C / 6D / 6E / 6F / 6G are GREEN (archit
 - Native observations: normal Login → Channel → Character navigation; three slot areas; two-step Empty selection/Create; fixed base preview; NAME focus; physical uppercase and numeric input; punctuation ignored; CREATE disabled at two characters, enabled at three; short-name Enter no-op; all seven locked appearance rows and attributes visible; CANCEL and Escape return to Empty Browsing without scene movement; re-entry clears abandoned name. Final build rendered correctly at 1280x720 and maximized 1920x1009. During user interaction, the resulting `fsdfsd` slot was observed Occupied and selected in the unchanged Character scene. Status stayed Disconnected and gameplay tick stayed zero; source review confirms the creation action has no network or persistence path.
 - Remaining manual coverage: complete physical alphabet/Unicode/12-character boundary entry, valid focused Enter, Backspace, final locked-slot focus fix, and Browsing Back were covered automatically but not all re-exercised through native input. User interaction took over the final native creation sequence; the agent did not claim to have driven that submission. Shipping configuration was checked, not launched. No packet capture or server session was run.
 - Scope: local client-only creation, no authoritative identity, uniqueness, persistence, deletion, appearance choices, attribute definitions, gameplay spawning or Enter World. Fixed preview uses the existing base composer and shared UI texture pipeline; no second renderer or asset root. User-requested client gates only; full workspace tests not run.
+## R5B — Pre-game network session / authoritative roster and creation (2026-09-24)
+
+Baseline: `3046c5bf03cc79de8aad8ab03d43332148186b60`. Protocol v32; ADR-0066.
+Scoped gates follow the requested R5B command set rather than a full workspace run.
+
+| Exact command | Result |
+|---|---|
+| `cargo test -p purgatory-protocol --quiet` | 174 passed (96 unit, 3 roster/create, 75 wire golden); historical golden bytes unchanged |
+| `cargo test -p purgatory-persistence` | 26 passed |
+| `cargo test -p purgatory-client frontend --quiet` | 37 passed |
+| `cargo test -p purgatory-client frontend_runtime --quiet` | 17 passed |
+| `cargo test -p purgatory-client lifecycle --quiet` | 50 passed |
+| `cargo test -p purgatory-client network --quiet` | 29 passed, 1 existing soak ignored |
+| `cargo test -p purgatory-server network --quiet` | 280 passed, 9 existing extended soaks ignored |
+| `cargo test -p purgatory-bot-client probe --quiet` | 3 passed |
+| `cargo check -p purgatory-client` | passed |
+| `cargo check -p purgatory-client --no-default-features` | passed |
+| `cargo check -p purgatory-server` | passed |
+| `cargo check -p purgatory-bot-client` | passed |
+| `cargo clippy -p purgatory-protocol --all-targets -- -D warnings` | passed |
+| `cargo clippy -p purgatory-client --all-targets --all-features -- -D warnings` | passed |
+| `cargo clippy -p purgatory-server --all-targets -- -D warnings` | passed |
+| `cargo clippy -p purgatory-bot-client --all-targets -- -D warnings` | passed |
+| `cargo build -p purgatory-client -p purgatory-server -p purgatory-bot-client --bins` | passed |
+| `rustfmt --edition 2024 --config skip_children=true --check $files` | passed; `$files` is changed Rust paths plus the two new protocol Rust files |
+| `git diff --check` | passed |
+| `.\target\debug\purgatory-load.exe --probe` | live production server: probe OK on 127.0.0.1:5001 |
+
+New coverage includes empty/full/ordered bounded wire rosters, names-only requests and rejection variants; real QUIC Hello/create/reconnect with persistence and a gameplay owner present but zero players and no replication; same-login concurrent sessions without occupancy; cross-login uniqueness, capacity and invalid-name rejection without disconnect; storage failure preserving roster/allocator and successful restart; real client NetworkHandle readiness/create delivery; frontend pending/rejection/success/reset; stale-attempt filtering; and choosing the created name correctly when another session created first. Historical gameplay integration tests explicitly opt into a `cfg(test)` legacy fixture; production and new frontend tests do not use it.
+
+Native manual evidence used clean `target/r5b-manual-data` as PURGATORY_DATA_DIR: startup remained Login; Continue connected and advanced to ChannelSelect; Channel 1 opened exactly three Empty slots; opening creation kept Connected and tick 0. The on-disk identity remained an empty roster after login and the probe. Manual text injection did not reach the native field, so manual CREATE/pending, visual NameTaken and restart-with-created-character remain unverified. Automated QUIC/worker/frontend tests cover those state and persistence contracts. The test client and server were stopped afterward. No full visual acceptance claim is made.
+
+Remaining boundary: gameplay load bots require the next selected-character entry slice and explicitly report this dependency. R5B adds no Enter World. A transport drop during creation is resolved by fetching the roster on reconnect, not automatic replay.

@@ -25,6 +25,7 @@
 //! The server remains authoritative.
 
 mod ability;
+mod character;
 mod config;
 mod connection;
 mod dialogue;
@@ -39,6 +40,11 @@ mod message;
 mod presentation_oneshot;
 mod snapshot;
 mod version;
+
+pub use character::{
+    CharacterCreateRejection, CharacterSummary, CreateCharacterResult, FrontendSessionReady,
+    MAX_CHARACTER_ROSTER,
+};
 
 pub use ability::{
     ABILITY_ACCEPTED_BYTES, ABILITY_ACTIVATE_INDEPENDENT_BYTES, ABILITY_ACTIVATE_SELECTED_BYTES,
@@ -123,7 +129,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 31);
+        assert_eq!(PROTOCOL_VERSION, 32);
     }
 
     #[test]

@@ -8,13 +8,25 @@ use std::time::Duration;
 
 use purgatory_common::DevLogin;
 use purgatory_persistence::{
-    PersistError, PersistenceService, PersistentCharacter, PersistentCharacterSnapshot,
+    CreateCharacterRejection, PersistError, PersistenceService, PersistentCharacterSnapshot,
 };
 
 enum PersistCmd {
+    #[cfg(test)]
     Resolve {
         login: DevLogin,
-        reply: tokio::sync::oneshot::Sender<Result<PersistentCharacter, PersistError>>,
+        reply: tokio::sync::oneshot::Sender<
+            Result<purgatory_persistence::PersistentCharacter, PersistError>,
+        >,
+    },
+    Roster {
+        login: DevLogin,
+        reply: tokio::sync::oneshot::Sender<Vec<purgatory_protocol::CharacterSummary>>,
+    },
+    CreateCharacter {
+        login: DevLogin,
+        name: String,
+        reply: tokio::sync::oneshot::Sender<purgatory_protocol::CreateCharacterResult>,
     },
     Save(PersistentCharacterSnapshot),
     Shutdown {
@@ -22,7 +34,7 @@ enum PersistCmd {
     },
 }
 
-/// Cloneable handle. Connection tasks await resolve; the sim thread `try_send`s saves.
+/// Cloneable handle. Connection tasks await roster/create; the sim thread `try_send`s saves.
 #[derive(Clone)]
 pub struct PersistenceHandle {
     tx: tokio::sync::mpsc::Sender<PersistCmd>,
@@ -33,11 +45,38 @@ impl PersistenceHandle {
         let mut service =
             PersistenceService::open(dir).map_err(|err| format!("persistence open: {err}"))?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-        tokio::spawn(async move {
-            while let Some(cmd) = rx.recv().await {
+        tokio::task::spawn_blocking(move || {
+            while let Some(cmd) = rx.blocking_recv() {
                 match cmd {
+                    #[cfg(test)]
                     PersistCmd::Resolve { login, reply } => {
-                        let result = service.resolve_or_create(&login);
+                        let _ = reply.send(service.resolve_or_create(&login));
+                    }
+                    PersistCmd::Roster { login, reply } => {
+                        let _ = reply.send(roster(&service, &login));
+                    }
+                    PersistCmd::CreateCharacter { login, name, reply } => {
+                        use purgatory_protocol::{
+                            CharacterCreateRejection as Rejection, CreateCharacterResult as Result,
+                        };
+                        let result = match service.create_character(&login, &name) {
+                            Ok(_) => Result::Created {
+                                roster: roster(&service, &login),
+                            },
+                            Err(PersistError::CreateRejected(reason)) => {
+                                Result::Rejected(match reason {
+                                    CreateCharacterRejection::InvalidName(_) => {
+                                        Rejection::InvalidName
+                                    }
+                                    CreateCharacterRejection::NameTaken => Rejection::NameTaken,
+                                    CreateCharacterRejection::RosterFull => Rejection::RosterFull,
+                                })
+                            }
+                            Err(err) => {
+                                eprintln!("PURGATORY character creation failed: {err}");
+                                Result::Rejected(Rejection::StorageFailure)
+                            }
+                        };
                         let _ = reply.send(result);
                     }
                     PersistCmd::Save(snapshot) => {
@@ -62,20 +101,49 @@ impl PersistenceHandle {
         Ok(Self { tx })
     }
 
-    pub async fn resolve(&self, login: DevLogin) -> Result<PersistentCharacter, PersistError> {
+    #[cfg(test)]
+    pub async fn resolve(
+        &self,
+        login: DevLogin,
+    ) -> Result<purgatory_persistence::PersistentCharacter, PersistError> {
         let (reply, rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(PersistCmd::Resolve { login, reply })
             .await
-            .map_err(|_| {
-                PersistError::corrupt(PathBuf::from("<worker>"), "persistence worker closed")
-            })?;
-        rx.await.map_err(|_| {
-            PersistError::corrupt(
-                PathBuf::from("<worker>"),
-                "persistence worker dropped reply",
-            )
-        })?
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn roster(
+        &self,
+        login: DevLogin,
+    ) -> Result<Vec<purgatory_protocol::CharacterSummary>, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::Roster { login, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())
+    }
+
+    pub async fn create_character(
+        &self,
+        login: DevLogin,
+        name: String,
+    ) -> purgatory_protocol::CreateCharacterResult {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        let failure = purgatory_protocol::CreateCharacterResult::Rejected(
+            purgatory_protocol::CharacterCreateRejection::StorageFailure,
+        );
+        if self
+            .tx
+            .send(PersistCmd::CreateCharacter { login, name, reply })
+            .await
+            .is_err()
+        {
+            return failure;
+        }
+        rx.await.unwrap_or(failure)
     }
 
     pub fn try_save(&self, snapshot: PersistentCharacterSnapshot) -> bool {
@@ -239,5 +307,78 @@ mod tests {
             "shutdown must drain the pending save into the temp tree"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+fn worker_closed() -> PersistError {
+    PersistError::corrupt(PathBuf::from("<worker>"), "persistence worker closed")
+}
+
+fn roster(
+    service: &PersistenceService,
+    login: &DevLogin,
+) -> Vec<purgatory_protocol::CharacterSummary> {
+    service
+        .roster(login)
+        .into_iter()
+        .map(|entry| purgatory_protocol::CharacterSummary {
+            character_id: entry.character_id,
+            display_name: entry.display_name.as_str().to_owned(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod frontend_worker_tests {
+    use super::*;
+    use purgatory_protocol::{
+        CharacterCreateRejection as Rejection, CreateCharacterResult as Result,
+    };
+
+    #[tokio::test]
+    async fn frontend_storage_failure_has_no_projection_mutation_and_restart_keeps_order() {
+        let dir = std::env::temp_dir().join(format!(
+            "purgatory-r5b-worker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("alice").unwrap();
+        assert!(worker.roster(login.clone()).await.unwrap().is_empty());
+        let Result::Created { roster: first } = worker
+            .create_character(login.clone(), "FirstHero".into())
+            .await
+        else {
+            panic!("first");
+        };
+        let obstacle = dir.join("identity.json.tmp");
+        std::fs::create_dir(&obstacle).unwrap();
+        assert_eq!(
+            worker
+                .create_character(login.clone(), "NextHero".into())
+                .await,
+            Result::Rejected(Rejection::StorageFailure)
+        );
+        assert_eq!(worker.roster(login.clone()).await.unwrap(), first);
+        std::fs::remove_dir(&obstacle).unwrap();
+        let Result::Created { roster: second } = worker
+            .create_character(login.clone(), "NextHero".into())
+            .await
+        else {
+            panic!("retry");
+        };
+        assert_eq!(second[0], first[0]);
+        assert_eq!(
+            second[1].character_id.raw(),
+            first[0].character_id.raw() + 1
+        );
+        worker.shutdown(Duration::from_secs(2)).await;
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        assert_eq!(worker.roster(login).await.unwrap(), second);
+        worker.shutdown(Duration::from_secs(2)).await;
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -55,6 +55,10 @@ struct Control {
 }
 
 enum RuntimeCommand {
+    CreateCharacter {
+        attempt_id: ConnectionAttemptId,
+        name: String,
+    },
     Connect {
         attempt_id: ConnectionAttemptId,
         epoch: u64,
@@ -179,6 +183,9 @@ impl EventSink {
     async fn emit(&self, event: NetworkEvent, control: &watch::Receiver<Control>) {
         if self.verbose() && event.is_lifecycle() {
             match &event {
+                NetworkEvent::FrontendSessionReady { .. }
+                | NetworkEvent::CharacterCreateResult { .. }
+                | NetworkEvent::GameplayReady { .. } => self.trace("frontend/gameplay control"),
                 NetworkEvent::Connecting { attempt_id } => {
                     self.trace(&format!("attempt={attempt_id} Connecting"));
                 }
@@ -383,6 +390,10 @@ impl NetworkHandle {
     /// Connect pressure.
     pub fn try_send(&self, command: NetworkCommand) -> bool {
         match command {
+            NetworkCommand::CreateCharacter { attempt_id, name } => self
+                .commands
+                .try_send(RuntimeCommand::CreateCharacter { attempt_id, name })
+                .is_ok(),
             NetworkCommand::Connect {
                 attempt_id,
                 dev_login,
@@ -682,6 +693,7 @@ async fn network_loop(
         tokio::select! {
             cmd = commands.recv() => {
                 match cmd {
+                    Some(RuntimeCommand::CreateCharacter { .. }) => {},
                     None => {
                         endpoint.close(0u32.into(), b"shutdown");
                         break;
@@ -810,6 +822,7 @@ async fn run_session(
             },
             cmd = commands.recv() => {
                 match cmd {
+                    Some(RuntimeCommand::CreateCharacter { .. }) => {},
                     None => {
                         return emit_closed(
                             attempt_id,
@@ -908,6 +921,7 @@ async fn handshake_and_live(
                 }
                 cmd = commands.recv() => {
                     match cmd {
+                    Some(RuntimeCommand::CreateCharacter { .. }) => {},
                         None => {
                             connection.close(0u32.into(), b"cancel");
                             return Ok(AfterSession::Shutdown);
@@ -961,6 +975,7 @@ async fn handshake_and_live(
             }
             cmd = commands.recv() => {
                 match cmd {
+                    Some(RuntimeCommand::CreateCharacter { .. }) => {},
                     None => {
                         connection.close(0u32.into(), b"cancel");
                         return Ok(AfterSession::Shutdown);
@@ -987,7 +1002,22 @@ async fn handshake_and_live(
         }
     };
 
+    let gameplay_ready = matches!(&control_msg, Ok(ServerControl::Welcome(_)));
     match control_msg {
+        Ok(ServerControl::FrontendSessionReady(ready)) => {
+            events
+                .emit(
+                    NetworkEvent::FrontendSessionReady { attempt_id, ready },
+                    control,
+                )
+                .await;
+        }
+        Ok(ServerControl::CreateCharacterResult(_)) => {
+            return Err(NetworkEvent::Disconnected {
+                attempt_id,
+                kind: NetworkFailureKind::UnexpectedMessage,
+            });
+        }
         Ok(ServerControl::Welcome(welcome)) => {
             events
                 .emit(
@@ -999,6 +1029,9 @@ async fn handshake_and_live(
                     },
                     control,
                 )
+                .await;
+            events
+                .emit(NetworkEvent::GameplayReady { attempt_id }, control)
                 .await;
         }
         Ok(ServerControl::Disconnect(reason)) => {
@@ -1076,7 +1109,17 @@ async fn handshake_and_live(
 
     drain_inputs(inputs);
     live_loop(
-        connection, send, recv, attempt_id, epoch, commands, inputs, events, control, impairment,
+        connection,
+        send,
+        recv,
+        attempt_id,
+        epoch,
+        commands,
+        inputs,
+        events,
+        control,
+        impairment,
+        gameplay_ready,
     )
     .await
 }
@@ -1189,6 +1232,7 @@ async fn live_loop(
     events: &EventSink,
     control: &mut watch::Receiver<Control>,
     impairment: &mut ImpairmentNet,
+    gameplay_ready: bool,
 ) -> Result<AfterSession, NetworkEvent> {
     let mut ping = tokio::time::interval(PING_INTERVAL);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1214,11 +1258,17 @@ async fn live_loop(
                 .map(|ns| Duration::from_nanos(ns.saturating_sub(now)))
         };
 
-        let waiting_uni = !uni_accepted;
+        let waiting_uni = gameplay_ready && !uni_accepted;
         tokio::select! {
             biased;
             cmd = commands.recv() => {
                 match cmd {
+                    Some(RuntimeCommand::CreateCharacter { attempt_id: owner, name }) => {
+                        if owner == attempt_id {
+                            write_client_control(&mut send, &ClientControl::CreateCharacter { name }).await
+                                .map_err(|kind| NetworkEvent::Disconnected { attempt_id, kind })?;
+                        }
+                    },
                     Some(RuntimeCommand::Connect { .. }) => {}
                     None => {
                         connection.close(0u32.into(), b"client");
@@ -1230,6 +1280,7 @@ async fn live_loop(
                 let Some(first) = maybe_input else {
                     continue;
                 };
+                if !gameplay_ready { drain_inputs(inputs); continue; }
                 let mut batch = vec![first];
                 while let Ok(next) = inputs.try_recv() {
                     batch.push(next);
@@ -1302,7 +1353,10 @@ async fn live_loop(
                             kind: NetworkFailureKind::from_wire(reason.code),
                         });
                     }
-                    Ok(ServerControl::Welcome(_)) => {
+                    Ok(ServerControl::CreateCharacterResult(result)) => {
+                        events.emit(NetworkEvent::CharacterCreateResult { attempt_id, result }, control).await;
+                    }
+                    Ok(ServerControl::FrontendSessionReady(_)) | Ok(ServerControl::Welcome(_)) => {
                         return Err(NetworkEvent::Disconnected {
                             attempt_id,
                             kind: NetworkFailureKind::UnexpectedMessage,
@@ -2176,6 +2230,7 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum UniAfterWelcome {
+        Frontend,
         Immediate,
         Delayed,
         TwoFrames,
@@ -2358,10 +2413,43 @@ mod tests {
         if !read_framed_hello(&mut recv).await {
             return;
         }
+        if matches!(mode, UniAfterWelcome::Frontend) {
+            let ready =
+                ServerControl::FrontendSessionReady(purgatory_protocol::FrontendSessionReady {
+                    connection_id: ConnectionId::from_raw(7),
+                    roster: Vec::new(),
+                });
+            let frame = encode_frame(&encode_server_control(&ready).unwrap()).unwrap();
+            send.write_all(&frame).await.unwrap();
+            let mut prefix = [0; 4];
+            recv.read_exact(&mut prefix).await.unwrap();
+            let mut bytes = vec![0; peek_frame_len(&prefix).unwrap() as usize];
+            recv.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(
+                purgatory_protocol::decode_client_control(&bytes).unwrap(),
+                ClientControl::CreateCharacter {
+                    name: "Hero".into()
+                }
+            );
+            let result = ServerControl::CreateCharacterResult(
+                purgatory_protocol::CreateCharacterResult::Created {
+                    roster: vec![purgatory_protocol::CharacterSummary {
+                        character_id: purgatory_common::CharacterId::from_raw(73),
+                        display_name: "Hero".into(),
+                    }],
+                },
+            );
+            send.write_all(&encode_frame(&encode_server_control(&result).unwrap()).unwrap())
+                .await
+                .unwrap();
+            let _ = connection.closed().await;
+            return;
+        }
         if !write_welcome_frame(&mut send).await {
             return;
         }
         match mode {
+            UniAfterWelcome::Frontend => unreachable!(),
             UniAfterWelcome::Immediate => {
                 let _ = write_snapshot_uni(&connection).await;
             }
@@ -2555,5 +2643,48 @@ mod tests {
         assert!(src.contains("stall_rx.recv"));
         assert!(src.contains("drain_due_inputs"));
         assert!(src.contains("session_cut"));
+    }
+    #[test]
+    fn frontend_network_handle_delivers_reliable_roster_and_create_without_gameplay() {
+        let (mut server, mut handle) = connect_scripted(UniAfterWelcome::Frontend);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut ready = false;
+        let mut created = false;
+        while Instant::now() < deadline && !created {
+            let mut received = Vec::new();
+            handle.poll(|event| received.push(event));
+            for event in received {
+                match event {
+                    NetworkEvent::FrontendSessionReady {
+                        attempt_id,
+                        ready: session,
+                    } => {
+                        assert!(session.roster.is_empty());
+                        ready = true;
+                        assert!(handle.try_send(NetworkCommand::CreateCharacter {
+                            attempt_id,
+                            name: "Hero".into()
+                        }));
+                    }
+                    NetworkEvent::CharacterCreateResult { result, .. } => {
+                        let purgatory_protocol::CreateCharacterResult::Created { roster } = result
+                        else {
+                            panic!("created");
+                        };
+                        assert_eq!(roster[0].character_id.raw(), 73);
+                        created = true;
+                    }
+                    NetworkEvent::Connected { .. } | NetworkEvent::GameplayReady { .. } => {
+                        panic!("pre-game is not Welcome")
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(ready && created);
+        assert!(handle.try_send(NetworkCommand::Shutdown));
+        drop(handle);
+        server.stop();
     }
 }

@@ -390,7 +390,7 @@ fn assert_app_close(err: &quinn::ReadExactError, code: DisconnectReasonCode) {
 async fn write_hello_best_effort(send: &mut SendStream, version: u32, build: &str) -> bool {
     let Ok(payload) = encode_client_control(&ClientControl::Hello(Hello {
         protocol_version: version,
-        client_build: build.into(),
+        client_build: format!("legacy-test:{build}"),
         dev_login: next_test_login(),
     })) else {
         return false;
@@ -408,7 +408,7 @@ async fn write_hello(send: &mut SendStream, version: u32, build: &str) {
 async fn write_hello_login(send: &mut SendStream, version: u32, build: &str, login: &str) {
     let payload = encode_client_control(&ClientControl::Hello(Hello {
         protocol_version: version,
-        client_build: build.into(),
+        client_build: format!("legacy-test:{build}"),
         dev_login: login.into(),
     }))
     .expect("encode hello");
@@ -4128,4 +4128,135 @@ fn replication_uni_is_opened_once_and_write_failure_ends_the_session() {
         }),
         "must not drop the stream and continue later frames"
     );
+}
+
+/// The production handshake, with an actual persistence worker and gameplay owner present.
+/// The legacy test fixture is deliberately not requested by this Hello.
+async fn frontend_peer(
+    server: SocketAddr,
+    login: &str,
+) -> (
+    TestClient,
+    SendStream,
+    RecvStream,
+    purgatory_protocol::FrontendSessionReady,
+) {
+    let client = connect(server).await;
+    let (mut send, mut recv) = client.conn.open_bi().await.unwrap();
+    write_control(
+        &mut send,
+        ClientControl::Hello(Hello {
+            protocol_version: PROTOCOL_VERSION,
+            client_build: "r5b-session-test".into(),
+            dev_login: login.into(),
+        }),
+    )
+    .await;
+    let ready = match timeout(Duration::from_secs(5), read_server_control(&mut recv))
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        ServerControl::FrontendSessionReady(ready) => ready,
+        other => panic!("expected pre-game readiness, got {other:?}"),
+    };
+    (client, send, recv, ready)
+}
+
+async fn create_frontend(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    name: &str,
+) -> purgatory_protocol::CreateCharacterResult {
+    write_control(send, ClientControl::CreateCharacter { name: name.into() }).await;
+    match timeout(Duration::from_secs(5), read_server_control(recv))
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        ServerControl::CreateCharacterResult(result) => result,
+        other => panic!("expected create result, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn frontend_session_roster_create_rejections_reconnect_without_gameplay_or_occupancy() {
+    use purgatory_protocol::{
+        CharacterCreateRejection as Rejection, CreateCharacterResult as Result,
+    };
+    let (server, sim) = spawn_gameplay().await;
+    let (a, mut sa, mut ra, ready) = frontend_peer(server.addr, "r5b.alice").await;
+    assert!(ready.roster.is_empty(), "Hello must not auto-create");
+    let (_same, _ss, _rs, same) = frontend_peer(server.addr, "r5b.alice").await;
+    assert!(
+        same.roster.is_empty(),
+        "a second session does not reserve occupancy"
+    );
+    assert_ne!(ready.connection_id, same.connection_id);
+    let Result::Created { roster: first } = create_frontend(&mut sa, &mut ra, "FirstHero").await
+    else {
+        panic!("create");
+    };
+    assert_eq!(first.len(), 1);
+    assert_ne!(first[0].character_id.raw(), 0);
+    assert_eq!(first[0].display_name, "FirstHero");
+    assert_eq!(
+        create_frontend(&mut sa, &mut ra, "firsthero").await,
+        Result::Rejected(Rejection::NameTaken)
+    );
+    assert_eq!(
+        create_frontend(&mut sa, &mut ra, "bad_name").await,
+        Result::Rejected(Rejection::InvalidName)
+    );
+    assert_eq!(
+        create_frontend(&mut sa, &mut ra, "TooLongHero1234").await,
+        Result::Rejected(Rejection::InvalidName)
+    );
+    let (_b, mut sb, mut rb, bob) = frontend_peer(server.addr, "r5b.bob").await;
+    assert!(bob.roster.is_empty());
+    assert_eq!(
+        create_frontend(&mut sb, &mut rb, "FIRSTHERO").await,
+        Result::Rejected(Rejection::NameTaken)
+    );
+    let Result::Created { roster: bob_roster } = create_frontend(&mut sb, &mut rb, "BobHero").await
+    else {
+        panic!("bob");
+    };
+    assert_eq!(bob_roster.len(), 1);
+    assert_ne!(bob_roster[0].character_id, first[0].character_id);
+    assert!(matches!(
+        create_frontend(&mut sa, &mut ra, "SecondHero").await,
+        Result::Created { .. }
+    ));
+    let Result::Created { roster: full } = create_frontend(&mut sa, &mut ra, "ThirdHero").await
+    else {
+        panic!("third");
+    };
+    assert_eq!(full.len(), 3);
+    assert_eq!(full[0], first[0]);
+    for _ in 0..2 {
+        assert_eq!(
+            create_frontend(&mut sa, &mut ra, "FourthHero").await,
+            Result::Rejected(Rejection::RosterFull)
+        );
+    }
+    {
+        let mut game = lock_sim(&sim);
+        game.pump();
+        assert_eq!(
+            game.owner.player_count(),
+            0,
+            "pre-game must not enter or spawn"
+        );
+    }
+    assert!(
+        timeout(Duration::from_millis(100), a.conn.accept_uni())
+            .await
+            .is_err(),
+        "no replication stream"
+    );
+    a.conn.close(0u32.into(), b"reconnect");
+    let (_again, _send, _recv, again) = frontend_peer(server.addr, "r5b.alice").await;
+    assert_eq!(again.roster, full);
+    server.shutdown();
 }

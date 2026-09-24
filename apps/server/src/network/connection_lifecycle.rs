@@ -82,6 +82,10 @@ impl ConnectionLifecycleBook {
         self.fail_welcome.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Gameplay entry deferred after pre-game R5B")
+    )]
     pub fn note_enter_fail(&self) {
         self.fail_enter.fetch_add(1, Ordering::Relaxed);
     }

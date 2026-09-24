@@ -1,11 +1,4 @@
-//! One-shot Hello/Welcome connection probe for Developer Tools readiness.
-//!
-//! Uses the existing Quinn client stack and protocol v10. A successful probe
-//! follows the normal DEV login / persistence / enter path (`dev.probe`).
-//! Hub-spawned servers set `PURGATORY_DATA_DIR` under
-//! `logs/dev-tools/hub_server_persist` so Ready does not mint into
-//! `%LOCALAPPDATA%\Purgatory`. Adopted servers without that env still hit the
-//! default persist root (documented debt).
+//! One-shot pre-game session readiness probe; never creates or enters a character.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -19,7 +12,7 @@ use crate::session::BotSession;
 /// Reserved DEV login for Developer Tools readiness probes.
 pub const PROBE_DEV_LOGIN: &str = "dev.probe";
 
-/// Establish a real session, wait for Welcome, disconnect. No gameplay loop.
+/// Establish a real session, wait for FrontendSessionReady, disconnect. No gameplay loop.
 pub fn run_probe(server: SocketAddr) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -34,7 +27,7 @@ async fn probe_once(server: SocketAddr) -> Result<(), String> {
     let shared = SharedEndpoint::new()?;
     let mut session = BotSession::new(0, BotProfile::Idle, 0);
     let result = session
-        .connect_with_login(shared.endpoint(), server, PROBE_DEV_LOGIN)
+        .connect_frontend(shared.endpoint(), server, PROBE_DEV_LOGIN)
         .await;
     session.close_and_wait(Duration::from_secs(5)).await;
     shared.close();

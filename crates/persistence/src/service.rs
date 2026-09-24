@@ -22,7 +22,8 @@ impl PersistenceService {
     }
 
     /// Temporary direct-play compatibility: resolve roster slot zero, creating
-    /// one compatibility entry only when empty. Replaced by selection in R5B.
+    /// one compatibility entry only when empty. Production R5B uses roster/create;
+    /// this remains for historical direct-play callers.
     pub fn resolve_or_create(
         &mut self,
         login: &DevLogin,

@@ -7,6 +7,7 @@ use crate::ability::{
     ABILITY_ACTIVATE_INDEPENDENT_BYTES, ABILITY_ACTIVATE_SELECTED_BYTES, AbilityActivateRequest,
     AbilityCommandReject, MAX_GRANTED_ABILITIES, ServerAbility, ServerAbilityGrants,
 };
+use crate::character::*;
 use crate::dialogue::{
     DialogueAdvance, DialogueChoose, ServerDialogueChoiceAccepted, ServerDialogueLine,
 };
@@ -185,7 +186,7 @@ pub struct Hello {
     pub dev_login: String,
 }
 
-/// Server Welcome after a valid Hello.
+/// Server Welcome only after authoritative gameplay entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Welcome {
     pub protocol_version: u32,
@@ -280,6 +281,9 @@ impl InputCommand {
 /// Client → server reliable control.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientControl {
+    CreateCharacter {
+        name: String,
+    },
     Hello(Hello),
     Input(InputCommand),
     /// Pathological focus-loss / send-window barrier. No sequence.
@@ -318,6 +322,8 @@ pub enum ClientControl {
 /// Server → client reliable control.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServerControl {
+    FrontendSessionReady(FrontendSessionReady),
+    CreateCharacterResult(CreateCharacterResult),
     Welcome(Welcome),
     Disconnect(DisconnectReason),
     Interact(ServerInteract),
@@ -367,6 +373,11 @@ pub fn validate_hello(hello: &Hello) -> Result<(), DisconnectReason> {
 
 pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError> {
     match msg {
+        ClientControl::CreateCharacter { name } => {
+            let mut out = vec![TAG_CREATE_CHARACTER];
+            write_bounded_string(&mut out, name)?;
+            Ok(out)
+        }
         ClientControl::Hello(hello) => {
             let mut out = Vec::new();
             out.push(TAG_HELLO);
@@ -538,6 +549,11 @@ pub fn encode_client_control(msg: &ClientControl) -> Result<Vec<u8>, CodecError>
 pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> {
     let (tag, rest) = split_tag(bytes)?;
     match tag {
+        TAG_CREATE_CHARACTER => {
+            let (name, rest) = read_bounded_string(rest)?;
+            expect_empty(rest)?;
+            Ok(ClientControl::CreateCharacter { name })
+        }
         TAG_HELLO => {
             let (protocol_version, rest) = read_u32(rest)?;
             let (client_build, rest) = read_bounded_string(rest)?;
@@ -785,6 +801,23 @@ pub fn decode_client_control(bytes: &[u8]) -> Result<ClientControl, CodecError> 
 
 pub fn encode_server_control(msg: &ServerControl) -> Result<Vec<u8>, CodecError> {
     match msg {
+        ServerControl::FrontendSessionReady(ready) => {
+            let mut out = vec![TAG_SESSION_READY];
+            out.extend_from_slice(&ready.connection_id.get().to_le_bytes());
+            encode_roster(&mut out, &ready.roster)?;
+            Ok(out)
+        }
+        ServerControl::CreateCharacterResult(result) => {
+            let mut out = vec![TAG_CREATE_RESULT];
+            match result {
+                CreateCharacterResult::Created { roster } => {
+                    out.push(0);
+                    encode_roster(&mut out, roster)?;
+                }
+                CreateCharacterResult::Rejected(reason) => out.push(*reason as u8),
+            }
+            Ok(out)
+        }
         ServerControl::Welcome(welcome) => {
             let mut out = Vec::new();
             out.push(TAG_WELCOME);
@@ -831,6 +864,17 @@ pub fn encode_server_control(msg: &ServerControl) -> Result<Vec<u8>, CodecError>
 pub fn decode_server_control(bytes: &[u8]) -> Result<ServerControl, CodecError> {
     let (tag, rest) = split_tag(bytes)?;
     match tag {
+        TAG_SESSION_READY => {
+            let (id, rest) = read_u64(rest)?;
+            if id == 0 {
+                return Err(CodecError::InvalidValue);
+            }
+            Ok(ServerControl::FrontendSessionReady(FrontendSessionReady {
+                connection_id: ConnectionId::from_raw(id),
+                roster: decode_roster(rest)?,
+            }))
+        }
+        TAG_CREATE_RESULT => Ok(ServerControl::CreateCharacterResult(decode_result(rest)?)),
         TAG_WELCOME => {
             let (protocol_version, rest) = read_u32(rest)?;
             let (connection_id, rest) = read_u64(rest)?;
@@ -1393,7 +1437,7 @@ fn read_u32(bytes: &[u8]) -> Result<(u32, &[u8]), CodecError> {
     Ok((u32::from_le_bytes(buf), &bytes[4..]))
 }
 
-fn read_u64(bytes: &[u8]) -> Result<(u64, &[u8]), CodecError> {
+pub(crate) fn read_u64(bytes: &[u8]) -> Result<(u64, &[u8]), CodecError> {
     if bytes.len() < 8 {
         return Err(CodecError::Truncated);
     }
@@ -1402,7 +1446,7 @@ fn read_u64(bytes: &[u8]) -> Result<(u64, &[u8]), CodecError> {
     Ok((u64::from_le_bytes(buf), &bytes[8..]))
 }
 
-fn write_bounded_string(out: &mut Vec<u8>, value: &str) -> Result<(), CodecError> {
+pub(crate) fn write_bounded_string(out: &mut Vec<u8>, value: &str) -> Result<(), CodecError> {
     if value.len() > MAX_LABEL_BYTES {
         return Err(CodecError::StringTooLong);
     }
@@ -1412,7 +1456,7 @@ fn write_bounded_string(out: &mut Vec<u8>, value: &str) -> Result<(), CodecError
     Ok(())
 }
 
-fn read_bounded_string(bytes: &[u8]) -> Result<(String, &[u8]), CodecError> {
+pub(crate) fn read_bounded_string(bytes: &[u8]) -> Result<(String, &[u8]), CodecError> {
     if bytes.is_empty() {
         return Err(CodecError::Truncated);
     }

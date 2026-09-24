@@ -550,6 +550,10 @@ pub enum LifecycleCmd {
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
     },
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Gameplay entry deferred after pre-game R5B")
+    )]
     Enter {
         connection_id: ConnectionId,
         character: PersistentCharacter,
@@ -699,12 +703,20 @@ impl GameplayTx {
     }
 
     /// Non-blocking detach for Drop guards. Idempotent in [`GameplayOwner::detach`].
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Gameplay entry deferred after pre-game R5B")
+    )]
     pub fn try_detach(&self, connection_id: ConnectionId) -> bool {
         self.lifecycle
             .try_send(LifecycleCmd::Detach { connection_id })
             .is_ok()
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Gameplay entry deferred after pre-game R5B")
+    )]
     pub async fn enter(
         &self,
         connection_id: ConnectionId,

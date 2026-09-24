@@ -74,7 +74,7 @@ pub struct Cli {
     #[arg(long, default_value = "127.0.0.1:5002")]
     pub metrics: SocketAddr,
 
-    /// One-shot Hello/Welcome readiness probe. Does not run a load scenario.
+    /// One-shot Hello/FrontendSessionReady readiness probe. Does not run a load scenario.
     #[arg(long, default_value_t = false)]
     pub probe: bool,
 

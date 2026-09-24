@@ -111,6 +111,27 @@ impl BotSession {
         server: SocketAddr,
         dev_login: &str,
     ) -> Result<(), String> {
+        self.connect_session(endpoint, server, dev_login, false)
+            .await
+    }
+
+    pub(crate) async fn connect_frontend(
+        &mut self,
+        endpoint: &Endpoint,
+        server: SocketAddr,
+        dev_login: &str,
+    ) -> Result<(), String> {
+        self.connect_session(endpoint, server, dev_login, true)
+            .await
+    }
+
+    async fn connect_session(
+        &mut self,
+        endpoint: &Endpoint,
+        server: SocketAddr,
+        dev_login: &str,
+        frontend_only: bool,
+    ) -> Result<(), String> {
         self.state = SessionState::Connecting;
         self.login = dev_login.to_string();
         self.last_disconnect = None;
@@ -161,6 +182,22 @@ impl BotSession {
             })?;
 
         match control_msg {
+            ServerControl::FrontendSessionReady(ready) => {
+                if !frontend_only {
+                    connection.close(0u32.into(), b"entry deferred");
+                    self.state = SessionState::Failed;
+                    return Err("R5B pre-game session ready; gameplay bots require the next selected-character entry slice".into());
+                }
+                self.connection_id = Some(ready.connection_id);
+                self.connection = Some(connection);
+                self.send_stream = Some(send);
+                self.control_recv = Some(recv);
+                self.state = SessionState::Connected;
+                Ok(())
+            }
+            ServerControl::CreateCharacterResult(_) => {
+                Err("unexpected create result during handshake".into())
+            }
             ServerControl::Welcome(welcome) => {
                 self.intent.set_epoch(0);
                 self.connection_id = Some(welcome.connection_id);
@@ -340,7 +377,9 @@ impl BotSession {
                         self.metrics.portal_out_of_range.saturating_add(1);
                 }
             }
-            ServerControl::Welcome(_)
+            ServerControl::FrontendSessionReady(_)
+            | ServerControl::CreateCharacterResult(_)
+            | ServerControl::Welcome(_)
             | ServerControl::Interact(_)
             | ServerControl::DialogueLine(_)
             | ServerControl::DialogueChoiceAccepted(_)

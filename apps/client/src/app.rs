@@ -801,7 +801,22 @@ impl ClientApp {
             {
                 self.local_presentation.request_snap();
             }
-            self.lifecycle.apply(event);
+            let frontend_event = event.clone();
+            if self.lifecycle.apply(event) {
+                use crate::network::state::NetworkEvent;
+                match frontend_event {
+                    NetworkEvent::FrontendSessionReady { ready, .. } => self
+                        .frontend_runtime
+                        .session_ready(&ready.roster, &mut self.frontend_scene),
+                    NetworkEvent::CharacterCreateResult { result, .. } => {
+                        self.frontend_runtime.create_result(&result)
+                    }
+                    NetworkEvent::Disconnected { .. } | NetworkEvent::Rejected { .. } => {
+                        self.frontend_runtime.disconnected(&mut self.frontend_scene)
+                    }
+                    _ => {}
+                }
+            }
         }
         self.dialogue_runtime
             .clear_if_target_missing(|target| self.replica.get(target).is_some());
@@ -1718,10 +1733,58 @@ impl ClientApp {
         }
     }
 
+    fn frontend_action(&mut self, action: crate::frontend_runtime::FrontendAction) {
+        use crate::frontend_runtime::{CreationState, FrontendAction, FrontendSession};
+        if action == FrontendAction::ContinueFromLogin
+            && self.frontend_runtime.session != FrontendSession::Ready
+        {
+            if purgatory_common::DevLogin::parse(&self.dev_login).is_ok() {
+                self.request_connect();
+            }
+            return;
+        }
+        if action == FrontendAction::Back
+            && self.frontend_runtime.visible_stage()
+                == Some(crate::frontend_runtime::FrontendStage::ChannelSelect)
+        {
+            self.request_disconnect();
+            return;
+        }
+        let can_create = self.frontend_runtime.character_area.can_create();
+        self.frontend_runtime.act(action, &mut self.frontend_scene);
+        if action == FrontendAction::CreateCharacter
+            && can_create
+            && self.frontend_runtime.character_area.creation == CreationState::Pending
+        {
+            let name = self
+                .frontend_runtime
+                .character_area
+                .draft
+                .as_ref()
+                .unwrap()
+                .name
+                .clone();
+            let sent = self.network.as_ref().is_some_and(|net| {
+                net.try_send(NetworkCommand::CreateCharacter {
+                    attempt_id: self.lifecycle.view().active_attempt,
+                    name,
+                })
+            });
+            if !sent {
+                self.frontend_runtime.create_result(
+                    &purgatory_protocol::CreateCharacterResult::Rejected(
+                        purgatory_protocol::CharacterCreateRejection::StorageFailure,
+                    ),
+                );
+            }
+        }
+    }
+
     fn request_connect(&mut self) {
         let Some(id) = self.lifecycle.try_begin_connect() else {
             return;
         };
+        self.frontend_runtime.session = crate::frontend_runtime::FrontendSession::Pending;
         println!("PURGATORY connect requested attempt={id}");
         let sent = self.network.as_ref().is_some_and(|net| {
             net.try_send(NetworkCommand::Connect {
@@ -1732,13 +1795,14 @@ impl ClientApp {
         if !sent {
             eprintln!("PURGATORY connection failed attempt={id} reason=command dropped");
             self.lifecycle.fail_unsent_connect();
+            self.frontend_runtime.disconnected(&mut self.frontend_scene);
         }
     }
 
-    #[cfg(feature = "dev-diagnostics")]
     fn request_disconnect(&mut self) {
         let before = self.lifecycle.screen();
         let should_send = self.lifecycle.request_disconnect();
+        self.frontend_runtime.disconnected(&mut self.frontend_scene);
         if should_send && let Some(network) = &self.network {
             let _ = network.try_send(NetworkCommand::Disconnect);
         }
@@ -5041,7 +5105,7 @@ impl ApplicationHandler for ClientApp {
                             event.repeat,
                         );
                         if let Some(action) = action {
-                            self.frontend_runtime.act(action, &mut self.frontend_scene);
+                            self.frontend_action(action);
                         }
                     }
                     window.request_redraw();
@@ -5202,7 +5266,7 @@ impl ApplicationHandler for ClientApp {
                             state == ElementState::Pressed,
                         );
                         if let Some(action) = action {
-                            self.frontend_runtime.act(action, &mut self.frontend_scene);
+                            self.frontend_action(action);
                         }
                     }
                     window.request_redraw();

@@ -48,7 +48,8 @@
 /// owner-private grant baselines, admits semantic Dash presentation, and adds
 /// authoritative local Dash state to replication frames for restore+replay.
 /// Historical golden vectors remain frozen.
-pub const PROTOCOL_VERSION: u32 = 31;
+/// Protocol v32 adds pre-game session readiness and authoritative roster/create.
+pub const PROTOCOL_VERSION: u32 = 32;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;

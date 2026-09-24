@@ -61,8 +61,7 @@ impl ClientLifecycle {
         matches!(self.screen, ClientScreen::Game)
     }
 
-    // The temporary R2 foreground only navigates locally. This query remains for
-    // the existing shipping auto-connect path and lifecycle tests.
+    // Connect eligibility is independent of frontend navigation.
     #[cfg(any(test, not(feature = "dev-diagnostics")))]
     #[must_use]
     pub fn can_connect(&self) -> bool {
@@ -119,21 +118,26 @@ impl ClientLifecycle {
     }
 
     /// Central stale-event filter. `event.attempt_id != active_attempt` never
-    /// mutates connection or screen state.
-    pub fn apply(&mut self, event: NetworkEvent) {
+    /// mutates connection or screen state. Returns whether the event was accepted,
+    /// so frontend projection uses the same filter.
+    pub fn apply(&mut self, event: NetworkEvent) -> bool {
         let attempt_id = event.attempt_id();
         if attempt_id.is_none() || attempt_id != self.view.active_attempt {
             let record = self.log_verbose && event.is_lifecycle();
             self.view.note_stale(record, attempt_id.get());
-            return;
+            return false;
         }
         if !self.is_legal(&event) {
             self.view.note_stale(self.log_verbose, attempt_id.get());
-            return;
+            return false;
         }
         self.log_event(&event);
+        if matches!(event, NetworkEvent::GameplayReady { .. }) {
+            self.screen = ClientScreen::Game;
+        }
         self.view.apply_trusted(event);
         self.sync_screen();
+        true
     }
 
     fn log_event(&self, event: &NetworkEvent) {
@@ -141,6 +145,9 @@ impl ClientLifecycle {
             return;
         }
         match event {
+            NetworkEvent::FrontendSessionReady { .. }
+            | NetworkEvent::CharacterCreateResult { .. }
+            | NetworkEvent::GameplayReady { .. } => self.emit_log("frontend/gameplay control"),
             NetworkEvent::RttUpdated { .. } => {}
             NetworkEvent::Connecting { attempt_id } => {
                 self.emit_log(&format!("attempt={attempt_id} Connecting"));
@@ -217,7 +224,7 @@ impl ClientLifecycle {
             NetworkEvent::Handshaking { .. } => {
                 matches!(state, ConnectionState::Connecting)
             }
-            NetworkEvent::Connected { .. } => {
+            NetworkEvent::FrontendSessionReady { .. } | NetworkEvent::Connected { .. } => {
                 matches!(state, ConnectionState::Handshaking)
             }
             NetworkEvent::Rejected { .. } => {
@@ -229,7 +236,9 @@ impl ClientLifecycle {
                     | ConnectionState::Handshaking
                     | ConnectionState::Connected
             ),
-            NetworkEvent::RttUpdated { .. } => {
+            NetworkEvent::CharacterCreateResult { .. }
+            | NetworkEvent::GameplayReady { .. }
+            | NetworkEvent::RttUpdated { .. } => {
                 matches!(state, ConnectionState::Connected)
             }
             NetworkEvent::Interact { .. }
@@ -249,11 +258,6 @@ impl ClientLifecycle {
     }
 
     fn sync_screen(&mut self) {
-        if self.view.state == ConnectionState::Connected && self.view.connection_id.is_some() {
-            self.screen = ClientScreen::Game;
-        } else {
-            self.screen = ClientScreen::Connection;
-        }
         if self.screen == ClientScreen::Game && self.view.state != ConnectionState::Connected {
             self.screen = ClientScreen::Connection;
         }
@@ -410,11 +414,11 @@ mod tests {
     }
 
     #[test]
-    fn g_welcome_for_active_attempt_enters_game() {
+    fn g_connected_for_active_attempt_stays_frontend() {
         let mut life = ClientLifecycle::new(SERVER);
         let id = start_handshaking(&mut life);
         life.apply(welcome(id.get(), 7));
-        assert_eq!(life.screen(), ClientScreen::Game);
+        assert_eq!(life.screen(), ClientScreen::Connection);
         assert_eq!(life.view().state, ConnectionState::Connected);
         assert_eq!(life.view().connection_id.map(|c| c.get()), Some(7));
     }
@@ -450,6 +454,7 @@ mod tests {
         let mut life = ClientLifecycle::new(SERVER);
         let id = start_handshaking(&mut life);
         life.apply(welcome(id.get(), 3));
+        life.apply(NetworkEvent::GameplayReady { attempt_id: id });
         assert_eq!(life.screen(), ClientScreen::Game);
         life.apply(disconnected(id.get(), NetworkFailureKind::TransportLost));
         assert_eq!(life.screen(), ClientScreen::Connection);
@@ -552,6 +557,7 @@ mod tests {
         let mut life = ClientLifecycle::new(SERVER);
         let id = start_handshaking(&mut life);
         life.apply(welcome(id.get(), 5));
+        life.apply(NetworkEvent::GameplayReady { attempt_id: id });
         assert_eq!(life.screen(), ClientScreen::Game);
         life.request_disconnect();
         assert_eq!(life.screen(), ClientScreen::Connection);
@@ -569,9 +575,9 @@ mod tests {
         life.apply(disconnected(a.get(), NetworkFailureKind::ConnectFailed));
         let b = start_handshaking(&mut life);
         life.apply(welcome(b.get(), 8));
-        assert_eq!(life.screen(), ClientScreen::Game);
+        assert_eq!(life.screen(), ClientScreen::Connection);
         life.apply(disconnected(a.get(), NetworkFailureKind::ConnectFailed));
-        assert_eq!(life.screen(), ClientScreen::Game);
+        assert_eq!(life.screen(), ClientScreen::Connection);
         assert_eq!(life.view().state, ConnectionState::Connected);
         assert_eq!(life.view().active_attempt, b);
         assert_eq!(life.view().connection_id.map(|c| c.get()), Some(8));
@@ -605,7 +611,7 @@ mod tests {
         life.apply(rtt(b.get()));
         assert!(life.view().rtt.is_some());
         assert_eq!(life.view().state, ConnectionState::Connected);
-        assert_eq!(life.screen(), ClientScreen::Game);
+        assert_eq!(life.screen(), ClientScreen::Connection);
     }
 
     #[test]
@@ -616,7 +622,7 @@ mod tests {
         let before = life.view().state;
         life.apply(rtt(id.get()));
         assert_eq!(life.view().state, before);
-        assert_eq!(life.screen(), ClientScreen::Game);
+        assert_eq!(life.screen(), ClientScreen::Connection);
     }
 
     #[test]
@@ -978,7 +984,7 @@ mod tests {
                         1 => life.apply(welcome(*old, 900 + *old)),
                         2 => life.apply(rtt(*old)),
                         _ => life.apply(rejected(*old)),
-                    }
+                    };
                     assert_eq!(
                         life.view().active_attempt,
                         active,
@@ -999,7 +1005,7 @@ mod tests {
                 }
                 assert_screen_invariant(&life, &context);
                 life.apply(welcome(active.get(), round + 1));
-                assert_eq!(life.screen(), ClientScreen::Game, "{context}");
+                assert_eq!(life.screen(), ClientScreen::Connection, "{context}");
                 life.apply(disconnected(
                     active.get(),
                     NetworkFailureKind::TransportLost,

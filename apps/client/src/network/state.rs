@@ -46,6 +46,7 @@ pub enum ConnectionState {
     Disconnected,
     Connecting,
     Handshaking,
+    /// Transport/session active; does not imply gameplay entry.
     Connected,
     Rejected,
 }
@@ -70,6 +71,10 @@ impl ConnectionState {
 /// be stranded behind Connect pressure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkCommand {
+    CreateCharacter {
+        attempt_id: ConnectionAttemptId,
+        name: String,
+    },
     Connect {
         attempt_id: ConnectionAttemptId,
         dev_login: String,
@@ -81,6 +86,18 @@ pub enum NetworkCommand {
 /// Semantic events consumed by presentation. No Quinn types.
 #[derive(Clone, Debug)]
 pub enum NetworkEvent {
+    FrontendSessionReady {
+        attempt_id: ConnectionAttemptId,
+        ready: purgatory_protocol::FrontendSessionReady,
+    },
+    CharacterCreateResult {
+        attempt_id: ConnectionAttemptId,
+        result: purgatory_protocol::CreateCharacterResult,
+    },
+    /// Only emitted for authoritative Welcome, never generic connectivity.
+    GameplayReady {
+        attempt_id: ConnectionAttemptId,
+    },
     Connecting {
         attempt_id: ConnectionAttemptId,
     },
@@ -147,7 +164,10 @@ impl NetworkEvent {
     #[must_use]
     pub const fn attempt_id(&self) -> ConnectionAttemptId {
         match *self {
-            Self::Connecting { attempt_id }
+            Self::FrontendSessionReady { attempt_id, .. }
+            | Self::CharacterCreateResult { attempt_id, .. }
+            | Self::GameplayReady { attempt_id }
+            | Self::Connecting { attempt_id }
             | Self::Handshaking { attempt_id }
             | Self::Connected { attempt_id, .. }
             | Self::Rejected { attempt_id, .. }
@@ -323,6 +343,16 @@ impl NetworkView {
 
     pub fn apply_trusted(&mut self, event: NetworkEvent) {
         match event {
+            NetworkEvent::FrontendSessionReady { attempt_id, ready } => {
+                self.apply_trusted(NetworkEvent::Connected {
+                    attempt_id,
+                    connection_id: ready.connection_id,
+                    protocol_version: purgatory_protocol::PROTOCOL_VERSION,
+                    server_tick_rate: 0,
+                });
+                self.server_tick_rate = None;
+            }
+            NetworkEvent::CharacterCreateResult { .. } | NetworkEvent::GameplayReady { .. } => {}
             NetworkEvent::Connecting { attempt_id } => {
                 self.state = ConnectionState::Connecting;
                 self.clear_session_local();

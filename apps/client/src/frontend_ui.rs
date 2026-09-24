@@ -3,8 +3,8 @@ use purgatory_common::{DEV_LOGIN_MAX_LEN, DevLogin};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::frontend_runtime::{
-    CHARACTER_NAME_MAX, CharacterAreaMode, CharacterSlotState, FrontendAction, FrontendRuntime,
-    FrontendStage,
+    CHARACTER_NAME_MAX, CharacterAreaMode, CharacterSlotState, CreationState, FrontendAction,
+    FrontendRuntime, FrontendSession, FrontendStage,
 };
 use crate::renderer::{
     DrawQuad, PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle,
@@ -66,6 +66,11 @@ impl FrontendUi {
         repeat: bool,
     ) -> Option<FrontendAction> {
         let stage = runtime.visible_stage()?;
+        if runtime.character_area.creation == CreationState::Pending
+            || runtime.session == FrontendSession::Pending
+        {
+            return None;
+        }
         if *key == Key::Named(NamedKey::Escape) && !repeat {
             self.reset_input();
             return Some(FrontendAction::Back);
@@ -217,7 +222,7 @@ impl FrontendUi {
                 label(&shown, 640.0, 348.0, 390.0, 17.0);
                 label(
                     if DevLogin::parse(login).is_ok() {
-                        "Local preview — no authentication"
+                        "DEV profile — no authentication"
                     } else {
                         "2–32: a–z, 0–9, _ or .\nNo leading, trailing or consecutive dots"
                     },
@@ -243,7 +248,7 @@ impl FrontendUi {
             FrontendStage::CharacterSelect => {
                 label("CHARACTERS", 640.0, 54.0, 1100.0, 28.0);
                 label(
-                    "Local proof roster — Enter World is not available",
+                    "Server roster — Enter World is not available",
                     640.0,
                     99.0,
                     1100.0,
@@ -288,7 +293,25 @@ impl FrontendUi {
                             },
                         ));
                         label(&shown, x + 62.0, 249.0, 184.0, 17.0);
-                        label("3–12 letters or numbers", x + 62.0, 286.0, 195.0, 12.0);
+                        let status = match runtime.character_area.creation {
+                            CreationState::Idle => "3–12 letters or numbers",
+                            CreationState::Pending => "Creating...",
+                            CreationState::Rejected(reason) => match reason {
+                                purgatory_protocol::CharacterCreateRejection::InvalidName => {
+                                    "Invalid name"
+                                }
+                                purgatory_protocol::CharacterCreateRejection::NameTaken => {
+                                    "Name taken"
+                                }
+                                purgatory_protocol::CharacterCreateRejection::RosterFull => {
+                                    "Roster full"
+                                }
+                                purgatory_protocol::CharacterCreateRejection::StorageFailure => {
+                                    "Server failure. Retry."
+                                }
+                            },
+                        };
+                        label(status, x + 62.0, 286.0, 195.0, 12.0);
                         label("APPEARANCE — LOCKED", x + 62.0, 315.0, 195.0, 14.0);
                         for (index, heading) in APPEARANCE_ROWS.iter().enumerate() {
                             label(
@@ -310,13 +333,13 @@ impl FrontendUi {
                     } else {
                         let name = match state {
                             CharacterSlotState::Empty => "EMPTY",
-                            CharacterSlotState::Occupied { name } => name,
+                            CharacterSlotState::Occupied { name, .. } => name,
                         };
                         label(name, x, 190.0, 300.0, 22.0);
                         label(
                             match state {
                                 CharacterSlotState::Empty => "NEW CHARACTER",
-                                CharacterSlotState::Occupied { .. } => "LOCAL PLACEHOLDER",
+                                CharacterSlotState::Occupied { .. } => "CHARACTER",
                             },
                             x,
                             465.0,
@@ -497,6 +520,11 @@ fn cancel_button(slot: u8) -> [f32; 4] {
 }
 
 fn controls(runtime: &FrontendRuntime, login: &str) -> Vec<([f32; 4], Control)> {
+    if runtime.character_area.creation == CreationState::Pending
+        || runtime.session == FrontendSession::Pending
+    {
+        return Vec::new();
+    }
     let action = |bounds, intent| (bounds, Control::Action(intent));
     match runtime.visible_stage() {
         Some(FrontendStage::Login) => {
@@ -656,12 +684,8 @@ mod tests {
             .unwrap();
         assert_eq!(action, FrontendAction::CreateCharacter);
         runtime.act(action, &mut scene);
-        assert_eq!(
-            runtime.character_area.slots[1],
-            CharacterSlotState::Occupied {
-                name: "Ab312345678".into()
-            }
-        );
+        assert_eq!(runtime.character_area.slots[1], CharacterSlotState::Empty);
+        assert_eq!(runtime.character_area.creation, CreationState::Pending);
         assert_eq!(login, "login");
         assert_eq!(
             ui.key(
@@ -720,13 +744,23 @@ mod tests {
             assert_eq!(click(&mut ui, &runtime, "", [562.0, 555.0]), expected);
             if let Some(action) = expected {
                 runtime.act(action, &mut scene);
-                assert_eq!(runtime.selected_character(), Some(1));
+                assert_eq!(runtime.selected_character(), None);
+                assert_eq!(runtime.character_area.creation, CreationState::Pending);
             }
         }
     }
 
     fn at(stage: FrontendStage) -> (FrontendRuntime, FrontendScene) {
         let mut runtime = FrontendRuntime::new();
+        runtime.session = crate::frontend_runtime::FrontendSession::Ready;
+        runtime.character_area.slots[0] = CharacterSlotState::Occupied {
+            character_id: purgatory_common::CharacterId::from_raw(10),
+            name: "Wanderer".into(),
+        };
+        runtime.character_area.slots[2] = CharacterSlotState::Occupied {
+            character_id: purgatory_common::CharacterId::from_raw(20),
+            name: "Warden".into(),
+        };
         let mut scene = FrontendScene::new();
         runtime.request(stage, &mut scene);
         runtime.advance(1.0, &mut scene);

@@ -1,6 +1,8 @@
 //! Local frontend navigation. Lifecycle owns Connection/Game; the scene owns camera motion.
 
 use crate::frontend_scene::{FrontendScene, FrontendSceneStop};
+use purgatory_common::CharacterId;
+use purgatory_protocol::{CharacterCreateRejection, CharacterSummary, CreateCharacterResult};
 
 /// Intro presentation time, supplied by the client frame delta (never wall-clock reads).
 const INTRO_DELAY_SECONDS: f32 = 1.25;
@@ -38,7 +40,10 @@ pub(crate) enum FrontendAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CharacterSlotState {
     Empty,
-    Occupied { name: String },
+    Occupied {
+        character_id: CharacterId,
+        name: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,9 +65,25 @@ pub(crate) struct CharacterCreationDraft {
     pub(crate) name: String,
 }
 
-/// Local R4 proof roster, not server identities or persisted characters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CreationState {
+    Idle,
+    Pending,
+    Rejected(CharacterCreateRejection),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FrontendSession {
+    Disconnected,
+    Pending,
+    Ready,
+}
+
+/// Projection of the latest authoritative ordered roster.
 pub(crate) struct CharacterArea {
     pub(crate) slots: [CharacterSlotState; 3],
+    pub(crate) creation: CreationState,
+    pub(crate) selected_id: Option<CharacterId>,
     pub(crate) mode: CharacterAreaMode,
     pub(crate) selected_slot: Option<u8>,
     pub(crate) draft: Option<CharacterCreationDraft>,
@@ -71,15 +92,9 @@ pub(crate) struct CharacterArea {
 impl CharacterArea {
     fn new() -> Self {
         Self {
-            slots: [
-                CharacterSlotState::Occupied {
-                    name: "Local Wanderer".into(),
-                },
-                CharacterSlotState::Empty,
-                CharacterSlotState::Occupied {
-                    name: "Local Warden".into(),
-                },
-            ],
+            slots: std::array::from_fn(|_| CharacterSlotState::Empty),
+            creation: CreationState::Idle,
+            selected_id: None,
             mode: CharacterAreaMode::Browsing,
             selected_slot: None,
             draft: None,
@@ -87,16 +102,18 @@ impl CharacterArea {
     }
 
     pub(crate) fn can_create(&self) -> bool {
-        self.draft.as_ref().is_some_and(|draft| {
-            self.mode == (CharacterAreaMode::Creating { slot: draft.slot })
-                && self.slots.get(usize::from(draft.slot)) == Some(&CharacterSlotState::Empty)
-                && validate_character_name(&draft.name).is_ok()
-        })
+        self.creation != CreationState::Pending
+            && self.draft.as_ref().is_some_and(|draft| {
+                self.mode == (CharacterAreaMode::Creating { slot: draft.slot })
+                    && self.slots.get(usize::from(draft.slot)) == Some(&CharacterSlotState::Empty)
+                    && validate_character_name(&draft.name).is_ok()
+            })
     }
 
     fn cancel_creation(&mut self) {
         self.mode = CharacterAreaMode::Browsing;
         self.draft = None;
+        self.creation = CreationState::Idle;
     }
 
     pub(crate) fn create_slot(&self) -> Option<u8> {
@@ -108,6 +125,7 @@ impl CharacterArea {
 }
 
 pub(crate) struct FrontendRuntime {
+    pub(crate) session: FrontendSession,
     stage: FrontendStage,
     target: Option<FrontendStage>,
     intro_elapsed: f32,
@@ -119,6 +137,7 @@ pub(crate) struct FrontendRuntime {
 impl FrontendRuntime {
     pub(crate) fn new() -> Self {
         Self {
+            session: FrontendSession::Disconnected,
             stage: FrontendStage::Intro,
             target: None,
             intro_elapsed: 0.0,
@@ -147,7 +166,10 @@ impl FrontendRuntime {
 
     /// Also used by diagnostic shortcuts; active transitions cannot be retargeted.
     pub(crate) fn request(&mut self, stage: FrontendStage, scene: &mut FrontendScene) {
-        if self.target.is_some() || stage == self.stage {
+        if self.character_area.creation == CreationState::Pending
+            || self.target.is_some()
+            || stage == self.stage
+        {
             return;
         }
         self.target = Some(stage);
@@ -156,7 +178,7 @@ impl FrontendRuntime {
     }
 
     pub(crate) fn act(&mut self, action: FrontendAction, scene: &mut FrontendScene) {
-        if self.target.is_some() {
+        if self.character_area.creation == CreationState::Pending || self.target.is_some() {
             return;
         }
         if self.stage == FrontendStage::CharacterSelect
@@ -167,19 +189,16 @@ impl FrontendRuntime {
                 FrontendAction::Back | FrontendAction::CancelCreation
             ) {
                 self.character_area.cancel_creation();
-            } else if action == FrontendAction::CreateCharacter
-                && self.character_area.can_create()
-                && let Some(draft) = self.character_area.draft.take()
+            } else if action == FrontendAction::CreateCharacter && self.character_area.can_create()
             {
-                self.character_area.slots[usize::from(draft.slot)] =
-                    CharacterSlotState::Occupied { name: draft.name };
-                self.character_area.selected_slot = Some(draft.slot);
-                self.character_area.mode = CharacterAreaMode::Browsing;
+                self.character_area.creation = CreationState::Pending;
             }
             return;
         }
         let next = match (self.stage, action) {
-            (FrontendStage::Login, FrontendAction::ContinueFromLogin) => {
+            (FrontendStage::Login, FrontendAction::ContinueFromLogin)
+                if self.session == FrontendSession::Ready =>
+            {
                 FrontendStage::ChannelSelect
             }
             (FrontendStage::ChannelSelect, FrontendAction::SelectChannel(slot @ 0..=1)) => {
@@ -188,6 +207,11 @@ impl FrontendRuntime {
             }
             (FrontendStage::CharacterSelect, FrontendAction::SelectCharacter(slot @ 0..=2)) => {
                 self.character_area.selected_slot = Some(slot);
+                self.character_area.selected_id = match self.character_area.slots[usize::from(slot)]
+                {
+                    CharacterSlotState::Occupied { character_id, .. } => Some(character_id),
+                    CharacterSlotState::Empty => None,
+                };
                 return;
             }
             (FrontendStage::CharacterSelect, FrontendAction::BeginCreate(slot)) => {
@@ -205,6 +229,64 @@ impl FrontendRuntime {
             _ => return,
         };
         self.request(next, scene);
+    }
+
+    pub(crate) fn replace_roster(&mut self, roster: &[CharacterSummary]) {
+        self.character_area.slots = std::array::from_fn(|slot| {
+            roster.get(slot).map_or(CharacterSlotState::Empty, |entry| {
+                CharacterSlotState::Occupied {
+                    character_id: entry.character_id,
+                    name: entry.display_name.clone(),
+                }
+            })
+        });
+        self.character_area.selected_slot = self.character_area.selected_id.and_then(|id| {
+            roster
+                .iter()
+                .position(|entry| entry.character_id == id)
+                .map(|i| i as u8)
+        });
+        if self.character_area.selected_slot.is_none() {
+            self.character_area.selected_id = None;
+        }
+    }
+
+    pub(crate) fn session_ready(&mut self, roster: &[CharacterSummary], scene: &mut FrontendScene) {
+        self.session = FrontendSession::Ready;
+        self.replace_roster(roster);
+        self.request(FrontendStage::ChannelSelect, scene);
+    }
+
+    pub(crate) fn create_result(&mut self, result: &CreateCharacterResult) {
+        if self.character_area.creation != CreationState::Pending {
+            return;
+        }
+        match result {
+            CreateCharacterResult::Created { roster } => {
+                // Another session for this DEV profile may have created earlier entries.
+                // Global uniqueness plus the preserved draft identifies our accepted name.
+                let created = self.character_area.draft.as_ref().and_then(|draft| {
+                    roster
+                        .iter()
+                        .find(|entry| entry.display_name == draft.name)
+                        .map(|entry| entry.character_id)
+                });
+                self.character_area.selected_id = created;
+                self.replace_roster(roster);
+                self.character_area.cancel_creation();
+            }
+            CreateCharacterResult::Rejected(reason) => {
+                self.character_area.creation = CreationState::Rejected(*reason)
+            }
+        }
+    }
+
+    pub(crate) fn disconnected(&mut self, scene: &mut FrontendScene) {
+        self.session = FrontendSession::Disconnected;
+        self.character_area = CharacterArea::new();
+        self.selected_channel = None;
+        self.target = Some(FrontendStage::Login);
+        scene.request(FrontendSceneStop::Login);
     }
 
     pub(crate) fn advance(&mut self, dt: f32, scene: &mut FrontendScene) {
@@ -252,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn frontend_creation_validates_commits_locally_and_preserves_camera_and_case() {
+    fn frontend_creation_waits_for_authority_and_preserves_camera_and_case() {
         let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
         let camera = scene.source_rect();
         for slot in [0, 2] {
@@ -285,10 +367,33 @@ mod tests {
         runtime.character_area.draft.as_mut().unwrap().name = "Hero123".into();
         assert!(runtime.character_area.can_create());
         runtime.act(FrontendAction::CreateCharacter, &mut scene);
+        assert_eq!(runtime.character_area.slots[1], CharacterSlotState::Empty);
+        assert_eq!(runtime.character_area.creation, CreationState::Pending);
+        runtime.create_result(&CreateCharacterResult::Created {
+            roster: vec![
+                CharacterSummary {
+                    character_id: CharacterId::from_raw(10),
+                    display_name: "Wanderer".into(),
+                },
+                CharacterSummary {
+                    character_id: CharacterId::from_raw(30),
+                    display_name: "Hero123".into(),
+                },
+                CharacterSummary {
+                    character_id: CharacterId::from_raw(20),
+                    display_name: "Warden".into(),
+                },
+            ],
+        });
+        assert_eq!(
+            runtime.character_area.selected_id,
+            Some(CharacterId::from_raw(30))
+        );
         assert_eq!(runtime.character_area.slots.len(), 3);
         assert_eq!(
             runtime.character_area.slots[1],
             CharacterSlotState::Occupied {
+                character_id: purgatory_common::CharacterId::from_raw(30),
                 name: "Hero123".into()
             }
         );
@@ -310,6 +415,7 @@ mod tests {
         assert_eq!(
             runtime.character_area.slots[1],
             CharacterSlotState::Occupied {
+                character_id: purgatory_common::CharacterId::from_raw(30),
                 name: "Hero123".into()
             }
         );
@@ -355,6 +461,15 @@ mod tests {
 
     fn at(stage: FrontendStage) -> (FrontendRuntime, FrontendScene) {
         let mut runtime = FrontendRuntime::new();
+        runtime.session = crate::frontend_runtime::FrontendSession::Ready;
+        runtime.character_area.slots[0] = CharacterSlotState::Occupied {
+            character_id: purgatory_common::CharacterId::from_raw(10),
+            name: "Wanderer".into(),
+        };
+        runtime.character_area.slots[2] = CharacterSlotState::Occupied {
+            character_id: purgatory_common::CharacterId::from_raw(20),
+            name: "Warden".into(),
+        };
         let mut scene = FrontendScene::new();
         runtime.request(stage, &mut scene);
         if stage != FrontendStage::Intro {
@@ -599,5 +714,153 @@ mod tests {
         runtime.request(FrontendStage::CharacterSelect, &mut scene);
         runtime.advance(1.0, &mut scene);
         assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+    }
+}
+#[cfg(test)]
+mod pregame_tests {
+    use super::*;
+    use crate::lifecycle::{ClientLifecycle, ClientScreen};
+    use crate::network::NetworkFailureKind;
+    use crate::network::state::{ConnectionState, NetworkEvent};
+
+    fn roster(count: usize) -> Vec<CharacterSummary> {
+        (0..count)
+            .map(|i| CharacterSummary {
+                character_id: CharacterId::from_raw(70 + i as u64),
+                display_name: format!("Hero{i}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn frontend_authoritative_slots_pending_rejections_success_and_disconnect() {
+        let mut runtime = FrontendRuntime::new();
+        let mut scene = FrontendScene::new();
+        for count in [0, 1, 3] {
+            runtime.replace_roster(&roster(count));
+            assert_eq!(runtime.character_area.slots.len(), 3);
+            for slot in 0..3 {
+                assert_eq!(
+                    matches!(
+                        runtime.character_area.slots[slot],
+                        CharacterSlotState::Occupied { .. }
+                    ),
+                    slot < count
+                );
+            }
+        }
+        runtime.session_ready(&[], &mut scene);
+        runtime.advance(1.0, &mut scene);
+        runtime.act(FrontendAction::SelectChannel(0), &mut scene);
+        runtime.advance(1.0, &mut scene);
+        runtime.act(FrontendAction::SelectCharacter(0), &mut scene);
+        runtime.act(FrontendAction::BeginCreate(0), &mut scene);
+        runtime.character_area.draft.as_mut().unwrap().name = "Hero0".into();
+        let camera = scene.source_rect();
+        for reason in [
+            CharacterCreateRejection::NameTaken,
+            CharacterCreateRejection::RosterFull,
+            CharacterCreateRejection::InvalidName,
+            CharacterCreateRejection::StorageFailure,
+        ] {
+            runtime.act(FrontendAction::CreateCharacter, &mut scene);
+            assert_eq!(runtime.character_area.creation, CreationState::Pending);
+            assert!(!runtime.character_area.can_create());
+            for action in [
+                FrontendAction::CreateCharacter,
+                FrontendAction::CancelCreation,
+                FrontendAction::Back,
+            ] {
+                runtime.act(action, &mut scene);
+            }
+            runtime.request(FrontendStage::Login, &mut scene);
+            assert_eq!(runtime.character_area.slots[0], CharacterSlotState::Empty);
+            assert_eq!(runtime.character_area.creation, CreationState::Pending);
+            runtime.create_result(&CreateCharacterResult::Rejected(reason));
+            assert_eq!(runtime.character_area.draft.as_ref().unwrap().name, "Hero0");
+            assert_eq!(
+                runtime.character_area.mode,
+                CharacterAreaMode::Creating { slot: 0 }
+            );
+        }
+        runtime.act(FrontendAction::CreateCharacter, &mut scene);
+        runtime.create_result(&CreateCharacterResult::Created { roster: roster(1) });
+        assert_eq!(
+            runtime.character_area.selected_id,
+            Some(CharacterId::from_raw(70))
+        );
+        assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+        assert_eq!(scene.source_rect(), camera);
+        assert_eq!(
+            runtime.visible_stage(),
+            Some(FrontendStage::CharacterSelect)
+        );
+        runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+        runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+        runtime.character_area.draft.as_mut().unwrap().name = "Hero1".into();
+        runtime.act(FrontendAction::CreateCharacter, &mut scene);
+        runtime.disconnected(&mut scene);
+        runtime.advance(1.0, &mut scene);
+        assert_eq!(runtime.visible_stage(), Some(FrontendStage::Login));
+        assert!(
+            runtime
+                .character_area
+                .slots
+                .iter()
+                .all(|s| *s == CharacterSlotState::Empty)
+        );
+        assert_eq!(runtime.character_area.selected_id, None);
+        assert_eq!(runtime.character_area.creation, CreationState::Idle);
+    }
+
+    #[test]
+    fn frontend_lifecycle_filters_stale_roster_and_create_and_reconnects() {
+        let mut life = ClientLifecycle::new(purgatory_protocol::dev_socket_addr());
+        let a = life.try_begin_connect().unwrap();
+        life.apply(NetworkEvent::Handshaking { attempt_id: a });
+        let ready = |attempt_id, count| NetworkEvent::FrontendSessionReady {
+            attempt_id,
+            ready: purgatory_protocol::FrontendSessionReady {
+                connection_id: purgatory_protocol::ConnectionId::from_raw(9),
+                roster: roster(count),
+            },
+        };
+        assert!(life.apply(ready(a, 0)));
+        assert_eq!(life.view().state, ConnectionState::Connected);
+        assert_eq!(life.screen(), ClientScreen::Connection);
+        assert!(!life.gameplay_actions_allowed());
+        life.apply(NetworkEvent::Disconnected {
+            attempt_id: a,
+            kind: NetworkFailureKind::TransportLost,
+        });
+        let b = life.try_begin_connect().unwrap();
+        assert_ne!(a, b);
+        life.apply(NetworkEvent::Handshaking { attempt_id: b });
+        assert!(!life.apply(ready(a, 3)));
+        assert!(!life.apply(NetworkEvent::CharacterCreateResult {
+            attempt_id: a,
+            result: CreateCharacterResult::Created { roster: roster(3) }
+        }));
+        assert!(life.apply(ready(b, 1)));
+        assert_eq!(life.screen(), ClientScreen::Connection);
+        // A generic Connected event never authorizes gameplay; only explicit Welcome delivery does.
+        assert!(life.apply(NetworkEvent::GameplayReady { attempt_id: b }));
+        assert_eq!(life.screen(), ClientScreen::Game);
+    }
+    #[test]
+    fn frontend_create_selects_own_name_when_another_session_created_first() {
+        let mut runtime = FrontendRuntime::new();
+        runtime.character_area.mode = CharacterAreaMode::Creating { slot: 0 };
+        runtime.character_area.creation = CreationState::Pending;
+        runtime.character_area.draft = Some(CharacterCreationDraft {
+            slot: 0,
+            name: "Hero1".into(),
+        });
+        runtime.create_result(&CreateCharacterResult::Created { roster: roster(2) });
+        assert_eq!(
+            runtime.character_area.selected_id,
+            Some(CharacterId::from_raw(71))
+        );
+        assert_eq!(runtime.character_area.selected_slot, Some(1));
     }
 }

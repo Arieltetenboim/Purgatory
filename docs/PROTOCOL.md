@@ -1,6 +1,6 @@
 # Protocol
 
-Current protocol version is **31**. The historical phase summary below
+Current protocol version is **32**. The historical phase summary below
 retains its original version references.
 
 Phase 5.2 adds **authoritative gameplay replication**. Protocol version is **15**. The client sends per-tick `InputCommand` values identified by `(input_epoch, sequence)`. Phase 5.3 is client-only remote interpolation. Phase 5.4 is client-only local prediction. Phase 5.5 adds acknowledgement, continuation debt, late-collapse compaction, and local restore+replay. Phase 5.6 adds a **development-only** network impairment lab (delay/stall/HOL on the existing reliable streams). Phase 5.7 adds off-protocol localhost load metrics and raises the mechanical entity decode bound to 256. Phase 6.0 adds runtime/replication **contracts**; 6A composition; **6B** adds reliable interaction control envelopes and optional `ReplicatedKind::Interactable`; **6C** adds observer `WorldAddress`, `ReplicatedKind::Portal`, and `PortalActivate`. **6D** replaces full `WorldSnapshot` on the gameplay uni stream with `ReplicationFrame` (Enter/Update/Leave) and server interest-policy AOI, then adds DEV-only `DevSetChannel` (tag 17) so a Channel change is an authoritative `WorldAddress` boundary. **6E** adds DEV `Hello.dev_login` (temporary lookup identity) and `DisconnectReasonCode::AlreadyConnected`. Phase **6F** adds server-side runtime services without a protocol bump. Phase **7.2** adds `ReplicatedKind::Npc` (kind `4`) so visible Generics/NPCs Enter AOI on the wire (ADR-0054). Protocol **v12** adds equipment request envelopes and an optional equipment domain on Enter/Update. Protocol **v13** adds DEV presentation Attack/Hurt oneshot control envelopes (tags 22/23); Enter/Update snapshot layout is unchanged. Historical v1–v12 Hello/Welcome and earlier snapshot goldens stay frozen. Health on v8+ frames proves multi-domain deltas; 7.2 uses Health as a workload mutation domain. Phase **9A** locks ability authority (client requests ability id + targeting; server applies `AbilityEffect`) without adding wire tags. Phase **9B** executes `skill.basic.strike` in simulation only. Protocol **v15** adds ability activation envelopes (tags 25–27).
@@ -559,3 +559,22 @@ The client never sends snapshot or transform state back as input. Seeing another
 ## Protocol v30 — replicated authored content identity
 
 Replication Enter records carry an optional stable `ContentId` after the entity transform payload. The authoritative server sources it from the runtime entity. The client retains it as immutable presentation identity; transform, health and equipment Updates do not resend it.
+
+
+## R5B / protocol v32: pre-game session and character creation
+
+Hello validates version and DevLogin, then returns `FrontendSessionReady`, not Welcome. The reliable QUIC control stream remains open for creation. Welcome retains its gameplay-ready meaning; production R5B has no gameplay entry or replication startup. Historical golden byte vectors are unchanged; only the current-version assertion advances.
+
+All integers below are little-endian. Strings use the existing u8 byte-length prefix and MAX_LABEL_BYTES bound. A roster starts with u8 count (0–3); each entry is the existing CharacterId as u64 plus a validated CharacterName display string. IDs must be nonzero and distinct, and vector order is persistent slot order. No runtime entity, world or gameplay state appears in selection metadata.
+
+| Direction | Tag | Payload |
+|---|---|---|
+| Server | 45 | FrontendSessionReady: ConnectionId u64, roster |
+| Client | 46 | CreateCharacter: bounded name string only |
+| Server | 47 | CreateCharacterResult: outcome u8; 0 = success followed by full roster; 1 = InvalidName; 2 = NameTaken; 3 = RosterFull; 4 = StorageFailure |
+
+Bounded invalid request names reach server CharacterName validation and return InvalidName; oversized/malformed encodings fail decoding. Domain rejections keep the session open and never become Malformed. Owner is always the connection's validated DevLogin, never a request field. Requests are processed serially by the persistence worker; its commit determines visibility and ID allocation. Abusive control traffic retains the existing rate boundary.
+
+The client tags control events with local ConnectionAttemptId and reliably delivers them independently of droppable RTT telemetry. Connected means session active, not Game. Disconnect retires local authority. Creation has no retry/idempotency token: after uncertain transport loss the client refetches the roster on a new login rather than retrying an old pending request automatically.
+
+`purgatory-load --probe` now checks pre-game readiness. Gameplay scenarios explicitly report that selected-character entry is deferred; they must not be used as gameplay load gates in R5B.
