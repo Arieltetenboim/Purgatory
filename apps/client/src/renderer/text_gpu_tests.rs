@@ -239,12 +239,15 @@ fn renderer_repeated_text_preserves_order_and_color() {
         let panel = panels.prepare(
             &device,
             &queue,
-            &[UiRect {
-                min: [0.0, 60.0],
-                max: [400.0, 120.0],
-                color: [0.0, 0.0, 1.0, 1.0],
-            }],
-            &[],
+            &crate::renderer::UiComposition::new(
+                &[],
+                &[UiRect {
+                    min: [0.0, 60.0],
+                    max: [400.0, 120.0],
+                    color: [0.0, 0.0, 1.0, 1.0],
+                }],
+                &[],
+            ),
             SIZE,
         );
         let texture = target(&device);
@@ -481,7 +484,12 @@ fn renderer_repeated_text_consumer_calibration() {
             let batch = text
                 .prepare_blocks(&device, &queue, &blocks, scale)
                 .unwrap();
-            let panel = panels.prepare(&device, &queue, &rects, &[], SIZE);
+            let panel = panels.prepare(
+                &device,
+                &queue,
+                &crate::renderer::UiComposition::new(&[], &rects, &[]),
+                SIZE,
+            );
             let texture = target(&device);
             let view = texture.create_view(&Default::default());
             let mut encoder = device.create_command_encoder(&Default::default());

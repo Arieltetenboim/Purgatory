@@ -207,6 +207,35 @@ pub fn presentation_debug_quads_with_assets(
     quads
 }
 
+/// Fixed, equipment-free frontend preview using the ordinary base-piece composer.
+/// No entity, collection membership, animation clock, or gameplay state is created.
+pub(crate) fn fixed_base_preview_quads(visual_pack: &CharacterVisualPack) -> Vec<DrawQuad> {
+    use super::state::{CharacterPresentationState, EquipmentView, PresentationActivity};
+    let state = CharacterPresentationState {
+        pose: [0.0, 0.0],
+        facing: Facing::Right,
+        activity: PresentationActivity::Idle,
+        view: PresentationView::Side,
+        equipment: EquipmentView::empty_present(),
+    };
+    let prepared = super::skeleton_input::prepared_from_state(state)
+        .expect("canonical fixed frontend skeleton");
+    let bone_map = BoneTargetMap::bind_humanoid_v0().expect("canonical frontend bone map");
+    plan_character_draw(0, &[], PresentationView::Side)
+        .into_iter()
+        .filter_map(|kind| match kind {
+            PlannedKind::Base(piece) => textured_base_quad(
+                visual_pack,
+                prepared.world(),
+                1.0,
+                piece,
+                bone_map.bone(piece.hide_target()),
+            ),
+            PlannedKind::Attachment(_) => None,
+        })
+        .collect()
+}
+
 fn textured_base_quad(
     visual_pack: &CharacterVisualPack,
     world: &purgatory_skeleton::WorldPose,

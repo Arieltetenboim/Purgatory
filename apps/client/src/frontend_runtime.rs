@@ -31,13 +31,14 @@ pub(crate) enum FrontendAction {
     SelectCharacter(u8),
     BeginCreate(u8),
     CancelCreation,
+    CreateCharacter,
     Back,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CharacterSlotState {
     Empty,
-    Occupied { name: &'static str },
+    Occupied { name: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,11 +47,36 @@ pub(crate) enum CharacterAreaMode {
     Creating { slot: u8 },
 }
 
-/// Local R3 proof roster, not server identities or persisted characters.
+pub(crate) const CHARACTER_NAME_MAX: usize = 12;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CharacterNameError {
+    Length,
+    Characters,
+}
+
+pub(crate) fn validate_character_name(name: &str) -> Result<(), CharacterNameError> {
+    if !name.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        return Err(CharacterNameError::Characters);
+    }
+    if !(3..=CHARACTER_NAME_MAX).contains(&name.len()) {
+        return Err(CharacterNameError::Length);
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CharacterCreationDraft {
+    pub(crate) slot: u8,
+    pub(crate) name: String,
+}
+
+/// Local R4 proof roster, not server identities or persisted characters.
 pub(crate) struct CharacterArea {
     pub(crate) slots: [CharacterSlotState; 3],
     pub(crate) mode: CharacterAreaMode,
     pub(crate) selected_slot: Option<u8>,
+    pub(crate) draft: Option<CharacterCreationDraft>,
 }
 
 impl CharacterArea {
@@ -58,16 +84,30 @@ impl CharacterArea {
         Self {
             slots: [
                 CharacterSlotState::Occupied {
-                    name: "Local Wanderer",
+                    name: "Local Wanderer".into(),
                 },
                 CharacterSlotState::Empty,
                 CharacterSlotState::Occupied {
-                    name: "Local Warden",
+                    name: "Local Warden".into(),
                 },
             ],
             mode: CharacterAreaMode::Browsing,
             selected_slot: None,
+            draft: None,
         }
+    }
+
+    pub(crate) fn can_create(&self) -> bool {
+        self.draft.as_ref().is_some_and(|draft| {
+            self.mode == (CharacterAreaMode::Creating { slot: draft.slot })
+                && self.slots.get(usize::from(draft.slot)) == Some(&CharacterSlotState::Empty)
+                && validate_character_name(&draft.name).is_ok()
+        })
+    }
+
+    fn cancel_creation(&mut self) {
+        self.mode = CharacterAreaMode::Browsing;
+        self.draft = None;
     }
 
     pub(crate) fn create_slot(&self) -> Option<u8> {
@@ -122,7 +162,7 @@ impl FrontendRuntime {
             return;
         }
         self.target = Some(stage);
-        self.character_area.mode = CharacterAreaMode::Browsing;
+        self.character_area.cancel_creation();
         scene.request(stage.stop());
     }
 
@@ -137,6 +177,14 @@ impl FrontendRuntime {
                 action,
                 FrontendAction::Back | FrontendAction::CancelCreation
             ) {
+                self.character_area.cancel_creation();
+            } else if action == FrontendAction::CreateCharacter
+                && self.character_area.can_create()
+                && let Some(draft) = self.character_area.draft.take()
+            {
+                self.character_area.slots[usize::from(draft.slot)] =
+                    CharacterSlotState::Occupied { name: draft.name };
+                self.character_area.selected_slot = Some(draft.slot);
                 self.character_area.mode = CharacterAreaMode::Browsing;
             }
             return;
@@ -156,6 +204,10 @@ impl FrontendRuntime {
             (FrontendStage::CharacterSelect, FrontendAction::BeginCreate(slot)) => {
                 if self.character_area.create_slot() == Some(slot) {
                     self.character_area.mode = CharacterAreaMode::Creating { slot };
+                    self.character_area.draft = Some(CharacterCreationDraft {
+                        slot,
+                        name: String::new(),
+                    });
                 }
                 return;
             }
@@ -188,6 +240,128 @@ impl FrontendRuntime {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn frontend_character_name_contract() {
+        for name in ["ABC", "abc123", "Ab3", "Abc123Def456"] {
+            assert_eq!(super::validate_character_name(name), Ok(()), "{name}");
+        }
+        for name in [
+            "",
+            "AB",
+            "Abc123Def4567",
+            "A B",
+            "A_B",
+            "A.B",
+            "A-B",
+            "A!B",
+            "A@B",
+            "אבג",
+            "Abé",
+        ] {
+            assert!(super::validate_character_name(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn frontend_creation_validates_commits_locally_and_preserves_camera_and_case() {
+        let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+        let camera = scene.source_rect();
+        for slot in [0, 2] {
+            runtime.act(FrontendAction::SelectCharacter(slot), &mut scene);
+            runtime.act(FrontendAction::BeginCreate(slot), &mut scene);
+            assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+            assert!(runtime.character_area.draft.is_none());
+        }
+        runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+        runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+        assert_eq!(runtime.character_area.draft.as_ref().unwrap().name, "");
+        for name in ["", "Ab", "abc_", "Abc123Def4567", "אבג"] {
+            runtime.character_area.draft.as_mut().unwrap().name = name.into();
+            assert!(!runtime.character_area.can_create());
+            runtime.act(FrontendAction::CreateCharacter, &mut scene);
+            assert_eq!(runtime.character_area.slots[1], CharacterSlotState::Empty);
+        }
+        for action in [
+            FrontendAction::SelectCharacter(0),
+            FrontendAction::SelectChannel(0),
+            FrontendAction::BeginCreate(2),
+        ] {
+            runtime.act(action, &mut scene);
+            assert_eq!(
+                runtime.character_area.mode,
+                CharacterAreaMode::Creating { slot: 1 }
+            );
+            assert_eq!(runtime.character_area.selected_slot, Some(1));
+        }
+        runtime.character_area.draft.as_mut().unwrap().name = "Hero123".into();
+        assert!(runtime.character_area.can_create());
+        runtime.act(FrontendAction::CreateCharacter, &mut scene);
+        assert_eq!(runtime.character_area.slots.len(), 3);
+        assert_eq!(
+            runtime.character_area.slots[1],
+            CharacterSlotState::Occupied {
+                name: "Hero123".into()
+            }
+        );
+        assert_eq!(runtime.selected_character(), Some(1));
+        assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+        assert!(runtime.character_area.draft.is_none());
+        assert_eq!(
+            runtime.visible_stage(),
+            Some(FrontendStage::CharacterSelect)
+        );
+        assert_eq!(scene.source_rect(), camera);
+        assert!(scene.is_at(FrontendSceneStop::Character));
+        runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+        runtime.act(FrontendAction::CreateCharacter, &mut scene);
+        assert!(runtime.character_area.draft.is_none());
+        runtime.act(FrontendAction::Back, &mut scene);
+        runtime.advance(1.0, &mut scene);
+        assert_eq!(runtime.visible_stage(), Some(FrontendStage::ChannelSelect));
+        assert_eq!(
+            runtime.character_area.slots[1],
+            CharacterSlotState::Occupied {
+                name: "Hero123".into()
+            }
+        );
+    }
+
+    #[test]
+    fn frontend_cancel_and_dev_navigation_discard_drafts() {
+        for action in [FrontendAction::CancelCreation, FrontendAction::Back] {
+            let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+            let camera = scene.source_rect();
+            runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+            runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+            runtime.character_area.draft.as_mut().unwrap().name = "Abandoned".into();
+            runtime.act(action, &mut scene);
+            assert!(runtime.character_area.draft.is_none());
+            assert_eq!(runtime.character_area.slots[1], CharacterSlotState::Empty);
+            assert_eq!(runtime.selected_character(), None);
+            assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+            assert_eq!(scene.source_rect(), camera);
+            assert!(scene.is_at(FrontendSceneStop::Character));
+            runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+            assert_eq!(runtime.character_area.draft.as_ref().unwrap().name, "");
+        }
+        for destination in [
+            FrontendStage::Intro,
+            FrontendStage::Login,
+            FrontendStage::ChannelSelect,
+        ] {
+            let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+            runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+            runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+            runtime.character_area.draft.as_mut().unwrap().name = "Discard".into();
+            runtime.request(destination, &mut scene);
+            assert!(runtime.character_area.draft.is_none());
+            assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+            runtime.advance(1.0, &mut scene);
+            runtime.request(FrontendStage::CharacterSelect, &mut scene);
+            runtime.advance(1.0, &mut scene);
+            assert_eq!(runtime.character_area.mode, CharacterAreaMode::Browsing);
+        }
+    }
     use super::*;
 
     fn at(stage: FrontendStage) -> (FrontendRuntime, FrontendScene) {

@@ -1161,8 +1161,7 @@ impl Renderer {
             let ui_batch = self.ui.prepare(
                 &self.device,
                 &self.queue,
-                composition.rects,
-                composition.textured_rects,
+                composition,
                 [self.config.width, self.config.height],
             );
             let sprite_textures = &self.sprite_textures;

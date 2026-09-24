@@ -3,11 +3,12 @@ use purgatory_common::{DEV_LOGIN_MAX_LEN, DevLogin};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::frontend_runtime::{
-    CharacterAreaMode, CharacterSlotState, FrontendAction, FrontendRuntime, FrontendStage,
+    CHARACTER_NAME_MAX, CharacterAreaMode, CharacterSlotState, FrontendAction, FrontendRuntime,
+    FrontendStage,
 };
 use crate::renderer::{
-    PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle, UiRect,
-    UiTexturedRect,
+    DrawQuad, PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle,
+    UiRect, UiTexturedQuad, UiTexturedRect,
 };
 use crate::ui_panel::ScreenRect;
 
@@ -26,6 +27,7 @@ pub(crate) struct FrontendView<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
     Username,
+    CharacterName,
     Action(FrontendAction),
 }
 
@@ -57,7 +59,7 @@ impl FrontendUi {
 
     pub(crate) fn key(
         &mut self,
-        runtime: &FrontendRuntime,
+        runtime: &mut FrontendRuntime,
         login: &mut String,
         key: &Key,
         text: Option<&str>,
@@ -68,7 +70,29 @@ impl FrontendUi {
             self.reset_input();
             return Some(FrontendAction::Back);
         }
-        if stage != FrontendStage::Login || !self.focused {
+        if !self.focused {
+            return None;
+        }
+        if stage == FrontendStage::CharacterSelect {
+            if *key == Key::Named(NamedKey::Enter) {
+                if !repeat && runtime.character_area.can_create() {
+                    self.reset_input();
+                    return Some(FrontendAction::CreateCharacter);
+                }
+                return None;
+            }
+            if let Some(draft) = runtime.character_area.draft.as_mut() {
+                if *key == Key::Named(NamedKey::Backspace) {
+                    draft.name.pop();
+                } else if let Some(text) = text {
+                    append_single_line(&mut draft.name, text, CHARACTER_NAME_MAX, |ch| {
+                        ch.is_ascii_alphanumeric()
+                    });
+                }
+            }
+            return None;
+        }
+        if stage != FrontendStage::Login {
             return None;
         }
         match key {
@@ -105,7 +129,15 @@ impl FrontendUi {
                 .map(|(_, control)| control)
         });
         if pressed {
-            self.focused = hit == Some(Control::Username);
+            // Locked slots/background must not steal creation input focus.
+            if hit.is_some()
+                || !matches!(
+                    runtime.character_area.mode,
+                    CharacterAreaMode::Creating { .. }
+                )
+            {
+                self.focused = matches!(hit, Some(Control::Username | Control::CharacterName));
+            }
             self.pressed = hit;
             return None;
         }
@@ -233,18 +265,47 @@ impl FrontendUi {
                         == (CharacterAreaMode::Creating { slot: slot as u8 })
                     {
                         label("NEW CHARACTER", x, 181.0, 300.0, 22.0);
-                        for (index, heading) in ["NAME", "APPEARANCE", "CLOTHING", "ATTRIBUTES"]
-                            .iter()
-                            .enumerate()
-                        {
-                            label(heading, x, 255.0 + index as f32 * 66.0, 295.0, 18.0);
+                        label("NAME", x + 62.0, 218.0, 195.0, 15.0);
+                        let name = runtime
+                            .character_area
+                            .draft
+                            .as_ref()
+                            .map(|draft| draft.name.as_str())
+                            .unwrap_or("");
+                        let shown = if self.focused {
+                            format!("{name}|")
+                        } else if name.is_empty() {
+                            "Click to enter".into()
+                        } else {
+                            name.into()
+                        };
+                        frame.rects.push(layout.fill(
+                            name_bounds(slot as u8),
+                            if self.focused {
+                                [0.16, 0.19, 0.24, 1.0]
+                            } else {
+                                [0.06, 0.07, 0.09, 1.0]
+                            },
+                        ));
+                        label(&shown, x + 62.0, 249.0, 184.0, 17.0);
+                        label("3–12 letters or numbers", x + 62.0, 286.0, 195.0, 12.0);
+                        label("APPEARANCE — LOCKED", x + 62.0, 315.0, 195.0, 14.0);
+                        for (index, heading) in APPEARANCE_ROWS.iter().enumerate() {
                             label(
-                                "Not configured in R3",
-                                x,
-                                280.0 + index as f32 * 66.0,
-                                295.0,
+                                &format!("{heading}: DEFAULT"),
+                                x + 62.0,
+                                340.0 + index as f32 * 20.0,
+                                195.0,
                                 13.0,
                             );
+                        }
+                        label("ATTRIBUTES", x, 484.0, 300.0, 15.0);
+                        label("Customization available later", x, 506.0, 300.0, 12.0);
+                        if !runtime.character_area.can_create() {
+                            frame.rects.push(
+                                layout.fill(create_button(slot as u8), [0.10, 0.10, 0.10, 0.95]),
+                            );
+                            label("CREATE", x - 78.0, 550.0, 140.0, 16.0);
                         }
                     } else {
                         let name = match state {
@@ -258,7 +319,7 @@ impl FrontendUi {
                                 CharacterSlotState::Occupied { .. } => "LOCAL PLACEHOLDER",
                             },
                             x,
-                            285.0,
+                            465.0,
                             295.0,
                             15.0,
                         );
@@ -328,6 +389,7 @@ impl FrontendUi {
                 }
                 FrontendAction::BeginCreate(_) => "CREATE NEW CHARACTER".into(),
                 FrontendAction::CancelCreation => "CANCEL".into(),
+                FrontendAction::CreateCharacter => "CREATE".into(),
                 FrontendAction::Back => "BACK".into(),
             };
             let [x, y, width, height] = button_bounds;
@@ -351,6 +413,59 @@ pub(crate) struct FrontendFrame {
     pub(crate) rects: Vec<UiRect>,
     pub(crate) textured_rects: Vec<UiTexturedRect>,
     pub(crate) texts: Vec<TextBlock>,
+    pub(crate) preview_quads: Vec<UiTexturedQuad>,
+}
+
+impl FrontendFrame {
+    pub(crate) fn add_previews(
+        &mut self,
+        runtime: &FrontendRuntime,
+        viewport: PixelViewport,
+        base: &[DrawQuad],
+    ) {
+        if runtime.visible_stage() != Some(FrontendStage::CharacterSelect) || base.is_empty() {
+            return;
+        }
+        let mut min = [f32::INFINITY; 2];
+        let mut max = [f32::NEG_INFINITY; 2];
+        for point in base.iter().flat_map(|quad| quad.world_corners()) {
+            for axis in 0..2 {
+                min[axis] = min[axis].min(point[axis]);
+                max[axis] = max[axis].max(point[axis]);
+            }
+        }
+        for (slot, state) in runtime.character_area.slots.iter().enumerate() {
+            let creating =
+                runtime.character_area.mode == (CharacterAreaMode::Creating { slot: slot as u8 });
+            if !creating && *state == CharacterSlotState::Empty {
+                continue;
+            }
+            let left = 60.0 + slot as f32 * 400.0;
+            let [x, y, width, height] = if creating {
+                [left + 15.0, 235.0, 115.0, 235.0]
+            } else {
+                [left + 110.0, 245.0, 140.0, 165.0]
+            };
+            let scale = (width / (max[0] - min[0])).min(height / (max[1] - min[1]));
+            for quad in base {
+                let Some(texture) = quad.sprite_texture_id() else {
+                    continue;
+                };
+                let corners = quad.world_corners().map(|point| {
+                    Layout(viewport).point([
+                        x + width / 2.0 + (point[0] - (min[0] + max[0]) / 2.0) * scale,
+                        y + height / 2.0 - (point[1] - (min[1] + max[1]) / 2.0) * scale,
+                    ])
+                });
+                self.preview_quads.push(UiTexturedQuad {
+                    corners,
+                    uvs: quad.uvs(),
+                    texture,
+                    tint: quad.color,
+                });
+            }
+        }
+    }
 }
 
 const USERNAME: [f32; 4] = [430.0, 336.0, 420.0, 48.0];
@@ -361,6 +476,24 @@ fn slot_bounds(slot: u8) -> [f32; 4] {
 }
 fn slot_button(slot: u8) -> [f32; 4] {
     [90.0 + f32::from(slot) * 400.0, 525.0, 300.0, 48.0]
+}
+const APPEARANCE_ROWS: [&str; 7] = [
+    "Eyes",
+    "Hair",
+    "Hair Color",
+    "Eye Color",
+    "Shirt",
+    "Pants",
+    "Shoes",
+];
+fn name_bounds(slot: u8) -> [f32; 4] {
+    [204.0 + f32::from(slot) * 400.0, 242.0, 196.0, 38.0]
+}
+fn create_button(slot: u8) -> [f32; 4] {
+    [90.0 + f32::from(slot) * 400.0, 535.0, 144.0, 48.0]
+}
+fn cancel_button(slot: u8) -> [f32; 4] {
+    [246.0 + f32::from(slot) * 400.0, 535.0, 144.0, 48.0]
 }
 
 fn controls(runtime: &FrontendRuntime, login: &str) -> Vec<([f32; 4], Control)> {
@@ -385,10 +518,17 @@ fn controls(runtime: &FrontendRuntime, login: &str) -> Vec<([f32; 4], Control)> 
             action(BACK, FrontendAction::Back),
         ],
         Some(FrontendStage::CharacterSelect) => match runtime.character_area.mode {
-            CharacterAreaMode::Creating { slot } => vec![
-                action(slot_button(slot), FrontendAction::CancelCreation),
-                action(BACK, FrontendAction::Back),
-            ],
+            CharacterAreaMode::Creating { slot } => {
+                let mut controls = vec![
+                    (name_bounds(slot), Control::CharacterName),
+                    action(cancel_button(slot), FrontendAction::CancelCreation),
+                    action(BACK, FrontendAction::Back),
+                ];
+                if runtime.character_area.can_create() {
+                    controls.push(action(create_button(slot), FrontendAction::CreateCharacter));
+                }
+                controls
+            }
             CharacterAreaMode::Browsing => {
                 let mut controls: Vec<_> = (0..3)
                     .map(|slot| action(slot_bounds(slot), FrontendAction::SelectCharacter(slot)))
@@ -441,6 +581,150 @@ mod tests {
     use super::*;
     use crate::frontend_scene::FrontendScene;
 
+    #[test]
+    fn frontend_creation_input_focus_filter_backspace_enter_and_cancel() {
+        let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+        let mut ui = FrontendUi::default();
+        let mut login = "login".to_owned();
+        runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+        runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+        let key = Key::Character("a".into());
+        ui.key(&mut runtime, &mut login, &key, Some("Lost"), false);
+        assert_eq!(runtime.character_area.draft.as_ref().unwrap().name, "");
+        assert_eq!(click(&mut ui, &runtime, &login, [562.0, 550.0]), None);
+        click(&mut ui, &runtime, &login, [690.0, 260.0]);
+        assert!(ui.focused);
+        assert_eq!(click(&mut ui, &runtime, &login, [240.0, 550.0]), None);
+        assert!(ui.focused);
+        ui.key(&mut runtime, &mut login, &key, Some("Ab _.-!@אבé"), false);
+        assert_eq!(runtime.character_area.draft.as_ref().unwrap().name, "Ab");
+        assert_eq!(
+            ui.key(
+                &mut runtime,
+                &mut login,
+                &Key::Named(NamedKey::Enter),
+                None,
+                false
+            ),
+            None
+        );
+        assert!(
+            !controls(&runtime, &login)
+                .iter()
+                .any(|(_, control)| *control == Control::Action(FrontendAction::CreateCharacter))
+        );
+        ui.key(&mut runtime, &mut login, &key, Some("3"), false);
+        assert!(
+            controls(&runtime, &login)
+                .iter()
+                .any(|(_, control)| *control == Control::Action(FrontendAction::CreateCharacter))
+        );
+        assert_eq!(
+            ui.key(
+                &mut runtime,
+                &mut login,
+                &Key::Named(NamedKey::Enter),
+                None,
+                true
+            ),
+            None
+        );
+        ui.key(&mut runtime, &mut login, &key, Some("1234567890123"), false);
+        assert_eq!(
+            runtime.character_area.draft.as_ref().unwrap().name,
+            "Ab3123456789"
+        );
+        ui.key(
+            &mut runtime,
+            &mut login,
+            &Key::Named(NamedKey::Backspace),
+            None,
+            false,
+        );
+        assert_eq!(
+            runtime.character_area.draft.as_ref().unwrap().name,
+            "Ab312345678"
+        );
+        let action = ui
+            .key(
+                &mut runtime,
+                &mut login,
+                &Key::Named(NamedKey::Enter),
+                None,
+                false,
+            )
+            .unwrap();
+        assert_eq!(action, FrontendAction::CreateCharacter);
+        runtime.act(action, &mut scene);
+        assert_eq!(
+            runtime.character_area.slots[1],
+            CharacterSlotState::Occupied {
+                name: "Ab312345678".into()
+            }
+        );
+        assert_eq!(login, "login");
+        assert_eq!(
+            ui.key(
+                &mut runtime,
+                &mut login,
+                &Key::Named(NamedKey::Enter),
+                None,
+                false
+            ),
+            None
+        );
+
+        let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+        runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+        runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+        click(&mut ui, &runtime, &login, [690.0, 260.0]);
+        ui.key(&mut runtime, &mut login, &key, Some("Discard"), false);
+        let action = ui
+            .key(
+                &mut runtime,
+                &mut login,
+                &Key::Named(NamedKey::Escape),
+                None,
+                false,
+            )
+            .unwrap();
+        runtime.act(action, &mut scene);
+        assert!(runtime.character_area.draft.is_none());
+        assert!(scene.is_at(crate::frontend_scene::FrontendSceneStop::Character));
+        runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+        let action = click(&mut ui, &runtime, &login, [718.0, 550.0]).unwrap();
+        assert_eq!(action, FrontendAction::CancelCreation);
+        runtime.act(action, &mut scene);
+        assert!(runtime.character_area.draft.is_none());
+    }
+
+    #[test]
+    fn frontend_creation_click_create_requires_valid_name() {
+        for name in [
+            "",
+            "Ab",
+            "ABC",
+            "abc123",
+            "Abc123Def456",
+            "Abc123Def4567",
+            "Ab_",
+        ] {
+            let (mut runtime, mut scene) = at(FrontendStage::CharacterSelect);
+            runtime.act(FrontendAction::SelectCharacter(1), &mut scene);
+            runtime.act(FrontendAction::BeginCreate(1), &mut scene);
+            runtime.character_area.draft.as_mut().unwrap().name = name.into();
+            let expected = crate::frontend_runtime::validate_character_name(name)
+                .is_ok()
+                .then_some(FrontendAction::CreateCharacter);
+            let mut ui = FrontendUi::default();
+            assert_eq!(click(&mut ui, &runtime, "", [562.0, 555.0]), expected);
+            if let Some(action) = expected {
+                runtime.act(action, &mut scene);
+                assert_eq!(runtime.selected_character(), Some(1));
+            }
+        }
+    }
+
     fn at(stage: FrontendStage) -> (FrontendRuntime, FrontendScene) {
         let mut runtime = FrontendRuntime::new();
         let mut scene = FrontendScene::new();
@@ -473,15 +757,15 @@ mod tests {
 
     #[test]
     fn frontend_login_focus_characters_backspace_and_length() {
-        let (runtime, _) = at(FrontendStage::Login);
+        let (mut runtime, _) = at(FrontendStage::Login);
         let mut ui = FrontendUi::default();
         let mut login = String::new();
         let key = Key::Character("a".into());
-        ui.key(&runtime, &mut login, &key, Some("a"), false);
+        ui.key(&mut runtime, &mut login, &key, Some("a"), false);
         assert!(login.is_empty());
         click(&mut ui, &runtime, &login, [640.0, 355.0]);
         ui.key(
-            &runtime,
+            &mut runtime,
             &mut login,
             &key,
             Some("abc_09.defAZ /\\é\n"),
@@ -490,18 +774,18 @@ mod tests {
         assert_eq!(login, "abc_09.def");
         assert!(DevLogin::parse(&login).is_ok());
         ui.key(
-            &runtime,
+            &mut runtime,
             &mut login,
             &Key::Named(NamedKey::Backspace),
             None,
             true,
         );
         assert_eq!(login, "abc_09.de");
-        ui.key(&runtime, &mut login, &key, Some(&"x".repeat(40)), false);
+        ui.key(&mut runtime, &mut login, &key, Some(&"x".repeat(40)), false);
         assert_eq!(login.len(), DEV_LOGIN_MAX_LEN);
         click(&mut ui, &runtime, &login, [1.0, 1.0]);
         ui.key(
-            &runtime,
+            &mut runtime,
             &mut login,
             &Key::Named(NamedKey::Backspace),
             None,
@@ -512,7 +796,7 @@ mod tests {
 
     #[test]
     fn frontend_login_enter_and_button_share_full_validation() {
-        let (runtime, _) = at(FrontendStage::Login);
+        let (mut runtime, _) = at(FrontendStage::Login);
         for raw in ["", "a", ".ab", "ab.", "a..b", "Ab", "valid_09.name"] {
             let mut login = raw.to_string();
             let mut ui = FrontendUi::default();
@@ -522,7 +806,7 @@ mod tests {
                 .then_some(FrontendAction::ContinueFromLogin);
             assert_eq!(
                 ui.key(
-                    &runtime,
+                    &mut runtime,
                     &mut login,
                     &Key::Named(NamedKey::Enter),
                     None,
@@ -549,7 +833,7 @@ mod tests {
         assert!(controls(&runtime, &login).is_empty());
         assert_eq!(click(&mut ui, &runtime, &login, [640.0, 490.0]), None);
         ui.key(
-            &runtime,
+            &mut runtime,
             &mut login,
             &Key::Character("x".into()),
             Some("x"),
@@ -558,7 +842,7 @@ mod tests {
         assert_eq!(login, "test");
         assert_eq!(
             ui.key(
-                &runtime,
+                &mut runtime,
                 &mut login,
                 &Key::Named(NamedKey::Escape),
                 None,
@@ -581,7 +865,7 @@ mod tests {
         assert_eq!(click(&mut ui, &runtime, "", [240.0, 550.0]), None);
         let action = ui
             .key(
-                &runtime,
+                &mut runtime,
                 &mut String::new(),
                 &Key::Named(NamedKey::Escape),
                 None,
@@ -610,7 +894,7 @@ mod tests {
             (" ", crate::input::Action::Jump),
         ] {
             ui.key(
-                &runtime,
+                &mut runtime,
                 &mut login,
                 &Key::Character(character.into()),
                 Some(character),
@@ -625,7 +909,7 @@ mod tests {
         assert!(!gameplay.jump_pending());
         let action = ui
             .key(
-                &runtime,
+                &mut runtime,
                 &mut login,
                 &Key::Named(NamedKey::Enter),
                 None,
@@ -654,11 +938,21 @@ mod tests {
         let logo = assets
             .register_image("test.logo", image::RgbaImage::new(4, 1))
             .unwrap();
+        let pack = crate::character_assets::embedded_character_visual_pack(&mut assets).unwrap();
+        let preview = crate::character_presentation::fixed_base_preview_quads(&pack);
+        assert_eq!(preview.len(), 14);
+        assert!(preview.iter().all(|quad| quad.is_textured()));
         let assets = FrontendUiAssets {
             logo,
             logo_aspect: 4.0,
         };
-        for (width, height) in [(1280, 720), (800, 600), (2560, 1080), (1920, 1080)] {
+        for (width, height) in [
+            (1280, 720),
+            (800, 600),
+            (2560, 1080),
+            (1920, 1080),
+            (1920, 1009),
+        ] {
             let viewport = crate::renderer::constrained_pixel_viewport(width, height).unwrap();
             let outer = ScreenRect {
                 min: [viewport.x as f32, viewport.y as f32],
@@ -679,7 +973,7 @@ mod tests {
                         runtime.act(FrontendAction::BeginCreate(1), &mut scene);
                     }
                     for ppp in [1.0, 1.5, 2.0] {
-                        let frame = FrontendUi::default().frame(
+                        let mut frame = FrontendUi::default().frame(
                             FrontendView {
                                 runtime: &runtime,
                                 login: "dev.local",
@@ -690,6 +984,33 @@ mod tests {
                             assets,
                             None,
                         );
+                        frame.add_previews(&runtime, viewport, &preview);
+                        if stage == FrontendStage::CharacterSelect {
+                            assert_eq!(frame.preview_quads.len(), if creating { 42 } else { 28 });
+                            assert!(
+                                frame
+                                    .preview_quads
+                                    .iter()
+                                    .flat_map(|quad| quad.corners)
+                                    .all(|point| outer.contains(point))
+                            );
+                            if creating {
+                                for row in APPEARANCE_ROWS {
+                                    assert!(frame.texts.iter().any(|text| text.content.0 == format!("{row}: DEFAULT")));
+                                }
+                                for expected in [
+                                    "APPEARANCE — LOCKED",
+                                    "ATTRIBUTES",
+                                    "Customization available later",
+                                    "CREATE",
+                                    "CANCEL",
+                                ] {
+                                    assert!(
+                                        frame.texts.iter().any(|text| text.content.0 == expected)
+                                    );
+                                }
+                            }
+                        }
                         assert!(!frame.texts.is_empty());
                         if stage == FrontendStage::Login {
                             let button = Layout(viewport).rect(CONTINUE);

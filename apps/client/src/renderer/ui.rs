@@ -64,11 +64,21 @@ pub(crate) struct UiTexturedRect {
     pub tint: [f32; 4],
 }
 
+/// A sprite with explicit framebuffer corners and UVs; never tiles like UI rectangles.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiTexturedQuad {
+    pub(crate) corners: [[f32; 2]; 4],
+    pub(crate) uvs: [[f32; 2]; 4],
+    pub(crate) texture: SpriteTextureId,
+    pub(crate) tint: [f32; 4],
+}
+
 /// One atomic screen-space UI submission. Groups are rendered in slice order.
 pub(crate) struct UiComposition<'a> {
     pub(crate) textured_rects: &'a [UiTexturedRect],
     pub(crate) rects: &'a [UiRect],
     pub(crate) text: &'a [super::text::TextBlock],
+    pub(crate) textured_quads: &'a [UiTexturedQuad],
 }
 
 impl<'a> UiComposition<'a> {
@@ -81,6 +91,7 @@ impl<'a> UiComposition<'a> {
             textured_rects,
             rects,
             text,
+            textured_quads: &[],
         }
     }
 }
@@ -230,10 +241,11 @@ impl UiRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        rects: &[UiRect],
-        textured_rects: &[UiTexturedRect],
+        composition: &UiComposition<'_>,
         viewport: [u32; 2],
     ) -> usize {
+        let rects = composition.rects;
+        let textured_rects = composition.textured_rects;
         let mut batch = UiBatch {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("screen-ui-rect-batch"),
@@ -255,7 +267,10 @@ impl UiRenderer {
             return self.batches.len() - 1;
         }
 
-        let budget_usage = UiBudgetUsage::from_counts(rects.len(), textured_rects.len());
+        let budget_usage = UiBudgetUsage::from_counts(
+            rects.len(),
+            textured_rects.len() + composition.textured_quads.len(),
+        );
         if budget_usage.overflowed() {
             if !self.overflow_active {
                 eprintln!(
@@ -340,6 +355,47 @@ impl UiRenderer {
             } else {
                 batch.textured_runs.push(UiTextureRun {
                     texture: rect.texture,
+                    first_vertex,
+                    vertex_count: 6,
+                });
+            }
+        }
+        // Arbitrary sprite corners reuse the same UI pipeline, texture registry,
+        // painter order and budget. Zero rect_size disables rectangle-only tiling.
+        for quad in composition
+            .textured_quads
+            .iter()
+            .take(MAX_UI_TEXTURED_RECTS - textured_rects.len())
+        {
+            if !quad
+                .corners
+                .iter()
+                .flatten()
+                .chain(quad.uvs.iter().flatten())
+                .chain(quad.tint.iter())
+                .all(|value| value.is_finite())
+            {
+                continue;
+            }
+            let first_vertex = textured_vertices.len() as u32;
+            for index in [0, 1, 2, 0, 2, 3] {
+                textured_vertices.push(UiTexturedVertex {
+                    position: to_ndc(quad.corners[index]),
+                    uv: quad.uvs[index],
+                    tint: quad.tint,
+                    uv_min: [0.0; 2],
+                    uv_max: [1.0; 2],
+                    rect_min: [0.0; 2],
+                    rect_size: [0.0; 2],
+                });
+            }
+            if let Some(run) = batch.textured_runs.last_mut()
+                && run.texture == quad.texture
+            {
+                run.vertex_count += 6;
+            } else {
+                batch.textured_runs.push(UiTextureRun {
+                    texture: quad.texture,
                     first_vertex,
                     vertex_count: 6,
                 });

@@ -249,6 +249,7 @@ struct ClientApp {
     frontend_scene: crate::frontend_scene::FrontendScene,
     frontend_scene_texture: crate::renderer::SpriteTextureId,
     character_visual_pack: crate::character_assets::CharacterVisualPack,
+    frontend_base_preview: Vec<DrawQuad>,
     #[cfg(feature = "dev-diagnostics")]
     debug: Option<DebugOverlay>,
     frontend_ui: FrontendUi,
@@ -435,6 +436,9 @@ impl ClientApp {
             frontend_runtime: crate::frontend_runtime::FrontendRuntime::new(),
             frontend_scene: crate::frontend_scene::FrontendScene::new(),
             frontend_scene_texture,
+            frontend_base_preview: crate::character_presentation::fixed_base_preview_quads(
+                &character_visual_pack,
+            ),
             character_visual_pack,
             #[cfg(feature = "dev-diagnostics")]
             debug: None,
@@ -3256,7 +3260,7 @@ impl ClientApp {
             .into_iter()
             .collect();
         let frontend_frame = viewport.filter(|_| on_connection).map(|viewport| {
-            self.frontend_ui.frame(
+            let mut frame = self.frontend_ui.frame(
                 FrontendView {
                     runtime: &self.frontend_runtime,
                     login: &self.dev_login,
@@ -3269,13 +3273,21 @@ impl ClientApp {
                 ),
                 self.frontend_ui_assets,
                 self.cursor_position,
-            )
+            );
+            frame.add_previews(
+                &self.frontend_runtime,
+                viewport,
+                &self.frontend_base_preview,
+            );
+            frame
         });
         let mut ui_compositions = Vec::with_capacity(7);
         ui_compositions.push(UiComposition::new(&scene_rects, &[], &[]));
         if let Some(frame) = &frontend_frame {
             ui_compositions.push(UiComposition::new(&[], &frame.rects, &[]));
-            ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
+            let mut composition = UiComposition::new(&frame.textured_rects, &[], &frame.texts);
+            composition.textured_quads = &frame.preview_quads;
+            ui_compositions.push(composition);
         }
 
         ui_compositions.push(UiComposition::new(&[], &ui_rects, &ui_text));
@@ -5022,7 +5034,7 @@ impl ApplicationHandler for ClientApp {
                         self.frontend_ui.reset_input();
                     } else if event.state == ElementState::Pressed {
                         let action = self.frontend_ui.key(
-                            &self.frontend_runtime,
+                            &mut self.frontend_runtime,
                             &mut self.dev_login,
                             &event.logical_key,
                             event.text.as_deref(),
