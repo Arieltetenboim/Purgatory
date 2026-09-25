@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
-  "id": "equipment.debug.plate_cuirass",
+  "schema_version": 2,
+  "id": 30005,
+  "label": "equipment.debug.plate_cuirass",
   "equipment_slot": "bodywear"
 }

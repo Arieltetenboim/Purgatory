@@ -23,7 +23,7 @@ fn pack() -> ContentRegistry {
 }
 
 fn cid(authored: &str) -> ContentId {
-    ContentId::from_authored(authored).expect("authored id")
+    purgatory_common::allocated_id_for_label(authored).expect("catalog content")
 }
 
 fn present_slots(pairs: &[(EquipmentSlot, ContentId)]) -> EquipmentView {

@@ -1,6 +1,7 @@
 {
-  "schema_version": 2,
-  "id": "equipment.debug.cloth_pants",
+  "schema_version": 3,
+  "id": 30002,
+  "label": "equipment.debug.cloth_pants",
   "category": "equipment",
   "stack_limit": 1
 }

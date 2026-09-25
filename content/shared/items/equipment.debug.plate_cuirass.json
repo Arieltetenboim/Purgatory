@@ -1,6 +1,7 @@
 {
-  "schema_version": 2,
-  "id": "equipment.debug.plate_cuirass",
+  "schema_version": 3,
+  "id": 30005,
+  "label": "equipment.debug.plate_cuirass",
   "category": "equipment",
   "stack_limit": 1
 }

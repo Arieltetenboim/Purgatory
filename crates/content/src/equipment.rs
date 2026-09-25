@@ -1,4 +1,4 @@
-//! Equipment Content Schema v1: gameplay slot identity + client presentation.
+//! Equipment Content Schema v2: numeric Item identity + client presentation.
 //!
 //! Not protocol. Not skeleton internals. Not ART. Authoritative runtime state
 //! remains `EquipmentSlot → Option<ContentId>` (Phase 8A).
@@ -11,8 +11,8 @@ use crate::error::{ContentError, ValidationIssue};
 use purgatory_common::{ContentId, validate_authored_id};
 use purgatory_simulation::EquipmentSlot;
 
-/// Equipment content schema v1. Independent of map/entity `CONTENT_SCHEMA_VERSION`.
-pub const EQUIPMENT_CONTENT_SCHEMA_VERSION: u32 = 1;
+/// Equipment content schema v2. Independent of map/entity `CONTENT_SCHEMA_VERSION`.
+pub const EQUIPMENT_CONTENT_SCHEMA_VERSION: u32 = 2;
 
 /// Authoring-space correction bounds (128×128 reference canvas).
 pub const CORRECTION_OFFSET_MAX_PX: f32 = 8.0;
@@ -353,14 +353,16 @@ pub fn slot_allows_anchor(slot: EquipmentSlot, bone: BoneTarget, anchor: AnchorP
 
 pub fn validate_equipment_definition(def: &EquipmentDefinition) -> Result<(), ContentError> {
     let mut issues = Vec::new();
-    if let Err(err) = validate_authored_id(&def.authored_id) {
+    if let Err(reason) =
+        crate::item::validate_item_catalog_identity(def.content_id, &def.authored_id)
+    {
         issues.push(equip_issue(
             &def.authored_id,
             Some(def.slot),
             None,
             "id",
             "schema",
-            format!("invalid ContentId ({err:?})"),
+            reason,
         ));
     }
     if issues.is_empty() {
@@ -375,14 +377,17 @@ pub fn validate_equipment_presentation(
     slot: EquipmentSlot,
 ) -> Result<(), ContentError> {
     let mut issues = Vec::new();
-    if let Err(err) = validate_authored_id(&presentation.authored_id) {
+    if let Err(reason) = crate::item::validate_item_catalog_identity(
+        presentation.content_id,
+        &presentation.authored_id,
+    ) {
         issues.push(equip_issue(
             &presentation.authored_id,
             Some(slot),
             None,
             "id",
             "schema",
-            format!("invalid ContentId ({err:?})"),
+            reason,
         ));
     }
     let mut seen_ids = HashSet::new();
@@ -655,7 +660,7 @@ mod tests {
 
     fn def(id: &str, slot: EquipmentSlot) -> EquipmentDefinition {
         EquipmentDefinition {
-            content_id: ContentId::from_authored(id).unwrap(),
+            content_id: purgatory_common::allocated_id_for_label(id).expect("catalog item"),
             authored_id: id.into(),
             slot,
             domain: ContentDomain::Shared,
@@ -679,7 +684,7 @@ mod tests {
 
     fn presentation(id: &str, attachments: Vec<PresentationAttachment>) -> EquipmentPresentation {
         EquipmentPresentation {
-            content_id: ContentId::from_authored(id).unwrap(),
+            content_id: purgatory_common::allocated_id_for_label(id).expect("catalog item"),
             authored_id: id.into(),
             attachments,
         }
@@ -1014,7 +1019,7 @@ mod tests {
     #[test]
     fn authorize_equip_uses_gameplay_only() {
         let mut registry = crate::registry::ContentRegistry::new();
-        let id = "equipment.debug.solo";
+        let id = "equipment.debug.practice_sword";
         let def = def(id, EquipmentSlot::Weapon);
         let cid = def.content_id;
         registry.insert_equipment(def).unwrap();

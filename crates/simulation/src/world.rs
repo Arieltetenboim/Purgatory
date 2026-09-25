@@ -692,10 +692,7 @@ impl World {
     }
 
     fn equipment_ability(definition: ContentId) -> Option<crate::ability::AbilityId> {
-        (definition
-            == ContentId::from_authored("equipment.debug.practice_sword")
-                .expect("valid proof content"))
-        .then(|| {
+        (definition == purgatory_common::ITEM_PRACTICE_SWORD).then(|| {
             ContentId::from_authored("skill.debug.practice_sword_strike")
                 .expect("valid proof ability")
         })

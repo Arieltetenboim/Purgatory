@@ -527,7 +527,8 @@ struct RawPlacement {
 #[serde(deny_unknown_fields)]
 struct RawEquipment {
     schema_version: u32,
-    id: String,
+    id: u32,
+    label: String,
     equipment_slot: String,
 }
 
@@ -535,7 +536,8 @@ struct RawEquipment {
 #[serde(deny_unknown_fields)]
 struct RawItem {
     schema_version: u32,
-    id: String,
+    id: u32,
+    label: String,
     category: String,
     stack_limit: u32,
     #[serde(default)]
@@ -546,7 +548,8 @@ struct RawItem {
 #[serde(deny_unknown_fields)]
 struct RawItemPresentation {
     schema_version: u32,
-    id: String,
+    id: u32,
+    label: String,
     icon: String,
 }
 
@@ -554,7 +557,8 @@ struct RawItemPresentation {
 #[serde(deny_unknown_fields)]
 struct RawEquipmentPresentation {
     schema_version: u32,
-    id: String,
+    id: u32,
+    label: String,
     #[serde(default)]
     attachments: Vec<RawAttachment>,
 }
@@ -888,12 +892,12 @@ impl RawEquipment {
         path: &Path,
         domain: ContentDomain,
     ) -> Result<EquipmentDefinition, ContentError> {
-        check_equipment_schema(path, self.schema_version, &self.id)?;
-        check_authored(path, &self.id)?;
+        check_equipment_schema(path, self.schema_version, &self.label)?;
+        check_authored(path, &self.label)?;
         let slot = EquipmentSlot::parse(&self.equipment_slot).ok_or_else(|| {
             ContentError::from_path(
                 path.to_path_buf(),
-                &self.id,
+                &self.label,
                 "equipment_slot",
                 format!(
                     "rule=schema: unknown equipment slot '{}'",
@@ -902,8 +906,8 @@ impl RawEquipment {
             )
         })?;
         let def = EquipmentDefinition {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
-            authored_id: self.id,
+            content_id: ContentId::from_raw(self.id),
+            authored_id: self.label,
             slot,
             domain,
         };
@@ -914,19 +918,19 @@ impl RawEquipment {
 
 impl RawItem {
     fn into_def(self, path: &Path, domain: ContentDomain) -> Result<ItemDefinition, ContentError> {
-        check_item_schema(path, self.schema_version, &self.id)?;
-        check_authored(path, &self.id)?;
+        check_item_schema(path, self.schema_version, &self.label)?;
+        check_authored(path, &self.label)?;
         let category = ItemCategory::parse(&self.category).ok_or_else(|| {
             ContentError::from_path(
                 path.to_path_buf(),
-                &self.id,
+                &self.label,
                 "category",
                 format!("rule=schema: unknown item category '{}'", self.category),
             )
         })?;
         let def = ItemDefinition {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
-            authored_id: self.id,
+            content_id: ContentId::from_raw(self.id),
+            authored_id: self.label,
             domain,
             category,
             stack_limit: self.stack_limit,
@@ -941,11 +945,11 @@ impl RawItem {
 
 impl RawItemPresentation {
     fn into_def(self, path: &Path) -> Result<ItemPresentation, ContentError> {
-        check_item_presentation_schema(path, self.schema_version, &self.id)?;
-        check_authored(path, &self.id)?;
+        check_item_presentation_schema(path, self.schema_version, &self.label)?;
+        check_authored(path, &self.label)?;
         let def = ItemPresentation {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
-            authored_id: self.id,
+            content_id: ContentId::from_raw(self.id),
+            authored_id: self.label,
             icon: self.icon,
         };
         validate_item_presentation(&def)?;
@@ -955,15 +959,15 @@ impl RawItemPresentation {
 
 impl RawEquipmentPresentation {
     fn into_def(self, path: &Path) -> Result<EquipmentPresentation, ContentError> {
-        check_equipment_schema(path, self.schema_version, &self.id)?;
-        check_authored(path, &self.id)?;
+        check_equipment_schema(path, self.schema_version, &self.label)?;
+        check_authored(path, &self.label)?;
         let mut attachments = Vec::new();
         for (i, raw) in self.attachments.into_iter().enumerate() {
-            attachments.push(parse_attachment(path, &self.id, i, raw)?);
+            attachments.push(parse_attachment(path, &self.label, i, raw)?);
         }
         Ok(EquipmentPresentation {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
-            authored_id: self.id,
+            content_id: ContentId::from_raw(self.id),
+            authored_id: self.label,
             attachments,
         })
     }
@@ -1767,13 +1771,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.bad_target.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_target","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.bad_target.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_target","attachments":[{"id":"x","bone":"root","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.bad_target.side"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"x","bone":"root","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.cloth_cap.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("unknown bone");
         assert!(err.to_string().contains("unknown BoneTarget"));
@@ -1787,7 +1791,7 @@ mod tests {
         write_file(
             &tmp.join("shared/equipment_presentation"),
             "equipment.debug.orphan.json",
-            r#"{"schema_version":1,"id":"equipment.debug.orphan","attachments":[]}"#,
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("orphan");
         assert!(err.to_string().contains("no matching equipment gameplay"));
@@ -1800,13 +1804,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "item.debug.token.json",
-            r#"{"schema_version":2,"id":"item.debug.token","category":"consumable","stack_limit":20}"#,
+            "item.debug.small_potion.json",
+            r#"{"schema_version":3,"id":30011,"label":"item.debug.small_potion","category":"consumable","stack_limit":20}"#,
         );
         let registry = load_registry(&tmp, LoadMode::Shared).expect("valid item");
-        let id = ContentId::from_authored("item.debug.token").unwrap();
+        let id = purgatory_common::ITEM_SMALL_POTION;
         let item = registry.item_by_id(id).expect("lookup by ContentId");
-        assert_eq!(item.authored_id, "item.debug.token");
+        assert_eq!(item.authored_id, "item.debug.small_potion");
         assert_eq!(item.category, ItemCategory::Consumable);
         assert_eq!(item.stack_limit, 20);
         assert!(!item.drop_requires_confirmation);
@@ -1822,53 +1826,53 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "equipment.debug.default.json",
-            r#"{"schema_version":2,"id":"equipment.debug.default","category":"equipment","stack_limit":1}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":3,"id":30001,"label":"equipment.debug.cloth_cap","category":"equipment","stack_limit":1}"#,
         );
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.default.json",
-            r#"{"schema_version":1,"id":"equipment.debug.default","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/items"),
-            "item.debug.default.json",
-            r#"{"schema_version":2,"id":"item.debug.default","category":"misc","stack_limit":1}"#,
+            "item.package.json",
+            r#"{"schema_version":3,"id":30012,"label":"item.package","category":"misc","stack_limit":1}"#,
         );
         write_file(
             &tmp.join("shared/items"),
-            "equipment.debug.override.json",
-            r#"{"schema_version":2,"id":"equipment.debug.override","category":"equipment","stack_limit":1,"drop_requires_confirmation":false}"#,
+            "equipment.debug.unadorned.json",
+            r#"{"schema_version":3,"id":30008,"label":"equipment.debug.unadorned","category":"equipment","stack_limit":1,"drop_requires_confirmation":false}"#,
         );
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.override.json",
-            r#"{"schema_version":1,"id":"equipment.debug.override","equipment_slot":"headwear"}"#,
+            "equipment.debug.unadorned.json",
+            r#"{"schema_version":2,"id":30008,"label":"equipment.debug.unadorned","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/items"),
-            "item.debug.override.json",
-            r#"{"schema_version":2,"id":"item.debug.override","category":"misc","stack_limit":1,"drop_requires_confirmation":true}"#,
+            "item.welcome.watch_signal_lantern.json",
+            r#"{"schema_version":3,"id":30014,"label":"item.welcome.watch_signal_lantern","category":"misc","stack_limit":1,"drop_requires_confirmation":true}"#,
         );
         let registry = load_registry(&tmp, LoadMode::Shared).expect("valid item policies");
         assert!(
             registry
-                .item("equipment.debug.default")
+                .item("equipment.debug.cloth_cap")
                 .is_some_and(|item| item.drop_requires_confirmation)
         );
         assert!(
             registry
-                .item("item.debug.default")
+                .item("item.package")
                 .is_some_and(|item| !item.drop_requires_confirmation)
         );
         assert!(
             registry
-                .item("equipment.debug.override")
+                .item("equipment.debug.unadorned")
                 .is_some_and(|item| !item.drop_requires_confirmation)
         );
         assert!(
             registry
-                .item("item.debug.override")
+                .item("item.welcome.watch_signal_lantern")
                 .is_some_and(|item| item.drop_requires_confirmation)
         );
         let _ = fs::remove_dir_all(&tmp);
@@ -1881,7 +1885,7 @@ mod tests {
         write_file(
             &tmp.join("shared/items"),
             "item.debug.zero.json",
-            r#"{"schema_version":2,"id":"item.debug.zero","category":"misc","stack_limit":0}"#,
+            r#"{"schema_version":3,"id":30012,"label":"item.package","category":"misc","stack_limit":0}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("zero stack limit");
         assert!(err.to_string().contains("stack_limit"));
@@ -1898,7 +1902,7 @@ mod tests {
         write_file(
             &tmp.join("shared/items"),
             "item.debug.quest.json",
-            r#"{"schema_version":2,"id":"item.debug.quest","category":"quest","stack_limit":1}"#,
+            r#"{"schema_version":3,"id":30012,"label":"item.package","category":"quest","stack_limit":1}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("unknown category");
         assert!(err.to_string().contains("unknown item category 'quest'"));
@@ -1914,16 +1918,16 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "item.debug.icon.json",
-            r#"{"schema_version":2,"id":"item.debug.icon","category":"misc","stack_limit":1}"#,
+            "item.debug.small_potion.json",
+            r#"{"schema_version":3,"id":30011,"label":"item.debug.small_potion","category":"consumable","stack_limit":20}"#,
         );
         write_file(
             &tmp.join("shared/item_presentation"),
-            "item.debug.icon.json",
-            r#"{"schema_version":1,"id":"item.debug.icon","icon":"item.placeholder"}"#,
+            "item.debug.small_potion.json",
+            r#"{"schema_version":2,"id":30011,"label":"item.debug.small_potion","icon":"item.placeholder"}"#,
         );
         let registry = load_registry(&tmp, LoadMode::Shared).expect("valid presentation");
-        let id = ContentId::from_authored("item.debug.icon").unwrap();
+        let id = purgatory_common::ITEM_SMALL_POTION;
         assert_eq!(
             registry.item_presentation_by_id(id).unwrap().icon,
             "item.placeholder"
@@ -1940,8 +1944,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/item_presentation"),
-            "item.debug.orphan.json",
-            r#"{"schema_version":1,"id":"item.debug.orphan","icon":"item.placeholder"}"#,
+            "item.package.json",
+            r#"{"schema_version":2,"id":30012,"label":"item.package","icon":"item.placeholder"}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("orphan presentation");
         assert!(
@@ -1958,8 +1962,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.orphan.json",
-            r#"{"schema_version":1,"id":"equipment.debug.orphan","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("missing matching item");
         assert!(
@@ -1978,13 +1982,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "equipment.debug.misc_cap.json",
-            r#"{"schema_version":2,"id":"equipment.debug.misc_cap","category":"misc","stack_limit":1}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":3,"id":30001,"label":"equipment.debug.cloth_cap","category":"misc","stack_limit":1}"#,
         );
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.misc_cap.json",
-            r#"{"schema_version":1,"id":"equipment.debug.misc_cap","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("wrong category");
         assert!(
@@ -2003,16 +2007,16 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "equipment.debug.cap.json",
-            r#"{"schema_version":2,"id":"equipment.debug.cap","category":"equipment","stack_limit":1}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":3,"id":30001,"label":"equipment.debug.cloth_cap","category":"equipment","stack_limit":1}"#,
         );
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.cap.json",
-            r#"{"schema_version":1,"id":"equipment.debug.cap","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         let registry = load_registry(&tmp, LoadMode::Shared).expect("matching definitions");
-        let id = ContentId::from_authored("equipment.debug.cap").unwrap();
+        let id = purgatory_common::ITEM_CLOTH_CAP;
         assert_eq!(
             registry.item_by_id(id).unwrap().content_id,
             registry.equipment_by_id(id).unwrap().content_id
@@ -2046,13 +2050,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.ov.json",
-            r#"{"schema_version":1,"id":"equipment.debug.ov","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.ov.json",
-            r#"{"schema_version":1,"id":"equipment.debug.ov","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","hide_base":["head"],"visuals":{"side":"equipment.debug.ov.side"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","hide_base":["head"],"visuals":{"side":"equipment.debug.cloth_cap.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("overlay hide");
         assert!(err.to_string().contains("Overlay requires hide_base"));
@@ -2065,13 +2069,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.noside.json",
-            r#"{"schema_version":1,"id":"equipment.debug.noside","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.noside.json",
-            r#"{"schema_version":1,"id":"equipment.debug.noside","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","visuals":{"back":"equipment.debug.noside.back"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","visuals":{"back":"equipment.debug.cloth_cap.back"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("missing side");
         let text = err.to_string();
@@ -2085,13 +2089,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.hide.json",
-            r#"{"schema_version":1,"id":"equipment.debug.hide","equipment_slot":"bodywear"}"#,
+            "equipment.debug.plate_cuirass.json",
+            r#"{"schema_version":2,"id":30005,"label":"equipment.debug.plate_cuirass","equipment_slot":"bodywear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.hide.json",
-            r#"{"schema_version":1,"id":"equipment.debug.hide","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"replace_base","hide_base":["weapon"],"visuals":{"side":"equipment.debug.hide.side"}}]}"#,
+            "equipment.debug.plate_cuirass.json",
+            r#"{"schema_version":2,"id":30005,"label":"equipment.debug.plate_cuirass","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"replace_base","hide_base":["weapon"],"visuals":{"side":"equipment.debug.plate_cuirass.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("illegal hide");
         assert!(err.to_string().contains("unknown base visual"));
@@ -2104,13 +2108,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.bad_anchor.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_anchor","equipment_slot":"weapon"}"#,
+            "equipment.debug.practice_sword.json",
+            r#"{"schema_version":2,"id":30006,"label":"equipment.debug.practice_sword","equipment_slot":"weapon"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.bad_anchor.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_anchor","attachments":[{"id":"blade","bone":"foot_front","anchor":"grip_front","coverage":"overlay","visuals":{"side":"equipment.debug.bad_anchor.side"}}]}"#,
+            "equipment.debug.practice_sword.json",
+            r#"{"schema_version":2,"id":30006,"label":"equipment.debug.practice_sword","attachments":[{"id":"blade","bone":"foot_front","anchor":"grip_front","coverage":"overlay","visuals":{"side":"equipment.debug.practice_sword.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("bad anchor");
         let text = err.to_string();
@@ -2124,13 +2128,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.bad_corr.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_corr","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.bad_corr.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_corr","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","correction":{"x":9.0},"visuals":{"side":"equipment.debug.bad_corr.side"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","correction":{"x":9.0},"visuals":{"side":"equipment.debug.cloth_cap.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("correction");
         assert!(err.to_string().contains("correction"));
@@ -2143,13 +2147,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.dup.json",
-            r#"{"schema_version":1,"id":"equipment.debug.dup","equipment_slot":"gloves"}"#,
+            "equipment.debug.leather_gloves.json",
+            r#"{"schema_version":2,"id":30004,"label":"equipment.debug.leather_gloves","equipment_slot":"gloves"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.dup.json",
-            r#"{"schema_version":1,"id":"equipment.debug.dup","attachments":[{"id":"hand","bone":"hand_front","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.dup.a"}},{"id":"hand","bone":"hand_back","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.dup.b"}}]}"#,
+            "equipment.debug.leather_gloves.json",
+            r#"{"schema_version":2,"id":30004,"label":"equipment.debug.leather_gloves","attachments":[{"id":"hand","bone":"hand_front","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.leather_gloves.a"}},{"id":"hand","bone":"hand_back","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.leather_gloves.b"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("dup id");
         assert!(err.to_string().contains("duplicate attachment id"));
@@ -2162,13 +2166,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.slot.json",
-            r#"{"schema_version":1,"id":"equipment.debug.slot","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.slot.json",
-            r#"{"schema_version":1,"id":"equipment.debug.slot","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"overlay","visuals":{"side":"equipment.debug.slot.side"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"overlay","visuals":{"side":"equipment.debug.cloth_cap.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("slot mismatch");
         assert!(err.to_string().contains("slot_target"));

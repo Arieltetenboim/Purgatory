@@ -965,11 +965,11 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_item_and_equipment_content_ids_are_rejected() {
-        let authored = "equipment.debug.mismatch";
+    fn item_facets_reject_numeric_id_that_belongs_to_another_catalog_label() {
+        let authored = "equipment.debug.cloth_cap";
         let mut reg = ContentRegistry::new();
         reg.insert_item(ItemDefinition {
-            content_id: ContentId::from_authored(authored).unwrap(),
+            content_id: purgatory_common::ITEM_CLOTH_CAP,
             authored_id: authored.into(),
             domain: ContentDomain::Shared,
             category: ItemCategory::Equipment,
@@ -979,16 +979,13 @@ mod tests {
         .unwrap();
         let err = reg
             .insert_equipment(EquipmentDefinition {
-                content_id: ContentId::from_authored("equipment.debug.other").unwrap(),
+                content_id: purgatory_common::ITEM_PRACTICE_SWORD,
                 authored_id: authored.into(),
                 slot: purgatory_simulation::EquipmentSlot::Headwear,
                 domain: ContentDomain::Shared,
             })
-            .expect_err("mismatched ids");
-        assert!(
-            err.to_string()
-                .contains("item and equipment definitions must share")
-        );
+            .expect_err("catalog label mismatch");
+        assert!(err.to_string().contains("not allocated to label"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 {
-  "schema_version": 2,
-  "id": "item.welcome.watch_signal_lantern",
+  "schema_version": 3,
+  "id": 30014,
+  "label": "item.welcome.watch_signal_lantern",
   "category": "misc",
   "stack_limit": 1
 }

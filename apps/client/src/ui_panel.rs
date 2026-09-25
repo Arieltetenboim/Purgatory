@@ -4220,8 +4220,8 @@ mod tests {
         let slot_assets = embedded_slot_assets();
         let registry = inventory_registry();
         let item_icons = placeholder_item_icons(&registry);
-        let sword = ContentId::from_authored("equipment.debug.practice_sword").unwrap();
-        let potion = ContentId::from_authored("item.debug.small_potion").unwrap();
+        let sword = purgatory_common::ITEM_PRACTICE_SWORD;
+        let potion = purgatory_common::ITEM_SMALL_POTION;
         let entries = [
             InventoryEntry {
                 slot: 9,
@@ -4297,7 +4297,7 @@ mod tests {
         let slot_assets = embedded_slot_assets();
         let registry = inventory_registry();
         let item_icons = placeholder_item_icons(&registry);
-        let sword = ContentId::from_authored("equipment.debug.practice_sword").unwrap();
+        let sword = purgatory_common::ITEM_PRACTICE_SWORD;
         let sword_item = ItemInstanceId::from_raw(41);
         let entries = [InventoryEntry {
             slot: 7,

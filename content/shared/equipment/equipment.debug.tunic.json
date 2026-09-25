@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
-  "id": "equipment.debug.tunic",
+  "schema_version": 2,
+  "id": 30007,
+  "label": "equipment.debug.tunic",
   "equipment_slot": "bodywear"
 }

@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
-  "id": "equipment.debug.unadorned",
+  "schema_version": 2,
+  "id": 30008,
+  "label": "equipment.debug.unadorned",
   "equipment_slot": "headwear"
 }
