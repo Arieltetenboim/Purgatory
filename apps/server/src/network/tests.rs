@@ -3736,7 +3736,7 @@ async fn slow_snapshot_client_does_not_block_simulation_or_peer() {
 }
 
 fn debug_sword() -> purgatory_common::ContentId {
-    purgatory_common::ContentId::from_authored("equipment.debug.practice_sword").unwrap()
+    purgatory_common::ITEM_PRACTICE_SWORD
 }
 
 fn owned_debug_sword(
