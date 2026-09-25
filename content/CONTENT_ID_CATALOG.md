@@ -37,6 +37,12 @@ Rules:
 | `30006` | `equipment.debug.practice_sword` | active |
 | `30007` | `equipment.debug.tunic` | active |
 | `30008` | `equipment.debug.unadorned` | active |
+| `30009` | `item.debug.iron_scrap` | active |
+| `30010` | `item.debug.repair_hammer` | active |
+| `30011` | `item.debug.small_potion` | active |
+| `30012` | `item.package` | active |
+| `30013` | `item.welcome.road_marker_cloth_bundle` | active |
+| `30014` | `item.welcome.watch_signal_lantern` | active |
 
 The matching equipment gameplay and equipment-presentation facets use the same Item ID as the item row above.
 
