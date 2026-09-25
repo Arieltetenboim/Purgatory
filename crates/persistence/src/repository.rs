@@ -53,17 +53,12 @@ impl FileCharacterRepository {
         Ok(Some(parsed))
     }
 
-    /// Load, or recreate a default record after corruption / missing file.
+    /// Load an existing character, or create the normal default only when the
+    /// character file is genuinely absent. Existing invalid data fails closed.
     pub fn load_or_default(&self, id: CharacterId) -> Result<PersistentCharacter, PersistError> {
-        match self.load(id) {
-            Ok(Some(character)) => Ok(character),
-            Ok(None) => {
-                let character = PersistentCharacter::new_default(id);
-                self.save(&character)?;
-                Ok(character)
-            }
-            Err(err) => {
-                eprintln!("PURGATORY persist load fallback id={id} err={err}");
+        match self.load(id)? {
+            Some(character) => Ok(character),
+            None => {
                 let character = PersistentCharacter::new_default(id);
                 self.save(&character)?;
                 Ok(character)
@@ -132,37 +127,57 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_falls_back_to_default() {
+    fn missing_file_load_or_default_creates_default() {
         let dir = unique_dir();
         let repo = FileCharacterRepository::open(&dir).unwrap();
         let id = CharacterId::from_raw(9);
         let path = repo.path_for(id);
-        std::fs::write(&path, b"{not json").unwrap();
+        assert!(!path.exists());
         let character = repo.load_or_default(id).unwrap();
         assert_eq!(character.character_id, id);
         assert_eq!(character.restore.map_authored, "map.dev.footnote");
+        assert!(path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn unsupported_schema_is_error_then_load_or_default_recovers() {
+    fn malformed_json_fails_closed_and_preserves_original_bytes() {
+        let dir = unique_dir();
+        let repo = FileCharacterRepository::open(&dir).unwrap();
+        let id = CharacterId::from_raw(10);
+        let path = repo.path_for(id);
+        let original = b"{not json".to_vec();
+        std::fs::write(&path, &original).unwrap();
+        assert!(matches!(repo.load_or_default(id), Err(PersistError::Json { .. })));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsupported_schema_fails_closed_and_preserves_original_bytes() {
         let dir = unique_dir();
         let repo = FileCharacterRepository::open(&dir).unwrap();
         let id = CharacterId::from_raw(11);
         let path = repo.path_for(id);
-        std::fs::write(
-            &path,
-            r#"{"schema_version":99,"character_id":11,"persistence_revision":1,"restore":{"map_authored":"map.dev.footnote","point_id":"default"}}"#,
-        )
-        .unwrap();
-        let err = repo.load(id).unwrap_err();
-        assert!(
-            matches!(err, PersistError::Schema { found: 99, .. }),
-            "{err}"
-        );
-        let recovered = repo.load_or_default(id).unwrap();
-        assert_eq!(recovered.character_id, id);
-        assert_eq!(recovered.schema_version, PERSISTENCE_SCHEMA_VERSION);
+        let original = br#"{"schema_version":99,"character_id":11,"persistence_revision":1,"restore":{"map_authored":"map.dev.footnote","point_id":"default"}}"#.to_vec();
+        std::fs::write(&path, &original).unwrap();
+        let err = repo.load_or_default(id).unwrap_err();
+        assert!(matches!(err, PersistError::Schema { found: 99, .. }), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn character_id_mismatch_fails_closed_and_preserves_original_bytes() {
+        let dir = unique_dir();
+        let repo = FileCharacterRepository::open(&dir).unwrap();
+        let id = CharacterId::from_raw(12);
+        let path = repo.path_for(id);
+        let original = br#"{"schema_version":1,"character_id":13,"persistence_revision":1,"restore":{"map_authored":"map.dev.footnote","point_id":"default"}}"#.to_vec();
+        std::fs::write(&path, &original).unwrap();
+        let err = repo.load_or_default(id).unwrap_err();
+        assert!(matches!(err, PersistError::Corrupt { .. }), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
