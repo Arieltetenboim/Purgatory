@@ -358,11 +358,11 @@ fn save_snapshot_observed(
 
 fn flush_deferred_latest(service: &mut PersistenceService, shared: &SharedSaveState) {
     let pending = {
-        let mut latest = shared
-            .latest
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        latest.drain().map(|(_, snapshot)| snapshot).collect::<Vec<_>>()
+        let mut latest = shared.latest.lock().unwrap_or_else(|err| err.into_inner());
+        latest
+            .drain()
+            .map(|(_, snapshot)| snapshot)
+            .collect::<Vec<_>>()
     };
     for snapshot in pending {
         save_snapshot_observed(service, shared, snapshot);
