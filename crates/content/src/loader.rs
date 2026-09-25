@@ -1771,13 +1771,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.bad_target.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_target","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.bad_target.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_target","attachments":[{"id":"x","bone":"root","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.bad_target.side"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"x","bone":"root","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.cloth_cap.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("unknown bone");
         assert!(err.to_string().contains("unknown BoneTarget"));
@@ -2050,13 +2050,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.ov.json",
-            r#"{"schema_version":1,"id":"equipment.debug.ov","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.ov.json",
-            r#"{"schema_version":1,"id":"equipment.debug.ov","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","hide_base":["head"],"visuals":{"side":"equipment.debug.ov.side"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","hide_base":["head"],"visuals":{"side":"equipment.debug.cloth_cap.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("overlay hide");
         assert!(err.to_string().contains("Overlay requires hide_base"));
@@ -2069,13 +2069,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.noside.json",
-            r#"{"schema_version":1,"id":"equipment.debug.noside","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.noside.json",
-            r#"{"schema_version":1,"id":"equipment.debug.noside","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","visuals":{"back":"equipment.debug.noside.back"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","visuals":{"back":"equipment.debug.cloth_cap.back"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("missing side");
         let text = err.to_string();
@@ -2089,13 +2089,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.hide.json",
-            r#"{"schema_version":1,"id":"equipment.debug.hide","equipment_slot":"bodywear"}"#,
+            "equipment.debug.plate_cuirass.json",
+            r#"{"schema_version":2,"id":30005,"label":"equipment.debug.plate_cuirass","equipment_slot":"bodywear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.hide.json",
-            r#"{"schema_version":1,"id":"equipment.debug.hide","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"replace_base","hide_base":["weapon"],"visuals":{"side":"equipment.debug.hide.side"}}]}"#,
+            "equipment.debug.plate_cuirass.json",
+            r#"{"schema_version":2,"id":30005,"label":"equipment.debug.plate_cuirass","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"replace_base","hide_base":["weapon"],"visuals":{"side":"equipment.debug.plate_cuirass.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("illegal hide");
         assert!(err.to_string().contains("unknown base visual"));
@@ -2108,13 +2108,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.bad_anchor.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_anchor","equipment_slot":"weapon"}"#,
+            "equipment.debug.practice_sword.json",
+            r#"{"schema_version":2,"id":30006,"label":"equipment.debug.practice_sword","equipment_slot":"weapon"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.bad_anchor.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_anchor","attachments":[{"id":"blade","bone":"foot_front","anchor":"grip_front","coverage":"overlay","visuals":{"side":"equipment.debug.bad_anchor.side"}}]}"#,
+            "equipment.debug.practice_sword.json",
+            r#"{"schema_version":2,"id":30006,"label":"equipment.debug.practice_sword","attachments":[{"id":"blade","bone":"foot_front","anchor":"grip_front","coverage":"overlay","visuals":{"side":"equipment.debug.practice_sword.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("bad anchor");
         let text = err.to_string();
@@ -2128,13 +2128,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.bad_corr.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_corr","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.bad_corr.json",
-            r#"{"schema_version":1,"id":"equipment.debug.bad_corr","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","correction":{"x":9.0},"visuals":{"side":"equipment.debug.bad_corr.side"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"crown","bone":"head","anchor":"crown","coverage":"overlay","correction":{"x":9.0},"visuals":{"side":"equipment.debug.cloth_cap.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("correction");
         assert!(err.to_string().contains("correction"));
@@ -2147,13 +2147,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.dup.json",
-            r#"{"schema_version":1,"id":"equipment.debug.dup","equipment_slot":"gloves"}"#,
+            "equipment.debug.leather_gloves.json",
+            r#"{"schema_version":2,"id":30004,"label":"equipment.debug.leather_gloves","equipment_slot":"gloves"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.dup.json",
-            r#"{"schema_version":1,"id":"equipment.debug.dup","attachments":[{"id":"hand","bone":"hand_front","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.dup.a"}},{"id":"hand","bone":"hand_back","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.dup.b"}}]}"#,
+            "equipment.debug.leather_gloves.json",
+            r#"{"schema_version":2,"id":30004,"label":"equipment.debug.leather_gloves","attachments":[{"id":"hand","bone":"hand_front","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.leather_gloves.a"}},{"id":"hand","bone":"hand_back","anchor":"bone_origin","coverage":"overlay","visuals":{"side":"equipment.debug.leather_gloves.b"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("dup id");
         assert!(err.to_string().contains("duplicate attachment id"));
@@ -2166,13 +2166,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.slot.json",
-            r#"{"schema_version":1,"id":"equipment.debug.slot","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/equipment_presentation"),
-            "equipment.debug.slot.json",
-            r#"{"schema_version":1,"id":"equipment.debug.slot","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"overlay","visuals":{"side":"equipment.debug.slot.side"}}]}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[{"id":"shell","bone":"torso","anchor":"chest","coverage":"overlay","visuals":{"side":"equipment.debug.cloth_cap.side"}}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("slot mismatch");
         assert!(err.to_string().contains("slot_target"));
