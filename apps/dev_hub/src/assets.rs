@@ -4,12 +4,12 @@ use std::path::PathBuf;
 
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 
-/// Development path to the Hub brand logo (`Graphic/LOGO.png`).
+/// Development path to the canonical Hub brand logo (`Graphic/frontend/LOGO.png`).
 ///
 /// Packaged builds should change this function only — not paint call sites.
 #[must_use]
 pub fn hub_logo_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Graphic/LOGO.png")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Graphic/frontend/LOGO.png")
 }
 
 /// Decode the logo once. Missing/invalid PNG logs a single warning.
@@ -74,10 +74,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hub_logo_path_points_at_graphic_logo() {
+    fn hub_logo_path_points_at_frontend_logo() {
         let path = hub_logo_path();
         assert!(
-            path.ends_with("Graphic/LOGO.png") || path.ends_with("Graphic\\LOGO.png"),
+            path.ends_with("Graphic/frontend/LOGO.png")
+                || path.ends_with("Graphic\\frontend\\LOGO.png"),
             "{}",
             path.display()
         );
