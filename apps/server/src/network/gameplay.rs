@@ -1553,11 +1553,30 @@ impl GameplayOwner {
     fn emit_save(&mut self, snapshot: &PersistentCharacterSnapshot) {
         if let Some(persist) = &self.persist {
             let t0 = std::time::Instant::now();
-            if persist.try_save(snapshot.clone()) == SaveHandoff::Closed {
-                eprintln!(
-                    "PURGATORY persist handoff closed character={} revision={}",
-                    snapshot.character_id, snapshot.persistence_revision
-                );
+            match persist.try_save(snapshot.clone()) {
+                SaveHandoff::Accepted => {}
+                SaveHandoff::DeferredLatest => {
+                    let diagnostics = persist.diagnostics();
+                    if diagnostics.queue_full.is_power_of_two() {
+                        eprintln!(
+                            "PURGATORY persist queue pressure full={} deferred={} replaced={} stale_ignored={}",
+                            diagnostics.queue_full,
+                            diagnostics.deferred_latest,
+                            diagnostics.coalesced_replaced,
+                            diagnostics.coalesced_stale_ignored
+                        );
+                    }
+                }
+                SaveHandoff::Closed => {
+                    let diagnostics = persist.diagnostics();
+                    eprintln!(
+                        "PURGATORY persist handoff closed character={} revision={} closed_total={} save_failures={}",
+                        snapshot.character_id,
+                        snapshot.persistence_revision,
+                        diagnostics.worker_closed,
+                        diagnostics.save_failures
+                    );
+                }
             }
             let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
             self.persist_enqueue_us = self.persist_enqueue_us.saturating_add(us);
