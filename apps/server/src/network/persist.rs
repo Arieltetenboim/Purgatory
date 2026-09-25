@@ -473,6 +473,65 @@ mod tests {
         assert_eq!(home, PathBuf::from("/home/dev/.local/share/purgatory"));
     }
 
+    #[test]
+    fn saturation_keeps_latest_snapshot_per_character_and_counts_pressure() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let shared = Arc::new(SharedSaveState::default());
+        let handle = PersistenceHandle {
+            tx,
+            shared: shared.clone(),
+        };
+        let id = purgatory_common::CharacterId::from_raw(31);
+        let mut character = purgatory_persistence::PersistentCharacter::new_default(id);
+        character.persistence_revision = 1;
+        let first = PersistentCharacterSnapshot::from_character(&character);
+        assert_eq!(handle.try_save(first), SaveHandoff::Accepted);
+
+        character.persistence_revision = 2;
+        let second = PersistentCharacterSnapshot::from_character(&character);
+        assert_eq!(handle.try_save(second), SaveHandoff::DeferredLatest);
+
+        character.persistence_revision = 3;
+        let third = PersistentCharacterSnapshot::from_character(&character);
+        assert_eq!(handle.try_save(third), SaveHandoff::DeferredLatest);
+
+        let queued = match rx.try_recv().unwrap() {
+            PersistCmd::Save(snapshot) => snapshot,
+            _ => panic!("expected save"),
+        };
+        assert_eq!(queued.persistence_revision, 1);
+        let deferred = handle.deferred_for_test(id).unwrap();
+        assert_eq!(deferred.persistence_revision, 3);
+
+        assert_eq!(
+            handle.diagnostics(),
+            PersistenceDiagnosticsSnapshot {
+                enqueue_accepted: 1,
+                queue_full: 2,
+                deferred_latest: 1,
+                coalesced_replaced: 1,
+                worker_closed: 0,
+                save_failures: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn closed_worker_is_explicit_and_counted() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let handle = PersistenceHandle {
+            tx,
+            shared: Arc::new(SharedSaveState::default()),
+        };
+        let id = purgatory_common::CharacterId::from_raw(32);
+        let snapshot = PersistentCharacterSnapshot::from_character(
+            &purgatory_persistence::PersistentCharacter::new_default(id),
+        );
+        assert_eq!(handle.try_save(snapshot), SaveHandoff::Closed);
+        assert_eq!(handle.diagnostics().worker_closed, 1);
+    }
+
     #[tokio::test]
     async fn shutdown_drains_pending_saves_in_temp_dir() {
         let dir = std::env::temp_dir().join(format!(
@@ -493,7 +552,7 @@ mod tests {
         let character = purgatory_persistence::PersistentCharacter::new_default(id);
         let snapshot =
             purgatory_persistence::PersistentCharacterSnapshot::from_character(&character);
-        assert!(handle.try_save(snapshot));
+        assert_eq!(handle.try_save(snapshot), SaveHandoff::Accepted);
         handle.shutdown(Duration::from_secs(2)).await;
         let path = dir.join(purgatory_persistence::character_file_name(id));
         assert!(
