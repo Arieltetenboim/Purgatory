@@ -2,12 +2,14 @@
 
 use crate::domain::ContentDomain;
 use crate::error::{ContentError, ValidationIssue};
-use purgatory_common::{ContentId, validate_authored_id};
+use purgatory_common::{
+    ContentId, ContentKind, allocated_id_for_label, label_for_allocated_id, validate_authored_id,
+};
 
-/// Item gameplay content schema v2.
-pub const ITEM_CONTENT_SCHEMA_VERSION: u32 = 2;
-/// Item presentation content schema v1.
-pub const ITEM_PRESENTATION_SCHEMA_VERSION: u32 = 1;
+/// Item gameplay content schema v3: numeric canonical `id` + metadata `label`.
+pub const ITEM_CONTENT_SCHEMA_VERSION: u32 = 3;
+/// Item presentation content schema v2: same numeric Item ID + metadata label.
+pub const ITEM_PRESENTATION_SCHEMA_VERSION: u32 = 2;
 
 /// Stable gameplay category used by inventory policy and client filtering.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -70,20 +72,31 @@ pub const fn is_stackable(def: &ItemDefinition) -> bool {
     def.stack_limit > 1
 }
 
+pub(crate) fn validate_item_catalog_identity(
+    content_id: ContentId,
+    label: &str,
+) -> Result<(), String> {
+    validate_authored_id(label).map_err(|err| format!("invalid item label ({err:?})"))?;
+    if content_id.kind() != Some(ContentKind::Item) {
+        return Err("item id must be allocated in the Item block".into());
+    }
+    if label_for_allocated_id(content_id) != Some(label) {
+        return Err(format!(
+            "item id {content_id} is not allocated to label '{label}' in the content catalog"
+        ));
+    }
+    if allocated_id_for_label(label) != Some(content_id) {
+        return Err(format!(
+            "item label '{label}' does not resolve to id {content_id} in the content catalog"
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_item_definition(def: &ItemDefinition) -> Result<(), ContentError> {
     let mut issues = Vec::new();
-    if let Err(err) = validate_authored_id(&def.authored_id) {
-        issues.push(item_issue(
-            &def.authored_id,
-            "id",
-            format!("invalid ContentId ({err:?})"),
-        ));
-    } else if ContentId::from_authored(&def.authored_id).expect("validated") != def.content_id {
-        issues.push(item_issue(
-            &def.authored_id,
-            "id",
-            "content_id does not match authored id",
-        ));
+    if let Err(reason) = validate_item_catalog_identity(def.content_id, &def.authored_id) {
+        issues.push(item_issue(&def.authored_id, "id", reason));
     }
     if def.stack_limit == 0 {
         issues.push(item_issue(
@@ -101,18 +114,8 @@ pub fn validate_item_definition(def: &ItemDefinition) -> Result<(), ContentError
 
 pub fn validate_item_presentation(def: &ItemPresentation) -> Result<(), ContentError> {
     let mut issues = Vec::new();
-    if let Err(err) = validate_authored_id(&def.authored_id) {
-        issues.push(item_issue(
-            &def.authored_id,
-            "id",
-            format!("invalid ContentId ({err:?})"),
-        ));
-    } else if ContentId::from_authored(&def.authored_id).expect("validated") != def.content_id {
-        issues.push(item_issue(
-            &def.authored_id,
-            "id",
-            "content_id does not match authored id",
-        ));
+    if let Err(reason) = validate_item_catalog_identity(def.content_id, &def.authored_id) {
+        issues.push(item_issue(&def.authored_id, "id", reason));
     }
     if let Err(reason) = crate::equipment::validate_visual_key(&def.icon) {
         issues.push(item_issue(&def.authored_id, "icon", reason));
