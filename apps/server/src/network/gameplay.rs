@@ -4307,7 +4307,7 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
-        let item = ContentId::from_authored("item.debug.small_potion").expect("item id");
+        let item = purgatory_common::ITEM_SMALL_POTION;
         let before = owner.world().iter().count();
 
         owner
@@ -7184,7 +7184,7 @@ mod tests {
     }
 
     fn debug_sword() -> ContentId {
-        ContentId::from_authored("equipment.debug.practice_sword").unwrap()
+        purgatory_common::ITEM_PRACTICE_SWORD
     }
 
     fn owned_debug_sword(
