@@ -92,7 +92,7 @@ Builds if needed, launches `purgatory-dev-hub.exe`, then the bootstrap exits. Li
 
 - **Dashboard** — shared design-system modules (StatusCard / Project / Attention / Quick Actions + real ActivityLog strip). Semantic wide/medium/narrow composition; primary/ghost/destructive buttons; no invented host System Status gauges.
 - **Validation & Performance** — live run header + structured `live_status.json` fields, compact `capacity_live.json` strip (tick p99, utilization, dominant owner, saturation class, CPU raw vs normalized-per-logical; owner table behind Show full details), bounded `load.log` tail, `metrics.csv` chart (connected bots / tick mean), completed **Result summary** with **Show full details** expander over `run_summary.json`. Pass/fail remains harness CLI authority. Cancelled is distinct from Failed / OrchestrationFailed.
-- **Visual system** — shared cards, status pills, metric tiles, page headers in `apps/dev_hub` (`theme` + `ui/layout`). Brand logo from `Graphic/LOGO.png` (sidebar; same development path pattern as the client connection screen). Fixed window 1280×800.
+- **Visual system** — shared cards, status pills, metric tiles, page headers in `apps/dev_hub` (`theme` + `ui/layout`). Brand logo from `Graphic/frontend/LOGO.png` (sidebar; same canonical frontend asset as the client connection screen). Fixed window 1280×800.
 - Runtime snapshot owns presentation data (`ValidationLiveStatus`, `RunSummaryBrief`, `MetricsSeries`, `load_log_lines`). GUI does not spawn harnesses or decide PASS/FAIL.
 
 Do not use `cargo run -p purgatory-dev-hub` as the operational launch path.
