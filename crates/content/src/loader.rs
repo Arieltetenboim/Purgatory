@@ -1182,8 +1182,8 @@ impl RawMap {
         }
         let restore = parse_restore(path, &self.id, &self.restore, &spawn_points)?;
         Ok(MapDefinition {
-            content_id: ContentId::from_raw(self.id),
-            authored_id: self.label,
+            content_id: ContentId::from_authored(&self.id).expect("validated"),
+            authored_id: self.id,
             debug_name: self.debug_name,
             domain,
             bounds,
