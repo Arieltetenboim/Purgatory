@@ -1,6 +1,7 @@
 {
-  "schema_version": 2,
-  "id": "item.debug.repair_hammer",
+  "schema_version": 3,
+  "id": 30010,
+  "label": "item.debug.repair_hammer",
   "category": "tool",
   "stack_limit": 1
 }
