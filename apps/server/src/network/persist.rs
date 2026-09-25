@@ -53,6 +53,7 @@ pub struct PersistenceDiagnosticsSnapshot {
     pub queue_full: u64,
     pub deferred_latest: u64,
     pub coalesced_replaced: u64,
+    pub coalesced_stale_ignored: u64,
     pub worker_closed: u64,
     pub save_failures: u64,
 }
@@ -63,6 +64,7 @@ struct PersistenceDiagnostics {
     queue_full: AtomicU64,
     deferred_latest: AtomicU64,
     coalesced_replaced: AtomicU64,
+    coalesced_stale_ignored: AtomicU64,
     worker_closed: AtomicU64,
     save_failures: AtomicU64,
 }
@@ -74,6 +76,7 @@ impl PersistenceDiagnostics {
             queue_full: self.queue_full.load(Ordering::Relaxed),
             deferred_latest: self.deferred_latest.load(Ordering::Relaxed),
             coalesced_replaced: self.coalesced_replaced.load(Ordering::Relaxed),
+            coalesced_stale_ignored: self.coalesced_stale_ignored.load(Ordering::Relaxed),
             worker_closed: self.worker_closed.load(Ordering::Relaxed),
             save_failures: self.save_failures.load(Ordering::Relaxed),
         }
@@ -260,16 +263,28 @@ impl PersistenceHandle {
                     .latest
                     .lock()
                     .unwrap_or_else(|err| err.into_inner());
-                if latest.insert(snapshot.character_id, snapshot).is_some() {
-                    self.shared
-                        .diagnostics
-                        .coalesced_replaced
-                        .fetch_add(1, Ordering::Relaxed);
-                } else {
-                    self.shared
-                        .diagnostics
-                        .deferred_latest
-                        .fetch_add(1, Ordering::Relaxed);
+                match latest.entry(snapshot.character_id) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(snapshot);
+                        self.shared
+                            .diagnostics
+                            .deferred_latest
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        if snapshot.persistence_revision > entry.get().persistence_revision {
+                            entry.insert(snapshot);
+                            self.shared
+                                .diagnostics
+                                .coalesced_replaced
+                                .fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            self.shared
+                                .diagnostics
+                                .coalesced_stale_ignored
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
                 SaveHandoff::DeferredLatest
             }
@@ -495,6 +510,10 @@ mod tests {
         let third = PersistentCharacterSnapshot::from_character(&character);
         assert_eq!(handle.try_save(third), SaveHandoff::DeferredLatest);
 
+        character.persistence_revision = 2;
+        let stale = PersistentCharacterSnapshot::from_character(&character);
+        assert_eq!(handle.try_save(stale), SaveHandoff::DeferredLatest);
+
         let queued = match rx.try_recv().unwrap() {
             PersistCmd::Save(snapshot) => snapshot,
             _ => panic!("expected save"),
@@ -507,9 +526,10 @@ mod tests {
             handle.diagnostics(),
             PersistenceDiagnosticsSnapshot {
                 enqueue_accepted: 1,
-                queue_full: 2,
+                queue_full: 3,
                 deferred_latest: 1,
                 coalesced_replaced: 1,
+                coalesced_stale_ignored: 1,
                 worker_closed: 0,
                 save_failures: 0,
             }
