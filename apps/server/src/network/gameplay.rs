@@ -4336,7 +4336,7 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
-        let item = ContentId::from_authored("item.debug.small_potion").expect("item id");
+        let item = purgatory_common::ITEM_SMALL_POTION;
         let stack_limit = owner
             .registry
             .item_by_id(item)
