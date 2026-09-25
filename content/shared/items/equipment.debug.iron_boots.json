@@ -1,6 +1,7 @@
 {
-  "schema_version": 2,
-  "id": "equipment.debug.iron_boots",
+  "schema_version": 3,
+  "id": 30003,
+  "label": "equipment.debug.iron_boots",
   "category": "equipment",
   "stack_limit": 1
 }
