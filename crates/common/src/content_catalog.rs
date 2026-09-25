@@ -29,6 +29,12 @@ pub const ITEM_PLATE_CUIRASS: ContentId = ContentId::from_raw(30_005);
 pub const ITEM_PRACTICE_SWORD: ContentId = ContentId::from_raw(30_006);
 pub const ITEM_TUNIC: ContentId = ContentId::from_raw(30_007);
 pub const ITEM_UNADORNED: ContentId = ContentId::from_raw(30_008);
+pub const ITEM_IRON_SCRAP: ContentId = ContentId::from_raw(30_009);
+pub const ITEM_REPAIR_HAMMER: ContentId = ContentId::from_raw(30_010);
+pub const ITEM_SMALL_POTION: ContentId = ContentId::from_raw(30_011);
+pub const ITEM_PACKAGE: ContentId = ContentId::from_raw(30_012);
+pub const ITEM_ROAD_MARKER_CLOTH_BUNDLE: ContentId = ContentId::from_raw(30_013);
+pub const ITEM_WATCH_SIGNAL_LANTERN: ContentId = ContentId::from_raw(30_014);
 
 pub const WORLD_OBJECT_CHEST: ContentId = ContentId::from_raw(60_001);
 pub const WORLD_OBJECT_MAP_B_SWITCH: ContentId = ContentId::from_raw(60_002);
@@ -62,6 +68,12 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
         "equipment.debug.practice_sword" => ITEM_PRACTICE_SWORD,
         "equipment.debug.tunic" => ITEM_TUNIC,
         "equipment.debug.unadorned" => ITEM_UNADORNED,
+        "item.debug.iron_scrap" => ITEM_IRON_SCRAP,
+        "item.debug.repair_hammer" => ITEM_REPAIR_HAMMER,
+        "item.debug.small_potion" => ITEM_SMALL_POTION,
+        "item.package" => ITEM_PACKAGE,
+        "item.welcome.road_marker_cloth_bundle" => ITEM_ROAD_MARKER_CLOTH_BUNDLE,
+        "item.welcome.watch_signal_lantern" => ITEM_WATCH_SIGNAL_LANTERN,
         "entity.interactable.chest" => WORLD_OBJECT_CHEST,
         "entity.interactable.map_b_switch" => WORLD_OBJECT_MAP_B_SWITCH,
         "entity.interactable.switch" => WORLD_OBJECT_SWITCH,
@@ -94,6 +106,12 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
         ITEM_PRACTICE_SWORD => "equipment.debug.practice_sword",
         ITEM_TUNIC => "equipment.debug.tunic",
         ITEM_UNADORNED => "equipment.debug.unadorned",
+        ITEM_IRON_SCRAP => "item.debug.iron_scrap",
+        ITEM_REPAIR_HAMMER => "item.debug.repair_hammer",
+        ITEM_SMALL_POTION => "item.debug.small_potion",
+        ITEM_PACKAGE => "item.package",
+        ITEM_ROAD_MARKER_CLOTH_BUNDLE => "item.welcome.road_marker_cloth_bundle",
+        ITEM_WATCH_SIGNAL_LANTERN => "item.welcome.watch_signal_lantern",
         WORLD_OBJECT_CHEST => "entity.interactable.chest",
         WORLD_OBJECT_MAP_B_SWITCH => "entity.interactable.map_b_switch",
         WORLD_OBJECT_SWITCH => "entity.interactable.switch",
@@ -119,6 +137,12 @@ mod tests {
             ITEM_PRACTICE_SWORD,
             ITEM_TUNIC,
             ITEM_UNADORNED,
+            ITEM_IRON_SCRAP,
+            ITEM_REPAIR_HAMMER,
+            ITEM_SMALL_POTION,
+            ITEM_PACKAGE,
+            ITEM_ROAD_MARKER_CLOTH_BUNDLE,
+            ITEM_WATCH_SIGNAL_LANTERN,
         ] {
             assert_eq!(id.kind(), Some(ContentKind::Item));
         }
@@ -162,6 +186,9 @@ mod tests {
             "npc.welcome.workshop_craftsperson",
             "map.dev.footnote",
             "equipment.debug.practice_sword",
+            "item.debug.small_potion",
+            "item.package",
+            "item.welcome.watch_signal_lantern",
             "entity.portal.to_second",
         ] {
             let id = allocated_id_for_label(label).expect("allocated label");
