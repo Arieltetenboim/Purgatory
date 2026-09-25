@@ -1,7 +1,8 @@
 //! Persistence worker. Owns identity allocation and character files.
 //!
-//! The simulation thread only `try_send`s owned [`PersistentCharacterSnapshot`]
-//! values. JSON and filesystem work happen here.
+//! The simulation thread hands off owned [`PersistentCharacterSnapshot`] values
+//! through a bounded queue with latest-per-character pressure coalescing. JSON
+//! and filesystem work happen only on the persistence worker.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -550,6 +551,37 @@ mod tests {
         );
         assert_eq!(handle.try_save(snapshot), SaveHandoff::Closed);
         assert_eq!(handle.diagnostics().worker_closed, 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_flushes_deferred_latest_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "purgatory-persist-deferred-shutdown-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let handle = PersistenceHandle::spawn(&dir).expect("spawn");
+        let id = purgatory_common::CharacterId::from_raw(33);
+        let mut character = purgatory_persistence::PersistentCharacter::new_default(id);
+        character.persistence_revision = 9;
+        let snapshot = PersistentCharacterSnapshot::from_character(&character);
+        handle
+            .shared
+            .latest
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(id, snapshot);
+
+        handle.shutdown(Duration::from_secs(2)).await;
+
+        let repo = purgatory_persistence::FileCharacterRepository::open(&dir).unwrap();
+        let loaded = repo.load(id).unwrap().unwrap();
+        assert_eq!(loaded.persistence_revision, 9);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
