@@ -8,7 +8,7 @@ use std::fmt;
 
 use crate::domain::ContentDomain;
 use crate::error::{ContentError, ValidationIssue};
-use purgatory_common::ContentId;
+use purgatory_common::{ContentId, validate_authored_id};
 use purgatory_simulation::EquipmentSlot;
 
 /// Equipment content schema v2. Independent of map/entity `CONTENT_SCHEMA_VERSION`.
