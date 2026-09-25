@@ -659,7 +659,7 @@ mod tests {
 
     fn def(id: &str, slot: EquipmentSlot) -> EquipmentDefinition {
         EquipmentDefinition {
-            content_id: ContentId::from_authored(id).unwrap(),
+            content_id: purgatory_common::allocated_id_for_label(id).expect("catalog item"),
             authored_id: id.into(),
             slot,
             domain: ContentDomain::Shared,
@@ -683,7 +683,7 @@ mod tests {
 
     fn presentation(id: &str, attachments: Vec<PresentationAttachment>) -> EquipmentPresentation {
         EquipmentPresentation {
-            content_id: ContentId::from_authored(id).unwrap(),
+            content_id: purgatory_common::allocated_id_for_label(id).expect("catalog item"),
             authored_id: id.into(),
             attachments,
         }
@@ -1018,7 +1018,7 @@ mod tests {
     #[test]
     fn authorize_equip_uses_gameplay_only() {
         let mut registry = crate::registry::ContentRegistry::new();
-        let id = "equipment.debug.solo";
+        let id = "equipment.debug.practice_sword";
         let def = def(id, EquipmentSlot::Weapon);
         let cid = def.content_id;
         registry.insert_equipment(def).unwrap();
