@@ -1,6 +1,7 @@
 {
-  "schema_version": 2,
-  "id": "equipment.debug.unadorned",
+  "schema_version": 3,
+  "id": 30008,
+  "label": "equipment.debug.unadorned",
   "category": "equipment",
   "stack_limit": 1
 }
