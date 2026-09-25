@@ -84,7 +84,7 @@ impl FileCharacterRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::character::{PERSISTENCE_SCHEMA_VERSION, PersistentCharacter};
+    use crate::character::PersistentCharacter;
     use purgatory_common::RestoreIntent;
     use std::sync::atomic::{AtomicU64, Ordering};
 
