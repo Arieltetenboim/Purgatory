@@ -148,7 +148,10 @@ mod tests {
         let path = repo.path_for(id);
         let original = b"{not json".to_vec();
         std::fs::write(&path, &original).unwrap();
-        assert!(matches!(repo.load_or_default(id), Err(PersistError::Json { .. })));
+        assert!(matches!(
+            repo.load_or_default(id),
+            Err(PersistError::Json { .. })
+        ));
         assert_eq!(std::fs::read(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -162,7 +165,10 @@ mod tests {
         let original = br#"{"schema_version":99,"character_id":11,"persistence_revision":1,"restore":{"map_authored":"map.dev.footnote","point_id":"default"}}"#.to_vec();
         std::fs::write(&path, &original).unwrap();
         let err = repo.load_or_default(id).unwrap_err();
-        assert!(matches!(err, PersistError::Schema { found: 99, .. }), "{err}");
+        assert!(
+            matches!(err, PersistError::Schema { found: 99, .. }),
+            "{err}"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
