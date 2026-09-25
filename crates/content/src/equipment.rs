@@ -377,9 +377,10 @@ pub fn validate_equipment_presentation(
     slot: EquipmentSlot,
 ) -> Result<(), ContentError> {
     let mut issues = Vec::new();
-    if let Err(reason) =
-        crate::item::validate_item_catalog_identity(presentation.content_id, &presentation.authored_id)
-    {
+    if let Err(reason) = crate::item::validate_item_catalog_identity(
+        presentation.content_id,
+        &presentation.authored_id,
+    ) {
         issues.push(equip_issue(
             &presentation.authored_id,
             Some(slot),
