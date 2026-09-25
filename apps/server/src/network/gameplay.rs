@@ -41,7 +41,7 @@ use super::dialogue::{
 };
 use super::dialogue_actions::execute_dialogue_actions;
 use super::narrative::NarrativeRuntime;
-use super::persist::PersistenceHandle;
+use super::persist::{PersistenceHandle, SaveHandoff};
 use super::replication::{
     InterestFanoutIndex, ObserverReplicationState, PublishPolicyInput, ReplicationPipe,
     publish_observer_frame,
@@ -1553,7 +1553,31 @@ impl GameplayOwner {
     fn emit_save(&mut self, snapshot: &PersistentCharacterSnapshot) {
         if let Some(persist) = &self.persist {
             let t0 = std::time::Instant::now();
-            let _ = persist.try_save(snapshot.clone());
+            match persist.try_save(snapshot.clone()) {
+                SaveHandoff::Accepted => {}
+                SaveHandoff::DeferredLatest => {
+                    let diagnostics = persist.diagnostics();
+                    if diagnostics.queue_full.is_power_of_two() {
+                        eprintln!(
+                            "PURGATORY persist queue pressure full={} deferred={} replaced={} stale_ignored={}",
+                            diagnostics.queue_full,
+                            diagnostics.deferred_latest,
+                            diagnostics.coalesced_replaced,
+                            diagnostics.coalesced_stale_ignored
+                        );
+                    }
+                }
+                SaveHandoff::Closed => {
+                    let diagnostics = persist.diagnostics();
+                    eprintln!(
+                        "PURGATORY persist handoff closed character={} revision={} closed_total={} save_failures={}",
+                        snapshot.character_id,
+                        snapshot.persistence_revision,
+                        diagnostics.worker_closed,
+                        diagnostics.save_failures
+                    );
+                }
+            }
             let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
             self.persist_enqueue_us = self.persist_enqueue_us.saturating_add(us);
         }
@@ -4324,6 +4348,37 @@ mod tests {
             .expect_err("oversized stack must be rejected");
 
         assert!(error.contains("exceeds authored stack limit"));
+    }
+
+    #[test]
+    fn detach_retains_latest_snapshot_when_persist_queue_is_full() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(77);
+        let character_id = CharacterId::from_raw(77);
+        owner.attach(connection);
+        {
+            let binding = owner.bindings.get_mut(&connection).unwrap();
+            binding.character_id = Some(character_id);
+            binding.persistence_revision = 5;
+            binding.restore = RestoreIntent {
+                map_authored: MAP_SECOND_AUTHORED.into(),
+                point_id: "default".into(),
+                checkpoint_id: None,
+            };
+        }
+        let persist = PersistenceHandle::saturated_for_test();
+        owner.set_persist(persist.clone());
+
+        owner.detach(connection);
+
+        assert!(!owner.bindings.contains_key(&connection));
+        let deferred = persist.deferred_for_test(character_id).unwrap();
+        assert_eq!(deferred.character_id, character_id);
+        assert_eq!(deferred.persistence_revision, 6);
+        assert_eq!(deferred.restore.map_authored, MAP_SECOND_AUTHORED);
+        let diagnostics = persist.diagnostics();
+        assert_eq!(diagnostics.queue_full, 1);
+        assert_eq!(diagnostics.deferred_latest, 1);
     }
 
     #[test]

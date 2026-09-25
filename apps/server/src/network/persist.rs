@@ -1,9 +1,13 @@
 //! Persistence worker. Owns identity allocation and character files.
 //!
-//! The simulation thread only `try_send`s owned [`PersistentCharacterSnapshot`]
-//! values. JSON and filesystem work happen here.
+//! The simulation thread hands off owned [`PersistentCharacterSnapshot`] values
+//! through a bounded queue with latest-per-character pressure coalescing. JSON
+//! and filesystem work happen only on the persistence worker.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use purgatory_common::DevLogin;
@@ -44,10 +48,61 @@ enum PersistCmd {
     },
 }
 
-/// Cloneable handle. Connection tasks await roster/create; the sim thread `try_send`s saves.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PersistenceDiagnosticsSnapshot {
+    pub enqueue_accepted: u64,
+    pub queue_full: u64,
+    pub deferred_latest: u64,
+    pub coalesced_replaced: u64,
+    pub coalesced_stale_ignored: u64,
+    pub worker_closed: u64,
+    pub save_failures: u64,
+}
+
+#[derive(Default)]
+struct PersistenceDiagnostics {
+    enqueue_accepted: AtomicU64,
+    queue_full: AtomicU64,
+    deferred_latest: AtomicU64,
+    coalesced_replaced: AtomicU64,
+    coalesced_stale_ignored: AtomicU64,
+    worker_closed: AtomicU64,
+    save_failures: AtomicU64,
+}
+
+impl PersistenceDiagnostics {
+    fn snapshot(&self) -> PersistenceDiagnosticsSnapshot {
+        PersistenceDiagnosticsSnapshot {
+            enqueue_accepted: self.enqueue_accepted.load(Ordering::Relaxed),
+            queue_full: self.queue_full.load(Ordering::Relaxed),
+            deferred_latest: self.deferred_latest.load(Ordering::Relaxed),
+            coalesced_replaced: self.coalesced_replaced.load(Ordering::Relaxed),
+            coalesced_stale_ignored: self.coalesced_stale_ignored.load(Ordering::Relaxed),
+            worker_closed: self.worker_closed.load(Ordering::Relaxed),
+            save_failures: self.save_failures.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Default)]
+struct SharedSaveState {
+    latest: Mutex<HashMap<purgatory_common::CharacterId, PersistentCharacterSnapshot>>,
+    diagnostics: PersistenceDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SaveHandoff {
+    Accepted,
+    DeferredLatest,
+    Closed,
+}
+
+/// Cloneable handle. Connection tasks await roster/create; the sim thread uses a
+/// bounded queue and latest-per-character coalescing under pressure.
 #[derive(Clone)]
 pub struct PersistenceHandle {
     tx: tokio::sync::mpsc::Sender<PersistCmd>,
+    shared: Arc<SharedSaveState>,
 }
 
 impl PersistenceHandle {
@@ -55,6 +110,8 @@ impl PersistenceHandle {
         let mut service =
             PersistenceService::open(dir).map_err(|err| format!("persistence open: {err}"))?;
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let shared = Arc::new(SharedSaveState::default());
+        let worker_shared = shared.clone();
         tokio::task::spawn_blocking(move || {
             while let Some(cmd) = rx.blocking_recv() {
                 match cmd {
@@ -102,25 +159,24 @@ impl PersistenceHandle {
                         let _ = reply.send(result);
                     }
                     PersistCmd::Save(snapshot) => {
-                        if let Err(err) = service.save_snapshot(snapshot) {
-                            eprintln!("PURGATORY persist save failed: {err}");
-                        }
+                        save_snapshot_observed(&mut service, &worker_shared, snapshot);
                     }
                     PersistCmd::Shutdown { reply } => {
                         while let Ok(extra) = rx.try_recv() {
-                            if let PersistCmd::Save(snapshot) = extra
-                                && let Err(err) = service.save_snapshot(snapshot)
-                            {
-                                eprintln!("PURGATORY persist drain save failed: {err}");
+                            if let PersistCmd::Save(snapshot) = extra {
+                                save_snapshot_observed(&mut service, &worker_shared, snapshot);
                             }
                         }
+                        flush_deferred_latest(&mut service, &worker_shared);
                         let _ = reply.send(());
                         break;
                     }
                 }
+                flush_deferred_latest(&mut service, &worker_shared);
             }
+            flush_deferred_latest(&mut service, &worker_shared);
         });
-        Ok(Self { tx })
+        Ok(Self { tx, shared })
     }
 
     #[cfg(test)]
@@ -189,8 +245,92 @@ impl PersistenceHandle {
         rx.await.unwrap_or(failure)
     }
 
-    pub fn try_save(&self, snapshot: PersistentCharacterSnapshot) -> bool {
-        self.tx.try_send(PersistCmd::Save(snapshot)).is_ok()
+    pub fn try_save(&self, snapshot: PersistentCharacterSnapshot) -> SaveHandoff {
+        match self.tx.try_send(PersistCmd::Save(snapshot)) {
+            Ok(()) => {
+                self.shared
+                    .diagnostics
+                    .enqueue_accepted
+                    .fetch_add(1, Ordering::Relaxed);
+                SaveHandoff::Accepted
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(PersistCmd::Save(snapshot))) => {
+                self.shared
+                    .diagnostics
+                    .queue_full
+                    .fetch_add(1, Ordering::Relaxed);
+                let mut latest = self
+                    .shared
+                    .latest
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                match latest.entry(snapshot.character_id) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(snapshot);
+                        self.shared
+                            .diagnostics
+                            .deferred_latest
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        if snapshot.persistence_revision > entry.get().persistence_revision {
+                            entry.insert(snapshot);
+                            self.shared
+                                .diagnostics
+                                .coalesced_replaced
+                                .fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            self.shared
+                                .diagnostics
+                                .coalesced_stale_ignored
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+                SaveHandoff::DeferredLatest
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(PersistCmd::Save(_))) => {
+                self.shared
+                    .diagnostics
+                    .worker_closed
+                    .fetch_add(1, Ordering::Relaxed);
+                SaveHandoff::Closed
+            }
+            Err(_) => unreachable!("try_save only sends Save commands"),
+        }
+    }
+
+    #[must_use]
+    pub fn diagnostics(&self) -> PersistenceDiagnosticsSnapshot {
+        self.shared.diagnostics.snapshot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn saturated_for_test() -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let shared = Arc::new(SharedSaveState::default());
+        let handle = Self { tx, shared };
+        let filler = PersistentCharacterSnapshot::from_character(
+            &purgatory_persistence::PersistentCharacter::new_default(
+                purgatory_common::CharacterId::from_raw(u64::MAX),
+            ),
+        );
+        assert_eq!(handle.try_save(filler), SaveHandoff::Accepted);
+        std::mem::forget(rx);
+        handle
+    }
+
+    #[cfg(test)]
+    pub(crate) fn deferred_for_test(
+        &self,
+        id: purgatory_common::CharacterId,
+    ) -> Option<PersistentCharacterSnapshot> {
+        self.shared
+            .latest
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(&id)
+            .cloned()
     }
 
     pub async fn shutdown(self, timeout: Duration) {
@@ -199,6 +339,33 @@ impl PersistenceHandle {
             return;
         }
         let _ = tokio::time::timeout(timeout, rx).await;
+    }
+}
+
+fn save_snapshot_observed(
+    service: &mut PersistenceService,
+    shared: &SharedSaveState,
+    snapshot: PersistentCharacterSnapshot,
+) {
+    if let Err(err) = service.save_snapshot(snapshot) {
+        shared
+            .diagnostics
+            .save_failures
+            .fetch_add(1, Ordering::Relaxed);
+        eprintln!("PURGATORY persist save failed: {err}");
+    }
+}
+
+fn flush_deferred_latest(service: &mut PersistenceService, shared: &SharedSaveState) {
+    let pending = {
+        let mut latest = shared.latest.lock().unwrap_or_else(|err| err.into_inner());
+        latest
+            .drain()
+            .map(|(_, snapshot)| snapshot)
+            .collect::<Vec<_>>()
+    };
+    for snapshot in pending {
+        save_snapshot_observed(service, shared, snapshot);
     }
 }
 
@@ -322,6 +489,101 @@ mod tests {
         assert_eq!(home, PathBuf::from("/home/dev/.local/share/purgatory"));
     }
 
+    #[test]
+    fn saturation_keeps_latest_snapshot_per_character_and_counts_pressure() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let shared = Arc::new(SharedSaveState::default());
+        let handle = PersistenceHandle {
+            tx,
+            shared: shared.clone(),
+        };
+        let id = purgatory_common::CharacterId::from_raw(31);
+        let mut character = purgatory_persistence::PersistentCharacter::new_default(id);
+        character.persistence_revision = 1;
+        let first = PersistentCharacterSnapshot::from_character(&character);
+        assert_eq!(handle.try_save(first), SaveHandoff::Accepted);
+
+        character.persistence_revision = 2;
+        let second = PersistentCharacterSnapshot::from_character(&character);
+        assert_eq!(handle.try_save(second), SaveHandoff::DeferredLatest);
+
+        character.persistence_revision = 3;
+        let third = PersistentCharacterSnapshot::from_character(&character);
+        assert_eq!(handle.try_save(third), SaveHandoff::DeferredLatest);
+
+        character.persistence_revision = 2;
+        let stale = PersistentCharacterSnapshot::from_character(&character);
+        assert_eq!(handle.try_save(stale), SaveHandoff::DeferredLatest);
+
+        let queued = match rx.try_recv().unwrap() {
+            PersistCmd::Save(snapshot) => snapshot,
+            _ => panic!("expected save"),
+        };
+        assert_eq!(queued.persistence_revision, 1);
+        let deferred = handle.deferred_for_test(id).unwrap();
+        assert_eq!(deferred.persistence_revision, 3);
+
+        assert_eq!(
+            handle.diagnostics(),
+            PersistenceDiagnosticsSnapshot {
+                enqueue_accepted: 1,
+                queue_full: 3,
+                deferred_latest: 1,
+                coalesced_replaced: 1,
+                coalesced_stale_ignored: 1,
+                worker_closed: 0,
+                save_failures: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn closed_worker_is_explicit_and_counted() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let handle = PersistenceHandle {
+            tx,
+            shared: Arc::new(SharedSaveState::default()),
+        };
+        let id = purgatory_common::CharacterId::from_raw(32);
+        let snapshot = PersistentCharacterSnapshot::from_character(
+            &purgatory_persistence::PersistentCharacter::new_default(id),
+        );
+        assert_eq!(handle.try_save(snapshot), SaveHandoff::Closed);
+        assert_eq!(handle.diagnostics().worker_closed, 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_flushes_deferred_latest_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "purgatory-persist-deferred-shutdown-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let handle = PersistenceHandle::spawn(&dir).expect("spawn");
+        let id = purgatory_common::CharacterId::from_raw(33);
+        let mut character = purgatory_persistence::PersistentCharacter::new_default(id);
+        character.persistence_revision = 9;
+        let snapshot = PersistentCharacterSnapshot::from_character(&character);
+        handle
+            .shared
+            .latest
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(id, snapshot);
+
+        handle.shutdown(Duration::from_secs(2)).await;
+
+        let repo = purgatory_persistence::FileCharacterRepository::open(&dir).unwrap();
+        let loaded = repo.load(id).unwrap().unwrap();
+        assert_eq!(loaded.persistence_revision, 9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn shutdown_drains_pending_saves_in_temp_dir() {
         let dir = std::env::temp_dir().join(format!(
@@ -342,7 +604,7 @@ mod tests {
         let character = purgatory_persistence::PersistentCharacter::new_default(id);
         let snapshot =
             purgatory_persistence::PersistentCharacterSnapshot::from_character(&character);
-        assert!(handle.try_save(snapshot));
+        assert_eq!(handle.try_save(snapshot), SaveHandoff::Accepted);
         handle.shutdown(Duration::from_secs(2)).await;
         let path = dir.join(purgatory_persistence::character_file_name(id));
         assert!(
