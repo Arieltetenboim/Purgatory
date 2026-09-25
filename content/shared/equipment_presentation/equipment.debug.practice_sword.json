@@ -1,6 +1,7 @@
 {
-  "schema_version": 1,
-  "id": "equipment.debug.practice_sword",
+  "schema_version": 2,
+  "id": 30006,
+  "label": "equipment.debug.practice_sword",
   "attachments": [
     {
       "id": "blade",
