@@ -527,7 +527,8 @@ struct RawPlacement {
 #[serde(deny_unknown_fields)]
 struct RawEquipment {
     schema_version: u32,
-    id: String,
+    id: u32,
+    label: String,
     equipment_slot: String,
 }
 
@@ -535,7 +536,8 @@ struct RawEquipment {
 #[serde(deny_unknown_fields)]
 struct RawItem {
     schema_version: u32,
-    id: String,
+    id: u32,
+    label: String,
     category: String,
     stack_limit: u32,
     #[serde(default)]
@@ -546,7 +548,8 @@ struct RawItem {
 #[serde(deny_unknown_fields)]
 struct RawItemPresentation {
     schema_version: u32,
-    id: String,
+    id: u32,
+    label: String,
     icon: String,
 }
 
@@ -554,7 +557,8 @@ struct RawItemPresentation {
 #[serde(deny_unknown_fields)]
 struct RawEquipmentPresentation {
     schema_version: u32,
-    id: String,
+    id: u32,
+    label: String,
     #[serde(default)]
     attachments: Vec<RawAttachment>,
 }
@@ -888,12 +892,12 @@ impl RawEquipment {
         path: &Path,
         domain: ContentDomain,
     ) -> Result<EquipmentDefinition, ContentError> {
-        check_equipment_schema(path, self.schema_version, &self.id)?;
-        check_authored(path, &self.id)?;
+        check_equipment_schema(path, self.schema_version, &self.label)?;
+        check_authored(path, &self.label)?;
         let slot = EquipmentSlot::parse(&self.equipment_slot).ok_or_else(|| {
             ContentError::from_path(
                 path.to_path_buf(),
-                &self.id,
+                &self.label,
                 "equipment_slot",
                 format!(
                     "rule=schema: unknown equipment slot '{}'",
@@ -902,8 +906,8 @@ impl RawEquipment {
             )
         })?;
         let def = EquipmentDefinition {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
-            authored_id: self.id,
+            content_id: ContentId::from_raw(self.id),
+            authored_id: self.label,
             slot,
             domain,
         };
@@ -914,19 +918,19 @@ impl RawEquipment {
 
 impl RawItem {
     fn into_def(self, path: &Path, domain: ContentDomain) -> Result<ItemDefinition, ContentError> {
-        check_item_schema(path, self.schema_version, &self.id)?;
-        check_authored(path, &self.id)?;
+        check_item_schema(path, self.schema_version, &self.label)?;
+        check_authored(path, &self.label)?;
         let category = ItemCategory::parse(&self.category).ok_or_else(|| {
             ContentError::from_path(
                 path.to_path_buf(),
-                &self.id,
+                &self.label,
                 "category",
                 format!("rule=schema: unknown item category '{}'", self.category),
             )
         })?;
         let def = ItemDefinition {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
-            authored_id: self.id,
+            content_id: ContentId::from_raw(self.id),
+            authored_id: self.label,
             domain,
             category,
             stack_limit: self.stack_limit,
@@ -941,11 +945,11 @@ impl RawItem {
 
 impl RawItemPresentation {
     fn into_def(self, path: &Path) -> Result<ItemPresentation, ContentError> {
-        check_item_presentation_schema(path, self.schema_version, &self.id)?;
-        check_authored(path, &self.id)?;
+        check_item_presentation_schema(path, self.schema_version, &self.label)?;
+        check_authored(path, &self.label)?;
         let def = ItemPresentation {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
-            authored_id: self.id,
+            content_id: ContentId::from_raw(self.id),
+            authored_id: self.label,
             icon: self.icon,
         };
         validate_item_presentation(&def)?;
@@ -955,15 +959,15 @@ impl RawItemPresentation {
 
 impl RawEquipmentPresentation {
     fn into_def(self, path: &Path) -> Result<EquipmentPresentation, ContentError> {
-        check_equipment_schema(path, self.schema_version, &self.id)?;
-        check_authored(path, &self.id)?;
+        check_equipment_schema(path, self.schema_version, &self.label)?;
+        check_authored(path, &self.label)?;
         let mut attachments = Vec::new();
         for (i, raw) in self.attachments.into_iter().enumerate() {
-            attachments.push(parse_attachment(path, &self.id, i, raw)?);
+            attachments.push(parse_attachment(path, &self.label, i, raw)?);
         }
         Ok(EquipmentPresentation {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
-            authored_id: self.id,
+            content_id: ContentId::from_raw(self.id),
+            authored_id: self.label,
             attachments,
         })
     }
