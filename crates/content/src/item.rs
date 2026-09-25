@@ -141,7 +141,7 @@ mod tests {
 
     fn def(id: &str, stack_limit: u32) -> ItemDefinition {
         ItemDefinition {
-            content_id: ContentId::from_authored(id).unwrap(),
+            content_id: allocated_id_for_label(id).expect("catalog item"),
             authored_id: id.into(),
             domain: ContentDomain::Shared,
             category: ItemCategory::Misc,
@@ -152,23 +152,23 @@ mod tests {
 
     #[test]
     fn valid_definition_accepts_single_and_stacked_items() {
-        assert!(!is_stackable(&def("item.debug.single", 1)));
-        assert!(is_stackable(&def("item.debug.stack", 20)));
-        validate_item_definition(&def("item.debug.stack", 20)).unwrap();
+        assert!(!is_stackable(&def("item.package", 1)));
+        assert!(is_stackable(&def("item.debug.small_potion", 20)));
+        validate_item_definition(&def("item.debug.small_potion", 20)).unwrap();
     }
 
     #[test]
     fn zero_stack_limit_is_rejected() {
-        let err = validate_item_definition(&def("item.debug.invalid", 0)).unwrap_err();
+        let err = validate_item_definition(&def("item.package", 0)).unwrap_err();
         assert!(err.to_string().contains("stack_limit"));
     }
 
     #[test]
     fn mismatched_content_id_is_rejected() {
-        let mut item = def("item.debug.one", 1);
-        item.content_id = ContentId::from_authored("item.debug.other").unwrap();
+        let mut item = def("item.package", 1);
+        item.content_id = purgatory_common::ITEM_SMALL_POTION;
         let err = validate_item_definition(&item).unwrap_err();
-        assert!(err.to_string().contains("does not match authored id"));
+        assert!(err.to_string().contains("not allocated to label"));
     }
 
     #[test]
@@ -188,8 +188,8 @@ mod tests {
     #[test]
     fn item_presentation_rejects_paths_as_icon_keys() {
         let def = ItemPresentation {
-            content_id: ContentId::from_authored("item.debug.icon").unwrap(),
-            authored_id: "item.debug.icon".into(),
+            content_id: purgatory_common::ITEM_SMALL_POTION,
+            authored_id: "item.debug.small_potion".into(),
             icon: "Graphic/items/icon.png".into(),
         };
         let err = validate_item_presentation(&def).unwrap_err();
