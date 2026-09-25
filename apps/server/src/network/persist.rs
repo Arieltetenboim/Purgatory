@@ -379,6 +379,39 @@ mod frontend_worker_tests {
     };
 
     #[tokio::test]
+    async fn load_owned_corrupt_character_maps_to_storage_failure_and_preserves_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "purgatory-r5b-load-corrupt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("alice").unwrap();
+        let Result::Created { roster } = worker
+            .create_character(login.clone(), "CorruptHero".into())
+            .await
+        else {
+            panic!("create");
+        };
+        let id = roster[0].character_id;
+        let path = dir.join(purgatory_persistence::character_file_name(id));
+        let original = b"{not json".to_vec();
+        std::fs::write(&path, &original).unwrap();
+
+        assert_eq!(
+            worker.load_owned_character(login, id).await,
+            Err(purgatory_protocol::CharacterEnterRejection::StorageFailure)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        worker.shutdown(Duration::from_secs(2)).await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn frontend_storage_failure_has_no_projection_mutation_and_restart_keeps_order() {
         let dir = std::env::temp_dir().join(format!(
             "purgatory-r5b-worker-{}-{}",
