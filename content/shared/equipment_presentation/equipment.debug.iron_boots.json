@@ -1,13 +1,18 @@
 {
-  "schema_version": 1,
-  "id": "equipment.debug.iron_boots",
+  "schema_version": 2,
+  "id": 30003,
+  "label": "equipment.debug.iron_boots",
   "attachments": [
     {
       "id": "foot_front",
       "bone": "foot_front",
       "anchor": "foot_front",
       "coverage": "overlay",
-      "correction": { "x": 2.0, "y": -1.0, "rotation": 5.0 },
+      "correction": {
+        "x": 2,
+        "y": -1,
+        "rotation": 5
+      },
       "visuals": {
         "side": "equipment.debug.iron_boots.foot_front.side",
         "back": "equipment.debug.iron_boots.foot_front.back"
