@@ -1791,7 +1791,7 @@ mod tests {
         write_file(
             &tmp.join("shared/equipment_presentation"),
             "equipment.debug.orphan.json",
-            r#"{"schema_version":1,"id":"equipment.debug.orphan","attachments":[]}"#,
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","attachments":[]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("orphan");
         assert!(err.to_string().contains("no matching equipment gameplay"));
@@ -1804,13 +1804,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "item.debug.token.json",
-            r#"{"schema_version":2,"id":"item.debug.token","category":"consumable","stack_limit":20}"#,
+            "item.debug.small_potion.json",
+            r#"{"schema_version":3,"id":30011,"label":"item.debug.small_potion","category":"consumable","stack_limit":20}"#,
         );
         let registry = load_registry(&tmp, LoadMode::Shared).expect("valid item");
-        let id = ContentId::from_authored("item.debug.token").unwrap();
+        let id = purgatory_common::ITEM_SMALL_POTION;
         let item = registry.item_by_id(id).expect("lookup by ContentId");
-        assert_eq!(item.authored_id, "item.debug.token");
+        assert_eq!(item.authored_id, "item.debug.small_potion");
         assert_eq!(item.category, ItemCategory::Consumable);
         assert_eq!(item.stack_limit, 20);
         assert!(!item.drop_requires_confirmation);
@@ -1826,53 +1826,53 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "equipment.debug.default.json",
-            r#"{"schema_version":2,"id":"equipment.debug.default","category":"equipment","stack_limit":1}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":3,"id":30001,"label":"equipment.debug.cloth_cap","category":"equipment","stack_limit":1}"#,
         );
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.default.json",
-            r#"{"schema_version":1,"id":"equipment.debug.default","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/items"),
-            "item.debug.default.json",
-            r#"{"schema_version":2,"id":"item.debug.default","category":"misc","stack_limit":1}"#,
+            "item.package.json",
+            r#"{"schema_version":3,"id":30012,"label":"item.package","category":"misc","stack_limit":1}"#,
         );
         write_file(
             &tmp.join("shared/items"),
-            "equipment.debug.override.json",
-            r#"{"schema_version":2,"id":"equipment.debug.override","category":"equipment","stack_limit":1,"drop_requires_confirmation":false}"#,
+            "equipment.debug.unadorned.json",
+            r#"{"schema_version":3,"id":30008,"label":"equipment.debug.unadorned","category":"equipment","stack_limit":1,"drop_requires_confirmation":false}"#,
         );
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.override.json",
-            r#"{"schema_version":1,"id":"equipment.debug.override","equipment_slot":"headwear"}"#,
+            "equipment.debug.unadorned.json",
+            r#"{"schema_version":2,"id":30008,"label":"equipment.debug.unadorned","equipment_slot":"headwear"}"#,
         );
         write_file(
             &tmp.join("shared/items"),
-            "item.debug.override.json",
-            r#"{"schema_version":2,"id":"item.debug.override","category":"misc","stack_limit":1,"drop_requires_confirmation":true}"#,
+            "item.welcome.watch_signal_lantern.json",
+            r#"{"schema_version":3,"id":30014,"label":"item.welcome.watch_signal_lantern","category":"misc","stack_limit":1,"drop_requires_confirmation":true}"#,
         );
         let registry = load_registry(&tmp, LoadMode::Shared).expect("valid item policies");
         assert!(
             registry
-                .item("equipment.debug.default")
+                .item("equipment.debug.cloth_cap")
                 .is_some_and(|item| item.drop_requires_confirmation)
         );
         assert!(
             registry
-                .item("item.debug.default")
+                .item("item.package")
                 .is_some_and(|item| !item.drop_requires_confirmation)
         );
         assert!(
             registry
-                .item("equipment.debug.override")
+                .item("equipment.debug.unadorned")
                 .is_some_and(|item| !item.drop_requires_confirmation)
         );
         assert!(
             registry
-                .item("item.debug.override")
+                .item("item.welcome.watch_signal_lantern")
                 .is_some_and(|item| item.drop_requires_confirmation)
         );
         let _ = fs::remove_dir_all(&tmp);
@@ -1885,7 +1885,7 @@ mod tests {
         write_file(
             &tmp.join("shared/items"),
             "item.debug.zero.json",
-            r#"{"schema_version":2,"id":"item.debug.zero","category":"misc","stack_limit":0}"#,
+            r#"{"schema_version":3,"id":30012,"label":"item.package","category":"misc","stack_limit":0}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("zero stack limit");
         assert!(err.to_string().contains("stack_limit"));
@@ -1902,7 +1902,7 @@ mod tests {
         write_file(
             &tmp.join("shared/items"),
             "item.debug.quest.json",
-            r#"{"schema_version":2,"id":"item.debug.quest","category":"quest","stack_limit":1}"#,
+            r#"{"schema_version":3,"id":30012,"label":"item.package","category":"quest","stack_limit":1}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("unknown category");
         assert!(err.to_string().contains("unknown item category 'quest'"));
@@ -1918,16 +1918,16 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "item.debug.icon.json",
-            r#"{"schema_version":2,"id":"item.debug.icon","category":"misc","stack_limit":1}"#,
+            "item.debug.small_potion.json",
+            r#"{"schema_version":3,"id":30011,"label":"item.debug.small_potion","category":"consumable","stack_limit":20}"#,
         );
         write_file(
             &tmp.join("shared/item_presentation"),
-            "item.debug.icon.json",
-            r#"{"schema_version":1,"id":"item.debug.icon","icon":"item.placeholder"}"#,
+            "item.debug.small_potion.json",
+            r#"{"schema_version":2,"id":30011,"label":"item.debug.small_potion","icon":"item.placeholder"}"#,
         );
         let registry = load_registry(&tmp, LoadMode::Shared).expect("valid presentation");
-        let id = ContentId::from_authored("item.debug.icon").unwrap();
+        let id = purgatory_common::ITEM_SMALL_POTION;
         assert_eq!(
             registry.item_presentation_by_id(id).unwrap().icon,
             "item.placeholder"
@@ -1944,8 +1944,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/item_presentation"),
-            "item.debug.orphan.json",
-            r#"{"schema_version":1,"id":"item.debug.orphan","icon":"item.placeholder"}"#,
+            "item.package.json",
+            r#"{"schema_version":2,"id":30012,"label":"item.package","icon":"item.placeholder"}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("orphan presentation");
         assert!(
@@ -1962,8 +1962,8 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.orphan.json",
-            r#"{"schema_version":1,"id":"equipment.debug.orphan","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("missing matching item");
         assert!(
@@ -1982,13 +1982,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "equipment.debug.misc_cap.json",
-            r#"{"schema_version":2,"id":"equipment.debug.misc_cap","category":"misc","stack_limit":1}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":3,"id":30001,"label":"equipment.debug.cloth_cap","category":"misc","stack_limit":1}"#,
         );
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.misc_cap.json",
-            r#"{"schema_version":1,"id":"equipment.debug.misc_cap","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("wrong category");
         assert!(
@@ -2007,16 +2007,16 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         write_file(
             &tmp.join("shared/items"),
-            "equipment.debug.cap.json",
-            r#"{"schema_version":2,"id":"equipment.debug.cap","category":"equipment","stack_limit":1}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":3,"id":30001,"label":"equipment.debug.cloth_cap","category":"equipment","stack_limit":1}"#,
         );
         write_file(
             &tmp.join("shared/equipment"),
-            "equipment.debug.cap.json",
-            r#"{"schema_version":1,"id":"equipment.debug.cap","equipment_slot":"headwear"}"#,
+            "equipment.debug.cloth_cap.json",
+            r#"{"schema_version":2,"id":30001,"label":"equipment.debug.cloth_cap","equipment_slot":"headwear"}"#,
         );
         let registry = load_registry(&tmp, LoadMode::Shared).expect("matching definitions");
-        let id = ContentId::from_authored("equipment.debug.cap").unwrap();
+        let id = purgatory_common::ITEM_CLOTH_CAP;
         assert_eq!(
             registry.item_by_id(id).unwrap().content_id,
             registry.equipment_by_id(id).unwrap().content_id
