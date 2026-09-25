@@ -17,10 +17,10 @@ Human-editable JSON lives under `/content`:
 
 - `shared/maps/` — client-safe map geometry, bounds, spawn points
 - `shared/entities/` — client-safe entity definitions (none required for 6C)
-- `shared/items/` — generic item gameplay definitions (`schema_version`, `id`, `category`, `stack_limit`)
-- `shared/item_presentation/` — optional client-safe item icon selection for the same `ContentId`
-- `shared/equipment/` — gameplay equipment identity (`schema_version`, `id`, `equipment_slot`)
-- `shared/equipment_presentation/` — client presentation for the same `ContentId` (`attachments[]`)
+- `shared/items/` — generic item gameplay definitions (schema v3: numeric canonical `id`, metadata `label`, `category`, `stack_limit`)
+- `shared/item_presentation/` — optional client-safe item icon selection (schema v2) for the same numeric Item `ContentId`
+- `shared/equipment/` — gameplay equipment facet (schema v2: same numeric Item `id` + metadata `label` + `equipment_slot`)
+- `shared/equipment_presentation/` — client presentation facet (schema v2) for the same numeric Item `ContentId` (`attachments[]`)
 - `shared/abilities/` — gameplay ability JSON (`AbilityDefinition`; schema_version 1). Loaded in Shared and Full modes.
 - `shared/animations/dev/` — A6/A7 v1 `.anim` presentation clips (token text, not JSON). Optional `depth` keys (A7.1 `depth_angle`; omitted = 0). Authored in Animation Lab. Runtime still compiles them in via `include_str!`.
 - `authoring/npcs/` — canonical NPC Lab JSON. Recursively validated in Shared
@@ -90,7 +90,7 @@ schema v1.
 
 Portal links are content data: `transition: { "map": "<dest map authored id>", "portal": "<dest portal entity authored id>" }`. Arrival is at the linked portal, not the map's generic spawn. The destination entity does not need a reverse `transition` (one-way portals).
 
-Phase **8A** stores equipped appearance as `EquipmentSlot → Option<ContentId>` using the existing `ContentId` type. Phase **8B** validates Equipment Content Schema v1 (gameplay slot + client presentation). Phase **8C** authorizes Equip/Unequip from gameplay definitions only (`authorize_equip`); presentation is not required on the server path. Presentation fields (bones, anchors, visuals, coverage) are not on the network. Phase **8D** carries replicated equipment on `CharacterPresentationState`. Phase **8E** resolves those ContentIds to bound attachments on the client (`equipment_presentation_by_id`) and composes debug placeholders; it does not load ART.
+Phase **8A** stores equipped appearance as `EquipmentSlot → Option<ContentId>` using the existing `ContentId` type. Phase **8B** introduced the gameplay slot + client presentation split; the current Item/Equipment schemas use the stable numeric Item catalog described below. Phase **8C** authorizes Equip/Unequip from gameplay definitions only (`authorize_equip`); presentation is not required on the server path. Presentation fields (bones, anchors, visuals, coverage) are not on the network. Phase **8D** carries replicated equipment on `CharacterPresentationState`. Phase **8E** resolves those ContentIds to bound attachments on the client (`equipment_presentation_by_id`) and composes debug placeholders; it does not load ART.
 
 ## Ability definition (Phase 9A / 9B)
 
@@ -116,24 +116,27 @@ Runtime contract lives in `purgatory-simulation` (`AbilityId` = `ContentId`). Pa
 - Basic Attack is this data, not hardcoded combat constants. 7.2 `STRIKE_*` constants are workload placeholders.
 - Phase **9C** authorization is a World `AbilityGrantTable`, not a content skill-book. Pack membership is not a grant.
 
-## Equipment Content Schema v1
+## Item / Equipment stable numeric identity
 
-Gameplay JSON (`content/shared/equipment/*.json`):
+Gameplay equipment JSON (`content/shared/equipment/*.json`) uses schema v2:
 
 ```text
-{ "schema_version": 1, "id": "<ContentId>", "equipment_slot": "headwear|bodywear|pants|gloves|boots|weapon" }
+{ "schema_version": 2, "id": 30001, "label": "equipment.debug.cloth_cap", "equipment_slot": "headwear|bodywear|pants|gloves|boots|weapon" }
 ```
 
-Item Gameplay Schema v2 (`content/shared/items/*.json`):
+Item gameplay JSON (`content/shared/items/*.json`) uses schema v3:
 
 ```text
 {
-  "schema_version": 2,
-  "id": "<ContentId>",
+  "schema_version": 3,
+  "id": 30001,
+  "label": "equipment.debug.cloth_cap",
   "category": "equipment|consumable|material|tool|misc",
   "stack_limit": 1
 }
 ```
+
+The numeric `id` is canonical and must be an allocated Item-block ID (`30,000–39,999`) from `content/CONTENT_ID_CATALOG.md`. `label` is human-readable authoring/search metadata and must match the catalog allocation exactly.
 
 Every Equipment definition must have an Item definition with the same canonical `ContentId`.
 Equipment-backed items must use the `equipment` category, and an `equipment`
@@ -141,7 +144,7 @@ category item must have a matching Equipment definition. Category is gameplay
 data because future inventory capacity policy may depend on it; it is not
 inferred from an icon or filename.
 
-Optional item presentation JSON (`content/shared/item_presentation/*.json`)
+Optional item presentation JSON (`content/shared/item_presentation/*.json`) uses schema v2 and repeats the same numeric `id` plus `label`.
 uses the same `id`:
 
 ```text
@@ -153,7 +156,7 @@ key through its presentation asset layer. Missing item presentation, or a
 presentation key unavailable in the current client build, uses the explicit
 inventory placeholder icon.
 
-Presentation JSON (`content/shared/equipment_presentation/*.json`) uses the **same** `id`. It must not repeat `equipment_slot`. Attachments are `0..N`:
+Presentation JSON (`content/shared/equipment_presentation/*.json`) uses schema v2 and the **same numeric Item `id` + `label`**. It must not repeat `equipment_slot`. Attachments are `0..N`:
 
 ```text
 id, bone, anchor, coverage, hide_base?, correction?, visuals.side, visuals.back?
