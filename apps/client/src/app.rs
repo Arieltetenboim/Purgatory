@@ -2852,8 +2852,19 @@ impl ClientApp {
             self.refresh_character_presentation(frame_dt);
             let local_pose = self.frame_local.presented;
             let predicted_pose = self.frame_local.predicted;
-            quads = parallax_quads(&camera, self.world.bounds());
-            quads.extend(self.map_presentation.quads());
+            let active_map = self
+                .last_observer
+                .map(|observer| MapId::from_raw(observer.0));
+            let canonical_map_visuals = active_map
+                .is_some_and(|map_id| self.map_presentation.active_for_map(map_id));
+            if canonical_map_visuals {
+                quads.extend(
+                    self.map_presentation
+                        .quads_centered_in(self.world.bounds()),
+                );
+            } else {
+                quads = parallax_quads(&camera, self.world.bounds());
+            }
             let hold_source = self.map_fade.holds_source_presentation();
             let replica_live = self.replica_matches_local_map() && !hold_source;
             let remote_buf: Vec<PresentationPose> = if hold_source {
@@ -2881,6 +2892,7 @@ impl ClientApp {
                 local_pose,
                 remotes,
                 crate::skeleton_debug::CHARACTER_VISUAL_SCALE_1,
+                !canonical_map_visuals,
                 {
                     #[cfg(feature = "dev-diagnostics")]
                     {
@@ -4367,22 +4379,25 @@ fn scene_quads(
     local_pose: Option<[f32; 2]>,
     remote_poses: &[PresentationPose],
     _local_preview_scale: f32,
+    show_platform_geometry: bool,
     show_player_aabbs: bool,
 ) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(8);
-    for view in world.iter_platforms() {
-        let color = match view.platform.kind {
-            PlatformKind::Solid => {
-                if view.platform.half_extents[0] >= 7.0 {
-                    SOLID_FLOOR_COLOR
-                } else {
-                    SOLID_PLATFORM_COLOR
+    if show_platform_geometry {
+        for view in world.iter_platforms() {
+            let color = match view.platform.kind {
+                PlatformKind::Solid => {
+                    if view.platform.half_extents[0] >= 7.0 {
+                        SOLID_FLOOR_COLOR
+                    } else {
+                        SOLID_PLATFORM_COLOR
+                    }
                 }
-            }
-            PlatformKind::OneWay => ONEWAY_COLOR,
-            _ => SOLID_PLATFORM_COLOR,
-        };
-        quads.push(aabb_quad(view.aabb(), color));
+                PlatformKind::OneWay => ONEWAY_COLOR,
+                _ => SOLID_PLATFORM_COLOR,
+            };
+            quads.push(aabb_quad(view.aabb(), color));
+        }
     }
     if show_player_aabbs {
         if let Some(position) = local_pose {
@@ -4393,12 +4408,14 @@ fn scene_quads(
             push_collision_aabb_outline(Aabb::new(pose.position, PLAYER_HALF_EXTENTS), &mut quads);
         }
     }
-    let b = world.bounds();
-    quads.push(DrawQuad::rect(
-        [b.min_x + 0.6, b.max_y - 0.6],
-        [0.35, 0.35],
-        MARKER_COLOR,
-    ));
+    if show_platform_geometry {
+        let b = world.bounds();
+        quads.push(DrawQuad::rect(
+            [b.min_x + 0.6, b.max_y - 0.6],
+            [0.35, 0.35],
+            MARKER_COLOR,
+        ));
+    }
     quads
 }
 
