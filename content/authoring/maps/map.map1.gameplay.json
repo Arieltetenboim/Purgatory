@@ -9,7 +9,7 @@
       "drop_through": false,
       "points": [
         [
-          0.0,
+          0,
           0.4
         ],
         [
@@ -55,6 +55,15 @@
           16.637794,
           7.5042014
         ]
+      ]
+    }
+  ],
+  "spawn_points": [
+    {
+      "id": "default",
+      "position": [
+        15.31,
+        1
       ]
     }
   ]
