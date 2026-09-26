@@ -6,6 +6,8 @@ fn main() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let map = root.join("content/authoring/maps/map.map1.purgatory-map.json");
     println!("cargo:rerun-if-changed={}", map.display());
+    let environment = root.join("content/authoring/maps/map.map1.environment.json");
+    println!("cargo:rerun-if-changed={}", environment.display());
     println!(
         "cargo:rerun-if-changed={}",
         root.join("Graphic/assets/maps/map1.tmx").display()
@@ -31,4 +33,9 @@ fn main() {
         purgatory_content::serialize_map_pretty(&presentation).expect("serialize map presentation"),
     )
     .expect("write compiled map presentation");
+    fs::copy(
+        &environment,
+        output.join("map.map1.environment.json"),
+    )
+    .expect("copy map environment authoring");
 }
