@@ -4719,23 +4719,14 @@ fn spawn_local_player_from_replica(
 ) -> Option<[f32; 2]> {
     let auth = replica.local_entity()?;
     let x = auth.position[0];
-    let floor = world
-        .iter_platforms()
-        .find(|v| {
-            world
-                .address_of(v.id)
-                .is_some_and(|a| a.compatible_with(address))
-                && x >= v.aabb().min_x()
-                && x <= v.aabb().max_x()
-        })
-        .or_else(|| {
-            world.iter_platforms().find(|v| {
-                world
-                    .address_of(v.id)
-                    .is_some_and(|a| a.compatible_with(address))
-            })
-        })?;
-    let (transform, state) = PlayerState::standing_on_at(floor.id, floor.top_surface(), x);
+    let floor = world.iter_platforms().find(|v| {
+        world
+            .address_of(v.id)
+            .is_some_and(|a| a.compatible_with(address))
+            && v.platform.surface_y_at(v.transform, x).is_some()
+    })?;
+    let surface_y = floor.platform.surface_y_at(floor.transform, x)?;
+    let (transform, state) = PlayerState::standing_on_at(floor.id, surface_y, x);
     let _ = world.spawn_player_at(address, transform, state);
     world.restore_player_sim_state(
         auth.position,
