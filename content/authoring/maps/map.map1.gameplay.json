@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "map_authored": "map.map1",
+  "name": "map.map1",
   "foothold_paths": [
     {
       "id": "foothold.001",
@@ -8,12 +9,12 @@
       "drop_through": false,
       "points": [
         [
-          0.013256073,
-          0.31988382
+          0.0,
+          0.4
         ],
         [
           46.429977,
-          0.3254981
+          0.4
         ]
       ]
     },
