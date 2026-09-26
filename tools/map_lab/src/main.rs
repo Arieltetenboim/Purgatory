@@ -1,4 +1,4 @@
-//! FORGE W1.3A Map Lab: faithful canonical-map preview and scale calibration.
+//! FORGE W1.3B Map Lab: faithful canonical-map preview and professional visual workflow.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{PresentationSprite, TileTransform};
-use purgatory_map_lab::MapLabDocument;
+use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
 const CAMERA_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
 const CAMERA_WIDTH_WU: f32 = CAMERA_HEIGHT_WU * purgatory_simulation::AOI_VIEWPORT_ASPECT;
@@ -79,6 +79,11 @@ impl MapLabApp {
     fn reload(&mut self, ctx: &egui::Context) {
         let path = PathBuf::from(self.path_text.trim());
         self.open(ctx, &path);
+    }
+
+    fn use_standard_ppu(&mut self, ctx: &egui::Context) {
+        self.ppu_text = PURGATORY_STANDARD_PPU.to_string();
+        self.apply_ppu(ctx);
     }
 
     fn apply_ppu(&mut self, ctx: &egui::Context) {
@@ -299,10 +304,32 @@ impl eframe::App for MapLabApp {
                     ui.horizontal(|ui| {
                         ui.label("PPU");
                         ui.add(egui::TextEdit::singleline(&mut self.ppu_text).desired_width(90.0));
+                        ui.label(format!("· standard {:.0}", PURGATORY_STANDARD_PPU));
                     });
-                    apply_ppu_requested = ui.button("Apply PPU to Preview").clicked();
+                    ui.horizontal(|ui| {
+                        apply_ppu_requested = ui.button("Apply Preview Override").clicked();
+                        if ui.button("Use Standard 100").clicked() {
+                            self.ppu_text = PURGATORY_STANDARD_PPU.to_string();
+                            apply_ppu_requested = true;
+                        }
+                    });
+                    let authored_ppu = document.source.pixels_per_world_unit;
+                    if (authored_ppu - PURGATORY_STANDARD_PPU).abs() <= f32::EPSILON {
+                        ui.colored_label(
+                            Color32::LIGHT_GREEN,
+                            "STANDARD SCALE · authored sidecar = 100 px/wu",
+                        );
+                    } else {
+                        ui.colored_label(
+                            Color32::YELLOW,
+                            format!(
+                                "NON-STANDARD AUTHORED SCALE · {:.3} px/wu",
+                                authored_ppu
+                            ),
+                        );
+                    }
                     ui.small(
-                        "Calibration is in memory. Edit the sidecar deliberately to persist it.",
+                        "Preview overrides are temporary. Map1 production scale is 100 px/wu; camera zoom is separate.",
                     );
                     let width = map.world_bounds[2] - map.world_bounds[0];
                     let height = map.world_bounds[3] - map.world_bounds[1];
@@ -610,6 +637,11 @@ fn world_rect(center: [f32; 2], size: [f32; 2], to_screen: &impl Fn([f32; 2]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map1_uses_locked_purgatory_standard_ppu() {
+        assert_eq!(PURGATORY_STANDARD_PPU, 100.0);
+    }
 
     #[test]
     fn camera_and_player_references_use_repo_owned_scale() {
