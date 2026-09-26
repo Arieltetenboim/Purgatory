@@ -248,10 +248,46 @@ fn load_map_gameplay_tree(
                         ));
                     }
                 }
+                let mut spawn_ids = std::collections::HashSet::new();
+                for spawn in &gameplay.spawn_points {
+                    if spawn.id.trim().is_empty() || !spawn_ids.insert(spawn.id.as_str()) {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "spawn_points.id",
+                            "spawn point ids must be non-empty and unique",
+                        ));
+                    }
+                    if !spawn.position[0].is_finite()
+                        || !spawn.position[1].is_finite()
+                        || spawn.position[0] < bounds.min_x
+                        || spawn.position[0] > bounds.max_x
+                        || spawn.position[1] < bounds.min_y
+                        || spawn.position[1] > bounds.max_y
+                    {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "spawn_points.position",
+                            format!("{} is outside map bounds", spawn.id),
+                        ));
+                    }
+                }
+                if !gameplay.spawn_points.is_empty()
+                    && !gameplay.spawn_points.iter().any(|spawn| spawn.id == "default")
+                {
+                    return Err(ContentError::from_path(
+                        path.clone(),
+                        &gameplay.map_authored,
+                        "spawn_points",
+                        "gameplay-authored spawns require a 'default' point",
+                    ));
+                }
                 registry.apply_map_gameplay(
                     &gameplay.map_authored,
                     &gameplay.name,
                     gameplay.foothold_paths,
+                    gameplay.spawn_points,
                 )
             });
         if let Err(error) = result {
