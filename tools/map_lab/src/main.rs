@@ -434,6 +434,7 @@ fn load_textures(
     document: &MapLabDocument,
 ) -> Result<TextureRegions, String> {
     let graphic = find_graphic_root(&document.sidecar_path)?;
+    let max_texture_side = ctx.input(|input| input.raw.max_texture_side.unwrap_or(2048));
     let mut textures = HashMap::new();
 
     for asset in &document.presentation.assets {
@@ -470,6 +471,12 @@ fn load_textures(
             {
                 return Err(format!(
                     "{} has invalid source rect [{x}, {y}, {width}, {height}]",
+                    path.display()
+                ));
+            }
+            if width as usize > max_texture_side || height as usize > max_texture_side {
+                return Err(format!(
+                    "{} source rect [{x}, {y}, {width}, {height}] exceeds Map Lab texture limit {max_texture_side}px; split this visual source for preview",
                     path.display()
                 ));
             }
