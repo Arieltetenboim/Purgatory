@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use purgatory_content::{MapPresentation, PresentationSprite};
+use purgatory_content::{MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationSprite};
 use serde_json::from_slice;
 
 use crate::asset_runtime::AssetRuntime;
@@ -27,6 +27,12 @@ impl RuntimeMapPresentation {
     pub(crate) fn load(assets: &mut AssetRuntime) -> Result<Self, String> {
         let map: MapPresentation = from_slice(COMPILED_PRESENTATION)
             .map_err(|error| format!("decode compiled map presentation: {error}"))?;
+        if map.schema_version != MAP_PRESENTATION_SCHEMA_VERSION {
+            return Err(format!(
+                "compiled map presentation schema {} is unsupported; expected {}",
+                map.schema_version, MAP_PRESENTATION_SCHEMA_VERSION
+            ));
+        }
         if map.map_authored != purgatory_common::MAP_FOOTNOTE_AUTHORED {
             return Err(format!(
                 "compiled map presentation targets {}, expected {}",
