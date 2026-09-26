@@ -28,8 +28,7 @@ fn main() {
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     fs::write(
         output.join("map.dev.footnote.presentation.json"),
-        purgatory_content::serialize_map_pretty(&presentation)
-            .expect("serialize map presentation"),
+        purgatory_content::serialize_map_pretty(&presentation).expect("serialize map presentation"),
     )
     .expect("write compiled map presentation");
 }
