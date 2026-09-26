@@ -47,7 +47,8 @@ pub use map_compiler::{
     compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
 };
 pub use map_gameplay_authoring::{
-    FootholdKind, FootholdPath, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION, MapGameplayAuthoring,
+    FootholdKind, FootholdPath, GameplaySpawnPoint, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
+    MapGameplayAuthoring,
 };
 pub use map_presentation::{
     MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationAsset, PresentationLayer,
