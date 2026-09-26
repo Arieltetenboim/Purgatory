@@ -582,10 +582,11 @@ impl eframe::App for MapLabApp {
 
 impl MapLabApp {
     fn preview(&mut self, ui: &mut egui::Ui) {
-        let (canvas, response) = ui.allocate_exact_size(ui.available_size(), Sense::drag());
+        let (canvas, response) =
+            ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         ui.painter()
             .rect_filled(canvas, 0.0, Color32::from_rgb(24, 27, 32));
-        if response.dragged() {
+        if self.editor_mode == EditorMode::Map && response.dragged() {
             self.pan += ui.input(|input| input.pointer.delta());
         }
         if response.hovered() {
@@ -649,6 +650,33 @@ impl MapLabApp {
             }
         }
 
+        for path in &document.gameplay.foothold_paths {
+            paint_foothold_path(&map_painter, path, &to_screen, false);
+        }
+        if self.editor_mode == EditorMode::Footnote && !self.draft_points.is_empty() {
+            paint_draft_foothold(
+                &map_painter,
+                &self.draft_points,
+                self.footnote_kind,
+                &to_screen,
+            );
+        }
+
+        let clicked_world = if self.editor_mode == EditorMode::Footnote && response.clicked() {
+            response.interact_pointer_pos().and_then(|position| {
+                map_rect.contains(position).then(|| {
+                    [
+                        ((position.x - center.x) / scale + world_width * 0.5)
+                            .clamp(0.0, world_width),
+                        (world_height * 0.5 - (position.y - center.y) / scale)
+                            .clamp(0.0, world_height),
+                    ]
+                })
+            })
+        } else {
+            None
+        };
+
         let camera_center = [world_width * 0.5, world_height * 0.5];
         let camera_rect = world_rect(
             camera_center,
@@ -700,7 +728,57 @@ impl MapLabApp {
             Stroke::new(2.0, Color32::WHITE),
             egui::StrokeKind::Inside,
         );
+        if let Some(point) = clicked_world {
+            self.draft_points.push(point);
+            self.status = format!(
+                "FOOTNOTE EDIT · point {} = ({:.2}, {:.2})",
+                self.draft_points.len(),
+                point[0],
+                point[1]
+            );
+        }
     }
+}
+
+fn foothold_color(kind: FootholdKind) -> Color32 {
+    match kind {
+        FootholdKind::OneWay => Color32::from_rgb(70, 205, 255),
+        FootholdKind::Solid => Color32::from_rgb(255, 105, 80),
+    }
+}
+
+fn paint_foothold_path(
+    painter: &egui::Painter,
+    path: &FootholdPath,
+    to_screen: &impl Fn([f32; 2]) -> Pos2,
+    draft: bool,
+) {
+    let color = foothold_color(path.kind);
+    let width = if draft { 2.0 } else { 3.0 };
+    for pair in path.points.windows(2) {
+        painter.line_segment(
+            [to_screen(pair[0]), to_screen(pair[1])],
+            Stroke::new(width, color),
+        );
+    }
+    for point in &path.points {
+        painter.circle_filled(to_screen(*point), if draft { 3.0 } else { 4.0 }, color);
+    }
+}
+
+fn paint_draft_foothold(
+    painter: &egui::Painter,
+    points: &[[f32; 2]],
+    kind: FootholdKind,
+    to_screen: &impl Fn([f32; 2]) -> Pos2,
+) {
+    let path = FootholdPath {
+        id: "draft".to_owned(),
+        kind,
+        drop_through: kind == FootholdKind::OneWay,
+        points: points.to_vec(),
+    };
+    paint_foothold_path(painter, &path, to_screen, true);
 }
 
 struct PreviewTextureChunk {
@@ -940,6 +1018,14 @@ fn world_rect(center: [f32; 2], size: [f32; 2], to_screen: &impl Fn([f32; 2]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foothold_categories_have_distinct_preview_colors() {
+        assert_ne!(
+            foothold_color(FootholdKind::OneWay),
+            foothold_color(FootholdKind::Solid)
+        );
+    }
 
     #[test]
     fn oversized_preview_region_splits_without_resizing_pixels() {
