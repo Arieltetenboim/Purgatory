@@ -789,11 +789,7 @@ impl MapLabApp {
                 && selected_path == path_index
                 && let Some(point) = path.points.get(selected_point)
             {
-                map_painter.circle_stroke(
-                    to_screen(*point),
-                    7.0,
-                    Stroke::new(2.0, Color32::WHITE),
-                );
+                map_painter.circle_stroke(to_screen(*point), 7.0, Stroke::new(2.0, Color32::WHITE));
             }
         }
         if self.editor_mode == EditorMode::Footnote && !self.draft_points.is_empty() {
@@ -816,9 +812,16 @@ impl MapLabApp {
                     .iter()
                     .enumerate()
                     .flat_map(|(path_index, path)| {
-                        path.points.iter().enumerate().map(move |(point_index, point)| {
-                            (path_index, point_index, to_screen(*point).distance(position))
-                        })
+                        path.points
+                            .iter()
+                            .enumerate()
+                            .map(move |(point_index, point)| {
+                                (
+                                    path_index,
+                                    point_index,
+                                    to_screen(*point).distance(position),
+                                )
+                            })
                     })
                     .filter(|(_, _, distance)| *distance <= 8.0)
                     .min_by(|a, b| a.2.total_cmp(&b.2))
