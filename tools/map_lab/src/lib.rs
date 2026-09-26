@@ -18,9 +18,8 @@ impl MapLabDocument {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
         let source = load_map_authoring(path).map_err(|error| error.to_string())?;
-        let presentation =
-            compile_tiled_map_with_ppu(path, &source, source.pixels_per_world_unit)
-                .map_err(|error| error.to_string())?;
+        let presentation = compile_tiled_map_with_ppu(path, &source, source.pixels_per_world_unit)
+            .map_err(|error| error.to_string())?;
         Ok(Self {
             sidecar_path: path.to_path_buf(),
             source,
