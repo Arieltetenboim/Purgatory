@@ -762,8 +762,8 @@ mod tests {
         let map = compile_tiled_map(&fixture_sidecar()).expect("fixture compiles");
         assert_eq!(map.schema_version, 1);
         assert_eq!(map.map_authored, "map.dev.footnote");
-        assert_eq!(map.visual_extent_px, [1080, 720]);
-        assert_eq!(map.world_bounds, [0.0, 0.0, 10.8, 7.2]);
+        assert_eq!(map.visual_extent_px, [1944, 1080]);
+        assert_eq!(map.world_bounds, [0.0, 0.0, 19.44, 10.8]);
         assert_eq!(
             map.layers
                 .iter()
@@ -785,7 +785,7 @@ mod tests {
                 .filter(|layer| layer.kind == PresentationLayerKind::Tile)
                 .map(|layer| layer.sprites.len())
                 .sum::<usize>(),
-            12
+            13
         );
         assert_eq!(map.layers[5].sprites.len(), 1);
         assert!(map.layers[6].sprites.is_empty());
@@ -797,12 +797,12 @@ mod tests {
     fn world_conversion_is_map_local_y_up_and_free_position_is_not_snapped() {
         let map = compile_tiled_map(&fixture_sidecar()).unwrap();
         let object = &map.layers[5].sprites[0];
-        assert!((object.position_world[0] - 9.57333).abs() < 1e-4);
-        assert!((object.position_world[1] - 2.0).abs() < 1e-4);
+        assert!((object.position_world[0] - 17.1933).abs() < 1e-4);
+        assert!((object.position_world[1] - 2.08).abs() < 1e-4);
         assert_eq!(object.size_world, [3.6, 2.4]);
         let background = &map.layers[0].sprites[0];
-        assert!((background.position_world[0] - 1.79333).abs() < 1e-4);
-        assert!((background.position_world[1] - 1.99333).abs() < 1e-4);
+        assert!((background.position_world[0] - 9.600833).abs() < 1e-4);
+        assert!((background.position_world[1] - 5.400833).abs() < 1e-4);
     }
 
     #[test]
@@ -835,8 +835,8 @@ mod tests {
         let path = fixture_sidecar();
         let source = load_map_authoring(&path).unwrap();
         let map = compile_tiled_map_with_ppu(&path, &source, 50.0).unwrap();
-        assert_eq!(map.visual_extent_px, [1080, 720]);
-        assert_eq!(map.world_bounds, [0.0, 0.0, 21.6, 14.4]);
+        assert_eq!(map.visual_extent_px, [1944, 1080]);
+        assert_eq!(map.world_bounds, [0.0, 0.0, 38.88, 21.6]);
     }
 
     #[test]
