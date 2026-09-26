@@ -7,6 +7,12 @@ use purgatory_content::{
     serialize_map_pretty,
 };
 
+/// Production visual-scale standard for ordinary PURGATORY maps.
+///
+/// The per-map sidecar keeps PPU explicit, but normal authored maps should use
+/// this value. Camera zoom is a separate presentation concern.
+pub const PURGATORY_STANDARD_PPU: f32 = 100.0;
+
 #[derive(Clone, Debug)]
 pub struct MapLabDocument {
     pub sidecar_path: PathBuf,
