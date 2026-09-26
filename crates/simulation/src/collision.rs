@@ -503,20 +503,14 @@ mod tests {
         let mut world = World::new();
         let slope = world.spawn_platform(
             Transform::from_position([0.0, 0.0]),
-            Platform::segment(
-                [-2.0, 0.0],
-                [2.0, 2.0],
-                PlatformKind::OneWay,
-                true,
-            ),
+            Platform::segment([-2.0, 0.0], [2.0, 2.0], PlatformKind::OneWay, true),
         );
         let surface = world
             .iter_platforms()
             .find(|view| view.id == slope)
             .and_then(|view| view.platform.surface_y_at(view.transform, 0.0))
             .unwrap();
-        let (mut transform, mut state) =
-            PlayerState::standing_on_at(slope, surface, 0.0);
+        let (mut transform, mut state) = PlayerState::standing_on_at(slope, surface, 0.0);
         transform.position[1] = 3.0;
         state.grounded = false;
         state.grounded_on = None;
