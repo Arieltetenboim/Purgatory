@@ -54,6 +54,8 @@ struct MapLabApp {
     footnote_kind: FootholdKind,
     draft_points: Vec<[f32; 2]>,
     gameplay_dirty: bool,
+    selected_point: Option<(usize, usize)>,
+    settings_open: bool,
 }
 
 impl MapLabApp {
@@ -75,6 +77,8 @@ impl MapLabApp {
             footnote_kind: FootholdKind::OneWay,
             draft_points: Vec::new(),
             gameplay_dirty: false,
+            selected_point: None,
+            settings_open: false,
         };
         app.open(ctx, &path);
         app
@@ -212,12 +216,14 @@ impl MapLabApp {
     fn enter_footnote_editor(&mut self) {
         self.editor_mode = EditorMode::Footnote;
         self.draft_points.clear();
+        self.selected_point = None;
         self.status = "FOOTNOTE EDIT · click points to draw a path".to_owned();
     }
 
     fn back_from_footnote_editor(&mut self) {
         self.editor_mode = EditorMode::Map;
         self.draft_points.clear();
+        self.selected_point = None;
         self.status = "MAP VIEW · unfinished foothold path discarded".to_owned();
     }
 
@@ -270,6 +276,33 @@ impl MapLabApp {
             }
             Err(error) => format!("SAVE ERROR\n{error}"),
         };
+    }
+
+    fn select_foothold_point(&mut self, path_index: usize, point_index: usize) {
+        self.selected_point = Some((path_index, point_index));
+        self.status = format!(
+            "FOOTNOTE EDIT · selected point {}:{}",
+            path_index + 1,
+            point_index + 1
+        );
+    }
+
+    fn edit_selected_point(&mut self, x: f32, y: f32) {
+        let Some((path_index, point_index)) = self.selected_point else {
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let [min_x, min_y, max_x, max_y] = document.presentation.world_bounds;
+        let Some(path) = document.gameplay.foothold_paths.get_mut(path_index) else {
+            return;
+        };
+        let Some(point) = path.points.get_mut(point_index) else {
+            return;
+        };
+        *point = [x.clamp(min_x, max_x), y.clamp(min_y, max_y)];
+        self.gameplay_dirty = true;
     }
 
     fn dirty(&self) -> bool {
@@ -325,6 +358,9 @@ impl eframe::App for MapLabApp {
                     }
                     if ui.button("Fit Map").clicked() {
                         self.fit_requested = true;
+                    }
+                    if ui.button("SETTINGS").clicked() {
+                        self.settings_open = true;
                     }
                     if self.editor_mode == EditorMode::Footnote {
                         if ui.button("Save Gameplay").clicked() {
@@ -416,6 +452,41 @@ impl eframe::App for MapLabApp {
                     ui.separator();
 
                     ui.heading("PATHS");
+                    if let Some((path_index, point_index)) = self.selected_point {
+                        if let Some(document) = &self.document {
+                            if let Some(point) = document
+                                .gameplay
+                                .foothold_paths
+                                .get(path_index)
+                                .and_then(|path| path.points.get(point_index))
+                                .copied()
+                            {
+                                let mut x = point[0];
+                                let mut y = point[1];
+                                ui.group(|ui| {
+                                    ui.label(format!(
+                                        "Selected point {}:{}",
+                                        path_index + 1,
+                                        point_index + 1
+                                    ));
+                                    ui.horizontal(|ui| {
+                                        ui.label("X");
+                                        let x_changed = ui
+                                            .add(egui::DragValue::new(&mut x).speed(0.05))
+                                            .changed();
+                                        ui.label("Y");
+                                        let y_changed = ui
+                                            .add(egui::DragValue::new(&mut y).speed(0.05))
+                                            .changed();
+                                        if x_changed || y_changed {
+                                            self.edit_selected_point(x, y);
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                        ui.add_space(6.0);
+                    }
                     if let Some(document) = &self.document {
                         if document.gameplay.foothold_paths.is_empty() {
                             ui.label("No authored footholds yet.");
@@ -560,6 +631,64 @@ impl eframe::App for MapLabApp {
                 ui.add(egui::Label::new(&self.status).wrap().selectable(true));
             });
 
+        if self.settings_open {
+            let mut open = self.settings_open;
+            egui::Window::new("MAP LAB SETTINGS")
+                .open(&mut open)
+                .resizable(true)
+                .default_width(420.0)
+                .show(ui.ctx(), |ui| {
+                    ui.heading("MAP");
+                    if let Some(document) = self.document.as_mut() {
+                        ui.horizontal(|ui| {
+                            ui.label("Name");
+                            if ui
+                                .text_edit_singleline(&mut document.gameplay.name)
+                                .changed()
+                            {
+                                self.gameplay_dirty = true;
+                            }
+                        });
+                        ui.label(format!("Authored ID: {}", document.gameplay.map_authored));
+                        ui.label(format!(
+                            "World bounds: {:.2}..{:.2} × {:.2}..{:.2}",
+                            document.presentation.world_bounds[0],
+                            document.presentation.world_bounds[2],
+                            document.presentation.world_bounds[1],
+                            document.presentation.world_bounds[3]
+                        ));
+                        ui.small("Authored ID and bounds are source-owned and read-only here.");
+                    }
+                    ui.separator();
+                    ui.heading("SHORTCUTS");
+                    egui::Grid::new("map_lab_shortcuts").show(ui, |ui| {
+                        ui.label("Shift+R");
+                        ui.label("Reload map");
+                        ui.end_row();
+                        ui.label("Wheel");
+                        ui.label("Zoom");
+                        ui.end_row();
+                        ui.label("Space+Drag");
+                        ui.label("Pan while editing FOOTNOTE");
+                        ui.end_row();
+                        ui.label("Click");
+                        ui.label("Add/select FOOTNOTE point");
+                        ui.end_row();
+                        ui.label("Enter");
+                        ui.label("Finish current FOOTNOTE path");
+                        ui.end_row();
+                        ui.label("Esc / BACK");
+                        ui.label("Leave FOOTNOTE editor");
+                        ui.end_row();
+                    });
+                    ui.separator();
+                    if ui.button("Save Gameplay").clicked() {
+                        self.save_gameplay();
+                    }
+                });
+            self.settings_open = open;
+        }
+
         egui::Panel::bottom("map_lab_status")
             .exact_size(28.0)
             .show(ui, |ui| {
@@ -654,8 +783,18 @@ impl MapLabApp {
             }
         }
 
-        for path in &document.gameplay.foothold_paths {
+        for (path_index, path) in document.gameplay.foothold_paths.iter().enumerate() {
             paint_foothold_path(&map_painter, path, &to_screen, false);
+            if let Some((selected_path, selected_point)) = self.selected_point
+                && selected_path == path_index
+                && let Some(point) = path.points.get(selected_point)
+            {
+                map_painter.circle_stroke(
+                    to_screen(*point),
+                    7.0,
+                    Stroke::new(2.0, Color32::WHITE),
+                );
+            }
         }
         if self.editor_mode == EditorMode::Footnote && !self.draft_points.is_empty() {
             paint_draft_foothold(
@@ -666,7 +805,31 @@ impl MapLabApp {
             );
         }
 
+        let clicked_existing_point = if self.editor_mode == EditorMode::Footnote
+            && !ui.input(|input| input.key_down(egui::Key::Space))
+            && response.clicked()
+        {
+            response.interact_pointer_pos().and_then(|position| {
+                document
+                    .gameplay
+                    .foothold_paths
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(path_index, path)| {
+                        path.points.iter().enumerate().map(move |(point_index, point)| {
+                            (path_index, point_index, to_screen(*point).distance(position))
+                        })
+                    })
+                    .filter(|(_, _, distance)| *distance <= 8.0)
+                    .min_by(|a, b| a.2.total_cmp(&b.2))
+                    .map(|(path_index, point_index, _)| (path_index, point_index))
+            })
+        } else {
+            None
+        };
+
         let clicked_world = if self.editor_mode == EditorMode::Footnote
+            && clicked_existing_point.is_none()
             && !ui.input(|input| input.key_down(egui::Key::Space))
             && response.clicked()
         {
@@ -735,7 +898,10 @@ impl MapLabApp {
             Stroke::new(2.0, Color32::WHITE),
             egui::StrokeKind::Inside,
         );
-        if let Some(point) = clicked_world {
+        if let Some((path_index, point_index)) = clicked_existing_point {
+            self.select_foothold_point(path_index, point_index);
+        } else if let Some(point) = clicked_world {
+            self.selected_point = None;
             self.draft_points.push(point);
             self.status = format!(
                 "FOOTNOTE EDIT · point {} = ({:.2}, {:.2})",
