@@ -70,7 +70,7 @@ pub fn recover_solid_penetration<B: CollisionBody>(
     let mut best: Option<(EntityId, f32, f32, f32, f32)> = None;
 
     for platform in platforms {
-        if platform.platform.kind != PlatformKind::Solid {
+        if platform.platform.kind != PlatformKind::Solid || platform.platform.is_segment() {
             continue;
         }
         let pa = platform.aabb();
@@ -149,6 +149,11 @@ pub fn resolve_horizontal<B: CollisionBody>(
 
     for platform in platforms {
         if !detect_overlap(body, platform.aabb()) {
+            continue;
+        }
+        if let Some((start, end)) = platform.platform.segment_world(platform.transform)
+            && (end[0] - start[0]).abs() > CONTACT_EPSILON
+        {
             continue;
         }
         let query = BlockQuery {
@@ -276,7 +281,17 @@ fn resolve_upward<B: CollisionBody>(
         if !detect_overlap(body, platform.aabb()) {
             continue;
         }
-        let underside = platform.platform.min_y(platform.transform);
+        let underside = if platform.platform.is_segment() {
+            let Some(surface) = platform
+                .platform
+                .surface_y_at(platform.transform, body.center[0])
+            else {
+                continue;
+            };
+            surface
+        } else {
+            platform.platform.min_y(platform.transform)
+        };
         let query = BlockQuery {
             approach: Approach::Up,
             platform_id: platform.id,
@@ -327,7 +342,12 @@ fn resolve_downward<B: CollisionBody>(
         if !detect_overlap(body, platform.aabb()) {
             continue;
         }
-        let top = platform.top_surface();
+        let Some(top) = platform
+            .platform
+            .surface_y_at(platform.transform, body.center[0])
+        else {
+            continue;
+        };
         let query = BlockQuery {
             approach: Approach::Down,
             platform_id: platform.id,
