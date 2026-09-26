@@ -492,6 +492,53 @@ fn rising_player_passes_through_oneway() {
 }
 
 #[test]
+fn grounded_floor_is_not_stolen_by_nearby_rising_oneway_segment() {
+    use crate::platform::Platform;
+
+    let mut world = World::new();
+    let floor = world.spawn_platform(
+        Transform::from_position([0.0, 0.0]),
+        Platform::segment(
+            [-4.0, 0.0],
+            [4.0, 0.0],
+            PlatformKind::Solid,
+            false,
+        ),
+    );
+    let _slope = world.spawn_platform(
+        Transform::from_position([0.0, 0.0]),
+        Platform::segment(
+            [0.0, -0.02],
+            [4.0, 1.60],
+            PlatformKind::OneWay,
+            true,
+        ),
+    );
+    let (transform, state) =
+        PlayerState::standing_on_at(floor, 0.0, -0.5);
+    world.spawn_player(transform, state);
+
+    for _ in 0..30 {
+        world.tick(
+            DT_30,
+            PlayerInput::from_buttons(false, true, false),
+        );
+        let body = player(&world);
+        assert!(body.grounded, "walking floor contact must remain grounded");
+        assert_eq!(
+            body.grounded_on,
+            Some(floor),
+            "nearby OneWay slope must not steal current support"
+        );
+        assert!(
+            (body.aabb().min_y() - 0.0).abs() < 1e-3,
+            "feet drifted off floor: {}",
+            body.aabb().min_y()
+        );
+    }
+}
+
+#[test]
 fn descending_player_lands_on_oneway() {
     let mut world = World::dev_stage();
     let oa = oneway_a_id(&world);
