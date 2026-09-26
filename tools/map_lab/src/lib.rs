@@ -51,15 +51,15 @@ mod tests {
 
     fn fixture() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../content/authoring/maps/map.dev.footnote.purgatory-map.json")
+            .join("../../content/authoring/maps/map.map1.purgatory-map.json")
     }
 
     #[test]
     fn bridge_opens_shared_compiler_output_and_recompiles_ppu() {
         let mut document = MapLabDocument::open(fixture()).expect("open");
-        assert_eq!(document.presentation.visual_extent_px, [1944, 1080]);
+        assert_eq!(document.presentation.visual_extent_px, [4644, 1080]);
         document.recompile(50.0).expect("recompile");
-        assert_eq!(document.presentation.world_bounds, [0.0, 0.0, 38.88, 21.6]);
+        assert_eq!(document.presentation.world_bounds, [0.0, 0.0, 92.88, 21.6]);
         let decoded: MapPresentation =
             serde_json::from_slice(&document.canonical_json().unwrap()).unwrap();
         assert_eq!(decoded, document.presentation);
