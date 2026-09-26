@@ -1614,6 +1614,11 @@ impl ClientApp {
 
     fn readiness_flags(&self) -> ReadinessFlags {
         let observer = self.replica.observer_address();
+        let observer_address = WorldAddress::new(
+            MapId::from_raw(observer.0),
+            ChannelId::from_raw(observer.1),
+            InstanceId::from_raw(observer.2),
+        );
         let dest = self.map_fade.dest_address();
         let dest_set = dest != (0, 0, 0);
         let observer_accepted = !dest_set || observer == dest;
@@ -1636,11 +1641,7 @@ impl ClientApp {
             observer_accepted,
             epoch_applied: self.replica.last_sequence().is_some() && observer_accepted,
             geometry_ready: presentation_matches
-                && self
-                    .world
-                    .iter_kind(purgatory_simulation::EntityKind::Platform)
-                    .count()
-                    > 0,
+                && self.world.map_instantiated(observer_address),
             self_baseline: self_entity.is_some(),
             local_seeded: pose_ok,
             prediction_synced: presentation_matches,
