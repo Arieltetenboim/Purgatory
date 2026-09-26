@@ -8,11 +8,11 @@ mod error;
 mod instantiate;
 mod item;
 mod loader;
+mod map_compiler;
 mod monster;
 mod registry;
 mod restore;
 mod schema;
-mod tiled;
 
 pub use ability::ABILITY_CONTENT_SCHEMA_VERSION;
 pub use dialogue::{
@@ -47,9 +47,11 @@ pub use schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
     SpawnPoint, TransitionRef,
 };
-pub use tiled::{
-    MapPresentation, PresentationLayer, PresentationSprite, TILED_PIXELS_PER_WORLD_UNIT,
-    TILED_WORLD_ORIGIN, compile_tiled_map,
+pub use map_compiler::{
+    MAP_AUTHORING_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION, MapAuthoringSource,
+    MapPresentation, PresentationAsset, PresentationLayer, PresentationLayerKind,
+    PresentationSprite, TileTransform, compile_tiled_map, compile_tiled_map_with_ppu,
+    load_map_authoring, serialize_map_pretty,
 };
 
 /// Cargo package version for this crate.

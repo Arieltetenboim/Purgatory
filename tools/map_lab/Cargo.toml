@@ -1,0 +1,27 @@
+[package]
+name = "purgatory-map-lab"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Standalone FORGE W1.3A Map Lab visual calibration tool."
+
+[lib]
+name = "purgatory_map_lab"
+path = "src/lib.rs"
+
+[[bin]]
+name = "purgatory-map-lab"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.36.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+purgatory-content = { path = "../../crates/content" }
+purgatory-simulation = { path = "../../crates/simulation" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
