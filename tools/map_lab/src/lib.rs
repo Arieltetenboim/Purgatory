@@ -82,7 +82,6 @@ impl MapLabDocument {
             .map(|(_, position)| position)
     }
 
-    #[must_use]
     pub fn gameplay_readiness(&self) -> Result<(), String> {
         if self.gameplay.foothold_paths.is_empty() {
             return Err("map requires at least one FOOTNOTE path".to_owned());
