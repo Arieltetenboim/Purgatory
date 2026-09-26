@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
-use purgatory_content::{PresentationSprite, TileTransform};
+use purgatory_content::{FootholdKind, FootholdPath, PresentationSprite, TileTransform};
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
 const CAMERA_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
@@ -32,6 +32,13 @@ fn main() -> eframe::Result {
     )
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum EditorMode {
+    #[default]
+    Map,
+    Footnote,
+}
+
 struct MapLabApp {
     path_text: String,
     document: Option<MapLabDocument>,
@@ -43,6 +50,10 @@ struct MapLabApp {
     zoom: f32,
     pan: Vec2,
     fit_requested: bool,
+    editor_mode: EditorMode,
+    footnote_kind: FootholdKind,
+    draft_points: Vec<[f32; 2]>,
+    gameplay_dirty: bool,
 }
 
 impl MapLabApp {
@@ -60,6 +71,10 @@ impl MapLabApp {
             zoom: 1.0,
             pan: Vec2::ZERO,
             fit_requested: true,
+            editor_mode: EditorMode::Map,
+            footnote_kind: FootholdKind::OneWay,
+            draft_points: Vec::new(),
+            gameplay_dirty: false,
         };
         app.open(ctx, &path);
         app
@@ -71,6 +86,7 @@ impl MapLabApp {
             Ok(document) => {
                 self.ppu_text = document.source.pixels_per_world_unit.to_string();
                 self.install_document(ctx, document);
+                self.gameplay_dirty = false;
             }
             Err(error) => self.status = format!("COMPILE ERROR\n{error}"),
         }
@@ -193,14 +209,77 @@ impl MapLabApp {
         };
     }
 
-    fn dirty(&self) -> bool {
-        let Some(compiled) = self.compiled_ppu else {
-            return false;
+    fn enter_footnote_editor(&mut self) {
+        self.editor_mode = EditorMode::Footnote;
+        self.draft_points.clear();
+        self.status = "FOOTNOTE EDIT · click points to draw a path".to_owned();
+    }
+
+    fn back_from_footnote_editor(&mut self) {
+        self.editor_mode = EditorMode::Map;
+        self.draft_points.clear();
+        self.status = "MAP VIEW · unfinished foothold path discarded".to_owned();
+    }
+
+    fn finish_foothold_path(&mut self) {
+        if self.draft_points.len() < 2 {
+            self.status = "FOOTNOTE EDIT · add at least two points".to_owned();
+            return;
+        }
+        let Some(document) = self.document.as_mut() else {
+            return;
         };
-        self.ppu_text
-            .trim()
-            .parse::<f32>()
-            .is_ok_and(|edited| (edited - compiled).abs() > f32::EPSILON)
+        let next_index = document.gameplay.foothold_paths.len() + 1;
+        document.gameplay.foothold_paths.push(FootholdPath {
+            id: format!("foothold.{next_index:03}"),
+            kind: self.footnote_kind,
+            drop_through: self.footnote_kind == FootholdKind::OneWay,
+            points: std::mem::take(&mut self.draft_points),
+        });
+        self.gameplay_dirty = true;
+        self.status = format!(
+            "FOOTNOTE EDIT · path foothold.{next_index:03} added · save gameplay to persist"
+        );
+    }
+
+    fn cancel_foothold_path(&mut self) {
+        self.draft_points.clear();
+        self.status = "FOOTNOTE EDIT · current path cancelled".to_owned();
+    }
+
+    fn delete_foothold_path(&mut self, index: usize) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        if index < document.gameplay.foothold_paths.len() {
+            let removed = document.gameplay.foothold_paths.remove(index);
+            self.gameplay_dirty = true;
+            self.status = format!("FOOTNOTE EDIT · deleted {}", removed.id);
+        }
+    }
+
+    fn save_gameplay(&mut self) {
+        let Some(document) = &self.document else {
+            self.status = "SAVE ERROR\nNo current map".to_owned();
+            return;
+        };
+        self.status = match document.save_gameplay() {
+            Ok(()) => {
+                self.gameplay_dirty = false;
+                format!("SAVED GAMEPLAY\n{}", document.gameplay_path.display())
+            }
+            Err(error) => format!("SAVE ERROR\n{error}"),
+        };
+    }
+
+    fn dirty(&self) -> bool {
+        let ppu_dirty = self.compiled_ppu.is_some_and(|compiled| {
+            self.ppu_text
+                .trim()
+                .parse::<f32>()
+                .is_ok_and(|edited| (edited - compiled).abs() > f32::EPSILON)
+        });
+        ppu_dirty || self.gameplay_dirty
     }
 }
 
