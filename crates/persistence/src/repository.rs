@@ -135,7 +135,7 @@ mod tests {
         assert!(!path.exists());
         let character = repo.load_or_default(id).unwrap();
         assert_eq!(character.character_id, id);
-        assert_eq!(character.restore.map_authored, "map.dev.footnote");
+        assert_eq!(character.restore.map_authored, "map.map1");
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
