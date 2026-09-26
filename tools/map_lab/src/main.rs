@@ -290,7 +290,10 @@ impl MapLabApp {
         self.status = match document.save_gameplay() {
             Ok(()) => {
                 self.gameplay_dirty = false;
-                format!("SAVED GAMEPLAY\n{}", document.gameplay_path.display())
+                format!(
+                    "SAVED GAMEPLAY\n{}\nRestart the server to apply runtime content.",
+                    document.gameplay_path.display()
+                )
             }
             Err(error) => format!("SAVE ERROR\n{error}"),
         };
