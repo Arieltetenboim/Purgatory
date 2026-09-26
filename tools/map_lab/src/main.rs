@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
-use purgatory_content::{FootholdKind, FootholdPath, PresentationSprite, TileTransform};
+use purgatory_content::{
+    FootholdKind, FootholdPath, GameplaySpawnPoint, PresentationSprite, TileTransform,
+};
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
 const CAMERA_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
@@ -37,6 +39,7 @@ enum EditorMode {
     #[default]
     Map,
     Footnote,
+    Spawn,
 }
 
 struct MapLabApp {
@@ -213,6 +216,20 @@ impl MapLabApp {
         };
     }
 
+    fn enter_spawn_editor(&mut self) {
+        self.editor_mode = EditorMode::Spawn;
+        self.selected_point = None;
+        self.draft_points.clear();
+        self.status = "SPAWN EDIT · click near a FOOTNOTE to place default spawn".to_owned();
+    }
+
+    fn back_to_map(&mut self) {
+        self.editor_mode = EditorMode::Map;
+        self.draft_points.clear();
+        self.selected_point = None;
+        self.status = "MAP VIEW".to_owned();
+    }
+
     fn enter_footnote_editor(&mut self) {
         self.editor_mode = EditorMode::Footnote;
         self.draft_points.clear();
@@ -221,10 +238,11 @@ impl MapLabApp {
     }
 
     fn back_from_footnote_editor(&mut self) {
-        self.editor_mode = EditorMode::Map;
-        self.draft_points.clear();
-        self.selected_point = None;
-        self.status = "MAP VIEW · unfinished foothold path discarded".to_owned();
+        let had_draft = !self.draft_points.is_empty();
+        self.back_to_map();
+        if had_draft {
+            self.status = "MAP VIEW · unfinished foothold path discarded".to_owned();
+        }
     }
 
     fn finish_foothold_path(&mut self) {
@@ -305,6 +323,63 @@ impl MapLabApp {
         self.gameplay_dirty = true;
     }
 
+    fn set_default_spawn(&mut self, approximate_center: [f32; 2]) {
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
+        let Some(snapped) = document.snap_spawn_to_foothold(approximate_center) else {
+            self.status =
+                "SPAWN EDIT · no FOOTNOTE surface close enough to clicked position".to_owned();
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        if let Some(spawn) = document
+            .gameplay
+            .spawn_points
+            .iter_mut()
+            .find(|spawn| spawn.id == "default")
+        {
+            spawn.position = snapped;
+        } else {
+            document.gameplay.spawn_points.push(GameplaySpawnPoint {
+                id: "default".to_owned(),
+                position: snapped,
+            });
+        }
+        self.gameplay_dirty = true;
+        self.status = format!(
+            "SPAWN EDIT · default = ({:.2}, {:.2})",
+            snapped[0], snapped[1]
+        );
+    }
+
+    fn edit_default_spawn(&mut self, x: f32, y: f32) {
+        let Some(document) = self.document.as_ref() else {
+            return;
+        };
+        let [min_x, min_y, max_x, max_y] = document.presentation.world_bounds;
+        let approximate = [x.clamp(min_x, max_x), y.clamp(min_y, max_y)];
+        let Some(snapped) = document.snap_spawn_to_foothold(approximate) else {
+            self.status = "SPAWN EDIT · edited position has no nearby FOOTNOTE".to_owned();
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let Some(spawn) = document
+            .gameplay
+            .spawn_points
+            .iter_mut()
+            .find(|spawn| spawn.id == "default")
+        else {
+            return;
+        };
+        spawn.position = snapped;
+        self.gameplay_dirty = true;
+    }
+
     fn dirty(&self) -> bool {
         let ppu_dirty = self.compiled_ppu.is_some_and(|compiled| {
             self.ppu_text
@@ -321,27 +396,47 @@ impl eframe::App for MapLabApp {
         if ui.input(|input| input.key_pressed(egui::Key::R) && input.modifiers.shift) {
             self.reload(ui.ctx());
         }
-        if self.editor_mode == EditorMode::Footnote {
-            if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                self.back_from_footnote_editor();
-            } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                self.finish_foothold_path();
+        match self.editor_mode {
+            EditorMode::Footnote => {
+                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                    self.back_from_footnote_editor();
+                } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    self.finish_foothold_path();
+                }
             }
+            EditorMode::Spawn => {
+                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                    self.back_to_map();
+                }
+            }
+            EditorMode::Map => {}
         }
 
         egui::Panel::top("map_lab_top")
             .exact_size(54.0)
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    if self.editor_mode == EditorMode::Footnote {
-                        if ui.button("← BACK").clicked() {
-                            self.back_from_footnote_editor();
+                    match self.editor_mode {
+                        EditorMode::Footnote => {
+                            if ui.button("← BACK").clicked() {
+                                self.back_from_footnote_editor();
+                            }
+                            ui.heading("FOOTNOTE");
                         }
-                        ui.heading("FOOTNOTE");
-                    } else {
-                        ui.heading("MAP LAB");
-                        if ui.button("FOOTNOTE").clicked() && self.document.is_some() {
-                            self.enter_footnote_editor();
+                        EditorMode::Spawn => {
+                            if ui.button("← BACK").clicked() {
+                                self.back_to_map();
+                            }
+                            ui.heading("SPAWN");
+                        }
+                        EditorMode::Map => {
+                            ui.heading("MAP LAB");
+                            if ui.button("FOOTNOTE").clicked() && self.document.is_some() {
+                                self.enter_footnote_editor();
+                            }
+                            if ui.button("SPAWN").clicked() && self.document.is_some() {
+                                self.enter_spawn_editor();
+                            }
                         }
                     }
                     ui.separator();
@@ -362,7 +457,7 @@ impl eframe::App for MapLabApp {
                     if ui.button("SETTINGS").clicked() {
                         self.settings_open = true;
                     }
-                    if self.editor_mode == EditorMode::Footnote {
+                    if self.editor_mode != EditorMode::Map {
                         if ui.button("Save Gameplay").clicked() {
                             self.save_gameplay();
                         }
@@ -388,10 +483,10 @@ impl eframe::App for MapLabApp {
         let mut delete_foothold = None;
         egui::Panel::left("map_lab_layers")
             .resizable(true)
-            .default_size(if self.editor_mode == EditorMode::Footnote {
-                250.0
-            } else {
+            .default_size(if self.editor_mode == EditorMode::Map {
                 210.0
+            } else {
+                250.0
             })
             .min_size(180.0)
             .show(ui, |ui| {
@@ -505,6 +600,47 @@ impl eframe::App for MapLabApp {
                             });
                         }
                     }
+                    ui.separator();
+                    if ui.button("Save Gameplay").clicked() {
+                        self.save_gameplay();
+                    }
+                } else if self.editor_mode == EditorMode::Spawn {
+                    ui.heading("SPAWN EDIT");
+                    ui.small("Player AABB center · snapped to authored FOOTNOTE support");
+                    ui.separator();
+
+                    let default_spawn = self.document.as_ref().and_then(|document| {
+                        document
+                            .gameplay
+                            .spawn_points
+                            .iter()
+                            .find(|spawn| spawn.id == "default")
+                            .map(|spawn| spawn.position)
+                    });
+                    if let Some(point) = default_spawn {
+                        let mut x = point[0];
+                        let mut y = point[1];
+                        ui.label("DEFAULT SPAWN");
+                        ui.horizontal(|ui| {
+                            ui.label("X");
+                            let x_changed = ui
+                                .add(egui::DragValue::new(&mut x).speed(0.05))
+                                .changed();
+                            ui.label("Y");
+                            let y_changed = ui
+                                .add(egui::DragValue::new(&mut y).speed(0.05))
+                                .changed();
+                            if x_changed || y_changed {
+                                self.edit_default_spawn(x, y);
+                            }
+                        });
+                        ui.small("Y is the player AABB center; edits snap back to FOOTNOTE.");
+                    } else {
+                        ui.colored_label(Color32::YELLOW, "No default spawn authored.");
+                    }
+                    ui.separator();
+                    ui.label("Click near a FOOTNOTE to place/move the default spawn.");
+                    ui.label("Space+Drag pans · wheel zoom · BACK/Esc exits.");
                     ui.separator();
                     if ui.button("Save Gameplay").clicked() {
                         self.save_gameplay();
@@ -627,6 +763,16 @@ impl eframe::App for MapLabApp {
                 }
                 ui.separator();
                 ui.heading("COMPILER / VALIDATION");
+                if let Some(document) = &self.document {
+                    match document.gameplay_readiness() {
+                        Ok(()) => {
+                            ui.colored_label(Color32::LIGHT_GREEN, "GAMEPLAY READY");
+                        }
+                        Err(reason) => {
+                            ui.colored_label(Color32::YELLOW, format!("NOT READY · {reason}"));
+                        }
+                    }
+                }
                 ui.add(egui::Label::new(&self.status).wrap().selectable(true));
             });
 
@@ -668,10 +814,10 @@ impl eframe::App for MapLabApp {
                         ui.label("Zoom");
                         ui.end_row();
                         ui.label("Space+Drag");
-                        ui.label("Pan while editing FOOTNOTE");
+                        ui.label("Pan while editing FOOTNOTE / SPAWN");
                         ui.end_row();
                         ui.label("Click");
-                        ui.label("Add/select FOOTNOTE point");
+                        ui.label("Add/select FOOTNOTE point or place SPAWN");
                         ui.end_row();
                         ui.label("Enter");
                         ui.label("Finish current FOOTNOTE path");
@@ -696,10 +842,16 @@ impl eframe::App for MapLabApp {
                     ui.separator();
                     ui.label(format!("Pan {:.0}, {:.0}px", self.pan.x, self.pan.y));
                     ui.separator();
-                    ui.label(if self.editor_mode == EditorMode::Footnote {
-                        "Click add point · Space+drag pan · wheel zoom · Enter finish · Esc/BACK exit"
-                    } else {
-                        "Drag to pan · wheel to zoom · Shift+R reload · source files are not rewritten"
+                    ui.label(match self.editor_mode {
+                        EditorMode::Footnote => {
+                            "Click add point · Space+drag pan · wheel zoom · Enter finish · Esc/BACK exit"
+                        }
+                        EditorMode::Spawn => {
+                            "Click place spawn · Space+drag pan · wheel zoom · Esc/BACK exit"
+                        }
+                        EditorMode::Map => {
+                            "Drag to pan · wheel to zoom · Shift+R reload · source files are not rewritten"
+                        }
                     });
                 });
             });
