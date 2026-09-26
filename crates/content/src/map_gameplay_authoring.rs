@@ -29,20 +29,23 @@ pub struct MapGameplayAuthoring {
     pub schema_version: u32,
     pub map_authored: String,
     #[serde(default)]
+    pub name: String,
+    #[serde(default)]
     pub foothold_paths: Vec<FootholdPath>,
 }
 
 impl MapGameplayAuthoring {
     #[must_use]
     pub fn empty(map_authored: impl Into<String>) -> Self {
+        let map_authored = map_authored.into();
         Self {
             schema_version: MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
-            map_authored: map_authored.into(),
+            name: map_authored.clone(),
+            map_authored,
             foothold_paths: Vec::new(),
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -56,6 +59,7 @@ mod tests {
             MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION
         );
         assert_eq!(authoring.map_authored, "map.map1");
+        assert_eq!(authoring.name, "map.map1");
         assert!(authoring.foothold_paths.is_empty());
     }
 
