@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
-    FootholdKind, FootholdPath, GameplaySpawnPoint, PresentationSprite, TileTransform,
+    FootholdKind, FootholdPath, GameplaySpawnPoint, PresentationSprite, SkyGradient, TileTransform,
 };
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
@@ -40,6 +40,7 @@ enum EditorMode {
     Map,
     Footnote,
     Spawn,
+    Environment,
 }
 
 struct MapLabApp {
@@ -57,6 +58,7 @@ struct MapLabApp {
     footnote_kind: FootholdKind,
     draft_points: Vec<[f32; 2]>,
     gameplay_dirty: bool,
+    environment_dirty: bool,
     selected_point: Option<(usize, usize)>,
     settings_open: bool,
 }
@@ -80,6 +82,7 @@ impl MapLabApp {
             footnote_kind: FootholdKind::OneWay,
             draft_points: Vec::new(),
             gameplay_dirty: false,
+            environment_dirty: false,
             selected_point: None,
             settings_open: false,
         };
@@ -94,6 +97,7 @@ impl MapLabApp {
                 self.ppu_text = document.source.pixels_per_world_unit.to_string();
                 self.install_document(ctx, document);
                 self.gameplay_dirty = false;
+                self.environment_dirty = false;
             }
             Err(error) => self.status = format!("COMPILE ERROR\n{error}"),
         }
@@ -282,6 +286,30 @@ impl MapLabApp {
         }
     }
 
+    fn enter_environment_editor(&mut self) {
+        self.editor_mode = EditorMode::Environment;
+        self.selected_point = None;
+        self.draft_points.clear();
+        self.status = "ENVIRONMENT · edit map-level presentation".to_owned();
+    }
+
+    fn save_environment(&mut self) {
+        let Some(document) = &self.document else {
+            self.status = "SAVE ERROR\nNo current map".to_owned();
+            return;
+        };
+        self.status = match document.save_environment() {
+            Ok(()) => {
+                self.environment_dirty = false;
+                format!(
+                    "SAVED ENVIRONMENT\n{}\nRebuild the client to apply runtime presentation.",
+                    document.environment_path.display()
+                )
+            }
+            Err(error) => format!("SAVE ERROR\n{error}"),
+        };
+    }
+
     fn save_gameplay(&mut self) {
         let Some(document) = &self.document else {
             self.status = "SAVE ERROR\nNo current map".to_owned();
@@ -390,7 +418,7 @@ impl MapLabApp {
                 .parse::<f32>()
                 .is_ok_and(|edited| (edited - compiled).abs() > f32::EPSILON)
         });
-        ppu_dirty || self.gameplay_dirty
+        ppu_dirty || self.gameplay_dirty || self.environment_dirty
     }
 }
 
@@ -407,7 +435,7 @@ impl eframe::App for MapLabApp {
                     self.finish_foothold_path();
                 }
             }
-            EditorMode::Spawn => {
+            EditorMode::Spawn | EditorMode::Environment => {
                 if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
                     self.back_to_map();
                 }
@@ -432,6 +460,12 @@ impl eframe::App for MapLabApp {
                             }
                             ui.heading("SPAWN");
                         }
+                        EditorMode::Environment => {
+                            if ui.button("← BACK").clicked() {
+                                self.back_to_map();
+                            }
+                            ui.heading("ENVIRONMENT");
+                        }
                         EditorMode::Map => {
                             ui.heading("MAP LAB");
                             if ui.button("FOOTNOTE").clicked() && self.document.is_some() {
@@ -439,6 +473,9 @@ impl eframe::App for MapLabApp {
                             }
                             if ui.button("SPAWN").clicked() && self.document.is_some() {
                                 self.enter_spawn_editor();
+                            }
+                            if ui.button("ENVIRONMENT").clicked() && self.document.is_some() {
+                                self.enter_environment_editor();
                             }
                         }
                     }
@@ -460,9 +497,13 @@ impl eframe::App for MapLabApp {
                     if ui.button("SETTINGS").clicked() {
                         self.settings_open = true;
                     }
-                    if self.editor_mode != EditorMode::Map {
+                    if matches!(self.editor_mode, EditorMode::Footnote | EditorMode::Spawn) {
                         if ui.button("Save Gameplay").clicked() {
                             self.save_gameplay();
+                        }
+                    } else if self.editor_mode == EditorMode::Environment {
+                        if ui.button("Save Environment").clicked() {
+                            self.save_environment();
                         }
                     } else if ui.button("Export Canonical JSON").clicked() {
                         self.export_artifact();
@@ -493,7 +534,69 @@ impl eframe::App for MapLabApp {
             })
             .min_size(180.0)
             .show(ui, |ui| {
-                if self.editor_mode == EditorMode::Footnote {
+                if self.editor_mode == EditorMode::Environment {
+                    ui.heading("ENVIRONMENT");
+                    ui.small("Map-level presentation · independent from gameplay/Tiled visuals");
+                    ui.separator();
+
+                    let mut enabled = self
+                        .document
+                        .as_ref()
+                        .and_then(|document| document.environment.sky_gradient)
+                        .is_some();
+                    if ui.checkbox(&mut enabled, "Sky Gradient").changed() {
+                        if let Some(document) = self.document.as_mut() {
+                            document.environment.sky_gradient =
+                                enabled.then(SkyGradient::default);
+                            self.environment_dirty = true;
+                        }
+                    }
+                    if enabled {
+                        let gradient = self
+                            .document
+                            .as_ref()
+                            .and_then(|document| document.environment.sky_gradient)
+                            .unwrap_or_default();
+                        let mut top = Color32::from_rgba_unmultiplied(
+                            gradient.top_rgba[0],
+                            gradient.top_rgba[1],
+                            gradient.top_rgba[2],
+                            gradient.top_rgba[3],
+                        );
+                        let mut bottom = Color32::from_rgba_unmultiplied(
+                            gradient.bottom_rgba[0],
+                            gradient.bottom_rgba[1],
+                            gradient.bottom_rgba[2],
+                            gradient.bottom_rgba[3],
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Top");
+                            if ui.color_edit_button_srgba(&mut top).changed() {
+                                if let Some(document) = self.document.as_mut()
+                                    && let Some(sky) = document.environment.sky_gradient.as_mut()
+                                {
+                                    sky.top_rgba = top.to_array();
+                                    self.environment_dirty = true;
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Bottom");
+                            if ui.color_edit_button_srgba(&mut bottom).changed() {
+                                if let Some(document) = self.document.as_mut()
+                                    && let Some(sky) = document.environment.sky_gradient.as_mut()
+                                {
+                                    sky.bottom_rgba = bottom.to_array();
+                                    self.environment_dirty = true;
+                                }
+                            }
+                        });
+                        ui.small("Preview updates immediately. Runtime applies after client rebuild.");
+                    }
+                    ui.separator();
+                    ui.label("NEXT");
+                    ui.small("Parallax layers · celestial objects · cloud motion");
+                } else if self.editor_mode == EditorMode::Footnote {
                     ui.heading("FOOTNOTE EDIT");
                     ui.small("Polyline authoring · gameplay-owned · Tiled stays visual-only");
                     ui.separator();
@@ -852,6 +955,9 @@ impl eframe::App for MapLabApp {
                         EditorMode::Spawn => {
                             "Click place spawn · Space+drag pan · wheel zoom · Esc/BACK exit"
                         }
+                        EditorMode::Environment => {
+                            "Edit environment · preview is live · Save Environment persists"
+                        }
                         EditorMode::Map => {
                             "Drag to pan · wheel to zoom · Shift+R reload · source files are not rewritten"
                         }
@@ -919,6 +1025,24 @@ impl MapLabApp {
         ui.painter()
             .rect_filled(map_rect, 0.0, Color32::from_rgb(10, 12, 15));
         let map_painter = ui.painter().with_clip_rect(map_clip);
+        if let Some(gradient) = document.environment.sky_gradient {
+            const BANDS: usize = 24;
+            for index in 0..BANDS {
+                let t0 = index as f32 / BANDS as f32;
+                let t1 = (index + 1) as f32 / BANDS as f32;
+                let color = lerp_color32(gradient.bottom_rgba, gradient.top_rgba, (t0 + t1) * 0.5);
+                let y0 = min_y_screen(map_rect, t0);
+                let y1 = min_y_screen(map_rect, t1);
+                map_painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(map_rect.left(), y1),
+                        Pos2::new(map_rect.right(), y0),
+                    ),
+                    0.0,
+                    color,
+                );
+            }
+        }
 
         for (index, layer) in map.layers.iter().enumerate() {
             if !self.preview_layers.get(index).copied().unwrap_or(false) {
@@ -1111,6 +1235,18 @@ impl MapLabApp {
             self.set_default_spawn(point);
         }
     }
+}
+
+fn lerp_color32(bottom: [u8; 4], top: [u8; 4], t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let channel = |index: usize| {
+        (bottom[index] as f32 + (top[index] as f32 - bottom[index] as f32) * t).round() as u8
+    };
+    Color32::from_rgba_unmultiplied(channel(0), channel(1), channel(2), channel(3))
+}
+
+fn min_y_screen(rect: Rect, t: f32) -> f32 {
+    rect.bottom() - rect.height() * t
 }
 
 fn foothold_color(kind: FootholdKind) -> Color32 {
