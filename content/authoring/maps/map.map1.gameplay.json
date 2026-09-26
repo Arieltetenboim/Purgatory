@@ -9,7 +9,7 @@
       "drop_through": false,
       "points": [
         [
-          0,
+          0.0,
           0.4
         ],
         [
@@ -62,8 +62,8 @@
     {
       "id": "default",
       "position": [
-        15.31,
-        1
+        30.0,
+        1.0
       ]
     }
   ]
