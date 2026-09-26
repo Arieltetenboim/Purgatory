@@ -135,6 +135,39 @@ impl MapLabApp {
         self.status = status.to_owned();
     }
 
+    fn open_in_tiled(&mut self) {
+        let Some(document) = &self.document else {
+            self.status = "OPEN ERROR\nNo current compiled map".to_owned();
+            return;
+        };
+        let Some(parent) = document.sidecar_path.parent() else {
+            self.status = "OPEN ERROR\nInvalid sidecar path".to_owned();
+            return;
+        };
+        let tmx = parent.join(&document.source.visual_source);
+        if !tmx.is_file() {
+            self.status = format!("OPEN ERROR\nTMX not found: {}", tmx.display());
+            return;
+        }
+
+        #[cfg(windows)]
+        {
+            self.status = match std::process::Command::new("rundll32.exe")
+                .arg("url.dll,FileProtocolHandler")
+                .arg(&tmx)
+                .spawn()
+            {
+                Ok(_) => format!("OPENED IN TILED\n{}", tmx.display()),
+                Err(error) => format!("OPEN ERROR\n{}: {error}", tmx.display()),
+            };
+        }
+
+        #[cfg(not(windows))]
+        {
+            self.status = "OPEN ERROR\nOpen in Tiled currently supports Windows only".to_owned();
+        }
+    }
+
     fn export_artifact(&mut self) {
         let Some(document) = &self.document else {
             self.status = "EXPORT ERROR\nNo current compiled output".to_owned();
@@ -173,6 +206,10 @@ impl MapLabApp {
 
 impl eframe::App for MapLabApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if ui.input(|input| input.key_pressed(egui::Key::R) && input.modifiers.shift) {
+            self.reload(ui.ctx());
+        }
+
         egui::Panel::top("map_lab_top")
             .exact_size(54.0)
             .show(ui, |ui| {
@@ -186,6 +223,9 @@ impl eframe::App for MapLabApp {
                     );
                     if ui.button("Open / Reload").clicked() {
                         self.reload(ui.ctx());
+                    }
+                    if ui.button("Open in Tiled").clicked() {
+                        self.open_in_tiled();
                     }
                     if ui.button("Fit Map").clicked() {
                         self.fit_requested = true;
@@ -294,7 +334,9 @@ impl eframe::App for MapLabApp {
                     ui.separator();
                     ui.label(format!("Pan {:.0}, {:.0}px", self.pan.x, self.pan.y));
                     ui.separator();
-                    ui.label("Drag to pan · wheel to zoom · source files are not rewritten");
+                    ui.label(
+                        "Drag to pan · wheel to zoom · Shift+R reload · source files are not rewritten",
+                    );
                 });
             });
 
