@@ -4376,6 +4376,11 @@ fn scene_quads(
 ) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(8);
     for view in world.iter_platforms() {
+        // Authored FOOTNOTE segments are gameplay collision geometry, not
+        // visible world art. Their AABB exists only for broad-phase queries.
+        if view.platform.is_segment() {
+            continue;
+        }
         let color = match view.platform.kind {
             PlatformKind::Solid => {
                 if view.platform.half_extents[0] >= 7.0 {
