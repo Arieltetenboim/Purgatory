@@ -334,6 +334,28 @@ impl eframe::App for MapLabApp {
                     let width = map.world_bounds[2] - map.world_bounds[0];
                     let height = map.world_bounds[3] - map.world_bounds[1];
                     ui.label(format!("World: {width:.3} × {height:.3} wu"));
+                    let width_coverage = width / CAMERA_WIDTH_WU * 100.0;
+                    let height_coverage = height / CAMERA_HEIGHT_WU * 100.0;
+                    if map_covers_camera([width, height]) {
+                        ui.colored_label(
+                            Color32::LIGHT_GREEN,
+                            format!(
+                                "MAP COVERS CAMERA · {:.0}% width · {:.0}% height",
+                                width_coverage, height_coverage
+                            ),
+                        );
+                    } else {
+                        ui.colored_label(
+                            Color32::YELLOW,
+                            format!(
+                                "MAP SMALLER THAN CAMERA · {:.0}% width · {:.0}% height",
+                                width_coverage, height_coverage
+                            ),
+                        );
+                        ui.small(
+                            "Keep 100 PPU. Enlarge the TMX canvas if this map should fill or exceed one gameplay view.",
+                        );
+                    }
                     ui.separator();
                     ui.label(format!(
                         "Camera: {:.3} × {:.3} wu",
@@ -627,6 +649,10 @@ fn transformed_uv(transform: TileTransform) -> [[f32; 2]; 4] {
     })
 }
 
+fn map_covers_camera(world_size: [f32; 2]) -> bool {
+    world_size[0] >= CAMERA_WIDTH_WU && world_size[1] >= CAMERA_HEIGHT_WU
+}
+
 fn world_rect(center: [f32; 2], size: [f32; 2], to_screen: &impl Fn([f32; 2]) -> Pos2) -> Rect {
     Rect::from_two_pos(
         to_screen([center[0] - size[0] * 0.5, center[1] + size[1] * 0.5]),
@@ -637,6 +663,12 @@ fn world_rect(center: [f32; 2], size: [f32; 2], to_screen: &impl Fn([f32; 2]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_coverage_is_independent_from_ppu_standard() {
+        assert!(!map_covers_camera([19.44, 10.8]));
+        assert!(map_covers_camera([CAMERA_WIDTH_WU, CAMERA_HEIGHT_WU]));
+    }
 
     #[test]
     fn map1_uses_locked_purgatory_standard_ppu() {
