@@ -504,6 +504,8 @@ pub(crate) fn glue_to_support<B: CollisionBody>(
     let right = transform.position[0] + half[0];
     const GLUE_EPS: f32 = 0.12;
 
+    let current_support = body_state.grounded_on();
+    let mut current: Option<(f32, EntityId)> = None;
     let mut best: Option<(f32, EntityId)> = None;
     for view in platforms {
         let Some(top) = view
@@ -531,13 +533,20 @@ pub(crate) fn glue_to_support<B: CollisionBody>(
         if !crate::footnote::surface_blocks(view.platform, query) {
             continue;
         }
+        if current_support == Some(view.id) {
+            current = Some((top, view.id));
+            continue;
+        }
         best = Some(match best {
             Some((bt, bid)) if bt >= top => (bt, bid),
             _ => (top, view.id),
         });
     }
 
-    let (top, id) = best?;
+    // Do not let a nearby/crossing foothold steal a grounded body from its
+    // still-valid support. Only hand off when the current support has actually
+    // ended or stopped blocking.
+    let (top, id) = current.or(best)?;
     let before = transform.position[1];
     transform.position[1] = top + half[1];
     let mut velocity = body_state.velocity();
