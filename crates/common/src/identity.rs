@@ -350,6 +350,15 @@ impl RestoreIntent {
             checkpoint_id: None,
         }
     }
+
+    #[must_use]
+    pub fn map1_default() -> Self {
+        Self {
+            map_authored: MAP1_AUTHORED.to_string(),
+            point_id: DEFAULT_RESTORE_POINT.to_string(),
+            checkpoint_id: None,
+        }
+    }
 }
 
 /// Future instance-exit metadata. Not a runtime `InstanceId`.
@@ -362,6 +371,7 @@ pub struct InstanceExitContext {
 /// Legacy development map labels. Stable map identity moves to numeric IDs.
 pub const MAP_FOOTNOTE_AUTHORED: &str = "map.dev.footnote";
 pub const MAP_SECOND_AUTHORED: &str = "map.dev.second";
+pub const MAP1_AUTHORED: &str = "map.map1";
 
 /// FNV-1a 64-bit used only by the temporary authored-string migration bridge.
 #[must_use]
