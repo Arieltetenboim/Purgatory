@@ -1360,16 +1360,13 @@ impl GameplayOwner {
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
     ) -> bool {
-        let floor = self
-            .world
-            .iter_platforms()
-            .find(|view| {
-                self.world.address_of(view.id) == Some(spawn_address)
-                    && view
-                        .platform
-                        .surface_y_at(view.transform, spawn_position[0])
-                        .is_some()
-            });
+        let floor = self.world.iter_platforms().find(|view| {
+            self.world.address_of(view.id) == Some(spawn_address)
+                && view
+                    .platform
+                    .surface_y_at(view.transform, spawn_position[0])
+                    .is_some()
+        });
         let Some(view) = floor else {
             return false;
         };
@@ -1379,8 +1376,7 @@ impl GameplayOwner {
         else {
             return false;
         };
-        let (transform, state) =
-            PlayerState::standing_on_at(view.id, surface_y, spawn_position[0]);
+        let (transform, state) = PlayerState::standing_on_at(view.id, surface_y, spawn_position[0]);
         let entity = self.world.spawn_player_at(spawn_address, transform, state);
         let _ = self
             .world
@@ -2210,7 +2206,11 @@ impl GameplayOwner {
                 && v.platform.surface_y_at(v.transform, x).is_some()
         })?;
         let surface_y = view.platform.surface_y_at(view.transform, x)?;
-        Some(PlayerState::standing_on_at(view.id, surface_y, x).0.position)
+        Some(
+            PlayerState::standing_on_at(view.id, surface_y, x)
+                .0
+                .position,
+        )
     }
 
     fn send_equipment_result(
