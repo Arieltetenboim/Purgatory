@@ -689,8 +689,10 @@ Map Lab preview / client AssetRuntime + existing renderer
 ```
 
 The sidecar is the single compiler entry point and owns PURGATORY map identity,
-the TMX reference, and explicit per-map pixels-per-world-unit (PPU). Tiled owns
-visual composition and is never rewritten by Map Lab. For finite orthogonal V1
+the TMX reference, and explicit per-map pixels-per-world-unit (PPU). The production
+visual-scale standard is **100 px/wu** for ordinary PURGATORY maps; per-map PPU stays explicit for
+validation/import compatibility, not as a camera-zoom control. Intentional camera zoom remains a
+separate presentation concern. Tiled owns visual composition and is never rewritten by Map Lab. For finite orthogonal V1
 maps, the TMX map extent is authoritative:
 `pixel_width = map.width × tile_width` and
 `pixel_height = map.height × tile_height`. Canonical map-local bounds are
