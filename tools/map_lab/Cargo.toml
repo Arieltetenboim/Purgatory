@@ -19,7 +19,7 @@ path = "src/main.rs"
 eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts"] }
 egui = "0.36.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
-purgatory-content = { path = "../../crates/content" }
+purgatory-content = { path = "../../crates/content", features = ["map-authoring"] }
 purgatory-simulation = { path = "../../crates/simulation" }
 serde_json = { workspace = true }
 
