@@ -318,6 +318,7 @@ impl ContentRegistry {
         authored: &str,
         name: &str,
         foothold_paths: Vec<crate::FootholdPath>,
+        spawn_points: Vec<crate::GameplaySpawnPoint>,
     ) -> Result<(), ContentError> {
         let Some(map) = self.maps.get_mut(authored) else {
             return Err(ContentError::one(ValidationIssue::new(
@@ -331,6 +332,15 @@ impl ContentRegistry {
             map.debug_name = name.trim().to_owned();
         }
         map.foothold_paths = foothold_paths;
+        if !spawn_points.is_empty() {
+            map.spawn_points = spawn_points
+                .into_iter()
+                .map(|spawn| crate::SpawnPoint {
+                    id: spawn.id,
+                    position: spawn.position,
+                })
+                .collect();
+        }
         Ok(())
     }
 
