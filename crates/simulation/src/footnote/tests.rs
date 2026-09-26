@@ -498,31 +498,17 @@ fn grounded_floor_is_not_stolen_by_nearby_rising_oneway_segment() {
     let mut world = World::new();
     let floor = world.spawn_platform(
         Transform::from_position([0.0, 0.0]),
-        Platform::segment(
-            [-4.0, 0.0],
-            [4.0, 0.0],
-            PlatformKind::Solid,
-            false,
-        ),
+        Platform::segment([-4.0, 0.0], [4.0, 0.0], PlatformKind::Solid, false),
     );
     let _slope = world.spawn_platform(
         Transform::from_position([0.0, 0.0]),
-        Platform::segment(
-            [0.0, -0.02],
-            [4.0, 1.60],
-            PlatformKind::OneWay,
-            true,
-        ),
+        Platform::segment([0.0, -0.02], [4.0, 1.60], PlatformKind::OneWay, true),
     );
-    let (transform, state) =
-        PlayerState::standing_on_at(floor, 0.0, -0.5);
+    let (transform, state) = PlayerState::standing_on_at(floor, 0.0, -0.5);
     world.spawn_player(transform, state);
 
     for _ in 0..30 {
-        world.tick(
-            DT_30,
-            PlayerInput::from_buttons(false, true, false),
-        );
+        world.tick(DT_30, PlayerInput::from_buttons(false, true, false));
         let body = player(&world);
         assert!(body.grounded, "walking floor contact must remain grounded");
         assert_eq!(
