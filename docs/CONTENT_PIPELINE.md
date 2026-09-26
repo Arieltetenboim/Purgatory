@@ -23,6 +23,11 @@ Human-editable JSON lives under `/content`:
 - `shared/equipment_presentation/` — client presentation facet (schema v2) for the same numeric Item `ContentId` (`attachments[]`)
 - `shared/abilities/` — gameplay ability JSON (`AbilityDefinition`; schema_version 1). Loaded in Shared and Full modes.
 - `shared/animations/dev/` — A6/A7 v1 `.anim` presentation clips (token text, not JSON). Optional `depth` keys (A7.1 `depth_angle`; omitted = 0). Authored in Animation Lab. Runtime still compiles them in via `include_str!`.
+- `authoring/maps/` — PURGATORY map-authoring sidecars. A sidecar owns map
+  identity, the relative Tiled TMX visual source, and explicit per-map PPU.
+  `purgatory-content` compiles TMX/TSX through one shared compiler into
+  versioned canonical `MapPresentation`; Map Lab previews that same output.
+  TMX remains the visual-composition source and is not runtime input.
 - `authoring/npcs/` — canonical NPC Lab JSON. Recursively validated in Shared
   and Full modes; projected into client-safe dialogue presentation in both and
   authoritative dialogue definitions in Full mode.
