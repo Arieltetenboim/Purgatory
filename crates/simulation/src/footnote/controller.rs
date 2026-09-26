@@ -116,7 +116,7 @@ impl World {
         let previous_left = prev_pos[0] - prev_half[0];
         let previous_right = prev_pos[0] + prev_half[0];
         let support_platform =
-            prev_grounded_on.and_then(|id| self.get_platform(id).map(|(_, platform)| platform));
+            prev_grounded_on.and_then(|id| self.get_platform(id).map(|(_, platform)| *platform));
 
         let mut scratch = PlatformScratch::default();
         let addr = self.address_of(id);
