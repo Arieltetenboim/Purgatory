@@ -410,7 +410,9 @@ impl eframe::App for MapLabApp {
                             self.cancel_foothold_path();
                         }
                     });
-                    ui.small("Click map to add points · Enter finishes · BACK/Esc exits");
+                    ui.small(
+                        "Click map to add points · Space+drag pans without ending the path · Enter finishes · BACK/Esc exits",
+                    );
                     ui.separator();
 
                     ui.heading("PATHS");
@@ -567,7 +569,7 @@ impl eframe::App for MapLabApp {
                     ui.label(format!("Pan {:.0}, {:.0}px", self.pan.x, self.pan.y));
                     ui.separator();
                     ui.label(if self.editor_mode == EditorMode::Footnote {
-                        "Click to add point · Enter finish · Esc/BACK exit · wheel zoom"
+                        "Click add point · Space+drag pan · wheel zoom · Enter finish · Esc/BACK exit"
                     } else {
                         "Drag to pan · wheel to zoom · Shift+R reload · source files are not rewritten"
                     });
@@ -586,7 +588,9 @@ impl MapLabApp {
             ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         ui.painter()
             .rect_filled(canvas, 0.0, Color32::from_rgb(24, 27, 32));
-        if self.editor_mode == EditorMode::Map && response.dragged() {
+        let pan_gesture = self.editor_mode == EditorMode::Map
+            || ui.input(|input| input.key_down(egui::Key::Space));
+        if pan_gesture && response.dragged() {
             self.pan += ui.input(|input| input.pointer.delta());
         }
         if response.hovered() {
@@ -662,7 +666,10 @@ impl MapLabApp {
             );
         }
 
-        let clicked_world = if self.editor_mode == EditorMode::Footnote && response.clicked() {
+        let clicked_world = if self.editor_mode == EditorMode::Footnote
+            && !ui.input(|input| input.key_down(egui::Key::Space))
+            && response.clicked()
+        {
             response.interact_pointer_pos().and_then(|position| {
                 map_rect.contains(position).then(|| {
                     [
