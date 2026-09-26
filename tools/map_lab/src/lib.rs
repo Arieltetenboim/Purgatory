@@ -32,8 +32,11 @@ impl MapLabDocument {
         let gameplay = if gameplay_path.is_file() {
             let bytes = std::fs::read(&gameplay_path)
                 .map_err(|error| format!("read {}: {error}", gameplay_path.display()))?;
-            let gameplay: MapGameplayAuthoring = serde_json::from_slice(&bytes)
+            let mut gameplay: MapGameplayAuthoring = serde_json::from_slice(&bytes)
                 .map_err(|error| format!("parse {}: {error}", gameplay_path.display()))?;
+            if gameplay.name.trim().is_empty() {
+                gameplay.name = source.id.clone();
+            }
             validate_gameplay(&gameplay_path, &source, &presentation, &gameplay)?;
             gameplay
         } else {
