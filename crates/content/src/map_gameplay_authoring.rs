@@ -25,6 +25,13 @@ pub struct FootholdPath {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct GameplaySpawnPoint {
+    pub id: String,
+    pub position: [f32; 2],
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MapGameplayAuthoring {
     pub schema_version: u32,
     pub map_authored: String,
@@ -32,6 +39,8 @@ pub struct MapGameplayAuthoring {
     pub name: String,
     #[serde(default)]
     pub foothold_paths: Vec<FootholdPath>,
+    #[serde(default)]
+    pub spawn_points: Vec<GameplaySpawnPoint>,
 }
 
 impl MapGameplayAuthoring {
@@ -43,6 +52,7 @@ impl MapGameplayAuthoring {
             name: map_authored.clone(),
             map_authored,
             foothold_paths: Vec::new(),
+            spawn_points: Vec::new(),
         }
     }
 }
@@ -61,6 +71,18 @@ mod tests {
         assert_eq!(authoring.map_authored, "map.map1");
         assert_eq!(authoring.name, "map.map1");
         assert!(authoring.foothold_paths.is_empty());
+        assert!(authoring.spawn_points.is_empty());
+    }
+
+    #[test]
+    fn spawn_point_serializes_stably() {
+        let spawn = GameplaySpawnPoint {
+            id: "default".to_owned(),
+            position: [12.5, 3.0],
+        };
+        let json = serde_json::to_string(&spawn).unwrap();
+        assert!(json.contains("\"id\":\"default\""));
+        assert!(json.contains("\"position\":[12.5,3.0]"));
     }
 
     #[test]
