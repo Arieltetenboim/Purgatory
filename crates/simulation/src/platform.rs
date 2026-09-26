@@ -281,6 +281,32 @@ mod tests {
     }
 
     #[test]
+    fn authored_segment_interpolates_surface_height() {
+        let platform = Platform::segment(
+            [-2.0, -1.0],
+            [2.0, 1.0],
+            PlatformKind::OneWay,
+            true,
+        );
+        let transform = Transform::from_position([10.0, 5.0]);
+        assert_eq!(platform.surface_y_at(transform, 10.0), Some(5.0));
+        assert_eq!(platform.surface_y_at(transform, 8.0), Some(4.0));
+        assert_eq!(platform.surface_y_at(transform, 12.0), Some(6.0));
+        assert_eq!(platform.surface_y_at(transform, 12.1), None);
+    }
+
+    #[test]
+    fn solid_segment_never_becomes_drop_through() {
+        let platform = Platform::segment(
+            [-1.0, 0.0],
+            [1.0, 0.0],
+            PlatformKind::Solid,
+            true,
+        );
+        assert!(!platform.drop_through);
+    }
+
+    #[test]
     fn top_surface_is_center_plus_half_height() {
         let transform = Transform::from_position(FLOOR_POSITION);
         assert!(
