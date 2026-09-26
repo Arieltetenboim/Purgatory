@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use purgatory_content::{ContentRegistry, MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationSprite};
+use purgatory_content::{
+    ContentRegistry, MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationSprite,
+};
 use purgatory_simulation::MapId;
 use serde_json::from_slice;
 
@@ -8,10 +10,8 @@ use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
 use crate::renderer::{DrawQuad, SpriteTextureId};
 
-const COMPILED_PRESENTATION: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/map.map1.presentation.json"
-));
+const COMPILED_PRESENTATION: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/map.map1.presentation.json"));
 
 pub(crate) struct RuntimeMapPresentation {
     map_authored: String,
