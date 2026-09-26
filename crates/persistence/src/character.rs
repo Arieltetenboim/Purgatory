@@ -24,7 +24,7 @@ impl PersistentCharacter {
             schema_version: PERSISTENCE_SCHEMA_VERSION,
             character_id,
             persistence_revision: 1,
-            restore: RestoreIntent::map1_default(),
+            restore: RestoreIntent::footnote_default(),
             instance_exit: None,
         }
     }
