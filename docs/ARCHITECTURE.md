@@ -678,16 +678,36 @@ Common content variants are data.
 Visual map authoring follows a separate compile-time path:
 
 ```text
-Tiled TMX/TSX
-→ PURGATORY importer/compiler
-→ canonical PURGATORY map presentation
-→ client AssetRuntime / existing renderer
+PURGATORY map sidecar (content/authoring/maps/)
+        + Tiled TMX/TSX visual source
+        ↓
+shared purgatory-content map compiler (tiled crate)
+        ↓
+versioned canonical PURGATORY MapPresentation
+        ↓
+Map Lab preview / client AssetRuntime + existing renderer
 ```
 
-The production client consumes the canonical presentation and never parses
+The sidecar is the single compiler entry point and owns PURGATORY map identity,
+the TMX reference, and explicit per-map pixels-per-world-unit (PPU). Tiled owns
+visual composition and is never rewritten by Map Lab. For finite orthogonal V1
+maps, the TMX map extent is authoritative:
+`pixel_width = map.width × tile_width` and
+`pixel_height = map.height × tile_height`. Canonical map-local bounds are
+`x: 0..pixel_width/PPU`, `y: 0..pixel_height/PPU`; compilation converts
+Tiled Y-down coordinates to PURGATORY Y-up coordinates.
+
+Both Map Lab and the game consume the same canonical compiler semantics; neither
+implements a second Tiled interpretation. The production client never parses
 TMX/TSX at runtime. Visual composition is independent of gameplay geometry:
 Tiled does not author FOOTNOTE, NPC, or mob placement; that direction belongs
-to Map Lab.
+to Map Lab. W1.3A supports finite orthogonal atlas-based maps with top-level
+Image, Tile, and tile-object layers plus normal visibility/opacity/offset and
+orthogonal tile flips. Infinite/isometric/staggered/hex maps, group nesting,
+tile animation, rotated tile objects, image repeat/parallax, tint/non-normal
+blend modes, collection-of-images tilesets, color-key transparency, oblique
+skew, and TMX background color are explicit unsupported inputs rather than
+silent fallbacks.
 
 Authoring flow:
 
