@@ -121,7 +121,10 @@ pub fn compile_tiled_map_with_ppu(
             &tmx_path,
             "-",
             "orientation",
-            format!("unsupported {:?}; W1.3A supports orthogonal only", map.orientation),
+            format!(
+                "unsupported {:?}; W1.3A supports orthogonal only",
+                map.orientation
+            ),
         ));
     }
     if map.infinite() {
@@ -245,7 +248,8 @@ impl Compiler<'_> {
                         "color-key transparency is unsupported; use PNG alpha",
                     ));
                 }
-                let (asset_id, size) = self.register_image(&image.source, image.width, image.height)?;
+                let (asset_id, size) =
+                    self.register_image(&image.source, image.width, image.height)?;
                 vec![self.sprite(
                     asset_id,
                     [0, 0, size[0], size[1]],
@@ -321,11 +325,8 @@ impl Compiler<'_> {
                     self.register_image(&image.source, image.width, image.height)?;
                 let size = [tileset.tile_width as f32, tileset.tile_height as f32];
                 let top_left = [
-                    x as f32 * map.tile_width as f32
-                        + layer.offset_x
-                        + tileset.offset_x as f32,
-                    (y + 1) as f32 * map.tile_height as f32
-                        - size[1]
+                    x as f32 * map.tile_width as f32 + layer.offset_x + tileset.offset_x as f32,
+                    (y + 1) as f32 * map.tile_height as f32 - size[1]
                         + layer.offset_y
                         + tileset.offset_y as f32,
                 ];
@@ -364,7 +365,9 @@ impl Compiler<'_> {
         }
         let mut sprites = Vec::new();
         for index in indices {
-            let object = object_layer.get_object(index).expect("index from object data");
+            let object = object_layer
+                .get_object(index)
+                .expect("index from object data");
             let Some(tile) = object.get_tile() else {
                 continue;
             };
@@ -443,7 +446,10 @@ impl Compiler<'_> {
         transform: TileTransform,
         draw_order: u32,
     ) -> Result<PresentationSprite, ContentError> {
-        if !top_left_px.iter().chain(size_px.iter()).all(|v| v.is_finite())
+        if !top_left_px
+            .iter()
+            .chain(size_px.iter())
+            .all(|v| v.is_finite())
             || size_px.iter().any(|v| *v <= 0.0)
         {
             return Err(issue(
@@ -824,7 +830,10 @@ mod tests {
         assert_eq!(map.visual_extent_px, [1080, 720]);
         assert_eq!(map.world_bounds, [0.0, 0.0, 10.8, 7.2]);
         assert_eq!(
-            map.layers.iter().map(|layer| layer.name.as_str()).collect::<Vec<_>>(),
+            map.layers
+                .iter()
+                .map(|layer| layer.name.as_str())
+                .collect::<Vec<_>>(),
             ["BACKGROUND", "3", "4", "2", "1", "WORLD_ART", "MARKERS"]
         );
         assert_eq!(map.layers[0].sprites.len(), 1);
@@ -869,15 +878,21 @@ mod tests {
             .flat_map(|layer| &layer.sprites)
             .collect();
         assert!(tile_sprites.len() > 1);
-        assert!(tile_sprites
-            .iter()
-            .all(|sprite| sprite.asset_id == tile_sprites[0].asset_id));
-        assert!(tile_sprites
-            .iter()
-            .any(|sprite| sprite.source_rect_px == [0, 0, 360, 240]));
-        assert!(tile_sprites
-            .iter()
-            .any(|sprite| sprite.source_rect_px == [1080, 0, 360, 240]));
+        assert!(
+            tile_sprites
+                .iter()
+                .all(|sprite| sprite.asset_id == tile_sprites[0].asset_id)
+        );
+        assert!(
+            tile_sprites
+                .iter()
+                .any(|sprite| sprite.source_rect_px == [0, 0, 360, 240])
+        );
+        assert!(
+            tile_sprites
+                .iter()
+                .any(|sprite| sprite.source_rect_px == [1080, 0, 360, 240])
+        );
     }
 
     #[test]
@@ -896,7 +911,10 @@ mod tests {
         let decoded: MapPresentation = serde_json::from_slice(&first).unwrap();
         assert_eq!(decoded, map);
         assert_eq!(first, serialize_map_pretty(&decoded).unwrap());
-        assert_eq!(first, serialize_map_pretty(&compile_tiled_map(&fixture_sidecar()).unwrap()).unwrap());
+        assert_eq!(
+            first,
+            serialize_map_pretty(&compile_tiled_map(&fixture_sidecar()).unwrap()).unwrap()
+        );
     }
 
     #[test]
