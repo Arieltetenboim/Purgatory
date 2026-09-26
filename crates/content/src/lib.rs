@@ -38,6 +38,12 @@ pub use item::{
     ItemPresentation, is_stackable, validate_item_definition, validate_item_presentation,
 };
 pub use loader::{LoadMode, default_content_root, load_registry};
+pub use map_compiler::{
+    MAP_AUTHORING_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION, MapAuthoringSource,
+    MapPresentation, PresentationAsset, PresentationLayer, PresentationLayerKind,
+    PresentationSprite, TileTransform, compile_tiled_map, compile_tiled_map_with_ppu,
+    load_map_authoring, serialize_map_pretty,
+};
 pub use monster::{
     MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
 };
@@ -46,12 +52,6 @@ pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement}
 pub use schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
     SpawnPoint, TransitionRef,
-};
-pub use map_compiler::{
-    MAP_AUTHORING_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION, MapAuthoringSource,
-    MapPresentation, PresentationAsset, PresentationLayer, PresentationLayerKind,
-    PresentationSprite, TileTransform, compile_tiled_map, compile_tiled_map_with_ppu,
-    load_map_authoring, serialize_map_pretty,
 };
 
 /// Cargo package version for this crate.
