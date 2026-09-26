@@ -31,8 +31,8 @@ use purgatory_simulation::{
     ActionKind, CONTACT_EPSILON, Cadence, CommandClass, CommandDenial, EntityId, EntityKind,
     EquipmentSlot, FOOTNOTE_SPAWN_X, Health, InputGateReason, InteractionCloseReason,
     InteractionReject, ItemRuntimeError, NpcApproachBounds, NpcRuntimeConfig, PLAYER_HALF_EXTENTS,
-    PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind,
-    RuntimeSpawnRequest, ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
+    PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest,
+    ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
     validate_command_preamble,
 };
 
@@ -477,7 +477,6 @@ pub struct GameplayOwner {
     trace_relevance: bool,
     trace_snapshot: bool,
     runtime_probe: RuntimeProbe,
-    proof_drop_spawned: bool,
     /// Bounded bookkeeping for transient NPCs created by the DEV overlay.
     /// `World` owns the entities; this list only enforces the tool cap.
     dev_spawned_npcs: Vec<EntityId>,
@@ -1123,7 +1122,6 @@ impl GameplayOwner {
             trace_relevance: false,
             trace_snapshot: false,
             runtime_probe: RuntimeProbe::from_env(),
-            proof_drop_spawned: false,
             dev_spawned_npcs: Vec::new(),
             dev_spawned_monsters: Vec::new(),
             load_pressure: super::load_pressure::LoadPressure::from_process_env(),
@@ -1929,7 +1927,6 @@ impl GameplayOwner {
             }
             self.world.tick_player(entity, dt, player_input);
         }
-        self.spawn_phase_11e_proof_drop();
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
@@ -1978,54 +1975,6 @@ impl GameplayOwner {
         sample.persistence_enqueue += Duration::from_micros(self.persist_enqueue_us);
         sample.total = tick_t0.elapsed();
         sample
-    }
-
-    fn spawn_phase_11e_proof_drop(&mut self) {
-        if self.proof_drop_spawned {
-            return;
-        }
-        let Some((&connection_id, binding)) = self.bindings.iter().next() else {
-            return;
-        };
-        let entity = binding.entity;
-        let Some(address) = self.world.address_of(entity) else {
-            return;
-        };
-        let Some(position) = self.world.transform_of(entity).map(|t| t.position) else {
-            return;
-        };
-        const PROOF_DROPS: [(&str, u32, f32); 5] = [
-            ("equipment.debug.practice_sword", 1, -2.5),
-            ("item.debug.small_potion", 3, -1.25),
-            ("item.debug.iron_scrap", 7, 0.0),
-            ("item.debug.repair_hammer", 1, 1.25),
-            ("item.package", 1, 2.5),
-        ];
-        for (authored_id, quantity, x_offset) in PROOF_DROPS {
-            let (definition, stack_limit) = {
-                let item = self
-                    .registry
-                    .item(authored_id)
-                    .unwrap_or_else(|| panic!("missing Phase 11E proof item {authored_id}"));
-                (item.content_id, item.stack_limit)
-            };
-            self.world
-                .spawn_world_drop_item(
-                    address,
-                    [x_offset, position[1] + 0.75],
-                    definition,
-                    quantity,
-                    stack_limit,
-                )
-                .unwrap_or_else(|error| {
-                    panic!("Phase 11E proof item drop {authored_id}: {error:?}")
-                });
-        }
-        self.proof_drop_spawned = true;
-        println!(
-            "11E proof Item drops spawned for connection={connection_id} count={}",
-            PROOF_DROPS.len()
-        );
     }
 
     fn maybe_arm_runtime_probe(&mut self, tick: SimulationTick) {
