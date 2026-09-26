@@ -274,7 +274,10 @@ fn load_map_gameplay_tree(
                     }
                 }
                 if !gameplay.spawn_points.is_empty()
-                    && !gameplay.spawn_points.iter().any(|spawn| spawn.id == "default")
+                    && !gameplay
+                        .spawn_points
+                        .iter()
+                        .any(|spawn| spawn.id == "default")
                 {
                     return Err(ContentError::from_path(
                         path.clone(),
@@ -283,8 +286,10 @@ fn load_map_gameplay_tree(
                         "gameplay-authored spawns require a 'default' point",
                     ));
                 }
-                if let Some(default_spawn) =
-                    gameplay.spawn_points.iter().find(|spawn| spawn.id == "default")
+                if let Some(default_spawn) = gameplay
+                    .spawn_points
+                    .iter()
+                    .find(|spawn| spawn.id == "default")
                 {
                     let target_surface =
                         default_spawn.position[1] - purgatory_simulation::PLAYER_HALF_EXTENTS[1];
