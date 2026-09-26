@@ -208,13 +208,7 @@ fn validate_gameplay(
             ));
         }
         let [x, y] = spawn.position;
-        if !x.is_finite()
-            || !y.is_finite()
-            || x < min_x
-            || x > max_x
-            || y < min_y
-            || y > max_y
-        {
+        if !x.is_finite() || !y.is_finite() || x < min_x || x > max_x || y < min_y || y > max_y {
             return Err(format!(
                 "{}: spawn {} leaves map bounds",
                 path.display(),
