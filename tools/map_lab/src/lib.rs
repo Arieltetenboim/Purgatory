@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use purgatory_content::{
-    MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION, MapAuthoringSource, MapGameplayAuthoring,
-    MapPresentation, compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
+    MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
+    MapAuthoringSource, MapEnvironmentAuthoring, MapGameplayAuthoring, MapPresentation,
+    compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
 };
 
 /// Production visual-scale standard for ordinary PURGATORY maps.
@@ -17,9 +18,11 @@ pub const PURGATORY_STANDARD_PPU: f32 = 100.0;
 pub struct MapLabDocument {
     pub sidecar_path: PathBuf,
     pub gameplay_path: PathBuf,
+    pub environment_path: PathBuf,
     pub source: MapAuthoringSource,
     pub presentation: MapPresentation,
     pub gameplay: MapGameplayAuthoring,
+    pub environment: MapEnvironmentAuthoring,
 }
 
 impl MapLabDocument {
@@ -29,6 +32,7 @@ impl MapLabDocument {
         let presentation = compile_tiled_map_with_ppu(path, &source, source.pixels_per_world_unit)
             .map_err(|error| error.to_string())?;
         let gameplay_path = gameplay_path_for(path)?;
+        let environment_path = environment_path_for(path)?;
         let gameplay = if gameplay_path.is_file() {
             let bytes = std::fs::read(&gameplay_path)
                 .map_err(|error| format!("read {}: {error}", gameplay_path.display()))?;
@@ -42,12 +46,24 @@ impl MapLabDocument {
         } else {
             MapGameplayAuthoring::empty(source.id.clone())
         };
+        let environment = if environment_path.is_file() {
+            let bytes = std::fs::read(&environment_path)
+                .map_err(|error| format!("read {}: {error}", environment_path.display()))?;
+            let environment: MapEnvironmentAuthoring = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("parse {}: {error}", environment_path.display()))?;
+            validate_environment(&environment_path, &source, &environment)?;
+            environment
+        } else {
+            MapEnvironmentAuthoring::empty(source.id.clone())
+        };
         Ok(Self {
             sidecar_path: path.to_path_buf(),
             gameplay_path,
+            environment_path,
             source,
             presentation,
             gameplay,
+            environment,
         })
     }
 
@@ -100,6 +116,21 @@ impl MapLabDocument {
         Ok(())
     }
 
+    pub fn save_environment(&self) -> Result<(), String> {
+        validate_environment(&self.environment_path, &self.source, &self.environment)?;
+        let parent = self
+            .environment_path
+            .parent()
+            .ok_or_else(|| "invalid environment authoring path".to_owned())?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+        let mut bytes = serde_json::to_vec_pretty(&self.environment)
+            .map_err(|error| format!("serialize environment authoring: {error}"))?;
+        bytes.push(b'\n');
+        std::fs::write(&self.environment_path, bytes)
+            .map_err(|error| format!("write {}: {error}", self.environment_path.display()))
+    }
+
     pub fn save_gameplay(&self) -> Result<(), String> {
         validate_gameplay(
             &self.gameplay_path,
@@ -119,6 +150,41 @@ impl MapLabDocument {
         std::fs::write(&self.gameplay_path, bytes)
             .map_err(|error| format!("write {}: {error}", self.gameplay_path.display()))
     }
+}
+
+fn environment_path_for(sidecar: &Path) -> Result<PathBuf, String> {
+    let name = sidecar
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("invalid sidecar filename: {}", sidecar.display()))?;
+    let stem = name
+        .strip_suffix(".purgatory-map.json")
+        .ok_or_else(|| format!("sidecar must end in .purgatory-map.json: {name}"))?;
+    Ok(sidecar.with_file_name(format!("{stem}.environment.json")))
+}
+
+fn validate_environment(
+    path: &Path,
+    source: &MapAuthoringSource,
+    environment: &MapEnvironmentAuthoring,
+) -> Result<(), String> {
+    if environment.schema_version != MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION {
+        return Err(format!(
+            "{}: unsupported environment schema {} (want {})",
+            path.display(),
+            environment.schema_version,
+            MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION
+        ));
+    }
+    if environment.map_authored != source.id {
+        return Err(format!(
+            "{}: environment map {} does not match source {}",
+            path.display(),
+            environment.map_authored,
+            source.id
+        ));
+    }
+    Ok(())
 }
 
 fn gameplay_path_for(sidecar: &Path) -> Result<PathBuf, String> {
@@ -261,6 +327,12 @@ mod tests {
         let decoded: MapPresentation =
             serde_json::from_slice(&document.canonical_json().unwrap()).unwrap();
         assert_eq!(decoded, document.presentation);
+    }
+
+    #[test]
+    fn environment_path_sits_next_to_visual_sidecar() {
+        let path = environment_path_for(&fixture()).unwrap();
+        assert!(path.ends_with("map.map1.environment.json"));
     }
 
     #[test]
