@@ -518,7 +518,12 @@ impl MapLabApp {
     }
 }
 
-type TextureRegions = HashMap<String, HashMap<[u32; 4], TextureHandle>>;
+struct PreviewTextureChunk {
+    source_rect_px: [u32; 4],
+    texture: TextureHandle,
+}
+
+type TextureRegions = HashMap<String, HashMap<[u32; 4], Vec<PreviewTextureChunk>>>;
 
 fn load_textures(ctx: &egui::Context, document: &MapLabDocument) -> Result<TextureRegions, String> {
     let graphic = find_graphic_root(&document.sidecar_path)?;
@@ -564,26 +569,55 @@ fn load_textures(ctx: &egui::Context, document: &MapLabDocument) -> Result<Textu
                     path.display()
                 ));
             }
-            if width as usize > max_texture_side || height as usize > max_texture_side {
+
+            let chunks = split_source_rect(rect, max_texture_side.max(1) as u32);
+            if chunks.len() > 1
+                && document.presentation.layers.iter().any(|layer| {
+                    layer.sprites.iter().any(|sprite| {
+                        sprite.asset_id == asset.id
+                            && sprite.source_rect_px == rect
+                            && sprite.transform != TileTransform::default()
+                    })
+                })
+            {
                 return Err(format!(
-                    "{} source rect [{x}, {y}, {width}, {height}] exceeds Map Lab texture limit {max_texture_side}px; split this visual source for preview",
+                    "{} oversized transformed source rect [{x}, {y}, {width}, {height}] is not supported by Map Lab preview",
                     path.display()
                 ));
             }
 
-            // Map Lab previews source regions, not whole source atlases. This keeps
-            // authoring atlases larger than egui's current texture-side limit from
-            // crashing the tool while preserving the exact source pixels and UVs.
-            let region = image::imageops::crop_imm(&image, x, y, width, height).to_image();
-            let color = egui::ColorImage::from_rgba_unmultiplied(
-                [width as usize, height as usize],
-                region.as_raw(),
-            );
-            let texture_name = format!("{}@{x},{y}:{width}x{height}", asset.id);
-            regions.insert(
-                rect,
-                ctx.load_texture(texture_name, color, egui::TextureOptions::NEAREST),
-            );
+            // egui can expose a smaller texture-side limit than the source art.
+            // Keep canonical geometry unchanged and upload the source region as
+            // multiple exact pixel chunks instead of resizing the artwork.
+            let mut preview_chunks = Vec::with_capacity(chunks.len());
+            for chunk in chunks {
+                let [chunk_x, chunk_y, chunk_width, chunk_height] = chunk;
+                let region = image::imageops::crop_imm(
+                    &image,
+                    chunk_x,
+                    chunk_y,
+                    chunk_width,
+                    chunk_height,
+                )
+                .to_image();
+                let color = egui::ColorImage::from_rgba_unmultiplied(
+                    [chunk_width as usize, chunk_height as usize],
+                    region.as_raw(),
+                );
+                let texture_name = format!(
+                    "{}@{chunk_x},{chunk_y}:{chunk_width}x{chunk_height}",
+                    asset.id
+                );
+                preview_chunks.push(PreviewTextureChunk {
+                    source_rect_px: chunk,
+                    texture: ctx.load_texture(
+                        texture_name,
+                        color,
+                        egui::TextureOptions::NEAREST,
+                    ),
+                });
+            }
+            regions.insert(rect, preview_chunks);
         }
         textures.insert(asset.id.clone(), regions);
     }
@@ -606,22 +640,72 @@ fn paint_sprite(
     textures: &TextureRegions,
     to_screen: &impl Fn([f32; 2]) -> Pos2,
 ) {
-    let Some(texture) = textures
+    let Some(chunks) = textures
         .get(&sprite.asset_id)
         .and_then(|regions| regions.get(&sprite.source_rect_px))
     else {
         return;
     };
-    let [w, h] = sprite.size_world;
-    let [cx, cy] = sprite.position_world;
-    let positions = [
-        to_screen([cx - w * 0.5, cy - h * 0.5]),
-        to_screen([cx + w * 0.5, cy - h * 0.5]),
-        to_screen([cx + w * 0.5, cy + h * 0.5]),
-        to_screen([cx - w * 0.5, cy + h * 0.5]),
-    ];
-    let uv = transformed_uv(sprite.transform).map(|[u, v]| Pos2::new(u, v));
     let alpha = (layer_opacity * sprite.opacity * 255.0).round() as u8;
+
+    if chunks.len() == 1 && chunks[0].source_rect_px == sprite.source_rect_px {
+        let texture = &chunks[0].texture;
+        let [w, h] = sprite.size_world;
+        let [cx, cy] = sprite.position_world;
+        let positions = [
+            to_screen([cx - w * 0.5, cy - h * 0.5]),
+            to_screen([cx + w * 0.5, cy - h * 0.5]),
+            to_screen([cx + w * 0.5, cy + h * 0.5]),
+            to_screen([cx - w * 0.5, cy + h * 0.5]),
+        ];
+        let uv = transformed_uv(sprite.transform).map(|[u, v]| Pos2::new(u, v));
+        paint_textured_quad(painter, texture, positions, uv, alpha);
+        return;
+    }
+
+    if sprite.transform != TileTransform::default() {
+        return;
+    }
+
+    let [source_x, source_y, source_width, source_height] = sprite.source_rect_px;
+    let [world_width, world_height] = sprite.size_world;
+    let [cx, cy] = sprite.position_world;
+    let world_left = cx - world_width * 0.5;
+    let world_top = cy + world_height * 0.5;
+
+    for chunk in chunks {
+        let [chunk_x, chunk_y, chunk_width, chunk_height] = chunk.source_rect_px;
+        let u0 = (chunk_x - source_x) as f32 / source_width as f32;
+        let u1 = (chunk_x + chunk_width - source_x) as f32 / source_width as f32;
+        let v0 = (chunk_y - source_y) as f32 / source_height as f32;
+        let v1 = (chunk_y + chunk_height - source_y) as f32 / source_height as f32;
+        let left = world_left + u0 * world_width;
+        let right = world_left + u1 * world_width;
+        let top = world_top - v0 * world_height;
+        let bottom = world_top - v1 * world_height;
+        let positions = [
+            to_screen([left, bottom]),
+            to_screen([right, bottom]),
+            to_screen([right, top]),
+            to_screen([left, top]),
+        ];
+        let uv = [
+            Pos2::new(0.0, 1.0),
+            Pos2::new(1.0, 1.0),
+            Pos2::new(1.0, 0.0),
+            Pos2::new(0.0, 0.0),
+        ];
+        paint_textured_quad(painter, &chunk.texture, positions, uv, alpha);
+    }
+}
+
+fn paint_textured_quad(
+    painter: &egui::Painter,
+    texture: &TextureHandle,
+    positions: [Pos2; 4],
+    uv: [Pos2; 4],
+    alpha: u8,
+) {
     let mut mesh = egui::Mesh::with_texture(texture.id());
     for index in 0..4 {
         mesh.vertices.push(egui::epaint::Vertex {
@@ -632,6 +716,28 @@ fn paint_sprite(
     }
     mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
     painter.add(mesh);
+}
+
+fn split_source_rect(rect: [u32; 4], max_side: u32) -> Vec<[u32; 4]> {
+    let [x, y, width, height] = rect;
+    let mut chunks = Vec::new();
+    let mut offset_y = 0;
+    while offset_y < height {
+        let chunk_height = (height - offset_y).min(max_side);
+        let mut offset_x = 0;
+        while offset_x < width {
+            let chunk_width = (width - offset_x).min(max_side);
+            chunks.push([
+                x + offset_x,
+                y + offset_y,
+                chunk_width,
+                chunk_height,
+            ]);
+            offset_x += chunk_width;
+        }
+        offset_y += chunk_height;
+    }
+    chunks
 }
 
 fn transformed_uv(transform: TileTransform) -> [[f32; 2]; 4] {
@@ -663,6 +769,18 @@ fn world_rect(center: [f32; 2], size: [f32; 2], to_screen: &impl Fn([f32; 2]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_preview_region_splits_without_resizing_pixels() {
+        assert_eq!(
+            split_source_rect([0, 0, 4644, 1080], 2048),
+            vec![
+                [0, 0, 2048, 1080],
+                [2048, 0, 2048, 1080],
+                [4096, 0, 548, 1080],
+            ]
+        );
+    }
 
     #[test]
     fn camera_coverage_is_independent_from_ppu_standard() {
