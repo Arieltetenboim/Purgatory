@@ -58,34 +58,34 @@ impl RuntimeMapPresentation {
                     textures.get(&authored.asset_id).ok_or_else(|| {
                         format!("map sprite references missing asset {}", authored.asset_id)
                     })?;
-            let [x, y, width, height] = authored.source_rect_px;
-            if width == 0
-                || height == 0
+                let [x, y, width, height] = authored.source_rect_px;
+                if width == 0
+                    || height == 0
                     || x.saturating_add(width) > image_dimensions[0]
                     || y.saturating_add(height) > image_dimensions[1]
-            {
-                return Err(format!(
+                {
+                    return Err(format!(
                         "map asset {} has invalid source rectangle {:?}",
                         authored.asset_id, authored.source_rect_px
-                ));
-            }
+                    ));
+                }
                 if !authored.position_world.iter().all(|value| value.is_finite())
-                || !authored
-                    .size_world
-                    .iter()
-                    .all(|value| value.is_finite() && *value > 0.0)
-            {
-                return Err(format!(
-                    "map asset {} has non-finite or non-positive normalized geometry",
+                    || !authored
+                        .size_world
+                        .iter()
+                        .all(|value| value.is_finite() && *value > 0.0)
+                {
+                    return Err(format!(
+                        "map asset {} has non-finite or non-positive normalized geometry",
                         authored.asset_id
-                ));
-            }
-            sprites.push(RuntimeSprite {
-                authored,
-                texture,
+                    ));
+                }
+                sprites.push(RuntimeSprite {
+                    authored,
+                    texture,
                     image_dimensions,
                     opacity: layer.opacity,
-            });
+                });
             }
         }
         Ok(Self { sprites })
