@@ -51,7 +51,10 @@ mod tests {
     #[test]
     fn empty_authoring_is_versioned_and_map_owned() {
         let authoring = MapGameplayAuthoring::empty("map.map1");
-        assert_eq!(authoring.schema_version, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION);
+        assert_eq!(
+            authoring.schema_version,
+            MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION
+        );
         assert_eq!(authoring.map_authored, "map.map1");
         assert!(authoring.foothold_paths.is_empty());
     }
