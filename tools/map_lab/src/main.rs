@@ -823,7 +823,7 @@ impl eframe::App for MapLabApp {
                         ui.label("Finish current FOOTNOTE path");
                         ui.end_row();
                         ui.label("Esc / BACK");
-                        ui.label("Leave FOOTNOTE editor");
+                        ui.label("Leave current editor");
                         ui.end_row();
                     });
                     ui.separator();
@@ -952,6 +952,29 @@ impl MapLabApp {
             );
         }
 
+        for spawn in &document.gameplay.spawn_points {
+            let center = to_screen(spawn.position);
+            let half = purgatory_simulation::PLAYER_HALF_EXTENTS;
+            let spawn_rect = Rect::from_two_pos(
+                to_screen([spawn.position[0] - half[0], spawn.position[1] + half[1]]),
+                to_screen([spawn.position[0] + half[0], spawn.position[1] - half[1]]),
+            );
+            map_painter.rect_stroke(
+                spawn_rect,
+                2.0,
+                Stroke::new(2.0, Color32::from_rgb(120, 255, 120)),
+                egui::StrokeKind::Inside,
+            );
+            map_painter.circle_filled(center, 5.0, Color32::from_rgb(120, 255, 120));
+            map_painter.text(
+                center + Vec2::new(7.0, -7.0),
+                egui::Align2::LEFT_BOTTOM,
+                &spawn.id,
+                egui::FontId::monospace(11.0),
+                Color32::from_rgb(160, 255, 160),
+            );
+        }
+
         let clicked_existing_point = if self.editor_mode == EditorMode::Footnote
             && !ui.input(|input| input.key_down(egui::Key::Space))
             && response.clicked()
@@ -984,6 +1007,24 @@ impl MapLabApp {
 
         let clicked_world = if self.editor_mode == EditorMode::Footnote
             && clicked_existing_point.is_none()
+            && !ui.input(|input| input.key_down(egui::Key::Space))
+            && response.clicked()
+        {
+            response.interact_pointer_pos().and_then(|position| {
+                map_rect.contains(position).then(|| {
+                    [
+                        ((position.x - center.x) / scale + world_width * 0.5)
+                            .clamp(0.0, world_width),
+                        (world_height * 0.5 - (position.y - center.y) / scale)
+                            .clamp(0.0, world_height),
+                    ]
+                })
+            })
+        } else {
+            None
+        };
+
+        let clicked_spawn_world = if self.editor_mode == EditorMode::Spawn
             && !ui.input(|input| input.key_down(egui::Key::Space))
             && response.clicked()
         {
@@ -1063,6 +1104,8 @@ impl MapLabApp {
                 point[0],
                 point[1]
             );
+        } else if let Some(point) = clicked_spawn_world {
+            self.set_default_spawn(point);
         }
     }
 }
