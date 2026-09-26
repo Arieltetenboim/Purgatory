@@ -13,6 +13,44 @@ pub(crate) fn launch_mob_lab() -> Result<(), String> {
     launch_visible_powershell(&root, &launcher, &[])
 }
 
+pub(crate) fn launch_asset_slicer() -> Result<(), String> {
+    let root = workspace_root()?;
+    let tool = root.join("tools").join("asset_slicer").join("index.html");
+
+    if !tool.is_file() {
+        return Err(format!("Asset Slicer not found: {}", tool.display()));
+    }
+
+    #[cfg(windows)]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let cache_bust = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("asset slicer launch clock: {err}"))?
+            .as_millis();
+        let file_url = format!(
+            "file:///{}?purgatory_reload={cache_bust}",
+            tool.to_string_lossy()
+                .replace('\\', "/")
+                .replace(' ', "%20")
+        );
+
+        std::process::Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(&file_url)
+            .current_dir(&root)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| format!("launch {file_url}: {err}"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("Asset Slicer launch currently supports Windows only".to_owned())
+    }
+}
+
 pub(crate) fn launch_character_lab() -> Result<(), String> {
     let root = workspace_root()?;
     crate::authoring_template::export_character_lab_contract()?;

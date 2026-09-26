@@ -446,6 +446,15 @@ fn quick_actions(
             {
                 let _ = tool_launch::launch_character_lab();
             }
+            let response = ui.add(btn_ghost("Asset Slicer").min_size(button_size));
+            if action_response(
+                response,
+                "Open the local image island slicer in the default browser.",
+            )
+            .clicked()
+            {
+                let _ = tool_launch::launch_asset_slicer();
+            }
         });
 
         ui.add_space(6.0);

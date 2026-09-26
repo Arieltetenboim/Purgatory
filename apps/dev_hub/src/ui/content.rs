@@ -13,7 +13,7 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
     layout::page_header(
         ui,
         "Content",
-        "Standalone authoring tools. Animation Lab, Character Lab, NPC Lab, and Mob Lab launch independently of the Hub.",
+        "Standalone authoring tools. Animation Lab, Character Lab, NPC Lab, Mob Lab, and Asset Slicer launch independently of the Hub.",
     );
     ui.columns(4, |columns| {
         card(&mut columns[0], "Animation Lab", |ui| {
@@ -82,6 +82,26 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
                 });
             }
         });
+    });
+
+    ui.add_space(12.0);
+
+    card(ui, "Asset Slicer", |ui| {
+        ui.label(
+            "Load an image, detect disconnected alpha islands, and export one or all islands as transparent PNG files.",
+        );
+        ui.add_space(6.0);
+        ui.colored_label(
+            theme::muted(),
+            "Local browser tool. Reuses Character Lab-style 4-neighbor island detection; no game runtime dependency.",
+        );
+        ui.add_space(8.0);
+        if ui.add(btn_primary("Launch Asset Slicer")).clicked() {
+            *export_status = Some(match tool_launch::launch_asset_slicer() {
+                Ok(()) => "Asset Slicer launch requested".to_owned(),
+                Err(err) => format!("Asset Slicer launch failed: {err}"),
+            });
+        }
     });
 
     ui.add_space(12.0);
