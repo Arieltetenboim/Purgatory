@@ -81,11 +81,6 @@ impl MapLabApp {
         self.open(ctx, &path);
     }
 
-    fn use_standard_ppu(&mut self, ctx: &egui::Context) {
-        self.ppu_text = PURGATORY_STANDARD_PPU.to_string();
-        self.apply_ppu(ctx);
-    }
-
     fn apply_ppu(&mut self, ctx: &egui::Context) {
         let Ok(ppu) = self.ppu_text.trim().parse::<f32>() else {
             self.clear_compiled("COMPILE ERROR\nPPU must be a number");
@@ -592,14 +587,9 @@ fn load_textures(ctx: &egui::Context, document: &MapLabDocument) -> Result<Textu
             let mut preview_chunks = Vec::with_capacity(chunks.len());
             for chunk in chunks {
                 let [chunk_x, chunk_y, chunk_width, chunk_height] = chunk;
-                let region = image::imageops::crop_imm(
-                    &image,
-                    chunk_x,
-                    chunk_y,
-                    chunk_width,
-                    chunk_height,
-                )
-                .to_image();
+                let region =
+                    image::imageops::crop_imm(&image, chunk_x, chunk_y, chunk_width, chunk_height)
+                        .to_image();
                 let color = egui::ColorImage::from_rgba_unmultiplied(
                     [chunk_width as usize, chunk_height as usize],
                     region.as_raw(),
@@ -610,11 +600,7 @@ fn load_textures(ctx: &egui::Context, document: &MapLabDocument) -> Result<Textu
                 );
                 preview_chunks.push(PreviewTextureChunk {
                     source_rect_px: chunk,
-                    texture: ctx.load_texture(
-                        texture_name,
-                        color,
-                        egui::TextureOptions::NEAREST,
-                    ),
+                    texture: ctx.load_texture(texture_name, color, egui::TextureOptions::NEAREST),
                 });
             }
             regions.insert(rect, preview_chunks);
@@ -727,12 +713,7 @@ fn split_source_rect(rect: [u32; 4], max_side: u32) -> Vec<[u32; 4]> {
         let mut offset_x = 0;
         while offset_x < width {
             let chunk_width = (width - offset_x).min(max_side);
-            chunks.push([
-                x + offset_x,
-                y + offset_y,
-                chunk_width,
-                chunk_height,
-            ]);
+            chunks.push([x + offset_x, y + offset_y, chunk_width, chunk_height]);
             offset_x += chunk_width;
         }
         offset_y += chunk_height;
