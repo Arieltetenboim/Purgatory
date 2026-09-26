@@ -158,6 +158,7 @@ mod tests {
                 half_extents: [1.0, 0.2],
                 kind: PlatformKind::Solid,
             }],
+            foothold_paths: Vec::new(),
             restore,
         }
     }
