@@ -499,6 +499,44 @@ mod tests {
     }
 
     #[test]
+    fn falling_player_lands_on_sloped_oneway_segment() {
+        let mut world = World::new();
+        let slope = world.spawn_platform(
+            Transform::from_position([0.0, 0.0]),
+            Platform::segment(
+                [-2.0, 0.0],
+                [2.0, 2.0],
+                PlatformKind::OneWay,
+                true,
+            ),
+        );
+        let surface = world
+            .iter_platforms()
+            .find(|view| view.id == slope)
+            .and_then(|view| view.platform.surface_y_at(view.transform, 0.0))
+            .unwrap();
+        let (mut transform, mut state) =
+            PlayerState::standing_on_at(slope, surface, 0.0);
+        transform.position[1] = 3.0;
+        state.grounded = false;
+        state.grounded_on = None;
+        state.velocity = [0.0, -4.0];
+        world.spawn_player(transform, state);
+
+        for _ in 0..30 {
+            world.tick(DT, PlayerInput::idle());
+            if world.player_body().is_some_and(|body| body.grounded) {
+                break;
+            }
+        }
+
+        let body = world.player_body().unwrap();
+        assert!(body.grounded);
+        assert_eq!(body.grounded_on, Some(slope));
+        assert!((body.position[1] - (surface + PLAYER_HALF_EXTENTS[1])).abs() < 1e-3);
+    }
+
+    #[test]
     fn descending_picks_highest_crossed_top_order_independent() {
         let mut world_ab = World::new();
         let low = world_ab.spawn_platform(
