@@ -1,6 +1,7 @@
 //! Build simulation spawn plans from a validated registry. No disk IO.
 
 use crate::error::{ContentError, ValidationIssue};
+use crate::map_gameplay_authoring::FootholdKind;
 use crate::registry::ContentRegistry;
 use crate::schema::EntityDefinition;
 use purgatory_common::{ContentId, WorldAddress};
@@ -49,6 +50,24 @@ pub fn map_plan(
             },
             content_id: Some(map.content_id),
         });
+    }
+    for path in &map.foothold_paths {
+        let kind = match path.kind {
+            FootholdKind::OneWay => purgatory_simulation::PlatformKind::OneWay,
+            FootholdKind::Solid => purgatory_simulation::PlatformKind::Solid,
+        };
+        for pair in path.points.windows(2) {
+            let start = pair[0];
+            let end = pair[1];
+            let midpoint = [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5];
+            let local_start = [start[0] - midpoint[0], start[1] - midpoint[1]];
+            let local_end = [end[0] - midpoint[0], end[1] - midpoint[1]];
+            platforms.push(PlanPlatform {
+                position: midpoint,
+                platform: Platform::segment(local_start, local_end, kind, path.drop_through),
+                content_id: Some(map.content_id),
+            });
+        }
     }
     let mut placements = Vec::new();
     for place in registry.placements(map_authored) {
