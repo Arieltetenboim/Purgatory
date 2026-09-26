@@ -4735,8 +4735,12 @@ fn spawn_local_player_from_replica(
                     .address_of(v.id)
                     .is_some_and(|a| a.compatible_with(address))
             })
-        })?;
-    let (transform, state) = PlayerState::standing_on_at(floor.id, floor.top_surface(), x);
+        });
+    let (transform, state) = if let Some(floor) = floor {
+        PlayerState::standing_on_at(floor.id, floor.top_surface(), x)
+    } else {
+        PlayerState::airborne_at(auth.position)
+    };
     let _ = world.spawn_player_at(address, transform, state);
     world.restore_player_sim_state(
         auth.position,
