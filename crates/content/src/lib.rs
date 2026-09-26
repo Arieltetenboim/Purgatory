@@ -10,6 +10,7 @@ mod item;
 mod loader;
 #[cfg(feature = "map-authoring")]
 mod map_compiler;
+mod map_presentation;
 mod monster;
 mod registry;
 mod restore;
@@ -41,10 +42,12 @@ pub use item::{
 pub use loader::{LoadMode, default_content_root, load_registry};
 #[cfg(feature = "map-authoring")]
 pub use map_compiler::{
-    MAP_AUTHORING_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION, MapAuthoringSource,
-    MapPresentation, PresentationAsset, PresentationLayer, PresentationLayerKind,
-    PresentationSprite, TileTransform, compile_tiled_map, compile_tiled_map_with_ppu,
-    load_map_authoring, serialize_map_pretty,
+    MAP_AUTHORING_SCHEMA_VERSION, MapAuthoringSource, compile_tiled_map,
+    compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
+};
+pub use map_presentation::{
+    MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationAsset, PresentationLayer,
+    PresentationLayerKind, PresentationSprite, TileTransform,
 };
 pub use monster::{
     MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
