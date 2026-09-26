@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use purgatory_content::{MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationSprite};
+use purgatory_simulation::{MapId, WorldBounds};
 use serde_json::from_slice;
 
 use crate::asset_runtime::AssetRuntime;
@@ -13,6 +14,8 @@ const COMPILED_PRESENTATION: &[u8] = include_bytes!(concat!(
 ));
 
 pub(crate) struct RuntimeMapPresentation {
+    map_id: MapId,
+    canonical_bounds: [f32; 4],
     sprites: Vec<RuntimeSprite>,
 }
 
@@ -97,18 +100,35 @@ impl RuntimeMapPresentation {
                 });
             }
         }
-        Ok(Self { sprites })
+        Ok(Self {
+            map_id: MapId::DEV,
+            canonical_bounds: map.world_bounds,
+            sprites,
+        })
     }
 
-    pub(crate) fn quads(&self) -> Vec<DrawQuad> {
+    pub(crate) fn active_for_map(&self, map_id: MapId) -> bool {
+        self.map_id == map_id
+    }
+
+    /// Runtime gameplay geometry still owns bounds during W1.4. Center the
+    /// canonical Tiled presentation inside those bounds without changing any
+    /// authored relative positions or scale. W2 gameplay authoring can remove
+    /// this compatibility offset once gameplay bounds come from Map Lab.
+    pub(crate) fn quads_centered_in(&self, runtime_bounds: WorldBounds) -> Vec<DrawQuad> {
+        let offset = presentation_center_offset(self.canonical_bounds, runtime_bounds);
         self.sprites
             .iter()
             .map(|sprite| {
                 let uvs = sprite.uvs_for();
                 let [w, h] = sprite.authored.size_world;
+                let center = [
+                    sprite.authored.position_world[0] + offset[0],
+                    sprite.authored.position_world[1] + offset[1],
+                ];
                 let mut quad = DrawQuad::textured_sprite(
                     sprite.texture,
-                    sprite.authored.position_world,
+                    center,
                     [
                         [-w / 2.0, -h / 2.0],
                         [w / 2.0, -h / 2.0],
@@ -123,6 +143,24 @@ impl RuntimeMapPresentation {
             })
             .collect()
     }
+}
+
+fn presentation_center_offset(
+    canonical_bounds: [f32; 4],
+    runtime_bounds: WorldBounds,
+) -> [f32; 2] {
+    let canonical_center = [
+        (canonical_bounds[0] + canonical_bounds[2]) * 0.5,
+        (canonical_bounds[1] + canonical_bounds[3]) * 0.5,
+    ];
+    let runtime_center = [
+        (runtime_bounds.min_x + runtime_bounds.max_x) * 0.5,
+        (runtime_bounds.min_y + runtime_bounds.max_y) * 0.5,
+    ];
+    [
+        runtime_center[0] - canonical_center[0],
+        runtime_center[1] - canonical_center[1],
+    ]
 }
 
 impl RuntimeSprite {
@@ -155,4 +193,31 @@ fn sprite_uv_transform(horizontal: bool, vertical: bool, diagonal: bool) -> [[f3
         }
         uv
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_visual_center_can_align_to_runtime_bounds_without_rescaling() {
+        let offset = presentation_center_offset(
+            [0.0, 0.0, 46.44, 10.8],
+            WorldBounds {
+                min_x: -24.0,
+                max_x: 24.0,
+                min_y: -8.0,
+                max_y: 10.0,
+            },
+        );
+        assert!((offset[0] + 23.22).abs() < 1e-4);
+        assert!((offset[1] + 4.4).abs() < 1e-4);
+    }
+
+    #[test]
+    fn tile_uv_transform_keeps_existing_flip_order() {
+        let transformed = sprite_uv_transform(true, false, true);
+        assert_eq!(transformed[0], [0.0, 0.0]);
+        assert_eq!(transformed[2], [1.0, 1.0]);
+    }
 }
