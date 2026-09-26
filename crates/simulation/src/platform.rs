@@ -59,10 +59,7 @@ impl Approach {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PlatformShape {
     Aabb,
-    Segment {
-        start: [f32; 2],
-        end: [f32; 2],
-    },
+    Segment { start: [f32; 2], end: [f32; 2] },
 }
 
 /// Platform / FOOTNOTE collider. Position lives on the entity [`Transform`].
@@ -103,12 +100,7 @@ impl Platform {
     }
 
     #[must_use]
-    pub fn segment(
-        start: [f32; 2],
-        end: [f32; 2],
-        kind: PlatformKind,
-        drop_through: bool,
-    ) -> Self {
+    pub fn segment(start: [f32; 2], end: [f32; 2], kind: PlatformKind, drop_through: bool) -> Self {
         let half_extents = [
             ((end[0] - start[0]).abs() * 0.5).max(0.01),
             ((end[1] - start[1]).abs() * 0.5).max(0.01),
@@ -149,10 +141,8 @@ impl Platform {
     #[must_use]
     pub fn surface_y_at(self, transform: Transform, x: f32) -> Option<f32> {
         match self.shape {
-            PlatformShape::Aabb => {
-                (x >= self.min_x(transform) && x <= self.max_x(transform))
-                    .then_some(self.top_surface(transform))
-            }
+            PlatformShape::Aabb => (x >= self.min_x(transform) && x <= self.max_x(transform))
+                .then_some(self.top_surface(transform)),
             PlatformShape::Segment { .. } => {
                 let (start, end) = self.segment_world(transform)?;
                 let dx = end[0] - start[0];
@@ -282,12 +272,7 @@ mod tests {
 
     #[test]
     fn authored_segment_interpolates_surface_height() {
-        let platform = Platform::segment(
-            [-2.0, -1.0],
-            [2.0, 1.0],
-            PlatformKind::OneWay,
-            true,
-        );
+        let platform = Platform::segment([-2.0, -1.0], [2.0, 1.0], PlatformKind::OneWay, true);
         let transform = Transform::from_position([10.0, 5.0]);
         assert_eq!(platform.surface_y_at(transform, 10.0), Some(5.0));
         assert_eq!(platform.surface_y_at(transform, 8.0), Some(4.0));
@@ -297,12 +282,7 @@ mod tests {
 
     #[test]
     fn solid_segment_never_becomes_drop_through() {
-        let platform = Platform::segment(
-            [-1.0, 0.0],
-            [1.0, 0.0],
-            PlatformKind::Solid,
-            true,
-        );
+        let platform = Platform::segment([-1.0, 0.0], [1.0, 0.0], PlatformKind::Solid, true);
         assert!(!platform.drop_through);
     }
 
