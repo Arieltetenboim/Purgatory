@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 fn main() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let map = root.join("content/authoring/maps/map.dev.footnote.purgatory-map.json");
+    let map = root.join("content/authoring/maps/map.map1.purgatory-map.json");
     println!("cargo:rerun-if-changed={}", map.display());
     println!(
         "cargo:rerun-if-changed={}",
@@ -27,7 +27,7 @@ fn main() {
         .unwrap_or_else(|error| panic!("PURGATORY Tiled map compilation failed:\n{error}"));
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     fs::write(
-        output.join("map.dev.footnote.presentation.json"),
+        output.join("map.map1.presentation.json"),
         purgatory_content::serialize_map_pretty(&presentation).expect("serialize map presentation"),
     )
     .expect("write compiled map presentation");
