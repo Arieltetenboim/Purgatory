@@ -1707,8 +1707,14 @@ mod tests {
             registry.map_id(cid_b),
             Some(purgatory_common::MapId::from_raw(2))
         );
+        let cid_map1 =
+            purgatory_common::ContentId::from_authored(purgatory_common::MAP1_AUTHORED).unwrap();
+        assert_eq!(
+            registry.map_id(cid_map1),
+            Some(purgatory_common::MapId::from_raw(3))
+        );
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
-        assert_eq!(shared.map_count(), 2);
+        assert_eq!(shared.map_count(), 3);
         assert_eq!(shared.entity_count(), 0);
         assert!(shared.item_count() >= 11);
         assert!(shared.item("item.package").is_some());
