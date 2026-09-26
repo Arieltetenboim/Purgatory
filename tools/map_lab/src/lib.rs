@@ -149,11 +149,7 @@ fn validate_gameplay(
                 foothold.id
             ));
         }
-        if foothold
-            .points
-            .windows(2)
-            .any(|pair| pair[0] == pair[1])
-        {
+        if foothold.points.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(format!(
                 "{}: foothold {} contains a zero-length segment",
                 path.display(),
