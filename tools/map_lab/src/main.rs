@@ -1,6 +1,6 @@
 //! FORGE W1.3A Map Lab: faithful canonical-map preview and scale calibration.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -35,7 +35,7 @@ fn main() -> eframe::Result {
 struct MapLabApp {
     path_text: String,
     document: Option<MapLabDocument>,
-    textures: HashMap<String, TextureHandle>,
+    textures: TextureRegions,
     preview_layers: Vec<bool>,
     ppu_text: String,
     compiled_ppu: Option<f32>,
@@ -427,13 +427,28 @@ impl MapLabApp {
     }
 }
 
+type TextureRegions = HashMap<String, HashMap<[u32; 4], TextureHandle>>;
+
 fn load_textures(
     ctx: &egui::Context,
     document: &MapLabDocument,
-) -> Result<HashMap<String, TextureHandle>, String> {
+) -> Result<TextureRegions, String> {
     let graphic = find_graphic_root(&document.sidecar_path)?;
     let mut textures = HashMap::new();
+
     for asset in &document.presentation.assets {
+        let source_rects: HashSet<[u32; 4]> = document
+            .presentation
+            .layers
+            .iter()
+            .flat_map(|layer| &layer.sprites)
+            .filter(|sprite| sprite.asset_id == asset.id)
+            .map(|sprite| sprite.source_rect_px)
+            .collect();
+        if source_rects.is_empty() {
+            continue;
+        }
+
         let path = graphic.join(&asset.source_path);
         let image = image::open(&path)
             .map_err(|error| format!("decode {}: {error}", path.display()))?
@@ -444,15 +459,41 @@ fn load_textures(
                 path.display()
             ));
         }
-        let color = egui::ColorImage::from_rgba_unmultiplied(
-            [image.width() as usize, image.height() as usize],
-            image.as_raw(),
-        );
-        textures.insert(
-            asset.id.clone(),
-            ctx.load_texture(&asset.id, color, egui::TextureOptions::NEAREST),
-        );
+
+        let mut regions = HashMap::new();
+        for rect in source_rects {
+            let [x, y, width, height] = rect;
+            if width == 0
+                || height == 0
+                || x.checked_add(width).is_none_or(|right| right > image.width())
+                || y.checked_add(height).is_none_or(|bottom| bottom > image.height())
+            {
+                return Err(format!(
+                    "{} has invalid source rect [{x}, {y}, {width}, {height}]",
+                    path.display()
+                ));
+            }
+
+            // Map Lab previews source regions, not whole source atlases. This keeps
+            // authoring atlases larger than egui's current texture-side limit from
+            // crashing the tool while preserving the exact source pixels and UVs.
+            let region = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [width as usize, height as usize],
+                region.as_raw(),
+            );
+            let texture_name = format!(
+                "{}@{x},{y}:{width}x{height}",
+                asset.id
+            );
+            regions.insert(
+                rect,
+                ctx.load_texture(texture_name, color, egui::TextureOptions::NEAREST),
+            );
+        }
+        textures.insert(asset.id.clone(), regions);
     }
+
     Ok(textures)
 }
 
@@ -468,10 +509,13 @@ fn paint_sprite(
     painter: &egui::Painter,
     sprite: &PresentationSprite,
     layer_opacity: f32,
-    textures: &HashMap<String, TextureHandle>,
+    textures: &TextureRegions,
     to_screen: &impl Fn([f32; 2]) -> Pos2,
 ) {
-    let Some(texture) = textures.get(&sprite.asset_id) else {
+    let Some(texture) = textures
+        .get(&sprite.asset_id)
+        .and_then(|regions| regions.get(&sprite.source_rect_px))
+    else {
         return;
     };
     let [w, h] = sprite.size_world;
@@ -482,14 +526,7 @@ fn paint_sprite(
         to_screen([cx + w * 0.5, cy + h * 0.5]),
         to_screen([cx - w * 0.5, cy + h * 0.5]),
     ];
-    let [x, y, width, height] = sprite.source_rect_px;
-    let [image_width, image_height] = [texture.size()[0] as f32, texture.size()[1] as f32];
-    let u0 = x as f32 / image_width;
-    let v0 = y as f32 / image_height;
-    let u1 = (x + width) as f32 / image_width;
-    let v1 = (y + height) as f32 / image_height;
-    let uv = transformed_uv(sprite.transform)
-        .map(|[u, v]| Pos2::new(u0 + (u1 - u0) * u, v0 + (v1 - v0) * v));
+    let uv = transformed_uv(sprite.transform).map(|[u, v]| Pos2::new(u, v));
     let alpha = (layer_opacity * sprite.opacity * 255.0).round() as u8;
     let mut mesh = egui::Mesh::with_texture(texture.id());
     for index in 0..4 {
