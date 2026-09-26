@@ -1218,8 +1218,11 @@ impl GameplayOwner {
         }) else {
             return false;
         };
-        let (transform, state) =
-            PlayerState::standing_on_at(view.id, view.top_surface(), view.transform.position[0]);
+        let x = view.transform.position[0];
+        let Some(surface_y) = view.platform.surface_y_at(view.transform, x) else {
+            return false;
+        };
+        let (transform, state) = PlayerState::standing_on_at(view.id, surface_y, x);
         let previous = {
             let Some((t, player)) = self.world.player_parts_mut_for(entity) else {
                 return false;
@@ -1362,20 +1365,22 @@ impl GameplayOwner {
             .iter_platforms()
             .find(|view| {
                 self.world.address_of(view.id) == Some(spawn_address)
-                    && view.platform.half_extents == P0.half_extents
-                    && (view.transform.position[0] - P0_POSITION[0]).abs() < 0.01
-                    && (view.transform.position[1] - P0_POSITION[1]).abs() < 0.01
-            })
-            .or_else(|| {
-                self.world
-                    .iter_platforms()
-                    .find(|view| self.world.address_of(view.id) == Some(spawn_address))
+                    && view
+                        .platform
+                        .surface_y_at(view.transform, spawn_position[0])
+                        .is_some()
             });
-        let (transform, state) = if let Some(view) = floor {
-            PlayerState::standing_on_at(view.id, view.top_surface(), spawn_position[0])
-        } else {
-            PlayerState::airborne_at(spawn_position)
+        let Some(view) = floor else {
+            return false;
         };
+        let Some(surface_y) = view
+            .platform
+            .surface_y_at(view.transform, spawn_position[0])
+        else {
+            return false;
+        };
+        let (transform, state) =
+            PlayerState::standing_on_at(view.id, surface_y, spawn_position[0]);
         let entity = self.world.spawn_player_at(spawn_address, transform, state);
         let _ = self
             .world
@@ -2202,14 +2207,10 @@ impl GameplayOwner {
             self.world
                 .address_of(v.id)
                 .is_some_and(|a| a.compatible_with(address))
-                && x >= v.aabb().min_x()
-                && x <= v.aabb().max_x()
+                && v.platform.surface_y_at(v.transform, x).is_some()
         })?;
-        Some(
-            PlayerState::standing_on_at(view.id, view.top_surface(), x)
-                .0
-                .position,
-        )
+        let surface_y = view.platform.surface_y_at(view.transform, x)?;
+        Some(PlayerState::standing_on_at(view.id, surface_y, x).0.position)
     }
 
     fn send_equipment_result(
