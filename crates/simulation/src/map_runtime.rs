@@ -175,9 +175,8 @@ impl World {
 }
 
 fn preflight(plan: &MapRuntimePlan) -> Result<(), InstantiateError> {
-    if plan.platforms.is_empty() && plan.placements.is_empty() {
-        return Err(InstantiateError::EmptyPlan);
-    }
+    // A map with valid bounds but no authored gameplay objects is a valid
+    // runtime map. Map Lab can add FOOTNOTE/NPC/Mob content incrementally.
     if !finite_bounds(plan.bounds) {
         return Err(InstantiateError::NonFinite);
     }
