@@ -228,7 +228,11 @@ impl eframe::App for MapLabApp {
                             layer.kind,
                             layer.sprites.len(),
                             if layer.sprites.len() == 1 { "" } else { "s" },
-                            if layer.visible { "" } else { " · source hidden" }
+                            if layer.visible {
+                                ""
+                            } else {
+                                " · source hidden"
+                            }
                         ));
                         ui.add_space(5.0);
                     }
@@ -258,7 +262,9 @@ impl eframe::App for MapLabApp {
                     if ui.button("Apply PPU to Preview").clicked() {
                         self.apply_ppu(ui.ctx());
                     }
-                    ui.small("Calibration is in memory. Edit the sidecar deliberately to persist it.");
+                    ui.small(
+                        "Calibration is in memory. Edit the sidecar deliberately to persist it.",
+                    );
                     let width = map.world_bounds[2] - map.world_bounds[0];
                     let height = map.world_bounds[3] - map.world_bounds[1];
                     ui.label(format!("World: {width:.3} × {height:.3} wu"));
@@ -275,11 +281,7 @@ impl eframe::App for MapLabApp {
                 }
                 ui.separator();
                 ui.heading("COMPILER / VALIDATION");
-                ui.add(
-                    egui::Label::new(&self.status)
-                        .wrap()
-                        .selectable(true),
-                );
+                ui.add(egui::Label::new(&self.status).wrap().selectable(true));
             });
 
         egui::Panel::bottom("map_lab_status")
@@ -303,7 +305,8 @@ impl eframe::App for MapLabApp {
 impl MapLabApp {
     fn preview(&mut self, ui: &mut egui::Ui) {
         let (canvas, response) = ui.allocate_exact_size(ui.available_size(), Sense::drag());
-        ui.painter().rect_filled(canvas, 0.0, Color32::from_rgb(24, 27, 32));
+        ui.painter()
+            .rect_filled(canvas, 0.0, Color32::from_rgb(24, 27, 32));
         if response.dragged() {
             self.pan += ui.input(|input| input.pointer.delta());
         }
@@ -342,7 +345,10 @@ impl MapLabApp {
                 center.y - (world[1] - world_height * 0.5) * scale,
             )
         };
-        let map_rect = Rect::from_two_pos(to_screen([0.0, world_height]), to_screen([world_width, 0.0]));
+        let map_rect = Rect::from_two_pos(
+            to_screen([0.0, world_height]),
+            to_screen([world_width, 0.0]),
+        );
         let map_clip = map_rect.intersect(canvas);
         ui.painter()
             .rect_filled(map_rect, 0.0, Color32::from_rgb(10, 12, 15));
@@ -390,10 +396,7 @@ impl MapLabApp {
             Color32::from_rgb(120, 205, 255),
         );
 
-        let player_center = [
-            world_width * 0.5,
-            PLAYER_REFERENCE_SIZE_WU[1] * 0.5,
-        ];
+        let player_center = [world_width * 0.5, PLAYER_REFERENCE_SIZE_WU[1] * 0.5];
         let player_rect = world_rect(player_center, PLAYER_REFERENCE_SIZE_WU, &to_screen);
         ui.painter().rect_filled(
             player_rect,
@@ -513,11 +516,7 @@ fn transformed_uv(transform: TileTransform) -> [[f32; 2]; 4] {
     })
 }
 
-fn world_rect(
-    center: [f32; 2],
-    size: [f32; 2],
-    to_screen: &impl Fn([f32; 2]) -> Pos2,
-) -> Rect {
+fn world_rect(center: [f32; 2], size: [f32; 2], to_screen: &impl Fn([f32; 2]) -> Pos2) -> Rect {
     Rect::from_two_pos(
         to_screen([center[0] - size[0] * 0.5, center[1] + size[1] * 0.5]),
         to_screen([center[0] + size[0] * 0.5, center[1] - size[1] * 0.5]),
