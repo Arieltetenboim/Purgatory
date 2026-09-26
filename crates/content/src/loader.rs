@@ -1473,6 +1473,33 @@ mod tests {
     }
 
     #[test]
+    fn gameplay_authored_spawn_overrides_bootstrap_map_spawn() {
+        let root = default_content_root();
+        let registry = load_registry(&root, LoadMode::Shared).expect("shared content");
+        let gameplay_path = root
+            .join("authoring")
+            .join("maps")
+            .join("map.map1.gameplay.json");
+        let gameplay_text = fs::read_to_string(&gameplay_path).expect("MAP1 gameplay authoring");
+        let gameplay: MapGameplayAuthoring =
+            serde_json::from_str(&gameplay_text).expect("valid MAP1 gameplay authoring");
+        let authored_default = gameplay
+            .spawn_points
+            .iter()
+            .find(|spawn| spawn.id == "default")
+            .expect("authored default spawn");
+        let runtime_default = registry
+            .map("map.map1")
+            .expect("MAP1 runtime definition")
+            .spawn_points
+            .iter()
+            .find(|spawn| spawn.id == "default")
+            .expect("runtime default spawn");
+
+        assert_eq!(runtime_default.position, authored_default.position);
+    }
+
+    #[test]
     fn malformed_json_fails() {
         let tmp = std::env::temp_dir().join(format!("purgatory-content-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
