@@ -313,6 +313,27 @@ impl ContentRegistry {
         Ok(())
     }
 
+    pub(crate) fn apply_map_gameplay(
+        &mut self,
+        authored: &str,
+        name: &str,
+        foothold_paths: Vec<crate::FootholdPath>,
+    ) -> Result<(), ContentError> {
+        let Some(map) = self.maps.get_mut(authored) else {
+            return Err(ContentError::one(ValidationIssue::new(
+                authored,
+                authored,
+                "map_authored",
+                "gameplay authoring references an unknown map",
+            )));
+        };
+        if !name.trim().is_empty() {
+            map.debug_name = name.trim().to_owned();
+        }
+        map.foothold_paths = foothold_paths;
+        Ok(())
+    }
+
     pub(crate) fn insert_equipment(
         &mut self,
         def: EquipmentDefinition,
