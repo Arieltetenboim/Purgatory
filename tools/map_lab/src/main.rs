@@ -429,10 +429,7 @@ impl MapLabApp {
 
 type TextureRegions = HashMap<String, HashMap<[u32; 4], TextureHandle>>;
 
-fn load_textures(
-    ctx: &egui::Context,
-    document: &MapLabDocument,
-) -> Result<TextureRegions, String> {
+fn load_textures(ctx: &egui::Context, document: &MapLabDocument) -> Result<TextureRegions, String> {
     let graphic = find_graphic_root(&document.sidecar_path)?;
     let max_texture_side = ctx.input(|input| input.raw.max_texture_side.unwrap_or(2048));
     let mut textures = HashMap::new();
@@ -466,8 +463,10 @@ fn load_textures(
             let [x, y, width, height] = rect;
             if width == 0
                 || height == 0
-                || x.checked_add(width).is_none_or(|right| right > image.width())
-                || y.checked_add(height).is_none_or(|bottom| bottom > image.height())
+                || x.checked_add(width)
+                    .is_none_or(|right| right > image.width())
+                || y.checked_add(height)
+                    .is_none_or(|bottom| bottom > image.height())
             {
                 return Err(format!(
                     "{} has invalid source rect [{x}, {y}, {width}, {height}]",
@@ -489,10 +488,7 @@ fn load_textures(
                 [width as usize, height as usize],
                 region.as_raw(),
             );
-            let texture_name = format!(
-                "{}@{x},{y}:{width}x{height}",
-                asset.id
-            );
+            let texture_name = format!("{}@{x},{y}:{width}x{height}", asset.id);
             regions.insert(
                 rect,
                 ctx.load_texture(texture_name, color, egui::TextureOptions::NEAREST),
