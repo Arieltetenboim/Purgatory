@@ -2855,9 +2855,8 @@ impl ClientApp {
             let active_map = self
                 .last_observer
                 .map(|observer| MapId::from_raw(observer.0));
-            let canonical_map_visuals = active_map.is_some_and(|map_id| {
-                self.map_presentation.active_for_map(map_id, &self.registry)
-            });
+            let canonical_map_visuals = active_map
+                .is_some_and(|map_id| self.map_presentation.active_for_map(map_id, &self.registry));
             if canonical_map_visuals {
                 quads.extend(self.map_presentation.quads());
             } else {
@@ -4377,17 +4376,17 @@ fn scene_quads(
 ) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(8);
     for view in world.iter_platforms() {
-            let color = match view.platform.kind {
-                PlatformKind::Solid => {
-                    if view.platform.half_extents[0] >= 7.0 {
-                        SOLID_FLOOR_COLOR
-                    } else {
-                        SOLID_PLATFORM_COLOR
-                    }
+        let color = match view.platform.kind {
+            PlatformKind::Solid => {
+                if view.platform.half_extents[0] >= 7.0 {
+                    SOLID_FLOOR_COLOR
+                } else {
+                    SOLID_PLATFORM_COLOR
                 }
-                PlatformKind::OneWay => ONEWAY_COLOR,
-                _ => SOLID_PLATFORM_COLOR,
-            };
+            }
+            PlatformKind::OneWay => ONEWAY_COLOR,
+            _ => SOLID_PLATFORM_COLOR,
+        };
         quads.push(aabb_quad(view.aabb(), color));
     }
     if show_player_aabbs {
