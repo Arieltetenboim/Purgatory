@@ -187,8 +187,7 @@ impl World {
             } else {
                 control_input
             };
-            let dropped =
-                apply_drop_through(player, control_input, support_platform, &mut contact);
+            let dropped = apply_drop_through(player, control_input, support_platform, &mut contact);
             player.last_contact = contact;
 
             let jump_consumed = !dropped && apply_jump(player, jump_input, &config);
