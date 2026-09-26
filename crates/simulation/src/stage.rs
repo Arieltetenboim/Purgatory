@@ -34,9 +34,8 @@ pub const FOOTNOTE_SPAWN_X: f32 = -19.4;
 #[cfg(test)]
 const LEGACY_INVALID_FOOTNOTE_SPAWN_X: f32 = -20.0;
 
-/// Experimental production-like logical viewport height for camera scale evaluation.
-/// At the locked 16:9 gameplay aspect this yields a 16 × 9 wu visible world.
-pub const FOOTNOTE_TEST_VIEWPORT_HEIGHT: f32 = 9.0;
+/// Suggested client logical viewport height for this arena.
+pub const FOOTNOTE_TEST_VIEWPORT_HEIGHT: f32 = 14.0;
 
 impl World {
     /// Phase-4.8 FOOTNOTE movement laboratory with wide bounds for camera tests.
