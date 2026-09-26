@@ -301,16 +301,7 @@ impl Compiler<'_> {
                 "infinite tile layers are unsupported",
             ));
         };
-        if finite.width() != map.width || finite.height() != map.height {
-            return Err(issue(
-                self.tmx_path,
-                &layer.name,
-                "dimensions",
-                "finite tile layer dimensions must match the map",
-            ));
-        }
-
-        let (xs, ys) = render_axes(map.render_order, map.width, map.height);
+        let (xs, ys) = render_axes(map.render_order, finite.width(), finite.height());
         let mut sprites = Vec::new();
         for y in ys {
             for &x in &xs {
