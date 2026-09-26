@@ -42,7 +42,7 @@ pub use identity::{
     CONTENT_NPC_END, CONTENT_NPC_START, CONTENT_WORLD_OBJECT_END, CONTENT_WORLD_OBJECT_START,
     CharacterId, CharacterName, CharacterNameError, ContentId, ContentKind, DEFAULT_DEV_LOGIN,
     DEFAULT_RESTORE_POINT, DEV_LOGIN_MAX_LEN, DEV_LOGIN_MIN_LEN, DevLogin, DevLoginError,
-    InstanceExitContext, ItemInstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
+    InstanceExitContext, ItemInstanceId, MAP1_AUTHORED, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
     MAX_AUTHORED_CONTENT_ID_LEN, PersistentId, RestoreIntent, fnv1a64, validate_authored_id,
 };
 pub use load_metrics::{
