@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "map.map1",
+  "debug_name": "MAP1",
+  "bounds": {
+    "min_x": 0.0,
+    "max_x": 46.44,
+    "min_y": 0.0,
+    "max_y": 10.8
+  },
+  "spawn_points": [
+    {
+      "id": "default",
+      "position": [
+        15.31,
+        0.88
+      ]
+    }
+  ],
+  "restore": {
+    "policy": "safe_point",
+    "point": "default"
+  },
+  "platforms": []
+}
