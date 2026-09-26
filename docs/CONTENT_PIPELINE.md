@@ -25,7 +25,8 @@ Human-editable JSON lives under `/content`:
 - `shared/animations/dev/` — A6/A7 v1 `.anim` presentation clips (token text, not JSON). Optional `depth` keys (A7.1 `depth_angle`; omitted = 0). Authored in Animation Lab. Runtime still compiles them in via `include_str!`.
 - `authoring/maps/` — PURGATORY map-authoring sidecars. A sidecar owns map
   identity, the relative Tiled TMX visual source, and explicit per-map PPU.
-  `purgatory-content` compiles TMX/TSX through one shared compiler into
+  Ordinary production maps use the locked **100 px/wu** visual-scale standard; changing
+  camera zoom must not be modeled by changing PPU. `purgatory-content` compiles TMX/TSX through one shared compiler into
   versioned canonical `MapPresentation`; Map Lab previews that same output.
   TMX remains the visual-composition source and is not runtime input.
 - `authoring/npcs/` — canonical NPC Lab JSON. Recursively validated in Shared
