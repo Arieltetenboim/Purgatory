@@ -8,6 +8,7 @@ mod error;
 mod instantiate;
 mod item;
 mod loader;
+#[cfg(feature = "map-authoring")]
 mod map_compiler;
 mod monster;
 mod registry;
@@ -38,6 +39,7 @@ pub use item::{
     ItemPresentation, is_stackable, validate_item_definition, validate_item_presentation,
 };
 pub use loader::{LoadMode, default_content_root, load_registry};
+#[cfg(feature = "map-authoring")]
 pub use map_compiler::{
     MAP_AUTHORING_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION, MapAuthoringSource,
     MapPresentation, PresentationAsset, PresentationLayer, PresentationLayerKind,
