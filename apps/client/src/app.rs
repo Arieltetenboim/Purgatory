@@ -2855,13 +2855,11 @@ impl ClientApp {
             let active_map = self
                 .last_observer
                 .map(|observer| MapId::from_raw(observer.0));
-            let canonical_map_visuals = active_map
-                .is_some_and(|map_id| self.map_presentation.active_for_map(map_id));
+            let canonical_map_visuals = active_map.is_some_and(|map_id| {
+                self.map_presentation.active_for_map(map_id, &self.registry)
+            });
             if canonical_map_visuals {
-                quads.extend(
-                    self.map_presentation
-                        .quads_centered_in(self.world.bounds()),
-                );
+                quads.extend(self.map_presentation.quads());
             } else {
                 quads = parallax_quads(&camera, self.world.bounds());
             }
@@ -2892,7 +2890,6 @@ impl ClientApp {
                 local_pose,
                 remotes,
                 crate::skeleton_debug::CHARACTER_VISUAL_SCALE_1,
-                !canonical_map_visuals,
                 {
                     #[cfg(feature = "dev-diagnostics")]
                     {
@@ -3033,11 +3030,6 @@ impl ClientApp {
                         entity.entity_id.index == key.index
                             && entity.entity_id.generation == key.generation
                     });
-                    if canonical_map_visuals
-                        && replicated.is_some_and(|entity| entity.kind != ReplicatedKind::Player)
-                    {
-                        continue;
-                    }
                     let health = replicated.and_then(|entity| entity.health);
                     if !immunity_flash_visible(
                         health.is_none_or(|h| h.current > 0.0),
@@ -3063,27 +3055,19 @@ impl ClientApp {
                     ));
                 }
             }
-            let replica_interactable_quads = if canonical_map_visuals {
-                Vec::new()
-            } else {
-                visible_interactable_quads(
-                    hold_source,
-                    self.frozen_presentation.as_ref(),
-                    replica_live,
-                    &self.replica,
-                )
-            };
-            let replica_portal_quads = if canonical_map_visuals {
-                Vec::new()
-            } else {
-                visible_portal_quads(
-                    hold_source,
-                    self.frozen_presentation.as_ref(),
-                    replica_live,
-                    &self.replica,
-                )
-            };
-            let replica_npc_quads = if canonical_map_visuals || hold_source || !replica_live {
+            let replica_interactable_quads = visible_interactable_quads(
+                hold_source,
+                self.frozen_presentation.as_ref(),
+                replica_live,
+                &self.replica,
+            );
+            let replica_portal_quads = visible_portal_quads(
+                hold_source,
+                self.frozen_presentation.as_ref(),
+                replica_live,
+                &self.replica,
+            );
+            let replica_npc_quads = if hold_source || !replica_live {
                 Vec::new()
             } else {
                 npc_quads(
@@ -3116,13 +3100,10 @@ impl ClientApp {
             let interactable_n = replica_interactable_quads.len() + replica_portal_quads.len();
             quads.extend(replica_interactable_quads);
             quads.extend(replica_portal_quads);
-            if !canonical_map_visuals {
-                quads.extend(item_drop_quads(&self.replica));
-            }
+            quads.extend(item_drop_quads(&self.replica));
             quads.extend(replica_npc_quads);
             #[cfg(feature = "dev-diagnostics")]
-            if !canonical_map_visuals
-                && replica_live
+            if replica_live
                 && self
                     .debug
                     .as_ref()
@@ -3139,11 +3120,7 @@ impl ClientApp {
                     .map(|d| d.ui.clone())
                     .unwrap_or_default();
                 if ui.show_overlay_gizmos {
-                    let mut gizmos = if canonical_map_visuals {
-                        Vec::new()
-                    } else {
-                        footnote_debug_quads(&self.world, &ui, local_pose)
-                    };
+                    let mut gizmos = footnote_debug_quads(&self.world, &ui, local_pose);
                     if replica_live {
                         let origin = local_pose.unwrap_or([0.0, 0.0]);
                         let rects = aoi_policy_rects(origin, self.world.bounds());
@@ -4396,12 +4373,10 @@ fn scene_quads(
     local_pose: Option<[f32; 2]>,
     remote_poses: &[PresentationPose],
     _local_preview_scale: f32,
-    show_platform_geometry: bool,
     show_player_aabbs: bool,
 ) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(8);
-    if show_platform_geometry {
-        for view in world.iter_platforms() {
+    for view in world.iter_platforms() {
             let color = match view.platform.kind {
                 PlatformKind::Solid => {
                     if view.platform.half_extents[0] >= 7.0 {
@@ -4413,8 +4388,7 @@ fn scene_quads(
                 PlatformKind::OneWay => ONEWAY_COLOR,
                 _ => SOLID_PLATFORM_COLOR,
             };
-            quads.push(aabb_quad(view.aabb(), color));
-        }
+        quads.push(aabb_quad(view.aabb(), color));
     }
     if show_player_aabbs {
         if let Some(position) = local_pose {
@@ -4425,14 +4399,12 @@ fn scene_quads(
             push_collision_aabb_outline(Aabb::new(pose.position, PLAYER_HALF_EXTENTS), &mut quads);
         }
     }
-    if show_platform_geometry {
-        let b = world.bounds();
-        quads.push(DrawQuad::rect(
-            [b.min_x + 0.6, b.max_y - 0.6],
-            [0.35, 0.35],
-            MARKER_COLOR,
-        ));
-    }
+    let b = world.bounds();
+    quads.push(DrawQuad::rect(
+        [b.min_x + 0.6, b.max_y - 0.6],
+        [0.35, 0.35],
+        MARKER_COLOR,
+    ));
     quads
 }
 
