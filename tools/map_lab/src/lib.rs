@@ -62,6 +62,45 @@ impl MapLabDocument {
         serialize_map_pretty(&self.presentation).map_err(|error| error.to_string())
     }
 
+    #[must_use]
+    pub fn snap_spawn_to_foothold(&self, approximate_center: [f32; 2]) -> Option<[f32; 2]> {
+        let half_height = purgatory_simulation::PLAYER_HALF_EXTENTS[1];
+        self.gameplay
+            .foothold_paths
+            .iter()
+            .flat_map(|path| path.points.windows(2))
+            .filter_map(|pair| segment_y_at_x(pair[0], pair[1], approximate_center[0]))
+            .map(|surface_y| {
+                let center_y = surface_y + half_height;
+                (
+                    (center_y - approximate_center[1]).abs(),
+                    [approximate_center[0], center_y],
+                )
+            })
+            .filter(|(distance, _)| *distance <= 2.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, position)| position)
+    }
+
+    #[must_use]
+    pub fn gameplay_readiness(&self) -> Result<(), String> {
+        if self.gameplay.foothold_paths.is_empty() {
+            return Err("map requires at least one FOOTNOTE path".to_owned());
+        }
+        let Some(default) = self
+            .gameplay
+            .spawn_points
+            .iter()
+            .find(|spawn| spawn.id == "default")
+        else {
+            return Err("map requires a default spawn point".to_owned());
+        };
+        if !spawn_is_supported(&self.gameplay, default.position) {
+            return Err("default spawn must align to a FOOTNOTE surface".to_owned());
+        }
+        Ok(())
+    }
+
     pub fn save_gameplay(&self) -> Result<(), String> {
         validate_gameplay(
             &self.gameplay_path,
@@ -160,7 +199,54 @@ fn validate_gameplay(
             ));
         }
     }
+    let mut spawn_ids = std::collections::HashSet::new();
+    for spawn in &gameplay.spawn_points {
+        if spawn.id.trim().is_empty() || !spawn_ids.insert(spawn.id.as_str()) {
+            return Err(format!(
+                "{}: spawn point ids must be non-empty and unique",
+                path.display()
+            ));
+        }
+        let [x, y] = spawn.position;
+        if !x.is_finite()
+            || !y.is_finite()
+            || x < min_x
+            || x > max_x
+            || y < min_y
+            || y > max_y
+        {
+            return Err(format!(
+                "{}: spawn {} leaves map bounds",
+                path.display(),
+                spawn.id
+            ));
+        }
+    }
     Ok(())
+}
+
+fn segment_y_at_x(start: [f32; 2], end: [f32; 2], x: f32) -> Option<f32> {
+    let dx = end[0] - start[0];
+    if dx.abs() <= f32::EPSILON {
+        return None;
+    }
+    let min_x = start[0].min(end[0]);
+    let max_x = start[0].max(end[0]);
+    if x < min_x || x > max_x {
+        return None;
+    }
+    let t = (x - start[0]) / dx;
+    Some(start[1] + (end[1] - start[1]) * t)
+}
+
+fn spawn_is_supported(gameplay: &MapGameplayAuthoring, position: [f32; 2]) -> bool {
+    let target_surface = position[1] - purgatory_simulation::PLAYER_HALF_EXTENTS[1];
+    gameplay.foothold_paths.iter().any(|path| {
+        path.points.windows(2).any(|pair| {
+            segment_y_at_x(pair[0], pair[1], position[0])
+                .is_some_and(|surface_y| (surface_y - target_surface).abs() <= 0.05)
+        })
+    })
 }
 
 #[cfg(test)]
@@ -188,5 +274,19 @@ mod tests {
     fn gameplay_path_sits_next_to_visual_sidecar() {
         let path = gameplay_path_for(&fixture()).unwrap();
         assert!(path.ends_with("map.map1.gameplay.json"));
+    }
+
+    #[test]
+    fn default_spawn_is_supported_by_authored_foothold() {
+        let document = MapLabDocument::open(fixture()).expect("open");
+        assert!(document.gameplay_readiness().is_ok());
+    }
+
+    #[test]
+    fn spawn_snap_uses_player_center_above_surface() {
+        let document = MapLabDocument::open(fixture()).expect("open");
+        let snapped = document.snap_spawn_to_foothold([15.31, 0.9]).unwrap();
+        assert!((snapped[0] - 15.31).abs() < 1e-5);
+        assert!((snapped[1] - 1.0).abs() < 1e-4);
     }
 }
