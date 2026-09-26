@@ -3029,14 +3029,16 @@ impl ClientApp {
                 };
                 let bone_map = self.characters.bone_map();
                 for (key, entry) in self.characters.iter_draw_order() {
-                    let health = self
-                        .replica
-                        .iter()
-                        .find(|entity| {
-                            entity.entity_id.index == key.index
-                                && entity.entity_id.generation == key.generation
-                        })
-                        .and_then(|entity| entity.health);
+                    let replicated = self.replica.iter().find(|entity| {
+                        entity.entity_id.index == key.index
+                            && entity.entity_id.generation == key.generation
+                    });
+                    if canonical_map_visuals
+                        && replicated.is_some_and(|entity| entity.kind != ReplicatedKind::Player)
+                    {
+                        continue;
+                    }
+                    let health = replicated.and_then(|entity| entity.health);
                     if !immunity_flash_visible(
                         health.is_none_or(|h| h.current > 0.0),
                         health.is_some_and(|h| h.damage_immunity_active),
@@ -3061,19 +3063,27 @@ impl ClientApp {
                     ));
                 }
             }
-            let replica_interactable_quads = visible_interactable_quads(
-                hold_source,
-                self.frozen_presentation.as_ref(),
-                replica_live,
-                &self.replica,
-            );
-            let replica_portal_quads = visible_portal_quads(
-                hold_source,
-                self.frozen_presentation.as_ref(),
-                replica_live,
-                &self.replica,
-            );
-            let replica_npc_quads = if hold_source || !replica_live {
+            let replica_interactable_quads = if canonical_map_visuals {
+                Vec::new()
+            } else {
+                visible_interactable_quads(
+                    hold_source,
+                    self.frozen_presentation.as_ref(),
+                    replica_live,
+                    &self.replica,
+                )
+            };
+            let replica_portal_quads = if canonical_map_visuals {
+                Vec::new()
+            } else {
+                visible_portal_quads(
+                    hold_source,
+                    self.frozen_presentation.as_ref(),
+                    replica_live,
+                    &self.replica,
+                )
+            };
+            let replica_npc_quads = if canonical_map_visuals || hold_source || !replica_live {
                 Vec::new()
             } else {
                 npc_quads(
@@ -3106,10 +3116,13 @@ impl ClientApp {
             let interactable_n = replica_interactable_quads.len() + replica_portal_quads.len();
             quads.extend(replica_interactable_quads);
             quads.extend(replica_portal_quads);
-            quads.extend(item_drop_quads(&self.replica));
+            if !canonical_map_visuals {
+                quads.extend(item_drop_quads(&self.replica));
+            }
             quads.extend(replica_npc_quads);
             #[cfg(feature = "dev-diagnostics")]
-            if replica_live
+            if !canonical_map_visuals
+                && replica_live
                 && self
                     .debug
                     .as_ref()
@@ -3126,7 +3139,11 @@ impl ClientApp {
                     .map(|d| d.ui.clone())
                     .unwrap_or_default();
                 if ui.show_overlay_gizmos {
-                    let mut gizmos = footnote_debug_quads(&self.world, &ui, local_pose);
+                    let mut gizmos = if canonical_map_visuals {
+                        Vec::new()
+                    } else {
+                        footnote_debug_quads(&self.world, &ui, local_pose)
+                    };
                     if replica_live {
                         let origin = local_pose.unwrap_or([0.0, 0.0]);
                         let rects = aoi_policy_rects(origin, self.world.bounds());
