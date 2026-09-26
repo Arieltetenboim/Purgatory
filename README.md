@@ -54,10 +54,14 @@ cargo run -p purgatory-server
 
 The server listens on `127.0.0.1:5001` by default.
 
-For the W1.2 visual-map proof, start the server, start the client, then use the
-normal Connection Frontend flow to enter the DEV world. The compiled Tiled
-background and WORLD_ART are loaded before the renderer is created; the client
-does not read TMX/TSX at runtime.
+FORGE W1.3A Map Lab can be launched directly with:
+
+```powershell
+cargo run -p purgatory-map-lab
+```
+
+It previews the shared compiler's canonical Tiled map output; the game client
+does not parse TMX/TSX at runtime.
 
 ## Project map
 
@@ -75,6 +79,7 @@ does not read TMX/TSX at runtime.
 | `crates/animation` | Animation runtime |
 | `crates/dev_runtime` | Developer Hub orchestration |
 | `tools/animation_lab` | Animation authoring/debug tool |
+| `tools/map_lab` | Visual map compilation/calibration tool |
 | `tools/Character part lab` | Character Lab authoring/conversion tool |
 | `tools/mob_lab` | Monster authoring / creature-manifest tool |
 | `tools/npc_lab` | NPC authoring/test tool |
