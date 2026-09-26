@@ -24,6 +24,7 @@ mod jitter_forensics;
 mod lifecycle;
 mod local_presentation;
 mod map_fade;
+mod map_presentation;
 mod network;
 mod npc_presentation;
 mod platform;

@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 description = "Native PURGATORY client."
+build = "build.rs"
 
 [[bin]]
 name = "purgatory-client"
@@ -41,6 +42,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[build-dependencies]
+purgatory-content = { path = "../../crates/content" }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # Test-only: the live handshake-shutdown test stands up a local QUIC listener.

@@ -675,6 +675,20 @@ Windows development control is **Developer Tools** (ADR-0050). The current opera
 
 Common content variants are data.
 
+Visual map authoring follows a separate compile-time path:
+
+```text
+Tiled TMX/TSX
+→ PURGATORY importer/compiler
+→ canonical PURGATORY map presentation
+→ client AssetRuntime / existing renderer
+```
+
+The production client consumes the canonical presentation and never parses
+TMX/TSX at runtime. Visual composition is independent of gameplay geometry:
+Tiled does not author FOOTNOTE, NPC, or mob placement; that direction belongs
+to Map Lab.
+
 Authoring flow:
 
 ```text

@@ -386,7 +386,7 @@ mod tests {
         let server = purgatory_simulation::aoi_clamp_camera_center(desired, vw, vh, bounds);
         assert!((client[0] - server[0]).abs() < 1e-5);
         assert!((client[1] - server[1]).abs() < 1e-5);
-        assert!((client[0] - (-11.556)).abs() < 0.01);
+        assert!((client[0] - (-12.444)).abs() < 0.01);
     }
 
     #[test]

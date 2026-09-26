@@ -245,6 +245,7 @@ struct ClientApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     asset_runtime: crate::asset_runtime::AssetRuntime,
+    map_presentation: crate::map_presentation::RuntimeMapPresentation,
     frontend_runtime: crate::frontend_runtime::FrontendRuntime,
     frontend_scene: crate::frontend_scene::FrontendScene,
     frontend_scene_texture: crate::renderer::SpriteTextureId,
@@ -379,6 +380,8 @@ impl ClientApp {
         dialogue_animations: DialogueAnimationCatalog,
     ) -> Result<Self, String> {
         let mut asset_runtime = crate::asset_runtime::AssetRuntime::new();
+        let map_presentation =
+            crate::map_presentation::RuntimeMapPresentation::load(&mut asset_runtime)?;
         let frontend_scene_texture = crate::assets::ClientAssetLoader::new(&mut asset_runtime)
             .load_png("frontend.scene.guide", "frontend/frontend_scene_guide.png")?;
         let scene_image = &asset_runtime
@@ -433,6 +436,7 @@ impl ClientApp {
             window: None,
             renderer: None,
             asset_runtime,
+            map_presentation,
             frontend_runtime: crate::frontend_runtime::FrontendRuntime::new(),
             frontend_scene: crate::frontend_scene::FrontendScene::new(),
             frontend_scene_texture,
@@ -2849,6 +2853,7 @@ impl ClientApp {
             let local_pose = self.frame_local.presented;
             let predicted_pose = self.frame_local.predicted;
             quads = parallax_quads(&camera, self.world.bounds());
+            quads.extend(self.map_presentation.quads());
             let hold_source = self.map_fade.holds_source_presentation();
             let replica_live = self.replica_matches_local_map() && !hold_source;
             let remote_buf: Vec<PresentationPose> = if hold_source {

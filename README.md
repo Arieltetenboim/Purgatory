@@ -54,6 +54,11 @@ cargo run -p purgatory-server
 
 The server listens on `127.0.0.1:5001` by default.
 
+For the W1.2 visual-map proof, start the server, start the client, then use the
+normal Connection Frontend flow to enter the DEV world. The compiled Tiled
+background and WORLD_ART are loaded before the renderer is created; the client
+does not read TMX/TSX at runtime.
+
 ## Project map
 
 | Path | Role |

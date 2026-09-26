@@ -12,6 +12,7 @@ mod monster;
 mod registry;
 mod restore;
 mod schema;
+mod tiled;
 
 pub use ability::ABILITY_CONTENT_SCHEMA_VERSION;
 pub use dialogue::{
@@ -45,6 +46,10 @@ pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement}
 pub use schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
     SpawnPoint, TransitionRef,
+};
+pub use tiled::{
+    MapPresentation, PresentationLayer, PresentationSprite, TILED_PIXELS_PER_WORLD_UNIT,
+    TILED_WORLD_ORIGIN, compile_tiled_map,
 };
 
 /// Cargo package version for this crate.
