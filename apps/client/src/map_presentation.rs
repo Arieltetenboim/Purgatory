@@ -69,7 +69,10 @@ impl RuntimeMapPresentation {
                         authored.asset_id, authored.source_rect_px
                     ));
                 }
-                if !authored.position_world.iter().all(|value| value.is_finite())
+                if !authored
+                    .position_world
+                    .iter()
+                    .all(|value| value.is_finite())
                     || !authored
                         .size_world
                         .iter()
