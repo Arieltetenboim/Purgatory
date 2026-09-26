@@ -115,7 +115,8 @@ impl World {
         let previous_top = prev_pos[1] + prev_half[1];
         let previous_left = prev_pos[0] - prev_half[0];
         let previous_right = prev_pos[0] + prev_half[0];
-        let support_kind = prev_grounded_on.and_then(|id| self.platform_kind(id));
+        let support_platform =
+            prev_grounded_on.and_then(|id| self.get_platform(id).map(|(_, platform)| platform));
 
         let mut scratch = PlatformScratch::default();
         let addr = self.address_of(id);
@@ -186,7 +187,8 @@ impl World {
             } else {
                 control_input
             };
-            let dropped = apply_drop_through(player, control_input, support_kind, &mut contact);
+            let dropped =
+                apply_drop_through(player, control_input, support_platform, &mut contact);
             player.last_contact = contact;
 
             let jump_consumed = !dropped && apply_jump(player, jump_input, &config);
@@ -426,10 +428,6 @@ impl World {
         }
     }
 
-    fn platform_kind(&self, id: EntityId) -> Option<PlatformKind> {
-        self.get_platform(id).map(|(_, platform)| platform.kind)
-    }
-
     /// Clear stale grounded_on / ignored_platform EntityIds.
     pub fn clear_stale_footnote_ids(&mut self) {
         if let Some(id) = self.player_id() {
@@ -458,7 +456,7 @@ impl World {
 fn apply_drop_through(
     player: &mut PlayerState,
     input: PlayerInput,
-    support_kind: Option<PlatformKind>,
+    support_platform: Option<crate::platform::Platform>,
     contact: &mut ContactEvent,
 ) -> bool {
     if !(input.down_held && input.jump_pressed && player.grounded) {
@@ -467,7 +465,10 @@ fn apply_drop_through(
     let Some(support) = player.grounded_on else {
         return false;
     };
-    if support_kind != Some(PlatformKind::OneWay) {
+    let Some(platform) = support_platform else {
+        return false;
+    };
+    if platform.kind != PlatformKind::OneWay || !platform.drop_through {
         return false;
     }
     player.ignored_platform = Some(support);
@@ -506,7 +507,12 @@ pub(crate) fn glue_to_support<B: CollisionBody>(
 
     let mut best: Option<(f32, EntityId)> = None;
     for view in platforms {
-        let top = view.top_surface();
+        let Some(top) = view
+            .platform
+            .surface_y_at(view.transform, transform.position[0])
+        else {
+            continue;
+        };
         if (feet - top).abs() > GLUE_EPS
             && !(previous_bottom >= top - 1e-4 && feet <= top + GLUE_EPS)
         {
@@ -626,7 +632,10 @@ fn expire_ignored(player: &mut PlayerState, position: [f32; 2], platforms: &Plat
     // Primary lifecycle: ignore ends once the collider is fully below the
     // platform's top/support region — not the platform bottom, not the floor.
     let player_top = position[1] + player.half_extents[1];
-    let platform_top = view.top_surface();
+    let platform_top = view
+        .platform
+        .surface_y_at(view.transform, position[0])
+        .unwrap_or_else(|| view.top_surface());
     if player_top < platform_top {
         player.ignored_platform = None;
     }
