@@ -288,16 +288,33 @@ impl eframe::App for MapLabApp {
         if ui.input(|input| input.key_pressed(egui::Key::R) && input.modifiers.shift) {
             self.reload(ui.ctx());
         }
+        if self.editor_mode == EditorMode::Footnote {
+            if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                self.back_from_footnote_editor();
+            } else if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                self.finish_foothold_path();
+            }
+        }
 
         egui::Panel::top("map_lab_top")
             .exact_size(54.0)
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.heading("MAP LAB");
+                    if self.editor_mode == EditorMode::Footnote {
+                        if ui.button("← BACK").clicked() {
+                            self.back_from_footnote_editor();
+                        }
+                        ui.heading("FOOTNOTE");
+                    } else {
+                        ui.heading("MAP LAB");
+                        if ui.button("FOOTNOTE").clicked() && self.document.is_some() {
+                            self.enter_footnote_editor();
+                        }
+                    }
                     ui.separator();
                     ui.add(
                         egui::TextEdit::singleline(&mut self.path_text)
-                            .desired_width(560.0)
+                            .desired_width(420.0)
                             .hint_text("PURGATORY map sidecar"),
                     );
                     if ui.button("Open / Reload").clicked() {
@@ -309,7 +326,11 @@ impl eframe::App for MapLabApp {
                     if ui.button("Fit Map").clicked() {
                         self.fit_requested = true;
                     }
-                    if ui.button("Export Canonical JSON").clicked() {
+                    if self.editor_mode == EditorMode::Footnote {
+                        if ui.button("Save Gameplay").clicked() {
+                            self.save_gameplay();
+                        }
+                    } else if ui.button("Export Canonical JSON").clicked() {
                         self.export_artifact();
                     }
                     ui.separator();
@@ -320,7 +341,7 @@ impl eframe::App for MapLabApp {
                             Color32::LIGHT_RED
                         },
                         if self.dirty() {
-                            "DIRTY · not compiled"
+                            "DIRTY · unsaved"
                         } else {
                             self.status.lines().next().unwrap_or("Not compiled")
                         },
@@ -328,37 +349,125 @@ impl eframe::App for MapLabApp {
                 });
             });
 
+        let mut delete_foothold = None;
         egui::Panel::left("map_lab_layers")
             .resizable(true)
-            .default_size(210.0)
-            .min_size(160.0)
+            .default_size(if self.editor_mode == EditorMode::Footnote {
+                250.0
+            } else {
+                210.0
+            })
+            .min_size(180.0)
             .show(ui, |ui| {
-                ui.heading("LAYERS");
-                ui.label("Preview-only visibility");
-                ui.separator();
-                if let Some(document) = &self.document {
-                    for (index, layer) in document.presentation.layers.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut self.preview_layers[index], "");
-                            ui.label(&layer.name);
-                        });
-                        ui.small(format!(
-                            "{:?} · {} sprite{}{}",
-                            layer.kind,
-                            layer.sprites.len(),
-                            if layer.sprites.len() == 1 { "" } else { "s" },
-                            if layer.visible {
-                                ""
-                            } else {
-                                " · source hidden"
-                            }
-                        ));
-                        ui.add_space(5.0);
+                if self.editor_mode == EditorMode::Footnote {
+                    ui.heading("FOOTNOTE EDIT");
+                    ui.small("Polyline authoring · gameplay-owned · Tiled stays visual-only");
+                    ui.separator();
+
+                    ui.label("CATEGORY");
+                    ui.horizontal(|ui| {
+                        let one_way = self.footnote_kind == FootholdKind::OneWay;
+                        if ui
+                            .selectable_label(one_way, "● OneWay")
+                            .on_hover_text("Land from above; pass through from below")
+                            .clicked()
+                        {
+                            self.footnote_kind = FootholdKind::OneWay;
+                        }
+                        let solid = self.footnote_kind == FootholdKind::Solid;
+                        if ui
+                            .selectable_label(solid, "● Solid")
+                            .on_hover_text("Blocks from both sides")
+                            .clicked()
+                        {
+                            self.footnote_kind = FootholdKind::Solid;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.colored_label(foothold_color(FootholdKind::OneWay), "━━ OneWay");
+                        ui.colored_label(foothold_color(FootholdKind::Solid), "━━ Solid");
+                    });
+                    ui.separator();
+
+                    ui.label(format!("Current path: {} point(s)", self.draft_points.len()));
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                self.draft_points.len() >= 2,
+                                egui::Button::new("Finish Path"),
+                            )
+                            .clicked()
+                        {
+                            self.finish_foothold_path();
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.draft_points.is_empty(),
+                                egui::Button::new("Cancel"),
+                            )
+                            .clicked()
+                        {
+                            self.cancel_foothold_path();
+                        }
+                    });
+                    ui.small("Click map to add points · Enter finishes · BACK/Esc exits");
+                    ui.separator();
+
+                    ui.heading("PATHS");
+                    if let Some(document) = &self.document {
+                        if document.gameplay.foothold_paths.is_empty() {
+                            ui.label("No authored footholds yet.");
+                        }
+                        for (index, path) in document.gameplay.foothold_paths.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(foothold_color(path.kind), "━━");
+                                ui.label(format!(
+                                    "{} · {:?} · {} pts",
+                                    path.id,
+                                    path.kind,
+                                    path.points.len()
+                                ));
+                                if ui.small_button("×").clicked() {
+                                    delete_foothold = Some(index);
+                                }
+                            });
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Save Gameplay").clicked() {
+                        self.save_gameplay();
                     }
                 } else {
-                    ui.label("No current compiler output.");
+                    ui.heading("LAYERS");
+                    ui.label("Preview-only visibility");
+                    ui.separator();
+                    if let Some(document) = &self.document {
+                        for (index, layer) in document.presentation.layers.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.preview_layers[index], "");
+                                ui.label(&layer.name);
+                            });
+                            ui.small(format!(
+                                "{:?} · {} sprite{}{}",
+                                layer.kind,
+                                layer.sprites.len(),
+                                if layer.sprites.len() == 1 { "" } else { "s" },
+                                if layer.visible {
+                                    ""
+                                } else {
+                                    " · source hidden"
+                                }
+                            ));
+                            ui.add_space(5.0);
+                        }
+                    } else {
+                        ui.label("No current compiler output.");
+                    }
                 }
             });
+        if let Some(index) = delete_foothold {
+            self.delete_foothold_path(index);
+        }
 
         egui::Panel::right("map_lab_info")
             .resizable(true)
@@ -457,9 +566,11 @@ impl eframe::App for MapLabApp {
                     ui.separator();
                     ui.label(format!("Pan {:.0}, {:.0}px", self.pan.x, self.pan.y));
                     ui.separator();
-                    ui.label(
-                        "Drag to pan · wheel to zoom · Shift+R reload · source files are not rewritten",
-                    );
+                    ui.label(if self.editor_mode == EditorMode::Footnote {
+                        "Click to add point · Enter finish · Esc/BACK exit · wheel zoom"
+                    } else {
+                        "Drag to pan · wheel to zoom · Shift+R reload · source files are not rewritten"
+                    });
                 });
             });
 
