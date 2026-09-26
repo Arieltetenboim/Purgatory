@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use purgatory_content::{
-    ContentRegistry, MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationSprite,
+    ContentRegistry, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION,
+    MapEnvironmentAuthoring, MapPresentation, PresentationSprite, SkyGradient,
 };
 use purgatory_simulation::MapId;
 use serde_json::from_slice;
@@ -12,9 +13,13 @@ use crate::renderer::{DrawQuad, SpriteTextureId};
 
 const COMPILED_PRESENTATION: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/map.map1.presentation.json"));
+const COMPILED_ENVIRONMENT: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/map.map1.environment.json"));
 
 pub(crate) struct RuntimeMapPresentation {
     map_authored: String,
+    world_bounds: [f32; 4],
+    sky_gradient: Option<SkyGradient>,
     sprites: Vec<RuntimeSprite>,
 }
 
@@ -42,6 +47,21 @@ impl RuntimeMapPresentation {
                 purgatory_common::MAP1_AUTHORED
             ));
         }
+        let environment: MapEnvironmentAuthoring = from_slice(COMPILED_ENVIRONMENT)
+            .map_err(|error| format!("decode compiled map environment: {error}"))?;
+        if environment.schema_version != MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION {
+            return Err(format!(
+                "compiled map environment schema {} is unsupported; expected {}",
+                environment.schema_version, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION
+            ));
+        }
+        if environment.map_authored != map.map_authored {
+            return Err(format!(
+                "compiled map environment targets {}, expected {}",
+                environment.map_authored, map.map_authored
+            ));
+        }
+        let world_bounds = map.world_bounds;
         let mut loader = ClientAssetLoader::new(assets);
         let mut textures = HashMap::new();
         for asset in &map.assets {
@@ -101,6 +121,8 @@ impl RuntimeMapPresentation {
         }
         Ok(Self {
             map_authored: map.map_authored,
+            world_bounds,
+            sky_gradient: environment.sky_gradient,
             sprites,
         })
     }
@@ -112,7 +134,8 @@ impl RuntimeMapPresentation {
     }
 
     pub(crate) fn quads(&self) -> Vec<DrawQuad> {
-        self.sprites
+        let mut quads = self.sky_quads();
+        quads.extend(self.sprites
             .iter()
             .map(|sprite| {
                 let uvs = sprite.uvs_for();
@@ -132,8 +155,44 @@ impl RuntimeMapPresentation {
                 quad.color[3] = sprite.opacity * sprite.authored.opacity;
                 quad
             })
+            .collect::<Vec<_>>());
+        quads
+    }
+
+    fn sky_quads(&self) -> Vec<DrawQuad> {
+        let Some(gradient) = self.sky_gradient else {
+            return Vec::new();
+        };
+        const BANDS: usize = 16;
+        let [min_x, min_y, max_x, max_y] = self.world_bounds;
+        let width = max_x - min_x;
+        let height = max_y - min_y;
+        if width <= 0.0 || height <= 0.0 {
+            return Vec::new();
+        }
+        (0..BANDS)
+            .map(|index| {
+                let t = (index as f32 + 0.5) / BANDS as f32;
+                let color = lerp_rgba(gradient.bottom_rgba, gradient.top_rgba, t);
+                let band_height = height / BANDS as f32;
+                DrawQuad::rect(
+                    [
+                        (min_x + max_x) * 0.5,
+                        min_y + (index as f32 + 0.5) * band_height,
+                    ],
+                    [width, band_height + 0.002],
+                    color,
+                )
+            })
             .collect()
     }
+}
+
+fn lerp_rgba(bottom: [u8; 4], top: [u8; 4], t: f32) -> [f32; 4] {
+    let t = t.clamp(0.0, 1.0);
+    std::array::from_fn(|index| {
+        (bottom[index] as f32 + (top[index] as f32 - bottom[index] as f32) * t) / 255.0
+    })
 }
 
 impl RuntimeSprite {
