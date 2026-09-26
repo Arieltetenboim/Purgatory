@@ -1640,8 +1640,7 @@ impl ClientApp {
         ReadinessFlags {
             observer_accepted,
             epoch_applied: self.replica.last_sequence().is_some() && observer_accepted,
-            geometry_ready: presentation_matches
-                && self.world.map_instantiated(observer_address),
+            geometry_ready: presentation_matches && self.world.map_instantiated(observer_address),
             self_baseline: self_entity.is_some(),
             local_seeded: pose_ok,
             prediction_synced: presentation_matches,
@@ -4735,12 +4734,8 @@ fn spawn_local_player_from_replica(
                     .address_of(v.id)
                     .is_some_and(|a| a.compatible_with(address))
             })
-        });
-    let (transform, state) = if let Some(floor) = floor {
-        PlayerState::standing_on_at(floor.id, floor.top_surface(), x)
-    } else {
-        PlayerState::airborne_at(auth.position)
-    };
+        })?;
+    let (transform, state) = PlayerState::standing_on_at(floor.id, floor.top_surface(), x);
     let _ = world.spawn_player_at(address, transform, state);
     world.restore_player_sim_state(
         auth.position,
