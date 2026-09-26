@@ -754,16 +754,16 @@ mod tests {
 
     fn fixture_sidecar() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../content/authoring/maps/map.dev.footnote.purgatory-map.json")
+            .join("../../content/authoring/maps/map.map1.purgatory-map.json")
     }
 
     #[test]
     fn real_fixture_compiles_complete_visual_stack() {
         let map = compile_tiled_map(&fixture_sidecar()).expect("fixture compiles");
         assert_eq!(map.schema_version, 1);
-        assert_eq!(map.map_authored, "map.dev.footnote");
-        assert_eq!(map.visual_extent_px, [1944, 1080]);
-        assert_eq!(map.world_bounds, [0.0, 0.0, 19.44, 10.8]);
+        assert_eq!(map.map_authored, "map.map1");
+        assert_eq!(map.visual_extent_px, [4644, 1080]);
+        assert_eq!(map.world_bounds, [0.0, 0.0, 46.44, 10.8]);
         assert_eq!(
             map.layers
                 .iter()
@@ -801,7 +801,7 @@ mod tests {
         assert!((object.position_world[1] - 2.08).abs() < 1e-4);
         assert_eq!(object.size_world, [3.6, 2.4]);
         let background = &map.layers[0].sprites[0];
-        assert!((background.position_world[0] - 9.600833).abs() < 1e-4);
+        assert!((background.position_world[0] - 23.220833).abs() < 1e-4);
         assert!((background.position_world[1] - 5.400833).abs() < 1e-4);
     }
 
@@ -835,8 +835,8 @@ mod tests {
         let path = fixture_sidecar();
         let source = load_map_authoring(&path).unwrap();
         let map = compile_tiled_map_with_ppu(&path, &source, 50.0).unwrap();
-        assert_eq!(map.visual_extent_px, [1944, 1080]);
-        assert_eq!(map.world_bounds, [0.0, 0.0, 38.88, 21.6]);
+        assert_eq!(map.visual_extent_px, [4644, 1080]);
+        assert_eq!(map.world_bounds, [0.0, 0.0, 92.88, 21.6]);
     }
 
     #[test]
