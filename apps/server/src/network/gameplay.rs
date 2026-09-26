@@ -1286,7 +1286,7 @@ impl GameplayOwner {
         let _ = self.spawn_player_binding(
             connection_id,
             spawn_address,
-            spawn_x,
+            [spawn_x, -3.0],
             None,
             0,
             RestoreIntent::footnote_default(),
@@ -1330,7 +1330,7 @@ impl GameplayOwner {
         match self.spawn_player_binding(
             connection_id,
             address,
-            spawn_pos[0],
+            spawn_pos,
             Some(character_id),
             character.persistence_revision,
             character.restore.clone(),
@@ -1350,7 +1350,7 @@ impl GameplayOwner {
         &mut self,
         connection_id: ConnectionId,
         spawn_address: WorldAddress,
-        spawn_x: f32,
+        spawn_position: [f32; 2],
         character_id: Option<CharacterId>,
         persistence_revision: u64,
         restore: RestoreIntent,
@@ -1371,10 +1371,11 @@ impl GameplayOwner {
                     .iter_platforms()
                     .find(|view| self.world.address_of(view.id) == Some(spawn_address))
             });
-        let Some(view) = floor else {
-            return false;
+        let (transform, state) = if let Some(view) = floor {
+            PlayerState::standing_on_at(view.id, view.top_surface(), spawn_position[0])
+        } else {
+            PlayerState::airborne_at(spawn_position)
         };
-        let (transform, state) = PlayerState::standing_on_at(view.id, view.top_surface(), spawn_x);
         let entity = self.world.spawn_player_at(spawn_address, transform, state);
         let _ = self
             .world
