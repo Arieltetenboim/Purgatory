@@ -44,7 +44,7 @@ wgpu = "30.0.1"
 winit = "0.30.13"
 
 [build-dependencies]
-purgatory-content = { path = "../../crates/content" }
+purgatory-content = { path = "../../crates/content", features = ["map-authoring"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
