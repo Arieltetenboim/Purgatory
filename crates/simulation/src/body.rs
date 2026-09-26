@@ -91,6 +91,27 @@ impl PlayerState {
     }
 
     #[must_use]
+    pub fn airborne_at(position: [f32; 2]) -> (Transform, Self) {
+        (
+            Transform::from_position(position),
+            Self {
+                velocity: [0.0, 0.0],
+                grounded: false,
+                grounded_on: None,
+                ignored_platform: None,
+                last_contact: ContactEvent::None,
+                half_extents: PLAYER_HALF_EXTENTS,
+                facing_sign: 1,
+                movement_speed_override: None,
+                jump_speed_override: None,
+                coyote_ticks: 0,
+                jump_buffer_ticks: 0,
+                dash: None,
+            },
+        )
+    }
+
+    #[must_use]
     pub fn aabb(self, transform: Transform) -> Aabb {
         CollisionBody::aabb(&self, transform)
     }
