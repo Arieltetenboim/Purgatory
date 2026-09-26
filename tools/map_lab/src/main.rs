@@ -453,37 +453,36 @@ impl eframe::App for MapLabApp {
 
                     ui.heading("PATHS");
                     if let Some((path_index, point_index)) = self.selected_point {
-                        if let Some(document) = &self.document {
-                            if let Some(point) = document
+                        if let Some(document) = &self.document
+                            && let Some(point) = document
                                 .gameplay
                                 .foothold_paths
                                 .get(path_index)
                                 .and_then(|path| path.points.get(point_index))
                                 .copied()
-                            {
-                                let mut x = point[0];
-                                let mut y = point[1];
-                                ui.group(|ui| {
-                                    ui.label(format!(
-                                        "Selected point {}:{}",
-                                        path_index + 1,
-                                        point_index + 1
-                                    ));
-                                    ui.horizontal(|ui| {
-                                        ui.label("X");
-                                        let x_changed = ui
-                                            .add(egui::DragValue::new(&mut x).speed(0.05))
-                                            .changed();
-                                        ui.label("Y");
-                                        let y_changed = ui
-                                            .add(egui::DragValue::new(&mut y).speed(0.05))
-                                            .changed();
-                                        if x_changed || y_changed {
-                                            self.edit_selected_point(x, y);
-                                        }
-                                    });
+                        {
+                            let mut x = point[0];
+                            let mut y = point[1];
+                            ui.group(|ui| {
+                                ui.label(format!(
+                                    "Selected point {}:{}",
+                                    path_index + 1,
+                                    point_index + 1
+                                ));
+                                ui.horizontal(|ui| {
+                                    ui.label("X");
+                                    let x_changed = ui
+                                        .add(egui::DragValue::new(&mut x).speed(0.05))
+                                        .changed();
+                                    ui.label("Y");
+                                    let y_changed = ui
+                                        .add(egui::DragValue::new(&mut y).speed(0.05))
+                                        .changed();
+                                    if x_changed || y_changed {
+                                        self.edit_selected_point(x, y);
+                                    }
                                 });
-                            }
+                            });
                         }
                         ui.add_space(6.0);
                     }
