@@ -389,7 +389,10 @@ impl eframe::App for MapLabApp {
                     });
                     ui.separator();
 
-                    ui.label(format!("Current path: {} point(s)", self.draft_points.len()));
+                    ui.label(format!(
+                        "Current path: {} point(s)",
+                        self.draft_points.len()
+                    ));
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(
@@ -401,10 +404,7 @@ impl eframe::App for MapLabApp {
                             self.finish_foothold_path();
                         }
                         if ui
-                            .add_enabled(
-                                !self.draft_points.is_empty(),
-                                egui::Button::new("Cancel"),
-                            )
+                            .add_enabled(!self.draft_points.is_empty(), egui::Button::new("Cancel"))
                             .clicked()
                         {
                             self.cancel_foothold_path();
