@@ -48,7 +48,7 @@ struct MapLabApp {
 impl MapLabApp {
     fn new(ctx: &egui::Context) -> Self {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../content/authoring/maps/map.dev.footnote.purgatory-map.json");
+            .join("../../content/authoring/maps/map.map1.purgatory-map.json");
         let mut app = Self {
             path_text: path.display().to_string(),
             document: None,
