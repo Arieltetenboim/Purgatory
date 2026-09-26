@@ -283,6 +283,39 @@ fn load_map_gameplay_tree(
                         "gameplay-authored spawns require a 'default' point",
                     ));
                 }
+                if let Some(default_spawn) =
+                    gameplay.spawn_points.iter().find(|spawn| spawn.id == "default")
+                {
+                    let target_surface =
+                        default_spawn.position[1] - purgatory_simulation::PLAYER_HALF_EXTENTS[1];
+                    let supported = gameplay.foothold_paths.iter().any(|foothold| {
+                        foothold.points.windows(2).any(|pair| {
+                            let start = pair[0];
+                            let end = pair[1];
+                            let dx = end[0] - start[0];
+                            if dx.abs() <= f32::EPSILON {
+                                return false;
+                            }
+                            let min_x = start[0].min(end[0]);
+                            let max_x = start[0].max(end[0]);
+                            let x = default_spawn.position[0];
+                            if x < min_x || x > max_x {
+                                return false;
+                            }
+                            let t = (x - start[0]) / dx;
+                            let surface_y = start[1] + (end[1] - start[1]) * t;
+                            (surface_y - target_surface).abs() <= 0.05
+                        })
+                    });
+                    if !supported {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "spawn_points.default",
+                            "default spawn must align to an authored FOOTNOTE surface",
+                        ));
+                    }
+                }
                 registry.apply_map_gameplay(
                     &gameplay.map_authored,
                     &gameplay.name,
