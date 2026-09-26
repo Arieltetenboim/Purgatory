@@ -132,6 +132,22 @@ pub fn compile_tiled_map_with_ppu(
             "unsupported; W1.3A supports finite maps only",
         ));
     }
+    if map.skew_x != 0 || map.skew_y != 0 {
+        return Err(issue(
+            &tmx_path,
+            "-",
+            "skew",
+            "oblique map skew is unsupported in W1.3A",
+        ));
+    }
+    if map.background_color.is_some() {
+        return Err(issue(
+            &tmx_path,
+            "-",
+            "background_color",
+            "TMX map background color is unsupported; author a BACKGROUND image layer instead",
+        ));
+    }
     if map.width == 0 || map.height == 0 || map.tile_width == 0 || map.tile_height == 0 {
         return Err(issue(
             &tmx_path,
@@ -221,6 +237,14 @@ impl Compiler<'_> {
                         "image layer has no image",
                     )
                 })?;
+                if image.transparent_colour.is_some() {
+                    return Err(issue(
+                        self.tmx_path,
+                        &layer.name,
+                        "image.trans",
+                        "color-key transparency is unsupported; use PNG alpha",
+                    ));
+                }
                 let (asset_id, size) = self.register_image(&image.source, image.width, image.height)?;
                 vec![self.sprite(
                     asset_id,
@@ -547,12 +571,28 @@ fn validate_tilesets(map: &tiled::Map, path: &Path) -> Result<(), ContentError> 
                 "embedded tilesets are unsupported; use an external TSX",
             ));
         }
-        if tileset.image.is_none() {
-            return Err(issue(
+        let image = tileset.image.as_ref().ok_or_else(|| {
+            issue(
                 path,
                 &tileset.name,
                 "tileset.image",
                 "collection-of-images tilesets are unsupported",
+            )
+        })?;
+        if image.width <= 0 || image.height <= 0 {
+            return Err(issue(
+                path,
+                &tileset.name,
+                "tileset.image.dimensions",
+                "atlas image dimensions must be positive",
+            ));
+        }
+        if image.transparent_colour.is_some() {
+            return Err(issue(
+                path,
+                &tileset.name,
+                "tileset.image.trans",
+                "color-key transparency is unsupported; use PNG alpha",
             ));
         }
         if tileset.tile_width == 0
@@ -674,14 +714,9 @@ fn tile_source_rect(
     local_id: u32,
     tileset: &Tileset,
 ) -> Result<[u32; 4], ContentError> {
-    if local_id >= tileset.tilecount {
-        return Err(issue(
-            path,
-            layer,
-            "tile.id",
-            format!("local tile id {local_id} is outside tileset"),
-        ));
-    }
+    // For atlas tilesets Tiled can legally carry explicitly-authored tile IDs
+    // beyond tilecount. Presence is already validated through rs-tiled's
+    // get_tile(); the atlas rectangle is the actual renderability bound here.
     let col = local_id % tileset.columns;
     let row = local_id / tileset.columns;
     let x = tileset.margin + col * (tileset.tile_width + tileset.spacing);
@@ -806,7 +841,7 @@ mod tests {
                 .filter(|layer| layer.kind == PresentationLayerKind::Tile)
                 .map(|layer| layer.sprites.len())
                 .sum::<usize>(),
-            11
+            12
         );
         assert_eq!(map.layers[5].sprites.len(), 1);
         assert!(map.layers[6].sprites.is_empty());
