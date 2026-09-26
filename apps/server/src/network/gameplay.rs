@@ -1358,20 +1358,19 @@ impl GameplayOwner {
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
     ) -> bool {
-        let floor = self.world.iter_platforms().find(|view| {
-            self.world.address_of(view.id) == Some(spawn_address)
-                && view
+        let floor = self
+            .world
+            .iter_platforms()
+            .filter(|view| self.world.address_of(view.id) == Some(spawn_address))
+            .filter_map(|view| {
+                let surface_y = view
                     .platform
-                    .surface_y_at(view.transform, spawn_position[0])
-                    .is_some()
-        });
-        let Some(view) = floor else {
-            return false;
-        };
-        let Some(surface_y) = view
-            .platform
-            .surface_y_at(view.transform, spawn_position[0])
-        else {
+                    .surface_y_at(view.transform, spawn_position[0])?;
+                let center_y = surface_y + PLAYER_HALF_EXTENTS[1];
+                Some(((center_y - spawn_position[1]).abs(), view, surface_y))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let Some((_, view, surface_y)) = floor else {
             return false;
         };
         let (transform, state) = PlayerState::standing_on_at(view.id, surface_y, spawn_position[0]);
