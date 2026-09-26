@@ -313,6 +313,37 @@ impl ContentRegistry {
         Ok(())
     }
 
+    pub(crate) fn apply_map_gameplay(
+        &mut self,
+        authored: &str,
+        name: &str,
+        foothold_paths: Vec<crate::FootholdPath>,
+        spawn_points: Vec<crate::GameplaySpawnPoint>,
+    ) -> Result<(), ContentError> {
+        let Some(map) = self.maps.get_mut(authored) else {
+            return Err(ContentError::one(ValidationIssue::new(
+                authored,
+                authored,
+                "map_authored",
+                "gameplay authoring references an unknown map",
+            )));
+        };
+        if !name.trim().is_empty() {
+            map.debug_name = name.trim().to_owned();
+        }
+        map.foothold_paths = foothold_paths;
+        if !spawn_points.is_empty() {
+            map.spawn_points = spawn_points
+                .into_iter()
+                .map(|spawn| crate::SpawnPoint {
+                    id: spawn.id,
+                    position: spawn.position,
+                })
+                .collect();
+        }
+        Ok(())
+    }
+
     pub(crate) fn insert_equipment(
         &mut self,
         def: EquipmentDefinition,
@@ -871,6 +902,7 @@ mod tests {
                 half_extents: [1.0, 0.2],
                 kind: PlatformKind::Solid,
             }],
+            foothold_paths: Vec::new(),
             restore: RestorePolicy::SafePoint {
                 point_id: "default".into(),
             },

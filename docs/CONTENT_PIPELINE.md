@@ -23,6 +23,20 @@ Human-editable JSON lives under `/content`:
 - `shared/equipment_presentation/` — client presentation facet (schema v2) for the same numeric Item `ContentId` (`attachments[]`)
 - `shared/abilities/` — gameplay ability JSON (`AbilityDefinition`; schema_version 1). Loaded in Shared and Full modes.
 - `shared/animations/dev/` — A6/A7 v1 `.anim` presentation clips (token text, not JSON). Optional `depth` keys (A7.1 `depth_angle`; omitted = 0). Authored in Animation Lab. Runtime still compiles them in via `include_str!`.
+- `authoring/maps/` — PURGATORY map-authoring sources. The map sidecar owns
+  identity, the relative Tiled TMX visual source, and explicit per-map PPU.
+  Ordinary production maps use the locked **100 px/wu** visual-scale standard; changing
+  camera zoom must not be modeled by changing PPU. `purgatory-content` compiles TMX/TSX through one shared compiler into
+  versioned canonical `MapPresentation`; Map Lab previews that same output.
+  TMX remains the **static visual-composition source** and is not runtime input.
+  Map Lab owns gameplay/world authoring that is not visual composition: FOOTNOTE paths,
+  spawn points, NPC placement and Mob placement. Map Lab also owns map-level dynamic
+  environment presentation: sky gradients, semantic parallax/depth layers, celestial
+  sprites, and moving/wrapping cloud layers. Environment depth is authored as presentation
+  depth/parallax semantics rather than fake physical distance. Tiled continues to own the
+  underlying static artwork and object composition; Map Lab owns how environment layers
+  behave relative to the camera. Dynamic/moving platform gameplay remains deferred, but
+  authored FOOTNOTE geometry must not preclude future entity-owned moving foothold groups.
 - `authoring/npcs/` — canonical NPC Lab JSON. Recursively validated in Shared
   and Full modes; projected into client-safe dialogue presentation in both and
   authoritative dialogue definitions in Full mode.

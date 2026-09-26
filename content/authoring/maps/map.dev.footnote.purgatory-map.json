@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "map.dev.footnote",
+  "visual_source": "../../../Graphic/assets/maps/map1.tmx",
+  "pixels_per_world_unit": 100.0
+}

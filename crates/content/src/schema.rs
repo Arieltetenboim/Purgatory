@@ -1,6 +1,7 @@
 //! Typed content definitions. Gameplay never sees raw JSON.
 
 use crate::domain::ContentDomain;
+use crate::map_gameplay_authoring::FootholdPath;
 use purgatory_common::ContentId;
 use purgatory_simulation::{InteractableKind, WorldBounds};
 
@@ -45,6 +46,7 @@ pub struct MapDefinition {
     pub bounds: WorldBounds,
     pub spawn_points: Vec<SpawnPoint>,
     pub platforms: Vec<MapPlatform>,
+    pub foothold_paths: Vec<FootholdPath>,
     pub restore: RestorePolicy,
 }
 

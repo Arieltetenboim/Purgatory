@@ -30,9 +30,9 @@ use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionEnd, ActionGateContext,
     ActionKind, CONTACT_EPSILON, Cadence, CommandClass, CommandDenial, EntityId, EntityKind,
     EquipmentSlot, FOOTNOTE_SPAWN_X, Health, InputGateReason, InteractionCloseReason,
-    InteractionReject, ItemRuntimeError, NpcApproachBounds, NpcRuntimeConfig, P0, P0_POSITION,
-    PLAYER_HALF_EXTENTS, PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind,
-    RuntimeSpawnRequest, ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
+    InteractionReject, ItemRuntimeError, NpcApproachBounds, NpcRuntimeConfig, PLAYER_HALF_EXTENTS,
+    PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest,
+    ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
     validate_command_preamble,
 };
 
@@ -477,7 +477,6 @@ pub struct GameplayOwner {
     trace_relevance: bool,
     trace_snapshot: bool,
     runtime_probe: RuntimeProbe,
-    proof_drop_spawned: bool,
     /// Bounded bookkeeping for transient NPCs created by the DEV overlay.
     /// `World` owns the entities; this list only enforces the tool cap.
     dev_spawned_npcs: Vec<EntityId>,
@@ -1123,7 +1122,6 @@ impl GameplayOwner {
             trace_relevance: false,
             trace_snapshot: false,
             runtime_probe: RuntimeProbe::from_env(),
-            proof_drop_spawned: false,
             dev_spawned_npcs: Vec::new(),
             dev_spawned_monsters: Vec::new(),
             load_pressure: super::load_pressure::LoadPressure::from_process_env(),
@@ -1218,8 +1216,11 @@ impl GameplayOwner {
         }) else {
             return false;
         };
-        let (transform, state) =
-            PlayerState::standing_on_at(view.id, view.top_surface(), view.transform.position[0]);
+        let x = view.transform.position[0];
+        let Some(surface_y) = view.platform.surface_y_at(view.transform, x) else {
+            return false;
+        };
+        let (transform, state) = PlayerState::standing_on_at(view.id, surface_y, x);
         let previous = {
             let Some((t, player)) = self.world.player_parts_mut_for(entity) else {
                 return false;
@@ -1286,7 +1287,7 @@ impl GameplayOwner {
         let _ = self.spawn_player_binding(
             connection_id,
             spawn_address,
-            spawn_x,
+            [spawn_x, -3.0],
             None,
             0,
             RestoreIntent::footnote_default(),
@@ -1330,7 +1331,7 @@ impl GameplayOwner {
         match self.spawn_player_binding(
             connection_id,
             address,
-            spawn_pos[0],
+            spawn_pos,
             Some(character_id),
             character.persistence_revision,
             character.restore.clone(),
@@ -1350,7 +1351,7 @@ impl GameplayOwner {
         &mut self,
         connection_id: ConnectionId,
         spawn_address: WorldAddress,
-        spawn_x: f32,
+        spawn_position: [f32; 2],
         character_id: Option<CharacterId>,
         persistence_revision: u64,
         restore: RestoreIntent,
@@ -1360,21 +1361,19 @@ impl GameplayOwner {
         let floor = self
             .world
             .iter_platforms()
-            .find(|view| {
-                self.world.address_of(view.id) == Some(spawn_address)
-                    && view.platform.half_extents == P0.half_extents
-                    && (view.transform.position[0] - P0_POSITION[0]).abs() < 0.01
-                    && (view.transform.position[1] - P0_POSITION[1]).abs() < 0.01
+            .filter(|view| self.world.address_of(view.id) == Some(spawn_address))
+            .filter_map(|view| {
+                let surface_y = view
+                    .platform
+                    .surface_y_at(view.transform, spawn_position[0])?;
+                let center_y = surface_y + PLAYER_HALF_EXTENTS[1];
+                Some(((center_y - spawn_position[1]).abs(), view, surface_y))
             })
-            .or_else(|| {
-                self.world
-                    .iter_platforms()
-                    .find(|view| self.world.address_of(view.id) == Some(spawn_address))
-            });
-        let Some(view) = floor else {
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let Some((_, view, surface_y)) = floor else {
             return false;
         };
-        let (transform, state) = PlayerState::standing_on_at(view.id, view.top_surface(), spawn_x);
+        let (transform, state) = PlayerState::standing_on_at(view.id, surface_y, spawn_position[0]);
         let entity = self.world.spawn_player_at(spawn_address, transform, state);
         let _ = self
             .world
@@ -1927,7 +1926,6 @@ impl GameplayOwner {
             }
             self.world.tick_player(entity, dt, player_input);
         }
-        self.spawn_phase_11e_proof_drop();
         sample.simulation_movement += move_t0.elapsed();
 
         let npc_t0 = std::time::Instant::now();
@@ -1976,54 +1974,6 @@ impl GameplayOwner {
         sample.persistence_enqueue += Duration::from_micros(self.persist_enqueue_us);
         sample.total = tick_t0.elapsed();
         sample
-    }
-
-    fn spawn_phase_11e_proof_drop(&mut self) {
-        if self.proof_drop_spawned {
-            return;
-        }
-        let Some((&connection_id, binding)) = self.bindings.iter().next() else {
-            return;
-        };
-        let entity = binding.entity;
-        let Some(address) = self.world.address_of(entity) else {
-            return;
-        };
-        let Some(position) = self.world.transform_of(entity).map(|t| t.position) else {
-            return;
-        };
-        const PROOF_DROPS: [(&str, u32, f32); 5] = [
-            ("equipment.debug.practice_sword", 1, -2.5),
-            ("item.debug.small_potion", 3, -1.25),
-            ("item.debug.iron_scrap", 7, 0.0),
-            ("item.debug.repair_hammer", 1, 1.25),
-            ("item.package", 1, 2.5),
-        ];
-        for (authored_id, quantity, x_offset) in PROOF_DROPS {
-            let (definition, stack_limit) = {
-                let item = self
-                    .registry
-                    .item(authored_id)
-                    .unwrap_or_else(|| panic!("missing Phase 11E proof item {authored_id}"));
-                (item.content_id, item.stack_limit)
-            };
-            self.world
-                .spawn_world_drop_item(
-                    address,
-                    [x_offset, position[1] + 0.75],
-                    definition,
-                    quantity,
-                    stack_limit,
-                )
-                .unwrap_or_else(|error| {
-                    panic!("Phase 11E proof item drop {authored_id}: {error:?}")
-                });
-        }
-        self.proof_drop_spawned = true;
-        println!(
-            "11E proof Item drops spawned for connection={connection_id} count={}",
-            PROOF_DROPS.len()
-        );
     }
 
     fn maybe_arm_runtime_probe(&mut self, tick: SimulationTick) {
@@ -2201,11 +2151,11 @@ impl GameplayOwner {
             self.world
                 .address_of(v.id)
                 .is_some_and(|a| a.compatible_with(address))
-                && x >= v.aabb().min_x()
-                && x <= v.aabb().max_x()
+                && v.platform.surface_y_at(v.transform, x).is_some()
         })?;
+        let surface_y = view.platform.surface_y_at(view.transform, x)?;
         Some(
-            PlayerState::standing_on_at(view.id, view.top_surface(), x)
+            PlayerState::standing_on_at(view.id, surface_y, x)
                 .0
                 .position,
         )

@@ -54,11 +54,24 @@ impl Approach {
     }
 }
 
-/// Platform collider. Position lives on the entity [`Transform`].
+/// Collider geometry. Legacy rectangles remain for DEV fixtures; authored
+/// Map Lab FOOTNOTE uses true line segments in local entity coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlatformShape {
+    Aabb,
+    Segment { start: [f32; 2], end: [f32; 2] },
+}
+
+/// Platform / FOOTNOTE collider. Position lives on the entity [`Transform`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Platform {
+    /// Broad-phase bounds around this collider. For segment geometry this is
+    /// derived from the segment and is not the collision surface itself.
     pub half_extents: [f32; 2],
     pub kind: PlatformKind,
+    pub shape: PlatformShape,
+    /// Whether Down+Jump may temporarily ignore this OneWay support.
+    pub drop_through: bool,
     /// Stage-local support identity. `0` until [`crate::World::spawn_platform`] stamps it.
     pub support_id: u16,
 }
@@ -69,6 +82,8 @@ impl Platform {
         Self {
             half_extents,
             kind: PlatformKind::Solid,
+            shape: PlatformShape::Aabb,
+            drop_through: false,
             support_id: 0,
         }
     }
@@ -78,7 +93,70 @@ impl Platform {
         Self {
             half_extents,
             kind: PlatformKind::OneWay,
+            shape: PlatformShape::Aabb,
+            drop_through: true,
             support_id: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn segment(start: [f32; 2], end: [f32; 2], kind: PlatformKind, drop_through: bool) -> Self {
+        let half_extents = [
+            ((end[0] - start[0]).abs() * 0.5).max(0.01),
+            ((end[1] - start[1]).abs() * 0.5).max(0.01),
+        ];
+        Self {
+            half_extents,
+            kind,
+            shape: PlatformShape::Segment { start, end },
+            drop_through: kind == PlatformKind::OneWay && drop_through,
+            support_id: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn is_segment(self) -> bool {
+        matches!(self.shape, PlatformShape::Segment { .. })
+    }
+
+    #[must_use]
+    pub fn segment_world(self, transform: Transform) -> Option<([f32; 2], [f32; 2])> {
+        match self.shape {
+            PlatformShape::Aabb => None,
+            PlatformShape::Segment { start, end } => Some((
+                [
+                    transform.position[0] + start[0],
+                    transform.position[1] + start[1],
+                ],
+                [
+                    transform.position[0] + end[0],
+                    transform.position[1] + end[1],
+                ],
+            )),
+        }
+    }
+
+    /// Collision/support height at world X. Vertical segments have no walkable
+    /// Y-at-X surface and return None.
+    #[must_use]
+    pub fn surface_y_at(self, transform: Transform, x: f32) -> Option<f32> {
+        match self.shape {
+            PlatformShape::Aabb => (x >= self.min_x(transform) && x <= self.max_x(transform))
+                .then_some(self.top_surface(transform)),
+            PlatformShape::Segment { .. } => {
+                let (start, end) = self.segment_world(transform)?;
+                let dx = end[0] - start[0];
+                if dx.abs() <= f32::EPSILON {
+                    return None;
+                }
+                let min_x = start[0].min(end[0]);
+                let max_x = start[0].max(end[0]);
+                if x < min_x || x > max_x {
+                    return None;
+                }
+                let t = (x - start[0]) / dx;
+                Some(start[1] + (end[1] - start[1]) * t)
+            }
         }
     }
 
@@ -89,7 +167,10 @@ impl Platform {
 
     #[must_use]
     pub fn top_surface(self, transform: Transform) -> f32 {
-        transform.position[1] + self.half_extents[1]
+        match self.segment_world(transform) {
+            Some((start, end)) => start[1].max(end[1]),
+            None => transform.position[1] + self.half_extents[1],
+        }
     }
 
     #[must_use]
@@ -187,6 +268,22 @@ mod tests {
     fn oneway_blocks_approach_is_false_without_query() {
         assert!(!ONEWAY_A.blocks_approach(Approach::Down));
         assert!(!ONEWAY_A.blocks_approach(Approach::Left));
+    }
+
+    #[test]
+    fn authored_segment_interpolates_surface_height() {
+        let platform = Platform::segment([-2.0, -1.0], [2.0, 1.0], PlatformKind::OneWay, true);
+        let transform = Transform::from_position([10.0, 5.0]);
+        assert_eq!(platform.surface_y_at(transform, 10.0), Some(5.0));
+        assert_eq!(platform.surface_y_at(transform, 8.0), Some(4.0));
+        assert_eq!(platform.surface_y_at(transform, 12.0), Some(6.0));
+        assert_eq!(platform.surface_y_at(transform, 12.1), None);
+    }
+
+    #[test]
+    fn solid_segment_never_becomes_drop_through() {
+        let platform = Platform::segment([-1.0, 0.0], [1.0, 0.0], PlatformKind::Solid, true);
+        assert!(!platform.drop_through);
     }
 
     #[test]

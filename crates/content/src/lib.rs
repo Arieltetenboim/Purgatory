@@ -8,6 +8,10 @@ mod error;
 mod instantiate;
 mod item;
 mod loader;
+#[cfg(feature = "map-authoring")]
+mod map_compiler;
+mod map_gameplay_authoring;
+mod map_presentation;
 mod monster;
 mod registry;
 mod restore;
@@ -37,6 +41,19 @@ pub use item::{
     ItemPresentation, is_stackable, validate_item_definition, validate_item_presentation,
 };
 pub use loader::{LoadMode, default_content_root, load_registry};
+#[cfg(feature = "map-authoring")]
+pub use map_compiler::{
+    MAP_AUTHORING_SCHEMA_VERSION, MapAuthoringSource, compile_tiled_map,
+    compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
+};
+pub use map_gameplay_authoring::{
+    FootholdKind, FootholdPath, GameplaySpawnPoint, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
+    MapGameplayAuthoring,
+};
+pub use map_presentation::{
+    MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationAsset, PresentationLayer,
+    PresentationLayerKind, PresentationSprite, TileTransform,
+};
 pub use monster::{
     MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
 };

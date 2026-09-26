@@ -19,6 +19,9 @@ use crate::item::{
     ITEM_CONTENT_SCHEMA_VERSION, ITEM_PRESENTATION_SCHEMA_VERSION, ItemCategory, ItemDefinition,
     ItemPresentation, validate_item_definition, validate_item_presentation,
 };
+use crate::map_gameplay_authoring::{
+    FootholdKind, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION, MapGameplayAuthoring,
+};
 use crate::monster::{
     MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterCollisionBounds, MonsterDefinition,
     MonsterPresentationDefinition, validate_monster_definition, validate_monster_presentation,
@@ -65,6 +68,11 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         &root.join("shared").join("maps"),
         ContentDomain::Shared,
         Kind::Map,
+    );
+    load_map_gameplay_tree(
+        &mut registry,
+        &mut issues,
+        &root.join("authoring").join("maps"),
     );
     load_dir(
         &mut registry,
@@ -134,6 +142,158 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
     }
     registry.finish()?;
     Ok(registry)
+}
+
+fn load_map_gameplay_tree(
+    registry: &mut ContentRegistry,
+    issues: &mut Vec<ValidationIssue>,
+    root: &Path,
+) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            issues.push(ValidationIssue::new(
+                root.display().to_string(),
+                "-",
+                "io",
+                error.to_string(),
+            ));
+            return;
+        }
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.ends_with(".gameplay.json"))
+        })
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let result = fs::read_to_string(&path)
+            .map_err(|error| ContentError::from_io(&path, &error))
+            .and_then(|text| parse::<MapGameplayAuthoring>(&path, &text))
+            .and_then(|gameplay| {
+                if gameplay.schema_version != MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION {
+                    return Err(ContentError::from_path(
+                        path.clone(),
+                        &gameplay.map_authored,
+                        "schema_version",
+                        format!(
+                            "unsupported gameplay schema version {} (want {})",
+                            gameplay.schema_version, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION
+                        ),
+                    ));
+                }
+                let Some(map) = registry.map(&gameplay.map_authored) else {
+                    return Err(ContentError::from_path(
+                        path.clone(),
+                        &gameplay.map_authored,
+                        "map_authored",
+                        "unknown map",
+                    ));
+                };
+                let bounds = map.bounds;
+                let mut ids = std::collections::HashSet::new();
+                for foothold in &gameplay.foothold_paths {
+                    if foothold.id.trim().is_empty() || !ids.insert(foothold.id.as_str()) {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "foothold_paths.id",
+                            "foothold path ids must be non-empty and unique",
+                        ));
+                    }
+                    if foothold.points.len() < 2 {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "foothold_paths.points",
+                            format!("{} needs at least two points", foothold.id),
+                        ));
+                    }
+                    if foothold.kind == FootholdKind::Solid && foothold.drop_through {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "foothold_paths.drop_through",
+                            format!("{}: Solid footholds cannot be drop-through", foothold.id),
+                        ));
+                    }
+                    for point in &foothold.points {
+                        if !point[0].is_finite()
+                            || !point[1].is_finite()
+                            || point[0] < bounds.min_x
+                            || point[0] > bounds.max_x
+                            || point[1] < bounds.min_y
+                            || point[1] > bounds.max_y
+                        {
+                            return Err(ContentError::from_path(
+                                path.clone(),
+                                &gameplay.map_authored,
+                                "foothold_paths.points",
+                                format!("{} contains a point outside map bounds", foothold.id),
+                            ));
+                        }
+                    }
+                    if foothold.points.windows(2).any(|pair| pair[0] == pair[1]) {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "foothold_paths.points",
+                            format!("{} contains a zero-length segment", foothold.id),
+                        ));
+                    }
+                }
+                let mut spawn_ids = std::collections::HashSet::new();
+                for spawn in &gameplay.spawn_points {
+                    if spawn.id.trim().is_empty() || !spawn_ids.insert(spawn.id.as_str()) {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "spawn_points.id",
+                            "spawn point ids must be non-empty and unique",
+                        ));
+                    }
+                    if !spawn.position[0].is_finite()
+                        || !spawn.position[1].is_finite()
+                        || spawn.position[0] < bounds.min_x
+                        || spawn.position[0] > bounds.max_x
+                        || spawn.position[1] < bounds.min_y
+                        || spawn.position[1] > bounds.max_y
+                    {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "spawn_points.position",
+                            format!("{} is outside map bounds", spawn.id),
+                        ));
+                    }
+                }
+                if !gameplay.spawn_points.is_empty()
+                    && !gameplay.spawn_points.iter().any(|spawn| spawn.id == "default")
+                {
+                    return Err(ContentError::from_path(
+                        path.clone(),
+                        &gameplay.map_authored,
+                        "spawn_points",
+                        "gameplay-authored spawns require a 'default' point",
+                    ));
+                }
+                registry.apply_map_gameplay(
+                    &gameplay.map_authored,
+                    &gameplay.name,
+                    gameplay.foothold_paths,
+                    gameplay.spawn_points,
+                )
+            });
+        if let Err(error) = result {
+            issues.extend(error.issues);
+        }
+    }
 }
 
 fn load_npc_authoring_tree(
@@ -1189,6 +1349,7 @@ impl RawMap {
             bounds,
             spawn_points,
             platforms,
+            foothold_paths: Vec::new(),
             restore,
         })
     }
@@ -1707,8 +1868,14 @@ mod tests {
             registry.map_id(cid_b),
             Some(purgatory_common::MapId::from_raw(2))
         );
+        let cid_map1 =
+            purgatory_common::ContentId::from_authored(purgatory_common::MAP1_AUTHORED).unwrap();
+        assert_eq!(
+            registry.map_id(cid_map1),
+            Some(purgatory_common::MapId::from_raw(3))
+        );
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
-        assert_eq!(shared.map_count(), 2);
+        assert_eq!(shared.map_count(), 3);
         assert_eq!(shared.entity_count(), 0);
         assert!(shared.item_count() >= 11);
         assert!(shared.item("item.package").is_some());

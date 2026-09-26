@@ -20,6 +20,7 @@ pub const NPC_WELCOME_WORKSHOP_CRAFTSPERSON: ContentId = ContentId::from_raw(20_
 
 pub const MAP_FOOTNOTE: ContentId = ContentId::from_raw(50_001);
 pub const MAP_SECOND: ContentId = ContentId::from_raw(50_002);
+pub const MAP1: ContentId = ContentId::from_raw(50_003);
 
 pub const ITEM_CLOTH_CAP: ContentId = ContentId::from_raw(30_001);
 pub const ITEM_CLOTH_PANTS: ContentId = ContentId::from_raw(30_002);
@@ -60,6 +61,7 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
         "npc.welcome.workshop_craftsperson" => NPC_WELCOME_WORKSHOP_CRAFTSPERSON,
         "map.dev.footnote" => MAP_FOOTNOTE,
         "map.dev.second" => MAP_SECOND,
+        "map.map1" => MAP1,
         "equipment.debug.cloth_cap" => ITEM_CLOTH_CAP,
         "equipment.debug.cloth_pants" => ITEM_CLOTH_PANTS,
         "equipment.debug.iron_boots" => ITEM_IRON_BOOTS,
@@ -98,6 +100,7 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
         NPC_WELCOME_WORKSHOP_CRAFTSPERSON => "npc.welcome.workshop_craftsperson",
         MAP_FOOTNOTE => "map.dev.footnote",
         MAP_SECOND => "map.dev.second",
+        MAP1 => "map.map1",
         ITEM_CLOTH_CAP => "equipment.debug.cloth_cap",
         ITEM_CLOTH_PANTS => "equipment.debug.cloth_pants",
         ITEM_IRON_BOOTS => "equipment.debug.iron_boots",
@@ -160,7 +163,7 @@ mod tests {
         ] {
             assert_eq!(id.kind(), Some(ContentKind::Npc));
         }
-        for id in [MAP_FOOTNOTE, MAP_SECOND] {
+        for id in [MAP_FOOTNOTE, MAP_SECOND, MAP1] {
             assert_eq!(id.kind(), Some(ContentKind::Map));
         }
         for id in [
@@ -185,6 +188,7 @@ mod tests {
             "npc.welcome.shopkeeper",
             "npc.welcome.workshop_craftsperson",
             "map.dev.footnote",
+            "map.map1",
             "equipment.debug.practice_sword",
             "item.debug.small_potion",
             "item.package",
