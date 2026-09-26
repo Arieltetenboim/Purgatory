@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
-use purgatory_content::{MapPresentation, PresentationSprite, TileTransform};
+use purgatory_content::{PresentationSprite, TileTransform};
 use purgatory_map_lab::MapLabDocument;
 
 const CAMERA_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
@@ -248,6 +248,7 @@ impl eframe::App for MapLabApp {
             .show(ui, |ui| {
                 ui.heading("MAP INFO");
                 ui.separator();
+                let mut apply_ppu_requested = false;
                 if let Some(document) = &self.document {
                     let map = &document.presentation;
                     ui.label(format!("Map: {}", map.map_authored));
@@ -259,9 +260,7 @@ impl eframe::App for MapLabApp {
                         ui.label("PPU");
                         ui.add(egui::TextEdit::singleline(&mut self.ppu_text).desired_width(90.0));
                     });
-                    if ui.button("Apply PPU to Preview").clicked() {
-                        self.apply_ppu(ui.ctx());
-                    }
+                    apply_ppu_requested = ui.button("Apply PPU to Preview").clicked();
                     ui.small(
                         "Calibration is in memory. Edit the sidecar deliberately to persist it.",
                     );
@@ -278,6 +277,9 @@ impl eframe::App for MapLabApp {
                         PLAYER_REFERENCE_SIZE_WU[0], PLAYER_REFERENCE_SIZE_WU[1]
                     ));
                     ui.small("Player reference = current 1.15× presentation-scaled gameplay body.");
+                }
+                if apply_ppu_requested {
+                    self.apply_ppu(ui.ctx());
                 }
                 ui.separator();
                 ui.heading("COMPILER / VALIDATION");
