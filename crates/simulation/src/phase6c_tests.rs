@@ -21,7 +21,7 @@ fn tiny_plan(address: WorldAddress, token: u64) -> MapRuntimePlan {
 }
 
 #[test]
-fn instantiate_rejects_empty_plan_before_mutation() {
+fn instantiate_accepts_bounds_only_map() {
     let mut world = World::new();
     let plan = MapRuntimePlan {
         address: WorldAddress::DEV,
@@ -30,12 +30,11 @@ fn instantiate_rejects_empty_plan_before_mutation() {
         platforms: vec![],
         placements: vec![],
     };
-    assert!(matches!(
-        world.instantiate_map(&plan),
-        Err(InstantiateError::EmptyPlan)
-    ));
+    let instantiated = world.instantiate_map(&plan).expect("bounds-only map");
+    assert_eq!(instantiated.bounds, WorldBounds::DEV_COMPACT);
+    assert!(instantiated.entity_ids.is_empty());
     assert_eq!(world.len(), 0);
-    assert_eq!(world.instantiated_count(), 0);
+    assert_eq!(world.instantiated_count(), 1);
 }
 
 #[test]
