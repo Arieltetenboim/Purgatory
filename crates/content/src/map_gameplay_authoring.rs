@@ -19,7 +19,6 @@ pub enum FootholdKind {
 pub struct FootholdPath {
     pub id: String,
     pub kind: FootholdKind,
-    #[serde(default = "default_drop_through")]
     pub drop_through: bool,
     pub points: Vec<[f32; 2]>,
 }
@@ -44,9 +43,6 @@ impl MapGameplayAuthoring {
     }
 }
 
-const fn default_drop_through() -> bool {
-    true
-}
 
 #[cfg(test)]
 mod tests {
