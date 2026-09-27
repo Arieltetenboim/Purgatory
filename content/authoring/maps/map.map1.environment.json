@@ -55,9 +55,10 @@
   ],
   "cloud_fields": [
     {
-      "id": "clouds",
+      "id": "clouds_mid",
       "asset_folder": "assets/skys/cloud_mid",
       "depth": "far",
+      "stack_position": "after_far",
       "parallax": 0.18,
       "density": 1.0,
       "scale_range": [
@@ -65,8 +66,8 @@
         5.0
       ],
       "speed_range": [
-        0.08,
-        0.16
+        0.02,
+        0.1
       ],
       "height_range": [
         0.58,
@@ -75,6 +76,30 @@
       "opacity_range": [
         0.65,
         0.95
+      ]
+    },
+    {
+      "id": "clouds_near",
+      "asset_folder": "assets/skys/cloud_near",
+      "depth": "near",
+      "stack_position": "after_near",
+      "parallax": 0.22,
+      "density": 0.25,
+      "scale_range": [
+        1.0,
+        1.5
+      ],
+      "speed_range": [
+        0.1,
+        0.15
+      ],
+      "height_range": [
+        0.58,
+        0.92
+      ],
+      "opacity_range": [
+        0.65,
+        0.8
       ]
     }
   ]
