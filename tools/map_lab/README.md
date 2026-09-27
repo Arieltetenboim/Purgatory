@@ -29,10 +29,20 @@ start-map authoring are intentionally deferred.
 
 ## Adding maps
 
-Map visual assets use their stable numeric map ContentId as the TMX filename
-(`50001.tmx`, `50002.tmx`, ...). The map selector discovers numeric TMX files
-under `Graphic/assets/maps` that do not yet have a sidecar and offers an import
-action. Import derives the authored label (`50002` → `map.map2`), writes the
-versioned sidecar with that ContentId, records the allocation in
-`content/CONTENT_ID_CATALOG.md`, then opens it through the normal Map Lab path.
+**New Map** is the golden path. Map Lab allocates the next unused map ContentId
+from `content/CONTENT_ID_CATALOG.md` (`50001` → `map.map1`, retired IDs are never
+reused), writes `Graphic/assets/maps/<ContentId>.tmx` with the canonical 20×20 px
+orthogonal grid and 100 px/wu scale, and writes the sidecar, empty gameplay,
+empty environment, and empty placement files. The new map opens immediately.
+**Open in Tiled** edits that numeric TMX. **Open / Reload** recompiles the visual
+source and leaves gameplay, environment, and placements unchanged. Content that
+falls outside a later bounds change stays authored and is reported as outside
+map bounds.
+
+A newly created map can be visually valid while gameplay is **NOT READY** until
+FOOTNOTE and a default spawn exist.
+
+The map selector still lists numeric TMX files under `Graphic/assets/maps` that
+have no sidecar, under **Import Existing Numeric TMX**. That path is for
+exceptional or legacy files. It is not how new maps are created.
 

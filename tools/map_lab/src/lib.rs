@@ -3,11 +3,13 @@
 use std::path::{Path, PathBuf};
 
 use purgatory_content::{
-    LoadMode, MAP_AUTHORING_SCHEMA_VERSION, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION,
-    MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION, MapAuthoringSource, MapEnvironmentAuthoring,
-    MapGameplayAuthoring, MapPresentation, Placement, compile_tiled_map_with_ppu,
+    CANONICAL_MAP_TILE_PX, LoadMode, MAP_AUTHORING_SCHEMA_VERSION,
+    MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
+    MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, MapAuthoringSource, MapEnvironmentAuthoring,
+    MapGameplayAuthoring, MapPresentation, Placement, PlacementKind, compile_tiled_map_with_ppu,
     default_content_root, load_map_authoring, load_placement_file, load_registry,
-    resolve_png_asset_folder, serialize_map_pretty, serialize_placements_v2, validate_cloud_field,
+    resolve_png_asset_folder, serialize_map_pretty, serialize_placements_v2,
+    validate_canonical_map_grid, validate_cloud_field,
 };
 
 /// Production visual-scale standard for ordinary PURGATORY maps.
@@ -15,6 +17,18 @@ use purgatory_content::{
 /// The per-map sidecar keeps PPU explicit, but normal authored maps should use
 /// this value. Camera zoom is a separate presentation concern.
 pub const PURGATORY_STANDARD_PPU: f32 = 100.0;
+
+/// Guard against an accidental huge TMX. Not a gameplay size contract.
+const MAX_NEW_MAP_TILES: u32 = 4_096;
+
+/// Smallest tile count whose world size meets the one-viewport map minimum.
+#[must_use]
+pub fn minimum_new_map_tiles() -> (u32, u32) {
+    let tile = CANONICAL_MAP_TILE_PX as f32;
+    let width = (MIN_MAP_WIDTH_WU * PURGATORY_STANDARD_PPU / tile).ceil() as u32;
+    let height = (MIN_MAP_HEIGHT_WU * PURGATORY_STANDARD_PPU / tile).ceil() as u32;
+    (width.max(1), height.max(1))
+}
 
 #[derive(Clone, Debug)]
 pub struct MapLabDocument {
@@ -33,6 +47,9 @@ impl MapLabDocument {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
         let source = load_map_authoring(path).map_err(|error| error.to_string())?;
+        validate_world_scale(&source)?;
+        let tmx_path = tmx_path_for(path, &source)?;
+        validate_canonical_map_grid(&tmx_path).map_err(|error| error.to_string())?;
         let presentation = compile_tiled_map_with_ppu(path, &source, source.pixels_per_world_unit)
             .map_err(|error| error.to_string())?;
         sync_runtime_bounds_file(path, &source.id, presentation.world_bounds)?;
@@ -47,7 +64,7 @@ impl MapLabDocument {
             if gameplay.name.trim().is_empty() {
                 gameplay.name = source.id.clone();
             }
-            validate_gameplay(&gameplay_path, &source, &presentation, &gameplay)?;
+            validate_gameplay(&gameplay_path, &source, &presentation, &gameplay, false)?;
             gameplay
         } else {
             MapGameplayAuthoring::empty(source.id.clone())
@@ -91,10 +108,51 @@ impl MapLabDocument {
     }
 
     pub fn recompile(&mut self, pixels_per_world_unit: f32) -> Result<(), String> {
+        let tmx_path = tmx_path_for(&self.sidecar_path, &self.source)?;
+        validate_canonical_map_grid(&tmx_path).map_err(|error| error.to_string())?;
         self.presentation =
             compile_tiled_map_with_ppu(&self.sidecar_path, &self.source, pixels_per_world_unit)
                 .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    /// Authored positions that sit outside the current visual bounds.
+    ///
+    /// Reload reports these and leaves the files unchanged. It does not clamp,
+    /// delete, or move them.
+    #[must_use]
+    pub fn bounds_issues(&self) -> Vec<BoundsIssue> {
+        let bounds = self.presentation.world_bounds;
+        let mut issues = Vec::new();
+        for foothold in &self.gameplay.foothold_paths {
+            if foothold
+                .points
+                .iter()
+                .any(|point| outside_bounds(*point, bounds))
+            {
+                issues.push(BoundsIssue {
+                    kind: "FOOTNOTE",
+                    id: foothold.id.clone(),
+                });
+            }
+        }
+        for spawn in &self.gameplay.spawn_points {
+            if outside_bounds(spawn.position, bounds) {
+                issues.push(BoundsIssue {
+                    kind: "spawn",
+                    id: spawn.id.clone(),
+                });
+            }
+        }
+        for placement in &self.placements {
+            if outside_bounds(placement.position, bounds) {
+                issues.push(BoundsIssue {
+                    kind: placement_kind_label(placement),
+                    id: placement.id.clone(),
+                });
+            }
+        }
+        issues
     }
 
     pub fn canonical_json(&self) -> Result<Vec<u8>, String> {
@@ -182,6 +240,7 @@ impl MapLabDocument {
             &self.source,
             &self.presentation,
             &self.gameplay,
+            true,
         )?;
         let parent = self
             .gameplay_path
@@ -216,6 +275,27 @@ pub fn discover_authored_maps(directory: &Path) -> Result<Vec<PathBuf>, String> 
     }
     maps.sort();
     Ok(maps)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundsIssue {
+    pub kind: &'static str,
+    pub id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NewMapRequest {
+    pub display_name: String,
+    pub width_tiles: u32,
+    pub height_tiles: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NewMapCreated {
+    pub sidecar_path: PathBuf,
+    pub tmx_path: PathBuf,
+    pub content_id: u32,
+    pub authored_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -294,10 +374,302 @@ pub fn discover_unimported_tmx(
     Ok(candidates)
 }
 
+/// Next unused map ContentId from the catalog ledger.
+///
+/// Allocation walks forward from the highest recorded map ID, including
+/// retired rows. Gaps are not filled.
+pub fn allocate_next_map_id(catalog: &str) -> Result<(u32, String), String> {
+    let rows = catalog_map_rows(map_catalog_section(catalog)?)?;
+    let mut used = std::collections::BTreeSet::new();
+    let mut labels = std::collections::BTreeSet::new();
+    for (id, label) in rows {
+        if !(purgatory_common::CONTENT_MAP_START..=purgatory_common::CONTENT_MAP_END).contains(&id)
+        {
+            return Err(format!("catalog id {id} is outside the map range"));
+        }
+        if !used.insert(id) {
+            return Err(format!("ContentId {id} is allocated more than once"));
+        }
+        if !labels.insert(label) {
+            return Err("a map label is allocated more than once".to_owned());
+        }
+    }
+    let next = used
+        .iter()
+        .next_back()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or(purgatory_common::CONTENT_MAP_START + 1)
+        .max(purgatory_common::CONTENT_MAP_START + 1);
+    if next > purgatory_common::CONTENT_MAP_END || used.contains(&next) {
+        return Err("map ContentId range is exhausted".to_owned());
+    }
+    let authored = authored_map_id(next)?;
+    if labels.contains(&authored) {
+        return Err(format!("authored id {authored} is already allocated"));
+    }
+    Ok((next, authored))
+}
+
+pub fn authored_map_id(content_id: u32) -> Result<String, String> {
+    if !(purgatory_common::CONTENT_MAP_START..=purgatory_common::CONTENT_MAP_END)
+        .contains(&content_id)
+    {
+        return Err(format!(
+            "map ContentId must be in {}-{}",
+            purgatory_common::CONTENT_MAP_START,
+            purgatory_common::CONTENT_MAP_END
+        ));
+    }
+    Ok(format!(
+        "map.map{}",
+        content_id - purgatory_common::CONTENT_MAP_START
+    ))
+}
+
+pub fn preview_next_map_allocation(authoring_directory: &Path) -> Result<(u32, String), String> {
+    let repository_root = repository_root_from_authoring(authoring_directory)?;
+    let catalog = std::fs::read_to_string(catalog_path(&repository_root))
+        .map_err(|error| format!("read catalog: {error}"))?;
+    allocate_next_map_id(&catalog)
+}
+
+/// Canonical empty TMX for a new map. Paths stay project-relative; no tileset
+/// is embedded unless a canonical default tileset exists.
+#[must_use]
+pub fn canonical_tmx_document(width_tiles: u32, height_tiles: u32) -> String {
+    let csv = canonical_tile_csv(width_tiles, height_tiles);
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="{width_tiles}" height="{height_tiles}" tilewidth="{tile}" tileheight="{tile}" infinite="0" nextlayerid="2" nextobjectid="1">
+ <layer id="1" name="Tile Layer 1" width="{width_tiles}" height="{height_tiles}">
+  <data encoding="csv">
+{csv}
+</data>
+ </layer>
+</map>
+"#,
+        tile = CANONICAL_MAP_TILE_PX,
+    )
+}
+
+pub fn create_new_map(
+    authoring_directory: &Path,
+    request: &NewMapRequest,
+) -> Result<NewMapCreated, String> {
+    let display_name = validate_display_name(&request.display_name)?;
+    validate_new_map_dimensions(request.width_tiles, request.height_tiles)?;
+    let repository_root = repository_root_from_authoring(authoring_directory)?;
+    let catalog_file = catalog_path(&repository_root);
+    let catalog = std::fs::read_to_string(&catalog_file)
+        .map_err(|error| format!("read {}: {error}", catalog_file.display()))?;
+    let (content_id, authored_id) = allocate_next_map_id(&catalog)?;
+
+    for sidecar in discover_authored_maps(authoring_directory)? {
+        let source = load_map_authoring(&sidecar).map_err(|error| error.to_string())?;
+        if source.content_id == content_id || source.id == authored_id {
+            return Err(format!(
+                "{} already exists for ContentId {content_id}",
+                sidecar.display()
+            ));
+        }
+    }
+
+    let tmx_name = format!("{content_id}.tmx");
+    let tmx_path = repository_root
+        .join("Graphic")
+        .join("assets")
+        .join("maps")
+        .join(&tmx_name);
+    let sidecar_path = authoring_directory.join(format!("{authored_id}.purgatory-map.json"));
+    let gameplay_path = gameplay_path_for(&sidecar_path)?;
+    let environment_path = environment_path_for(&sidecar_path)?;
+    let placements_path = placements_path_for(&sidecar_path, &authored_id)?;
+    for path in [
+        &tmx_path,
+        &sidecar_path,
+        &gameplay_path,
+        &environment_path,
+        &placements_path,
+    ] {
+        if path.exists() {
+            return Err(format!("{} already exists", path.display()));
+        }
+    }
+
+    let source = MapAuthoringSource {
+        schema_version: MAP_AUTHORING_SCHEMA_VERSION,
+        content_id,
+        id: authored_id.clone(),
+        visual_source: format!("../../../Graphic/assets/maps/{tmx_name}"),
+        pixels_per_world_unit: PURGATORY_STANDARD_PPU,
+    };
+    let mut gameplay = MapGameplayAuthoring::empty(authored_id.clone());
+    gameplay.name = display_name;
+    let environment = MapEnvironmentAuthoring::empty(authored_id.clone());
+    let placements = serialize_placements_v2(&authored_id, &[])
+        .map_err(|error| format!("serialize placements: {error}"))?;
+
+    let mut created = Vec::new();
+    let write_result = (|| {
+        write_new_file(
+            &tmx_path,
+            canonical_tmx_document(request.width_tiles, request.height_tiles).as_bytes(),
+            &mut created,
+        )?;
+        write_new_file(
+            &sidecar_path,
+            &pretty_json(serde_json::to_vec_pretty(&source))?,
+            &mut created,
+        )?;
+        write_new_file(
+            &gameplay_path,
+            &pretty_json(serde_json::to_vec_pretty(&gameplay))?,
+            &mut created,
+        )?;
+        write_new_file(
+            &environment_path,
+            &pretty_json(serde_json::to_vec_pretty(&environment))?,
+            &mut created,
+        )?;
+        write_new_file(&placements_path, &placements, &mut created)?;
+        record_map_allocation(&repository_root, content_id, &authored_id, false)
+    })();
+    if let Err(error) = write_result {
+        for path in created.iter().rev() {
+            let _ = std::fs::remove_file(path);
+        }
+        return Err(error);
+    }
+    Ok(NewMapCreated {
+        sidecar_path,
+        tmx_path,
+        content_id,
+        authored_id,
+    })
+}
+
+fn catalog_path(repository_root: &Path) -> PathBuf {
+    repository_root
+        .join("content")
+        .join("CONTENT_ID_CATALOG.md")
+}
+
+fn map_catalog_section(catalog: &str) -> Result<&str, String> {
+    let start = catalog
+        .find("### Maps")
+        .ok_or_else(|| "CONTENT_ID_CATALOG.md: Maps section not found".to_owned())?;
+    let rest = &catalog[start..];
+    let end = rest[1..]
+        .find("\n### ")
+        .map(|index| index + 1)
+        .unwrap_or(rest.len());
+    Ok(&rest[..end])
+}
+
+fn catalog_map_rows(section: &str) -> Result<Vec<(u32, String)>, String> {
+    let mut rows = Vec::new();
+    for line in section.lines() {
+        let line = line.trim();
+        if !line.starts_with('|') {
+            continue;
+        }
+        let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+        if cells.len() < 2 {
+            continue;
+        }
+        let Ok(id) = cells[0].trim_matches('`').parse::<u32>() else {
+            continue;
+        };
+        let label = cells[1].trim_matches('`').to_owned();
+        if label.is_empty() {
+            return Err(format!("catalog map {id} is missing a label"));
+        }
+        rows.push((id, label));
+    }
+    Ok(rows)
+}
+
+fn authored_map_label_matches(content_id: u32, authored_id: &str) -> bool {
+    authored_map_id(content_id).is_ok_and(|expected| expected == authored_id)
+}
+
+fn validate_display_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("map name is required".to_owned());
+    }
+    if name.chars().count() > 80 {
+        return Err("map name must be at most 80 characters".to_owned());
+    }
+    if name.chars().any(char::is_control) {
+        return Err("map name must not contain control characters".to_owned());
+    }
+    Ok(name.to_owned())
+}
+
+fn validate_new_map_dimensions(width_tiles: u32, height_tiles: u32) -> Result<(), String> {
+    if width_tiles == 0 || height_tiles == 0 {
+        return Err("map width and height must be positive".to_owned());
+    }
+    if width_tiles > MAX_NEW_MAP_TILES || height_tiles > MAX_NEW_MAP_TILES {
+        return Err(format!(
+            "map width and height must be at most {MAX_NEW_MAP_TILES} tiles"
+        ));
+    }
+    let tile = CANONICAL_MAP_TILE_PX as f32;
+    let world_width = width_tiles as f32 * tile / PURGATORY_STANDARD_PPU;
+    let world_height = height_tiles as f32 * tile / PURGATORY_STANDARD_PPU;
+    if world_width + f32::EPSILON < MIN_MAP_WIDTH_WU
+        || world_height + f32::EPSILON < MIN_MAP_HEIGHT_WU
+    {
+        let (min_width, min_height) = minimum_new_map_tiles();
+        return Err(format!(
+            "map is {world_width:.3} × {world_height:.3} wu; minimum is {min_width}×{min_height} tiles ({MIN_MAP_WIDTH_WU:.3} × {MIN_MAP_HEIGHT_WU:.3} wu)"
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_tile_csv(width_tiles: u32, height_tiles: u32) -> String {
+    let mut csv = String::new();
+    for y in 0..height_tiles {
+        for x in 0..width_tiles {
+            csv.push('0');
+            let last_cell = x + 1 == width_tiles && y + 1 == height_tiles;
+            if !last_cell {
+                csv.push(',');
+            }
+        }
+        if y + 1 != height_tiles {
+            csv.push('\n');
+        }
+    }
+    csv
+}
+
+fn pretty_json(bytes: Result<Vec<u8>, serde_json::Error>) -> Result<Vec<u8>, String> {
+    let mut bytes = bytes.map_err(|error| format!("serialize json: {error}"))?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn write_new_file(path: &Path, bytes: &[u8], created: &mut Vec<PathBuf>) -> Result<(), String> {
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    created.push(path.to_path_buf());
+    std::fs::write(path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
+}
+
 fn record_map_allocation(
     repository_root: &Path,
     content_id: u32,
     authored_id: &str,
+    allow_existing_match: bool,
 ) -> Result<(), String> {
     let catalog = repository_root
         .join("content")
@@ -307,11 +679,16 @@ fn record_map_allocation(
     let id_cell = format!("| `{content_id}` |");
     if text.contains(&id_cell) {
         let expected = format!("| `{content_id}` | `{authored_id}` | active |");
-        return if text.contains(&expected) {
+        return if allow_existing_match && text.contains(&expected) {
             Ok(())
         } else {
             Err(format!("ContentId {content_id} is already allocated"))
         };
+    }
+    if !authored_map_label_matches(content_id, authored_id) {
+        return Err(format!(
+            "authored id {authored_id} does not match ContentId {content_id}"
+        ));
     }
     let marker = "\n\n### Items";
     let insert_at = text.find(marker).ok_or_else(|| {
@@ -371,6 +748,7 @@ pub fn import_numeric_tmx(
         &repository_root,
         candidate.content_id,
         &candidate.authored_id,
+        true,
     ) {
         let _ = std::fs::remove_file(&sidecar);
         return Err(error);
@@ -650,11 +1028,48 @@ fn sync_runtime_bounds_file(
     Ok(true)
 }
 
+fn validate_world_scale(source: &MapAuthoringSource) -> Result<(), String> {
+    if (source.pixels_per_world_unit - PURGATORY_STANDARD_PPU).abs() > 1.0e-4 {
+        return Err(format!(
+            "pixels_per_world_unit {} does not match the canonical {} px/wu world scale; world-scale migration is not supported",
+            source.pixels_per_world_unit, PURGATORY_STANDARD_PPU
+        ));
+    }
+    Ok(())
+}
+
+fn tmx_path_for(sidecar: &Path, source: &MapAuthoringSource) -> Result<PathBuf, String> {
+    let parent = sidecar
+        .parent()
+        .ok_or_else(|| format!("invalid sidecar path: {}", sidecar.display()))?;
+    Ok(parent.join(&source.visual_source))
+}
+
+fn outside_bounds(point: [f32; 2], bounds: [f32; 4]) -> bool {
+    let [min_x, min_y, max_x, max_y] = bounds;
+    !point[0].is_finite()
+        || !point[1].is_finite()
+        || point[0] < min_x
+        || point[0] > max_x
+        || point[1] < min_y
+        || point[1] > max_y
+}
+
+fn placement_kind_label(placement: &Placement) -> &'static str {
+    match placement.kind {
+        PlacementKind::Portal => "portal",
+        PlacementKind::Monster => "monster",
+        PlacementKind::Entity if placement.content_authored.starts_with("npc.") => "NPC",
+        PlacementKind::Entity => "entity",
+    }
+}
+
 fn validate_gameplay(
     path: &Path,
     source: &MapAuthoringSource,
     presentation: &MapPresentation,
     gameplay: &MapGameplayAuthoring,
+    enforce_bounds: bool,
 ) -> Result<(), String> {
     if gameplay.schema_version != MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION {
         return Err(format!(
@@ -672,7 +1087,6 @@ fn validate_gameplay(
             source.id
         ));
     }
-    let [min_x, min_y, max_x, max_y] = presentation.world_bounds;
     let mut ids = std::collections::HashSet::new();
     for foothold in &gameplay.foothold_paths {
         if foothold.id.trim().is_empty() || !ids.insert(foothold.id.as_str()) {
@@ -699,9 +1113,12 @@ fn validate_gameplay(
                 foothold.id
             ));
         }
-        if foothold.points.iter().any(|point| {
-            point[0] < min_x || point[0] > max_x || point[1] < min_y || point[1] > max_y
-        }) {
+        if enforce_bounds
+            && foothold
+                .points
+                .iter()
+                .any(|point| outside_bounds(*point, presentation.world_bounds))
+        {
             return Err(format!(
                 "{}: foothold {} leaves map bounds",
                 path.display(),
@@ -724,8 +1141,14 @@ fn validate_gameplay(
                 path.display()
             ));
         }
-        let [x, y] = spawn.position;
-        if !x.is_finite() || !y.is_finite() || x < min_x || x > max_x || y < min_y || y > max_y {
+        if !spawn.position[0].is_finite() || !spawn.position[1].is_finite() {
+            return Err(format!(
+                "{}: spawn {} contains non-finite coordinates",
+                path.display(),
+                spawn.id
+            ));
+        }
+        if enforce_bounds && outside_bounds(spawn.position, presentation.world_bounds) {
             return Err(format!(
                 "{}: spawn {} leaves map bounds",
                 path.display(),
@@ -1017,5 +1440,453 @@ mod tests {
         let snapped = document.snap_spawn_to_foothold([15.31, 0.9]).unwrap();
         assert!((snapped[0] - 15.31).abs() < 1e-5);
         assert!((snapped[1] - 1.0).abs() < 1e-4);
+    }
+
+    const CATALOG_HEAD: &str = "# Content ID Catalog\n\n### Maps — 50,000–59,999\n\n| ID | Label | Status |\n| ---: | --- | --- |\n";
+    const CATALOG_TAIL: &str = "\n### Items — 30,000–39,999\n";
+
+    fn catalog_with(rows: &str) -> String {
+        format!("{CATALOG_HEAD}{rows}{CATALOG_TAIL}")
+    }
+
+    fn temp_authoring(name: &str, catalog: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "purgatory-new-map-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let authoring = root.join("content/authoring/maps");
+        std::fs::create_dir_all(&authoring).unwrap();
+        std::fs::create_dir_all(root.join("Graphic/assets/maps")).unwrap();
+        std::fs::create_dir_all(root.join("content/server/placements")).unwrap();
+        std::fs::create_dir_all(root.join("content/shared/maps")).unwrap();
+        std::fs::write(root.join("content/CONTENT_ID_CATALOG.md"), catalog).unwrap();
+        (root, authoring)
+    }
+
+    #[test]
+    fn next_content_id_follows_the_catalog() {
+        let catalog =
+            catalog_with("| `50001` | `map.map1` | active |\n| `50002` | `map.map2` | active |\n");
+        assert_eq!(
+            allocate_next_map_id(&catalog).unwrap(),
+            (50_003, "map.map3".to_owned())
+        );
+        assert_eq!(
+            allocate_next_map_id(&catalog_with("")).unwrap(),
+            (50_001, "map.map1".to_owned())
+        );
+    }
+
+    #[test]
+    fn allocation_skips_existing_ids_without_filling_gaps() {
+        let catalog =
+            catalog_with("| `50001` | `map.map1` | active |\n| `50004` | `map.map4` | active |\n");
+        assert_eq!(allocate_next_map_id(&catalog).unwrap().0, 50_005);
+    }
+
+    #[test]
+    fn allocation_does_not_reuse_retired_ids() {
+        let catalog = catalog_with(
+            "| `50001` | `map.map1` | active |\n| `50002` | `map.map2` | retired (reserved; never reuse) |\n",
+        );
+        assert_eq!(
+            allocate_next_map_id(&catalog).unwrap(),
+            (50_003, "map.map3".to_owned())
+        );
+    }
+
+    #[test]
+    fn exhausted_map_range_is_rejected() {
+        let catalog = catalog_with("| `59999` | `map.map999` | active |\n");
+        let error = allocate_next_map_id(&catalog).unwrap_err();
+        assert!(error.contains("exhausted"));
+    }
+
+    #[test]
+    fn authored_id_uses_the_map_block_offset() {
+        assert_eq!(authored_map_id(50_008).unwrap(), "map.map8");
+        assert_eq!(authored_map_id(50_001).unwrap(), "map.map1");
+    }
+
+    #[test]
+    fn canonical_tmx_uses_the_production_grid() {
+        assert_eq!(minimum_new_map_tiles(), (116, 65));
+        let tmx = canonical_tmx_document(116, 65);
+        assert!(tmx.contains("orientation=\"orthogonal\""));
+        assert!(tmx.contains("tilewidth=\"20\""));
+        assert!(tmx.contains("tileheight=\"20\""));
+        assert!(tmx.contains("width=\"116\""));
+        assert!(tmx.contains("height=\"65\""));
+        assert!(tmx.contains("name=\"Tile Layer 1\""));
+        assert!(!tmx.contains("TEST.tsx"));
+        assert!(!tmx.contains(":\\") && !tmx.contains("C:/"));
+    }
+
+    #[test]
+    fn new_map_writes_required_files_and_is_discoverable() {
+        let (root, authoring) = temp_authoring(
+            "create",
+            &catalog_with("| `50001` | `map.map1` | active |\n| `50002` | `map.map2` | active |\n"),
+        );
+        let created = create_new_map(
+            &authoring,
+            &NewMapRequest {
+                display_name: "West Road".to_owned(),
+                width_tiles: 116,
+                height_tiles: 65,
+            },
+        )
+        .unwrap();
+        assert_eq!(created.content_id, 50_003);
+        assert_eq!(created.authored_id, "map.map3");
+        assert!(
+            created.tmx_path.ends_with("Graphic/assets/maps/50003.tmx")
+                || created
+                    .tmx_path
+                    .ends_with("Graphic\\assets\\maps\\50003.tmx")
+        );
+        assert!(
+            created
+                .sidecar_path
+                .ends_with("map.map3.purgatory-map.json")
+        );
+        assert!(authoring.join("map.map3.gameplay.json").is_file());
+        assert!(authoring.join("map.map3.environment.json").is_file());
+        assert!(
+            root.join("content/server/placements/map.map3.json")
+                .is_file()
+        );
+        let catalog = std::fs::read_to_string(root.join("content/CONTENT_ID_CATALOG.md")).unwrap();
+        assert!(catalog.contains("| `50003` | `map.map3` | active |"));
+        let document = MapLabDocument::open(&created.sidecar_path).unwrap();
+        assert_eq!(
+            document.source.visual_source,
+            "../../../Graphic/assets/maps/50003.tmx"
+        );
+        assert_eq!(document.gameplay.name, "West Road");
+        assert!(document.gameplay.foothold_paths.is_empty());
+        assert!(document.gameplay.spawn_points.is_empty());
+        assert!(document.environment.parallax_layers.is_empty());
+        assert!(document.placements.is_empty());
+        assert!(document.gameplay_readiness().is_err());
+        let discovered = discover_authored_maps(&authoring).unwrap();
+        assert!(discovered.contains(&created.sidecar_path));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_new_map_destination_is_rejected() {
+        let (root, authoring) = temp_authoring(
+            "duplicate",
+            &catalog_with("| `50001` | `map.map1` | active |\n| `50002` | `map.map2` | active |\n"),
+        );
+        let before = std::fs::read_to_string(root.join("content/CONTENT_ID_CATALOG.md")).unwrap();
+        std::fs::write(root.join("Graphic/assets/maps/50003.tmx"), "<map/>").unwrap();
+        let error = create_new_map(
+            &authoring,
+            &NewMapRequest {
+                display_name: "West Road".to_owned(),
+                width_tiles: 116,
+                height_tiles: 65,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("already exists"));
+        assert!(!authoring.join("map.map3.purgatory-map.json").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("content/CONTENT_ID_CATALOG.md")).unwrap(),
+            before
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_creation_rolls_back_files_and_catalog() {
+        let (root, authoring) = temp_authoring(
+            "rollback",
+            &catalog_with("| `50001` | `map.map1` | active |\n| `50002` | `map.map2` | active |\n"),
+        );
+        let placements = root.join("content/server/placements");
+        std::fs::remove_dir_all(&placements).unwrap();
+        std::fs::write(&placements, "not a directory").unwrap();
+        let before = std::fs::read_to_string(root.join("content/CONTENT_ID_CATALOG.md")).unwrap();
+        let error = create_new_map(
+            &authoring,
+            &NewMapRequest {
+                display_name: "West Road".to_owned(),
+                width_tiles: 116,
+                height_tiles: 65,
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("placements") || error.contains("create"));
+        assert!(!root.join("Graphic/assets/maps/50003.tmx").exists());
+        assert!(!authoring.join("map.map3.purgatory-map.json").exists());
+        assert!(!authoring.join("map.map3.gameplay.json").exists());
+        assert!(!authoring.join("map.map3.environment.json").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("content/CONTENT_ID_CATALOG.md")).unwrap(),
+            before
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn authored_bytes(root: &Path, authored: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let gameplay = std::fs::read(
+            root.join("content/authoring/maps")
+                .join(format!("{authored}.gameplay.json")),
+        )
+        .unwrap();
+        let environment = std::fs::read(
+            root.join("content/authoring/maps")
+                .join(format!("{authored}.environment.json")),
+        )
+        .unwrap();
+        let placements = std::fs::read(
+            root.join("content/server/placements")
+                .join(format!("{authored}.json")),
+        )
+        .unwrap();
+        (gameplay, environment, placements)
+    }
+
+    fn write_authored_sample(root: &Path, authored: &str) {
+        let gameplay = purgatory_content::MapGameplayAuthoring {
+            schema_version: purgatory_content::MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
+            map_authored: authored.to_owned(),
+            name: "West Road".to_owned(),
+            foothold_paths: vec![purgatory_content::FootholdPath {
+                id: "foothold.001".to_owned(),
+                kind: purgatory_content::FootholdKind::Solid,
+                drop_through: false,
+                points: vec![[1.0, 1.0], [10.0, 1.0]],
+            }],
+            spawn_points: vec![purgatory_content::GameplaySpawnPoint {
+                id: "default".to_owned(),
+                position: [4.0, 1.6],
+            }],
+        };
+        let mut environment = purgatory_content::MapEnvironmentAuthoring::empty(authored);
+        environment.sky_gradient = Some(purgatory_content::SkyGradient {
+            top_rgba: [9, 8, 7, 255],
+            bottom_rgba: [6, 5, 4, 255],
+        });
+        let placements = purgatory_content::serialize_placements_v2(
+            authored,
+            &[
+                Placement {
+                    id: "placement.mob_001".to_owned(),
+                    kind: purgatory_content::PlacementKind::Monster,
+                    content_authored: "monster.moss_crab".to_owned(),
+                    position: [8.0, 1.0],
+                    portal_link: None,
+                },
+                Placement {
+                    id: "portal.001".to_owned(),
+                    kind: purgatory_content::PlacementKind::Portal,
+                    content_authored: String::new(),
+                    position: [6.0, 1.0],
+                    portal_link: Some(purgatory_content::PortalLink {
+                        map_authored: "map.map1".to_owned(),
+                        portal_id: "portal.001".to_owned(),
+                    }),
+                },
+            ],
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("content/authoring/maps")
+                .join(format!("{authored}.gameplay.json")),
+            serde_json::to_vec_pretty(&gameplay).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("content/authoring/maps")
+                .join(format!("{authored}.environment.json")),
+            serde_json::to_vec_pretty(&environment).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("content/server/placements")
+                .join(format!("{authored}.json")),
+            placements,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn tmx_reload_preserves_gameplay_environment_and_placements() {
+        let (root, authoring) = temp_authoring(
+            "reload",
+            &catalog_with("| `50002` | `map.map2` | active |\n"),
+        );
+        let created = create_new_map(
+            &authoring,
+            &NewMapRequest {
+                display_name: "West Road".to_owned(),
+                width_tiles: 200,
+                height_tiles: 65,
+            },
+        )
+        .unwrap();
+        write_authored_sample(&root, &created.authored_id);
+        let before = authored_bytes(&root, &created.authored_id);
+        let mut tmx = std::fs::read_to_string(&created.tmx_path).unwrap();
+        tmx = tmx.replace("Tile Layer 1", "Painted Ground");
+        std::fs::write(&created.tmx_path, tmx).unwrap();
+
+        let document = MapLabDocument::open(&created.sidecar_path).unwrap();
+        assert!(
+            document
+                .presentation
+                .layers
+                .iter()
+                .any(|layer| layer.name == "Painted Ground")
+        );
+        assert_eq!(document.gameplay.foothold_paths.len(), 1);
+        assert_eq!(document.gameplay.spawn_points[0].id, "default");
+        assert_eq!(
+            document.environment.sky_gradient.unwrap().top_rgba,
+            [9, 8, 7, 255]
+        );
+        assert_eq!(document.placements.len(), 2);
+        assert_eq!(
+            document.placements[1]
+                .portal_link
+                .as_ref()
+                .unwrap()
+                .map_authored,
+            "map.map1"
+        );
+        assert_eq!(authored_bytes(&root, &created.authored_id), before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bounds_shrink_reports_outside_content_without_deleting_it() {
+        let (root, authoring) = temp_authoring(
+            "bounds",
+            &catalog_with("| `50002` | `map.map2` | active |\n"),
+        );
+        let created = create_new_map(
+            &authoring,
+            &NewMapRequest {
+                display_name: "West Road".to_owned(),
+                width_tiles: 200,
+                height_tiles: 65,
+            },
+        )
+        .unwrap();
+        let gameplay = purgatory_content::MapGameplayAuthoring {
+            schema_version: purgatory_content::MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
+            map_authored: created.authored_id.clone(),
+            name: "West Road".to_owned(),
+            foothold_paths: vec![purgatory_content::FootholdPath {
+                id: "foothold.001".to_owned(),
+                kind: purgatory_content::FootholdKind::OneWay,
+                drop_through: true,
+                points: vec![[30.0, 1.0], [35.0, 1.0]],
+            }],
+            spawn_points: vec![purgatory_content::GameplaySpawnPoint {
+                id: "default".to_owned(),
+                position: [31.0, 1.6],
+            }],
+        };
+        let placements = purgatory_content::serialize_placements_v2(
+            &created.authored_id,
+            &[
+                Placement {
+                    id: "placement.mob_001".to_owned(),
+                    kind: purgatory_content::PlacementKind::Monster,
+                    content_authored: "monster.moss_crab".to_owned(),
+                    position: [31.0, 1.0],
+                    portal_link: None,
+                },
+                Placement {
+                    id: "placement.npc_001".to_owned(),
+                    kind: purgatory_content::PlacementKind::Entity,
+                    content_authored: "npc.welcome.gate_watchman".to_owned(),
+                    position: [31.0, 1.5],
+                    portal_link: None,
+                },
+                Placement {
+                    id: "portal.001".to_owned(),
+                    kind: purgatory_content::PlacementKind::Portal,
+                    content_authored: String::new(),
+                    position: [31.0, 2.0],
+                    portal_link: Some(purgatory_content::PortalLink {
+                        map_authored: "map.map1".to_owned(),
+                        portal_id: "portal.001".to_owned(),
+                    }),
+                },
+            ],
+        )
+        .unwrap();
+        std::fs::write(
+            authoring.join("map.map3.gameplay.json"),
+            serde_json::to_vec_pretty(&gameplay).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("content/server/placements/map.map3.json"),
+            placements,
+        )
+        .unwrap();
+        let before = authored_bytes(&root, "map.map3");
+        std::fs::write(&created.tmx_path, canonical_tmx_document(116, 65)).unwrap();
+
+        let document = MapLabDocument::open(&created.sidecar_path).unwrap();
+        let issues = document.bounds_issues();
+        let ids: Vec<_> = issues.iter().map(|issue| issue.id.as_str()).collect();
+        assert!(ids.contains(&"foothold.001"));
+        assert!(ids.contains(&"default"));
+        assert!(ids.contains(&"placement.mob_001"));
+        assert!(ids.contains(&"placement.npc_001"));
+        assert!(ids.contains(&"portal.001"));
+        assert!(issues.iter().any(|issue| issue.kind == "NPC"));
+        assert_eq!(document.gameplay.foothold_paths[0].points[0][0], 30.0);
+        assert_eq!(document.placements[0].position[0], 31.0);
+        assert_eq!(
+            document.placements[2]
+                .portal_link
+                .as_ref()
+                .unwrap()
+                .portal_id,
+            "portal.001"
+        );
+        assert_eq!(authored_bytes(&root, "map.map3"), before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn structural_tile_size_mismatch_is_rejected_without_rewriting_authoring() {
+        let (root, authoring) = temp_authoring(
+            "structure",
+            &catalog_with("| `50002` | `map.map2` | active |\n"),
+        );
+        let created = create_new_map(
+            &authoring,
+            &NewMapRequest {
+                display_name: "West Road".to_owned(),
+                width_tiles: 116,
+                height_tiles: 65,
+            },
+        )
+        .unwrap();
+        write_authored_sample(&root, &created.authored_id);
+        let before = authored_bytes(&root, &created.authored_id);
+        let tmx = std::fs::read_to_string(&created.tmx_path)
+            .unwrap()
+            .replace("tilewidth=\"20\"", "tilewidth=\"32\"");
+        std::fs::write(&created.tmx_path, tmx).unwrap();
+        let error = MapLabDocument::open(&created.sidecar_path).unwrap_err();
+        assert!(error.contains("tile-size migration is not supported"));
+        assert_eq!(authored_bytes(&root, &created.authored_id), before);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

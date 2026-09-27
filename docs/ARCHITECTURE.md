@@ -692,10 +692,14 @@ The sidecar is the single compiler entry point and owns PURGATORY map identity,
 the TMX reference, and explicit per-map pixels-per-world-unit (PPU). The production
 visual-scale standard is **100 px/wu** for ordinary PURGATORY maps; per-map PPU stays explicit for
 validation/import compatibility, not as a camera-zoom control. Intentional camera zoom remains a
-separate presentation concern. Tiled owns visual composition and is never rewritten by Map Lab. For finite orthogonal V1
+separate presentation concern. Tiled owns visual composition. Map Lab writes the initial empty TMX when creating a map, then does not rewrite that visual source on reload. For finite orthogonal V1
 maps, the TMX map extent is authoritative:
 `pixel_width = map.width × tile_width` and
-`pixel_height = map.height × tile_height`. Canonical map-local bounds are
+`pixel_height = map.height × tile_height`. The canonical map grid is **20×20 px**,
+the tile size of the production map TMX sources. Map Lab New Map emits that grid
+with orthogonal orientation and the 100 px/wu standard. Width and height may change
+in Tiled and be recompiled. Tile size, orientation, and world scale are not migrated
+in V1; a mismatch is a validation error. Canonical map-local bounds are
 `x: 0..pixel_width/PPU`, `y: 0..pixel_height/PPU`; compilation converts
 Tiled Y-down coordinates to PURGATORY Y-up coordinates.
 

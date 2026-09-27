@@ -37,6 +37,13 @@ Human-editable JSON lives under `/content`:
   underlying static artwork and object composition; Map Lab owns how environment layers
   behave relative to the camera. Dynamic/moving platform gameplay remains deferred, but
   authored FOOTNOTE geometry must not preclude future entity-owned moving foothold groups.
+  New maps are created in Map Lab, which allocates the next unused map ContentId from
+  `content/CONTENT_ID_CATALOG.md` (retired IDs stay retired), writes
+  `Graphic/assets/maps/<ContentId>.tmx`, and writes the sidecar, gameplay, environment,
+  and placement files. The numeric TMX filename follows that ContentId. Importing an
+  existing numeric TMX remains available for exceptional cases. Reloading a TMX updates
+  the visual compile only; gameplay, environment, and placements stay as authored, including
+  when a later bounds change leaves them outside the map.
 - `authoring/npcs/` — canonical NPC Lab JSON. Recursively validated in Shared
   and Full modes; projected into client-safe dialogue presentation in both and
   authoritative dialogue definitions in Full mode.

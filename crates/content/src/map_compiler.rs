@@ -22,6 +22,13 @@ use crate::map_presentation::{
 
 pub const MAP_AUTHORING_SCHEMA_VERSION: u32 = 2;
 
+/// Canonical Tiled map grid used by the production sources
+/// `Graphic/assets/maps/50001.tmx` and `50002.tmx`.
+///
+/// New Map emits this size. A later TMX with a different tile size or
+/// orientation is a validation error. V1 does not migrate either one.
+pub const CANONICAL_MAP_TILE_PX: u32 = 20;
+
 /// Every authored map must contain at least one full gameplay camera viewport.
 pub const MIN_MAP_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
 pub const MIN_MAP_WIDTH_WU: f32 = MIN_MAP_HEIGHT_WU * purgatory_simulation::AOI_VIEWPORT_ASPECT;
@@ -519,6 +526,39 @@ fn validate_authoring(path: &Path, source: &MapAuthoringSource) -> Result<(), Co
     validate_ppu(path, source.pixels_per_world_unit)
 }
 
+/// Reject tile-size or orientation drift from the canonical map grid.
+///
+/// Width and height may change. Tile size and orientation may not.
+pub fn validate_canonical_map_grid(tmx_path: &Path) -> Result<(), ContentError> {
+    let mut loader = tiled::Loader::new();
+    let map = loader
+        .load_tmx_map(tmx_path)
+        .map_err(|error| issue(tmx_path, "-", "tmx", error.to_string()))?;
+    if map.orientation != Orientation::Orthogonal {
+        return Err(issue(
+            tmx_path,
+            "-",
+            "orientation",
+            format!(
+                "orientation {:?} does not match the canonical orthogonal map; orientation migration is not supported",
+                map.orientation
+            ),
+        ));
+    }
+    if map.tile_width != CANONICAL_MAP_TILE_PX || map.tile_height != CANONICAL_MAP_TILE_PX {
+        return Err(issue(
+            tmx_path,
+            "-",
+            "tile_size",
+            format!(
+                "tile size {}×{} px does not match the canonical {CANONICAL_MAP_TILE_PX}×{CANONICAL_MAP_TILE_PX} px map grid; tile-size migration is not supported",
+                map.tile_width, map.tile_height
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_ppu(path: &Path, ppu: f32) -> Result<(), ContentError> {
     if !ppu.is_finite() || ppu <= 0.0 {
         return Err(issue(
@@ -784,6 +824,14 @@ mod tests {
     fn fixture_sidecar() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../content/authoring/maps/map.map1.purgatory-map.json")
+    }
+
+    #[test]
+    fn production_maps_use_the_canonical_tile_grid() {
+        let maps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Graphic/assets/maps");
+        for name in ["50001.tmx", "50002.tmx"] {
+            validate_canonical_map_grid(&maps.join(name)).expect(name);
+        }
     }
 
     #[test]
