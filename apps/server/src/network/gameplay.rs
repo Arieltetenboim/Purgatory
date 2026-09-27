@@ -4135,8 +4135,7 @@ struct PublishTimings {
 fn install_map1_test_interaction_fixtures(world: &mut World, registry: &ContentRegistry) {
     let address = world_address_for_map(registry, MAP1, ChannelId::DEFAULT, InstanceId::DEFAULT)
         .expect("MAP1 test address");
-    let spawn = spawn_point_position(registry, MAP1_AUTHORED, "default")
-        .expect("MAP1 test spawn");
+    let spawn = spawn_point_position(registry, MAP1_AUTHORED, "default").expect("MAP1 test spawn");
     for (authored, offset_x) in [
         ("npc.welcome.traveler_stayed", 0.75_f32),
         ("entity.interactable.chest", -0.75_f32),
@@ -5814,11 +5813,7 @@ mod tests {
         assert!(owner.set_player_x(id, x));
     }
 
-    fn move_player_to_content(
-        owner: &mut GameplayOwner,
-        id: ConnectionId,
-        authored: &str,
-    ) {
+    fn move_player_to_content(owner: &mut GameplayOwner, id: ConnectionId, authored: &str) {
         let target = find_content(owner, authored);
         let x = owner
             .world()
@@ -8040,7 +8035,10 @@ mod tests {
             .dev_spawned_monsters
             .last()
             .expect("DEV-spawned Moss Crab");
-        assert_eq!(owner.world().content_id_of(creature), Some(MONSTER_MOSS_CRAB));
+        assert_eq!(
+            owner.world().content_id_of(creature),
+            Some(MONSTER_MOSS_CRAB)
+        );
         let definition = owner
             .registry
             .monster_by_id(MONSTER_MOSS_CRAB)
