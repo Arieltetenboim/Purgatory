@@ -304,6 +304,54 @@ impl MapLabApp {
         self.status = "ENVIRONMENT · edit map-level presentation".to_owned();
     }
 
+    fn add_parallax_layer(&mut self) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let next = document.environment.parallax_layers.len() + 1;
+        let depth = ParallaxDepth::Far;
+        document.environment.parallax_layers.push(ParallaxLayer {
+            id: format!("background.{next:03}"),
+            asset_path: "assets/maps/BG.png".to_owned(),
+            depth,
+            parallax: depth.default_parallax(),
+            offset_world: [0.0, 0.0],
+            repeat_x: true,
+            repeat_y: false,
+            opacity: 1.0,
+        });
+        self.environment_dirty = true;
+        self.status =
+            "ENVIRONMENT · parallax layer added · reload assets to preview".to_owned();
+    }
+
+    fn delete_parallax_layer(&mut self, index: usize) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        if index < document.environment.parallax_layers.len() {
+            let removed = document.environment.parallax_layers.remove(index);
+            self.environment_textures.remove(&removed.id);
+            self.environment_dirty = true;
+            self.status = format!("ENVIRONMENT · deleted {}", removed.id);
+        }
+    }
+
+    fn reload_environment_assets(&mut self, ctx: &egui::Context) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        match load_environment_textures(ctx, document) {
+            Ok(textures) => {
+                self.environment_textures = textures;
+                self.status = "ENVIRONMENT · preview assets reloaded".to_owned();
+            }
+            Err(error) => {
+                self.status = format!("ASSET ERROR\n{error}");
+            }
+        }
+    }
+
     fn save_environment(&mut self) {
         let Some(document) = &self.document else {
             self.status = "SAVE ERROR\nNo current map".to_owned();
