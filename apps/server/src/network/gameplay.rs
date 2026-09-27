@@ -4152,7 +4152,7 @@ fn install_map1_test_interaction_fixtures(world: &mut World, registry: &ContentR
         .unwrap_or_else(|error| panic!("test fixture {authored}: {error}"));
         world
             .spawn(request)
-            .unwrap_or_else(|error| panic!("spawn test fixture {authored}: {error:?}"));
+            .unwrap_or_else(|| panic!("spawn test fixture {authored}"));
     }
 }
 
