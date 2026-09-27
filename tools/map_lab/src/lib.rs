@@ -225,6 +225,17 @@ fn validate_environment(
                 layer.id
             ));
         }
+        if !layer
+            .motion_world_per_second
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            return Err(format!(
+                "{}: parallax layer {} motion must be finite",
+                path.display(),
+                layer.id
+            ));
+        }
     }
     Ok(())
 }

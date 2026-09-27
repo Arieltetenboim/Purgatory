@@ -24,6 +24,7 @@ pub(crate) struct RuntimeMapPresentation {
     sky_gradient: Option<SkyGradient>,
     parallax_layers: Vec<RuntimeParallaxLayer>,
     sprites: Vec<RuntimeSprite>,
+    environment_time_seconds: f64,
 }
 
 struct RuntimeSprite {
@@ -110,6 +111,16 @@ impl RuntimeMapPresentation {
                     layer.id, layer.opacity
                 ));
             }
+            if !layer
+                .motion_world_per_second
+                .iter()
+                .all(|value| value.is_finite())
+            {
+                return Err(format!(
+                    "environment layer {} has non-finite motion",
+                    layer.id
+                ));
+            }
             let texture_id = format!("map.environment.{}", layer.id);
             let texture = loader.load_png(&texture_id, &layer.asset_path)?;
             let image = loader
@@ -171,6 +182,7 @@ impl RuntimeMapPresentation {
             sky_gradient: environment.sky_gradient,
             parallax_layers,
             sprites,
+            environment_time_seconds: 0.0,
         })
     }
 
@@ -180,7 +192,10 @@ impl RuntimeMapPresentation {
             .is_some_and(|map| map.authored_id == self.map_authored)
     }
 
-    pub(crate) fn quads(&self, camera: &Camera) -> Vec<DrawQuad> {
+    pub(crate) fn quads(&mut self, camera: &Camera, frame_dt: f32) -> Vec<DrawQuad> {
+        if frame_dt.is_finite() && frame_dt > 0.0 {
+            self.environment_time_seconds += f64::from(frame_dt);
+        }
         let mut quads = self.sky_quads(camera);
         for depth in ParallaxDepth::ALL {
             for layer in self
@@ -266,13 +281,13 @@ impl RuntimeMapPresentation {
             p,
         );
         let size = fill_size(layer.authored.fill_mode, natural_size, coverage);
+        let animated_offset =
+            layer
+                .authored
+                .animated_offset_world(self.environment_time_seconds, size);
         let base = [
-            camera.position[0] * (1.0 - p)
-                + map_center[0] * p
-                + layer.authored.offset_world[0],
-            camera.position[1] * (1.0 - p)
-                + map_center[1] * p
-                + layer.authored.offset_world[1],
+            camera.position[0] * (1.0 - p) + map_center[0] * p + animated_offset[0],
+            camera.position[1] * (1.0 - p) + map_center[1] * p + animated_offset[1],
         ];
 
         let repeat = layer.authored.fill_mode == ParallaxFillMode::Repeat;

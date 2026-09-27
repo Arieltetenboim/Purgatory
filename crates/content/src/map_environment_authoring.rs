@@ -100,11 +100,40 @@ pub struct ParallaxLayer {
     pub parallax: f32,
     #[serde(default)]
     pub offset_world: [f32; 2],
+    /// Presentation-only linear drift in world units per second.
+    #[serde(default)]
+    pub motion_world_per_second: [f32; 2],
     #[serde(default)]
     pub repeat_x: bool,
     #[serde(default)]
     pub repeat_y: bool,
     pub opacity: f32,
+}
+
+impl ParallaxLayer {
+    /// Effective authored offset after presentation-only environment motion.
+    ///
+    /// Repeating axes wrap by the rendered tile period so long-running cloud
+    /// motion stays numerically bounded and visually seamless.
+    #[must_use]
+    pub fn animated_offset_world(
+        &self,
+        elapsed_seconds: f64,
+        repeat_period_world: [f32; 2],
+    ) -> [f32; 2] {
+        std::array::from_fn(|axis| {
+            let raw_motion = f64::from(self.motion_world_per_second[axis]) * elapsed_seconds;
+            let repeat_axis = self.fill_mode == ParallaxFillMode::Repeat
+                && if axis == 0 { self.repeat_x } else { self.repeat_y };
+            let period = f64::from(repeat_period_world[axis]);
+            let motion = if repeat_axis && period.is_finite() && period > f64::EPSILON {
+                raw_motion.rem_euclid(period)
+            } else {
+                raw_motion
+            };
+            self.offset_world[axis] + motion as f32
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -155,6 +184,26 @@ mod tests {
         }"#;
         let layer: ParallaxLayer = serde_json::from_str(json).unwrap();
         assert_eq!(layer.fill_mode, ParallaxFillMode::Repeat);
+        assert_eq!(layer.motion_world_per_second, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn repeating_motion_wraps_by_rendered_period() {
+        let layer = ParallaxLayer {
+            id: "clouds".to_owned(),
+            asset_path: "assets/skys/clouds.png".to_owned(),
+            depth: ParallaxDepth::Far,
+            fill_mode: ParallaxFillMode::Repeat,
+            parallax: 0.18,
+            offset_world: [1.0, 2.0],
+            motion_world_per_second: [2.0, -1.0],
+            repeat_x: true,
+            repeat_y: false,
+            opacity: 1.0,
+        };
+        let offset = layer.animated_offset_world(3.0, [4.0, 5.0]);
+        assert!((offset[0] - 3.0).abs() < 1e-5);
+        assert!((offset[1] + 1.0).abs() < 1e-5);
     }
 
     #[test]

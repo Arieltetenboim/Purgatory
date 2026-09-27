@@ -317,6 +317,7 @@ impl MapLabApp {
             fill_mode: ParallaxFillMode::Repeat,
             parallax: depth.default_parallax(),
             offset_world: [0.0, 0.0],
+            motion_world_per_second: [0.0, 0.0],
             repeat_x: true,
             repeat_y: false,
             opacity: 1.0,
@@ -776,11 +777,41 @@ impl eframe::App for MapLabApp {
                                     self.environment_dirty = true;
                                 }
                             });
+                            ui.horizontal(|ui| {
+                                ui.label("Motion");
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(
+                                            &mut layer.motion_world_per_second[0],
+                                        )
+                                        .speed(0.01)
+                                        .prefix("X "),
+                                    )
+                                    .changed()
+                                {
+                                    self.environment_dirty = true;
+                                }
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(
+                                            &mut layer.motion_world_per_second[1],
+                                        )
+                                        .speed(0.01)
+                                        .prefix("Y "),
+                                    )
+                                    .changed()
+                                {
+                                    self.environment_dirty = true;
+                                }
+                            });
+                            ui.small(
+                                "Motion uses world units/second · Repeat motion wraps seamlessly.",
+                            );
                         }
                     }
                     ui.separator();
                     ui.label("NEXT");
-                    ui.small("Celestial bodies · cloud motion · foreground atmosphere");
+                    ui.small("Foreground atmosphere");
                 } else if self.editor_mode == EditorMode::Footnote {
                     ui.heading("FOOTNOTE EDIT");
                     ui.small("Polyline authoring · gameplay-owned · Tiled stays visual-only");
@@ -1234,6 +1265,15 @@ impl MapLabApp {
         }
 
         let preview_camera = [world_width * 0.5, world_height * 0.5];
+        let environment_time_seconds = ui.input(|input| input.time);
+        if document.environment.parallax_layers.iter().any(|layer| {
+            layer
+                .motion_world_per_second
+                .iter()
+                .any(|value| value.abs() > f32::EPSILON)
+        }) {
+            ui.ctx().request_repaint();
+        }
         for depth in ParallaxDepth::ALL {
             for layer in document
                 .environment
@@ -1251,6 +1291,7 @@ impl MapLabApp {
                         [world_width, world_height],
                         preview_camera,
                         [CAMERA_WIDTH_WU, CAMERA_HEIGHT_WU],
+                        environment_time_seconds,
                         &to_screen,
                     );
                 }
@@ -1507,6 +1548,7 @@ fn paint_parallax_preview(
     map_size: [f32; 2],
     camera_center: [f32; 2],
     camera_size: [f32; 2],
+    elapsed_seconds: f64,
     to_screen: &impl Fn([f32; 2]) -> Pos2,
 ) {
     let ppu = pixels_per_world_unit.max(f32::EPSILON);
@@ -1521,9 +1563,10 @@ fn paint_parallax_preview(
     let p = layer.parallax.clamp(0.0, 1.0);
     let coverage = parallax_coverage_size(map_size, camera_size, p);
     let size = parallax_fill_size(layer.fill_mode, natural_size, coverage);
+    let animated_offset = layer.animated_offset_world(elapsed_seconds, size);
     let base = [
-        camera_center[0] * (1.0 - p) + map_center[0] * p + layer.offset_world[0],
-        camera_center[1] * (1.0 - p) + map_center[1] * p + layer.offset_world[1],
+        camera_center[0] * (1.0 - p) + map_center[0] * p + animated_offset[0],
+        camera_center[1] * (1.0 - p) + map_center[1] * p + animated_offset[1],
     ];
     let repeat = layer.fill_mode == ParallaxFillMode::Repeat;
     let x_radius = preview_repeat_radius(repeat && layer.repeat_x, camera_size[0], size[0]);
