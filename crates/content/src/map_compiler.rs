@@ -22,6 +22,11 @@ use crate::map_presentation::{
 
 pub const MAP_AUTHORING_SCHEMA_VERSION: u32 = 1;
 
+/// Every authored map must contain at least one full gameplay camera viewport.
+pub const MIN_MAP_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
+pub const MIN_MAP_WIDTH_WU: f32 =
+    MIN_MAP_HEIGHT_WU * purgatory_simulation::AOI_VIEWPORT_ASPECT;
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MapAuthoringSource {
@@ -111,6 +116,21 @@ pub fn compile_tiled_map_with_ppu(
         .height
         .checked_mul(map.tile_height)
         .ok_or_else(|| issue(&tmx_path, "-", "height", "pixel height overflow"))?;
+    let world_width = pixel_width as f32 / pixels_per_world_unit;
+    let world_height = pixel_height as f32 / pixels_per_world_unit;
+    if world_width + f32::EPSILON < MIN_MAP_WIDTH_WU
+        || world_height + f32::EPSILON < MIN_MAP_HEIGHT_WU
+    {
+        return Err(issue(
+            &tmx_path,
+            "-",
+            "dimensions",
+            format!(
+                "map is {world_width:.3} × {world_height:.3} wu; minimum gameplay map is {:.3} × {:.3} wu (one full camera viewport)",
+                MIN_MAP_WIDTH_WU, MIN_MAP_HEIGHT_WU
+            ),
+        ));
+    }
     let graphic_root = graphic_root(sidecar_path)?;
     validate_tilesets(&map, &tmx_path)?;
 
