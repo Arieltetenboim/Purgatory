@@ -29,7 +29,7 @@ use purgatory_protocol::{
 use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionEnd, ActionGateContext,
     ActionKind, Cadence, CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot,
-    FOOTNOTE_SPAWN_X, Health, InputGateReason, InteractionCloseReason, InteractionReject,
+    Health, InputGateReason, InteractionCloseReason, InteractionReject,
     ItemRuntimeError, PLAYER_HALF_EXTENTS, PLAYER_HEALTH_MAX, PlayerInput, PlayerState,
     PresentationOneShotKind, RuntimeSpawnRequest, ScheduleOwner, SimulationTick, TICK_RATE_HZ,
     Transform, WorkLane, World, validate_command_preamble,
@@ -2035,7 +2035,7 @@ impl GameplayOwner {
         let _ = self.world.register_cadence(Cadence::EveryN { n: 30 }, 6);
         let due = tick.saturating_add_ticks(30);
         let req = RuntimeSpawnRequest::transient_at(self.map_a_address())
-            .with_transform(Transform::from_position([FOOTNOTE_SPAWN_X + 6.0, 2.0]))
+            .with_transform(Transform::from_position([self.map_a_spawn()[0] + 6.0, 2.0]))
             .visible();
         if self
             .world
@@ -2113,13 +2113,24 @@ impl GameplayOwner {
         .expect("MAP1 registered")
     }
 
+    fn map_a_spawn(&self) -> [f32; 2] {
+        self.registry
+            .map(MAP1_AUTHORED)
+            .and_then(|map| map.spawn_points.iter().find(|spawn| spawn.id == "default"))
+            .map(|spawn| spawn.position)
+            .expect("MAP1 default spawn")
+    }
+
     fn ensure_dev_transition_map(
         &mut self,
         actor: EntityId,
         map_authored: &str,
     ) -> Result<WorldAddress, InteractionReject> {
-        let dest_content =
-            ContentId::from_authored(map_authored).map_err(|_| InteractionReject::Unavailable)?;
+        let dest_content = self
+            .registry
+            .map(map_authored)
+            .map(|map| map.content_id)
+            .ok_or(InteractionReject::Unavailable)?;
         let current = self
             .world
             .address_of(actor)
@@ -4897,7 +4908,7 @@ mod tests {
             .world()
             .player_body_of(owner.entity_of(a).unwrap())
             .unwrap();
-        assert!(body.position[0] > FOOTNOTE_SPAWN_X);
+        assert!(body.position[0] > owner.map_a_spawn()[0]);
     }
 
     #[test]
@@ -4918,7 +4929,7 @@ mod tests {
         }
         let ax = owner.world().player_body_of(ea).unwrap().position[0];
         let bx = owner.world().player_body_of(eb).unwrap().position[0];
-        assert!(ax > FOOTNOTE_SPAWN_X);
+        assert!(ax > owner.map_a_spawn()[0]);
         assert!((bx - bx0).abs() < 0.05, "B must stay put");
     }
 
@@ -5267,7 +5278,7 @@ mod tests {
         assert_eq!(owner.entity_of(id), Some(actor));
         let after = owner.world().transform_of(actor).unwrap().position;
         assert!(
-            (after[0] - FOOTNOTE_SPAWN_X).abs() < 0.05,
+            (after[0] - owner.map_a_spawn()[0]).abs() < 0.05,
             "authoritative spawn x, got {}",
             after[0]
         );
@@ -5464,7 +5475,7 @@ mod tests {
         let map_before = owner.world().address_of(actor).unwrap().map;
         let dest_addr = owner.world().address_of(actor).unwrap();
         let portal = find_portal_at(&owner, MAP1_AUTHORED, "portal.001", dest_addr);
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(portal),
@@ -5796,6 +5807,16 @@ mod tests {
             .unwrap_or_else(|| panic!("portal not instantiated at {address}"))
     }
 
+    fn move_player_to_map1_portal(owner: &mut GameplayOwner, id: ConnectionId) {
+        let portal = find_portal(owner, MAP1_AUTHORED, "portal.001");
+        let x = owner
+            .world()
+            .transform_of(portal)
+            .expect("MAP1 portal transform")
+            .position[0];
+        assert!(owner.set_player_x(id, x));
+    }
+
     #[test]
     fn portal_e_does_not_activate() {
         let mut owner = GameplayOwner::new();
@@ -5804,7 +5825,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(portal),
@@ -6059,7 +6080,7 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(portal),
@@ -6098,7 +6119,7 @@ mod tests {
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -6153,7 +6174,7 @@ mod tests {
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
         owner.apply_input(command_update(id, cmd(2, MoveAxis::Right, true, false)));
         owner.apply_input(InputUpdate::PortalActivate {
@@ -6188,7 +6209,7 @@ mod tests {
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(portal),
@@ -6304,7 +6325,7 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(portal),
@@ -6370,7 +6391,7 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         let a_portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let b_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(a_portal),
@@ -6422,7 +6443,7 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         let a_portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let b_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(a_portal),
@@ -6456,7 +6477,7 @@ mod tests {
         let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         assert!(owner.world_mut().despawn(dest_portal));
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(portal),
@@ -7214,7 +7235,7 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         let actor = owner.entity_of(id).unwrap();
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let actor_pos = owner.world().transform_of(actor).unwrap().position;
@@ -7264,7 +7285,7 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let map_a_traveler = find_content(&owner, "npc.welcome.traveler_stayed");
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(portal),
@@ -7296,7 +7317,7 @@ mod tests {
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
         let portal_a = find_portal(&owner, MAP1_AUTHORED, "portal.001");
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(portal_a),
@@ -7332,7 +7353,7 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(portal),
@@ -7370,7 +7391,7 @@ mod tests {
         let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
-        assert!(owner.set_player_x(id, 6.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
             target: wire_id(portal),
