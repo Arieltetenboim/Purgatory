@@ -3751,21 +3751,11 @@ fn owned_debug_sword(
         .transform_of(actor)
         .expect("transform")
         .position;
-    let address = game
-        .owner
-        .world()
-        .address_of(actor)
-        .expect("actor address");
+    let address = game.owner.world().address_of(actor).expect("actor address");
     let (item, entity) = game
         .owner
         .world_mut()
-        .spawn_world_drop_item(
-            address,
-            position,
-            debug_sword(),
-            1,
-            1,
-        )
+        .spawn_world_drop_item(address, position, debug_sword(), 1, 1)
         .expect("drop");
     game.owner
         .world_mut()
