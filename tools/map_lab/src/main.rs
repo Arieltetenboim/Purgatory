@@ -351,6 +351,41 @@ impl MapLabApp {
         }
     }
 
+    fn add_foreground_layer(&mut self) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let next = document.environment.foreground_layers.len() + 1;
+        let depth = ParallaxDepth::Near;
+        document.environment.foreground_layers.push(ParallaxLayer {
+            id: format!("atmosphere.{next:03}"),
+            asset_path: "assets/skys/foreground.png".to_owned(),
+            depth,
+            fill_mode: ParallaxFillMode::Cover,
+            parallax: depth.default_parallax(),
+            offset_world: [0.0, 0.0],
+            motion_world_per_second: [0.0, 0.0],
+            repeat_x: false,
+            repeat_y: false,
+            opacity: 0.5,
+        });
+        self.environment_dirty = true;
+        self.status =
+            "ENVIRONMENT · foreground atmosphere added · set Asset then Reload Assets".to_owned();
+    }
+
+    fn delete_foreground_layer(&mut self, index: usize) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        if index < document.environment.foreground_layers.len() {
+            let removed = document.environment.foreground_layers.remove(index);
+            self.environment_textures.remove(&removed.id);
+            self.environment_dirty = true;
+            self.status = format!("ENVIRONMENT · deleted {}", removed.id);
+        }
+    }
+
     fn add_cloud_field(&mut self) {
         let Some(document) = self.document.as_mut() else {
             return;
@@ -636,6 +671,7 @@ impl eframe::App for MapLabApp {
         let mut delete_foothold = None;
         let mut delete_parallax = None;
         let mut delete_cloud = None;
+        let mut delete_foreground = None;
         egui::Panel::left("map_lab_layers")
             .resizable(true)
             .default_size(if self.editor_mode == EditorMode::Map {
@@ -1167,8 +1203,59 @@ impl eframe::App for MapLabApp {
                                 });
 
                             ui.separator();
+                            egui::CollapsingHeader::new("FOREGROUND ATMOSPHERE")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.button("+ Add Atmosphere").clicked() {
+                                            self.add_foreground_layer();
+                                        }
+                                        if ui.button("Reload Assets").clicked() {
+                                            self.reload_environment_assets(ui.ctx());
+                                        }
+                                    });
+                                    ui.small(
+                                        "Drawn over world art, players, monsters, NPCs and items · below debug/UI.",
+                                    );
+                                    if let Some(document) = self.document.as_mut() {
+                                        for (index, layer) in document
+                                            .environment
+                                            .foreground_layers
+                                            .iter_mut()
+                                            .enumerate()
+                                        {
+                                            ui.separator();
+                                            egui::CollapsingHeader::new(&layer.id)
+                                                .id_salt(("foreground_layer", index))
+                                                .default_open(index == 0)
+                                                .show(ui, |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label("ID");
+                                                        if ui
+                                                            .text_edit_singleline(&mut layer.id)
+                                                            .changed()
+                                                        {
+                                                            self.environment_dirty = true;
+                                                        }
+                                                        if ui.small_button("Delete").clicked() {
+                                                            delete_foreground = Some(index);
+                                                        }
+                                                    });
+                                                    if environment_layer_controls(
+                                                        ui,
+                                                        layer,
+                                                        ("foreground_controls", index),
+                                                    ) {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                });
+                                        }
+                                    }
+                                });
+
+                            ui.separator();
                             ui.label("NEXT");
-                            ui.small("Foreground atmosphere");
+                            ui.small("Ambient sprite fields · weather events");
                             ui.add_space(12.0);
                         });
                 } else if self.editor_mode == EditorMode::Footnote {
@@ -1362,6 +1449,9 @@ impl eframe::App for MapLabApp {
         }
         if let Some(index) = delete_cloud {
             self.delete_cloud_field(index);
+        }
+        if let Some(index) = delete_foreground {
+            self.delete_foreground_layer(index);
         }
 
         egui::Panel::right("map_lab_info")
@@ -1628,12 +1718,18 @@ impl MapLabApp {
 
         let preview_camera = [world_width * 0.5, world_height * 0.5];
         let environment_time_seconds = ui.input(|input| input.time);
-        if document.environment.parallax_layers.iter().any(|layer| {
-            layer
-                .motion_world_per_second
-                .iter()
-                .any(|value| value.abs() > f32::EPSILON)
-        }) || document.environment.cloud_fields.iter().any(|field| {
+        if document
+            .environment
+            .parallax_layers
+            .iter()
+            .chain(document.environment.foreground_layers.iter())
+            .any(|layer| {
+                layer
+                    .motion_world_per_second
+                    .iter()
+                    .any(|value| value.abs() > f32::EPSILON)
+            })
+            || document.environment.cloud_fields.iter().any(|field| {
             field
                 .speed_range
                 .iter()
@@ -1724,6 +1820,23 @@ impl MapLabApp {
                         &to_screen,
                     );
                 }
+            }
+        }
+
+        for layer in &document.environment.foreground_layers {
+            if let Some(texture) = self.environment_textures.get(&layer.id) {
+                paint_parallax_preview(
+                    &map_painter,
+                    layer,
+                    texture,
+                    map.pixels_per_world_unit,
+                    [world_width * 0.5, world_height * 0.5],
+                    [world_width, world_height],
+                    preview_camera,
+                    [CAMERA_WIDTH_WU, CAMERA_HEIGHT_WU],
+                    environment_time_seconds,
+                    &to_screen,
+                );
             }
         }
 
@@ -1901,6 +2014,91 @@ impl MapLabApp {
             self.set_default_spawn(point);
         }
     }
+}
+
+fn environment_layer_controls(
+    ui: &mut egui::Ui,
+    layer: &mut ParallaxLayer,
+    id_salt: impl std::hash::Hash,
+) -> bool {
+    let mut changed = false;
+
+    ui.label("Asset");
+    changed |= ui.text_edit_singleline(&mut layer.asset_path).changed();
+
+    let old_depth = layer.depth;
+    egui::ComboBox::from_id_salt(("environment_layer_depth", id_salt))
+        .selected_text(layer.depth.as_str())
+        .show_ui(ui, |ui| {
+            for depth in ParallaxDepth::ALL {
+                ui.selectable_value(&mut layer.depth, depth, depth.as_str());
+            }
+        });
+    if layer.depth != old_depth {
+        layer.parallax = layer.depth.default_parallax();
+        changed = true;
+    }
+
+    let old_fill = layer.fill_mode;
+    egui::ComboBox::from_id_salt(("environment_layer_fill", &layer.id))
+        .selected_text(layer.fill_mode.as_str())
+        .show_ui(ui, |ui| {
+            for mode in ParallaxFillMode::ALL {
+                ui.selectable_value(&mut layer.fill_mode, mode, mode.as_str());
+            }
+        });
+    changed |= layer.fill_mode != old_fill;
+
+    changed |= ui
+        .add(egui::Slider::new(&mut layer.parallax, 0.0..=1.0).text("Parallax"))
+        .changed();
+    changed |= ui
+        .add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0).text("Opacity"))
+        .changed();
+
+    if layer.fill_mode == ParallaxFillMode::Repeat {
+        ui.horizontal(|ui| {
+            changed |= ui.checkbox(&mut layer.repeat_x, "Repeat X").changed();
+            changed |= ui.checkbox(&mut layer.repeat_y, "Repeat Y").changed();
+        });
+    }
+
+    ui.horizontal(|ui| {
+        ui.label("Offset");
+        changed |= ui
+            .add(
+                egui::DragValue::new(&mut layer.offset_world[0])
+                    .speed(0.05)
+                    .prefix("X "),
+            )
+            .changed();
+        changed |= ui
+            .add(
+                egui::DragValue::new(&mut layer.offset_world[1])
+                    .speed(0.05)
+                    .prefix("Y "),
+            )
+            .changed();
+    });
+    ui.horizontal(|ui| {
+        ui.label("Motion");
+        changed |= ui
+            .add(
+                egui::DragValue::new(&mut layer.motion_world_per_second[0])
+                    .speed(0.01)
+                    .prefix("X "),
+            )
+            .changed();
+        changed |= ui
+            .add(
+                egui::DragValue::new(&mut layer.motion_world_per_second[1])
+                    .speed(0.01)
+                    .prefix("Y "),
+            )
+            .changed();
+    });
+    ui.small("0 parallax = screen-fixed · Motion uses world units/second.");
+    changed
 }
 
 fn range_row(ui: &mut egui::Ui, label: &str, range: &mut [f32; 2], speed: f64) -> bool {
@@ -2280,13 +2478,25 @@ fn load_environment_textures(
     let graphic = find_graphic_root(&document.sidecar_path)?;
     let max_texture_side = ctx.input(|input| input.raw.max_texture_side.unwrap_or(2048));
     let mut textures = HashMap::new();
-    for layer in &document.environment.parallax_layers {
+    for (kind, layer) in document
+        .environment
+        .parallax_layers
+        .iter()
+        .map(|layer| ("background", layer))
+        .chain(
+            document
+                .environment
+                .foreground_layers
+                .iter()
+                .map(|layer| ("foreground", layer)),
+        )
+    {
         textures.insert(
             layer.id.clone(),
             load_environment_preview_texture(
                 ctx,
                 &graphic.join(&layer.asset_path),
-                &format!("environment:{}", layer.id),
+                &format!("environment:{kind}:{}", layer.id),
                 max_texture_side,
             )?,
         );
