@@ -992,11 +992,13 @@ mod tests {
         CONTENT_SCHEMA_VERSION, EntityDefinition, MapPlatform, PlacementKind, RestorePolicy,
         SpawnPoint, TransitionRef,
     };
+    use purgatory_common::{MAP1, MAP1_AUTHORED, MAP2, MAP2_AUTHORED, allocated_id_for_label};
     use purgatory_simulation::{InteractableKind, PlatformKind, WorldBounds};
 
     fn sample_map(id: &str) -> MapDefinition {
         MapDefinition {
-            content_id: ContentId::from_authored(id).unwrap(),
+            content_id: allocated_id_for_label(id)
+                .unwrap_or_else(|| ContentId::from_authored(id).unwrap()),
             authored_id: id.into(),
             debug_name: id.into(),
             domain: ContentDomain::Shared,
@@ -1022,7 +1024,7 @@ mod tests {
         let mut reg = ContentRegistry::new();
         reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.finish().unwrap();
-        let cid = ContentId::from_authored(MAP1_AUTHORED).unwrap();
+        let cid = MAP1;
         assert_eq!(reg.map_id(cid), Some(MapId::DEV));
         assert_eq!(reg.map_content_id(MapId::DEV), Some(cid));
         assert!(reg.map(MAP1_AUTHORED).is_some());
@@ -1040,14 +1042,14 @@ mod tests {
     fn map_ids_are_registry_assigned_not_file_fields() {
         let mut reg = ContentRegistry::new();
         reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
-        reg.insert_map(sample_map("map.dev.second")).unwrap();
+        reg.insert_map(sample_map(MAP2_AUTHORED)).unwrap();
         reg.finish().unwrap();
         assert_eq!(
-            reg.map_id(ContentId::from_authored(MAP1_AUTHORED).unwrap()),
+            reg.map_id(MAP1),
             Some(MapId::DEV)
         );
         assert_eq!(
-            reg.map_id(ContentId::from_authored("map.dev.second").unwrap()),
+            reg.map_id(MAP2),
             Some(MapId::from_raw(2))
         );
     }
