@@ -104,7 +104,7 @@ mod tests {
     fn full_pack_instantiates_map1_and_map2() {
         use purgatory_common::{
             ChannelId, InstanceId, MAP1, MAP1_AUTHORED, MAP2, MAP2_AUTHORED,
-            NPC_WELCOME_GATE_WATCHMAN,
+            content_catalog::NPC_WELCOME_GATE_WATCHMAN,
         };
         use purgatory_simulation::{InteractableKind, World};
         let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
