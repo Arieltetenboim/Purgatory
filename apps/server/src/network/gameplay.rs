@@ -5330,8 +5330,11 @@ mod tests {
             speed: Some(2_400),
         });
         owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
-        for _ in 0..15 {
+        for step in 0..40 {
             owner.simulate_tick(dt);
+            if step % 8 == 7 {
+                assert!(owner.set_player_x(id, owner.map_a_spawn()[0]));
+            }
         }
         assert!((owner.world().get_player(actor).unwrap().1.velocity[0] - 24.0).abs() < 0.05);
 
@@ -7469,11 +7472,11 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let chest = find_content(&owner, "entity.interactable.chest");
+        move_player_to_content(&mut owner, id, "entity.interactable.chest");
         let stale = chest;
         assert!(owner.world_mut().despawn(chest));
         // Reuse slot via a fresh interactable spawn near player if possible; despawned
         // generation must fail even before a replacement exists.
-        move_player_to_content(&mut owner, id, "entity.interactable.chest");
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(stale),
