@@ -1044,14 +1044,8 @@ mod tests {
         reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.insert_map(sample_map(MAP2_AUTHORED)).unwrap();
         reg.finish().unwrap();
-        assert_eq!(
-            reg.map_id(MAP1),
-            Some(MapId::DEV)
-        );
-        assert_eq!(
-            reg.map_id(MAP2),
-            Some(MapId::from_raw(2))
-        );
+        assert_eq!(reg.map_id(MAP1), Some(MapId::DEV));
+        assert_eq!(reg.map_id(MAP2), Some(MapId::from_raw(2)));
     }
 
     #[test]
