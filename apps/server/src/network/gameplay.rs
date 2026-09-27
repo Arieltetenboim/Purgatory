@@ -1676,8 +1676,11 @@ impl GameplayOwner {
                     portal_id,
                     reply,
                 } => {
-                    let result =
-                        self.handle_dev_transition(connection_id, &map_authored, portal_id.as_deref());
+                    let result = self.handle_dev_transition(
+                        connection_id,
+                        &map_authored,
+                        portal_id.as_deref(),
+                    );
                     let _ = reply.send(result);
                 }
                 InputUpdate::DevSetChannel {
@@ -2121,8 +2124,8 @@ impl GameplayOwner {
             current.instance,
         )
         .ok_or(InteractionReject::Unavailable)?;
-        let plan =
-            map_plan(&self.registry, map_authored, dest).map_err(|_| InteractionReject::Unavailable)?;
+        let plan = map_plan(&self.registry, map_authored, dest)
+            .map_err(|_| InteractionReject::Unavailable)?;
         self.world
             .ensure_map(&plan)
             .map_err(|_| InteractionReject::Unavailable)?;
@@ -2137,9 +2140,7 @@ impl GameplayOwner {
         anchor: [f32; 2],
         portal_lock: Option<EntityId>,
     ) -> Result<(), InteractionReject> {
-        let pos = self
-            .standing_pose_on_map(dest, anchor[0])
-            .unwrap_or(anchor);
+        let pos = self.standing_pose_on_map(dest, anchor[0]).unwrap_or(anchor);
         if !self.world.transition_entity(actor, dest, pos) {
             return Err(InteractionReject::Unavailable);
         }
@@ -2218,7 +2219,9 @@ impl GameplayOwner {
             let portal = self
                 .world
                 .entity_with_content_at(dest, portal_content)
-                .ok_or_else(|| format!("portal {portal_id} did not instantiate on {map_authored}"))?;
+                .ok_or_else(|| {
+                    format!("portal {portal_id} did not instantiate on {map_authored}")
+                })?;
             let anchor = self
                 .world
                 .transform_of(portal)
@@ -2261,13 +2264,7 @@ impl GameplayOwner {
         let Some(portal_pos) = self.world.transform_of(dest_portal).map(|t| t.position) else {
             return Err(InteractionReject::Unavailable);
         };
-        self.finalize_map_transition(
-            connection_id,
-            actor,
-            dest,
-            portal_pos,
-            Some(dest_portal),
-        )?;
+        self.finalize_map_transition(connection_id, actor, dest, portal_pos, Some(dest_portal))?;
         Ok(dest_portal)
     }
 

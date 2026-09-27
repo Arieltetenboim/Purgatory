@@ -149,13 +149,16 @@ impl ServerCommandsState {
                 self.selected_portal = None;
             }
             if let Some(selected_map) = self.selected_map.as_deref()
-                && self.selected_portal.as_ref().is_some_and(|selected_portal| {
-                    snapshot
-                        .maps
-                        .iter()
-                        .find(|map| map.authored_id == selected_map)
-                        .is_none_or(|map| !map.portals.contains(selected_portal))
-                })
+                && self
+                    .selected_portal
+                    .as_ref()
+                    .is_some_and(|selected_portal| {
+                        snapshot
+                            .maps
+                            .iter()
+                            .find(|map| map.authored_id == selected_map)
+                            .is_none_or(|map| !map.portals.contains(selected_portal))
+                    })
             {
                 self.selected_portal = None;
             }
