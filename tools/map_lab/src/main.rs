@@ -2017,7 +2017,7 @@ impl MapLabApp {
 fn environment_layer_controls(
     ui: &mut egui::Ui,
     layer: &mut ParallaxLayer,
-    id_salt: impl std::hash::Hash,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
 ) -> bool {
     let mut changed = false;
 
