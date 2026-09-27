@@ -14,8 +14,8 @@ use purgatory_content::{
 };
 use purgatory_map_lab::{
     MapImportCandidate, MapLabDocument, MapSwitchChoice, MapSwitchKind, PURGATORY_STANDARD_PPU,
-    apply_map_switch_choice, classify_map_switch, discover_authored_maps,
-    discover_unimported_tmx, import_numeric_tmx,
+    apply_map_switch_choice, classify_map_switch, discover_authored_maps, discover_unimported_tmx,
+    import_numeric_tmx,
 };
 
 const CAMERA_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;

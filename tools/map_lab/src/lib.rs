@@ -5,10 +5,9 @@ use std::path::{Path, PathBuf};
 use purgatory_content::{
     LoadMode, MAP_AUTHORING_SCHEMA_VERSION, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION,
     MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION, MapAuthoringSource, MapEnvironmentAuthoring,
-    MapGameplayAuthoring, MapPresentation, Placement,
-    compile_tiled_map_with_ppu, default_content_root, load_map_authoring, load_placement_file,
-    load_registry, resolve_png_asset_folder, serialize_map_pretty, serialize_placements_v2,
-    validate_cloud_field,
+    MapGameplayAuthoring, MapPresentation, Placement, compile_tiled_map_with_ppu,
+    default_content_root, load_map_authoring, load_placement_file, load_registry,
+    resolve_png_asset_folder, serialize_map_pretty, serialize_placements_v2, validate_cloud_field,
 };
 
 /// Production visual-scale standard for ordinary PURGATORY maps.
@@ -230,8 +229,15 @@ fn repository_root_from_authoring(authoring_directory: &Path) -> Result<PathBuf,
     authoring_directory
         .ancestors()
         .find(|candidate| {
-            candidate.join("Graphic").join("assets").join("maps").is_dir()
-                && candidate.join("content").join("CONTENT_ID_CATALOG.md").is_file()
+            candidate
+                .join("Graphic")
+                .join("assets")
+                .join("maps")
+                .is_dir()
+                && candidate
+                    .join("content")
+                    .join("CONTENT_ID_CATALOG.md")
+                    .is_file()
         })
         .map(Path::to_path_buf)
         .ok_or_else(|| {
@@ -293,7 +299,9 @@ fn record_map_allocation(
     content_id: u32,
     authored_id: &str,
 ) -> Result<(), String> {
-    let catalog = repository_root.join("content").join("CONTENT_ID_CATALOG.md");
+    let catalog = repository_root
+        .join("content")
+        .join("CONTENT_ID_CATALOG.md");
     let mut text = std::fs::read_to_string(&catalog)
         .map_err(|error| format!("read {}: {error}", catalog.display()))?;
     let id_cell = format!("| `{content_id}` |");
@@ -306,15 +314,17 @@ fn record_map_allocation(
         };
     }
     let marker = "\n\n### Items";
-    let insert_at = text
-        .find(marker)
-        .ok_or_else(|| format!("{}: Maps catalog section terminator not found", catalog.display()))?;
+    let insert_at = text.find(marker).ok_or_else(|| {
+        format!(
+            "{}: Maps catalog section terminator not found",
+            catalog.display()
+        )
+    })?;
     text.insert_str(
         insert_at,
         &format!("\n| `{content_id}` | `{authored_id}` | active |"),
     );
-    std::fs::write(&catalog, text)
-        .map_err(|error| format!("write {}: {error}", catalog.display()))
+    std::fs::write(&catalog, text).map_err(|error| format!("write {}: {error}", catalog.display()))
 }
 
 pub fn import_numeric_tmx(
@@ -327,7 +337,12 @@ pub fn import_numeric_tmx(
         return Err("TMX import must come from Graphic/assets/maps".to_owned());
     }
     let expected_name = format!("{}.tmx", candidate.content_id);
-    if candidate.tmx_path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
+    if candidate
+        .tmx_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(expected_name.as_str())
+    {
         return Err("TMX filename must equal its numeric ContentId".to_owned());
     }
     if !(purgatory_common::CONTENT_MAP_START..=purgatory_common::CONTENT_MAP_END)
@@ -344,10 +359,7 @@ pub fn import_numeric_tmx(
         schema_version: MAP_AUTHORING_SCHEMA_VERSION,
         content_id: candidate.content_id,
         id: candidate.authored_id.clone(),
-        visual_source: format!(
-            "../../../Graphic/assets/maps/{}",
-            expected_name
-        ),
+        visual_source: format!("../../../Graphic/assets/maps/{}", expected_name),
         pixels_per_world_unit: PURGATORY_STANDARD_PPU,
     };
     let mut bytes = serde_json::to_vec_pretty(&source)
@@ -901,10 +913,8 @@ mod tests {
 
     #[test]
     fn numeric_tmx_import_creates_sidecar_and_catalog_allocation() {
-        let root = std::env::temp_dir().join(format!(
-            "purgatory-map-import-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("purgatory-map-import-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let graphic_maps = root.join("Graphic/assets/maps");
         let authoring = root.join("content/authoring/maps");
@@ -925,8 +935,7 @@ mod tests {
         let source = load_map_authoring(&sidecar).unwrap();
         assert_eq!(source.content_id, 50_077);
         assert_eq!(source.id, "map.map77");
-        let catalog =
-            std::fs::read_to_string(root.join("content/CONTENT_ID_CATALOG.md")).unwrap();
+        let catalog = std::fs::read_to_string(root.join("content/CONTENT_ID_CATALOG.md")).unwrap();
         assert!(catalog.contains("| `50077` | `map.map77` | active |"));
         let _ = std::fs::remove_dir_all(&root);
     }
