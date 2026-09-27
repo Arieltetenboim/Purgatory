@@ -24,8 +24,7 @@ pub const MAP_AUTHORING_SCHEMA_VERSION: u32 = 1;
 
 /// Every authored map must contain at least one full gameplay camera viewport.
 pub const MIN_MAP_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
-pub const MIN_MAP_WIDTH_WU: f32 =
-    MIN_MAP_HEIGHT_WU * purgatory_simulation::AOI_VIEWPORT_ASPECT;
+pub const MIN_MAP_WIDTH_WU: f32 = MIN_MAP_HEIGHT_WU * purgatory_simulation::AOI_VIEWPORT_ASPECT;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -147,7 +147,11 @@ impl ParallaxLayer {
         std::array::from_fn(|axis| {
             let raw_motion = f64::from(self.motion_world_per_second[axis]) * elapsed_seconds;
             let repeat_axis = self.fill_mode == ParallaxFillMode::Repeat
-                && if axis == 0 { self.repeat_x } else { self.repeat_y };
+                && if axis == 0 {
+                    self.repeat_x
+                } else {
+                    self.repeat_y
+                };
             let period = f64::from(repeat_period_world[axis]);
             let motion = if repeat_axis && period.is_finite() && period > f64::EPSILON {
                 raw_motion.rem_euclid(period)
@@ -641,10 +645,8 @@ mod tests {
     #[cfg(feature = "map-authoring")]
     #[test]
     fn cloud_folder_discovery_is_sorted_non_recursive_and_png_only() {
-        let root = std::env::temp_dir().join(format!(
-            "purgatory-cloud-folder-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("purgatory-cloud-folder-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let folder = root.join("assets/skys/clouds");
         std::fs::create_dir_all(folder.join("nested")).unwrap();

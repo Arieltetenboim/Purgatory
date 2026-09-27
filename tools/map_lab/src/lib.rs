@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use purgatory_content::{
     MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
     MapAuthoringSource, MapEnvironmentAuthoring, MapGameplayAuthoring, MapPresentation,
-    compile_tiled_map_with_ppu, load_map_authoring, resolve_png_asset_folder,
-    serialize_map_pretty, validate_cloud_field,
+    compile_tiled_map_with_ppu, load_map_authoring, resolve_png_asset_folder, serialize_map_pretty,
+    validate_cloud_field,
 };
 
 /// Production visual-scale standard for ordinary PURGATORY maps.
@@ -207,7 +207,9 @@ fn validate_environment(
         let asset = std::path::Path::new(&layer.asset_path);
         if layer.asset_path.trim().is_empty()
             || asset.is_absolute()
-            || asset.components().any(|part| matches!(part, std::path::Component::ParentDir))
+            || asset
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
         {
             return Err(format!(
                 "{}: {kind} layer {} asset_path must be a Graphic-relative path without '..'",
@@ -255,8 +257,7 @@ fn validate_environment(
             .find(|candidate| candidate.is_dir())
             .ok_or_else(|| format!("cannot locate Graphic/ above {}", path.display()))?;
         for field in &environment.cloud_fields {
-            validate_cloud_field(field)
-                .map_err(|error| format!("{}: {error}", path.display()))?;
+            validate_cloud_field(field).map_err(|error| format!("{}: {error}", path.display()))?;
             if !ids.insert(field.id.as_str()) {
                 return Err(format!(
                     "{}: environment layer id {} is duplicated",
@@ -282,7 +283,6 @@ fn gameplay_path_for(sidecar: &Path) -> Result<PathBuf, String> {
     Ok(sidecar.with_file_name(format!("{stem}.gameplay.json")))
 }
 
-
 fn runtime_map_path_for(sidecar: &Path, map_authored: &str) -> Result<PathBuf, String> {
     let maps_dir = sidecar
         .parent()
@@ -290,9 +290,12 @@ fn runtime_map_path_for(sidecar: &Path, map_authored: &str) -> Result<PathBuf, S
     let authoring_dir = maps_dir
         .parent()
         .ok_or_else(|| format!("invalid authoring maps path: {}", maps_dir.display()))?;
-    let content_root = authoring_dir
-        .parent()
-        .ok_or_else(|| format!("invalid content authoring path: {}", authoring_dir.display()))?;
+    let content_root = authoring_dir.parent().ok_or_else(|| {
+        format!(
+            "invalid content authoring path: {}",
+            authoring_dir.display()
+        )
+    })?;
     Ok(content_root
         .join("shared")
         .join("maps")
@@ -557,22 +560,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(sync_runtime_bounds_file(
-            &sidecar,
-            "map.test",
-            [0.0, 0.0, 23.2, 13.0]
-        )
-        .unwrap());
+        assert!(sync_runtime_bounds_file(&sidecar, "map.test", [0.0, 0.0, 23.2, 13.0]).unwrap());
         let first = std::fs::read_to_string(&runtime).unwrap();
         assert!(first.contains("\"debug_name\": \"TEST\""));
         assert!(first.contains("\"max_x\": 23.2"));
         assert!(first.contains("\"max_y\": 13.0"));
-        assert!(!sync_runtime_bounds_file(
-            &sidecar,
-            "map.test",
-            [0.0, 0.0, 23.2, 13.0]
-        )
-        .unwrap());
+        assert!(!sync_runtime_bounds_file(&sidecar, "map.test", [0.0, 0.0, 23.2, 13.0]).unwrap());
         assert_eq!(first, std::fs::read_to_string(&runtime).unwrap());
 
         std::fs::remove_dir_all(root).unwrap();

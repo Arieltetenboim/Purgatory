@@ -44,11 +44,9 @@ fn main() {
         purgatory_content::serialize_map_pretty(&presentation).expect("serialize map presentation"),
     )
     .expect("write compiled map presentation");
-    let compiled_environment = purgatory_content::compile_map_environment(
-        &environment_authoring,
-        &root.join("Graphic"),
-    )
-    .unwrap_or_else(|error| panic!("PURGATORY environment compilation failed:\n{error}"));
+    let compiled_environment =
+        purgatory_content::compile_map_environment(&environment_authoring, &root.join("Graphic"))
+            .unwrap_or_else(|error| panic!("PURGATORY environment compilation failed:\n{error}"));
     fs::write(
         output.join("map.map1.environment.json"),
         purgatory_content::serialize_map_environment_pretty(&compiled_environment)

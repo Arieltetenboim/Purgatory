@@ -358,8 +358,7 @@ impl RuntimeMapPresentation {
                 DrawQuad::rect(
                     [
                         camera.position[0],
-                        camera.position[1] - height * 0.5
-                            + (index as f32 + 0.5) * band_height,
+                        camera.position[1] - height * 0.5 + (index as f32 + 0.5) * band_height,
                     ],
                     [width, band_height + 0.002],
                     color,
@@ -368,11 +367,7 @@ impl RuntimeMapPresentation {
             .collect()
     }
 
-    fn parallax_quads(
-        &self,
-        layer: &RuntimeParallaxLayer,
-        camera: &Camera,
-    ) -> Vec<DrawQuad> {
+    fn parallax_quads(&self, layer: &RuntimeParallaxLayer, camera: &Camera) -> Vec<DrawQuad> {
         let ppu = self.pixels_per_world_unit.max(f32::EPSILON);
         let natural_size = [
             layer.image_dimensions[0] as f32 / ppu,
@@ -386,16 +381,12 @@ impl RuntimeMapPresentation {
         let map_size = [max_x - min_x, max_y - min_y];
         let map_center = [(min_x + max_x) * 0.5, (min_y + max_y) * 0.5];
         let p = layer.authored.parallax;
-        let coverage = parallax_coverage_size(
-            map_size,
-            [camera.viewport_width, camera.viewport_height],
-            p,
-        );
+        let coverage =
+            parallax_coverage_size(map_size, [camera.viewport_width, camera.viewport_height], p);
         let size = fill_size(layer.authored.fill_mode, natural_size, coverage);
-        let animated_offset =
-            layer
-                .authored
-                .animated_offset_world(self.environment_time_seconds, size);
+        let animated_offset = layer
+            .authored
+            .animated_offset_world(self.environment_time_seconds, size);
         let base = [
             camera.position[0] * (1.0 - p) + map_center[0] * p + animated_offset[0],
             camera.position[1] * (1.0 - p) + map_center[1] * p + animated_offset[1],
@@ -517,8 +508,7 @@ fn wrap_cloud_center(
     if !travel_width.is_finite() || travel_width <= f32::EPSILON {
         return 0.0;
     }
-    let value =
-        x_unit * travel_width + speed_world_per_second * elapsed_seconds as f32;
+    let value = x_unit * travel_width + speed_world_per_second * elapsed_seconds as f32;
     value.rem_euclid(travel_width) - travel_width * 0.5
 }
 
@@ -539,11 +529,7 @@ fn parallax_coverage_size(map_size: [f32; 2], viewport: [f32; 2], parallax: f32)
     ]
 }
 
-fn fill_size(
-    mode: ParallaxFillMode,
-    natural: [f32; 2],
-    coverage: [f32; 2],
-) -> [f32; 2] {
+fn fill_size(mode: ParallaxFillMode, natural: [f32; 2], coverage: [f32; 2]) -> [f32; 2] {
     match mode {
         ParallaxFillMode::Natural | ParallaxFillMode::Repeat => natural,
         ParallaxFillMode::Stretch => coverage,
@@ -638,12 +624,8 @@ mod tests {
     fn cloud_wrap_keeps_sprite_fully_outside_before_reentry() {
         let coverage = 10.0;
         let sprite = 4.0;
-        assert!(
-            (wrap_cloud_center(0.0, 0.0, 0.0, coverage, sprite) + 7.0).abs()
-                < 1e-5
-        );
-        let almost_wrapped =
-            wrap_cloud_center(0.0, 1.0, 13.999, coverage, sprite);
+        assert!((wrap_cloud_center(0.0, 0.0, 0.0, coverage, sprite) + 7.0).abs() < 1e-5);
+        let almost_wrapped = wrap_cloud_center(0.0, 1.0, 13.999, coverage, sprite);
         assert!(almost_wrapped > 6.9);
         let wrapped = wrap_cloud_center(0.0, 1.0, 14.0, coverage, sprite);
         assert!((wrapped + 7.0).abs() < 1e-5);

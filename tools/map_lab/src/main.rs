@@ -7,10 +7,9 @@ use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
     CloudFieldAuthoring, CloudStackPosition, FootholdKind, FootholdPath, GameplaySpawnPoint,
-    MIN_MAP_HEIGHT_WU,
-    MIN_MAP_WIDTH_WU, ParallaxDepth, ParallaxFillMode, ParallaxLayer, PresentationSprite,
-    SkyGradient, TileTransform, cloud_field_seed, cloud_instance_count, cloud_instance_specs,
-    resolve_png_asset_folder,
+    MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
+    PresentationSprite, SkyGradient, TileTransform, cloud_field_seed, cloud_instance_count,
+    cloud_instance_specs, resolve_png_asset_folder,
 };
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
@@ -335,8 +334,7 @@ impl MapLabApp {
             opacity: 1.0,
         });
         self.environment_dirty = true;
-        self.status =
-            "ENVIRONMENT · parallax layer added · reload assets to preview".to_owned();
+        self.status = "ENVIRONMENT · parallax layer added · reload assets to preview".to_owned();
     }
 
     fn delete_parallax_layer(&mut self, index: usize) {
@@ -405,8 +403,7 @@ impl MapLabApp {
             opacity_range: [0.65, 0.95],
         });
         self.environment_dirty = true;
-        self.status =
-            "ENVIRONMENT · cloud field added · set Folder then Reload Assets".to_owned();
+        self.status = "ENVIRONMENT · cloud field added · set Folder then Reload Assets".to_owned();
     }
 
     fn delete_cloud_field(&mut self, index: usize) {
@@ -1730,11 +1727,12 @@ impl MapLabApp {
                     .any(|value| value.abs() > f32::EPSILON)
             })
             || document.environment.cloud_fields.iter().any(|field| {
-            field
-                .speed_range
-                .iter()
-                .any(|value| value.abs() > f32::EPSILON)
-        }) {
+                field
+                    .speed_range
+                    .iter()
+                    .any(|value| value.abs() > f32::EPSILON)
+            })
+        {
             ui.ctx().request_repaint();
         }
         for field in document
@@ -2106,10 +2104,18 @@ fn range_row(ui: &mut egui::Ui, label: &str, range: &mut [f32; 2], speed: f64) -
     ui.horizontal(|ui| {
         ui.label(label);
         changed |= ui
-            .add(egui::DragValue::new(&mut range[0]).speed(speed).prefix("Min "))
+            .add(
+                egui::DragValue::new(&mut range[0])
+                    .speed(speed)
+                    .prefix("Min "),
+            )
             .changed();
         changed |= ui
-            .add(egui::DragValue::new(&mut range[1]).speed(speed).prefix("Max "))
+            .add(
+                egui::DragValue::new(&mut range[1])
+                    .speed(speed)
+                    .prefix("Max "),
+            )
             .changed();
     });
     changed
@@ -2142,11 +2148,7 @@ fn parallax_coverage_size(map_size: [f32; 2], camera_size: [f32; 2], parallax: f
     ]
 }
 
-fn parallax_fill_size(
-    mode: ParallaxFillMode,
-    natural: [f32; 2],
-    coverage: [f32; 2],
-) -> [f32; 2] {
+fn parallax_fill_size(mode: ParallaxFillMode, natural: [f32; 2], coverage: [f32; 2]) -> [f32; 2] {
     match mode {
         ParallaxFillMode::Natural | ParallaxFillMode::Repeat => natural,
         ParallaxFillMode::Stretch => coverage,
@@ -2316,8 +2318,7 @@ fn wrap_cloud_center_preview(
     if !travel_width.is_finite() || travel_width <= f32::EPSILON {
         return 0.0;
     }
-    let value =
-        x_unit * travel_width + speed_world_per_second * elapsed_seconds as f32;
+    let value = x_unit * travel_width + speed_world_per_second * elapsed_seconds as f32;
     value.rem_euclid(travel_width) - travel_width * 0.5
 }
 
