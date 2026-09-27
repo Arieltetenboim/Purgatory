@@ -53,26 +53,7 @@
       "opacity": 1.0
     }
   ],
-  "foreground_layers": [
-    {
-      "id": "atmosphere.001",
-      "asset_path": "assets/skys/parallax_foreground.png",
-      "depth": "near",
-      "fill_mode": "cover",
-      "parallax": 0.68,
-      "offset_world": [
-        0.0,
-        0.0
-      ],
-      "motion_world_per_second": [
-        0.0,
-        0.0
-      ],
-      "repeat_x": false,
-      "repeat_y": false,
-      "opacity": 0.5
-    }
-  ],
+  "foreground_layers": [],
   "cloud_fields": [
     {
       "id": "clouds_mid",
