@@ -1020,30 +1020,30 @@ mod tests {
     #[test]
     fn valid_registration_and_lookup() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.finish().unwrap();
-        let cid = ContentId::from_authored(MAP_FOOTNOTE_AUTHORED).unwrap();
+        let cid = ContentId::from_authored(MAP1_AUTHORED).unwrap();
         assert_eq!(reg.map_id(cid), Some(MapId::DEV));
         assert_eq!(reg.map_content_id(MapId::DEV), Some(cid));
-        assert!(reg.map(MAP_FOOTNOTE_AUTHORED).is_some());
-        assert_eq!(reg.label(cid), Some(MAP_FOOTNOTE_AUTHORED));
+        assert!(reg.map(MAP1_AUTHORED).is_some());
+        assert_eq!(reg.label(cid), Some(MAP1_AUTHORED));
     }
 
     #[test]
     fn duplicate_map_rejected() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
-        assert!(reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).is_err());
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        assert!(reg.insert_map(sample_map(MAP1_AUTHORED)).is_err());
     }
 
     #[test]
     fn map_ids_are_registry_assigned_not_file_fields() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.insert_map(sample_map("map.dev.second")).unwrap();
         reg.finish().unwrap();
         assert_eq!(
-            reg.map_id(ContentId::from_authored(MAP_FOOTNOTE_AUTHORED).unwrap()),
+            reg.map_id(ContentId::from_authored(MAP1_AUTHORED).unwrap()),
             Some(MapId::DEV)
         );
         assert_eq!(
@@ -1055,9 +1055,9 @@ mod tests {
     #[test]
     fn unresolved_placement_entity_fails() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.insert_placements(
-            MAP_FOOTNOTE_AUTHORED.into(),
+            MAP1_AUTHORED.into(),
             vec![Placement {
                 id: "placement.missing".into(),
                 kind: PlacementKind::Entity,
@@ -1078,9 +1078,9 @@ mod tests {
     #[test]
     fn unresolved_placement_monster_fails() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.insert_placements(
-            MAP_FOOTNOTE_AUTHORED.into(),
+            MAP1_AUTHORED.into(),
             vec![Placement {
                 id: "placement.mob_001".into(),
                 kind: PlacementKind::Monster,
@@ -1113,11 +1113,11 @@ mod tests {
     #[test]
     fn unresolved_portal_destination_fails() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.insert_entity(sample_entity(
             "entity.portal.src",
             Some(TransitionRef {
-                map_authored: MAP_FOOTNOTE_AUTHORED.into(),
+                map_authored: MAP1_AUTHORED.into(),
                 portal_authored: "entity.portal.missing".into(),
             }),
         ))
@@ -1133,11 +1133,11 @@ mod tests {
     #[test]
     fn map_owned_portals_link_by_map_and_portal_id() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
-        let portal_a_authored = crate::portal_runtime_authored(MAP_FOOTNOTE_AUTHORED, "portal.001");
-        let portal_b_authored = crate::portal_runtime_authored(MAP_FOOTNOTE_AUTHORED, "portal.002");
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        let portal_a_authored = crate::portal_runtime_authored(MAP1_AUTHORED, "portal.001");
+        let portal_b_authored = crate::portal_runtime_authored(MAP1_AUTHORED, "portal.002");
         reg.insert_placements(
-            MAP_FOOTNOTE_AUTHORED.into(),
+            MAP1_AUTHORED.into(),
             vec![
                 Placement {
                     id: "portal.001".into(),
@@ -1145,7 +1145,7 @@ mod tests {
                     content_authored: portal_a_authored.clone(),
                     position: [0.0, 0.0],
                     portal_link: Some(crate::PortalLink {
-                        map_authored: MAP_FOOTNOTE_AUTHORED.into(),
+                        map_authored: MAP1_AUTHORED.into(),
                         portal_id: "portal.002".into(),
                     }),
                 },
@@ -1155,7 +1155,7 @@ mod tests {
                     content_authored: portal_b_authored.clone(),
                     position: [2.0, 0.0],
                     portal_link: Some(crate::PortalLink {
-                        map_authored: MAP_FOOTNOTE_AUTHORED.into(),
+                        map_authored: MAP1_AUTHORED.into(),
                         portal_id: "portal.001".into(),
                     }),
                 },
@@ -1168,10 +1168,10 @@ mod tests {
         let transition = reg
             .portal_transition_by_id(portal_a)
             .expect("portal transition");
-        assert_eq!(transition.map_authored, MAP_FOOTNOTE_AUTHORED);
+        assert_eq!(transition.map_authored, MAP1_AUTHORED);
         assert_eq!(transition.portal_authored, "portal.002");
         assert_eq!(
-            reg.portal_content_id(MAP_FOOTNOTE_AUTHORED, "portal.002"),
+            reg.portal_content_id(MAP1_AUTHORED, "portal.002"),
             ContentId::from_authored(&portal_b_authored).ok()
         );
     }
@@ -1203,13 +1203,13 @@ mod tests {
     #[test]
     fn dest_portal_must_be_placed_on_dest_map() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.insert_entity(sample_entity("entity.portal.src", None))
             .unwrap();
         reg.insert_entity(sample_entity(
             "entity.portal.dest",
             Some(TransitionRef {
-                map_authored: MAP_FOOTNOTE_AUTHORED.into(),
+                map_authored: MAP1_AUTHORED.into(),
                 portal_authored: "entity.portal.src".into(),
             }),
         ))
