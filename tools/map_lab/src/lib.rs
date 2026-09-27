@@ -78,6 +78,17 @@ impl MapLabDocument {
         serialize_map_pretty(&self.presentation).map_err(|error| error.to_string())
     }
 
+    /// Keep runtime world bounds derived from the authoritative TMX extent.
+    ///
+    /// Missing runtime definitions are allowed for visual-only authoring drafts.
+    pub fn sync_runtime_bounds(&self) -> Result<bool, String> {
+        sync_runtime_bounds_file(
+            &self.sidecar_path,
+            &self.source.id,
+            self.presentation.world_bounds,
+        )
+    }
+
     #[must_use]
     pub fn snap_spawn_to_foothold(&self, approximate_center: [f32; 2]) -> Option<[f32; 2]> {
         let half_height = purgatory_simulation::PLAYER_HALF_EXTENTS[1];
@@ -239,6 +250,100 @@ fn gameplay_path_for(sidecar: &Path) -> Result<PathBuf, String> {
     Ok(sidecar.with_file_name(format!("{stem}.gameplay.json")))
 }
 
+
+fn runtime_map_path_for(sidecar: &Path, map_authored: &str) -> Result<PathBuf, String> {
+    let maps_dir = sidecar
+        .parent()
+        .ok_or_else(|| format!("invalid sidecar path: {}", sidecar.display()))?;
+    let authoring_dir = maps_dir
+        .parent()
+        .ok_or_else(|| format!("invalid authoring maps path: {}", maps_dir.display()))?;
+    let content_root = authoring_dir
+        .parent()
+        .ok_or_else(|| format!("invalid content authoring path: {}", authoring_dir.display()))?;
+    Ok(content_root
+        .join("shared")
+        .join("maps")
+        .join(format!("{map_authored}.json")))
+}
+
+fn sync_runtime_bounds_file(
+    sidecar: &Path,
+    map_authored: &str,
+    world_bounds: [f32; 4],
+) -> Result<bool, String> {
+    let runtime_path = runtime_map_path_for(sidecar, map_authored)?;
+    if !runtime_path.is_file() {
+        return Ok(false);
+    }
+
+    let text = std::fs::read_to_string(&runtime_path)
+        .map_err(|error| format!("read {}: {error}", runtime_path.display()))?;
+    let json: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("parse {}: {error}", runtime_path.display()))?;
+    let bounds = json
+        .get("bounds")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| format!("{}: missing bounds object", runtime_path.display()))?;
+
+    let [min_x, min_y, max_x, max_y] = world_bounds;
+    let expected = [
+        ("min_x", min_x),
+        ("max_x", max_x),
+        ("min_y", min_y),
+        ("max_y", max_y),
+    ];
+    let already_synced = expected.iter().all(|(key, value)| {
+        bounds
+            .get(*key)
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|current| (current - f64::from(*value)).abs() <= 1.0e-5)
+    });
+    if already_synced {
+        return Ok(false);
+    }
+
+    let bounds_key = text
+        .find("\"bounds\"")
+        .ok_or_else(|| format!("{}: bounds key not found", runtime_path.display()))?;
+    let object_start = bounds_key
+        + text[bounds_key..]
+            .find('{')
+            .ok_or_else(|| format!("{}: bounds object start not found", runtime_path.display()))?;
+    let object_end = object_start
+        + text[object_start..]
+            .find('}')
+            .ok_or_else(|| format!("{}: bounds object end not found", runtime_path.display()))?;
+    let line_start = text[..bounds_key].rfind('\n').map_or(0, |index| index + 1);
+    let indent = &text[line_start..bounds_key];
+    if !indent.chars().all(char::is_whitespace) {
+        return Err(format!(
+            "{}: bounds indentation is not plain whitespace",
+            runtime_path.display()
+        ));
+    }
+    let child_indent = format!("{indent}  ");
+    let encode = |value: f32| {
+        serde_json::to_string(&value)
+            .map_err(|error| format!("serialize {} bounds: {error}", runtime_path.display()))
+    };
+    let replacement = format!(
+        "{{\n{child_indent}\"min_x\": {},\n{child_indent}\"max_x\": {},\n{child_indent}\"min_y\": {},\n{child_indent}\"max_y\": {}\n{indent}}}",
+        encode(min_x)?,
+        encode(max_x)?,
+        encode(min_y)?,
+        encode(max_y)?,
+    );
+
+    let mut updated = String::with_capacity(text.len() + replacement.len());
+    updated.push_str(&text[..object_start]);
+    updated.push_str(&replacement);
+    updated.push_str(&text[object_end + 1..]);
+    std::fs::write(&runtime_path, updated)
+        .map_err(|error| format!("write {}: {error}", runtime_path.display()))?;
+    Ok(true)
+}
+
 fn validate_gameplay(
     path: &Path,
     source: &MapAuthoringSource,
@@ -380,6 +485,65 @@ mod tests {
     fn gameplay_path_sits_next_to_visual_sidecar() {
         let path = gameplay_path_for(&fixture()).unwrap();
         assert!(path.ends_with("map.map1.gameplay.json"));
+    }
+
+    #[test]
+    fn runtime_bounds_follow_tmx_extent_and_sync_is_stable() {
+        let root = std::env::temp_dir().join(format!(
+            "purgatory-map-lab-bounds-sync-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let authoring_maps = root.join("content/authoring/maps");
+        let shared_maps = root.join("content/shared/maps");
+        std::fs::create_dir_all(&authoring_maps).unwrap();
+        std::fs::create_dir_all(&shared_maps).unwrap();
+
+        let sidecar = authoring_maps.join("map.test.purgatory-map.json");
+        std::fs::write(&sidecar, "{}\n").unwrap();
+        let runtime = shared_maps.join("map.test.json");
+        std::fs::write(
+            &runtime,
+            r#"{
+  "schema_version": 1,
+  "id": "map.test",
+  "debug_name": "TEST",
+  "bounds": {
+    "min_x": 0,
+    "max_x": 46.44,
+    "min_y": 0,
+    "max_y": 13.32
+  },
+  "spawn_points": [],
+  "platforms": [],
+  "restore": {
+    "policy": "safe_point",
+    "point": "default"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(sync_runtime_bounds_file(
+            &sidecar,
+            "map.test",
+            [0.0, 0.0, 23.2, 13.0]
+        )
+        .unwrap());
+        let first = std::fs::read_to_string(&runtime).unwrap();
+        assert!(first.contains("\"debug_name\": \"TEST\""));
+        assert!(first.contains("\"max_x\": 23.2"));
+        assert!(first.contains("\"max_y\": 13.0"));
+        assert!(!sync_runtime_bounds_file(
+            &sidecar,
+            "map.test",
+            [0.0, 0.0, 23.2, 13.0]
+        )
+        .unwrap());
+        assert_eq!(first, std::fs::read_to_string(&runtime).unwrap());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
