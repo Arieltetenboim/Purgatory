@@ -123,7 +123,7 @@ pub fn compile_tiled_map(
                 let x = background_offset[0];
                 let y = background_offset[1];
                 backgrounds.push(PresentationSprite {
-                    asset_key: "map.dev.footnote.background".to_owned(),
+                    asset_key: "map.map1.background".to_owned(),
                     asset_path: canonical_asset_path(base, &base.join(source), path)?,
                     source_rect_px: [0, 0, width, height],
                     position: pixel_center_to_world(
@@ -158,7 +158,7 @@ pub fn compile_tiled_map(
                 let source_rect = tile_source_rect(tile.local_id, tile.tileset);
                 validate_rect(source_rect, tile.tileset, path)?;
                 let sprite = PresentationSprite {
-                    asset_key: "map.dev.footnote.world_art".to_owned(),
+                    asset_key: "map.map1.world_art".to_owned(),
                     asset_path: canonical_asset_path(base, &tile.tileset.image_path, path)?,
                     source_rect_px: source_rect,
                     position: pixel_center_to_world(
@@ -496,7 +496,7 @@ mod tests {
         let map = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Graphic/assets/maps/map1.tmx");
         let presentation =
             compile_tiled_map(&map, TILED_PIXELS_PER_WORLD_UNIT).expect("fixture compiles");
-        assert_eq!(presentation.map_authored, "map.dev.footnote");
+        assert_eq!(presentation.map_authored, "map.map1");
         assert_eq!(presentation.backgrounds.len(), 1);
         assert_eq!(presentation.world_art.len(), 1);
         assert_eq!(
