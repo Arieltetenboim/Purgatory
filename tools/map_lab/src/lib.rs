@@ -901,7 +901,7 @@ mod tests {
             .collect();
         assert!(names.len() >= 2);
         assert!(names.contains(&"map.map1.purgatory-map.json"));
-        assert!(names.contains(&"map.dev.footnote.purgatory-map.json"));
+        assert!(names.contains(&"map.map2.purgatory-map.json"));
 
         for path in &maps {
             let document = MapLabDocument::open(path).expect("open discovered map");
