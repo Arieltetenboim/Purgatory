@@ -2383,7 +2383,12 @@ impl MapLabApp {
                     map_painter.rect_filled(
                         collision_rect,
                         0.0,
-                        Color32::from_rgba_unmultiplied(255, 80, 80, if selected { 44 } else { 22 }),
+                        Color32::from_rgba_unmultiplied(
+                            255,
+                            80,
+                            80,
+                            if selected { 44 } else { 22 },
+                        ),
                     );
                     map_painter.rect_stroke(
                         collision_rect,
@@ -2453,7 +2458,9 @@ impl MapLabApp {
             let kind_label = if placement.kind == PlacementKind::Portal {
                 "PORTAL"
             } else {
-                entry.map(|entry| entry.category.label()).unwrap_or("ENTITY")
+                entry
+                    .map(|entry| entry.category.label())
+                    .unwrap_or("ENTITY")
             };
             map_painter.text(
                 center + Vec2::new(8.0, -8.0),
