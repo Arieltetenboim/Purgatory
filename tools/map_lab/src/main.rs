@@ -476,6 +476,7 @@ impl MapLabApp {
     fn portal_choices(&self) -> Vec<PortalTarget> {
         let mut targets = self.portal_targets.clone();
         if let Some(document) = &self.document {
+            targets.retain(|target| target.map_authored != document.source.id);
             for placement in &document.placements {
                 if placement.kind == PlacementKind::Portal {
                     targets.push(PortalTarget {
