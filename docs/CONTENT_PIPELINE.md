@@ -41,7 +41,7 @@ Human-editable JSON lives under `/content`:
   and Full modes; projected into client-safe dialogue presentation in both and
   authoritative dialogue definitions in Full mode.
 - `server/entities/` — server-only entities (interactables, portals with `transition: { map, portal }`)
-- `server/placements/` — server-only placement lists keyed by map authored id
+- `server/placements/` — server-only placement lists keyed by map authored id. Placement schema v2 gives every placement a stable authored `id`, a closed `kind` (`entity` or `monster`), a `content` authored reference, and a world `position`. Schema v1 `{ entity, position }` remains load-compatible and receives deterministic legacy compatibility IDs; new Map Lab writes target v2. Portal entity definitions are unique per map placement list so transition arrival is unambiguous.
 - `definitions/monsters/` — canonical Monster schema v4 definitions. Full mode loads authoritative gameplay fields; Shared mode projects only client-safe Monster presentation identity. Mob Lab edits these files directly.
 
 JSON must not contain numeric `MapId`, channel, or instance. The registry assigns `MapId` (FOOTNOTE / `map.dev.footnote` is pinned to `MapId` 1).
@@ -99,8 +99,7 @@ The Monster schema v4 contract is
 [`MONSTER_AUTHORING_RUNTIME.md`](MONSTER_AUTHORING_RUNTIME.md). The Red Slime
 normal-session proof resolves Health, collision half-extents, movement speed, damage-triggered chase behavior and home leash from the validated Full registry. Workload-only NPC
 presets and tokens remain owned by simulation/server code and are not monster
-identity. Monster placement, presentation, abilities and loot are not part of
-schema v1.
+identity. Monster definitions remain owned by Mob Lab. Entity E0 adds validated monster references to placement schema v2, but static monster runtime spawning is intentionally deferred to the Entity E2 spawn-adapter slice; E0 does not duplicate the DEV monster spawn path.
 
 Portal links are content data: `transition: { "map": "<dest map authored id>", "portal": "<dest portal entity authored id>" }`. Arrival is at the linked portal, not the map's generic spawn. The destination entity does not need a reverse `transition` (one-way portals).
 

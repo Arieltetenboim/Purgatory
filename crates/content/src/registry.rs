@@ -13,7 +13,7 @@ use crate::monster::{
     MonsterDefinition, MonsterPresentationDefinition, validate_monster_definition,
     validate_monster_presentation,
 };
-use crate::schema::{EntityDefinition, MapDefinition, Placement, RestorePolicy};
+use crate::schema::{EntityDefinition, MapDefinition, Placement, PlacementKind, RestorePolicy};
 use purgatory_common::{ContentId, MAP_FOOTNOTE_AUTHORED, MapId};
 use purgatory_simulation::AbilityDefinition;
 
@@ -587,21 +587,57 @@ impl ContentRegistry {
                 ));
                 continue;
             }
+            let mut ids = std::collections::HashSet::new();
+            let mut placed_portals = std::collections::HashSet::new();
             for (i, p) in placements.iter().enumerate() {
-                match self.entities.get(&p.entity_authored) {
-                    None => issues.push(ValidationIssue::new(
+                if !ids.insert(p.id.as_str()) {
+                    issues.push(ValidationIssue::new(
                         map_authored,
-                        &p.entity_authored,
-                        format!("placements[{i}].entity"),
-                        "unresolved entity reference",
-                    )),
-                    Some(ent)
-                        if self.maps[map_authored].domain == ContentDomain::Shared
-                            && ent.domain == ContentDomain::ServerOnly =>
-                    {
-                        // Shared maps may be listed with server placements; OK.
+                        &p.id,
+                        format!("placements[{i}].id"),
+                        "duplicate placement id",
+                    ));
+                }
+                match p.kind {
+                    PlacementKind::Entity => match self.entities.get(&p.content_authored) {
+                        None => issues.push(ValidationIssue::new(
+                            map_authored,
+                            &p.content_authored,
+                            format!("placements[{i}].content"),
+                            "unresolved entity reference",
+                        )),
+                        Some(ent) => {
+                            if ent.interactable
+                                == Some(purgatory_simulation::InteractableKind::Portal)
+                                && !placed_portals.insert(ent.authored_id.as_str())
+                            {
+                                issues.push(ValidationIssue::new(
+                                    map_authored,
+                                    &p.id,
+                                    format!("placements[{i}].content"),
+                                    format!(
+                                        "portal '{}' may be placed only once per map",
+                                        ent.authored_id
+                                    ),
+                                ));
+                            }
+                            if self.maps[map_authored].domain == ContentDomain::Shared
+                                && ent.domain == ContentDomain::ServerOnly
+                            {
+                                // Shared maps may be listed with server placements; OK.
+                            }
+                        }
+                    },
+                    PlacementKind::Monster => {
+                        if !self.monsters.contains_key(&p.content_authored) {
+                            issues.push(ValidationIssue::new(
+                                map_authored,
+                                &p.content_authored,
+                                format!("placements[{i}].content"),
+                                "unresolved monster reference",
+                            ));
+                        }
                     }
-                    Some(_) => {}
                 }
             }
         }
@@ -638,7 +674,10 @@ impl ContentRegistry {
                 .is_none_or(|placements| {
                     placements
                         .iter()
-                        .all(|p| p.entity_authored != tr.portal_authored)
+                        .all(|p| {
+                            p.kind != PlacementKind::Entity
+                                || p.content_authored != tr.portal_authored
+                        })
                 })
             {
                 issues.push(ValidationIssue::new(
@@ -881,8 +920,8 @@ fn dialogue_ability_issue(
 mod tests {
     use super::*;
     use crate::schema::{
-        CONTENT_SCHEMA_VERSION, EntityDefinition, MapPlatform, RestorePolicy, SpawnPoint,
-        TransitionRef,
+        CONTENT_SCHEMA_VERSION, EntityDefinition, MapPlatform, PlacementKind, RestorePolicy,
+        SpawnPoint, TransitionRef,
     };
     use purgatory_simulation::{InteractableKind, PlatformKind, WorldBounds};
 
@@ -951,7 +990,9 @@ mod tests {
         reg.insert_placements(
             MAP_FOOTNOTE_AUTHORED.into(),
             vec![Placement {
-                entity_authored: "entity.missing.thing".into(),
+                id: "placement.missing".into(),
+                kind: PlacementKind::Entity,
+                content_authored: "entity.missing.thing".into(),
                 position: [0.0, 0.0],
             }],
         )
@@ -961,6 +1002,28 @@ mod tests {
             err.issues
                 .iter()
                 .any(|i| i.reason.contains("unresolved entity"))
+        );
+    }
+
+    #[test]
+    fn unresolved_placement_monster_fails() {
+        let mut reg = ContentRegistry::new();
+        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_placements(
+            MAP_FOOTNOTE_AUTHORED.into(),
+            vec![Placement {
+                id: "placement.mob_001".into(),
+                kind: PlacementKind::Monster,
+                content_authored: "monster.missing".into(),
+                position: [0.0, 0.0],
+            }],
+        )
+        .unwrap();
+        let err = reg.finish().expect_err("unresolved monster");
+        assert!(
+            err.issues
+                .iter()
+                .any(|issue| issue.reason.contains("unresolved monster"))
         );
     }
 
@@ -993,6 +1056,38 @@ mod tests {
             err.issues
                 .iter()
                 .any(|i| i.field == "transition.portal" && i.reason.contains("unresolved portal"))
+        );
+    }
+
+    #[test]
+    fn same_portal_definition_cannot_be_placed_twice_on_one_map() {
+        let mut reg = ContentRegistry::new();
+        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_entity(sample_entity("entity.portal.entry", None))
+            .unwrap();
+        reg.insert_placements(
+            MAP_FOOTNOTE_AUTHORED.into(),
+            vec![
+                Placement {
+                    id: "placement.portal_a".into(),
+                    kind: PlacementKind::Entity,
+                    content_authored: "entity.portal.entry".into(),
+                    position: [0.0, 0.0],
+                },
+                Placement {
+                    id: "placement.portal_b".into(),
+                    kind: PlacementKind::Entity,
+                    content_authored: "entity.portal.entry".into(),
+                    position: [2.0, 0.0],
+                },
+            ],
+        )
+        .unwrap();
+        let err = reg.finish().expect_err("duplicate portal placement");
+        assert!(
+            err.issues
+                .iter()
+                .any(|issue| issue.reason.contains("may be placed only once per map"))
         );
     }
 

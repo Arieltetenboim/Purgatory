@@ -3,7 +3,7 @@
 use crate::error::{ContentError, ValidationIssue};
 use crate::map_gameplay_authoring::FootholdKind;
 use crate::registry::ContentRegistry;
-use crate::schema::EntityDefinition;
+use crate::schema::{EntityDefinition, PlacementKind};
 use purgatory_common::{ContentId, WorldAddress};
 use purgatory_simulation::{
     EquipmentState, Interactable, InteractableKind, MapRuntimePlan, PlanPlatform, Platform,
@@ -71,15 +71,27 @@ pub fn map_plan(
     }
     let mut placements = Vec::new();
     for place in registry.placements(map_authored) {
-        let ent = registry.entity(&place.entity_authored).ok_or_else(|| {
-            ContentError::one(ValidationIssue::new(
-                map_authored,
-                &place.entity_authored,
-                "entity",
-                "unresolved entity reference",
-            ))
-        })?;
-        placements.push(spawn_request_for_entity(ent, address, place.position));
+        match place.kind {
+            PlacementKind::Entity => {
+                let entity = registry.entity(&place.content_authored).ok_or_else(|| {
+                    ContentError::one(ValidationIssue::new(
+                        map_authored,
+                        &place.content_authored,
+                        "content",
+                        "unresolved entity reference",
+                    ))
+                })?;
+                placements.push(spawn_request_for_entity(entity, address, place.position));
+            }
+            PlacementKind::Monster => {
+                return Err(ContentError::one(ValidationIssue::new(
+                    map_authored,
+                    &place.id,
+                    "kind",
+                    "monster placement is validated by Entity E0 but requires the Entity E2 runtime spawn adapter",
+                )));
+            }
+        }
     }
     Ok(MapRuntimePlan {
         address,

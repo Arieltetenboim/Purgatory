@@ -72,8 +72,8 @@ pub use monster::{
 pub use registry::ContentRegistry;
 pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement};
 pub use schema::{
-    CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
-    SpawnPoint, TransitionRef,
+    CONTENT_SCHEMA_VERSION, PLACEMENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform,
+    Placement, PlacementKind, RestorePolicy, SpawnPoint, TransitionRef,
 };
 
 /// Cargo package version for this crate.

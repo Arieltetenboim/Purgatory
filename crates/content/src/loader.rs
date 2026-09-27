@@ -1,6 +1,6 @@
 //! Filesystem JSON loader. Not used on the simulation tick.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -28,8 +28,8 @@ use crate::monster::{
 };
 use crate::registry::ContentRegistry;
 use crate::schema::{
-    CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
-    SpawnPoint, TransitionRef,
+    CONTENT_SCHEMA_VERSION, PLACEMENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform,
+    Placement, PlacementKind, RestorePolicy, SpawnPoint, TransitionRef,
 };
 use purgatory_common::{ContentId, ContentKind, allocated_id_for_label, validate_authored_id};
 use purgatory_simulation::{
@@ -510,18 +510,8 @@ fn load_file(
         }
         Kind::Placements => {
             let raw: RawPlacements = parse(path, &text)?;
-            check_schema(path, raw.schema_version, &raw.map)?;
-            check_authored(path, &raw.map)?;
-            let mut placements = Vec::new();
-            for (i, p) in raw.placements.iter().enumerate() {
-                check_authored(path, &p.entity)?;
-                let pos = pair(path, &format!("placements[{i}].position"), p.position)?;
-                placements.push(Placement {
-                    entity_authored: p.entity.clone(),
-                    position: pos,
-                });
-            }
-            registry.insert_placements(raw.map, placements)
+            let (map, placements) = placements_from_raw(path, raw)?;
+            registry.insert_placements(map, placements)
         }
         Kind::Item => {
             let raw: RawItem = parse(path, &text)?;
@@ -555,6 +545,95 @@ fn load_file(
 fn parse<'a, T: Deserialize<'a>>(path: &Path, text: &'a str) -> Result<T, ContentError> {
     serde_json::from_str(text)
         .map_err(|e| ContentError::from_path(path.to_path_buf(), "-", "json", e.to_string()))
+}
+
+fn placements_from_raw(
+    path: &Path,
+    raw: RawPlacements,
+) -> Result<(String, Vec<Placement>), ContentError> {
+    check_authored(path, &raw.map)?;
+    if raw.schema_version != 1 && raw.schema_version != PLACEMENT_SCHEMA_VERSION {
+        return Err(ContentError::from_path(
+            path.to_path_buf(),
+            &raw.map,
+            "schema_version",
+            format!(
+                "unsupported placement schema version {} (want 1 or {})",
+                raw.schema_version, PLACEMENT_SCHEMA_VERSION
+            ),
+        ));
+    }
+
+    let mut ids = HashSet::new();
+    let mut placements = Vec::with_capacity(raw.placements.len());
+    for (index, value) in raw.placements.into_iter().enumerate() {
+        let field = format!("placements[{index}]");
+        let placement = if raw.schema_version == 1 {
+            let legacy: RawPlacementV1 = serde_json::from_value(value).map_err(|error| {
+                ContentError::from_path(
+                    path.to_path_buf(),
+                    &raw.map,
+                    &field,
+                    format!("invalid legacy placement: {error}"),
+                )
+            })?;
+            check_authored(path, &legacy.entity)?;
+            Placement {
+                id: format!("placement.legacy_{:04}", index + 1),
+                kind: PlacementKind::Entity,
+                content_authored: legacy.entity,
+                position: pair(
+                    path,
+                    &format!("{field}.position"),
+                    legacy.position,
+                )?,
+            }
+        } else {
+            let authored: RawPlacementV2 = serde_json::from_value(value).map_err(|error| {
+                ContentError::from_path(
+                    path.to_path_buf(),
+                    &raw.map,
+                    &field,
+                    format!("invalid placement v2: {error}"),
+                )
+            })?;
+            check_authored(path, &authored.id)?;
+            check_authored(path, &authored.content)?;
+            let kind = match authored.kind.as_str() {
+                "entity" => PlacementKind::Entity,
+                "monster" => PlacementKind::Monster,
+                other => {
+                    return Err(ContentError::from_path(
+                        path.to_path_buf(),
+                        &raw.map,
+                        &format!("{field}.kind"),
+                        format!("unknown placement kind {other:?}; expected 'entity' or 'monster'"),
+                    ));
+                }
+            };
+            Placement {
+                id: authored.id,
+                kind,
+                content_authored: authored.content,
+                position: pair(
+                    path,
+                    &format!("{field}.position"),
+                    authored.position,
+                )?,
+            }
+        };
+
+        if !ids.insert(placement.id.clone()) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                &raw.map,
+                &format!("{field}.id"),
+                format!("duplicate placement id '{}'", placement.id),
+            ));
+        }
+        placements.push(placement);
+    }
+    Ok((raw.map, placements))
 }
 
 fn check_schema(path: &Path, version: u32, def: &str) -> Result<(), ContentError> {
@@ -709,15 +788,26 @@ struct RawPlatform {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawPlacements {
     schema_version: u32,
     map: String,
-    placements: Vec<RawPlacement>,
+    placements: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
-struct RawPlacement {
+#[serde(deny_unknown_fields)]
+struct RawPlacementV1 {
     entity: String,
+    position: [f32; 2],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPlacementV2 {
+    id: String,
+    kind: String,
+    content: String,
     position: [f32; 2],
 }
 
@@ -1521,6 +1611,95 @@ mod tests {
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("version");
         assert!(err.to_string().contains("unsupported schema"));
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn placement_v1_loads_as_legacy_entity_with_compatibility_id() {
+        let raw: RawPlacements = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "map": "map.dev.test",
+                "placements": [
+                    { "entity": "entity.portal.test", "position": [1.0, 2.0] }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let (map, placements) =
+            placements_from_raw(Path::new("placements.json"), raw).expect("legacy placement");
+        assert_eq!(map, "map.dev.test");
+        assert_eq!(
+            placements,
+            vec![Placement {
+                id: "placement.legacy_0001".into(),
+                kind: PlacementKind::Entity,
+                content_authored: "entity.portal.test".into(),
+                position: [1.0, 2.0],
+            }]
+        );
+    }
+
+    #[test]
+    fn placement_v2_accepts_stable_entity_and_monster_references() {
+        let raw: RawPlacements = serde_json::from_str(
+            r#"{
+                "schema_version": 2,
+                "map": "map.dev.test",
+                "placements": [
+                    {
+                        "id": "placement.portal_entry",
+                        "kind": "entity",
+                        "content": "entity.portal.test",
+                        "position": [1.0, 2.0]
+                    },
+                    {
+                        "id": "placement.mob_001",
+                        "kind": "monster",
+                        "content": "monster.moss_crab",
+                        "position": [4.0, 2.0]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let (_, placements) =
+            placements_from_raw(Path::new("placements.json"), raw).expect("placement v2");
+        assert_eq!(placements[0].kind, PlacementKind::Entity);
+        assert_eq!(placements[1].kind, PlacementKind::Monster);
+        assert_eq!(placements[1].id, "placement.mob_001");
+        assert_eq!(placements[1].content_authored, "monster.moss_crab");
+    }
+
+    #[test]
+    fn placement_v2_rejects_duplicate_ids_and_unknown_kinds() {
+        for (body, needle) in [
+            (
+                r#"{
+                    "schema_version": 2,
+                    "map": "map.dev.test",
+                    "placements": [
+                        { "id": "placement.same", "kind": "entity", "content": "entity.portal.test", "position": [0, 0] },
+                        { "id": "placement.same", "kind": "entity", "content": "entity.portal.other", "position": [1, 0] }
+                    ]
+                }"#,
+                "duplicate placement id",
+            ),
+            (
+                r#"{
+                    "schema_version": 2,
+                    "map": "map.dev.test",
+                    "placements": [
+                        { "id": "placement.bad_kind", "kind": "npc", "content": "npc.welcome.traveler_stayed", "position": [0, 0] }
+                    ]
+                }"#,
+                "unknown placement kind",
+            ),
+        ] {
+            let raw: RawPlacements = serde_json::from_str(body).unwrap();
+            let error = placements_from_raw(Path::new("placements.json"), raw)
+                .expect_err("invalid placement");
+            assert!(error.to_string().contains(needle), "{error}");
+        }
     }
 
     fn minimal_npc_json(beats: &str) -> String {

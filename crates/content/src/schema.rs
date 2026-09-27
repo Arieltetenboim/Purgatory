@@ -6,6 +6,7 @@ use purgatory_common::ContentId;
 use purgatory_simulation::{InteractableKind, WorldBounds};
 
 pub const CONTENT_SCHEMA_VERSION: u32 = 1;
+pub const PLACEMENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub struct EntityDefinition {
@@ -65,8 +66,28 @@ pub enum RestorePolicy {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlacementKind {
+    Entity,
+    Monster,
+}
+
+impl PlacementKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Entity => "entity",
+            Self::Monster => "monster",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Placement {
-    pub entity_authored: String,
+    /// Stable editor identity. Unique within one map placement document.
+    pub id: String,
+    pub kind: PlacementKind,
+    /// Authored content reference resolved according to `kind`.
+    pub content_authored: String,
     pub position: [f32; 2],
 }
