@@ -2991,7 +2991,11 @@ async fn authoritative_left_moves_player() {
     let (server, sim) = spawn_gameplay().await;
     let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
     assert!(wait_attached(&sim, id).await);
-    assert!(lock_sim(&sim).owner.set_player_x(id, 0.0));
+    let x0 = {
+        let g = lock_sim(&sim);
+        let entity = g.owner.entity_of(id).unwrap();
+        g.owner.world().player_body_of(entity).unwrap().position[0]
+    };
     write_input(&mut send, 1, MoveAxis::Left, false, false).await;
     assert!(
         wait_until(
@@ -3010,7 +3014,7 @@ async fn authoritative_left_moves_player() {
         let entity = g.owner.entity_of(id).unwrap();
         g.owner.world().player_body_of(entity).unwrap().position[0]
     };
-    assert!(x < -0.2, "left from x=0, got {x}");
+    assert!(x < x0 - 0.2, "left from x={x0}, got {x}");
     server.shutdown();
 }
 
@@ -3524,7 +3528,6 @@ async fn client_receives_authoritative_snapshot() {
     );
     {
         let mut g = lock_sim(&sim);
-        assert!(g.owner.set_player_x(id, -8.0));
         g.owner
             .apply_input(super::gameplay::InputUpdate::DevSpawnMonster {
                 connection_id: id,
@@ -3546,19 +3549,9 @@ async fn client_receives_authoritative_snapshot() {
         .expect("local player in snapshot");
     assert!(player.position[0] > purgatory_simulation::FOOTNOTE_SPAWN_X);
     assert_eq!(
-        snap.kind_count(ReplicatedKind::Interactable),
-        1,
-        "AOI at x=-8 must include the chest as a generic interactable"
-    );
-    assert_eq!(
         snap.kind_count(ReplicatedKind::Npc),
-        2,
-        "AOI at x=-8 must include the Social NPC and explicit DEV Monster as NPCs"
-    );
-    assert_eq!(
-        snap.kind_count(ReplicatedKind::Portal),
         1,
-        "AOI at x=-8 must include the Map A portal"
+        "default-map AOI must include the explicit DEV Monster"
     );
     server.shutdown();
 }
@@ -3570,8 +3563,15 @@ async fn two_clients_see_both_entities_and_distinct_local_ids() {
     let (client_b, mut send_b, _rb, id_b) = handshake_ok(server.addr).await;
     assert!(wait_attached(&sim, id_a).await);
     assert!(wait_attached(&sim, id_b).await);
-    assert!(lock_sim(&sim).owner.set_player_x(id_a, 0.0));
-    assert!(lock_sim(&sim).owner.set_player_x(id_b, 0.0));
+    let (ax0, bx0) = {
+        let g = lock_sim(&sim);
+        let entity_a = g.owner.entity_of(id_a).unwrap();
+        let entity_b = g.owner.entity_of(id_b).unwrap();
+        (
+            g.owner.world().player_body_of(entity_a).unwrap().position[0],
+            g.owner.world().player_body_of(entity_b).unwrap().position[0],
+        )
+    };
     write_input(&mut send_a, 1, MoveAxis::Right, false, false).await;
     write_input(&mut send_b, 1, MoveAxis::Left, false, false).await;
     assert!(
@@ -3605,8 +3605,8 @@ async fn two_clients_see_both_entities_and_distinct_local_ids() {
     assert_eq!(snap_b.local_player_entity, eb);
     let ax = snap_a.entities.get(&ea).unwrap().position[0];
     let bx = snap_a.entities.get(&eb).unwrap().position[0];
-    assert!(ax > 0.2, "A right from 0, got {ax}");
-    assert!(bx < -0.2, "B left from 0, got {bx}");
+    assert!(ax > ax0 + 0.2, "A right from {ax0}, got {ax}");
+    assert!(bx < bx0 - 0.2, "B left from {bx0}, got {bx}");
     server.shutdown();
 }
 
@@ -3751,11 +3751,16 @@ fn owned_debug_sword(
         .transform_of(actor)
         .expect("transform")
         .position;
+    let address = game
+        .owner
+        .world()
+        .address_of(actor)
+        .expect("actor address");
     let (item, entity) = game
         .owner
         .world_mut()
         .spawn_world_drop_item(
-            purgatory_common::WorldAddress::DEV,
+            address,
             position,
             debug_sword(),
             1,
