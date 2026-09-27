@@ -2274,51 +2274,30 @@ mod tests {
     }
 
     #[test]
-    fn workspace_pack_loads_and_matches_footnote_geometry() {
+    fn workspace_pack_loads_numeric_maps_and_shared_content() {
         let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
-        assert!(registry.map_count() >= 2);
+        assert_eq!(registry.map_count(), 2);
         assert!(registry.entity_count() >= 4);
-        let map_a = registry
-            .map(purgatory_common::MAP_FOOTNOTE_AUTHORED)
-            .expect("A");
-        assert_eq!(map_a.platforms.len(), 26);
+
+        let map1 = registry
+            .map(purgatory_common::MAP1_AUTHORED)
+            .expect("MAP1");
+        let map2 = registry
+            .map(purgatory_common::MAP2_AUTHORED)
+            .expect("MAP2");
+        assert_eq!(map1.content_id, purgatory_common::MAP1);
+        assert_eq!(map2.content_id, purgatory_common::MAP2);
         assert_eq!(
-            map_a.platforms[0].position,
-            purgatory_simulation::P0_POSITION
+            registry.map_id(purgatory_common::MAP1),
+            Some(purgatory_common::MapId::from_raw(1))
         );
         assert_eq!(
-            map_a.platforms[0].half_extents,
-            purgatory_simulation::P0.half_extents
-        );
-        assert_eq!(
-            map_a.bounds,
-            purgatory_simulation::WorldBounds::FOOTNOTE_TEST
-        );
-        let spawn = map_a
-            .spawn_points
-            .iter()
-            .find(|s| s.id == "default")
-            .expect("spawn");
-        assert!((spawn.position[0] - purgatory_simulation::FOOTNOTE_SPAWN_X).abs() < 1e-4);
-        let cid_a =
-            purgatory_common::ContentId::from_authored(purgatory_common::MAP_FOOTNOTE_AUTHORED)
-                .unwrap();
-        let cid_b =
-            purgatory_common::ContentId::from_authored(purgatory_common::MAP_SECOND_AUTHORED)
-                .unwrap();
-        assert_eq!(registry.map_id(cid_a), Some(purgatory_common::MapId::DEV));
-        assert_eq!(
-            registry.map_id(cid_b),
+            registry.map_id(purgatory_common::MAP2),
             Some(purgatory_common::MapId::from_raw(2))
         );
-        let cid_map1 =
-            purgatory_common::ContentId::from_authored(purgatory_common::MAP1_AUTHORED).unwrap();
-        assert_eq!(
-            registry.map_id(cid_map1),
-            Some(purgatory_common::MapId::from_raw(3))
-        );
+
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
-        assert_eq!(shared.map_count(), 3);
+        assert_eq!(shared.map_count(), 2);
         assert_eq!(shared.entity_count(), 0);
         assert!(shared.item_count() >= 11);
         assert!(shared.item("item.package").is_some());
@@ -2347,14 +2326,20 @@ mod tests {
         };
         assert!((*speed - 9.0).abs() < f32::EPSILON);
         assert_eq!(*duration_ticks, 5);
+
+        let legacy_portal = registry
+            .entity("entity.portal.to_second")
+            .expect("legacy portal definition remains loadable");
         assert!(
-            registry
-                .entity("entity.portal.to_second")
-                .unwrap()
+            legacy_portal
                 .transition
                 .as_ref()
-                .is_some_and(|tr| tr.portal_authored == "entity.portal.to_footnote")
+                .is_some_and(|transition| {
+                    transition.map_authored == purgatory_common::MAP2_AUTHORED
+                        && transition.portal_authored == "portal.001"
+                })
         );
+
         let cap = registry
             .equipment("equipment.debug.cloth_cap")
             .expect("headwear gameplay");
