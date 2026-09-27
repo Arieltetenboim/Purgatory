@@ -33,9 +33,6 @@ fn main() {
         purgatory_content::serialize_map_pretty(&presentation).expect("serialize map presentation"),
     )
     .expect("write compiled map presentation");
-    fs::copy(
-        &environment,
-        output.join("map.map1.environment.json"),
-    )
-    .expect("copy map environment authoring");
+    fs::copy(&environment, output.join("map.map1.environment.json"))
+        .expect("copy map environment authoring");
 }
