@@ -2,14 +2,15 @@ use std::collections::HashMap;
 
 use purgatory_content::{
     ContentRegistry, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION,
-    MapEnvironmentAuthoring, MapPresentation, PresentationSprite, SkyGradient,
+    MapEnvironmentAuthoring, MapPresentation, ParallaxDepth, ParallaxLayer, PresentationSprite,
+    SkyGradient,
 };
 use purgatory_simulation::MapId;
 use serde_json::from_slice;
 
 use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
-use crate::renderer::{DrawQuad, SpriteTextureId};
+use crate::renderer::{Camera, DrawQuad, SpriteTextureId};
 
 const COMPILED_PRESENTATION: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/map.map1.presentation.json"));
@@ -19,7 +20,9 @@ const COMPILED_ENVIRONMENT: &[u8] =
 pub(crate) struct RuntimeMapPresentation {
     map_authored: String,
     world_bounds: [f32; 4],
+    pixels_per_world_unit: f32,
     sky_gradient: Option<SkyGradient>,
+    parallax_layers: Vec<RuntimeParallaxLayer>,
     sprites: Vec<RuntimeSprite>,
 }
 
@@ -28,6 +31,12 @@ struct RuntimeSprite {
     texture: SpriteTextureId,
     image_dimensions: [u32; 2],
     opacity: f32,
+}
+
+struct RuntimeParallaxLayer {
+    authored: ParallaxLayer,
+    texture: SpriteTextureId,
+    image_dimensions: [u32; 2],
 }
 
 impl RuntimeMapPresentation {
@@ -47,6 +56,7 @@ impl RuntimeMapPresentation {
                 purgatory_common::MAP1_AUTHORED
             ));
         }
+
         let environment: MapEnvironmentAuthoring = from_slice(COMPILED_ENVIRONMENT)
             .map_err(|error| format!("decode compiled map environment: {error}"))?;
         if environment.schema_version != MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION {
@@ -61,9 +71,12 @@ impl RuntimeMapPresentation {
                 environment.map_authored, map.map_authored
             ));
         }
+
         let world_bounds = map.world_bounds;
+        let pixels_per_world_unit = map.pixels_per_world_unit;
         let mut loader = ClientAssetLoader::new(assets);
         let mut textures = HashMap::new();
+
         for asset in &map.assets {
             let texture = loader.load_png(&asset.id, &asset.source_path)?;
             let image = loader
@@ -79,6 +92,37 @@ impl RuntimeMapPresentation {
             }
             textures.insert(asset.id.clone(), (texture, dimensions));
         }
+
+        let mut parallax_layers = Vec::new();
+        for layer in environment.parallax_layers {
+            if layer.asset_path.trim().is_empty() {
+                return Err(format!("environment layer {} has empty asset path", layer.id));
+            }
+            if !layer.parallax.is_finite() || !(0.0..=1.0).contains(&layer.parallax) {
+                return Err(format!(
+                    "environment layer {} has invalid parallax {}",
+                    layer.id, layer.parallax
+                ));
+            }
+            if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) {
+                return Err(format!(
+                    "environment layer {} has invalid opacity {}",
+                    layer.id, layer.opacity
+                ));
+            }
+            let texture_id = format!("map.environment.{}", layer.id);
+            let texture = loader.load_png(&texture_id, &layer.asset_path)?;
+            let image = loader
+                .runtime()
+                .resource(texture)
+                .ok_or_else(|| format!("environment asset {} was not registered", layer.id))?;
+            parallax_layers.push(RuntimeParallaxLayer {
+                authored: layer,
+                texture,
+                image_dimensions: [image.image.width(), image.image.height()],
+            });
+        }
+
         let mut sprites = Vec::new();
         for layer in map.layers.into_iter().filter(|layer| layer.visible) {
             for authored in layer.sprites.into_iter().filter(|sprite| sprite.visible) {
@@ -119,10 +163,13 @@ impl RuntimeMapPresentation {
                 });
             }
         }
+
         Ok(Self {
             map_authored: map.map_authored,
             world_bounds,
+            pixels_per_world_unit,
             sky_gradient: environment.sky_gradient,
+            parallax_layers,
             sprites,
         })
     }
@@ -133,8 +180,17 @@ impl RuntimeMapPresentation {
             .is_some_and(|map| map.authored_id == self.map_authored)
     }
 
-    pub(crate) fn quads(&self) -> Vec<DrawQuad> {
-        let mut quads = self.sky_quads();
+    pub(crate) fn quads(&self, camera: &Camera) -> Vec<DrawQuad> {
+        let mut quads = self.sky_quads(camera);
+        for depth in ParallaxDepth::ALL {
+            for layer in self
+                .parallax_layers
+                .iter()
+                .filter(|layer| layer.authored.depth == depth)
+            {
+                quads.extend(self.parallax_quads(layer, camera));
+            }
+        }
         quads.extend(
             self.sprites
                 .iter()
@@ -161,17 +217,13 @@ impl RuntimeMapPresentation {
         quads
     }
 
-    fn sky_quads(&self) -> Vec<DrawQuad> {
+    fn sky_quads(&self, camera: &Camera) -> Vec<DrawQuad> {
         let Some(gradient) = self.sky_gradient else {
             return Vec::new();
         };
         const BANDS: usize = 16;
-        let [min_x, min_y, max_x, max_y] = self.world_bounds;
-        let width = max_x - min_x;
-        let height = max_y - min_y;
-        if width <= 0.0 || height <= 0.0 {
-            return Vec::new();
-        }
+        let width = camera.viewport_width;
+        let height = camera.viewport_height;
         (0..BANDS)
             .map(|index| {
                 let t = (index as f32 + 0.5) / BANDS as f32;
@@ -179,8 +231,9 @@ impl RuntimeMapPresentation {
                 let band_height = height / BANDS as f32;
                 DrawQuad::rect(
                     [
-                        (min_x + max_x) * 0.5,
-                        min_y + (index as f32 + 0.5) * band_height,
+                        camera.position[0],
+                        camera.position[1] - height * 0.5
+                            + (index as f32 + 0.5) * band_height,
                     ],
                     [width, band_height + 0.002],
                     color,
@@ -188,6 +241,68 @@ impl RuntimeMapPresentation {
             })
             .collect()
     }
+
+    fn parallax_quads(
+        &self,
+        layer: &RuntimeParallaxLayer,
+        camera: &Camera,
+    ) -> Vec<DrawQuad> {
+        let ppu = self.pixels_per_world_unit.max(f32::EPSILON);
+        let size = [
+            layer.image_dimensions[0] as f32 / ppu,
+            layer.image_dimensions[1] as f32 / ppu,
+        ];
+        if size[0] <= 0.0 || size[1] <= 0.0 {
+            return Vec::new();
+        }
+
+        let [min_x, min_y, max_x, max_y] = self.world_bounds;
+        let map_center = [(min_x + max_x) * 0.5, (min_y + max_y) * 0.5];
+        let p = layer.authored.parallax;
+        let base = [
+            camera.position[0] * (1.0 - p)
+                + map_center[0] * p
+                + layer.authored.offset_world[0],
+            camera.position[1] * (1.0 - p)
+                + map_center[1] * p
+                + layer.authored.offset_world[1],
+        ];
+
+        let x_radius = repeat_radius(layer.authored.repeat_x, camera.viewport_width, size[0]);
+        let y_radius = repeat_radius(layer.authored.repeat_y, camera.viewport_height, size[1]);
+        let uvs = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+        let mut quads = Vec::new();
+        for y in -y_radius..=y_radius {
+            for x in -x_radius..=x_radius {
+                if quads.len() >= 64 {
+                    return quads;
+                }
+                let center = [base[0] + x as f32 * size[0], base[1] + y as f32 * size[1]];
+                let mut quad = DrawQuad::textured_sprite(
+                    layer.texture,
+                    center,
+                    [
+                        [-size[0] * 0.5, -size[1] * 0.5],
+                        [size[0] * 0.5, -size[1] * 0.5],
+                        [size[0] * 0.5, size[1] * 0.5],
+                        [-size[0] * 0.5, size[1] * 0.5],
+                    ],
+                    uvs,
+                    0.0,
+                );
+                quad.color[3] = layer.authored.opacity;
+                quads.push(quad);
+            }
+        }
+        quads
+    }
+}
+
+fn repeat_radius(repeat: bool, viewport: f32, tile: f32) -> i32 {
+    if !repeat {
+        return 0;
+    }
+    ((viewport / tile).ceil() as i32 / 2 + 2).clamp(1, 8)
 }
 
 fn lerp_rgba(bottom: [u8; 4], top: [u8; 4], t: f32) -> [f32; 4] {
@@ -238,5 +353,12 @@ mod tests {
         let transformed = sprite_uv_transform(true, false, true);
         assert_eq!(transformed[0], [0.0, 0.0]);
         assert_eq!(transformed[2], [1.0, 1.0]);
+    }
+
+    #[test]
+    fn repeat_radius_is_bounded() {
+        assert_eq!(repeat_radius(false, 20.0, 2.0), 0);
+        assert!((1..=8).contains(&repeat_radius(true, 20.0, 2.0)));
+        assert_eq!(repeat_radius(true, 10_000.0, 0.1), 8);
     }
 }
