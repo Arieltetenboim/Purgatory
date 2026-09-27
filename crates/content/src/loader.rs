@@ -563,7 +563,7 @@ pub fn serialize_placements_v2(
     let mut ids = HashSet::new();
     let mut raw_placements = Vec::with_capacity(placements.len());
     for (index, placement) in placements.iter().enumerate() {
-        check_authored(path, &placement.id)?;
+        check_placement_id(path, &placement.id)?;
         if placement.kind != PlacementKind::Portal {
             check_authored(path, &placement.content_authored)?;
         }
@@ -660,7 +660,7 @@ fn placements_from_raw(
                     format!("invalid placement v2: {error}"),
                 )
             })?;
-            check_authored(path, &authored.id)?;
+            check_placement_id(path, &authored.id)?;
             let (kind, content_authored, portal_link) = match authored.kind.as_str() {
                 "entity" => {
                     let content = authored.content.ok_or_else(|| {
@@ -693,7 +693,7 @@ fn placements_from_raw(
                         .linked_portal
                         .map(|link| {
                             check_authored(path, &link.map)?;
-                            check_authored(path, &link.portal)?;
+                            check_placement_id(path, &link.portal)?;
                             Ok(PortalLink {
                                 map_authored: link.map,
                                 portal_id: link.portal,
@@ -805,6 +805,33 @@ fn check_ability_schema(path: &Path, version: u32, def: &str) -> Result<(), Cont
         ));
     }
     Ok(())
+}
+
+fn check_placement_id(path: &Path, id: &str) -> Result<(), ContentError> {
+    let valid = !id.is_empty()
+        && id.len() <= purgatory_common::MAX_AUTHORED_CONTENT_ID_LEN
+        && id
+            .split('.')
+            .all(|segment| {
+                !segment.is_empty()
+                    && segment
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            })
+        && id
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_lowercase());
+    if valid {
+        Ok(())
+    } else {
+        Err(ContentError::from_path(
+            path.to_path_buf(),
+            id,
+            "id",
+            "placement id must be lowercase ASCII segments separated by dots",
+        ))
+    }
 }
 
 fn check_authored(path: &Path, id: &str) -> Result<(), ContentError> {
