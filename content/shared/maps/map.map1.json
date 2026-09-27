@@ -3,10 +3,10 @@
   "id": "map.map1",
   "debug_name": "MAP1",
   "bounds": {
-    "min_x": 0,
-    "max_x": 46.44,
-    "min_y": 0,
-    "max_y": 13.32
+    "min_x": 0.0,
+    "max_x": 23.2,
+    "min_y": 0.0,
+    "max_y": 13.0
   },
   "spawn_points": [
     {
