@@ -2279,12 +2279,8 @@ mod tests {
         assert_eq!(registry.map_count(), 2);
         assert!(registry.entity_count() >= 4);
 
-        let map1 = registry
-            .map(purgatory_common::MAP1_AUTHORED)
-            .expect("MAP1");
-        let map2 = registry
-            .map(purgatory_common::MAP2_AUTHORED)
-            .expect("MAP2");
+        let map1 = registry.map(purgatory_common::MAP1_AUTHORED).expect("MAP1");
+        let map2 = registry.map(purgatory_common::MAP2_AUTHORED).expect("MAP2");
         assert_eq!(map1.content_id, purgatory_common::MAP1);
         assert_eq!(map2.content_id, purgatory_common::MAP2);
         assert_eq!(
@@ -2330,15 +2326,10 @@ mod tests {
         let legacy_portal = registry
             .entity("entity.portal.to_second")
             .expect("legacy portal definition remains loadable");
-        assert!(
-            legacy_portal
-                .transition
-                .as_ref()
-                .is_some_and(|transition| {
-                    transition.map_authored == purgatory_common::MAP2_AUTHORED
-                        && transition.portal_authored == "portal.001"
-                })
-        );
+        assert!(legacy_portal.transition.as_ref().is_some_and(|transition| {
+            transition.map_authored == purgatory_common::MAP2_AUTHORED
+                && transition.portal_authored == "portal.001"
+        }));
 
         let cap = registry
             .equipment("equipment.debug.cloth_cap")
