@@ -44,12 +44,12 @@ pub use item::{
 pub use loader::{LoadMode, default_content_root, load_registry};
 #[cfg(feature = "map-authoring")]
 pub use map_compiler::{
-    MAP_AUTHORING_SCHEMA_VERSION, MapAuthoringSource, compile_tiled_map,
-    compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
+    MAP_AUTHORING_SCHEMA_VERSION, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, MapAuthoringSource,
+    compile_tiled_map, compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
 };
 pub use map_environment_authoring::{
     MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MapEnvironmentAuthoring, ParallaxDepth,
-    ParallaxLayer, SkyGradient,
+    ParallaxFillMode, ParallaxLayer, SkyGradient,
 };
 pub use map_gameplay_authoring::{
     FootholdKind, FootholdPath, GameplaySpawnPoint, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
