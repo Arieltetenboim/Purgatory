@@ -41,7 +41,9 @@ pub use item::{
     ITEM_CONTENT_SCHEMA_VERSION, ITEM_PRESENTATION_SCHEMA_VERSION, ItemCategory, ItemDefinition,
     ItemPresentation, is_stackable, validate_item_definition, validate_item_presentation,
 };
-pub use loader::{LoadMode, default_content_root, load_registry};
+pub use loader::{
+    LoadMode, default_content_root, load_placement_file, load_registry, serialize_placements_v2,
+};
 #[cfg(feature = "map-authoring")]
 pub use map_compiler::{
     MAP_AUTHORING_SCHEMA_VERSION, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, MapAuthoringSource,

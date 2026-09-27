@@ -547,6 +547,63 @@ fn parse<'a, T: Deserialize<'a>>(path: &Path, text: &'a str) -> Result<T, Conten
         .map_err(|e| ContentError::from_path(path.to_path_buf(), "-", "json", e.to_string()))
 }
 
+pub fn load_placement_file(path: &Path) -> Result<(String, Vec<Placement>), ContentError> {
+    let text = fs::read_to_string(path).map_err(|error| ContentError::from_io(path, &error))?;
+    let raw: RawPlacements = parse(path, &text)?;
+    placements_from_raw(path, raw)
+}
+
+pub fn serialize_placements_v2(
+    map_authored: &str,
+    placements: &[Placement],
+) -> Result<Vec<u8>, ContentError> {
+    let path = Path::new("placements");
+    check_authored(path, map_authored)?;
+    let mut ids = HashSet::new();
+    let mut raw_placements = Vec::with_capacity(placements.len());
+    for (index, placement) in placements.iter().enumerate() {
+        check_authored(path, &placement.id)?;
+        check_authored(path, &placement.content_authored)?;
+        if !placement.position.iter().all(|value| value.is_finite()) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                map_authored,
+                &format!("placements[{index}].position"),
+                "non-finite number",
+            ));
+        }
+        if !ids.insert(placement.id.as_str()) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                map_authored,
+                &format!("placements[{index}].id"),
+                format!("duplicate placement id '{}'", placement.id),
+            ));
+        }
+        raw_placements.push(RawPlacementV2Out {
+            id: &placement.id,
+            kind: placement.kind.as_str(),
+            content: &placement.content_authored,
+            position: placement.position,
+        });
+    }
+    let raw = RawPlacementsV2Out {
+        schema_version: PLACEMENT_SCHEMA_VERSION,
+        map: map_authored,
+        placements: raw_placements,
+    };
+    let mut bytes = serde_json::to_vec_pretty(&raw).map_err(|error| {
+        ContentError::from_path(
+            path.to_path_buf(),
+            map_authored,
+            "json",
+            format!("serialize placements: {error}"),
+        )
+    })?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
 fn placements_from_raw(
     path: &Path,
     raw: RawPlacements,
@@ -800,6 +857,21 @@ struct RawPlacementV2 {
     id: String,
     kind: String,
     content: String,
+    position: [f32; 2],
+}
+
+#[derive(serde::Serialize)]
+struct RawPlacementsV2Out<'a> {
+    schema_version: u32,
+    map: &'a str,
+    placements: Vec<RawPlacementV2Out<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct RawPlacementV2Out<'a> {
+    id: &'a str,
+    kind: &'static str,
+    content: &'a str,
     position: [f32; 2],
 }
 

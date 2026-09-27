@@ -575,71 +575,89 @@ impl ContentRegistry {
         self.content_by_map_id.insert(map, content);
     }
 
-    fn validate_refs(&self) -> Result<(), ContentError> {
+    fn placement_issues(
+        &self,
+        map_authored: &str,
+        placements: &[Placement],
+    ) -> Vec<ValidationIssue> {
         let mut issues = Vec::new();
-        for (map_authored, placements) in &self.placements {
-            if !self.maps.contains_key(map_authored) {
+        if !self.maps.contains_key(map_authored) {
+            issues.push(ValidationIssue::new(
+                "placements",
+                map_authored,
+                "map",
+                "unresolved map reference",
+            ));
+            return issues;
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut placed_portals = std::collections::HashSet::new();
+        for (i, p) in placements.iter().enumerate() {
+            if !ids.insert(p.id.as_str()) {
                 issues.push(ValidationIssue::new(
-                    "placements",
                     map_authored,
-                    "map",
-                    "unresolved map reference",
+                    &p.id,
+                    format!("placements[{i}].id"),
+                    "duplicate placement id",
                 ));
-                continue;
             }
-            let mut ids = std::collections::HashSet::new();
-            let mut placed_portals = std::collections::HashSet::new();
-            for (i, p) in placements.iter().enumerate() {
-                if !ids.insert(p.id.as_str()) {
-                    issues.push(ValidationIssue::new(
+            match p.kind {
+                PlacementKind::Entity => match self.entities.get(&p.content_authored) {
+                    None => issues.push(ValidationIssue::new(
                         map_authored,
-                        &p.id,
-                        format!("placements[{i}].id"),
-                        "duplicate placement id",
-                    ));
-                }
-                match p.kind {
-                    PlacementKind::Entity => match self.entities.get(&p.content_authored) {
-                        None => issues.push(ValidationIssue::new(
-                            map_authored,
-                            &p.content_authored,
-                            format!("placements[{i}].content"),
-                            "unresolved entity reference",
-                        )),
-                        Some(ent) => {
-                            if ent.interactable
-                                == Some(purgatory_simulation::InteractableKind::Portal)
-                                && !placed_portals.insert(ent.authored_id.as_str())
-                            {
-                                issues.push(ValidationIssue::new(
-                                    map_authored,
-                                    &p.id,
-                                    format!("placements[{i}].content"),
-                                    format!(
-                                        "portal '{}' may be placed only once per map",
-                                        ent.authored_id
-                                    ),
-                                ));
-                            }
-                            if self.maps[map_authored].domain == ContentDomain::Shared
-                                && ent.domain == ContentDomain::ServerOnly
-                            {
-                                // Shared maps may be listed with server placements; OK.
-                            }
-                        }
-                    },
-                    PlacementKind::Monster => {
-                        if !self.monsters.contains_key(&p.content_authored) {
+                        &p.content_authored,
+                        format!("placements[{i}].content"),
+                        "unresolved entity reference",
+                    )),
+                    Some(ent) => {
+                        if ent.interactable
+                            == Some(purgatory_simulation::InteractableKind::Portal)
+                            && !placed_portals.insert(ent.authored_id.as_str())
+                        {
                             issues.push(ValidationIssue::new(
                                 map_authored,
-                                &p.content_authored,
+                                &p.id,
                                 format!("placements[{i}].content"),
-                                "unresolved monster reference",
+                                format!(
+                                    "portal '{}' may be placed only once per map",
+                                    ent.authored_id
+                                ),
                             ));
                         }
                     }
+                },
+                PlacementKind::Monster => {
+                    if !self.monsters.contains_key(&p.content_authored) {
+                        issues.push(ValidationIssue::new(
+                            map_authored,
+                            &p.content_authored,
+                            format!("placements[{i}].content"),
+                            "unresolved monster reference",
+                        ));
+                    }
                 }
             }
+        }
+        issues
+    }
+
+    pub fn validate_placements(
+        &self,
+        map_authored: &str,
+        placements: &[Placement],
+    ) -> Result<(), ContentError> {
+        let issues = self.placement_issues(map_authored, placements);
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(ContentError { issues })
+        }
+    }
+
+    fn validate_refs(&self) -> Result<(), ContentError> {
+        let mut issues = Vec::new();
+        for (map_authored, placements) in &self.placements {
+            issues.extend(self.placement_issues(map_authored, placements));
         }
         for ent in self.entities.values() {
             let Some(tr) = &ent.transition else {
