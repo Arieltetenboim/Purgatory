@@ -343,7 +343,6 @@ pub struct RestoreIntent {
 
 impl RestoreIntent {
     #[must_use]
-    #[must_use]
     pub fn map1_default() -> Self {
         Self {
             map_authored: MAP1_AUTHORED.to_string(),
