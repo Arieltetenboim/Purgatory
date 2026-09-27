@@ -44,7 +44,7 @@ Human-editable JSON lives under `/content`:
 - `server/placements/` — server-only placement lists keyed by map authored id. Placement schema v2 gives ordinary entity/monster placements a stable map-local `id`, a closed `kind`, a `content` authored reference, and a world `position`. Portals are map-owned placements: `kind: "portal"`, a map-local Portal ID such as `portal.001`, a world position, and optional `linked_portal: { map, portal }`. The linked target is identified explicitly by destination MapID plus destination Portal ID. Schema v1 `{ entity, position }` remains load-compatible and receives deterministic legacy compatibility IDs; new Map Lab writes v2.
 - `definitions/monsters/` — canonical Monster schema v4 definitions. Full mode loads authoritative gameplay fields; Shared mode projects only client-safe Monster presentation identity. Mob Lab edits these files directly.
 
-JSON must not contain numeric `MapId`, channel, or instance. The registry assigns `MapId` (FOOTNOTE / `map.dev.footnote` is pinned to `MapId` 1).
+JSON does not contain runtime `MapId`, channel, or instance. Stable map identity is the numeric `ContentId`; the registry derives runtime `MapId` from the map ContentId block.
 
 Each map authors a **restore** policy (`safe_point`, `checkpoint`, or `non_reenterable`). That is restore semantics, not a `WorldAddress`. Channel and runtime Instance are assigned by a separate placement layer (Phase 6E currently uses DEFAULT). See ADR-0044.
 
