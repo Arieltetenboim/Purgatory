@@ -5755,26 +5755,6 @@ mod tests {
             .unwrap_or_else(|| panic!("missing {authored}"))
     }
 
-    fn find_content_at(
-        owner: &GameplayOwner,
-        authored: &str,
-        address: purgatory_simulation::WorldAddress,
-    ) -> EntityId {
-        let cid = owner
-            .registry
-            .entity(authored)
-            .unwrap_or_else(|| panic!("missing definition {authored}"))
-            .content_id;
-        owner
-            .world()
-            .iter()
-            .find(|&eid| {
-                owner.world().content_id_of(eid) == Some(cid)
-                    && owner.world().address_of(eid) == Some(address)
-            })
-            .unwrap_or_else(|| panic!("missing {authored} at {address}"))
-    }
-
     fn find_portal(owner: &GameplayOwner, map_authored: &str, portal_id: &str) -> EntityId {
         let content = owner
             .registry
@@ -5867,8 +5847,7 @@ mod tests {
     #[test]
     fn entity_e5_map1_runtime_proof() {
         use purgatory_common::{
-            MAP1_AUTHORED, MONSTER_MOSS_CRAB, MONSTER_SHROOM,
-            content_catalog::NPC_WELCOME_GATE_WATCHMAN,
+            MONSTER_MOSS_CRAB, MONSTER_SHROOM, content_catalog::NPC_WELCOME_GATE_WATCHMAN,
         };
         use std::collections::BTreeSet;
 
