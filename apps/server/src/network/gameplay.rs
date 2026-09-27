@@ -15,7 +15,7 @@ use purgatory_common::{
 use purgatory_content::{
     ContentRegistry, EquipmentAuthError, LoadMode, authorize_equip, default_content_root,
     entity_spawn_request, load_registry, map_plan, monster_spawn_request, resolve_restore,
-    runtime_placement, world_address_for_map,
+    runtime_placement, spawn_point_position, world_address_for_map,
 };
 use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
 use purgatory_protocol::{
