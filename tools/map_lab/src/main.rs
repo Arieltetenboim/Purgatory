@@ -1206,6 +1206,29 @@ impl MapLabApp {
             }
         }
 
+        let preview_camera = [world_width * 0.5, world_height * 0.5];
+        for depth in ParallaxDepth::ALL {
+            for layer in document
+                .environment
+                .parallax_layers
+                .iter()
+                .filter(|layer| layer.depth == depth)
+            {
+                if let Some(texture) = self.environment_textures.get(&layer.id) {
+                    paint_parallax_preview(
+                        &map_painter,
+                        layer,
+                        texture,
+                        map.pixels_per_world_unit,
+                        [world_width * 0.5, world_height * 0.5],
+                        preview_camera,
+                        [CAMERA_WIDTH_WU, CAMERA_HEIGHT_WU],
+                        &to_screen,
+                    );
+                }
+            }
+        }
+
         for (index, layer) in map.layers.iter().enumerate() {
             if !self.preview_layers.get(index).copied().unwrap_or(false) {
                 continue;
@@ -1409,6 +1432,73 @@ fn lerp_color32(bottom: [u8; 4], top: [u8; 4], t: f32) -> Color32 {
 
 fn min_y_screen(rect: Rect, t: f32) -> f32 {
     rect.bottom() - rect.height() * t
+}
+
+fn preview_repeat_radius(repeat: bool, viewport: f32, tile: f32) -> i32 {
+    if !repeat {
+        return 0;
+    }
+    ((viewport / tile).ceil() as i32 / 2 + 2).clamp(1, 8)
+}
+
+fn paint_parallax_preview(
+    painter: &egui::Painter,
+    layer: &ParallaxLayer,
+    texture: &EnvironmentPreviewTexture,
+    pixels_per_world_unit: f32,
+    map_center: [f32; 2],
+    camera_center: [f32; 2],
+    camera_size: [f32; 2],
+    to_screen: &impl Fn([f32; 2]) -> Pos2,
+) {
+    let ppu = pixels_per_world_unit.max(f32::EPSILON);
+    let size = [
+        texture.image_size_px[0] as f32 / ppu,
+        texture.image_size_px[1] as f32 / ppu,
+    ];
+    if size[0] <= 0.0 || size[1] <= 0.0 {
+        return;
+    }
+    let p = layer.parallax.clamp(0.0, 1.0);
+    let base = [
+        camera_center[0] * (1.0 - p) + map_center[0] * p + layer.offset_world[0],
+        camera_center[1] * (1.0 - p) + map_center[1] * p + layer.offset_world[1],
+    ];
+    let x_radius = preview_repeat_radius(layer.repeat_x, camera_size[0], size[0]);
+    let y_radius = preview_repeat_radius(layer.repeat_y, camera_size[1], size[1]);
+    let alpha = (layer.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut copies = 0usize;
+    for y in -y_radius..=y_radius {
+        for x in -x_radius..=x_radius {
+            if copies >= 64 {
+                return;
+            }
+            copies += 1;
+            let center = [base[0] + x as f32 * size[0], base[1] + y as f32 * size[1]];
+            let left = center[0] - size[0] * 0.5;
+            let top = center[1] + size[1] * 0.5;
+            for chunk in &texture.chunks {
+                let [cx, cy, cw, ch] = chunk.source_rect_px;
+                let u0 = cx as f32 / texture.image_size_px[0] as f32;
+                let u1 = (cx + cw) as f32 / texture.image_size_px[0] as f32;
+                let v0 = cy as f32 / texture.image_size_px[1] as f32;
+                let v1 = (cy + ch) as f32 / texture.image_size_px[1] as f32;
+                let positions = [
+                    to_screen([left + u0 * size[0], top - v1 * size[1]]),
+                    to_screen([left + u1 * size[0], top - v1 * size[1]]),
+                    to_screen([left + u1 * size[0], top - v0 * size[1]]),
+                    to_screen([left + u0 * size[0], top - v0 * size[1]]),
+                ];
+                let uv = [
+                    Pos2::new(0.0, 1.0),
+                    Pos2::new(1.0, 1.0),
+                    Pos2::new(1.0, 0.0),
+                    Pos2::new(0.0, 0.0),
+                ];
+                paint_textured_quad(painter, &chunk.texture, positions, uv, alpha);
+            }
+        }
+    }
 }
 
 fn foothold_color(kind: FootholdKind) -> Color32 {
