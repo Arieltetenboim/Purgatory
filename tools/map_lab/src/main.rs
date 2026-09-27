@@ -2395,9 +2395,11 @@ fn load_entity_catalog() -> Result<Vec<EntityCatalogEntry>, String> {
         let category = match entity.interactable {
             Some(purgatory_simulation::InteractableKind::Portal) => EntityCatalogKind::Portal,
             Some(purgatory_simulation::InteractableKind::Npc) => EntityCatalogKind::Npc,
-            Some(purgatory_simulation::InteractableKind::Generic) => {
-                EntityCatalogKind::Interactable
-            }
+            Some(
+                purgatory_simulation::InteractableKind::Generic
+                | purgatory_simulation::InteractableKind::Chest
+                | purgatory_simulation::InteractableKind::Switch,
+            ) => EntityCatalogKind::Interactable,
             None => EntityCatalogKind::Entity,
         };
         entries.push(EntityCatalogEntry {
