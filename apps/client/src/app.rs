@@ -6555,7 +6555,7 @@ mod tests {
         use purgatory_simulation::{ChannelId, InstanceId, World, WorldAddress};
 
         let registry = load_registry(&default_content_root(), LoadMode::Shared).expect("registry");
-        let content = purgatory_common::purgatory_common::MAP2;
+        let content = purgatory_common::MAP2;
         let map_id = registry.map_id(content).expect("MAP2");
         let address = WorldAddress::new(map_id, ChannelId::DEFAULT, InstanceId::DEFAULT);
         let plan = geometry_plan(&registry, map_id, address).expect("plan");
