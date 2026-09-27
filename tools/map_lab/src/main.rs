@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
-    FootholdKind, FootholdPath, GameplaySpawnPoint, ParallaxDepth, ParallaxLayer,
-    PresentationSprite, SkyGradient, TileTransform,
+    FootholdKind, FootholdPath, GameplaySpawnPoint, ParallaxDepth, ParallaxFillMode,
+    ParallaxLayer, PresentationSprite, SkyGradient, TileTransform,
 };
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
@@ -314,6 +314,7 @@ impl MapLabApp {
             id: format!("background.{next:03}"),
             asset_path: "assets/maps/BG.png".to_owned(),
             depth,
+            fill_mode: ParallaxFillMode::Repeat,
             parallax: depth.default_parallax(),
             offset_world: [0.0, 0.0],
             repeat_x: true,
@@ -700,6 +701,29 @@ impl eframe::App for MapLabApp {
                                 self.environment_dirty = true;
                             }
 
+                            let old_fill = layer.fill_mode;
+                            egui::ComboBox::from_id_salt(("parallax_fill", index))
+                                .selected_text(layer.fill_mode.as_str())
+                                .show_ui(ui, |ui| {
+                                    for mode in ParallaxFillMode::ALL {
+                                        ui.selectable_value(
+                                            &mut layer.fill_mode,
+                                            mode,
+                                            mode.as_str(),
+                                        );
+                                    }
+                                });
+                            if layer.fill_mode != old_fill {
+                                self.environment_dirty = true;
+                            }
+                            ui.small(match layer.fill_mode {
+                                ParallaxFillMode::Natural => "Natural size · single copy",
+                                ParallaxFillMode::Repeat => "Natural size · tile on enabled axes",
+                                ParallaxFillMode::Stretch => "Stretch to guaranteed parallax coverage",
+                                ParallaxFillMode::Fit => "Preserve aspect · fit inside coverage",
+                                ParallaxFillMode::Cover => "Preserve aspect · fully cover camera travel",
+                            });
+
                             if ui
                                 .add(
                                     egui::Slider::new(&mut layer.parallax, 0.0..=1.0)
@@ -719,14 +743,16 @@ impl eframe::App for MapLabApp {
                             {
                                 self.environment_dirty = true;
                             }
-                            ui.horizontal(|ui| {
-                                if ui.checkbox(&mut layer.repeat_x, "Repeat X").changed() {
-                                    self.environment_dirty = true;
-                                }
-                                if ui.checkbox(&mut layer.repeat_y, "Repeat Y").changed() {
-                                    self.environment_dirty = true;
-                                }
-                            });
+                            if layer.fill_mode == ParallaxFillMode::Repeat {
+                                ui.horizontal(|ui| {
+                                    if ui.checkbox(&mut layer.repeat_x, "Repeat X").changed() {
+                                        self.environment_dirty = true;
+                                    }
+                                    if ui.checkbox(&mut layer.repeat_y, "Repeat Y").changed() {
+                                        self.environment_dirty = true;
+                                    }
+                                });
+                            }
                             ui.horizontal(|ui| {
                                 ui.label("Offset");
                                 if ui
