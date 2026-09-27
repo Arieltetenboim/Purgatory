@@ -1504,7 +1504,7 @@ impl RawEntity {
         };
         let transition = if let Some(tr) = self.transition {
             check_authored(path, &tr.map)?;
-            check_authored(path, &tr.portal)?;
+            check_placement_id(path, &tr.portal)?;
             Some(TransitionRef {
                 map_authored: tr.map,
                 portal_authored: tr.portal,
