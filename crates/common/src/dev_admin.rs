@@ -190,7 +190,7 @@ mod tests {
     fn transition_request_roundtrip_keeps_map_and_optional_portal() {
         let request = DevAdminRequest::TransitionPlayer {
             connection_id: 12,
-            map_authored: "map.dev.second".into(),
+            map_authored: "map.map2".into(),
             portal_id: Some("portal.001".into()),
         };
         let json = serde_json::to_string(&request).expect("encode");
