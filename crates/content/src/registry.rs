@@ -211,6 +211,47 @@ impl ContentRegistry {
             .unwrap_or(&[])
     }
 
+    #[must_use]
+    pub fn portal_content_id(&self, map_authored: &str, portal_id: &str) -> Option<ContentId> {
+        if let Some(placement) = self
+            .placements(map_authored)
+            .iter()
+            .find(|placement| {
+                placement.kind == PlacementKind::Portal && placement.id == portal_id
+            })
+        {
+            return ContentId::from_authored(&placement.content_authored).ok();
+        }
+
+        let legacy = self
+            .placements(map_authored)
+            .iter()
+            .find(|placement| {
+                placement.kind == PlacementKind::Entity
+                    && placement.content_authored == portal_id
+            })?;
+        let entity = self.entities.get(&legacy.content_authored)?;
+        (entity.interactable == Some(purgatory_simulation::InteractableKind::Portal))
+            .then(|| entity.content_id)
+    }
+
+    #[must_use]
+    pub fn portal_transition_by_id(&self, id: ContentId) -> Option<TransitionRef> {
+        for placements in self.placements.values() {
+            if let Some(placement) = placements.iter().find(|placement| {
+                placement.kind == PlacementKind::Portal
+                    && ContentId::from_authored(&placement.content_authored).ok() == Some(id)
+            }) {
+                let link = placement.portal_link.as_ref()?;
+                return Some(TransitionRef {
+                    map_authored: link.map_authored.clone(),
+                    portal_authored: link.portal_id.clone(),
+                });
+            }
+        }
+        self.entity_by_id(id)?.transition.clone()
+    }
+
     pub fn iter_maps(&self) -> impl Iterator<Item = &MapDefinition> {
         self.maps.values()
     }
@@ -591,7 +632,6 @@ impl ContentRegistry {
             return issues;
         }
         let mut ids = std::collections::HashSet::new();
-        let mut placed_portals = std::collections::HashSet::new();
         for (i, p) in placements.iter().enumerate() {
             if !ids.insert(p.id.as_str()) {
                 issues.push(ValidationIssue::new(
@@ -609,21 +649,7 @@ impl ContentRegistry {
                         format!("placements[{i}].content"),
                         "unresolved entity reference",
                     )),
-                    Some(ent) => {
-                        if ent.interactable == Some(purgatory_simulation::InteractableKind::Portal)
-                            && !placed_portals.insert(ent.authored_id.as_str())
-                        {
-                            issues.push(ValidationIssue::new(
-                                map_authored,
-                                &p.id,
-                                format!("placements[{i}].content"),
-                                format!(
-                                    "portal '{}' may be placed only once per map",
-                                    ent.authored_id
-                                ),
-                            ));
-                        }
-                    }
+                    Some(_) => {}
                 },
                 PlacementKind::Monster => {
                     if !self.monsters.contains_key(&p.content_authored) {
@@ -633,6 +659,31 @@ impl ContentRegistry {
                             format!("placements[{i}].content"),
                             "unresolved monster reference",
                         ));
+                    }
+                }
+                PlacementKind::Portal => {
+                    if let Some(link) = &p.portal_link {
+                        if !self.maps.contains_key(&link.map_authored) {
+                            issues.push(ValidationIssue::new(
+                                map_authored,
+                                &p.id,
+                                format!("placements[{i}].linked_portal.map"),
+                                "unresolved map reference",
+                            ));
+                        } else if self
+                            .portal_content_id(&link.map_authored, &link.portal_id)
+                            .is_none()
+                        {
+                            issues.push(ValidationIssue::new(
+                                map_authored,
+                                &p.id,
+                                format!("placements[{i}].linked_portal.portal"),
+                                format!(
+                                    "portal '{}' is not placed on '{}'",
+                                    link.portal_id, link.map_authored
+                                ),
+                            ));
+                        }
                     }
                 }
             }
@@ -678,21 +729,9 @@ impl ContentRegistry {
                     "unresolved map reference",
                 ));
             }
-            if !self.entities.contains_key(&tr.portal_authored) {
-                issues.push(ValidationIssue::new(
-                    &ent.authored_id,
-                    &ent.authored_id,
-                    "transition.portal",
-                    "unresolved portal reference",
-                ));
-            } else if self
-                .placements
-                .get(&tr.map_authored)
-                .is_none_or(|placements| {
-                    placements.iter().all(|p| {
-                        p.kind != PlacementKind::Entity || p.content_authored != tr.portal_authored
-                    })
-                })
+            if self
+                .portal_content_id(&tr.map_authored, &tr.portal_authored)
+                .is_none()
             {
                 issues.push(ValidationIssue::new(
                     &ent.authored_id,
@@ -949,6 +988,7 @@ mod tests {
             spawn_points: vec![SpawnPoint {
                 id: "default".into(),
                 position: [0.0, 0.0],
+                portal_link: None,
             }],
             platforms: vec![MapPlatform {
                 position: [0.0, 0.0],
@@ -1008,6 +1048,7 @@ mod tests {
                 kind: PlacementKind::Entity,
                 content_authored: "entity.missing.thing".into(),
                 position: [0.0, 0.0],
+                portal_link: None,
             }],
         )
         .unwrap();
@@ -1030,6 +1071,7 @@ mod tests {
                 kind: PlacementKind::Monster,
                 content_authored: "monster.missing".into(),
                 position: [0.0, 0.0],
+                portal_link: None,
             }],
         )
         .unwrap();
@@ -1087,12 +1129,14 @@ mod tests {
                     kind: PlacementKind::Entity,
                     content_authored: "entity.portal.entry".into(),
                     position: [0.0, 0.0],
+                    portal_link: None,
                 },
                 Placement {
                     id: "placement.portal_b".into(),
                     kind: PlacementKind::Entity,
                     content_authored: "entity.portal.entry".into(),
                     position: [2.0, 0.0],
+                    portal_link: None,
                 },
             ],
         )

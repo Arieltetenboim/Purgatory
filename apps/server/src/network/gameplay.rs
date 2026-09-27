@@ -2068,8 +2068,10 @@ impl GameplayOwner {
     ) -> Result<EntityId, InteractionReject> {
         let dest_content = ContentId::from_authored(&tr.map_authored)
             .map_err(|_| InteractionReject::Unavailable)?;
-        let dest_portal_content = ContentId::from_authored(&tr.portal_authored)
-            .map_err(|_| InteractionReject::Unavailable)?;
+        let dest_portal_content = self
+            .registry
+            .portal_content_id(&tr.map_authored, &tr.portal_authored)
+            .ok_or(InteractionReject::Unavailable)?;
         let Some(current) = self.world.address_of(actor) else {
             return Err(InteractionReject::Unavailable);
         };
@@ -3636,8 +3638,7 @@ impl GameplayOwner {
         let Some(tr) = self
             .world
             .content_id_of(target_id)
-            .and_then(|id| self.registry.entity_by_id(id))
-            .and_then(|def| def.transition.clone())
+            .and_then(|id| self.registry.portal_transition_by_id(id))
         else {
             println!("6C_PORTAL rejected actor={actor} target={target} reason=no_link");
             if let Some(tx) = interact_tx {

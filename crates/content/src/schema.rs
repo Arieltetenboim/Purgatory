@@ -70,6 +70,7 @@ pub enum RestorePolicy {
 pub enum PlacementKind {
     Entity,
     Monster,
+    Portal,
 }
 
 impl PlacementKind {
@@ -78,8 +79,24 @@ impl PlacementKind {
         match self {
             Self::Entity => "entity",
             Self::Monster => "monster",
+            Self::Portal => "portal",
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortalLink {
+    pub map_authored: String,
+    pub portal_id: String,
+}
+
+#[must_use]
+pub fn portal_runtime_authored(map_authored: &str, portal_id: &str) -> String {
+    format!(
+        "portal.{}.{}",
+        map_authored.replace('.', "_"),
+        portal_id.replace('.', "_")
+    )
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -90,4 +107,5 @@ pub struct Placement {
     /// Authored content reference resolved according to `kind`.
     pub content_authored: String,
     pub position: [f32; 2],
+    pub portal_link: Option<PortalLink>,
 }

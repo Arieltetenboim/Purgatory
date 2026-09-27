@@ -29,7 +29,8 @@ use crate::monster::{
 use crate::registry::ContentRegistry;
 use crate::schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, PLACEMENT_SCHEMA_VERSION,
-    Placement, PlacementKind, RestorePolicy, SpawnPoint, TransitionRef,
+    Placement, PlacementKind, PortalLink, RestorePolicy, SpawnPoint, TransitionRef,
+    portal_runtime_authored,
 };
 use purgatory_common::{ContentId, ContentKind, allocated_id_for_label, validate_authored_id};
 use purgatory_simulation::{
@@ -563,7 +564,9 @@ pub fn serialize_placements_v2(
     let mut raw_placements = Vec::with_capacity(placements.len());
     for (index, placement) in placements.iter().enumerate() {
         check_authored(path, &placement.id)?;
-        check_authored(path, &placement.content_authored)?;
+        if placement.kind != PlacementKind::Portal {
+            check_authored(path, &placement.content_authored)?;
+        }
         if !placement.position.iter().all(|value| value.is_finite()) {
             return Err(ContentError::from_path(
                 path.to_path_buf(),
@@ -580,11 +583,17 @@ pub fn serialize_placements_v2(
                 format!("duplicate placement id '{}'", placement.id),
             ));
         }
+        let linked_portal = placement.portal_link.as_ref().map(|link| RawPortalLinkOut {
+            map: &link.map_authored,
+            portal: &link.portal_id,
+        });
         raw_placements.push(RawPlacementV2Out {
             id: &placement.id,
             kind: placement.kind.as_str(),
-            content: &placement.content_authored,
+            content: (placement.kind != PlacementKind::Portal)
+                .then_some(placement.content_authored.as_str()),
             position: placement.position,
+            linked_portal,
         });
     }
     let raw = RawPlacementsV2Out {
@@ -640,6 +649,7 @@ fn placements_from_raw(
                 kind: PlacementKind::Entity,
                 content_authored: legacy.entity,
                 position: pair(path, &format!("{field}.position"), legacy.position)?,
+                portal_link: None,
             }
         } else {
             let authored: RawPlacementV2 = serde_json::from_value(value).map_err(|error| {
@@ -651,24 +661,64 @@ fn placements_from_raw(
                 )
             })?;
             check_authored(path, &authored.id)?;
-            check_authored(path, &authored.content)?;
-            let kind = match authored.kind.as_str() {
-                "entity" => PlacementKind::Entity,
-                "monster" => PlacementKind::Monster,
+            let (kind, content_authored, portal_link) = match authored.kind.as_str() {
+                "entity" => {
+                    let content = authored.content.ok_or_else(|| {
+                        ContentError::from_path(
+                            path.to_path_buf(),
+                            &raw.map,
+                            &format!("{field}.content"),
+                            "entity placement requires content",
+                        )
+                    })?;
+                    check_authored(path, &content)?;
+                    (PlacementKind::Entity, content, None)
+                }
+                "monster" => {
+                    let content = authored.content.ok_or_else(|| {
+                        ContentError::from_path(
+                            path.to_path_buf(),
+                            &raw.map,
+                            &format!("{field}.content"),
+                            "monster placement requires content",
+                        )
+                    })?;
+                    check_authored(path, &content)?;
+                    (PlacementKind::Monster, content, None)
+                }
+                "portal" => {
+                    let runtime_authored = portal_runtime_authored(&raw.map, &authored.id);
+                    check_authored(path, &runtime_authored)?;
+                    let link = authored
+                        .linked_portal
+                        .map(|link| {
+                            check_authored(path, &link.map)?;
+                            check_authored(path, &link.portal)?;
+                            Ok(PortalLink {
+                                map_authored: link.map,
+                                portal_id: link.portal,
+                            })
+                        })
+                        .transpose()?;
+                    (PlacementKind::Portal, runtime_authored, link)
+                }
                 other => {
                     return Err(ContentError::from_path(
                         path.to_path_buf(),
                         &raw.map,
                         &format!("{field}.kind"),
-                        format!("unknown placement kind {other:?}; expected 'entity' or 'monster'"),
+                        format!(
+                            "unknown placement kind {other:?}; expected 'entity', 'monster', or 'portal'"
+                        ),
                     ));
                 }
             };
             Placement {
                 id: authored.id,
                 kind,
-                content_authored: authored.content,
+                content_authored,
                 position: pair(path, &format!("{field}.position"), authored.position)?,
+                portal_link,
             }
         };
 
@@ -856,8 +906,18 @@ struct RawPlacementV1 {
 struct RawPlacementV2 {
     id: String,
     kind: String,
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
     position: [f32; 2],
+    #[serde(default)]
+    linked_portal: Option<RawPortalLink>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPortalLink {
+    map: String,
+    portal: String,
 }
 
 #[derive(serde::Serialize)]
@@ -871,8 +931,17 @@ struct RawPlacementsV2Out<'a> {
 struct RawPlacementV2Out<'a> {
     id: &'a str,
     kind: &'static str,
-    content: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a str>,
     position: [f32; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linked_portal: Option<RawPortalLinkOut<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct RawPortalLinkOut<'a> {
+    map: &'a str,
+    portal: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -1699,6 +1768,7 @@ mod tests {
                 kind: PlacementKind::Entity,
                 content_authored: "entity.portal.test".into(),
                 position: [1.0, 2.0],
+                portal_link: None,
             }]
         );
     }
@@ -1732,6 +1802,39 @@ mod tests {
         assert_eq!(placements[1].kind, PlacementKind::Monster);
         assert_eq!(placements[1].id, "placement.mob_001");
         assert_eq!(placements[1].content_authored, "monster.moss_crab");
+    }
+
+    #[test]
+    fn placement_v2_accepts_map_owned_portal_link() {
+        let raw: RawPlacements = serde_json::from_str(
+            r#"{
+                "schema_version": 2,
+                "map": "map.dev.test",
+                "placements": [
+                    {
+                        "id": "portal.001",
+                        "kind": "portal",
+                        "position": [3.0, 2.0],
+                        "linked_portal": {
+                            "map": "map.dev.other",
+                            "portal": "portal.002"
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let (_, placements) =
+            placements_from_raw(Path::new("placements.json"), raw).expect("portal placement");
+        assert_eq!(placements[0].kind, PlacementKind::Portal);
+        assert_eq!(placements[0].id, "portal.001");
+        assert_eq!(
+            placements[0].portal_link,
+            Some(PortalLink {
+                map_authored: "map.dev.other".into(),
+                portal_id: "portal.002".into(),
+            })
+        );
     }
 
     #[test]

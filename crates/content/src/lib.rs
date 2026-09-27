@@ -75,7 +75,8 @@ pub use registry::ContentRegistry;
 pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement};
 pub use schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, PLACEMENT_SCHEMA_VERSION,
-    Placement, PlacementKind, RestorePolicy, SpawnPoint, TransitionRef,
+    Placement, PlacementKind, PortalLink, RestorePolicy, SpawnPoint, TransitionRef,
+    portal_runtime_authored,
 };
 
 /// Cargo package version for this crate.

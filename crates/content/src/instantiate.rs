@@ -91,6 +91,23 @@ pub fn map_plan(
                     "monster placement is validated by Entity E0 but requires the Entity E2 runtime spawn adapter",
                 )));
             }
+            PlacementKind::Portal => {
+                let content_id = ContentId::from_authored(&place.content_authored).map_err(|_| {
+                    ContentError::one(ValidationIssue::new(
+                        map_authored,
+                        &place.id,
+                        "id",
+                        "portal runtime identity is invalid",
+                    ))
+                })?;
+                placements.push(
+                    RuntimeSpawnRequest::transient_at(address)
+                        .with_transform(Transform::from_position(place.position))
+                        .with_content(content_id)
+                        .visible()
+                        .with_interactable(Interactable::new(InteractableKind::Portal)),
+                );
+            }
         }
     }
     Ok(MapRuntimePlan {
