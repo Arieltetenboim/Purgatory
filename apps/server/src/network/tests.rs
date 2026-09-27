@@ -3526,15 +3526,35 @@ async fn client_receives_authoritative_snapshot() {
         )
         .await
     );
-    {
+    let dev_monster = {
         let mut g = lock_sim(&sim);
+        let before: std::collections::HashSet<_> = g
+            .owner
+            .world()
+            .iter()
+            .filter(|&entity| {
+                g.owner.world().content_id_of(entity)
+                    == Some(purgatory_common::MONSTER_MOSS_CRAB)
+            })
+            .collect();
         g.owner
             .apply_input(super::gameplay::InputUpdate::DevSpawnMonster {
                 connection_id: id,
                 monster_content_id: purgatory_common::MONSTER_MOSS_CRAB,
             });
+        let spawned = g
+            .owner
+            .world()
+            .iter()
+            .find(|entity| {
+                !before.contains(entity)
+                    && g.owner.world().content_id_of(*entity)
+                        == Some(purgatory_common::MONSTER_MOSS_CRAB)
+            })
+            .expect("explicit DEV Monster");
         g.tick_n(8);
-    }
+        spawned
+    };
     let mut uni = accept_snapshot_stream(&client).await;
     let snap = read_latest_view(&mut uni).await;
     assert_eq!(snap.player_count(), 1);
@@ -3548,10 +3568,11 @@ async fn client_receives_authoritative_snapshot() {
         .get(&snap.local_player_entity)
         .expect("local player in snapshot");
     assert!(player.position[0] > purgatory_simulation::FOOTNOTE_SPAWN_X);
+    let dev_monster_wire = super::snapshot::to_wire_id(dev_monster);
     assert_eq!(
-        snap.kind_count(ReplicatedKind::Npc),
-        1,
-        "default-map AOI must include the explicit DEV Monster"
+        snap.entities.get(&dev_monster_wire).map(|entity| entity.kind),
+        Some(ReplicatedKind::Npc),
+        "snapshot must include the explicit DEV Monster regardless of authored map NPC count"
     );
     server.shutdown();
 }
