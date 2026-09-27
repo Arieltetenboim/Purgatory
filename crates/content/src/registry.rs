@@ -1004,7 +1004,6 @@ mod tests {
             spawn_points: vec![SpawnPoint {
                 id: "default".into(),
                 position: [0.0, 0.0],
-                portal_link: None,
             }],
             platforms: vec![MapPlatform {
                 position: [0.0, 0.0],
