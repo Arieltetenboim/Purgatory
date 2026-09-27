@@ -160,7 +160,7 @@ mod tests {
         ] {
             assert_eq!(id.kind(), Some(ContentKind::Npc));
         }
-        for id in [MAP_FOOTNOTE, MAP_SECOND, MAP1] {
+        for id in [MAP1, MAP2] {
             assert_eq!(id.kind(), Some(ContentKind::Map));
         }
         for id in [
@@ -184,8 +184,8 @@ mod tests {
             "npc.welcome.gate_watchman",
             "npc.welcome.shopkeeper",
             "npc.welcome.workshop_craftsperson",
-            "map.dev.footnote",
             "map.map1",
+            "map.map2",
             "equipment.debug.practice_sword",
             "item.debug.small_potion",
             "item.package",

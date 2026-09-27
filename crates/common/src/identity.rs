@@ -483,10 +483,10 @@ mod tests {
 
     #[test]
     fn legacy_authored_constructor_remains_only_for_migration() {
-        let a = ContentId::from_authored("map.dev.footnote").expect("legacy label");
-        let b = ContentId::from_authored("map.dev.footnote").expect("legacy label");
+        let a = ContentId::from_authored("map.legacy.fixture").expect("legacy label");
+        let b = ContentId::from_authored("map.legacy.fixture").expect("legacy label");
         assert_eq!(a, b);
-        assert_eq!(a.token(), fnv1a64(b"map.dev.footnote"));
+        assert_eq!(a.token(), fnv1a64(b"map.legacy.fixture"));
         assert_eq!(a.kind(), None);
     }
 
@@ -565,8 +565,8 @@ mod tests {
 
     #[test]
     fn restore_intent_is_not_a_world_address() {
-        let intent = RestoreIntent::footnote_default();
-        assert_eq!(intent.map_authored, MAP_FOOTNOTE_AUTHORED);
+        let intent = RestoreIntent::map1_default();
+        assert_eq!(intent.map_authored, MAP1_AUTHORED);
         assert_eq!(intent.point_id, DEFAULT_RESTORE_POINT);
         assert!(intent.checkpoint_id.is_none());
     }

@@ -101,16 +101,15 @@ mod tests {
     }
 
     #[test]
-    fn full_pack_instantiates_map_a_and_b() {
+    fn full_pack_instantiates_map1_and_map2() {
         use purgatory_common::{
-            ChannelId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
-            NPC_WELCOME_TRAVELER_STAYED, WORLD_OBJECT_SWITCH,
+            ChannelId, InstanceId, MAP1, MAP1_AUTHORED, MAP2, MAP2_AUTHORED,
+            NPC_WELCOME_GATE_WATCHMAN,
         };
         use purgatory_simulation::{InteractableKind, World};
         let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
         let mut world = World::new();
-        for authored in [MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED] {
-            let cid = ContentId::from_authored(authored).unwrap();
+        for (authored, cid) in [(MAP1_AUTHORED, MAP1), (MAP2_AUTHORED, MAP2)] {
             let addr =
                 world_address_for_map(&registry, cid, ChannelId::DEFAULT, InstanceId::DEFAULT)
                     .unwrap();
@@ -118,29 +117,19 @@ mod tests {
             world.instantiate_map(&plan).unwrap();
         }
         assert_eq!(world.instantiated_count(), 2);
-        let traveler = world
+        let gate_watchman = world
             .iter()
-            .find(|&id| world.content_id_of(id) == Some(NPC_WELCOME_TRAVELER_STAYED))
-            .expect("live Traveler placement");
+            .find(|&id| world.content_id_of(id) == Some(NPC_WELCOME_GATE_WATCHMAN))
+            .expect("live MAP1 Gate Watchman");
         assert_eq!(
-            world.interactable_of(traveler).map(|cap| cap.kind),
+            world.interactable_of(gate_watchman).map(|cap| cap.kind),
             Some(InteractableKind::Npc)
         );
-        assert!(
-            world
-                .equipment_of(traveler)
-                .is_some_and(|state| state.is_empty())
-        );
-        assert!(
-            world.npc_of(traveler).is_none(),
-            "Social NPC has no combat AI"
-        );
-        assert!(
-            world
-                .iter()
-                .all(|id| world.content_id_of(id) != Some(WORLD_OBJECT_SWITCH)),
-            "the legacy Dev Switch definition remains available but is not live"
-        );
+        assert!(world.equipment_of(gate_watchman).is_some());
+        let map2_portal = registry
+            .portal_content_id(MAP2_AUTHORED, "portal.001")
+            .expect("MAP2 portal content");
+        assert!(world.iter().any(|id| world.content_id_of(id) == Some(map2_portal)));
         assert!(world.iter().all(|id| world.persistent_id_of(id).is_none()));
     }
 
