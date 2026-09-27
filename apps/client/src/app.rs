@@ -245,7 +245,7 @@ struct ClientApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     asset_runtime: crate::asset_runtime::AssetRuntime,
-    map_presentation: crate::map_presentation::RuntimeMapPresentation,
+    map_presentations: crate::map_presentation::RuntimeMapPresentationCatalog,
     frontend_runtime: crate::frontend_runtime::FrontendRuntime,
     frontend_scene: crate::frontend_scene::FrontendScene,
     frontend_scene_texture: crate::renderer::SpriteTextureId,
@@ -380,8 +380,10 @@ impl ClientApp {
         dialogue_animations: DialogueAnimationCatalog,
     ) -> Result<Self, String> {
         let mut asset_runtime = crate::asset_runtime::AssetRuntime::new();
-        let map_presentation =
-            crate::map_presentation::RuntimeMapPresentation::load(&mut asset_runtime)?;
+        let map_presentations = crate::map_presentation::RuntimeMapPresentationCatalog::load(
+            &mut asset_runtime,
+            &registry,
+        )?;
         let frontend_scene_texture = crate::assets::ClientAssetLoader::new(&mut asset_runtime)
             .load_png("frontend.scene.guide", "frontend/frontend_scene_guide.png")?;
         let scene_image = &asset_runtime
@@ -436,7 +438,7 @@ impl ClientApp {
             window: None,
             renderer: None,
             asset_runtime,
-            map_presentation,
+            map_presentations,
             frontend_runtime: crate::frontend_runtime::FrontendRuntime::new(),
             frontend_scene: crate::frontend_scene::FrontendScene::new(),
             frontend_scene_texture,
@@ -2855,13 +2857,32 @@ impl ClientApp {
             let active_map = self
                 .last_observer
                 .map(|observer| MapId::from_raw(observer.0));
-            let canonical_map_visuals = active_map
-                .is_some_and(|map_id| self.map_presentation.active_for_map(map_id, &self.registry));
-            if canonical_map_visuals {
-                quads.extend(self.map_presentation.quads(&camera, frame_dt));
-            } else {
-                quads = parallax_quads(&camera, self.world.bounds());
-            }
+            let canonical_map_visuals = match active_map {
+                Some(map_id) => {
+                    match self
+                        .map_presentations
+                        .presentation_mut(map_id, &self.registry)
+                    {
+                        Ok(Some(presentation)) => {
+                            quads.extend(presentation.quads(&camera, frame_dt));
+                            true
+                        }
+                        Ok(None) => {
+                            quads = parallax_quads(&camera, self.world.bounds());
+                            false
+                        }
+                        Err(error) => {
+                            eprintln!("{error}");
+                            self.fatal = Some(error);
+                            return;
+                        }
+                    }
+                }
+                None => {
+                    quads = parallax_quads(&camera, self.world.bounds());
+                    false
+                }
+            };
             let hold_source = self.map_fade.holds_source_presentation();
             let replica_live = self.replica_matches_local_map() && !hold_source;
             let remote_buf: Vec<PresentationPose> = if hold_source {
@@ -3111,7 +3132,13 @@ impl ClientApp {
                 quads.extend(npc_debug_aabb_quads(&self.replica, &self.interp));
             }
             if canonical_map_visuals {
-                quads.extend(self.map_presentation.foreground_quads(&camera));
+                let map_id = active_map.expect("production map visuals have an active map");
+                let presentation = self
+                    .map_presentations
+                    .presentation_mut(map_id, &self.registry)
+                    .expect("presentation was resolved for this frame")
+                    .expect("production map has a compiled presentation");
+                quads.extend(presentation.foreground_quads(&camera));
             }
             self.trace_scene_once(&camera, local_pose, interactable_n, quads.len());
             #[cfg(feature = "dev-diagnostics")]

@@ -52,8 +52,9 @@ pub use map_authoring::{
 };
 #[cfg(feature = "map-authoring")]
 pub use map_compiler::{
-    CANONICAL_MAP_TILE_PX, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, compile_tiled_map,
-    compile_tiled_map_with_ppu, serialize_map_pretty, validate_canonical_map_grid,
+    CANONICAL_MAP_TILE_PX, CompiledRegisteredMap, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU,
+    compile_registered_map_presentations, compile_tiled_map, compile_tiled_map_with_ppu,
+    serialize_map_pretty, validate_canonical_map_grid,
 };
 pub use map_environment_authoring::{
     CLOUDS_PER_VIEWPORT_AT_FULL_DENSITY, CloudFieldAuthoring, CloudFieldPresentation,

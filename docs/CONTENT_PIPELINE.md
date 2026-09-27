@@ -29,6 +29,8 @@ Human-editable JSON lives under `/content`:
   camera zoom must not be modeled by changing PPU. `purgatory-content` compiles TMX/TSX through one shared compiler into
   versioned canonical `MapPresentation`; Map Lab previews that same output.
   TMX remains the **static visual-composition source** and is not runtime input.
+  Maps are registry-driven content. Authored maps are discovered and compiled from content definitions. The client resolves presentation by ContentId through ContentRegistry. Adding a map requires no Rust code change.
+  TMX/TSX are authoring-only compiler inputs and are not runtime map identity.
   Map Lab owns gameplay/world authoring that is not visual composition: FOOTNOTE paths,
   spawn points, NPC placement and Mob placement. Map Lab also owns map-level dynamic
   environment presentation: sky gradients, semantic parallax/depth layers, celestial

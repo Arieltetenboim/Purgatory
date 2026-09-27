@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use purgatory_common::{ContentId, ContentKind};
 use purgatory_content::{
     CloudFieldAuthoring, CloudInstanceSpec, CloudStackPosition, ContentRegistry,
     MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION,
@@ -14,13 +15,19 @@ use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
 use crate::renderer::{Camera, DrawQuad, SpriteTextureId};
 
-const COMPILED_PRESENTATION: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/map.map1.presentation.json"));
-const COMPILED_ENVIRONMENT: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/map.map1.environment.json"));
+struct CompiledMapBytes {
+    content_id: u32,
+    presentation: &'static [u8],
+    environment: &'static [u8],
+}
+
+include!(concat!(env!("OUT_DIR"), "/compiled_map_catalog.rs"));
+
+pub(crate) struct RuntimeMapPresentationCatalog {
+    by_content: HashMap<ContentId, RuntimeMapPresentation>,
+}
 
 pub(crate) struct RuntimeMapPresentation {
-    map_authored: String,
     world_bounds: [f32; 4],
     pixels_per_world_unit: f32,
     sky_gradient: Option<SkyGradient>,
@@ -56,8 +63,53 @@ struct RuntimeCloudField {
     instances: Vec<CloudInstanceSpec>,
 }
 
+pub(crate) fn environment_layer_texture_key(
+    content_id: ContentId,
+    kind: &str,
+    layer_id: &str,
+) -> Result<String, String> {
+    Ok(format!(
+        "map.{}.environment.{kind}.{layer_id}",
+        numeric_map_content(content_id)?
+    ))
+}
+
+pub(crate) fn cloud_texture_key(
+    content_id: ContentId,
+    field_index: usize,
+    asset_index: usize,
+) -> Result<String, String> {
+    Ok(format!(
+        "map.{}.cloud.{field_index}.{asset_index}",
+        numeric_map_content(content_id)?
+    ))
+}
+
+fn numeric_map_content(content_id: ContentId) -> Result<u32, String> {
+    match content_id.raw() {
+        Some(raw) if content_id.kind() == Some(ContentKind::Map) => Ok(raw),
+        _ => Err(format!(
+            "map presentation requires a numeric map ContentId, got {content_id}"
+        )),
+    }
+}
+
+fn missing_presentation_error(
+    content_id: ContentId,
+    map_id: MapId,
+    registry: &ContentRegistry,
+) -> String {
+    let label = registry.label(content_id).unwrap_or("unknown");
+    format!(
+        "registered map content {} ({label}) for MapId {} has no compiled presentation",
+        numeric_map_content(content_id).unwrap_or(0),
+        map_id.raw()
+    )
+}
+
 fn load_runtime_environment_layer(
     loader: &mut ClientAssetLoader<'_>,
+    content_id: ContentId,
     layer: ParallaxLayer,
     kind: &str,
 ) -> Result<RuntimeParallaxLayer, String> {
@@ -83,7 +135,7 @@ fn load_runtime_environment_layer(
     {
         return Err(format!("{kind} layer {} has non-finite motion", layer.id));
     }
-    let texture_id = format!("map.environment.{kind}.{}", layer.id);
+    let texture_id = environment_layer_texture_key(content_id, kind, &layer.id)?;
     let texture = loader.load_png(&texture_id, &layer.asset_path)?;
     let image = loader
         .runtime()
@@ -96,171 +148,217 @@ fn load_runtime_environment_layer(
     })
 }
 
-impl RuntimeMapPresentation {
-    pub(crate) fn load(assets: &mut AssetRuntime) -> Result<Self, String> {
-        let map: MapPresentation = from_slice(COMPILED_PRESENTATION)
-            .map_err(|error| format!("decode compiled map presentation: {error}"))?;
-        if map.schema_version != MAP_PRESENTATION_SCHEMA_VERSION {
-            return Err(format!(
-                "compiled map presentation schema {} is unsupported; expected {}",
-                map.schema_version, MAP_PRESENTATION_SCHEMA_VERSION
-            ));
-        }
-        if map.map_authored != purgatory_common::MAP1_AUTHORED {
-            return Err(format!(
-                "compiled map presentation targets {}, expected {}",
-                map.map_authored,
-                purgatory_common::MAP1_AUTHORED
-            ));
-        }
-
-        let environment: MapEnvironmentPresentation = from_slice(COMPILED_ENVIRONMENT)
-            .map_err(|error| format!("decode compiled map environment: {error}"))?;
-        if environment.schema_version != MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION {
-            return Err(format!(
-                "compiled map environment schema {} is unsupported; expected {}",
-                environment.schema_version, MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION
-            ));
-        }
-        if environment.map_authored != map.map_authored {
-            return Err(format!(
-                "compiled map environment targets {}, expected {}",
-                environment.map_authored, map.map_authored
-            ));
-        }
-
-        let world_bounds = map.world_bounds;
-        let pixels_per_world_unit = map.pixels_per_world_unit;
-        let mut loader = ClientAssetLoader::new(assets);
-        let mut textures = HashMap::new();
-
-        for asset in &map.assets {
-            let texture = loader.load_png(&asset.id, &asset.source_path)?;
-            let image = loader
-                .runtime()
-                .resource(texture)
-                .ok_or_else(|| format!("map asset {} was not registered", asset.id))?;
-            let dimensions = [image.image.width(), image.image.height()];
-            if dimensions != asset.image_size_px {
+impl RuntimeMapPresentationCatalog {
+    pub(crate) fn load(
+        assets: &mut AssetRuntime,
+        registry: &ContentRegistry,
+    ) -> Result<Self, String> {
+        let mut by_content = HashMap::new();
+        for compiled in COMPILED_MAPS {
+            let content_id = ContentId::from_raw(compiled.content_id);
+            let raw = numeric_map_content(content_id)?;
+            let map: MapPresentation = from_slice(compiled.presentation)
+                .map_err(|error| format!("decode compiled map presentation {raw}: {error}"))?;
+            if map.schema_version != MAP_PRESENTATION_SCHEMA_VERSION {
                 return Err(format!(
-                    "map asset {} is {:?}, canonical map expects {:?}",
-                    asset.id, dimensions, asset.image_size_px
+                    "compiled map presentation {raw} schema {} is unsupported; expected {}",
+                    map.schema_version, MAP_PRESENTATION_SCHEMA_VERSION
                 ));
             }
-            textures.insert(asset.id.clone(), (texture, dimensions));
-        }
-
-        let mut parallax_layers = Vec::new();
-        for layer in environment.parallax_layers {
-            parallax_layers.push(load_runtime_environment_layer(
-                &mut loader,
-                layer,
-                "background",
-            )?);
-        }
-
-        let mut foreground_layers = Vec::new();
-        for layer in environment.foreground_layers {
-            foreground_layers.push(load_runtime_environment_layer(
-                &mut loader,
-                layer,
-                "foreground",
-            )?);
-        }
-
-        let mut cloud_fields = Vec::new();
-        for (field_index, field) in environment.cloud_fields.into_iter().enumerate() {
-            validate_cloud_field(&field.authored)
-                .map_err(|error| format!("compiled cloud field invalid: {error}"))?;
-            if field.asset_paths.is_empty() {
+            let label = registry.label(content_id).ok_or_else(|| {
+                format!("compiled map presentation {raw} is not a registered map")
+            })?;
+            if map.map_authored != label {
                 return Err(format!(
-                    "compiled cloud field {} has no resolved PNG assets",
-                    field.authored.id
+                    "compiled map presentation {raw} targets {}, registered map is {label}",
+                    map.map_authored
                 ));
             }
-            let mut variants = Vec::with_capacity(field.asset_paths.len());
-            for (asset_index, asset_path) in field.asset_paths.iter().enumerate() {
-                let texture_id = format!("map.cloud.{field_index}.{asset_index}");
-                let texture = loader.load_png(&texture_id, asset_path)?;
-                let image = loader.runtime().resource(texture).ok_or_else(|| {
-                    format!(
-                        "cloud asset {}:{} was not registered",
-                        field.authored.id, asset_index
-                    )
-                })?;
-                variants.push(RuntimeCloudVariant {
-                    texture,
-                    image_dimensions: [image.image.width(), image.image.height()],
-                });
+
+            let environment: MapEnvironmentPresentation = from_slice(compiled.environment)
+                .map_err(|error| format!("decode compiled map environment {raw}: {error}"))?;
+            if environment.schema_version != MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION {
+                return Err(format!(
+                    "compiled map environment {raw} schema {} is unsupported; expected {}",
+                    environment.schema_version, MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION
+                ));
             }
-            cloud_fields.push(RuntimeCloudField {
-                authored: field.authored,
-                variants,
-                instances: Vec::new(),
+            if environment.map_authored != map.map_authored {
+                return Err(format!(
+                    "compiled map environment {raw} targets {}, expected {}",
+                    environment.map_authored, map.map_authored
+                ));
+            }
+
+            let presentation = load_runtime_presentation(assets, content_id, map, environment)?;
+            if by_content.insert(content_id, presentation).is_some() {
+                return Err(format!("duplicate compiled map presentation {raw}"));
+            }
+        }
+
+        for map in registry.iter_maps() {
+            if !by_content.contains_key(&map.content_id) {
+                return Err(format!(
+                    "registered map content {} ({}) has no compiled presentation",
+                    map.content_id.raw().unwrap_or(0),
+                    map.authored_id
+                ));
+            }
+        }
+        Ok(Self { by_content })
+    }
+
+    /// `Ok(None)` is an unregistered synthetic/debug map. A registered map with no
+    /// compiled presentation is an error.
+    pub(crate) fn presentation_mut(
+        &mut self,
+        map_id: MapId,
+        registry: &ContentRegistry,
+    ) -> Result<Option<&mut RuntimeMapPresentation>, String> {
+        let Some(content_id) = registry.map_content_id(map_id) else {
+            return Ok(None);
+        };
+        match self.by_content.get_mut(&content_id) {
+            Some(presentation) => Ok(Some(presentation)),
+            None => Err(missing_presentation_error(content_id, map_id, registry)),
+        }
+    }
+}
+
+fn load_runtime_presentation(
+    assets: &mut AssetRuntime,
+    content_id: ContentId,
+    map: MapPresentation,
+    environment: MapEnvironmentPresentation,
+) -> Result<RuntimeMapPresentation, String> {
+    let world_bounds = map.world_bounds;
+    let pixels_per_world_unit = map.pixels_per_world_unit;
+    let mut loader = ClientAssetLoader::new(assets);
+    let mut textures = HashMap::new();
+
+    for asset in &map.assets {
+        let texture = loader.load_png(&asset.id, &asset.source_path)?;
+        let image = loader
+            .runtime()
+            .resource(texture)
+            .ok_or_else(|| format!("map asset {} was not registered", asset.id))?;
+        let dimensions = [image.image.width(), image.image.height()];
+        if dimensions != asset.image_size_px {
+            return Err(format!(
+                "map asset {} is {:?}, canonical map expects {:?}",
+                asset.id, dimensions, asset.image_size_px
+            ));
+        }
+        textures.insert(asset.id.clone(), (texture, dimensions));
+    }
+
+    let mut parallax_layers = Vec::new();
+    for layer in environment.parallax_layers {
+        parallax_layers.push(load_runtime_environment_layer(
+            &mut loader,
+            content_id,
+            layer,
+            "background",
+        )?);
+    }
+
+    let mut foreground_layers = Vec::new();
+    for layer in environment.foreground_layers {
+        foreground_layers.push(load_runtime_environment_layer(
+            &mut loader,
+            content_id,
+            layer,
+            "foreground",
+        )?);
+    }
+
+    let mut cloud_fields = Vec::new();
+    for (field_index, field) in environment.cloud_fields.into_iter().enumerate() {
+        validate_cloud_field(&field.authored)
+            .map_err(|error| format!("compiled cloud field invalid: {error}"))?;
+        if field.asset_paths.is_empty() {
+            return Err(format!(
+                "compiled cloud field {} has no resolved PNG assets",
+                field.authored.id
+            ));
+        }
+        let mut variants = Vec::with_capacity(field.asset_paths.len());
+        for (asset_index, asset_path) in field.asset_paths.iter().enumerate() {
+            let texture_id = cloud_texture_key(content_id, field_index, asset_index)?;
+            let texture = loader.load_png(&texture_id, asset_path)?;
+            let image = loader.runtime().resource(texture).ok_or_else(|| {
+                format!(
+                    "cloud asset {}:{} was not registered",
+                    field.authored.id, asset_index
+                )
+            })?;
+            variants.push(RuntimeCloudVariant {
+                texture,
+                image_dimensions: [image.image.width(), image.image.height()],
             });
         }
+        cloud_fields.push(RuntimeCloudField {
+            authored: field.authored,
+            variants,
+            instances: Vec::new(),
+        });
+    }
 
-        let mut sprites = Vec::new();
-        for layer in map.layers.into_iter().filter(|layer| layer.visible) {
-            for authored in layer.sprites.into_iter().filter(|sprite| sprite.visible) {
-                let &(texture, image_dimensions) =
-                    textures.get(&authored.asset_id).ok_or_else(|| {
-                        format!("map sprite references missing asset {}", authored.asset_id)
-                    })?;
-                let [x, y, width, height] = authored.source_rect_px;
-                if width == 0
-                    || height == 0
-                    || x.saturating_add(width) > image_dimensions[0]
-                    || y.saturating_add(height) > image_dimensions[1]
-                {
-                    return Err(format!(
-                        "map asset {} has invalid source rectangle {:?}",
-                        authored.asset_id, authored.source_rect_px
-                    ));
-                }
-                if !authored
-                    .position_world
-                    .iter()
-                    .all(|value| value.is_finite())
-                    || !authored
-                        .size_world
-                        .iter()
-                        .all(|value| value.is_finite() && *value > 0.0)
-                {
-                    return Err(format!(
-                        "map asset {} has non-finite or non-positive normalized geometry",
-                        authored.asset_id
-                    ));
-                }
-                sprites.push(RuntimeSprite {
-                    authored,
-                    texture,
-                    image_dimensions,
-                    opacity: layer.opacity,
-                });
+    let mut sprites = Vec::new();
+    for layer in map.layers.into_iter().filter(|layer| layer.visible) {
+        for authored in layer.sprites.into_iter().filter(|sprite| sprite.visible) {
+            let &(texture, image_dimensions) =
+                textures.get(&authored.asset_id).ok_or_else(|| {
+                    format!("map sprite references missing asset {}", authored.asset_id)
+                })?;
+            let [x, y, width, height] = authored.source_rect_px;
+            if width == 0
+                || height == 0
+                || x.saturating_add(width) > image_dimensions[0]
+                || y.saturating_add(height) > image_dimensions[1]
+            {
+                return Err(format!(
+                    "map asset {} has invalid source rectangle {:?}",
+                    authored.asset_id, authored.source_rect_px
+                ));
             }
+            if !authored
+                .position_world
+                .iter()
+                .all(|value| value.is_finite())
+                || !authored
+                    .size_world
+                    .iter()
+                    .all(|value| value.is_finite() && *value > 0.0)
+            {
+                return Err(format!(
+                    "map asset {} has non-finite or non-positive normalized geometry",
+                    authored.asset_id
+                ));
+            }
+            sprites.push(RuntimeSprite {
+                authored,
+                texture,
+                image_dimensions,
+                opacity: layer.opacity,
+            });
         }
-
-        Ok(Self {
-            map_authored: map.map_authored,
-            world_bounds,
-            pixels_per_world_unit,
-            sky_gradient: environment.sky_gradient,
-            parallax_layers,
-            foreground_layers,
-            cloud_fields,
-            sprites,
-            environment_time_seconds: 0.0,
-            visual_seed: local_visual_seed(),
-        })
     }
 
-    pub(crate) fn active_for_map(&self, map_id: MapId, registry: &ContentRegistry) -> bool {
-        registry
-            .map_by_map_id(map_id)
-            .is_some_and(|map| map.authored_id == self.map_authored)
-    }
+    Ok(RuntimeMapPresentation {
+        world_bounds,
+        pixels_per_world_unit,
+        sky_gradient: environment.sky_gradient,
+        parallax_layers,
+        foreground_layers,
+        cloud_fields,
+        sprites,
+        environment_time_seconds: 0.0,
+        visual_seed: local_visual_seed() ^ u64::from(numeric_map_content(content_id)?),
+    })
+}
 
+impl RuntimeMapPresentation {
     pub(crate) fn quads(&mut self, camera: &Camera, frame_dt: f32) -> Vec<DrawQuad> {
         if frame_dt.is_finite() && frame_dt > 0.0 {
             self.environment_time_seconds += f64::from(frame_dt);
@@ -636,5 +734,251 @@ mod tests {
         assert_eq!(repeat_radius(false, 20.0, 2.0), 0);
         assert!((1..=8).contains(&repeat_radius(true, 20.0, 2.0)));
         assert_eq!(repeat_radius(true, 10_000.0, 0.1), 8);
+    }
+
+    #[test]
+    fn compiled_catalog_matches_registered_maps_by_content_id() {
+        let registry = purgatory_content::load_registry(
+            &purgatory_content::default_content_root(),
+            purgatory_content::LoadMode::Shared,
+        )
+        .expect("shared content");
+        let mut registered: Vec<u32> = registry
+            .iter_maps()
+            .filter_map(|map| map.content_id.raw())
+            .collect();
+        registered.sort_unstable();
+        let mut compiled: Vec<u32> = COMPILED_MAPS.iter().map(|entry| entry.content_id).collect();
+        compiled.sort_unstable();
+        assert_eq!(compiled, registered);
+        assert!(compiled.len() >= 2);
+    }
+
+    #[test]
+    fn map_id_resolves_to_that_maps_compiled_presentation() {
+        let registry = purgatory_content::load_registry(
+            &purgatory_content::default_content_root(),
+            purgatory_content::LoadMode::Shared,
+        )
+        .expect("shared content");
+        for entry in COMPILED_MAPS {
+            let content_id = ContentId::from_raw(entry.content_id);
+            let map_id = registry.map_id(content_id).expect("registered map id");
+            assert_eq!(registry.map_content_id(map_id), Some(content_id));
+            let (presentation, environment) = decode_compiled(entry);
+            let label = registry.label(content_id).expect("label");
+            assert_eq!(presentation.map_authored, label);
+            assert_eq!(environment.map_authored, label);
+        }
+    }
+
+    #[test]
+    fn switching_active_map_selects_that_maps_environment() {
+        let registry = purgatory_content::load_registry(
+            &purgatory_content::default_content_root(),
+            purgatory_content::LoadMode::Shared,
+        )
+        .expect("shared content");
+        let map_a = registry.map_id(purgatory_common::MAP1).expect("MAP1");
+        let map_b = registry.map_id(purgatory_common::MAP2).expect("MAP2");
+        let mut catalog = catalog_with([
+            (
+                purgatory_common::MAP1,
+                presentation_for_test(Some(sky([1, 2, 3, 255], [4, 5, 6, 255])), "env-a"),
+            ),
+            (
+                purgatory_common::MAP2,
+                presentation_for_test(Some(sky([9, 8, 7, 255], [6, 5, 4, 255])), "env-b"),
+            ),
+        ]);
+
+        let (gradient_a, cloud_a) = selected(&mut catalog, map_a, &registry);
+        let (gradient_b, cloud_b) = selected(&mut catalog, map_b, &registry);
+        assert_eq!(gradient_a, Some(sky([1, 2, 3, 255], [4, 5, 6, 255])));
+        assert_eq!(gradient_b, Some(sky([9, 8, 7, 255], [6, 5, 4, 255])));
+        assert_ne!(gradient_a, gradient_b);
+        assert_eq!(cloud_a, "env-a");
+        assert_eq!(cloud_b, "env-b");
+    }
+
+    #[test]
+    fn compiled_map_environments_stay_with_their_content_id() {
+        let map1 = decode_compiled(compiled_entry(purgatory_common::MAP1.raw().unwrap()));
+        let map2 = decode_compiled(compiled_entry(purgatory_common::MAP2.raw().unwrap()));
+        assert_eq!(map1.0.map_authored, purgatory_common::MAP1_AUTHORED);
+        assert_eq!(map2.0.map_authored, purgatory_common::MAP2_AUTHORED);
+        assert_eq!(map1.1.map_authored, purgatory_common::MAP1_AUTHORED);
+        assert_eq!(map2.1.map_authored, purgatory_common::MAP2_AUTHORED);
+        assert_ne!(map1.0, map2.0);
+        assert_ne!(map1.1, map2.1);
+        assert_eq!(
+            map1.1.sky_gradient.map(|gradient| gradient.top_rgba),
+            Some([104, 155, 214, 255])
+        );
+        assert_eq!(
+            map1.1.sky_gradient.map(|gradient| gradient.bottom_rgba),
+            Some([232, 214, 188, 255])
+        );
+    }
+
+    #[test]
+    fn identical_environment_layer_ids_do_not_alias_textures() {
+        let mut runtime = AssetRuntime::new();
+        let key_a =
+            environment_layer_texture_key(purgatory_common::MAP1, "background", "layer.001")
+                .unwrap();
+        let key_b =
+            environment_layer_texture_key(purgatory_common::MAP2, "background", "layer.001")
+                .unwrap();
+        assert_ne!(key_a, key_b);
+        let texture_a = runtime
+            .register_png(&key_a, &png_bytes([255, 0, 0, 255]))
+            .unwrap();
+        let texture_b = runtime
+            .register_png(&key_b, &png_bytes([0, 0, 255, 255]))
+            .unwrap();
+        assert_ne!(texture_a, texture_b);
+        assert_ne!(
+            runtime.resource(texture_a).unwrap().image.get_pixel(0, 0),
+            runtime.resource(texture_b).unwrap().image.get_pixel(0, 0)
+        );
+
+        let cloud_a = cloud_texture_key(purgatory_common::MAP1, 0, 0).unwrap();
+        let cloud_b = cloud_texture_key(purgatory_common::MAP2, 0, 0).unwrap();
+        assert_ne!(cloud_a, cloud_b);
+        assert_ne!(
+            runtime
+                .register_png(&cloud_a, &png_bytes([1, 1, 1, 255]))
+                .unwrap(),
+            runtime
+                .register_png(&cloud_b, &png_bytes([2, 2, 2, 255]))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn unregistered_map_is_synthetic_and_missing_presentation_fails() {
+        let registry = purgatory_content::load_registry(
+            &purgatory_content::default_content_root(),
+            purgatory_content::LoadMode::Shared,
+        )
+        .expect("shared content");
+        let mut catalog = catalog_with([(
+            purgatory_common::MAP1,
+            presentation_for_test(None, "only-a"),
+        )]);
+        match catalog.presentation_mut(MapId::from_raw(424_242), &registry) {
+            Ok(None) => {}
+            Ok(Some(_)) => panic!("unregistered map must stay synthetic"),
+            Err(error) => panic!("unregistered map must stay synthetic, got {error}"),
+        }
+        let map2 = registry.map_id(purgatory_common::MAP2).expect("MAP2");
+        let error = match catalog.presentation_mut(map2, &registry) {
+            Err(error) => error,
+            Ok(_) => panic!("registered map without a compiled presentation must fail"),
+        };
+        assert!(error.contains("50002"), "{error}");
+        assert!(error.contains("no compiled presentation"), "{error}");
+    }
+
+    #[test]
+    fn compiled_runtime_bytes_are_not_tiled_documents() {
+        for entry in COMPILED_MAPS {
+            for bytes in [entry.presentation, entry.environment] {
+                let text = std::str::from_utf8(bytes).unwrap();
+                assert!(!text.contains("firstgid"), "{}", entry.content_id);
+                assert!(!text.contains(".tmx"), "{}", entry.content_id);
+                assert!(!text.contains(".tsx"), "{}", entry.content_id);
+            }
+        }
+    }
+
+    fn compiled_entry(content_id: u32) -> &'static CompiledMapBytes {
+        COMPILED_MAPS
+            .iter()
+            .find(|entry| entry.content_id == content_id)
+            .unwrap_or_else(|| panic!("compiled presentation {content_id}"))
+    }
+
+    fn decode_compiled(entry: &CompiledMapBytes) -> (MapPresentation, MapEnvironmentPresentation) {
+        (
+            from_slice(entry.presentation).expect("presentation json"),
+            from_slice(entry.environment).expect("environment json"),
+        )
+    }
+
+    fn sky(top: [u8; 4], bottom: [u8; 4]) -> SkyGradient {
+        SkyGradient {
+            top_rgba: top,
+            bottom_rgba: bottom,
+        }
+    }
+
+    fn presentation_for_test(
+        gradient: Option<SkyGradient>,
+        cloud_id: &str,
+    ) -> RuntimeMapPresentation {
+        RuntimeMapPresentation {
+            world_bounds: [0.0, 0.0, 10.0, 10.0],
+            pixels_per_world_unit: 100.0,
+            sky_gradient: gradient,
+            parallax_layers: Vec::new(),
+            foreground_layers: Vec::new(),
+            cloud_fields: vec![RuntimeCloudField {
+                authored: CloudFieldAuthoring {
+                    id: cloud_id.to_owned(),
+                    asset_folder: "assets/skys/cloud_far".to_owned(),
+                    depth: ParallaxDepth::Far,
+                    stack_position: CloudStackPosition::AfterFar,
+                    parallax: 0.2,
+                    density: 0.5,
+                    scale_range: [0.5, 1.0],
+                    speed_range: [0.1, 0.2],
+                    height_range: [0.5, 0.9],
+                    opacity_range: [0.5, 1.0],
+                },
+                variants: Vec::new(),
+                instances: Vec::new(),
+            }],
+            sprites: Vec::new(),
+            environment_time_seconds: 0.0,
+            visual_seed: 1,
+        }
+    }
+
+    fn catalog_with(
+        entries: impl IntoIterator<Item = (ContentId, RuntimeMapPresentation)>,
+    ) -> RuntimeMapPresentationCatalog {
+        RuntimeMapPresentationCatalog {
+            by_content: entries.into_iter().collect(),
+        }
+    }
+
+    fn selected(
+        catalog: &mut RuntimeMapPresentationCatalog,
+        map_id: MapId,
+        registry: &ContentRegistry,
+    ) -> (Option<SkyGradient>, String) {
+        let presentation = match catalog.presentation_mut(map_id, registry) {
+            Ok(Some(presentation)) => presentation,
+            Ok(None) => panic!("registered map resolved as synthetic"),
+            Err(error) => panic!("registered map failed to resolve: {error}"),
+        };
+        (
+            presentation.sky_gradient,
+            presentation.cloud_fields[0].authored.id.clone(),
+        )
+    }
+
+    fn png_bytes(pixel: [u8; 4]) -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba(pixel));
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
     }
 }

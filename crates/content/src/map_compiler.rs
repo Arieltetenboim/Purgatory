@@ -5,6 +5,7 @@
 //! object anchors, or TMX/TSX path semantics.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use tiled::{
@@ -153,6 +154,142 @@ pub fn serialize_map_pretty(map: &MapPresentation) -> Result<Vec<u8>, ContentErr
         .map_err(|error| issue(Path::new("canonical-map"), "-", "json", error.to_string()))?;
     bytes.push(b'\n');
     Ok(bytes)
+}
+
+/// One registered map compiled from its authoring sidecar and environment.
+///
+/// Identity is the registry `ContentId`. The TMX path is a compiler input recorded
+/// in `inputs` for rebuild tracking; it is not runtime map identity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledRegisteredMap {
+    pub content_id: purgatory_common::ContentId,
+    pub authored_id: String,
+    pub presentation: MapPresentation,
+    pub environment: crate::MapEnvironmentPresentation,
+    pub inputs: Vec<PathBuf>,
+}
+
+/// Compile every map registered in `content_root` through the shared authoring contract.
+///
+/// Discovery starts at `ContentRegistry`, then opens
+/// `authoring/maps/<authored-id>.purgatory-map.json` and the sibling environment file.
+/// Sidecars and TMX files that are not registered maps are ignored.
+pub fn compile_registered_map_presentations(
+    content_root: &Path,
+) -> Result<Vec<CompiledRegisteredMap>, ContentError> {
+    let registry = crate::load_registry(content_root, crate::LoadMode::Shared)?;
+    let authoring = content_root.join("authoring").join("maps");
+    let mut maps: Vec<_> = registry.iter_maps().collect();
+    maps.sort_by_key(|map| map.content_id.raw().unwrap_or(u32::MAX));
+
+    let mut compiled = Vec::with_capacity(maps.len());
+    for map in maps {
+        let sidecar = authoring.join(format!("{}.purgatory-map.json", map.authored_id));
+        if !sidecar.is_file() {
+            return Err(issue(
+                &sidecar,
+                &map.authored_id,
+                "sidecar",
+                "registered map has no authoring sidecar",
+            ));
+        }
+        let source = load_map_authoring(&sidecar)?;
+        let source_id = purgatory_common::ContentId::from_raw(source.content_id);
+        if source.id != map.authored_id || source_id != map.content_id {
+            return Err(issue(
+                &sidecar,
+                &map.authored_id,
+                "identity",
+                format!(
+                    "sidecar identity {}:{} does not match registered map {}:{}",
+                    source.content_id,
+                    source.id,
+                    map.content_id.raw().unwrap_or(0),
+                    map.authored_id
+                ),
+            ));
+        }
+
+        let environment_path = authoring.join(format!("{}.environment.json", map.authored_id));
+        if !environment_path.is_file() {
+            return Err(issue(
+                &environment_path,
+                &map.authored_id,
+                "environment",
+                "registered map has no environment authoring",
+            ));
+        }
+        let environment_bytes = fs::read(&environment_path)
+            .map_err(|error| ContentError::from_io(&environment_path, &error))?;
+        let environment_authoring: crate::MapEnvironmentAuthoring =
+            serde_json::from_slice(&environment_bytes).map_err(|error| {
+                issue(
+                    &environment_path,
+                    &map.authored_id,
+                    "json",
+                    error.to_string(),
+                )
+            })?;
+        if environment_authoring.schema_version != crate::MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION {
+            return Err(issue(
+                &environment_path,
+                &map.authored_id,
+                "schema_version",
+                format!(
+                    "unsupported environment schema {} (want {})",
+                    environment_authoring.schema_version,
+                    crate::MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION
+                ),
+            ));
+        }
+        if environment_authoring.map_authored != map.authored_id {
+            return Err(issue(
+                &environment_path,
+                &map.authored_id,
+                "map_authored",
+                format!(
+                    "environment map {} does not match registered map {}",
+                    environment_authoring.map_authored, map.authored_id
+                ),
+            ));
+        }
+
+        let presentation = compile_tiled_map(&sidecar)?;
+        if presentation.map_authored != map.authored_id {
+            return Err(issue(
+                &sidecar,
+                &map.authored_id,
+                "map_authored",
+                format!(
+                    "compiled presentation map {} does not match registered map {}",
+                    presentation.map_authored, map.authored_id
+                ),
+            ));
+        }
+        let graphic = graphic_root(&sidecar)?;
+        let environment = crate::compile_map_environment(&environment_authoring, &graphic)
+            .map_err(|error| issue(&environment_path, &map.authored_id, "environment", error))?;
+        let tmx_path = sidecar
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(&source.visual_source);
+        compiled.push(CompiledRegisteredMap {
+            content_id: map.content_id,
+            authored_id: map.authored_id.clone(),
+            presentation,
+            environment,
+            inputs: vec![
+                sidecar,
+                environment_path,
+                content_root
+                    .join("shared")
+                    .join("maps")
+                    .join(format!("{}.json", map.authored_id)),
+                tmx_path,
+            ],
+        });
+    }
+    Ok(compiled)
 }
 
 struct Compiler<'a> {
