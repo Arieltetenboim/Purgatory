@@ -690,18 +690,37 @@ fn record_map_allocation(
             "authored id {authored_id} does not match ContentId {content_id}"
         ));
     }
-    let marker = "\n\n### Items";
-    let insert_at = text.find(marker).ok_or_else(|| {
-        format!(
-            "{}: Maps catalog section terminator not found",
-            catalog.display()
-        )
-    })?;
-    text.insert_str(
-        insert_at,
-        &format!("\n| `{content_id}` | `{authored_id}` | active |"),
-    );
+    let insert_at = map_catalog_insert_index(&text)
+        .map_err(|error| format!("{}: {error}", catalog.display()))?;
+    let newline = catalog_line_ending(&text);
+    let mut row = format!("| `{content_id}` | `{authored_id}` | active |{newline}");
+    if !text[..insert_at].ends_with(newline) {
+        row.insert_str(0, newline);
+    }
+    text.insert_str(insert_at, &row);
     std::fs::write(&catalog, text).map_err(|error| format!("write {}: {error}", catalog.display()))
+}
+
+fn catalog_line_ending(text: &str) -> &'static str {
+    if text.contains("\r\n") { "\r\n" } else { "\n" }
+}
+
+/// Byte index where a new map row belongs: after the Maps section rows and
+/// before the blank line that introduces the next heading.
+fn map_catalog_insert_index(text: &str) -> Result<usize, String> {
+    let start = text
+        .find("### Maps")
+        .ok_or_else(|| "CONTENT_ID_CATALOG.md: Maps section not found".to_owned())?;
+    let section = map_catalog_section(text)?;
+    let mut insert_at = start + section.len();
+    // `map_catalog_section` ends on `\n### `, so a CRLF boundary leaves the
+    // preceding `\r` inside the section. Keep that line ending intact.
+    if text.as_bytes().get(insert_at) == Some(&b'\n')
+        && text.as_bytes().get(insert_at.wrapping_sub(1)) == Some(&b'\r')
+    {
+        insert_at -= 1;
+    }
+    Ok(insert_at)
 }
 
 pub fn import_numeric_tmx(
@@ -1466,6 +1485,37 @@ mod tests {
         std::fs::create_dir_all(root.join("content/shared/maps")).unwrap();
         std::fs::write(root.join("content/CONTENT_ID_CATALOG.md"), catalog).unwrap();
         (root, authoring)
+    }
+
+    #[test]
+    fn map_allocation_inserts_inside_maps_for_lf_and_crlf_catalogs() {
+        for (name, newline) in [("lf", "\n"), ("crlf", "\r\n")] {
+            let catalog = sample_catalog(newline, false);
+            let (root, _) = temp_authoring(&format!("catalog-{name}"), &catalog);
+            record_map_allocation(&root, 50_003, "map.map3", false).expect(name);
+            let updated =
+                std::fs::read_to_string(root.join("content/CONTENT_ID_CATALOG.md")).unwrap();
+            assert_eq!(updated, sample_catalog(newline, true), "{name}");
+            let section = map_catalog_section(&updated).unwrap();
+            assert!(section.contains("| `50001` | `map.map1` | active |"));
+            assert!(section.contains("| `50002` | `map.map2` | active |"));
+            assert!(section.contains("| `50003` | `map.map3` | active |"));
+            assert!(!section.contains("item.keep"));
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    fn sample_catalog(newline: &str, with_new_row: bool) -> String {
+        let mut catalog = format!(
+            "# Content ID Catalog{newline}{newline}### Maps — 50,000–59,999{newline}{newline}| ID | Label | Status |{newline}| ---: | --- | --- |{newline}| `50001` | `map.map1` | active |{newline}| `50002` | `map.map2` | active |{newline}"
+        );
+        if with_new_row {
+            catalog.push_str(&format!("| `50003` | `map.map3` | active |{newline}"));
+        }
+        catalog.push_str(&format!(
+            "{newline}### Items — 30,000–39,999{newline}| `30001` | `item.keep` | active |{newline}"
+        ));
+        catalog
     }
 
     #[test]
