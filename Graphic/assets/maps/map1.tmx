@@ -1,9 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="129" height="30" tilewidth="36" tileheight="36" infinite="0" nextlayerid="9" nextobjectid="3">
  <tileset firstgid="1" source="TEST.tsx"/>
- <imagelayer id="8" name="BACKGROUND" offsetx="0.0833333" offsety="-0.0833333">
-  <image source="BG.png" width="4644" height="1080"/>
- </imagelayer>
  <layer id="3" name="3" width="129" height="30">
   <data encoding="csv">
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,

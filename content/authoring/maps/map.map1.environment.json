@@ -2,7 +2,17 @@
   "schema_version": 1,
   "map_authored": "map.map1",
   "sky_gradient": {
-    "top_rgba": [104, 155, 214, 255],
-    "bottom_rgba": [232, 214, 188, 255]
+    "top_rgba": [
+      104,
+      155,
+      214,
+      255
+    ],
+    "bottom_rgba": [
+      232,
+      214,
+      188,
+      255
+    ]
   }
 }
