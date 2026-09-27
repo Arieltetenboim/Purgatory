@@ -156,7 +156,7 @@ pub use npc::{
 };
 pub use platform::{
     Approach, FLOOR, FLOOR_POSITION, ONEWAY_A, ONEWAY_A_POSITION, ONEWAY_B, ONEWAY_B_POSITION,
-    Platform, PlatformKind, PlatformView, RAISED_PLATFORM, RAISED_PLATFORM_POSITION,
+    Platform, PlatformKind, PlatformShape, PlatformView, RAISED_PLATFORM, RAISED_PLATFORM_POSITION,
 };
 pub use presentation_oneshot::{
     ATTACK_DURATION_TICKS, HURT_DURATION_TICKS, PresentationOneShot, PresentationOneShotError,

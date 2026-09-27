@@ -1,10 +1,12 @@
 //! Typed content definitions. Gameplay never sees raw JSON.
 
 use crate::domain::ContentDomain;
+use crate::map_gameplay_authoring::FootholdPath;
 use purgatory_common::ContentId;
 use purgatory_simulation::{InteractableKind, WorldBounds};
 
 pub const CONTENT_SCHEMA_VERSION: u32 = 1;
+pub const PLACEMENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub struct EntityDefinition {
@@ -45,6 +47,7 @@ pub struct MapDefinition {
     pub bounds: WorldBounds,
     pub spawn_points: Vec<SpawnPoint>,
     pub platforms: Vec<MapPlatform>,
+    pub foothold_paths: Vec<FootholdPath>,
     pub restore: RestorePolicy,
 }
 
@@ -63,8 +66,46 @@ pub enum RestorePolicy {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlacementKind {
+    Entity,
+    Monster,
+    Portal,
+}
+
+impl PlacementKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Entity => "entity",
+            Self::Monster => "monster",
+            Self::Portal => "portal",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortalLink {
+    pub map_authored: String,
+    pub portal_id: String,
+}
+
+#[must_use]
+pub fn portal_runtime_authored(map_authored: &str, portal_id: &str) -> String {
+    format!(
+        "portal.{}.{}",
+        map_authored.replace('.', "_"),
+        portal_id.replace('.', "_")
+    )
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Placement {
-    pub entity_authored: String,
+    /// Stable editor identity. Unique within one map placement document.
+    pub id: String,
+    pub kind: PlacementKind,
+    /// Authored content reference resolved according to `kind`.
+    pub content_authored: String,
     pub position: [f32; 2],
+    pub portal_link: Option<PortalLink>,
 }

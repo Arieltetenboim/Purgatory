@@ -23,14 +23,28 @@ Human-editable JSON lives under `/content`:
 - `shared/equipment_presentation/` — client presentation facet (schema v2) for the same numeric Item `ContentId` (`attachments[]`)
 - `shared/abilities/` — gameplay ability JSON (`AbilityDefinition`; schema_version 1). Loaded in Shared and Full modes.
 - `shared/animations/dev/` — A6/A7 v1 `.anim` presentation clips (token text, not JSON). Optional `depth` keys (A7.1 `depth_angle`; omitted = 0). Authored in Animation Lab. Runtime still compiles them in via `include_str!`.
+- `authoring/maps/` — PURGATORY map-authoring sources. The map sidecar owns
+  identity, the relative Tiled TMX visual source, and explicit per-map PPU.
+  Ordinary production maps use the locked **100 px/wu** visual-scale standard; changing
+  camera zoom must not be modeled by changing PPU. `purgatory-content` compiles TMX/TSX through one shared compiler into
+  versioned canonical `MapPresentation`; Map Lab previews that same output.
+  TMX remains the **static visual-composition source** and is not runtime input.
+  Map Lab owns gameplay/world authoring that is not visual composition: FOOTNOTE paths,
+  spawn points, NPC placement and Mob placement. Map Lab also owns map-level dynamic
+  environment presentation: sky gradients, semantic parallax/depth layers, celestial
+  sprites, and moving/wrapping cloud layers. Environment depth is authored as presentation
+  depth/parallax semantics rather than fake physical distance. Tiled continues to own the
+  underlying static artwork and object composition; Map Lab owns how environment layers
+  behave relative to the camera. Dynamic/moving platform gameplay remains deferred, but
+  authored FOOTNOTE geometry must not preclude future entity-owned moving foothold groups.
 - `authoring/npcs/` — canonical NPC Lab JSON. Recursively validated in Shared
   and Full modes; projected into client-safe dialogue presentation in both and
   authoritative dialogue definitions in Full mode.
-- `server/entities/` — server-only entities (interactables, portals with `transition: { map, portal }`)
-- `server/placements/` — server-only placement lists keyed by map authored id
+- `server/entities/` — server-only reusable entity definitions (NPC/entity/interactable facets). Legacy `entity.portal.*` definitions with `transition: { map, portal }` remain read-compatible, but Map Lab does not create new portals through this path.
+- `server/placements/` — server-only placement lists keyed by map authored id. Placement schema v2 gives ordinary entity/monster placements a stable map-local `id`, a closed `kind`, a `content` authored reference, and a world `position`. Portals are map-owned placements: `kind: "portal"`, a map-local Portal ID such as `portal.001`, a world position, and optional `linked_portal: { map, portal }`. The linked target is identified explicitly by destination MapID plus destination Portal ID. Schema v1 `{ entity, position }` remains load-compatible and receives deterministic legacy compatibility IDs; new Map Lab writes v2.
 - `definitions/monsters/` — canonical Monster schema v4 definitions. Full mode loads authoritative gameplay fields; Shared mode projects only client-safe Monster presentation identity. Mob Lab edits these files directly.
 
-JSON must not contain numeric `MapId`, channel, or instance. The registry assigns `MapId` (FOOTNOTE / `map.dev.footnote` is pinned to `MapId` 1).
+JSON does not contain runtime `MapId`, channel, or instance. Stable map identity is the numeric `ContentId`; the registry derives runtime `MapId` from the map ContentId block.
 
 Each map authors a **restore** policy (`safe_point`, `checkpoint`, or `non_reenterable`). That is restore semantics, not a `WorldAddress`. Channel and runtime Instance are assigned by a separate placement layer (Phase 6E currently uses DEFAULT). See ADR-0044.
 
@@ -85,10 +99,9 @@ The Monster schema v4 contract is
 [`MONSTER_AUTHORING_RUNTIME.md`](MONSTER_AUTHORING_RUNTIME.md). The Red Slime
 normal-session proof resolves Health, collision half-extents, movement speed, damage-triggered chase behavior and home leash from the validated Full registry. Workload-only NPC
 presets and tokens remain owned by simulation/server code and are not monster
-identity. Monster placement, presentation, abilities and loot are not part of
-schema v1.
+identity. Monster definitions remain owned by Mob Lab. Entity E2 projects both Map Lab monster placements and DEV monster spawns through the same content-backed runtime adapter, so HP, collision, movement speed, approach bounds and home leash have one owner. A Map Lab monster placement position is the monster's floor/contact point; the adapter derives the runtime entity origin from authored collision bounds.
 
-Portal links are content data: `transition: { "map": "<dest map authored id>", "portal": "<dest portal entity authored id>" }`. Arrival is at the linked portal, not the map's generic spawn. The destination entity does not need a reverse `transition` (one-way portals).
+Portal links are map-placement data. New portals are authored in Map Lab as map-owned placements with a map-local Portal ID and `linked_portal: { "map": "<destination MapID>", "portal": "<destination Portal ID>" }`. The editor displays targets as `MapID · PortalID`; choosing a portal therefore carries both pieces of identity explicitly. Arrival is at that linked portal, not the map's generic spawn. Links are one-way unless the destination portal also links back. Legacy portal entity `transition` metadata remains read-compatible during migration but is not the forward authoring workflow.
 
 Phase **8A** stores equipped appearance as `EquipmentSlot → Option<ContentId>` using the existing `ContentId` type. Phase **8B** introduced the gameplay slot + client presentation split; the current Item/Equipment schemas use the stable numeric Item catalog described below. Phase **8C** authorizes Equip/Unequip from gameplay definitions only (`authorize_equip`); presentation is not required on the server path. Presentation fields (bones, anchors, visuals, coverage) are not on the network. Phase **8D** carries replicated equipment on `CharacterPresentationState`. Phase **8E** resolves those ContentIds to bound attachments on the client (`equipment_presentation_by_id`) and composes debug placeholders; it does not load ART.
 

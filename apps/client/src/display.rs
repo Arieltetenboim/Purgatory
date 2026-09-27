@@ -8,7 +8,7 @@
 //! file yet). Dynamic resolution / DLSS / FSR are not implemented.
 
 use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::window::{Fullscreen, Window};
+use winit::window::{Fullscreen, Window, WindowButtons};
 
 /// Physical pixel width × height. Zero on either axis is invalid.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -575,6 +575,9 @@ impl DisplayController {
             match mode {
                 WindowMode::Windowed => {
                     window.set_fullscreen(None);
+                    window.set_maximized(false);
+                    window.set_resizable(false);
+                    window.set_enabled_buttons(WindowButtons::CLOSE | WindowButtons::MINIMIZE);
                     self.pending_window_resolution = Some(self.settings.resolution);
                 }
                 WindowMode::BorderlessFullscreen => {

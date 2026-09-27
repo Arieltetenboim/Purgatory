@@ -245,6 +245,7 @@ struct ClientApp {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     asset_runtime: crate::asset_runtime::AssetRuntime,
+    map_presentation: crate::map_presentation::RuntimeMapPresentation,
     frontend_runtime: crate::frontend_runtime::FrontendRuntime,
     frontend_scene: crate::frontend_scene::FrontendScene,
     frontend_scene_texture: crate::renderer::SpriteTextureId,
@@ -379,6 +380,8 @@ impl ClientApp {
         dialogue_animations: DialogueAnimationCatalog,
     ) -> Result<Self, String> {
         let mut asset_runtime = crate::asset_runtime::AssetRuntime::new();
+        let map_presentation =
+            crate::map_presentation::RuntimeMapPresentation::load(&mut asset_runtime)?;
         let frontend_scene_texture = crate::assets::ClientAssetLoader::new(&mut asset_runtime)
             .load_png("frontend.scene.guide", "frontend/frontend_scene_guide.png")?;
         let scene_image = &asset_runtime
@@ -433,6 +436,7 @@ impl ClientApp {
             window: None,
             renderer: None,
             asset_runtime,
+            map_presentation,
             frontend_runtime: crate::frontend_runtime::FrontendRuntime::new(),
             frontend_scene: crate::frontend_scene::FrontendScene::new(),
             frontend_scene_texture,
@@ -1610,6 +1614,11 @@ impl ClientApp {
 
     fn readiness_flags(&self) -> ReadinessFlags {
         let observer = self.replica.observer_address();
+        let observer_address = WorldAddress::new(
+            MapId::from_raw(observer.0),
+            ChannelId::from_raw(observer.1),
+            InstanceId::from_raw(observer.2),
+        );
         let dest = self.map_fade.dest_address();
         let dest_set = dest != (0, 0, 0);
         let observer_accepted = !dest_set || observer == dest;
@@ -1631,12 +1640,7 @@ impl ClientApp {
         ReadinessFlags {
             observer_accepted,
             epoch_applied: self.replica.last_sequence().is_some() && observer_accepted,
-            geometry_ready: presentation_matches
-                && self
-                    .world
-                    .iter_kind(purgatory_simulation::EntityKind::Platform)
-                    .count()
-                    > 0,
+            geometry_ready: presentation_matches && self.world.map_instantiated(observer_address),
             self_baseline: self_entity.is_some(),
             local_seeded: pose_ok,
             prediction_synced: presentation_matches,
@@ -2848,7 +2852,16 @@ impl ClientApp {
             self.refresh_character_presentation(frame_dt);
             let local_pose = self.frame_local.presented;
             let predicted_pose = self.frame_local.predicted;
-            quads = parallax_quads(&camera, self.world.bounds());
+            let active_map = self
+                .last_observer
+                .map(|observer| MapId::from_raw(observer.0));
+            let canonical_map_visuals = active_map
+                .is_some_and(|map_id| self.map_presentation.active_for_map(map_id, &self.registry));
+            if canonical_map_visuals {
+                quads.extend(self.map_presentation.quads(&camera, frame_dt));
+            } else {
+                quads = parallax_quads(&camera, self.world.bounds());
+            }
             let hold_source = self.map_fade.holds_source_presentation();
             let replica_live = self.replica_matches_local_map() && !hold_source;
             let remote_buf: Vec<PresentationPose> = if hold_source {
@@ -3012,14 +3025,11 @@ impl ClientApp {
                 };
                 let bone_map = self.characters.bone_map();
                 for (key, entry) in self.characters.iter_draw_order() {
-                    let health = self
-                        .replica
-                        .iter()
-                        .find(|entity| {
-                            entity.entity_id.index == key.index
-                                && entity.entity_id.generation == key.generation
-                        })
-                        .and_then(|entity| entity.health);
+                    let replicated = self.replica.iter().find(|entity| {
+                        entity.entity_id.index == key.index
+                            && entity.entity_id.generation == key.generation
+                    });
+                    let health = replicated.and_then(|entity| entity.health);
                     if !immunity_flash_visible(
                         health.is_none_or(|h| h.current > 0.0),
                         health.is_some_and(|h| h.damage_immunity_active),
@@ -3099,6 +3109,9 @@ impl ClientApp {
                     .is_some_and(|debug| debug.ui.show_npc_aabbs)
             {
                 quads.extend(npc_debug_aabb_quads(&self.replica, &self.interp));
+            }
+            if canonical_map_visuals {
+                quads.extend(self.map_presentation.foreground_quads(&camera));
             }
             self.trace_scene_once(&camera, local_pose, interactable_n, quads.len());
             #[cfg(feature = "dev-diagnostics")]
@@ -4366,6 +4379,11 @@ fn scene_quads(
 ) -> Vec<DrawQuad> {
     let mut quads = Vec::with_capacity(8);
     for view in world.iter_platforms() {
+        // Authored FOOTNOTE segments are gameplay collision geometry, not
+        // visible world art. Their AABB exists only for broad-phase queries.
+        if view.platform.is_segment() {
+            continue;
+        }
         let color = match view.platform.kind {
             PlatformKind::Solid => {
                 if view.platform.half_extents[0] >= 7.0 {
@@ -4709,23 +4727,14 @@ fn spawn_local_player_from_replica(
 ) -> Option<[f32; 2]> {
     let auth = replica.local_entity()?;
     let x = auth.position[0];
-    let floor = world
-        .iter_platforms()
-        .find(|v| {
-            world
-                .address_of(v.id)
-                .is_some_and(|a| a.compatible_with(address))
-                && x >= v.aabb().min_x()
-                && x <= v.aabb().max_x()
-        })
-        .or_else(|| {
-            world.iter_platforms().find(|v| {
-                world
-                    .address_of(v.id)
-                    .is_some_and(|a| a.compatible_with(address))
-            })
-        })?;
-    let (transform, state) = PlayerState::standing_on_at(floor.id, floor.top_surface(), x);
+    let floor = world.iter_platforms().find(|v| {
+        world
+            .address_of(v.id)
+            .is_some_and(|a| a.compatible_with(address))
+            && v.platform.surface_y_at(v.transform, x).is_some()
+    })?;
+    let surface_y = floor.platform.surface_y_at(floor.transform, x)?;
+    let (transform, state) = PlayerState::standing_on_at(floor.id, surface_y, x);
     let _ = world.spawn_player_at(address, transform, state);
     world.restore_player_sim_state(
         auth.position,
@@ -5493,6 +5502,35 @@ mod tests {
         FootnoteConfig, PlayerInput, SimulationClock, TICK_DURATION, World,
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn map1_npc_uses_humanoid_facet_and_monsters_use_sprite_path() {
+        use purgatory_protocol::{ReplicatedEquipment, ReplicatedKind, WireEntityId};
+
+        let entity = |kind, equipment| crate::replica::ReplicatedEntity {
+            entity_id: WireEntityId {
+                index: 1,
+                generation: 1,
+            },
+            kind,
+            position: [0.0, 0.0],
+            velocity: [0.0, 0.0],
+            content_id: None,
+            health: None,
+            equipment,
+            last_transform_tick: 0,
+            last_transform_gap: 0,
+            max_transform_gap: 0,
+        };
+        assert!(super::is_humanoid_social_npc(&entity(
+            ReplicatedKind::Npc,
+            Some(ReplicatedEquipment::empty())
+        )));
+        assert!(!super::is_humanoid_social_npc(&entity(
+            ReplicatedKind::Npc,
+            None
+        )));
+    }
 
     #[test]
     fn workspace_crates_are_linked() {
@@ -6517,8 +6555,8 @@ mod tests {
         use purgatory_simulation::{ChannelId, InstanceId, World, WorldAddress};
 
         let registry = load_registry(&default_content_root(), LoadMode::Shared).expect("registry");
-        let content = purgatory_common::ContentId::from_authored("map.dev.second").expect("id");
-        let map_id = registry.map_id(content).expect("Map B");
+        let content = purgatory_common::MAP1;
+        let map_id = registry.map_id(content).expect("MAP1");
         let address = WorldAddress::new(map_id, ChannelId::DEFAULT, InstanceId::DEFAULT);
         let plan = geometry_plan(&registry, map_id, address).expect("plan");
         let mut world = World::new();

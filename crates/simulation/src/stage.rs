@@ -35,7 +35,7 @@ pub const FOOTNOTE_SPAWN_X: f32 = -19.4;
 const LEGACY_INVALID_FOOTNOTE_SPAWN_X: f32 = -20.0;
 
 /// Suggested client logical viewport height for this arena.
-pub const FOOTNOTE_TEST_VIEWPORT_HEIGHT: f32 = 14.0;
+pub const FOOTNOTE_TEST_VIEWPORT_HEIGHT: f32 = 13.0;
 
 impl World {
     /// Phase-4.8 FOOTNOTE movement laboratory with wide bounds for camera tests.

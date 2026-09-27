@@ -1020,6 +1020,36 @@ mod tests {
     }
 
     #[test]
+    fn map1_monsters_resolve_distinct_authored_sprite_sheets() {
+        use purgatory_common::{MONSTER_MOSS_CRAB, MONSTER_SHROOM};
+        use purgatory_content::{LoadMode, default_content_root, load_registry};
+
+        let shared =
+            load_registry(&default_content_root(), LoadMode::Shared).expect("shared content");
+        let shroom_sprite = shared
+            .monster_presentation_by_id(MONSTER_SHROOM)
+            .expect("Shroom presentation")
+            .sprite_id
+            .clone();
+        let crab_sprite = shared
+            .monster_presentation_by_id(MONSTER_MOSS_CRAB)
+            .expect("Moss Crab presentation")
+            .sprite_id
+            .clone();
+        assert_eq!(shroom_sprite, "creature.shroom");
+        assert_eq!(crab_sprite, "creature.moss_crab");
+
+        let mut assets = AssetRuntime::new();
+        let shroom =
+            SpriteSheet::from_sprite_id(&mut assets, &shroom_sprite).expect("Shroom sheet");
+        let crab = SpriteSheet::from_sprite_id(&mut assets, &crab_sprite).expect("Moss Crab sheet");
+        assert_ne!(shroom.texture, crab.texture);
+        assert_ne!(shroom.frame_width, crab.frame_width);
+        assert!(!shroom.clip("idle").frames().is_empty());
+        assert!(!crab.clip("idle").frames().is_empty());
+    }
+
+    #[test]
     fn sheet_resolves_declared_four_by_four_grid() {
         let sheet = sheet();
         assert_eq!(sheet.frames.len(), 16);

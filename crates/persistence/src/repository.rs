@@ -107,13 +107,13 @@ mod tests {
         let mut character = PersistentCharacter::new_default(id);
         character.persistence_revision = 3;
         character.restore = RestoreIntent {
-            map_authored: "map.dev.second".into(),
+            map_authored: "map.map2".into(),
             point_id: "default".into(),
             checkpoint_id: None,
         };
         repo.save(&character).unwrap();
         let loaded = repo.load(id).unwrap().unwrap();
-        assert_eq!(loaded.restore.map_authored, "map.dev.second");
+        assert_eq!(loaded.restore.map_authored, "map.map2");
         assert_eq!(loaded.persistence_revision, 3);
 
         let mut stale = loaded.clone();
@@ -135,7 +135,7 @@ mod tests {
         assert!(!path.exists());
         let character = repo.load_or_default(id).unwrap();
         assert_eq!(character.character_id, id);
-        assert_eq!(character.restore.map_authored, "map.dev.footnote");
+        assert_eq!(character.restore.map_authored, "map.map1");
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -162,7 +162,7 @@ mod tests {
         let repo = FileCharacterRepository::open(&dir).unwrap();
         let id = CharacterId::from_raw(11);
         let path = repo.path_for(id);
-        let original = br#"{"schema_version":99,"character_id":11,"persistence_revision":1,"restore":{"map_authored":"map.dev.footnote","point_id":"default"}}"#.to_vec();
+        let original = br#"{"schema_version":99,"character_id":11,"persistence_revision":1,"restore":{"map_authored":"map.map1","point_id":"default"}}"#.to_vec();
         std::fs::write(&path, &original).unwrap();
         let err = repo.load_or_default(id).unwrap_err();
         assert!(
@@ -179,7 +179,7 @@ mod tests {
         let repo = FileCharacterRepository::open(&dir).unwrap();
         let id = CharacterId::from_raw(12);
         let path = repo.path_for(id);
-        let original = br#"{"schema_version":1,"character_id":13,"persistence_revision":1,"restore":{"map_authored":"map.dev.footnote","point_id":"default"}}"#.to_vec();
+        let original = br#"{"schema_version":1,"character_id":13,"persistence_revision":1,"restore":{"map_authored":"map.map1","point_id":"default"}}"#.to_vec();
         std::fs::write(&path, &original).unwrap();
         let err = repo.load_or_default(id).unwrap_err();
         assert!(matches!(err, PersistError::Corrupt { .. }), "{err}");

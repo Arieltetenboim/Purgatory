@@ -13,6 +13,12 @@ pub(crate) fn launch_mob_lab() -> Result<(), String> {
     launch_visible_powershell(&root, &launcher, &[])
 }
 
+pub(crate) fn launch_map_lab() -> Result<(), String> {
+    let root = workspace_root()?;
+    let launcher = root.join("tools").join("map_lab").join("run.ps1");
+    launch_visible_powershell(&root, &launcher, &[])
+}
+
 pub(crate) fn launch_character_lab() -> Result<(), String> {
     let root = workspace_root()?;
     crate::authoring_template::export_character_lab_contract()?;

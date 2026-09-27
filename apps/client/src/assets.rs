@@ -74,6 +74,10 @@ impl<'a> ClientAssetLoader<'a> {
             .to_rgba8();
         self.runtime.register_image(key, image)
     }
+
+    pub(crate) fn runtime(&self) -> &AssetRuntime {
+        self.runtime
+    }
 }
 
 /// Bundled production UI face (DejaVu Sans Bold); license accompanies the asset.

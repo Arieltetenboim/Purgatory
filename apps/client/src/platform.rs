@@ -1,7 +1,7 @@
 //! Native window creation. Default size comes from [`crate::display::DisplaySettings`].
 
 use winit::dpi::PhysicalSize;
-use winit::window::{Window, WindowAttributes};
+use winit::window::{Window, WindowAttributes, WindowButtons};
 
 use crate::display::Resolution;
 
@@ -24,6 +24,8 @@ pub fn window_attributes() -> WindowAttributes {
         .with_title(window_title())
         .with_inner_size(PhysicalSize::new(DEV_WINDOW_WIDTH, DEV_WINDOW_HEIGHT))
         .with_resizable(false)
+        .with_maximized(false)
+        .with_enabled_buttons(WindowButtons::CLOSE | WindowButtons::MINIMIZE)
 }
 
 #[must_use]
@@ -45,7 +47,12 @@ mod tests {
     }
 
     #[test]
-    fn player_window_disables_manual_resize() {
-        assert!(!window_attributes().resizable);
+    fn player_window_disables_manual_resize_and_maximize() {
+        let attributes = window_attributes();
+        assert!(!attributes.resizable);
+        assert!(!attributes.maximized);
+        assert!(!attributes.enabled_buttons.contains(WindowButtons::MAXIMIZE));
+        assert!(attributes.enabled_buttons.contains(WindowButtons::CLOSE));
+        assert!(attributes.enabled_buttons.contains(WindowButtons::MINIMIZE));
     }
 }

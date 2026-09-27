@@ -446,6 +446,15 @@ fn quick_actions(
             {
                 let _ = tool_launch::launch_character_lab();
             }
+            let response = ui.add(btn_ghost("Map Lab").min_size(button_size));
+            if action_response(
+                response,
+                "Launch the standalone visual map authoring and calibration tool.",
+            )
+            .clicked()
+            {
+                let _ = tool_launch::launch_map_lab();
+            }
         });
 
         ui.add_space(6.0);

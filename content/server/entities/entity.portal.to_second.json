@@ -5,7 +5,7 @@
   "visible": true,
   "interactable": "portal",
   "transition": {
-    "map": "map.dev.second",
-    "portal": "entity.portal.to_footnote"
+    "map": "map.map2",
+    "portal": "portal.001"
   }
 }

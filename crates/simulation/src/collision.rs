@@ -70,7 +70,7 @@ pub fn recover_solid_penetration<B: CollisionBody>(
     let mut best: Option<(EntityId, f32, f32, f32, f32)> = None;
 
     for platform in platforms {
-        if platform.platform.kind != PlatformKind::Solid {
+        if platform.platform.kind != PlatformKind::Solid || platform.platform.is_segment() {
             continue;
         }
         let pa = platform.aabb();
@@ -149,6 +149,11 @@ pub fn resolve_horizontal<B: CollisionBody>(
 
     for platform in platforms {
         if !detect_overlap(body, platform.aabb()) {
+            continue;
+        }
+        if let Some((start, end)) = platform.platform.segment_world(platform.transform)
+            && (end[0] - start[0]).abs() > CONTACT_EPSILON
+        {
             continue;
         }
         let query = BlockQuery {
@@ -276,7 +281,17 @@ fn resolve_upward<B: CollisionBody>(
         if !detect_overlap(body, platform.aabb()) {
             continue;
         }
-        let underside = platform.platform.min_y(platform.transform);
+        let underside = if platform.platform.is_segment() {
+            let Some(surface) = platform
+                .platform
+                .surface_y_at(platform.transform, body.center[0])
+            else {
+                continue;
+            };
+            surface
+        } else {
+            platform.platform.min_y(platform.transform)
+        };
         let query = BlockQuery {
             approach: Approach::Up,
             platform_id: platform.id,
@@ -327,7 +342,12 @@ fn resolve_downward<B: CollisionBody>(
         if !detect_overlap(body, platform.aabb()) {
             continue;
         }
-        let top = platform.top_surface();
+        let Some(top) = platform
+            .platform
+            .surface_y_at(platform.transform, body.center[0])
+        else {
+            continue;
+        };
         let query = BlockQuery {
             approach: Approach::Down,
             platform_id: platform.id,
@@ -476,6 +496,38 @@ mod tests {
         let body = world.player_body().expect("p");
         // Either still rising/falling normally or landed back — never stuck mid-snap.
         assert!(body.position[1].is_finite());
+    }
+
+    #[test]
+    fn falling_player_lands_on_sloped_oneway_segment() {
+        let mut world = World::new();
+        let slope = world.spawn_platform(
+            Transform::from_position([0.0, 0.0]),
+            Platform::segment([-2.0, 0.0], [2.0, 2.0], PlatformKind::OneWay, true),
+        );
+        let surface = world
+            .iter_platforms()
+            .find(|view| view.id == slope)
+            .and_then(|view| view.platform.surface_y_at(view.transform, 0.0))
+            .unwrap();
+        let (mut transform, mut state) = PlayerState::standing_on_at(slope, surface, 0.0);
+        transform.position[1] = 3.0;
+        state.grounded = false;
+        state.grounded_on = None;
+        state.velocity = [0.0, -4.0];
+        world.spawn_player(transform, state);
+
+        for _ in 0..30 {
+            world.tick(DT, PlayerInput::idle());
+            if world.player_body().is_some_and(|body| body.grounded) {
+                break;
+            }
+        }
+
+        let body = world.player_body().unwrap();
+        assert!(body.grounded);
+        assert_eq!(body.grounded_on, Some(slope));
+        assert!((body.position[1] - (surface + PLAYER_HALF_EXTENTS[1])).abs() < 1e-3);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Filesystem JSON loader. Not used on the simulation tick.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,14 +19,18 @@ use crate::item::{
     ITEM_CONTENT_SCHEMA_VERSION, ITEM_PRESENTATION_SCHEMA_VERSION, ItemCategory, ItemDefinition,
     ItemPresentation, validate_item_definition, validate_item_presentation,
 };
+use crate::map_gameplay_authoring::{
+    FootholdKind, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION, MapGameplayAuthoring,
+};
 use crate::monster::{
     MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterCollisionBounds, MonsterDefinition,
     MonsterPresentationDefinition, validate_monster_definition, validate_monster_presentation,
 };
 use crate::registry::ContentRegistry;
 use crate::schema::{
-    CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
-    SpawnPoint, TransitionRef,
+    CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, PLACEMENT_SCHEMA_VERSION,
+    Placement, PlacementKind, PortalLink, RestorePolicy, SpawnPoint, TransitionRef,
+    portal_runtime_authored,
 };
 use purgatory_common::{ContentId, ContentKind, allocated_id_for_label, validate_authored_id};
 use purgatory_simulation::{
@@ -65,6 +69,11 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         &root.join("shared").join("maps"),
         ContentDomain::Shared,
         Kind::Map,
+    );
+    load_map_gameplay_tree(
+        &mut registry,
+        &mut issues,
+        &root.join("authoring").join("maps"),
     );
     load_dir(
         &mut registry,
@@ -134,6 +143,196 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
     }
     registry.finish()?;
     Ok(registry)
+}
+
+fn load_map_gameplay_tree(
+    registry: &mut ContentRegistry,
+    issues: &mut Vec<ValidationIssue>,
+    root: &Path,
+) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            issues.push(ValidationIssue::new(
+                root.display().to_string(),
+                "-",
+                "io",
+                error.to_string(),
+            ));
+            return;
+        }
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.ends_with(".gameplay.json"))
+        })
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let result = fs::read_to_string(&path)
+            .map_err(|error| ContentError::from_io(&path, &error))
+            .and_then(|text| parse::<MapGameplayAuthoring>(&path, &text))
+            .and_then(|gameplay| {
+                if gameplay.schema_version != MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION {
+                    return Err(ContentError::from_path(
+                        path.clone(),
+                        &gameplay.map_authored,
+                        "schema_version",
+                        format!(
+                            "unsupported gameplay schema version {} (want {})",
+                            gameplay.schema_version, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION
+                        ),
+                    ));
+                }
+                let Some(map) = registry.map(&gameplay.map_authored) else {
+                    return Err(ContentError::from_path(
+                        path.clone(),
+                        &gameplay.map_authored,
+                        "map_authored",
+                        "unknown map",
+                    ));
+                };
+                let bounds = map.bounds;
+                let mut ids = std::collections::HashSet::new();
+                for foothold in &gameplay.foothold_paths {
+                    if foothold.id.trim().is_empty() || !ids.insert(foothold.id.as_str()) {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "foothold_paths.id",
+                            "foothold path ids must be non-empty and unique",
+                        ));
+                    }
+                    if foothold.points.len() < 2 {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "foothold_paths.points",
+                            format!("{} needs at least two points", foothold.id),
+                        ));
+                    }
+                    if foothold.kind == FootholdKind::Solid && foothold.drop_through {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "foothold_paths.drop_through",
+                            format!("{}: Solid footholds cannot be drop-through", foothold.id),
+                        ));
+                    }
+                    for point in &foothold.points {
+                        if !point[0].is_finite()
+                            || !point[1].is_finite()
+                            || point[0] < bounds.min_x
+                            || point[0] > bounds.max_x
+                            || point[1] < bounds.min_y
+                            || point[1] > bounds.max_y
+                        {
+                            return Err(ContentError::from_path(
+                                path.clone(),
+                                &gameplay.map_authored,
+                                "foothold_paths.points",
+                                format!("{} contains a point outside map bounds", foothold.id),
+                            ));
+                        }
+                    }
+                    if foothold.points.windows(2).any(|pair| pair[0] == pair[1]) {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "foothold_paths.points",
+                            format!("{} contains a zero-length segment", foothold.id),
+                        ));
+                    }
+                }
+                let mut spawn_ids = std::collections::HashSet::new();
+                for spawn in &gameplay.spawn_points {
+                    if spawn.id.trim().is_empty() || !spawn_ids.insert(spawn.id.as_str()) {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "spawn_points.id",
+                            "spawn point ids must be non-empty and unique",
+                        ));
+                    }
+                    if !spawn.position[0].is_finite()
+                        || !spawn.position[1].is_finite()
+                        || spawn.position[0] < bounds.min_x
+                        || spawn.position[0] > bounds.max_x
+                        || spawn.position[1] < bounds.min_y
+                        || spawn.position[1] > bounds.max_y
+                    {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "spawn_points.position",
+                            format!("{} is outside map bounds", spawn.id),
+                        ));
+                    }
+                }
+                if !gameplay.spawn_points.is_empty()
+                    && !gameplay
+                        .spawn_points
+                        .iter()
+                        .any(|spawn| spawn.id == "default")
+                {
+                    return Err(ContentError::from_path(
+                        path.clone(),
+                        &gameplay.map_authored,
+                        "spawn_points",
+                        "gameplay-authored spawns require a 'default' point",
+                    ));
+                }
+                if let Some(default_spawn) = gameplay
+                    .spawn_points
+                    .iter()
+                    .find(|spawn| spawn.id == "default")
+                {
+                    let target_surface =
+                        default_spawn.position[1] - purgatory_simulation::PLAYER_HALF_EXTENTS[1];
+                    let supported = gameplay.foothold_paths.iter().any(|foothold| {
+                        foothold.points.windows(2).any(|pair| {
+                            let start = pair[0];
+                            let end = pair[1];
+                            let dx = end[0] - start[0];
+                            if dx.abs() <= f32::EPSILON {
+                                return false;
+                            }
+                            let min_x = start[0].min(end[0]);
+                            let max_x = start[0].max(end[0]);
+                            let x = default_spawn.position[0];
+                            if x < min_x || x > max_x {
+                                return false;
+                            }
+                            let t = (x - start[0]) / dx;
+                            let surface_y = start[1] + (end[1] - start[1]) * t;
+                            (surface_y - target_surface).abs() <= 0.05
+                        })
+                    });
+                    if !supported {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "spawn_points.default",
+                            "default spawn must align to an authored FOOTNOTE surface",
+                        ));
+                    }
+                }
+                registry.apply_map_gameplay(
+                    &gameplay.map_authored,
+                    &gameplay.name,
+                    gameplay.foothold_paths,
+                    gameplay.spawn_points,
+                )
+            });
+        if let Err(error) = result {
+            issues.extend(error.issues);
+        }
+    }
 }
 
 fn load_npc_authoring_tree(
@@ -312,18 +511,8 @@ fn load_file(
         }
         Kind::Placements => {
             let raw: RawPlacements = parse(path, &text)?;
-            check_schema(path, raw.schema_version, &raw.map)?;
-            check_authored(path, &raw.map)?;
-            let mut placements = Vec::new();
-            for (i, p) in raw.placements.iter().enumerate() {
-                check_authored(path, &p.entity)?;
-                let pos = pair(path, &format!("placements[{i}].position"), p.position)?;
-                placements.push(Placement {
-                    entity_authored: p.entity.clone(),
-                    position: pos,
-                });
-            }
-            registry.insert_placements(raw.map, placements)
+            let (map, placements) = placements_from_raw(path, raw)?;
+            registry.insert_placements(map, placements)
         }
         Kind::Item => {
             let raw: RawItem = parse(path, &text)?;
@@ -357,6 +546,193 @@ fn load_file(
 fn parse<'a, T: Deserialize<'a>>(path: &Path, text: &'a str) -> Result<T, ContentError> {
     serde_json::from_str(text)
         .map_err(|e| ContentError::from_path(path.to_path_buf(), "-", "json", e.to_string()))
+}
+
+pub fn load_placement_file(path: &Path) -> Result<(String, Vec<Placement>), ContentError> {
+    let text = fs::read_to_string(path).map_err(|error| ContentError::from_io(path, &error))?;
+    let raw: RawPlacements = parse(path, &text)?;
+    placements_from_raw(path, raw)
+}
+
+pub fn serialize_placements_v2(
+    map_authored: &str,
+    placements: &[Placement],
+) -> Result<Vec<u8>, ContentError> {
+    let path = Path::new("placements");
+    check_authored(path, map_authored)?;
+    let mut ids = HashSet::new();
+    let mut raw_placements = Vec::with_capacity(placements.len());
+    for (index, placement) in placements.iter().enumerate() {
+        check_placement_id(path, &placement.id)?;
+        if placement.kind != PlacementKind::Portal {
+            check_authored(path, &placement.content_authored)?;
+        }
+        if !placement.position.iter().all(|value| value.is_finite()) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                map_authored,
+                &format!("placements[{index}].position"),
+                "non-finite number",
+            ));
+        }
+        if !ids.insert(placement.id.as_str()) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                map_authored,
+                &format!("placements[{index}].id"),
+                format!("duplicate placement id '{}'", placement.id),
+            ));
+        }
+        let linked_portal = placement.portal_link.as_ref().map(|link| RawPortalLinkOut {
+            map: &link.map_authored,
+            portal: &link.portal_id,
+        });
+        raw_placements.push(RawPlacementV2Out {
+            id: &placement.id,
+            kind: placement.kind.as_str(),
+            content: (placement.kind != PlacementKind::Portal)
+                .then_some(placement.content_authored.as_str()),
+            position: placement.position,
+            linked_portal,
+        });
+    }
+    let raw = RawPlacementsV2Out {
+        schema_version: PLACEMENT_SCHEMA_VERSION,
+        map: map_authored,
+        placements: raw_placements,
+    };
+    let mut bytes = serde_json::to_vec_pretty(&raw).map_err(|error| {
+        ContentError::from_path(
+            path.to_path_buf(),
+            map_authored,
+            "json",
+            format!("serialize placements: {error}"),
+        )
+    })?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+fn placements_from_raw(
+    path: &Path,
+    raw: RawPlacements,
+) -> Result<(String, Vec<Placement>), ContentError> {
+    check_authored(path, &raw.map)?;
+    if raw.schema_version != 1 && raw.schema_version != PLACEMENT_SCHEMA_VERSION {
+        return Err(ContentError::from_path(
+            path.to_path_buf(),
+            &raw.map,
+            "schema_version",
+            format!(
+                "unsupported placement schema version {} (want 1 or {})",
+                raw.schema_version, PLACEMENT_SCHEMA_VERSION
+            ),
+        ));
+    }
+
+    let mut ids = HashSet::new();
+    let mut placements = Vec::with_capacity(raw.placements.len());
+    for (index, value) in raw.placements.into_iter().enumerate() {
+        let field = format!("placements[{index}]");
+        let placement = if raw.schema_version == 1 {
+            let legacy: RawPlacementV1 = serde_json::from_value(value).map_err(|error| {
+                ContentError::from_path(
+                    path.to_path_buf(),
+                    &raw.map,
+                    &field,
+                    format!("invalid legacy placement: {error}"),
+                )
+            })?;
+            check_authored(path, &legacy.entity)?;
+            Placement {
+                id: format!("placement.legacy_{:04}", index + 1),
+                kind: PlacementKind::Entity,
+                content_authored: legacy.entity,
+                position: pair(path, &format!("{field}.position"), legacy.position)?,
+                portal_link: None,
+            }
+        } else {
+            let authored: RawPlacementV2 = serde_json::from_value(value).map_err(|error| {
+                ContentError::from_path(
+                    path.to_path_buf(),
+                    &raw.map,
+                    &field,
+                    format!("invalid placement v2: {error}"),
+                )
+            })?;
+            check_placement_id(path, &authored.id)?;
+            let (kind, content_authored, portal_link) = match authored.kind.as_str() {
+                "entity" => {
+                    let content = authored.content.ok_or_else(|| {
+                        ContentError::from_path(
+                            path.to_path_buf(),
+                            &raw.map,
+                            &format!("{field}.content"),
+                            "entity placement requires content",
+                        )
+                    })?;
+                    check_authored(path, &content)?;
+                    (PlacementKind::Entity, content, None)
+                }
+                "monster" => {
+                    let content = authored.content.ok_or_else(|| {
+                        ContentError::from_path(
+                            path.to_path_buf(),
+                            &raw.map,
+                            &format!("{field}.content"),
+                            "monster placement requires content",
+                        )
+                    })?;
+                    check_authored(path, &content)?;
+                    (PlacementKind::Monster, content, None)
+                }
+                "portal" => {
+                    let runtime_authored = portal_runtime_authored(&raw.map, &authored.id);
+                    check_authored(path, &runtime_authored)?;
+                    let link = authored
+                        .linked_portal
+                        .map(|link| {
+                            check_authored(path, &link.map)?;
+                            check_placement_id(path, &link.portal)?;
+                            Ok(PortalLink {
+                                map_authored: link.map,
+                                portal_id: link.portal,
+                            })
+                        })
+                        .transpose()?;
+                    (PlacementKind::Portal, runtime_authored, link)
+                }
+                other => {
+                    return Err(ContentError::from_path(
+                        path.to_path_buf(),
+                        &raw.map,
+                        &format!("{field}.kind"),
+                        format!(
+                            "unknown placement kind {other:?}; expected 'entity', 'monster', or 'portal'"
+                        ),
+                    ));
+                }
+            };
+            Placement {
+                id: authored.id,
+                kind,
+                content_authored,
+                position: pair(path, &format!("{field}.position"), authored.position)?,
+                portal_link,
+            }
+        };
+
+        if !ids.insert(placement.id.clone()) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                &raw.map,
+                &format!("{field}.id"),
+                format!("duplicate placement id '{}'", placement.id),
+            ));
+        }
+        placements.push(placement);
+    }
+    Ok((raw.map, placements))
 }
 
 fn check_schema(path: &Path, version: u32, def: &str) -> Result<(), ContentError> {
@@ -431,6 +807,28 @@ fn check_ability_schema(path: &Path, version: u32, def: &str) -> Result<(), Cont
     Ok(())
 }
 
+fn check_placement_id(path: &Path, id: &str) -> Result<(), ContentError> {
+    let valid = !id.is_empty()
+        && id.len() <= purgatory_common::MAX_AUTHORED_CONTENT_ID_LEN
+        && id.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        })
+        && id.chars().next().is_some_and(|ch| ch.is_ascii_lowercase());
+    if valid {
+        Ok(())
+    } else {
+        Err(ContentError::from_path(
+            path.to_path_buf(),
+            id,
+            "id",
+            "placement id must be lowercase ASCII segments separated by dots",
+        ))
+    }
+}
+
 fn check_authored(path: &Path, id: &str) -> Result<(), ContentError> {
     validate_authored_id(id)
         .map_err(|e| ContentError::from_path(path.to_path_buf(), id, "id", format!("{e:?}")))
@@ -470,6 +868,7 @@ struct RawTransition {
 #[derive(Deserialize)]
 struct RawMap {
     schema_version: u32,
+    content_id: u32,
     id: String,
     debug_name: String,
     bounds: RawBounds,
@@ -511,16 +910,61 @@ struct RawPlatform {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawPlacements {
     schema_version: u32,
     map: String,
-    placements: Vec<RawPlacement>,
+    placements: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
-struct RawPlacement {
+#[serde(deny_unknown_fields)]
+struct RawPlacementV1 {
     entity: String,
     position: [f32; 2],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPlacementV2 {
+    id: String,
+    kind: String,
+    #[serde(default)]
+    content: Option<String>,
+    position: [f32; 2],
+    #[serde(default)]
+    linked_portal: Option<RawPortalLink>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPortalLink {
+    map: String,
+    portal: String,
+}
+
+#[derive(serde::Serialize)]
+struct RawPlacementsV2Out<'a> {
+    schema_version: u32,
+    map: &'a str,
+    placements: Vec<RawPlacementV2Out<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct RawPlacementV2Out<'a> {
+    id: &'a str,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a str>,
+    position: [f32; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linked_portal: Option<RawPortalLinkOut<'a>>,
+}
+
+#[derive(serde::Serialize)]
+struct RawPortalLinkOut<'a> {
+    map: &'a str,
+    portal: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -1060,7 +1504,7 @@ impl RawEntity {
         };
         let transition = if let Some(tr) = self.transition {
             check_authored(path, &tr.map)?;
-            check_authored(path, &tr.portal)?;
+            check_placement_id(path, &tr.portal)?;
             Some(TransitionRef {
                 map_authored: tr.map,
                 portal_authored: tr.portal,
@@ -1105,6 +1549,15 @@ impl RawMap {
     fn into_def(self, path: &Path, domain: ContentDomain) -> Result<MapDefinition, ContentError> {
         check_schema(path, self.schema_version, &self.id)?;
         check_authored(path, &self.id)?;
+        let content_id = ContentId::from_raw(self.content_id);
+        if content_id.kind() != Some(ContentKind::Map) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "content_id",
+                "map ContentId must be allocated in the 50,000-59,999 map block",
+            ));
+        }
         if domain != ContentDomain::Shared {
             return Err(ContentError::from_path(
                 path.to_path_buf(),
@@ -1182,13 +1635,14 @@ impl RawMap {
         }
         let restore = parse_restore(path, &self.id, &self.restore, &spawn_points)?;
         Ok(MapDefinition {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
+            content_id,
             authored_id: self.id,
             debug_name: self.debug_name,
             domain,
             bounds,
             spawn_points,
             platforms,
+            foothold_paths: Vec::new(),
             restore,
         })
     }
@@ -1274,6 +1728,33 @@ mod tests {
     }
 
     #[test]
+    fn gameplay_authored_spawn_overrides_bootstrap_map_spawn() {
+        let root = default_content_root();
+        let registry = load_registry(&root, LoadMode::Shared).expect("shared content");
+        let gameplay_path = root
+            .join("authoring")
+            .join("maps")
+            .join("map.map1.gameplay.json");
+        let gameplay_text = fs::read_to_string(&gameplay_path).expect("MAP1 gameplay authoring");
+        let gameplay: MapGameplayAuthoring =
+            serde_json::from_str(&gameplay_text).expect("valid MAP1 gameplay authoring");
+        let authored_default = gameplay
+            .spawn_points
+            .iter()
+            .find(|spawn| spawn.id == "default")
+            .expect("authored default spawn");
+        let runtime_default = registry
+            .map("map.map1")
+            .expect("MAP1 runtime definition")
+            .spawn_points
+            .iter()
+            .find(|spawn| spawn.id == "default")
+            .expect("runtime default spawn");
+
+        assert_eq!(runtime_default.position, authored_default.position);
+    }
+
+    #[test]
     fn malformed_json_fails() {
         let tmp = std::env::temp_dir().join(format!("purgatory-content-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
@@ -1290,11 +1771,134 @@ mod tests {
         write_file(
             &tmp.join("shared/maps"),
             "x.json",
-            r#"{"schema_version":99,"id":"map.dev.x","debug_name":"x","bounds":{"min_x":0,"max_x":1,"min_y":0,"max_y":1},"spawn_points":[{"id":"default","position":[0,0]}],"restore":{"policy":"safe_point","point":"default"},"platforms":[{"position":[0,0],"half_extents":[1,0.2],"kind":"solid"}]}"#,
+            r#"{"schema_version":99,"content_id":50099,"id":"map.test.x","debug_name":"x","bounds":{"min_x":0,"max_x":1,"min_y":0,"max_y":1},"spawn_points":[{"id":"default","position":[0,0]}],"restore":{"policy":"safe_point","point":"default"},"platforms":[{"position":[0,0],"half_extents":[1,0.2],"kind":"solid"}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("version");
         assert!(err.to_string().contains("unsupported schema"));
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn placement_v1_loads_as_legacy_entity_with_compatibility_id() {
+        let raw: RawPlacements = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "map": "map.test.fixture",
+                "placements": [
+                    { "entity": "entity.portal.test", "position": [1.0, 2.0] }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let (map, placements) =
+            placements_from_raw(Path::new("placements.json"), raw).expect("legacy placement");
+        assert_eq!(map, "map.test.fixture");
+        assert_eq!(
+            placements,
+            vec![Placement {
+                id: "placement.legacy_0001".into(),
+                kind: PlacementKind::Entity,
+                content_authored: "entity.portal.test".into(),
+                position: [1.0, 2.0],
+                portal_link: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn placement_v2_accepts_stable_entity_and_monster_references() {
+        let raw: RawPlacements = serde_json::from_str(
+            r#"{
+                "schema_version": 2,
+                "map": "map.test.fixture",
+                "placements": [
+                    {
+                        "id": "placement.portal_entry",
+                        "kind": "entity",
+                        "content": "entity.portal.test",
+                        "position": [1.0, 2.0]
+                    },
+                    {
+                        "id": "placement.mob_001",
+                        "kind": "monster",
+                        "content": "monster.moss_crab",
+                        "position": [4.0, 2.0]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let (_, placements) =
+            placements_from_raw(Path::new("placements.json"), raw).expect("placement v2");
+        assert_eq!(placements[0].kind, PlacementKind::Entity);
+        assert_eq!(placements[1].kind, PlacementKind::Monster);
+        assert_eq!(placements[1].id, "placement.mob_001");
+        assert_eq!(placements[1].content_authored, "monster.moss_crab");
+    }
+
+    #[test]
+    fn placement_v2_accepts_map_owned_portal_link() {
+        let raw: RawPlacements = serde_json::from_str(
+            r#"{
+                "schema_version": 2,
+                "map": "map.test.fixture",
+                "placements": [
+                    {
+                        "id": "portal.001",
+                        "kind": "portal",
+                        "position": [3.0, 2.0],
+                        "linked_portal": {
+                            "map": "map.test.other",
+                            "portal": "portal.002"
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let (_, placements) =
+            placements_from_raw(Path::new("placements.json"), raw).expect("portal placement");
+        assert_eq!(placements[0].kind, PlacementKind::Portal);
+        assert_eq!(placements[0].id, "portal.001");
+        assert_eq!(
+            placements[0].portal_link,
+            Some(PortalLink {
+                map_authored: "map.test.other".into(),
+                portal_id: "portal.002".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn placement_v2_rejects_duplicate_ids_and_unknown_kinds() {
+        for (body, needle) in [
+            (
+                r#"{
+                    "schema_version": 2,
+                    "map": "map.test.fixture",
+                    "placements": [
+                        { "id": "placement.same", "kind": "entity", "content": "entity.portal.test", "position": [0, 0] },
+                        { "id": "placement.same", "kind": "entity", "content": "entity.portal.other", "position": [1, 0] }
+                    ]
+                }"#,
+                "duplicate placement id",
+            ),
+            (
+                r#"{
+                    "schema_version": 2,
+                    "map": "map.test.fixture",
+                    "placements": [
+                        { "id": "placement.bad_kind", "kind": "npc", "content": "npc.welcome.traveler_stayed", "position": [0, 0] }
+                    ]
+                }"#,
+                "unknown placement kind",
+            ),
+        ] {
+            let raw: RawPlacements = serde_json::from_str(body).unwrap();
+            let error = placements_from_raw(Path::new("placements.json"), raw)
+                .expect_err("invalid placement");
+            assert!(error.to_string().contains(needle), "{error}");
+        }
     }
 
     fn minimal_npc_json(beats: &str) -> String {
@@ -1670,43 +2274,24 @@ mod tests {
     }
 
     #[test]
-    fn workspace_pack_loads_and_matches_footnote_geometry() {
+    fn workspace_pack_loads_numeric_maps_and_shared_content() {
         let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
-        assert!(registry.map_count() >= 2);
+        assert_eq!(registry.map_count(), 2);
         assert!(registry.entity_count() >= 4);
-        let map_a = registry
-            .map(purgatory_common::MAP_FOOTNOTE_AUTHORED)
-            .expect("A");
-        assert_eq!(map_a.platforms.len(), 26);
+
+        let map1 = registry.map(purgatory_common::MAP1_AUTHORED).expect("MAP1");
+        let map2 = registry.map(purgatory_common::MAP2_AUTHORED).expect("MAP2");
+        assert_eq!(map1.content_id, purgatory_common::MAP1);
+        assert_eq!(map2.content_id, purgatory_common::MAP2);
         assert_eq!(
-            map_a.platforms[0].position,
-            purgatory_simulation::P0_POSITION
+            registry.map_id(purgatory_common::MAP1),
+            Some(purgatory_common::MapId::from_raw(1))
         );
         assert_eq!(
-            map_a.platforms[0].half_extents,
-            purgatory_simulation::P0.half_extents
-        );
-        assert_eq!(
-            map_a.bounds,
-            purgatory_simulation::WorldBounds::FOOTNOTE_TEST
-        );
-        let spawn = map_a
-            .spawn_points
-            .iter()
-            .find(|s| s.id == "default")
-            .expect("spawn");
-        assert!((spawn.position[0] - purgatory_simulation::FOOTNOTE_SPAWN_X).abs() < 1e-4);
-        let cid_a =
-            purgatory_common::ContentId::from_authored(purgatory_common::MAP_FOOTNOTE_AUTHORED)
-                .unwrap();
-        let cid_b =
-            purgatory_common::ContentId::from_authored(purgatory_common::MAP_SECOND_AUTHORED)
-                .unwrap();
-        assert_eq!(registry.map_id(cid_a), Some(purgatory_common::MapId::DEV));
-        assert_eq!(
-            registry.map_id(cid_b),
+            registry.map_id(purgatory_common::MAP2),
             Some(purgatory_common::MapId::from_raw(2))
         );
+
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
         assert_eq!(shared.map_count(), 2);
         assert_eq!(shared.entity_count(), 0);
@@ -1737,14 +2322,15 @@ mod tests {
         };
         assert!((*speed - 9.0).abs() < f32::EPSILON);
         assert_eq!(*duration_ticks, 5);
-        assert!(
-            registry
-                .entity("entity.portal.to_second")
-                .unwrap()
-                .transition
-                .as_ref()
-                .is_some_and(|tr| tr.portal_authored == "entity.portal.to_footnote")
-        );
+
+        let legacy_portal = registry
+            .entity("entity.portal.to_second")
+            .expect("legacy portal definition remains loadable");
+        assert!(legacy_portal.transition.as_ref().is_some_and(|transition| {
+            transition.map_authored == purgatory_common::MAP2_AUTHORED
+                && transition.portal_authored == "portal.001"
+        }));
+
         let cap = registry
             .equipment("equipment.debug.cloth_cap")
             .expect("headwear gameplay");

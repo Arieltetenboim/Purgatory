@@ -22,8 +22,8 @@ Rules:
 
 | ID | Label | Status |
 | ---: | --- | --- |
-| `50001` | `map.dev.footnote` | active |
-| `50002` | `map.dev.second` | active |
+| `50001` | `map.map1` | active |
+| `50002` | `map.map2` | active |
 
 ### Items — 30,000–39,999
 

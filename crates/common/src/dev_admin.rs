@@ -49,6 +49,12 @@ pub enum DevAdminRequest {
         connection_id: u64,
         channel: u32,
     },
+    TransitionPlayer {
+        connection_id: u64,
+        map_authored: String,
+        #[serde(default)]
+        portal_id: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -60,6 +66,13 @@ pub struct DevAdminPlayer {
 pub struct DevAdminContentEntry {
     pub content_id: u64,
     pub authored_id: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DevAdminMapEntry {
+    pub authored_id: String,
+    #[serde(default)]
+    pub portals: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -78,6 +91,9 @@ pub struct DevAdminSnapshot {
     /// Old server binaries omit this field; decode them as an empty catalogue.
     #[serde(default)]
     pub facts: Vec<String>,
+    /// Authored maps and their placed portal ids. Every map supports Default Spawn.
+    #[serde(default)]
+    pub maps: Vec<DevAdminMapEntry>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -164,6 +180,21 @@ mod tests {
         };
         let json = serde_json::to_string(&request).expect("encode");
         assert!(json.contains("set_narrative_fact"));
+        assert_eq!(
+            serde_json::from_str::<DevAdminRequest>(&json).expect("decode"),
+            request
+        );
+    }
+
+    #[test]
+    fn transition_request_roundtrip_keeps_map_and_optional_portal() {
+        let request = DevAdminRequest::TransitionPlayer {
+            connection_id: 12,
+            map_authored: "map.map2".into(),
+            portal_id: Some("portal.001".into()),
+        };
+        let json = serde_json::to_string(&request).expect("encode");
+        assert!(json.contains("transition_player"));
         assert_eq!(
             serde_json::from_str::<DevAdminRequest>(&json).expect("decode"),
             request

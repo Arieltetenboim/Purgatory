@@ -343,9 +343,9 @@ pub struct RestoreIntent {
 
 impl RestoreIntent {
     #[must_use]
-    pub fn footnote_default() -> Self {
+    pub fn map1_default() -> Self {
         Self {
-            map_authored: MAP_FOOTNOTE_AUTHORED.to_string(),
+            map_authored: MAP1_AUTHORED.to_string(),
             point_id: DEFAULT_RESTORE_POINT.to_string(),
             checkpoint_id: None,
         }
@@ -359,9 +359,9 @@ pub struct InstanceExitContext {
     pub reason: Option<String>,
 }
 
-/// Legacy development map labels. Stable map identity moves to numeric IDs.
-pub const MAP_FOOTNOTE_AUTHORED: &str = "map.dev.footnote";
-pub const MAP_SECOND_AUTHORED: &str = "map.dev.second";
+/// Human-readable map labels; durable identity is the numeric ContentId.
+pub const MAP1_AUTHORED: &str = "map.map1";
+pub const MAP2_AUTHORED: &str = "map.map2";
 
 /// FNV-1a 64-bit used only by the temporary authored-string migration bridge.
 #[must_use]
@@ -482,10 +482,10 @@ mod tests {
 
     #[test]
     fn legacy_authored_constructor_remains_only_for_migration() {
-        let a = ContentId::from_authored("map.dev.footnote").expect("legacy label");
-        let b = ContentId::from_authored("map.dev.footnote").expect("legacy label");
+        let a = ContentId::from_authored("map.legacy.fixture").expect("legacy label");
+        let b = ContentId::from_authored("map.legacy.fixture").expect("legacy label");
         assert_eq!(a, b);
-        assert_eq!(a.token(), fnv1a64(b"map.dev.footnote"));
+        assert_eq!(a.token(), fnv1a64(b"map.legacy.fixture"));
         assert_eq!(a.kind(), None);
     }
 
@@ -564,8 +564,8 @@ mod tests {
 
     #[test]
     fn restore_intent_is_not_a_world_address() {
-        let intent = RestoreIntent::footnote_default();
-        assert_eq!(intent.map_authored, MAP_FOOTNOTE_AUTHORED);
+        let intent = RestoreIntent::map1_default();
+        assert_eq!(intent.map_authored, MAP1_AUTHORED);
         assert_eq!(intent.point_id, DEFAULT_RESTORE_POINT);
         assert!(intent.checkpoint_id.is_none());
     }

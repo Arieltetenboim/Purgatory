@@ -8,9 +8,10 @@ use purgatory_skeleton::{
 
 use super::state::{CharacterPresentationState, Facing, PresentationActivity, PresentationView};
 
-/// Presentation-only overlap above the collision body's bottom edge, in world units.
-/// Increase this value to raise the whole character artwork without moving its collider.
-pub const CHARACTER_COLLISION_FOOT_OVERLAP: f32 = 0.04;
+/// Presentation-only offset from the collision body's bottom edge, in world units.
+/// Calibrated so the current base character's lowest sole sits on the AABB bottom
+/// at the normal 1.15 presentation scale. Recalibrate if the base foot art changes.
+pub const CHARACTER_COLLISION_FOOT_OVERLAP: f32 = 0.1762;
 
 /// Equipment-independent pose input. Skeleton math still sees only Definition + local Pose.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -13,7 +13,7 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
     layout::page_header(
         ui,
         "Content",
-        "Standalone authoring tools. Animation Lab, Character Lab, NPC Lab, and Mob Lab launch independently of the Hub.",
+        "Standalone authoring tools. Animation Lab, Character Lab, NPC Lab, Mob Lab, and Map Lab launch independently of the Hub.",
     );
     ui.columns(4, |columns| {
         card(&mut columns[0], "Animation Lab", |ui| {
@@ -82,6 +82,26 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
                 });
             }
         });
+    });
+
+    ui.add_space(12.0);
+
+    card(ui, "Map Lab", |ui| {
+        ui.label(
+            "Rust/eframe visual map authoring and calibration tool backed by the shared Tiled compiler.",
+        );
+        ui.add_space(6.0);
+        ui.colored_label(
+            theme::muted(),
+            "TMX remains the visual source of truth; Map Lab previews canonical PURGATORY map presentation output.",
+        );
+        ui.add_space(8.0);
+        if ui.add(btn_primary("Launch Map Lab")).clicked() {
+            *export_status = Some(match tool_launch::launch_map_lab() {
+                Ok(()) => "Map Lab launch requested".to_owned(),
+                Err(err) => format!("Map Lab launch failed: {err}"),
+            });
+        }
     });
 
     ui.add_space(12.0);

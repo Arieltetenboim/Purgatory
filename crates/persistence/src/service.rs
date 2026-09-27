@@ -133,7 +133,7 @@ mod tests {
         let a = svc.resolve_or_create(&login).unwrap();
         let b = svc.resolve_or_create(&login).unwrap();
         assert_eq!(a.character_id, b.character_id);
-        assert_eq!(a.restore.map_authored, "map.dev.footnote");
+        assert_eq!(a.restore.map_authored, "map.map1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

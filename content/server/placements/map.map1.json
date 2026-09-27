@@ -1,0 +1,45 @@
+{
+  "schema_version": 2,
+  "map": "map.map1",
+  "placements": [
+    {
+      "id": "placement.mob_001",
+      "kind": "monster",
+      "content": "monster.shroom",
+      "position": [
+        2.4097576,
+        2.4350557
+      ]
+    },
+    {
+      "id": "placement.mob_002",
+      "kind": "monster",
+      "content": "monster.moss_crab",
+      "position": [
+        18.2,
+        1.0
+      ]
+    },
+    {
+      "id": "portal.001",
+      "kind": "portal",
+      "position": [
+        21.858204,
+        1.0
+      ],
+      "linked_portal": {
+        "map": "map.map2",
+        "portal": "portal.001"
+      }
+    },
+    {
+      "id": "placement.npc_001",
+      "kind": "entity",
+      "content": "npc.welcome.gate_watchman",
+      "position": [
+        14.555908,
+        1.0
+      ]
+    }
+  ]
+}

@@ -13,8 +13,10 @@ use crate::monster::{
     MonsterDefinition, MonsterPresentationDefinition, validate_monster_definition,
     validate_monster_presentation,
 };
-use crate::schema::{EntityDefinition, MapDefinition, Placement, RestorePolicy};
-use purgatory_common::{ContentId, MAP_FOOTNOTE_AUTHORED, MapId};
+use crate::schema::{
+    EntityDefinition, MapDefinition, Placement, PlacementKind, RestorePolicy, TransitionRef,
+};
+use purgatory_common::{CONTENT_MAP_START, ContentId, ContentKind, MapId};
 use purgatory_simulation::AbilityDefinition;
 
 /// Validated authored definitions. Runtime systems query this, not JSON.
@@ -211,6 +213,41 @@ impl ContentRegistry {
             .unwrap_or(&[])
     }
 
+    #[must_use]
+    pub fn portal_content_id(&self, map_authored: &str, portal_id: &str) -> Option<ContentId> {
+        if let Some(placement) = self
+            .placements(map_authored)
+            .iter()
+            .find(|placement| placement.kind == PlacementKind::Portal && placement.id == portal_id)
+        {
+            return ContentId::from_authored(&placement.content_authored).ok();
+        }
+
+        let legacy = self.placements(map_authored).iter().find(|placement| {
+            placement.kind == PlacementKind::Entity && placement.content_authored == portal_id
+        })?;
+        let entity = self.entities.get(&legacy.content_authored)?;
+        (entity.interactable == Some(purgatory_simulation::InteractableKind::Portal))
+            .then_some(entity.content_id)
+    }
+
+    #[must_use]
+    pub fn portal_transition_by_id(&self, id: ContentId) -> Option<TransitionRef> {
+        for placements in self.placements.values() {
+            if let Some(placement) = placements.iter().find(|placement| {
+                placement.kind == PlacementKind::Portal
+                    && ContentId::from_authored(&placement.content_authored).ok() == Some(id)
+            }) {
+                let link = placement.portal_link.as_ref()?;
+                return Some(TransitionRef {
+                    map_authored: link.map_authored.clone(),
+                    portal_authored: link.portal_id.clone(),
+                });
+            }
+        }
+        self.entity_by_id(id)?.transition.clone()
+    }
+
     pub fn iter_maps(&self) -> impl Iterator<Item = &MapDefinition> {
         self.maps.values()
     }
@@ -310,6 +347,37 @@ impl ContentRegistry {
             return Err(duplicate(&def.authored_id, "map"));
         }
         self.maps.insert(def.authored_id.clone(), def);
+        Ok(())
+    }
+
+    pub(crate) fn apply_map_gameplay(
+        &mut self,
+        authored: &str,
+        name: &str,
+        foothold_paths: Vec<crate::FootholdPath>,
+        spawn_points: Vec<crate::GameplaySpawnPoint>,
+    ) -> Result<(), ContentError> {
+        let Some(map) = self.maps.get_mut(authored) else {
+            return Err(ContentError::one(ValidationIssue::new(
+                authored,
+                authored,
+                "map_authored",
+                "gameplay authoring references an unknown map",
+            )));
+        };
+        if !name.trim().is_empty() {
+            map.debug_name = name.trim().to_owned();
+        }
+        map.foothold_paths = foothold_paths;
+        if !spawn_points.is_empty() {
+            map.spawn_points = spawn_points
+                .into_iter()
+                .map(|spawn| crate::SpawnPoint {
+                    id: spawn.id,
+                    position: spawn.position,
+                })
+                .collect();
+        }
         Ok(())
     }
 
@@ -517,25 +585,25 @@ impl ContentRegistry {
     fn assign_map_ids(&mut self) {
         self.map_id_by_content.clear();
         self.content_by_map_id.clear();
-        if let Ok(footnote) = ContentId::from_authored(MAP_FOOTNOTE_AUTHORED)
-            && self.maps.contains_key(MAP_FOOTNOTE_AUTHORED)
-        {
-            self.bind_map(footnote, MapId::DEV);
-        }
-        let mut next = 2u32;
-        let authoreds: Vec<String> = self.maps.keys().cloned().collect();
-        for authored in authoreds {
-            if authored == MAP_FOOTNOTE_AUTHORED {
-                continue;
-            }
-            let Ok(cid) = ContentId::from_authored(&authored) else {
-                continue;
+
+        let maps: Vec<ContentId> = self.maps.values().map(|map| map.content_id).collect();
+        let mut legacy_next = 1u32;
+        for content in maps {
+            let map_id = if content.kind() == Some(ContentKind::Map) {
+                let raw = content.raw().expect("numeric Map ContentId");
+                MapId::from_raw(raw - CONTENT_MAP_START)
+            } else {
+                while self
+                    .content_by_map_id
+                    .contains_key(&MapId::from_raw(legacy_next))
+                {
+                    legacy_next = legacy_next.saturating_add(1);
+                }
+                let id = MapId::from_raw(legacy_next);
+                legacy_next = legacy_next.saturating_add(1);
+                id
             };
-            if next == MapId::DEV.raw() {
-                next = next.saturating_add(1);
-            }
-            self.bind_map(cid, MapId::from_raw(next));
-            next = next.saturating_add(1);
+            self.bind_map(content, map_id);
         }
     }
 
@@ -544,35 +612,118 @@ impl ContentRegistry {
         self.content_by_map_id.insert(map, content);
     }
 
+    fn placement_issues(
+        &self,
+        map_authored: &str,
+        placements: &[Placement],
+    ) -> Vec<ValidationIssue> {
+        let mut issues = Vec::new();
+        if !self.maps.contains_key(map_authored) {
+            issues.push(ValidationIssue::new(
+                "placements",
+                map_authored,
+                "map",
+                "unresolved map reference",
+            ));
+            return issues;
+        }
+        let mut ids = std::collections::HashSet::new();
+        for (i, p) in placements.iter().enumerate() {
+            if !ids.insert(p.id.as_str()) {
+                issues.push(ValidationIssue::new(
+                    map_authored,
+                    &p.id,
+                    format!("placements[{i}].id"),
+                    "duplicate placement id",
+                ));
+            }
+            match p.kind {
+                PlacementKind::Entity => {
+                    if !self.entities.contains_key(&p.content_authored) {
+                        issues.push(ValidationIssue::new(
+                            map_authored,
+                            &p.content_authored,
+                            format!("placements[{i}].content"),
+                            "unresolved entity reference",
+                        ));
+                    }
+                }
+                PlacementKind::Monster => {
+                    if !self.monsters.contains_key(&p.content_authored) {
+                        issues.push(ValidationIssue::new(
+                            map_authored,
+                            &p.content_authored,
+                            format!("placements[{i}].content"),
+                            "unresolved monster reference",
+                        ));
+                    }
+                }
+                PlacementKind::Portal => {
+                    if let Some(link) = &p.portal_link {
+                        if !self.maps.contains_key(&link.map_authored) {
+                            issues.push(ValidationIssue::new(
+                                map_authored,
+                                &p.id,
+                                format!("placements[{i}].linked_portal.map"),
+                                "unresolved map reference",
+                            ));
+                        } else {
+                            let target_exists = if link.map_authored == map_authored {
+                                placements.iter().any(|candidate| {
+                                    (candidate.kind == PlacementKind::Portal
+                                        && candidate.id == link.portal_id)
+                                        || (candidate.kind == PlacementKind::Entity
+                                            && candidate.content_authored == link.portal_id
+                                            && self
+                                                .entities
+                                                .get(&candidate.content_authored)
+                                                .is_some_and(|entity| {
+                                                    entity.interactable
+                                                        == Some(
+                                                            purgatory_simulation::InteractableKind::Portal,
+                                                        )
+                                                }))
+                                })
+                            } else {
+                                self.portal_content_id(&link.map_authored, &link.portal_id)
+                                    .is_some()
+                            };
+                            if !target_exists {
+                                issues.push(ValidationIssue::new(
+                                    map_authored,
+                                    &p.id,
+                                    format!("placements[{i}].linked_portal.portal"),
+                                    format!(
+                                        "portal '{}' is not placed on '{}'",
+                                        link.portal_id, link.map_authored
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        issues
+    }
+
+    pub fn validate_placements(
+        &self,
+        map_authored: &str,
+        placements: &[Placement],
+    ) -> Result<(), ContentError> {
+        let issues = self.placement_issues(map_authored, placements);
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(ContentError { issues })
+        }
+    }
+
     fn validate_refs(&self) -> Result<(), ContentError> {
         let mut issues = Vec::new();
         for (map_authored, placements) in &self.placements {
-            if !self.maps.contains_key(map_authored) {
-                issues.push(ValidationIssue::new(
-                    "placements",
-                    map_authored,
-                    "map",
-                    "unresolved map reference",
-                ));
-                continue;
-            }
-            for (i, p) in placements.iter().enumerate() {
-                match self.entities.get(&p.entity_authored) {
-                    None => issues.push(ValidationIssue::new(
-                        map_authored,
-                        &p.entity_authored,
-                        format!("placements[{i}].entity"),
-                        "unresolved entity reference",
-                    )),
-                    Some(ent)
-                        if self.maps[map_authored].domain == ContentDomain::Shared
-                            && ent.domain == ContentDomain::ServerOnly =>
-                    {
-                        // Shared maps may be listed with server placements; OK.
-                    }
-                    Some(_) => {}
-                }
-            }
+            issues.extend(self.placement_issues(map_authored, placements));
         }
         for ent in self.entities.values() {
             let Some(tr) = &ent.transition else {
@@ -594,21 +745,9 @@ impl ContentRegistry {
                     "unresolved map reference",
                 ));
             }
-            if !self.entities.contains_key(&tr.portal_authored) {
-                issues.push(ValidationIssue::new(
-                    &ent.authored_id,
-                    &ent.authored_id,
-                    "transition.portal",
-                    "unresolved portal reference",
-                ));
-            } else if self
-                .placements
-                .get(&tr.map_authored)
-                .is_none_or(|placements| {
-                    placements
-                        .iter()
-                        .all(|p| p.entity_authored != tr.portal_authored)
-                })
+            if self
+                .portal_content_id(&tr.map_authored, &tr.portal_authored)
+                .is_none()
             {
                 issues.push(ValidationIssue::new(
                     &ent.authored_id,
@@ -850,14 +989,16 @@ fn dialogue_ability_issue(
 mod tests {
     use super::*;
     use crate::schema::{
-        CONTENT_SCHEMA_VERSION, EntityDefinition, MapPlatform, RestorePolicy, SpawnPoint,
-        TransitionRef,
+        CONTENT_SCHEMA_VERSION, EntityDefinition, MapPlatform, PlacementKind, RestorePolicy,
+        SpawnPoint, TransitionRef,
     };
+    use purgatory_common::{MAP1, MAP1_AUTHORED, MAP2, MAP2_AUTHORED, allocated_id_for_label};
     use purgatory_simulation::{InteractableKind, PlatformKind, WorldBounds};
 
     fn sample_map(id: &str) -> MapDefinition {
         MapDefinition {
-            content_id: ContentId::from_authored(id).unwrap(),
+            content_id: allocated_id_for_label(id)
+                .unwrap_or_else(|| ContentId::from_authored(id).unwrap()),
             authored_id: id.into(),
             debug_name: id.into(),
             domain: ContentDomain::Shared,
@@ -871,6 +1012,7 @@ mod tests {
                 half_extents: [1.0, 0.2],
                 kind: PlatformKind::Solid,
             }],
+            foothold_paths: Vec::new(),
             restore: RestorePolicy::SafePoint {
                 point_id: "default".into(),
             },
@@ -880,47 +1022,44 @@ mod tests {
     #[test]
     fn valid_registration_and_lookup() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.finish().unwrap();
-        let cid = ContentId::from_authored(MAP_FOOTNOTE_AUTHORED).unwrap();
+        let cid = MAP1;
         assert_eq!(reg.map_id(cid), Some(MapId::DEV));
         assert_eq!(reg.map_content_id(MapId::DEV), Some(cid));
-        assert!(reg.map(MAP_FOOTNOTE_AUTHORED).is_some());
-        assert_eq!(reg.label(cid), Some(MAP_FOOTNOTE_AUTHORED));
+        assert!(reg.map(MAP1_AUTHORED).is_some());
+        assert_eq!(reg.label(cid), Some(MAP1_AUTHORED));
     }
 
     #[test]
     fn duplicate_map_rejected() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
-        assert!(reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).is_err());
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        assert!(reg.insert_map(sample_map(MAP1_AUTHORED)).is_err());
     }
 
     #[test]
     fn map_ids_are_registry_assigned_not_file_fields() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
-        reg.insert_map(sample_map("map.dev.second")).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP2_AUTHORED)).unwrap();
         reg.finish().unwrap();
-        assert_eq!(
-            reg.map_id(ContentId::from_authored(MAP_FOOTNOTE_AUTHORED).unwrap()),
-            Some(MapId::DEV)
-        );
-        assert_eq!(
-            reg.map_id(ContentId::from_authored("map.dev.second").unwrap()),
-            Some(MapId::from_raw(2))
-        );
+        assert_eq!(reg.map_id(MAP1), Some(MapId::DEV));
+        assert_eq!(reg.map_id(MAP2), Some(MapId::from_raw(2)));
     }
 
     #[test]
     fn unresolved_placement_entity_fails() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.insert_placements(
-            MAP_FOOTNOTE_AUTHORED.into(),
+            MAP1_AUTHORED.into(),
             vec![Placement {
-                entity_authored: "entity.missing.thing".into(),
+                id: "placement.missing".into(),
+                kind: PlacementKind::Entity,
+                content_authored: "entity.missing.thing".into(),
                 position: [0.0, 0.0],
+                portal_link: None,
             }],
         )
         .unwrap();
@@ -929,6 +1068,29 @@ mod tests {
             err.issues
                 .iter()
                 .any(|i| i.reason.contains("unresolved entity"))
+        );
+    }
+
+    #[test]
+    fn unresolved_placement_monster_fails() {
+        let mut reg = ContentRegistry::new();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        reg.insert_placements(
+            MAP1_AUTHORED.into(),
+            vec![Placement {
+                id: "placement.mob_001".into(),
+                kind: PlacementKind::Monster,
+                content_authored: "monster.missing".into(),
+                position: [0.0, 0.0],
+                portal_link: None,
+            }],
+        )
+        .unwrap();
+        let err = reg.finish().expect_err("unresolved monster");
+        assert!(
+            err.issues
+                .iter()
+                .any(|issue| issue.reason.contains("unresolved monster"))
         );
     }
 
@@ -947,11 +1109,11 @@ mod tests {
     #[test]
     fn unresolved_portal_destination_fails() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.insert_entity(sample_entity(
             "entity.portal.src",
             Some(TransitionRef {
-                map_authored: MAP_FOOTNOTE_AUTHORED.into(),
+                map_authored: MAP1_AUTHORED.into(),
                 portal_authored: "entity.portal.missing".into(),
             }),
         ))
@@ -960,7 +1122,53 @@ mod tests {
         assert!(
             err.issues
                 .iter()
-                .any(|i| i.field == "transition.portal" && i.reason.contains("unresolved portal"))
+                .any(|issue| issue.field == "transition.portal")
+        );
+    }
+
+    #[test]
+    fn map_owned_portals_link_by_map_and_portal_id() {
+        let mut reg = ContentRegistry::new();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        let portal_a_authored = crate::portal_runtime_authored(MAP1_AUTHORED, "portal.001");
+        let portal_b_authored = crate::portal_runtime_authored(MAP1_AUTHORED, "portal.002");
+        reg.insert_placements(
+            MAP1_AUTHORED.into(),
+            vec![
+                Placement {
+                    id: "portal.001".into(),
+                    kind: PlacementKind::Portal,
+                    content_authored: portal_a_authored.clone(),
+                    position: [0.0, 0.0],
+                    portal_link: Some(crate::PortalLink {
+                        map_authored: MAP1_AUTHORED.into(),
+                        portal_id: "portal.002".into(),
+                    }),
+                },
+                Placement {
+                    id: "portal.002".into(),
+                    kind: PlacementKind::Portal,
+                    content_authored: portal_b_authored.clone(),
+                    position: [2.0, 0.0],
+                    portal_link: Some(crate::PortalLink {
+                        map_authored: MAP1_AUTHORED.into(),
+                        portal_id: "portal.001".into(),
+                    }),
+                },
+            ],
+        )
+        .unwrap();
+        reg.finish().expect("linked portals validate");
+
+        let portal_a = ContentId::from_authored(&portal_a_authored).unwrap();
+        let transition = reg
+            .portal_transition_by_id(portal_a)
+            .expect("portal transition");
+        assert_eq!(transition.map_authored, MAP1_AUTHORED);
+        assert_eq!(transition.portal_authored, "portal.002");
+        assert_eq!(
+            reg.portal_content_id(MAP1_AUTHORED, "portal.002"),
+            ContentId::from_authored(&portal_b_authored).ok()
         );
     }
 
@@ -991,13 +1199,13 @@ mod tests {
     #[test]
     fn dest_portal_must_be_placed_on_dest_map() {
         let mut reg = ContentRegistry::new();
-        reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
+        reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
         reg.insert_entity(sample_entity("entity.portal.src", None))
             .unwrap();
         reg.insert_entity(sample_entity(
             "entity.portal.dest",
             Some(TransitionRef {
-                map_authored: MAP_FOOTNOTE_AUTHORED.into(),
+                map_authored: MAP1_AUTHORED.into(),
                 portal_authored: "entity.portal.src".into(),
             }),
         ))

@@ -8,6 +8,11 @@ mod error;
 mod instantiate;
 mod item;
 mod loader;
+#[cfg(feature = "map-authoring")]
+mod map_compiler;
+mod map_environment_authoring;
+mod map_gameplay_authoring;
+mod map_presentation;
 mod monster;
 mod registry;
 mod restore;
@@ -30,21 +35,49 @@ pub use equipment::{
 };
 pub use error::{ContentError, ValidationIssue};
 pub use instantiate::{
-    entity_spawn_request, geometry_plan, map_plan, spawn_point_position, world_address_for_map,
+    entity_spawn_request, geometry_plan, map_plan, monster_spawn_request, spawn_point_position,
+    world_address_for_map,
 };
 pub use item::{
     ITEM_CONTENT_SCHEMA_VERSION, ITEM_PRESENTATION_SCHEMA_VERSION, ItemCategory, ItemDefinition,
     ItemPresentation, is_stackable, validate_item_definition, validate_item_presentation,
 };
-pub use loader::{LoadMode, default_content_root, load_registry};
+pub use loader::{
+    LoadMode, default_content_root, load_placement_file, load_registry, serialize_placements_v2,
+};
+#[cfg(feature = "map-authoring")]
+pub use map_compiler::{
+    MAP_AUTHORING_SCHEMA_VERSION, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, MapAuthoringSource,
+    compile_tiled_map, compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
+};
+pub use map_environment_authoring::{
+    CLOUDS_PER_VIEWPORT_AT_FULL_DENSITY, CloudFieldAuthoring, CloudFieldPresentation,
+    CloudInstanceSpec, CloudStackPosition, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION,
+    MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION, MAX_CLOUDS_PER_FIELD, MapEnvironmentAuthoring,
+    MapEnvironmentPresentation, ParallaxDepth, ParallaxFillMode, ParallaxLayer, SkyGradient,
+    cloud_field_seed, cloud_instance_count, cloud_instance_specs, validate_cloud_field,
+};
+#[cfg(feature = "map-authoring")]
+pub use map_environment_authoring::{
+    compile_map_environment, resolve_png_asset_folder, serialize_map_environment_pretty,
+};
+pub use map_gameplay_authoring::{
+    FootholdKind, FootholdPath, GameplaySpawnPoint, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
+    MapGameplayAuthoring,
+};
+pub use map_presentation::{
+    MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationAsset, PresentationLayer,
+    PresentationLayerKind, PresentationSprite, TileTransform,
+};
 pub use monster::{
     MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
 };
 pub use registry::ContentRegistry;
 pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement};
 pub use schema::{
-    CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, Placement, RestorePolicy,
-    SpawnPoint, TransitionRef,
+    CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, PLACEMENT_SCHEMA_VERSION,
+    Placement, PlacementKind, PortalLink, RestorePolicy, SpawnPoint, TransitionRef,
+    portal_runtime_authored,
 };
 
 /// Cargo package version for this crate.
@@ -68,16 +101,15 @@ mod tests {
     }
 
     #[test]
-    fn full_pack_instantiates_map_a_and_b() {
+    fn full_pack_instantiates_map1_and_map2() {
         use purgatory_common::{
-            ChannelId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
-            NPC_WELCOME_TRAVELER_STAYED, WORLD_OBJECT_SWITCH,
+            ChannelId, InstanceId, MAP1, MAP1_AUTHORED, MAP2, MAP2_AUTHORED,
+            content_catalog::NPC_WELCOME_GATE_WATCHMAN,
         };
         use purgatory_simulation::{InteractableKind, World};
         let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
         let mut world = World::new();
-        for authored in [MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED] {
-            let cid = ContentId::from_authored(authored).unwrap();
+        for (authored, cid) in [(MAP1_AUTHORED, MAP1), (MAP2_AUTHORED, MAP2)] {
             let addr =
                 world_address_for_map(&registry, cid, ChannelId::DEFAULT, InstanceId::DEFAULT)
                     .unwrap();
@@ -85,28 +117,22 @@ mod tests {
             world.instantiate_map(&plan).unwrap();
         }
         assert_eq!(world.instantiated_count(), 2);
-        let traveler = world
+        let gate_watchman = world
             .iter()
-            .find(|&id| world.content_id_of(id) == Some(NPC_WELCOME_TRAVELER_STAYED))
-            .expect("live Traveler placement");
+            .find(|&id| world.content_id_of(id) == Some(NPC_WELCOME_GATE_WATCHMAN))
+            .expect("live MAP1 Gate Watchman");
         assert_eq!(
-            world.interactable_of(traveler).map(|cap| cap.kind),
+            world.interactable_of(gate_watchman).map(|cap| cap.kind),
             Some(InteractableKind::Npc)
         );
-        assert!(
-            world
-                .equipment_of(traveler)
-                .is_some_and(|state| state.is_empty())
-        );
-        assert!(
-            world.npc_of(traveler).is_none(),
-            "Social NPC has no combat AI"
-        );
+        assert!(world.equipment_of(gate_watchman).is_some());
+        let map2_portal = registry
+            .portal_content_id(MAP2_AUTHORED, "portal.001")
+            .expect("MAP2 portal content");
         assert!(
             world
                 .iter()
-                .all(|id| world.content_id_of(id) != Some(WORLD_OBJECT_SWITCH)),
-            "the legacy Dev Switch definition remains available but is not live"
+                .any(|id| world.content_id_of(id) == Some(map2_portal))
         );
         assert!(world.iter().all(|id| world.persistent_id_of(id).is_none()));
     }

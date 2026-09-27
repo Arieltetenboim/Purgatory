@@ -67,7 +67,7 @@ fn same_map_two_addresses_are_isolated() {
 #[test]
 fn authored_spawn_preserves_content_id_without_persistent_id() {
     let mut world = World::new();
-    let content = ContentId::from_authored("map.dev.footnote").unwrap();
+    let content = ContentId::from_raw(50_001);
     let id = world
         .spawn(
             RuntimeSpawnRequest::transient_at(WorldAddress::DEV)
