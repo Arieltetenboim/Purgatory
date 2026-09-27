@@ -2858,7 +2858,7 @@ impl ClientApp {
             let canonical_map_visuals = active_map
                 .is_some_and(|map_id| self.map_presentation.active_for_map(map_id, &self.registry));
             if canonical_map_visuals {
-                quads.extend(self.map_presentation.quads());
+                quads.extend(self.map_presentation.quads(&camera));
             } else {
                 quads = parallax_quads(&camera, self.world.bounds());
             }
