@@ -172,6 +172,10 @@ impl MapLabDocument {
             .map_err(|error| format!("write {}: {error}", self.placements_path.display()))
     }
 
+    pub fn discover_directory(&self) -> Option<&Path> {
+        self.sidecar_path.parent()
+    }
+
     pub fn save_gameplay(&self) -> Result<(), String> {
         validate_gameplay(
             &self.gameplay_path,
@@ -190,6 +194,63 @@ impl MapLabDocument {
         bytes.push(b'\n');
         std::fs::write(&self.gameplay_path, bytes)
             .map_err(|error| format!("write {}: {error}", self.gameplay_path.display()))
+    }
+}
+
+/// Sidecars in the canonical map authoring directory.
+///
+/// Map Lab opens one of these at a time through [`MapLabDocument::open`].
+pub fn discover_authored_maps(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut maps = Vec::new();
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("read {}: {error}", directory.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read {}: {error}", directory.display()))?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if path.is_file() && name.ends_with(".purgatory-map.json") {
+            maps.push(path);
+        }
+    }
+    maps.sort();
+    Ok(maps)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MapSwitchKind {
+    AlreadyOpen,
+    Open,
+    Confirm,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MapSwitchChoice {
+    SaveAndSwitch,
+    DiscardAndSwitch,
+    Cancel,
+}
+
+#[must_use]
+pub fn classify_map_switch(same_document: bool, reload: bool, dirty: bool) -> MapSwitchKind {
+    if same_document && !reload {
+        MapSwitchKind::AlreadyOpen
+    } else if dirty {
+        MapSwitchKind::Confirm
+    } else {
+        MapSwitchKind::Open
+    }
+}
+
+pub fn apply_map_switch_choice<E>(
+    choice: MapSwitchChoice,
+    save: impl FnOnce() -> Result<(), E>,
+) -> Result<bool, E> {
+    match choice {
+        MapSwitchChoice::Cancel => Ok(false),
+        MapSwitchChoice::DiscardAndSwitch => Ok(true),
+        MapSwitchChoice::SaveAndSwitch => save().map(|()| true),
     }
 }
 
@@ -548,6 +609,32 @@ mod tests {
             .join("../../content/authoring/maps/map.map1.purgatory-map.json")
     }
 
+    struct RestoreFiles(Vec<(PathBuf, Vec<u8>)>);
+
+    impl Drop for RestoreFiles {
+        fn drop(&mut self) {
+            for (path, bytes) in &self.0 {
+                let _ = std::fs::write(path, bytes);
+            }
+        }
+    }
+
+    fn snapshot_shared_maps() -> RestoreFiles {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/shared/maps");
+        let mut files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&directory) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                    && let Ok(bytes) = std::fs::read(&path)
+                {
+                    files.push((path, bytes));
+                }
+            }
+        }
+        RestoreFiles(files)
+    }
+
     #[test]
     fn bridge_opens_shared_compiler_output_and_recompiles_ppu() {
         let mut document = MapLabDocument::open(fixture()).expect("open");
@@ -638,6 +725,101 @@ mod tests {
     fn default_spawn_is_supported_by_authored_foothold() {
         let document = MapLabDocument::open(fixture()).expect("open");
         assert!(document.gameplay_readiness().is_ok());
+    }
+
+    #[test]
+    fn discovery_lists_every_authored_sidecar_and_open_uses_that_document() {
+        let _restore = snapshot_shared_maps();
+        let directory = fixture()
+            .parent()
+            .expect("authoring directory")
+            .to_path_buf();
+        let maps = discover_authored_maps(&directory).expect("discover");
+        let names: Vec<_> = maps
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect();
+        assert!(names.len() >= 2);
+        assert!(names.contains(&"map.map1.purgatory-map.json"));
+        assert!(names.contains(&"map.dev.footnote.purgatory-map.json"));
+
+        for path in &maps {
+            let document = MapLabDocument::open(path).expect("open discovered map");
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap();
+            assert!(name.starts_with(&document.source.id));
+            assert_eq!(document.sidecar_path, *path);
+        }
+    }
+
+    #[test]
+    fn clean_switch_opens_and_dirty_switch_waits_for_a_choice() {
+        assert_eq!(
+            classify_map_switch(false, false, false),
+            MapSwitchKind::Open
+        );
+        assert_eq!(
+            classify_map_switch(true, false, false),
+            MapSwitchKind::AlreadyOpen
+        );
+        assert_eq!(classify_map_switch(true, true, false), MapSwitchKind::Open);
+        assert_eq!(
+            classify_map_switch(false, false, true),
+            MapSwitchKind::Confirm
+        );
+        assert_eq!(
+            classify_map_switch(true, true, true),
+            MapSwitchKind::Confirm
+        );
+        assert!(!apply_map_switch_choice(MapSwitchChoice::Cancel, || Ok::<(), &str>(())).unwrap());
+        assert!(
+            apply_map_switch_choice(MapSwitchChoice::DiscardAndSwitch, || Ok::<(), &str>(()))
+                .unwrap()
+        );
+        assert!(
+            apply_map_switch_choice(MapSwitchChoice::SaveAndSwitch, || Ok::<(), &str>(())).unwrap()
+        );
+        assert_eq!(
+            apply_map_switch_choice(MapSwitchChoice::SaveAndSwitch, || Err("save failed")),
+            Err("save failed")
+        );
+    }
+
+    #[test]
+    fn save_switch_persists_discard_does_not_and_failed_save_keeps_the_file() {
+        let document = MapLabDocument::open(fixture()).expect("open");
+        assert!(!document.placements.is_empty());
+        let original = document.placements[0].position;
+        let temp = std::env::temp_dir().join(format!(
+            "purgatory-map-lab-switch-{}-{}.json",
+            std::process::id(),
+            document.source.id.replace('.', "_")
+        ));
+        let _ = std::fs::remove_file(&temp);
+
+        let mut edited = document.clone();
+        edited.placements_path = temp.clone();
+        edited.placements[0].position = [3.5, 4.5];
+        let discarded = MapLabDocument::open(fixture()).expect("discard reload");
+        assert_eq!(discarded.placements[0].position, original);
+
+        edited.save_placements().expect("save");
+        let (_, saved) = load_placement_file(&temp).expect("saved placements");
+        assert_eq!(saved[0].position, [3.5, 4.5]);
+
+        edited.placements.push(Placement {
+            id: "placement.mob_999".into(),
+            kind: purgatory_content::PlacementKind::Monster,
+            content_authored: "monster.not_authored".into(),
+            position: [0.0, 0.0],
+            portal_link: None,
+        });
+        let error = edited.save_placements().expect_err("invalid placement");
+        assert!(error.contains("monster.not_authored") || error.contains("unresolved"));
+        let (_, after_failure) = load_placement_file(&temp).expect("previous save remains");
+        assert_eq!(after_failure.len(), saved.len());
+        assert_eq!(after_failure[0].position, [3.5, 4.5]);
+        assert_eq!(edited.placements[0].position, [3.5, 4.5]);
+        let _ = std::fs::remove_file(&temp);
     }
 
     #[test]

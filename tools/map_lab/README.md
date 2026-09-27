@@ -11,7 +11,11 @@ cargo run -p purgatory-map-lab
 ```
 
 The default document is
-`content/authoring/maps/map.dev.footnote.purgatory-map.json`.
+`content/authoring/maps/map.map1.purgatory-map.json`.
+
+The map selector lists every `*.purgatory-map.json` sidecar in that authoring
+directory. Switching maps reuses the same load path. Unsaved gameplay,
+environment, or placement edits must be saved, discarded, or cancelled first.
 
 Use **Fit Map**, zoom/pan, preview-only layer visibility, and the PPU field to
 compare the full canonical preview against Tiled. The info panel shows TMX pixel

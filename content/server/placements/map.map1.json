@@ -12,6 +12,15 @@
       ]
     },
     {
+      "id": "placement.mob_002",
+      "kind": "monster",
+      "content": "monster.moss_crab",
+      "position": [
+        18.2,
+        1.0
+      ]
+    },
+    {
       "id": "portal.001",
       "kind": "portal",
       "position": [

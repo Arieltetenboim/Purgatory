@@ -12,7 +12,10 @@ use purgatory_content::{
     cloud_field_seed, cloud_instance_count, cloud_instance_specs, default_content_root,
     load_registry, portal_runtime_authored, resolve_png_asset_folder,
 };
-use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
+use purgatory_map_lab::{
+    MapLabDocument, MapSwitchChoice, MapSwitchKind, PURGATORY_STANDARD_PPU,
+    apply_map_switch_choice, classify_map_switch, discover_authored_maps,
+};
 
 const CAMERA_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
 const CAMERA_WIDTH_WU: f32 = CAMERA_HEIGHT_WU * purgatory_simulation::AOI_VIEWPORT_ASPECT;
@@ -139,6 +142,8 @@ struct MapLabApp {
     selected_point: Option<(usize, usize)>,
     settings_open: bool,
     gradient_color_clipboard: Option<[u8; 4]>,
+    available_maps: Vec<PathBuf>,
+    pending_map_switch: Option<PathBuf>,
 }
 
 impl MapLabApp {
@@ -172,28 +177,103 @@ impl MapLabApp {
             selected_point: None,
             settings_open: false,
             gradient_color_clipboard: None,
+            available_maps: Vec::new(),
+            pending_map_switch: None,
         };
         app.open(ctx, &path);
         app
     }
 
     fn open(&mut self, ctx: &egui::Context, path: &Path) {
-        self.clear_compiled("Compiling...");
-        match MapLabDocument::open(path) {
-            Ok(document) => {
-                self.ppu_text = document.source.pixels_per_world_unit.to_string();
-                self.install_document(ctx, document);
-                self.gameplay_dirty = false;
-                self.environment_dirty = false;
-                self.placements_dirty = false;
+        let document = match MapLabDocument::open(path) {
+            Ok(document) => document,
+            Err(error) => {
+                self.status = format!("COMPILE ERROR\n{error}");
+                return;
             }
-            Err(error) => self.status = format!("COMPILE ERROR\n{error}"),
+        };
+        if let Err(error) = self.install_document(ctx, document) {
+            self.status = format!("ASSET ERROR\n{error}");
+            return;
+        }
+        if let Some(document) = &self.document {
+            self.ppu_text = document.source.pixels_per_world_unit.to_string();
+        }
+        self.clear_map_local_ui();
+        self.gameplay_dirty = false;
+        self.environment_dirty = false;
+        self.placements_dirty = false;
+        self.pending_map_switch = None;
+        self.refresh_available_maps();
+    }
+
+    fn document_dirty(&self) -> bool {
+        self.gameplay_dirty || self.environment_dirty || self.placements_dirty
+    }
+
+    fn refresh_available_maps(&mut self) {
+        let directory = self
+            .document
+            .as_ref()
+            .and_then(MapLabDocument::discover_directory)
+            .map(Path::to_path_buf);
+        self.available_maps = directory
+            .and_then(|directory| discover_authored_maps(&directory).ok())
+            .unwrap_or_default();
+    }
+
+    fn request_map_switch(&mut self, ctx: &egui::Context, target: PathBuf, reload: bool) {
+        if target.as_os_str().is_empty() {
+            self.status = "OPEN ERROR\nChoose a map sidecar".to_owned();
+            return;
+        }
+        let same_document = self
+            .document
+            .as_ref()
+            .is_some_and(|document| document.sidecar_path == target);
+        match classify_map_switch(same_document, reload, self.document_dirty()) {
+            MapSwitchKind::AlreadyOpen => {}
+            MapSwitchKind::Open => self.open(ctx, &target),
+            MapSwitchKind::Confirm => self.pending_map_switch = Some(target),
         }
     }
 
-    fn reload(&mut self, ctx: &egui::Context) {
-        let path = PathBuf::from(self.path_text.trim());
-        self.open(ctx, &path);
+    fn confirm_pending_switch(&mut self, ctx: &egui::Context, choice: MapSwitchChoice) {
+        let Some(target) = self.pending_map_switch.clone() else {
+            return;
+        };
+        match apply_map_switch_choice(choice, || self.save_unsaved_documents()) {
+            Ok(true) => self.open(ctx, &target),
+            Ok(false) => self.pending_map_switch = None,
+            Err(error) => self.status = format!("SAVE ERROR\n{error}"),
+        }
+    }
+
+    fn save_unsaved_documents(&mut self) -> Result<(), String> {
+        let Some(document) = &self.document else {
+            return Err("No current map".to_owned());
+        };
+        if self.gameplay_dirty {
+            document.save_gameplay()?;
+            self.gameplay_dirty = false;
+        }
+        if self.environment_dirty {
+            document.save_environment()?;
+            self.environment_dirty = false;
+        }
+        if self.placements_dirty {
+            document.save_placements()?;
+            self.placements_dirty = false;
+        }
+        Ok(())
+    }
+
+    fn clear_map_local_ui(&mut self) {
+        self.portal_brush = false;
+        self.selected_catalog = None;
+        self.selected_placement = None;
+        self.selected_point = None;
+        self.draft_points.clear();
     }
 
     fn apply_ppu(&mut self, ctx: &egui::Context) {
@@ -209,10 +289,16 @@ impl MapLabApp {
             self.clear_compiled(&format!("COMPILE ERROR\n{error}"));
             return;
         }
-        self.install_document(ctx, document);
+        if let Err(error) = self.install_document(ctx, document) {
+            self.clear_compiled(&format!("ASSET ERROR\n{error}"));
+        }
     }
 
-    fn install_document(&mut self, ctx: &egui::Context, document: MapLabDocument) {
+    fn install_document(
+        &mut self,
+        ctx: &egui::Context,
+        document: MapLabDocument,
+    ) -> Result<(), String> {
         match (
             load_textures(ctx, &document),
             load_environment_textures(ctx, &document),
@@ -254,11 +340,12 @@ impl MapLabApp {
                 self.portal_brush = false;
                 self.selected_catalog = None;
                 self.selected_placement = None;
+                self.selected_point = None;
+                self.draft_points.clear();
                 self.fit_requested = true;
+                Ok(())
             }
-            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
-                self.clear_compiled(&format!("ASSET ERROR\n{error}"));
-            }
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error),
         }
     }
 
@@ -272,6 +359,8 @@ impl MapLabApp {
         self.portal_brush = false;
         self.selected_catalog = None;
         self.selected_placement = None;
+        self.selected_point = None;
+        self.draft_points.clear();
         self.preview_layers.clear();
         self.compiled_ppu = None;
         self.status = status.to_owned();
@@ -796,6 +885,67 @@ impl MapLabApp {
         self.gameplay_dirty = true;
     }
 
+    fn map_selector(&mut self, ui: &mut egui::Ui) {
+        let current = self
+            .document
+            .as_ref()
+            .map(|document| document.source.id.clone())
+            .unwrap_or_else(|| "No map".to_owned());
+        let current_path = self
+            .document
+            .as_ref()
+            .map(|document| document.sidecar_path.clone());
+        let maps = self.available_maps.clone();
+        egui::ComboBox::from_id_salt("map_lab_map_selector")
+            .selected_text(current)
+            .width(170.0)
+            .show_ui(ui, |ui| {
+                if maps.is_empty() {
+                    ui.label("No authored maps");
+                }
+                for path in maps {
+                    let label = path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("map")
+                        .trim_end_matches(".purgatory-map.json");
+                    let selected = current_path.as_ref() == Some(&path);
+                    if ui.selectable_label(selected, label).clicked() {
+                        self.request_map_switch(ui.ctx(), path, false);
+                    }
+                }
+            });
+    }
+
+    fn unsaved_switch_dialog(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.pending_map_switch.clone() else {
+            return;
+        };
+        let label = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("map")
+            .trim_end_matches(".purgatory-map.json")
+            .to_owned();
+        let modal = egui::Modal::new(egui::Id::new("map_lab_unsaved_switch")).show(ctx, |ui| {
+            ui.label(format!("Save changes before switching to {label}?"));
+            ui.horizontal(|ui| {
+                if ui.button("Save and switch").clicked() {
+                    self.confirm_pending_switch(ctx, MapSwitchChoice::SaveAndSwitch);
+                }
+                if ui.button("Discard and switch").clicked() {
+                    self.confirm_pending_switch(ctx, MapSwitchChoice::DiscardAndSwitch);
+                }
+                if ui.button("Cancel").clicked() {
+                    self.confirm_pending_switch(ctx, MapSwitchChoice::Cancel);
+                }
+            });
+        });
+        if modal.should_close() && self.pending_map_switch.is_some() {
+            self.confirm_pending_switch(ctx, MapSwitchChoice::Cancel);
+        }
+    }
+
     fn dirty(&self) -> bool {
         let ppu_dirty = self.compiled_ppu.is_some_and(|compiled| {
             self.ppu_text
@@ -810,7 +960,7 @@ impl MapLabApp {
 impl eframe::App for MapLabApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if ui.input(|input| input.key_pressed(egui::Key::R) && input.modifiers.shift) {
-            self.reload(ui.ctx());
+            self.request_map_switch(ui.ctx(), PathBuf::from(self.path_text.trim()), true);
         }
         match self.editor_mode {
             EditorMode::Footnote => {
@@ -874,13 +1024,18 @@ impl eframe::App for MapLabApp {
                         }
                     }
                     ui.separator();
+                    self.map_selector(ui);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.path_text)
-                            .desired_width(420.0)
+                            .desired_width(280.0)
                             .hint_text("PURGATORY map sidecar"),
                     );
                     if ui.button("Open / Reload").clicked() {
-                        self.reload(ui.ctx());
+                        self.request_map_switch(
+                            ui.ctx(),
+                            PathBuf::from(self.path_text.trim()),
+                            true,
+                        );
                     }
                     if ui.button("Open in Tiled").clicked() {
                         self.open_in_tiled();
@@ -2090,6 +2245,8 @@ impl eframe::App for MapLabApp {
                 });
             self.settings_open = open;
         }
+
+        self.unsaved_switch_dialog(ui.ctx());
 
         egui::Panel::bottom("map_lab_status")
             .exact_size(28.0)
@@ -3506,6 +3663,105 @@ mod tests {
     fn camera_coverage_is_independent_from_ppu_standard() {
         assert!(!map_covers_camera([19.44, 10.8]));
         assert!(map_covers_camera([CAMERA_WIDTH_WU, CAMERA_HEIGHT_WU]));
+    }
+
+    #[test]
+    fn map_switch_loads_the_other_map_and_drops_local_state() {
+        struct Restore(Vec<(PathBuf, Vec<u8>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (path, bytes) in &self.0 {
+                    let _ = std::fs::write(path, bytes);
+                }
+            }
+        }
+        let shared_maps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/shared/maps");
+        let _restore = Restore(
+            std::fs::read_dir(&shared_maps)
+                .expect("shared maps")
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+                .map(|path| {
+                    let bytes = std::fs::read(&path).expect("read runtime map");
+                    (path, bytes)
+                })
+                .collect(),
+        );
+        let ctx = egui::Context::default();
+        let mut app = MapLabApp::new(&ctx);
+        let first = app
+            .document
+            .as_ref()
+            .expect("default map")
+            .source
+            .id
+            .clone();
+        assert!(app.available_maps.len() >= 2);
+        app.selected_placement = Some(99);
+        app.selected_catalog = Some(3);
+        app.selected_point = Some((1, 2));
+        app.portal_brush = true;
+        app.draft_points.push([1.0, 2.0]);
+
+        let other = app
+            .available_maps
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("map.dev.footnote"))
+            })
+            .expect("second authored map")
+            .clone();
+        app.request_map_switch(&ctx, other, false);
+        let second = app
+            .document
+            .as_ref()
+            .expect("switched map")
+            .source
+            .id
+            .clone();
+        assert_ne!(second, first);
+        assert_eq!(second, "map.dev.footnote");
+        assert!(app.selected_placement.is_none());
+        assert!(app.selected_catalog.is_none());
+        assert!(app.selected_point.is_none());
+        assert!(!app.portal_brush);
+        assert!(app.draft_points.is_empty());
+        assert!(app.pending_map_switch.is_none());
+
+        let back = app
+            .available_maps
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("map.map1"))
+            })
+            .expect("map1")
+            .clone();
+        app.placements_dirty = true;
+        app.request_map_switch(&ctx, back.clone(), false);
+        assert_eq!(app.pending_map_switch.as_ref(), Some(&back));
+        app.confirm_pending_switch(&ctx, MapSwitchChoice::Cancel);
+        assert!(app.pending_map_switch.is_none());
+        assert_eq!(app.document.as_ref().unwrap().source.id, second);
+        assert!(app.placements_dirty);
+
+        app.document.as_mut().unwrap().placements.push(Placement {
+            id: "placement.mob_999".into(),
+            kind: PlacementKind::Monster,
+            content_authored: "monster.not_authored".into(),
+            position: [0.0, 0.0],
+            portal_link: None,
+        });
+        app.request_map_switch(&ctx, back, false);
+        app.confirm_pending_switch(&ctx, MapSwitchChoice::SaveAndSwitch);
+        assert_eq!(app.document.as_ref().unwrap().source.id, second);
+        assert!(app.placements_dirty);
+        assert!(app.pending_map_switch.is_some());
+        assert!(app.status.contains("SAVE ERROR"));
     }
 
     #[test]

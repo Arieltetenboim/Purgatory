@@ -4203,6 +4203,8 @@ mod tests {
         local_channel: u32,
         local_instance: u32,
         entities: HashMap<WireEntityId, SnapshotEntity>,
+        content: HashMap<WireEntityId, Option<ContentId>>,
+        humanoid: HashMap<WireEntityId, bool>,
         saw_update_before_enter: bool,
     }
 
@@ -4222,6 +4224,8 @@ mod tests {
                 local_channel: 0,
                 local_instance: 0,
                 entities: HashMap::new(),
+                content: HashMap::new(),
+                humanoid: HashMap::new(),
                 saw_update_before_enter: false,
             }
         }
@@ -4233,6 +4237,8 @@ mod tests {
             }
             if frame.observer_baseline_epoch > self.epoch {
                 self.entities.clear();
+                self.content.clear();
+                self.humanoid.clear();
                 self.epoch = frame.observer_baseline_epoch;
             }
             self.sequence = frame.snapshot_sequence;
@@ -4245,8 +4251,16 @@ mod tests {
             self.local_instance = frame.local_instance;
             for rec in frame.records {
                 match rec {
-                    ReplicationRecord::Enter { entity, .. } => {
-                        self.entities.insert(entity.entity_id, entity);
+                    ReplicationRecord::Enter {
+                        entity,
+                        content_id,
+                        equipment,
+                        ..
+                    } => {
+                        let id = entity.entity_id;
+                        self.content.insert(id, content_id);
+                        self.humanoid.insert(id, equipment.is_some());
+                        self.entities.insert(id, entity);
                     }
                     ReplicationRecord::Update {
                         entity_id,
@@ -4267,6 +4281,8 @@ mod tests {
                     }
                     ReplicationRecord::Leave { entity_id } => {
                         self.entities.remove(&entity_id);
+                        self.content.remove(&entity_id);
+                        self.humanoid.remove(&entity_id);
                     }
                 }
             }
@@ -5786,6 +5802,220 @@ mod tests {
             }
             other => panic!("expected Rejected OutOfRange, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn entity_e5_map1_runtime_proof() {
+        use purgatory_common::{
+            MAP1_AUTHORED, MONSTER_MOSS_CRAB, MONSTER_SHROOM,
+            content_catalog::NPC_WELCOME_GATE_WATCHMAN,
+        };
+        use std::collections::BTreeSet;
+
+        fn authored_identities(
+            owner: &GameplayOwner,
+            address: purgatory_simulation::WorldAddress,
+        ) -> BTreeSet<(u8, u64, bool)> {
+            owner
+                .world()
+                .iter()
+                .filter(|&id| owner.world().address_of(id) == Some(address))
+                .filter(|&id| owner.world().player_body_of(id).is_none())
+                .filter_map(|id| {
+                    let content = owner.world().content_id_of(id)?;
+                    let interactable = owner.world().interactable_of(id);
+                    let kind = if interactable.is_some_and(|cap| {
+                        cap.kind == purgatory_simulation::InteractableKind::Portal
+                    }) {
+                        1u8
+                    } else if interactable
+                        .is_some_and(|cap| cap.kind == purgatory_simulation::InteractableKind::Npc)
+                        || owner.world().npc_of(id).is_some()
+                    {
+                        2
+                    } else {
+                        return None;
+                    };
+                    let humanoid = owner.world().equipment_of(id).is_some();
+                    Some((kind, content.token(), humanoid))
+                })
+                .collect()
+        }
+
+        let mut owner = GameplayOwner::new();
+        let client_a = ConnectionId::from_raw(1);
+        let client_b = ConnectionId::from_raw(2);
+        assert_eq!(
+            owner.enter(
+                client_a,
+                PersistentCharacter::new_default(CharacterId::from_raw(11)),
+                None,
+                None,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            owner.enter(
+                client_b,
+                PersistentCharacter::new_default(CharacterId::from_raw(12)),
+                None,
+                None,
+            ),
+            Ok(())
+        );
+
+        let actor_a = owner.entity_of(client_a).expect("client A");
+        let actor_b = owner.entity_of(client_b).expect("client B");
+        let map1 = owner.world().address_of(actor_a).expect("MAP1 address");
+        assert_eq!(owner.world().address_of(actor_b), Some(map1));
+        let map1_id = owner
+            .registry
+            .map_id(ContentId::from_authored(MAP1_AUTHORED).expect("MAP1 content"))
+            .expect("MAP1 MapId");
+        assert_eq!(map1.map, map1_id);
+
+        let identities = authored_identities(&owner, map1);
+        let portal_content = {
+            let portals: Vec<_> = owner
+                .world()
+                .iter()
+                .filter(|&id| {
+                    owner.world().address_of(id) == Some(map1)
+                        && owner.world().interactable_of(id).is_some_and(|cap| {
+                            cap.kind == purgatory_simulation::InteractableKind::Portal
+                        })
+                })
+                .collect();
+            assert_eq!(portals.len(), 1, "MAP1 has one authored portal");
+            owner
+                .world()
+                .content_id_of(portals[0])
+                .expect("portal content")
+        };
+        let transition = owner
+            .registry
+            .portal_transition_by_id(portal_content)
+            .expect("MAP1 portal link");
+        assert_eq!(
+            transition.map_authored,
+            purgatory_common::MAP_FOOTNOTE_AUTHORED
+        );
+        assert_eq!(transition.portal_authored, "entity.portal.to_second");
+
+        let npc = owner
+            .world()
+            .entity_with_content_at(map1, NPC_WELCOME_GATE_WATCHMAN)
+            .expect("MAP1 NPC");
+        assert!(
+            owner.world().equipment_of(npc).is_some(),
+            "MAP1 NPC keeps the humanoid presentation facet"
+        );
+        let shroom = owner
+            .world()
+            .entity_with_content_at(map1, MONSTER_SHROOM)
+            .expect("authored Shroom");
+        let crab = owner
+            .world()
+            .entity_with_content_at(map1, MONSTER_MOSS_CRAB)
+            .expect("authored Moss Crab");
+        assert_ne!(shroom, crab);
+        assert!(owner.world().equipment_of(shroom).is_none());
+        assert!(owner.world().equipment_of(crab).is_none());
+        let shroom_bounds = owner
+            .world()
+            .npc_of(shroom)
+            .expect("shroom runtime")
+            .runtime_config
+            .half_extents;
+        let crab_bounds = owner
+            .world()
+            .npc_of(crab)
+            .expect("crab runtime")
+            .runtime_config
+            .half_extents;
+        assert_ne!(
+            shroom_bounds, crab_bounds,
+            "two monster definitions stay distinct"
+        );
+        assert!(identities.contains(&(1, portal_content.token(), false)));
+        assert!(identities.contains(&(2, NPC_WELCOME_GATE_WATCHMAN.token(), true)));
+        assert!(identities.contains(&(2, MONSTER_SHROOM.token(), false)));
+        assert!(identities.contains(&(2, MONSTER_MOSS_CRAB.token(), false)));
+
+        let pipe_a = bind_pipe(&mut owner, client_a);
+        let pipe_b = bind_pipe(&mut owner, client_b);
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        let mut view_a = ReplicaView::new();
+        let mut view_b = ReplicaView::new();
+        drain(&pipe_a, &mut view_a);
+        drain(&pipe_b, &mut view_b);
+        let observed = |view: &ReplicaView| -> BTreeSet<(u8, u64, bool)> {
+            view.entities
+                .iter()
+                .filter(|(_, entity)| entity.kind != purgatory_protocol::ReplicatedKind::Player)
+                .filter_map(|(id, entity)| {
+                    let content = (*view.content.get(id)?)?;
+                    let kind = match entity.kind {
+                        purgatory_protocol::ReplicatedKind::Portal => 1,
+                        purgatory_protocol::ReplicatedKind::Npc => 2,
+                        _ => return None,
+                    };
+                    Some((
+                        kind,
+                        content.token(),
+                        *view.humanoid.get(id).unwrap_or(&false),
+                    ))
+                })
+                .collect()
+        };
+        let shared = observed(&view_a);
+        assert_eq!(
+            shared,
+            observed(&view_b),
+            "both clients see one authoritative MAP1"
+        );
+        assert_eq!(shared, identities);
+
+        let portal = owner
+            .world()
+            .entity_with_content_at(map1, portal_content)
+            .expect("portal entity");
+        let portal_x = owner.world().transform_of(portal).unwrap().position[0];
+        assert!(owner.set_player_x(client_a, portal_x));
+        owner.apply_input(InputUpdate::PortalActivate {
+            connection_id: client_a,
+            target: wire_id(portal),
+        });
+        let dest_portal = find_content(&owner, "entity.portal.to_second");
+        assert_eq!(
+            owner.world().address_of(actor_a),
+            owner.world().address_of(dest_portal),
+            "MAP1 portal arrives on the linked portal's map"
+        );
+        let dest_x = owner.world().transform_of(dest_portal).unwrap().position[0];
+        assert!((owner.world().transform_of(actor_a).unwrap().position[0] - dest_x).abs() < 0.05);
+        assert_eq!(owner.world().address_of(actor_b), Some(map1));
+        assert!(owner.world().contains(shroom));
+        assert!(owner.world().contains(crab));
+        assert!(owner.world().contains(npc));
+
+        let mut restarted = GameplayOwner::new();
+        assert_eq!(
+            restarted.enter(
+                ConnectionId::from_raw(3),
+                PersistentCharacter::new_default(CharacterId::from_raw(13)),
+                None,
+                None,
+            ),
+            Ok(())
+        );
+        let restarted_actor = restarted.entity_of(ConnectionId::from_raw(3)).unwrap();
+        let restarted_map = restarted.world().address_of(restarted_actor).unwrap();
+        assert_eq!(
+            authored_identities(&restarted, restarted_map),
+            identities,
+            "restart reloads the same authored MAP1 entities"
+        );
     }
 
     #[test]

@@ -5504,6 +5504,35 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn map1_npc_uses_humanoid_facet_and_monsters_use_sprite_path() {
+        use purgatory_protocol::{ReplicatedEquipment, ReplicatedKind, WireEntityId};
+
+        let entity = |kind, equipment| crate::replica::ReplicatedEntity {
+            entity_id: WireEntityId {
+                index: 1,
+                generation: 1,
+            },
+            kind,
+            position: [0.0, 0.0],
+            velocity: [0.0, 0.0],
+            content_id: None,
+            health: None,
+            equipment,
+            last_transform_tick: 0,
+            last_transform_gap: 0,
+            max_transform_gap: 0,
+        };
+        assert!(super::is_humanoid_social_npc(&entity(
+            ReplicatedKind::Npc,
+            Some(ReplicatedEquipment::empty())
+        )));
+        assert!(!super::is_humanoid_social_npc(&entity(
+            ReplicatedKind::Npc,
+            None
+        )));
+    }
+
+    #[test]
     fn workspace_crates_are_linked() {
         assert!(!purgatory_common::version().is_empty());
         assert!(!purgatory_protocol::version().is_empty());
