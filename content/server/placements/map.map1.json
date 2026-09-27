@@ -1,5 +1,15 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "map": "map.map1",
-  "placements": []
+  "placements": [
+    {
+      "id": "placement.mob_001",
+      "kind": "monster",
+      "content": "monster.shroom",
+      "position": [
+        2.4097576,
+        2.4350557
+      ]
+    }
+  ]
 }
