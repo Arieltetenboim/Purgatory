@@ -1124,41 +1124,53 @@ mod tests {
         assert!(
             err.issues
                 .iter()
-                .any(|i| i.field == "transition.portal" && i.reason.contains("unresolved portal"))
+                .any(|issue| issue.field == "transition.portal")
         );
     }
 
     #[test]
-    fn same_portal_definition_cannot_be_placed_twice_on_one_map() {
+    fn map_owned_portals_link_by_map_and_portal_id() {
         let mut reg = ContentRegistry::new();
         reg.insert_map(sample_map(MAP_FOOTNOTE_AUTHORED)).unwrap();
-        reg.insert_entity(sample_entity("entity.portal.entry", None))
-            .unwrap();
+        let portal_a_authored = crate::portal_runtime_authored(MAP_FOOTNOTE_AUTHORED, "portal.001");
+        let portal_b_authored = crate::portal_runtime_authored(MAP_FOOTNOTE_AUTHORED, "portal.002");
         reg.insert_placements(
             MAP_FOOTNOTE_AUTHORED.into(),
             vec![
                 Placement {
-                    id: "placement.portal_a".into(),
-                    kind: PlacementKind::Entity,
-                    content_authored: "entity.portal.entry".into(),
+                    id: "portal.001".into(),
+                    kind: PlacementKind::Portal,
+                    content_authored: portal_a_authored.clone(),
                     position: [0.0, 0.0],
-                    portal_link: None,
+                    portal_link: Some(crate::PortalLink {
+                        map_authored: MAP_FOOTNOTE_AUTHORED.into(),
+                        portal_id: "portal.002".into(),
+                    }),
                 },
                 Placement {
-                    id: "placement.portal_b".into(),
-                    kind: PlacementKind::Entity,
-                    content_authored: "entity.portal.entry".into(),
+                    id: "portal.002".into(),
+                    kind: PlacementKind::Portal,
+                    content_authored: portal_b_authored.clone(),
                     position: [2.0, 0.0],
-                    portal_link: None,
+                    portal_link: Some(crate::PortalLink {
+                        map_authored: MAP_FOOTNOTE_AUTHORED.into(),
+                        portal_id: "portal.001".into(),
+                    }),
                 },
             ],
         )
         .unwrap();
-        let err = reg.finish().expect_err("duplicate portal placement");
-        assert!(
-            err.issues
-                .iter()
-                .any(|issue| issue.reason.contains("may be placed only once per map"))
+        reg.finish().expect("linked portals validate");
+
+        let portal_a = ContentId::from_authored(&portal_a_authored).unwrap();
+        let transition = reg
+            .portal_transition_by_id(portal_a)
+            .expect("portal transition");
+        assert_eq!(transition.map_authored, MAP_FOOTNOTE_AUTHORED);
+        assert_eq!(transition.portal_authored, "portal.002");
+        assert_eq!(
+            reg.portal_content_id(MAP_FOOTNOTE_AUTHORED, "portal.002"),
+            ContentId::from_authored(&portal_b_authored).ok()
         );
     }
 
