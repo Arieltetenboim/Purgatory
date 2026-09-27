@@ -670,19 +670,38 @@ impl ContentRegistry {
                                 format!("placements[{i}].linked_portal.map"),
                                 "unresolved map reference",
                             ));
-                        } else if self
-                            .portal_content_id(&link.map_authored, &link.portal_id)
-                            .is_none()
-                        {
-                            issues.push(ValidationIssue::new(
-                                map_authored,
-                                &p.id,
-                                format!("placements[{i}].linked_portal.portal"),
-                                format!(
-                                    "portal '{}' is not placed on '{}'",
-                                    link.portal_id, link.map_authored
-                                ),
-                            ));
+                        } else {
+                            let target_exists = if link.map_authored == map_authored {
+                                placements.iter().any(|candidate| {
+                                    (candidate.kind == PlacementKind::Portal
+                                        && candidate.id == link.portal_id)
+                                        || (candidate.kind == PlacementKind::Entity
+                                            && candidate.content_authored == link.portal_id
+                                            && self
+                                                .entities
+                                                .get(&candidate.content_authored)
+                                                .is_some_and(|entity| {
+                                                    entity.interactable
+                                                        == Some(
+                                                            purgatory_simulation::InteractableKind::Portal,
+                                                        )
+                                                }))
+                                })
+                            } else {
+                                self.portal_content_id(&link.map_authored, &link.portal_id)
+                                    .is_some()
+                            };
+                            if !target_exists {
+                                issues.push(ValidationIssue::new(
+                                    map_authored,
+                                    &p.id,
+                                    format!("placements[{i}].linked_portal.portal"),
+                                    format!(
+                                        "portal '{}' is not placed on '{}'",
+                                        link.portal_id, link.map_authored
+                                    ),
+                                ));
+                            }
                         }
                     }
                 }
