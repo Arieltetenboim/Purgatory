@@ -176,6 +176,142 @@ pub fn serialize_map_pretty(map: &MapPresentation) -> Result<Vec<u8>, ContentErr
     Ok(bytes)
 }
 
+/// One registered map compiled from its authoring sidecar and environment.
+///
+/// Identity is the registry `ContentId`. The TMX path is a compiler input recorded
+/// in `inputs` for rebuild tracking; it is not runtime map identity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledRegisteredMap {
+    pub content_id: purgatory_common::ContentId,
+    pub authored_id: String,
+    pub presentation: MapPresentation,
+    pub environment: crate::MapEnvironmentPresentation,
+    pub inputs: Vec<PathBuf>,
+}
+
+/// Compile every map registered in `content_root` through the shared authoring contract.
+///
+/// Discovery starts at `ContentRegistry`, then opens
+/// `authoring/maps/<authored-id>.purgatory-map.json` and the sibling environment file.
+/// Sidecars and TMX files that are not registered maps are ignored.
+pub fn compile_registered_map_presentations(
+    content_root: &Path,
+) -> Result<Vec<CompiledRegisteredMap>, ContentError> {
+    let registry = crate::load_registry(content_root, crate::LoadMode::Shared)?;
+    let authoring = content_root.join("authoring").join("maps");
+    let mut maps: Vec<_> = registry.iter_maps().collect();
+    maps.sort_by_key(|map| map.content_id.raw().unwrap_or(u32::MAX));
+
+    let mut compiled = Vec::with_capacity(maps.len());
+    for map in maps {
+        let sidecar = authoring.join(format!("{}.purgatory-map.json", map.authored_id));
+        if !sidecar.is_file() {
+            return Err(issue(
+                &sidecar,
+                &map.authored_id,
+                "sidecar",
+                "registered map has no authoring sidecar",
+            ));
+        }
+        let source = load_map_authoring(&sidecar)?;
+        let source_id = purgatory_common::ContentId::from_raw(source.content_id);
+        if source.id != map.authored_id || source_id != map.content_id {
+            return Err(issue(
+                &sidecar,
+                &map.authored_id,
+                "identity",
+                format!(
+                    "sidecar identity {}:{} does not match registered map {}:{}",
+                    source.content_id,
+                    source.id,
+                    map.content_id.raw().unwrap_or(0),
+                    map.authored_id
+                ),
+            ));
+        }
+
+        let environment_path = authoring.join(format!("{}.environment.json", map.authored_id));
+        if !environment_path.is_file() {
+            return Err(issue(
+                &environment_path,
+                &map.authored_id,
+                "environment",
+                "registered map has no environment authoring",
+            ));
+        }
+        let environment_bytes = fs::read(&environment_path)
+            .map_err(|error| ContentError::from_io(&environment_path, &error))?;
+        let environment_authoring: crate::MapEnvironmentAuthoring =
+            serde_json::from_slice(&environment_bytes).map_err(|error| {
+                issue(
+                    &environment_path,
+                    &map.authored_id,
+                    "json",
+                    error.to_string(),
+                )
+            })?;
+        if environment_authoring.schema_version != crate::MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION {
+            return Err(issue(
+                &environment_path,
+                &map.authored_id,
+                "schema_version",
+                format!(
+                    "unsupported environment schema {} (want {})",
+                    environment_authoring.schema_version,
+                    crate::MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION
+                ),
+            ));
+        }
+        if environment_authoring.map_authored != map.authored_id {
+            return Err(issue(
+                &environment_path,
+                &map.authored_id,
+                "map_authored",
+                format!(
+                    "environment map {} does not match registered map {}",
+                    environment_authoring.map_authored, map.authored_id
+                ),
+            ));
+        }
+
+        let presentation = compile_tiled_map(&sidecar)?;
+        if presentation.map_authored != map.authored_id {
+            return Err(issue(
+                &sidecar,
+                &map.authored_id,
+                "map_authored",
+                format!(
+                    "compiled presentation map {} does not match registered map {}",
+                    presentation.map_authored, map.authored_id
+                ),
+            ));
+        }
+        let graphic = graphic_root(&sidecar)?;
+        let environment = crate::compile_map_environment(&environment_authoring, &graphic)
+            .map_err(|error| issue(&environment_path, &map.authored_id, "environment", error))?;
+        let tmx_path = sidecar
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(&source.visual_source);
+        compiled.push(CompiledRegisteredMap {
+            content_id: map.content_id,
+            authored_id: map.authored_id.clone(),
+            presentation,
+            environment,
+            inputs: vec![
+                sidecar,
+                environment_path,
+                content_root
+                    .join("shared")
+                    .join("maps")
+                    .join(format!("{}.json", map.authored_id)),
+                tmx_path,
+            ],
+        });
+    }
+    Ok(compiled)
+}
+
 struct Compiler<'a> {
     tmx_path: &'a Path,
     graphic_root: &'a Path,
@@ -950,6 +1086,225 @@ mod tests {
             json,
             r#"{"flip_horizontal":true,"flip_vertical":true,"flip_diagonal":true}"#
         );
+    }
+
+    #[test]
+    fn registered_maps_compile_without_a_handwritten_client_list() {
+        let root = crate::default_content_root();
+        let compiled = compile_registered_map_presentations(&root).expect("production maps");
+        let registry = crate::load_registry(&root, crate::LoadMode::Shared).expect("registry");
+        let mut expected: Vec<_> = registry.iter_maps().map(|map| map.content_id).collect();
+        expected.sort_by_key(|id| id.raw());
+        let actual: Vec<_> = compiled.iter().map(|map| map.content_id).collect();
+        assert_eq!(actual, expected);
+        assert!(actual.len() >= 2);
+
+        let map1 = compiled
+            .iter()
+            .find(|map| map.content_id == purgatory_common::MAP1)
+            .expect("MAP1");
+        let direct = compile_tiled_map(
+            &root
+                .join("authoring")
+                .join("maps")
+                .join("map.map1.purgatory-map.json"),
+        )
+        .expect("MAP1 sidecar");
+        assert_eq!(map1.presentation, direct);
+        assert_eq!(map1.environment.map_authored, map1.authored_id);
+
+        let map2 = compiled
+            .iter()
+            .find(|map| map.content_id == purgatory_common::MAP2)
+            .expect("MAP2");
+        let direct = compile_tiled_map(
+            &root
+                .join("authoring")
+                .join("maps")
+                .join("map.map2.purgatory-map.json"),
+        )
+        .expect("MAP2 sidecar");
+        assert_eq!(map2.presentation, direct);
+        assert_eq!(map2.environment.map_authored, "map.map2");
+        assert_ne!(
+            map1.presentation.map_authored,
+            map2.presentation.map_authored
+        );
+        assert_ne!(map1.environment, map2.environment);
+
+        let text = String::from_utf8(serialize_map_pretty(&map2.presentation).unwrap()).unwrap();
+        assert!(!text.contains("firstgid"));
+        assert!(!text.contains(".tmx"));
+        assert!(!text.contains(".tsx"));
+    }
+
+    #[test]
+    fn a_third_registered_map_compiles_without_a_source_list() {
+        let root = fixture_content_root("third-map");
+        let tmx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Graphic/assets/maps/50001.tmx");
+        let visual = relative_to(&root.join("authoring/maps"), &tmx);
+        for (authored, content_id, top) in [
+            ("map.fixture.a", 50_010, [1, 2, 3, 255]),
+            ("map.fixture.b", 50_011, [7, 8, 9, 255]),
+            ("map.fixture.c", 50_012, [13, 14, 15, 255]),
+        ] {
+            write_registered_map(&root, authored, content_id, &visual, top, true);
+        }
+        fs::write(
+            root.join("authoring/maps/map.extra.purgatory-map.json"),
+            b"not-a-map",
+        )
+        .unwrap();
+        fs::write(root.join("authoring/maps/99999.tmx"), b"<map/>").unwrap();
+
+        let compiled = compile_registered_map_presentations(&root).expect("three fixture maps");
+        let ids: Vec<u32> = compiled
+            .iter()
+            .map(|map| map.content_id.raw().unwrap())
+            .collect();
+        assert_eq!(ids, vec![50_010, 50_011, 50_012]);
+        assert_eq!(
+            compiled[0].environment.sky_gradient.unwrap().top_rgba,
+            [1, 2, 3, 255]
+        );
+        assert_eq!(
+            compiled[1].environment.sky_gradient.unwrap().top_rgba,
+            [7, 8, 9, 255]
+        );
+        assert_eq!(
+            compiled[2].environment.sky_gradient.unwrap().top_rgba,
+            [13, 14, 15, 255]
+        );
+        assert!(
+            compiled
+                .iter()
+                .all(|map| map.presentation.layers.len() == compiled[0].presentation.layers.len())
+        );
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn registered_map_without_environment_fails_explicitly() {
+        let root = fixture_content_root("missing-environment");
+        let tmx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Graphic/assets/maps/50001.tmx");
+        let visual = relative_to(&root.join("authoring/maps"), &tmx);
+        write_registered_map(
+            &root,
+            "map.fixture.a",
+            50_010,
+            &visual,
+            [1, 2, 3, 255],
+            false,
+        );
+        let error = compile_registered_map_presentations(&root).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("environment"), "{text}");
+        assert!(text.contains("map.fixture.a"), "{text}");
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    fn fixture_content_root(name: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/map-presentation-fixtures")
+            .join(format!(
+                "{name}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+            .join("content");
+        fs::create_dir_all(root.join("authoring/maps")).unwrap();
+        fs::create_dir_all(root.join("shared/maps")).unwrap();
+        root
+    }
+
+    fn write_registered_map(
+        content_root: &Path,
+        authored: &str,
+        content_id: u32,
+        visual_source: &str,
+        top_rgba: [u8; 4],
+        with_environment: bool,
+    ) {
+        let map = format!(
+            r#"{{
+  "schema_version": 1,
+  "content_id": {content_id},
+  "id": "{authored}",
+  "debug_name": "{authored}",
+  "bounds": {{ "min_x": 0.0, "max_x": 40.0, "min_y": 0.0, "max_y": 13.0 }},
+  "spawn_points": [{{ "id": "default", "position": [2.0, 1.0] }}],
+  "restore": {{ "policy": "safe_point", "point": "default" }},
+  "platforms": []
+}}
+"#
+        );
+        fs::write(
+            content_root
+                .join("shared/maps")
+                .join(format!("{authored}.json")),
+            map,
+        )
+        .unwrap();
+        let sidecar = format!(
+            r#"{{
+  "schema_version": 2,
+  "content_id": {content_id},
+  "id": "{authored}",
+  "visual_source": "{visual_source}",
+  "pixels_per_world_unit": 100.0
+}}
+"#
+        );
+        fs::write(
+            content_root
+                .join("authoring/maps")
+                .join(format!("{authored}.purgatory-map.json")),
+            sidecar,
+        )
+        .unwrap();
+        if with_environment {
+            let environment = format!(
+                r#"{{
+  "schema_version": 1,
+  "map_authored": "{authored}",
+  "sky_gradient": {{
+    "top_rgba": [{}, {}, {}, {}],
+    "bottom_rgba": [4, 5, 6, 255]
+  }},
+  "parallax_layers": [],
+  "foreground_layers": [],
+  "cloud_fields": []
+}}
+"#,
+                top_rgba[0], top_rgba[1], top_rgba[2], top_rgba[3]
+            );
+            fs::write(
+                content_root
+                    .join("authoring/maps")
+                    .join(format!("{authored}.environment.json")),
+                environment,
+            )
+            .unwrap();
+        }
+    }
+
+    fn relative_to(from_dir: &Path, target: &Path) -> String {
+        let from = from_dir.canonicalize().unwrap();
+        let target = target.canonicalize().unwrap();
+        let mut ups = PathBuf::new();
+        let mut cursor = from.as_path();
+        loop {
+            if let Ok(rest) = target.strip_prefix(cursor) {
+                return ups.join(rest).to_string_lossy().replace('\\', "/");
+            }
+            ups.push("..");
+            cursor = cursor
+                .parent()
+                .expect("relative path stays in the filesystem");
+        }
     }
 
     #[test]

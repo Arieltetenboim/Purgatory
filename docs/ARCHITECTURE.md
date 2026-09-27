@@ -685,8 +685,14 @@ shared purgatory-content map compiler (tiled crate)
         ↓
 versioned canonical PURGATORY MapPresentation
         ↓
-Map Lab preview / client AssetRuntime + existing renderer
+Map Lab preview / client presentation catalog keyed by ContentId
+        ↓
+active MapId → ContentRegistry → that map's presentation and environment
 ```
+
+Maps are registry-driven content. Authored maps are discovered and compiled from content definitions. The client resolves presentation by ContentId through ContentRegistry. Adding a map requires no Rust code change.
+
+TMX/TSX are authoring-only compiler inputs and are not runtime map identity.
 
 The sidecar is the single compiler entry point and owns PURGATORY map identity,
 the TMX reference, and explicit per-map pixels-per-world-unit (PPU). The production

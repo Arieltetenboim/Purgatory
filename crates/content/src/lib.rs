@@ -47,9 +47,10 @@ pub use loader::{
 };
 #[cfg(feature = "map-authoring")]
 pub use map_compiler::{
-    CANONICAL_MAP_TILE_PX, MAP_AUTHORING_SCHEMA_VERSION, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU,
-    MapAuthoringSource, compile_tiled_map, compile_tiled_map_with_ppu, load_map_authoring,
-    serialize_map_pretty, validate_canonical_map_grid,
+    CANONICAL_MAP_TILE_PX, CompiledRegisteredMap, MAP_AUTHORING_SCHEMA_VERSION, MIN_MAP_HEIGHT_WU,
+    MIN_MAP_WIDTH_WU, MapAuthoringSource, compile_registered_map_presentations, compile_tiled_map,
+    compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
+    validate_canonical_map_grid,
 };
 pub use map_environment_authoring::{
     CLOUDS_PER_VIEWPORT_AT_FULL_DENSITY, CloudFieldAuthoring, CloudFieldPresentation,
