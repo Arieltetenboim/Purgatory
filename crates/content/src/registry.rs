@@ -16,7 +16,7 @@ use crate::monster::{
 use crate::schema::{
     EntityDefinition, MapDefinition, Placement, PlacementKind, RestorePolicy, TransitionRef,
 };
-use purgatory_common::{ContentId, MAP_FOOTNOTE_AUTHORED, MapId};
+use purgatory_common::{CONTENT_MAP_START, ContentId, ContentKind, MapId};
 use purgatory_simulation::AbilityDefinition;
 
 /// Validated authored definitions. Runtime systems query this, not JSON.
@@ -585,25 +585,22 @@ impl ContentRegistry {
     fn assign_map_ids(&mut self) {
         self.map_id_by_content.clear();
         self.content_by_map_id.clear();
-        if let Ok(footnote) = ContentId::from_authored(MAP_FOOTNOTE_AUTHORED)
-            && self.maps.contains_key(MAP_FOOTNOTE_AUTHORED)
-        {
-            self.bind_map(footnote, MapId::DEV);
-        }
-        let mut next = 2u32;
-        let authoreds: Vec<String> = self.maps.keys().cloned().collect();
-        for authored in authoreds {
-            if authored == MAP_FOOTNOTE_AUTHORED {
-                continue;
-            }
-            let Ok(cid) = ContentId::from_authored(&authored) else {
-                continue;
+
+        let maps: Vec<ContentId> = self.maps.values().map(|map| map.content_id).collect();
+        let mut legacy_next = 1u32;
+        for content in maps {
+            let map_id = if content.kind() == Some(ContentKind::Map) {
+                let raw = content.raw().expect("numeric Map ContentId");
+                MapId::from_raw(raw - CONTENT_MAP_START + 1)
+            } else {
+                while self.content_by_map_id.contains_key(&MapId::from_raw(legacy_next)) {
+                    legacy_next = legacy_next.saturating_add(1);
+                }
+                let id = MapId::from_raw(legacy_next);
+                legacy_next = legacy_next.saturating_add(1);
+                id
             };
-            if next == MapId::DEV.raw() {
-                next = next.saturating_add(1);
-            }
-            self.bind_map(cid, MapId::from_raw(next));
-            next = next.saturating_add(1);
+            self.bind_map(content, map_id);
         }
     }
 

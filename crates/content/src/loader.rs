@@ -868,6 +868,7 @@ struct RawTransition {
 #[derive(Deserialize)]
 struct RawMap {
     schema_version: u32,
+    content_id: u32,
     id: String,
     debug_name: String,
     bounds: RawBounds,
@@ -1548,6 +1549,15 @@ impl RawMap {
     fn into_def(self, path: &Path, domain: ContentDomain) -> Result<MapDefinition, ContentError> {
         check_schema(path, self.schema_version, &self.id)?;
         check_authored(path, &self.id)?;
+        let content_id = ContentId::from_raw(self.content_id);
+        if content_id.kind() != Some(ContentKind::Map) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "content_id",
+                "map ContentId must be allocated in the 50,000-59,999 map block",
+            ));
+        }
         if domain != ContentDomain::Shared {
             return Err(ContentError::from_path(
                 path.to_path_buf(),
@@ -1625,7 +1635,7 @@ impl RawMap {
         }
         let restore = parse_restore(path, &self.id, &self.restore, &spawn_points)?;
         Ok(MapDefinition {
-            content_id: ContentId::from_authored(&self.id).expect("validated"),
+            content_id,
             authored_id: self.id,
             debug_name: self.debug_name,
             domain,
@@ -1761,7 +1771,7 @@ mod tests {
         write_file(
             &tmp.join("shared/maps"),
             "x.json",
-            r#"{"schema_version":99,"id":"map.dev.x","debug_name":"x","bounds":{"min_x":0,"max_x":1,"min_y":0,"max_y":1},"spawn_points":[{"id":"default","position":[0,0]}],"restore":{"policy":"safe_point","point":"default"},"platforms":[{"position":[0,0],"half_extents":[1,0.2],"kind":"solid"}]}"#,
+            r#"{"schema_version":99,"content_id":50099,"id":"map.test.x","debug_name":"x","bounds":{"min_x":0,"max_x":1,"min_y":0,"max_y":1},"spawn_points":[{"id":"default","position":[0,0]}],"restore":{"policy":"safe_point","point":"default"},"platforms":[{"position":[0,0],"half_extents":[1,0.2],"kind":"solid"}]}"#,
         );
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("version");
         assert!(err.to_string().contains("unsupported schema"));
@@ -1773,7 +1783,7 @@ mod tests {
         let raw: RawPlacements = serde_json::from_str(
             r#"{
                 "schema_version": 1,
-                "map": "map.dev.test",
+                "map": "map.test.fixture",
                 "placements": [
                     { "entity": "entity.portal.test", "position": [1.0, 2.0] }
                 ]
@@ -1782,7 +1792,7 @@ mod tests {
         .unwrap();
         let (map, placements) =
             placements_from_raw(Path::new("placements.json"), raw).expect("legacy placement");
-        assert_eq!(map, "map.dev.test");
+        assert_eq!(map, "map.test.fixture");
         assert_eq!(
             placements,
             vec![Placement {
@@ -1800,7 +1810,7 @@ mod tests {
         let raw: RawPlacements = serde_json::from_str(
             r#"{
                 "schema_version": 2,
-                "map": "map.dev.test",
+                "map": "map.test.fixture",
                 "placements": [
                     {
                         "id": "placement.portal_entry",
@@ -1831,7 +1841,7 @@ mod tests {
         let raw: RawPlacements = serde_json::from_str(
             r#"{
                 "schema_version": 2,
-                "map": "map.dev.test",
+                "map": "map.test.fixture",
                 "placements": [
                     {
                         "id": "portal.001",
@@ -1865,7 +1875,7 @@ mod tests {
             (
                 r#"{
                     "schema_version": 2,
-                    "map": "map.dev.test",
+                    "map": "map.test.fixture",
                     "placements": [
                         { "id": "placement.same", "kind": "entity", "content": "entity.portal.test", "position": [0, 0] },
                         { "id": "placement.same", "kind": "entity", "content": "entity.portal.other", "position": [1, 0] }
@@ -1876,7 +1886,7 @@ mod tests {
             (
                 r#"{
                     "schema_version": 2,
-                    "map": "map.dev.test",
+                    "map": "map.test.fixture",
                     "placements": [
                         { "id": "placement.bad_kind", "kind": "npc", "content": "npc.welcome.traveler_stayed", "position": [0, 0] }
                     ]

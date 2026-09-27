@@ -20,7 +20,7 @@ use crate::map_presentation::{
     PresentationLayerKind, PresentationSprite, TileTransform,
 };
 
-pub const MAP_AUTHORING_SCHEMA_VERSION: u32 = 1;
+pub const MAP_AUTHORING_SCHEMA_VERSION: u32 = 2;
 
 /// Every authored map must contain at least one full gameplay camera viewport.
 pub const MIN_MAP_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
@@ -30,6 +30,7 @@ pub const MIN_MAP_WIDTH_WU: f32 = MIN_MAP_HEIGHT_WU * purgatory_simulation::AOI_
 #[serde(deny_unknown_fields)]
 pub struct MapAuthoringSource {
     pub schema_version: u32,
+    pub content_id: u32,
     pub id: String,
     pub visual_source: String,
     pub pixels_per_world_unit: f32,
@@ -497,6 +498,15 @@ fn validate_authoring(path: &Path, source: &MapAuthoringSource) -> Result<(), Co
     }
     purgatory_common::ContentId::from_authored(&source.id)
         .map_err(|error| issue(path, &source.id, "id", format!("{error:?}")))?;
+    let content_id = purgatory_common::ContentId::from_raw(source.content_id);
+    if content_id.kind() != Some(purgatory_common::ContentKind::Map) {
+        return Err(issue(
+            path,
+            &source.id,
+            "content_id",
+            "must be an allocated map ContentId in 50,000-59,999",
+        ));
+    }
     let visual = Path::new(&source.visual_source);
     if visual.as_os_str().is_empty() || visual.is_absolute() {
         return Err(issue(

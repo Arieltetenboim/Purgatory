@@ -15,7 +15,7 @@
 use crate::registry::ContentRegistry;
 use crate::schema::RestorePolicy;
 use purgatory_common::{
-    ChannelId, DEFAULT_RESTORE_POINT, InstanceId, MAP_FOOTNOTE_AUTHORED, RestoreIntent,
+    ChannelId, DEFAULT_RESTORE_POINT, InstanceId, MAP1_AUTHORED, RestoreIntent,
     WorldAddress,
 };
 
@@ -31,7 +31,7 @@ pub struct LogicalRestoreDestination {
 
 fn fallback_destination() -> LogicalRestoreDestination {
     LogicalRestoreDestination {
-        map_authored: MAP_FOOTNOTE_AUTHORED.to_string(),
+        map_authored: MAP1_AUTHORED.to_string(),
         point_id: DEFAULT_RESTORE_POINT.to_string(),
         checkpoint_id: None,
     }
@@ -44,7 +44,7 @@ fn map_has_point(registry: &ContentRegistry, map_authored: &str, point_id: &str)
 }
 
 /// Apply authored restore policy. Invalid content references fall back to
-/// `map.dev.footnote` / `default` and log; they never panic.
+/// `map.map1` / `default` and log; they never panic.
 #[must_use]
 pub fn resolve_restore(
     registry: &ContentRegistry,
@@ -52,7 +52,7 @@ pub fn resolve_restore(
 ) -> LogicalRestoreDestination {
     let Some(map) = registry.map(&intent.map_authored) else {
         eprintln!(
-            "PURGATORY restore unknown map '{}' — falling back to {MAP_FOOTNOTE_AUTHORED}/{DEFAULT_RESTORE_POINT}",
+            "PURGATORY restore unknown map '{}' — falling back to {MAP1_AUTHORED}/{DEFAULT_RESTORE_POINT}",
             intent.map_authored
         );
         return fallback_destination();
@@ -139,7 +139,7 @@ mod tests {
     use super::*;
     use crate::schema::{MapDefinition, MapPlatform, RestorePolicy, SpawnPoint};
     use crate::{ContentDomain, ContentRegistry};
-    use purgatory_common::{ContentId, MAP_SECOND_AUTHORED};
+    use purgatory_common::{ContentId, MAP2_AUTHORED};
     use purgatory_simulation::{PlatformKind, WorldBounds};
 
     fn sample_map(id: &str, restore: RestorePolicy) -> MapDefinition {
@@ -166,13 +166,13 @@ mod tests {
     fn registry_two_maps(second_policy: RestorePolicy) -> ContentRegistry {
         let mut reg = ContentRegistry::new();
         reg.insert_map(sample_map(
-            MAP_FOOTNOTE_AUTHORED,
+            MAP1_AUTHORED,
             RestorePolicy::SafePoint {
                 point_id: "default".into(),
             },
         ))
         .unwrap();
-        reg.insert_map(sample_map(MAP_SECOND_AUTHORED, second_policy))
+        reg.insert_map(sample_map(MAP2_AUTHORED, second_policy))
             .unwrap();
         reg.finish().unwrap();
         reg
@@ -184,12 +184,12 @@ mod tests {
             point_id: "default".into(),
         });
         let intent = RestoreIntent {
-            map_authored: MAP_SECOND_AUTHORED.into(),
+            map_authored: MAP2_AUTHORED.into(),
             point_id: "default".into(),
             checkpoint_id: None,
         };
         let logical = resolve_restore(&registry, &intent);
-        assert_eq!(logical.map_authored, MAP_SECOND_AUTHORED);
+        assert_eq!(logical.map_authored, MAP2_AUTHORED);
         let (addr, pos) = runtime_placement(&registry, &logical).unwrap();
         assert_eq!(addr.channel, ChannelId::DEFAULT);
         assert_eq!(addr.instance, InstanceId::DEFAULT);
@@ -199,16 +199,16 @@ mod tests {
     #[test]
     fn non_reenterable_uses_fallback_map() {
         let registry = registry_two_maps(RestorePolicy::NonReenterable {
-            fallback_map: MAP_FOOTNOTE_AUTHORED.into(),
+            fallback_map: MAP1_AUTHORED.into(),
             fallback_point: "default".into(),
         });
         let intent = RestoreIntent {
-            map_authored: MAP_SECOND_AUTHORED.into(),
+            map_authored: MAP2_AUTHORED.into(),
             point_id: "default".into(),
             checkpoint_id: None,
         };
         let logical = resolve_restore(&registry, &intent);
-        assert_eq!(logical.map_authored, MAP_FOOTNOTE_AUTHORED);
+        assert_eq!(logical.map_authored, MAP1_AUTHORED);
     }
 
     #[test]
@@ -217,11 +217,11 @@ mod tests {
             point_id: "default".into(),
         });
         let intent = RestoreIntent {
-            map_authored: "map.dev.missing".into(),
+            map_authored: "map.missing".into(),
             point_id: "default".into(),
             checkpoint_id: None,
         };
         let logical = resolve_restore(&registry, &intent);
-        assert_eq!(logical.map_authored, MAP_FOOTNOTE_AUTHORED);
+        assert_eq!(logical.map_authored, MAP1_AUTHORED);
     }
 }
