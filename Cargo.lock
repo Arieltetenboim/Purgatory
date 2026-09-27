@@ -2483,6 +2483,7 @@ dependencies = [
  "eframe",
  "egui",
  "image",
+ "purgatory-common",
  "purgatory-content",
  "purgatory-simulation",
  "serde_json",

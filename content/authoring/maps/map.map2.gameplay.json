@@ -18,5 +18,9 @@
       "id": "default",
       "position": [2.0, 1.0]
     }
-  ]
+  ],
+  "restore": {
+    "policy": "safe_point",
+    "point": "default"
+  }
 }

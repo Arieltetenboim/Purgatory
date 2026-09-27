@@ -24,6 +24,7 @@ Rules:
 | ---: | --- | --- |
 | `50001` | `map.map1` | active |
 | `50002` | `map.map2` | active |
+| `50003` | `map.map3` | active |
 
 ### Items — 30,000–39,999
 

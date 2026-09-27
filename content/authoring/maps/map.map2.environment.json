@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "map_authored": "map.map2",
+  "sky_gradient": {
+    "top_rgba": [
+      104,
+      155,
+      214,
+      255
+    ],
+    "bottom_rgba": [
+      232,
+      214,
+      188,
+      255
+    ]
+  },
+  "parallax_layers": [],
+  "foreground_layers": [],
+  "cloud_fields": [
+    {
+      "id": "clouds far",
+      "asset_folder": "assets/skys/cloud_far",
+      "depth": "far",
+      "stack_position": "after_far",
+      "parallax": 0.18,
+      "density": 0.5,
+      "scale_range": [
+        0.5,
+        0.85
+      ],
+      "speed_range": [
+        0.08,
+        0.16
+      ],
+      "height_range": [
+        0.58,
+        0.92
+      ],
+      "opacity_range": [
+        0.65,
+        0.95
+      ]
+    },
+    {
+      "id": "clouds.002",
+      "asset_folder": "assets/skys/cloud_near",
+      "depth": "far",
+      "stack_position": "after_far",
+      "parallax": 0.18,
+      "density": 0.5,
+      "scale_range": [
+        0.5,
+        0.85
+      ],
+      "speed_range": [
+        0.08,
+        0.16
+      ],
+      "height_range": [
+        0.58,
+        0.92
+      ],
+      "opacity_range": [
+        0.65,
+        0.95
+      ]
+    },
+    {
+      "id": "clouds.003",
+      "asset_folder": "assets/skys/cloud_mid",
+      "depth": "far",
+      "stack_position": "after_far",
+      "parallax": 0.18,
+      "density": 0.5,
+      "scale_range": [
+        0.5,
+        0.85
+      ],
+      "speed_range": [
+        0.08,
+        0.16
+      ],
+      "height_range": [
+        0.58,
+        0.92
+      ],
+      "opacity_range": [
+        0.65,
+        0.95
+      ]
+    }
+  ]
+}

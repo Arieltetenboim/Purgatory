@@ -6,16 +6,17 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
-    CloudFieldAuthoring, CloudStackPosition, FootholdKind, FootholdPath, GameplaySpawnPoint,
-    LoadMode, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
-    Placement, PlacementKind, PortalLink, PresentationSprite, SkyGradient, TileTransform,
-    cloud_field_seed, cloud_instance_count, cloud_instance_specs, default_content_root,
-    load_registry, portal_runtime_authored, resolve_png_asset_folder,
+    CANONICAL_MAP_TILE_PX, CloudFieldAuthoring, CloudStackPosition, FootholdKind, FootholdPath,
+    GameplaySpawnPoint, LoadMode, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, ParallaxDepth,
+    ParallaxFillMode, ParallaxLayer, Placement, PlacementKind, PortalLink, PresentationSprite,
+    SkyGradient, TileTransform, cloud_field_seed, cloud_instance_count, cloud_instance_specs,
+    default_content_root, load_registry, portal_runtime_authored, resolve_png_asset_folder,
 };
 use purgatory_map_lab::{
-    MapImportCandidate, MapLabDocument, MapSwitchChoice, MapSwitchKind, PURGATORY_STANDARD_PPU,
-    apply_map_switch_choice, classify_map_switch, discover_authored_maps, discover_unimported_tmx,
-    import_numeric_tmx,
+    MapImportCandidate, MapLabDocument, MapSwitchChoice, MapSwitchKind, NewMapRequest,
+    PURGATORY_STANDARD_PPU, apply_map_switch_choice, classify_map_switch, create_new_map,
+    discover_authored_maps, discover_unimported_tmx, import_numeric_tmx, minimum_new_map_tiles,
+    preview_next_map_allocation,
 };
 
 const CAMERA_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
@@ -146,6 +147,12 @@ struct MapLabApp {
     available_maps: Vec<PathBuf>,
     unimported_maps: Vec<MapImportCandidate>,
     pending_map_switch: Option<PathBuf>,
+    new_map_open: bool,
+    new_map_name: String,
+    new_map_width: String,
+    new_map_height: String,
+    new_map_error: String,
+    new_map_preview: Option<(u32, String)>,
 }
 
 impl MapLabApp {
@@ -182,6 +189,12 @@ impl MapLabApp {
             available_maps: Vec::new(),
             unimported_maps: Vec::new(),
             pending_map_switch: None,
+            new_map_open: false,
+            new_map_name: String::new(),
+            new_map_width: String::new(),
+            new_map_height: String::new(),
+            new_map_error: String::new(),
+            new_map_preview: None,
         };
         app.open(ctx, &path);
         app
@@ -943,7 +956,7 @@ impl MapLabApp {
                 }
                 if !imports.is_empty() {
                     ui.separator();
-                    ui.label("IMPORT NUMERIC TMX");
+                    ui.label("Import Existing Numeric TMX");
                     for candidate in imports {
                         let filename = candidate
                             .tmx_path
@@ -990,6 +1003,102 @@ impl MapLabApp {
         });
         if modal.should_close() && self.pending_map_switch.is_some() {
             self.confirm_pending_switch(ctx, MapSwitchChoice::Cancel);
+        }
+    }
+
+    fn authoring_directory(&self) -> Option<PathBuf> {
+        self.document
+            .as_ref()
+            .and_then(MapLabDocument::discover_directory)
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                PathBuf::from(self.path_text.trim())
+                    .parent()
+                    .map(Path::to_path_buf)
+            })
+    }
+
+    fn open_new_map_dialog(&mut self) {
+        let (width, height) = minimum_new_map_tiles();
+        self.new_map_open = true;
+        self.new_map_name.clear();
+        self.new_map_width = width.to_string();
+        self.new_map_height = height.to_string();
+        self.new_map_error.clear();
+        self.new_map_preview = self
+            .authoring_directory()
+            .and_then(|directory| preview_next_map_allocation(&directory).ok());
+    }
+
+    fn submit_new_map(&mut self, ctx: &egui::Context) {
+        let Some(directory) = self.authoring_directory() else {
+            self.new_map_error = "No authoring directory".to_owned();
+            return;
+        };
+        let Ok(width_tiles) = self.new_map_width.trim().parse::<u32>() else {
+            self.new_map_error = "Width must be a whole number of tiles".to_owned();
+            return;
+        };
+        let Ok(height_tiles) = self.new_map_height.trim().parse::<u32>() else {
+            self.new_map_error = "Height must be a whole number of tiles".to_owned();
+            return;
+        };
+        match create_new_map(
+            &directory,
+            &NewMapRequest {
+                display_name: self.new_map_name.clone(),
+                width_tiles,
+                height_tiles,
+            },
+        ) {
+            Ok(created) => {
+                self.new_map_open = false;
+                self.request_map_switch(ctx, created.sidecar_path, false);
+            }
+            Err(error) => self.new_map_error = error,
+        }
+    }
+
+    fn new_map_dialog(&mut self, ctx: &egui::Context) {
+        if !self.new_map_open {
+            return;
+        }
+        let (min_width, min_height) = minimum_new_map_tiles();
+        let modal = egui::Modal::new(egui::Id::new("map_lab_new_map")).show(ctx, |ui| {
+            ui.heading("New Map");
+            ui.label("Map Lab allocates the ContentId. Tiled edits the visual TMX after that.");
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                ui.text_edit_singleline(&mut self.new_map_name);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Width (tiles)");
+                ui.text_edit_singleline(&mut self.new_map_width);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Height (tiles)");
+                ui.text_edit_singleline(&mut self.new_map_height);
+            });
+            ui.small(format!(
+                "Orthogonal · {CANONICAL_MAP_TILE_PX}×{CANONICAL_MAP_TILE_PX} px tiles · {PURGATORY_STANDARD_PPU} px/wu · minimum {min_width}×{min_height} tiles"
+            ));
+            if let Some((content_id, authored_id)) = &self.new_map_preview {
+                ui.label(format!("Next ContentId: {content_id} · {authored_id}"));
+            }
+            if !self.new_map_error.is_empty() {
+                ui.colored_label(Color32::LIGHT_RED, &self.new_map_error);
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Create").clicked() {
+                    self.submit_new_map(ui.ctx());
+                }
+                if ui.button("Cancel").clicked() {
+                    self.new_map_open = false;
+                }
+            });
+        });
+        if modal.should_close() {
+            self.new_map_open = false;
         }
     }
 
@@ -1071,6 +1180,9 @@ impl eframe::App for MapLabApp {
                         }
                     }
                     ui.separator();
+                    if ui.button("New Map").clicked() {
+                        self.open_new_map_dialog();
+                    }
                     self.map_selector(ui);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.path_text)
@@ -2223,13 +2335,26 @@ impl eframe::App for MapLabApp {
                 ui.separator();
                 ui.heading("COMPILER / VALIDATION");
                 if let Some(document) = &self.document {
+                    ui.colored_label(Color32::LIGHT_GREEN, "VISUAL SOURCE VALID");
+                    ui.colored_label(Color32::LIGHT_GREEN, "AUTHORED MAP VALID");
                     match document.gameplay_readiness() {
                         Ok(()) => {
                             ui.colored_label(Color32::LIGHT_GREEN, "GAMEPLAY READY");
                         }
                         Err(reason) => {
-                            ui.colored_label(Color32::YELLOW, format!("NOT READY · {reason}"));
+                            ui.colored_label(Color32::YELLOW, format!("GAMEPLAY NOT READY · {reason}"));
                         }
+                    }
+                    let issues = document.bounds_issues();
+                    if !issues.is_empty() {
+                        ui.colored_label(
+                            Color32::LIGHT_RED,
+                            format!("OUTSIDE MAP BOUNDS · {} authored item(s)", issues.len()),
+                        );
+                        for issue in &issues {
+                            ui.small(format!("{} {} is outside map bounds", issue.kind, issue.id));
+                        }
+                        ui.small("Authored content was kept. Move or delete it explicitly.");
                     }
                 }
                 ui.add(egui::Label::new(&self.status).wrap().selectable(true));
@@ -2294,6 +2419,7 @@ impl eframe::App for MapLabApp {
         }
 
         self.unsaved_switch_dialog(ui.ctx());
+        self.new_map_dialog(ui.ctx());
 
         egui::Panel::bottom("map_lab_status")
             .exact_size(28.0)

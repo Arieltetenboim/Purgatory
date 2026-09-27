@@ -19,6 +19,7 @@ use crate::item::{
     ITEM_CONTENT_SCHEMA_VERSION, ITEM_PRESENTATION_SCHEMA_VERSION, ItemCategory, ItemDefinition,
     ItemPresentation, validate_item_definition, validate_item_presentation,
 };
+use crate::map_authoring::{catalog_allocates_map, load_map_authoring};
 use crate::map_gameplay_authoring::{
     FootholdKind, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION, MapGameplayAuthoring,
 };
@@ -63,17 +64,13 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
         ContentDomain::Shared,
         Kind::Entity,
     );
-    load_dir(
-        &mut registry,
-        &mut issues,
-        &root.join("shared").join("maps"),
-        ContentDomain::Shared,
-        Kind::Map,
-    );
+    let mut known_maps = HashMap::new();
+    load_authored_maps(&mut registry, &mut issues, root, &mut known_maps);
     load_map_gameplay_tree(
         &mut registry,
         &mut issues,
         &root.join("authoring").join("maps"),
+        &known_maps,
     );
     load_dir(
         &mut registry,
@@ -145,10 +142,166 @@ pub fn load_registry(root: &Path, mode: LoadMode) -> Result<ContentRegistry, Con
     Ok(registry)
 }
 
+fn load_authored_maps(
+    registry: &mut ContentRegistry,
+    issues: &mut Vec<ValidationIssue>,
+    root: &Path,
+    known_maps: &mut HashMap<String, u32>,
+) {
+    let authoring = root.join("authoring").join("maps");
+    let mut sidecars = match fs::read_dir(&authoring) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".purgatory-map.json"))
+            })
+            .collect::<Vec<_>>(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            issues.push(ValidationIssue::new(
+                authoring.display().to_string(),
+                "-",
+                "io",
+                error.to_string(),
+            ));
+            Vec::new()
+        }
+    };
+    sidecars.sort();
+
+    let catalog_path = root.join("CONTENT_ID_CATALOG.md");
+    let catalog = if sidecars.is_empty() {
+        None
+    } else {
+        match fs::read_to_string(&catalog_path) {
+            Ok(text) => Some(text),
+            Err(error) => {
+                issues.push(ValidationIssue::new(
+                    catalog_path.display().to_string(),
+                    "-",
+                    "io",
+                    error.to_string(),
+                ));
+                None
+            }
+        }
+    };
+
+    for path in &sidecars {
+        match load_map_authoring(path) {
+            Ok(source) => {
+                let allocated = catalog
+                    .as_ref()
+                    .is_some_and(|text| catalog_allocates_map(text, source.content_id, &source.id));
+                if !allocated {
+                    issues.push(ValidationIssue::new(
+                        path.display().to_string(),
+                        &source.id,
+                        "content_id",
+                        "ContentId allocation is not recorded in the catalog",
+                    ));
+                    continue;
+                }
+                known_maps.insert(source.id, source.content_id);
+            }
+            Err(error) => issues.extend(error.issues),
+        }
+    }
+
+    let maps_dir = root.join("shared").join("maps");
+    let mut projections = match fs::read_dir(&maps_dir) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .collect::<Vec<_>>(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            issues.push(ValidationIssue::new(
+                maps_dir.display().to_string(),
+                "-",
+                "io",
+                error.to_string(),
+            ));
+            Vec::new()
+        }
+    };
+    projections.sort();
+
+    let mut inserted = HashSet::new();
+    let mut failed = HashSet::new();
+    for path in projections {
+        let stem = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("-")
+            .to_owned();
+        if known_maps.contains_key(&stem) {
+            failed.insert(stem.clone());
+        }
+        match fs::read_to_string(&path)
+            .map_err(|error| ContentError::from_io(&path, &error))
+            .and_then(|text| parse::<RawMap>(&path, &text))
+            .and_then(|raw| raw.into_def(&path, ContentDomain::Shared))
+        {
+            Ok(mut def) => {
+                failed.remove(&def.authored_id);
+                let Some(content_id) = known_maps.get(&def.authored_id).copied() else {
+                    issues.push(ValidationIssue::new(
+                        path.display().to_string(),
+                        &def.authored_id,
+                        "id",
+                        "runtime projection has no map sidecar",
+                    ));
+                    continue;
+                };
+                if def.content_id.raw() != Some(content_id) {
+                    issues.push(ValidationIssue::new(
+                        path.display().to_string(),
+                        &def.authored_id,
+                        "content_id",
+                        "runtime projection does not match the map sidecar",
+                    ));
+                    failed.insert(def.authored_id);
+                    continue;
+                }
+                def.spawn_points.clear();
+                def.foothold_paths.clear();
+                def.restore = None;
+                def.debug_name = def.authored_id.clone();
+                if let Err(error) = registry.insert_map(def) {
+                    issues.extend(error.issues);
+                    failed.insert(stem);
+                    continue;
+                }
+                inserted.insert(stem);
+            }
+            Err(error) => issues.extend(error.issues),
+        }
+    }
+
+    let mut missing: Vec<_> = known_maps
+        .keys()
+        .filter(|id| !inserted.contains(*id) && !failed.contains(*id))
+        .cloned()
+        .collect();
+    missing.sort();
+    for id in missing {
+        issues.push(ValidationIssue::new(
+            maps_dir.join(format!("{id}.json")).display().to_string(),
+            &id,
+            "bounds",
+            "compiled map bounds are missing",
+        ));
+    }
+}
+
 fn load_map_gameplay_tree(
     registry: &mut ContentRegistry,
     issues: &mut Vec<ValidationIssue>,
     root: &Path,
+    known_maps: &HashMap<String, u32>,
 ) {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
@@ -190,6 +343,14 @@ fn load_map_gameplay_tree(
                     ));
                 }
                 let Some(map) = registry.map(&gameplay.map_authored) else {
+                    if known_maps.contains_key(&gameplay.map_authored) {
+                        return Err(ContentError::from_path(
+                            path.clone(),
+                            &gameplay.map_authored,
+                            "map_authored",
+                            "compiled map bounds are missing",
+                        ));
+                    }
                     return Err(ContentError::from_path(
                         path.clone(),
                         &gameplay.map_authored,
@@ -322,11 +483,34 @@ fn load_map_gameplay_tree(
                         ));
                     }
                 }
+                let spawn_points: Vec<SpawnPoint> = gameplay
+                    .spawn_points
+                    .iter()
+                    .map(|spawn| SpawnPoint {
+                        id: spawn.id.clone(),
+                        position: spawn.position,
+                    })
+                    .collect();
+                let restore = match &gameplay.restore {
+                    None => None,
+                    Some(raw) => Some(parse_restore(
+                        &path,
+                        &gameplay.map_authored,
+                        &RawRestore {
+                            policy: raw.policy.clone(),
+                            point: raw.point.clone(),
+                            fallback_map: raw.fallback_map.clone(),
+                            fallback_point: raw.fallback_point.clone(),
+                        },
+                        &spawn_points,
+                    )?),
+                };
                 registry.apply_map_gameplay(
                     &gameplay.map_authored,
                     &gameplay.name,
                     gameplay.foothold_paths,
                     gameplay.spawn_points,
+                    restore,
                 )
             });
         if let Err(error) = result {
@@ -450,7 +634,6 @@ fn collect_json_paths(dir: &Path, paths: &mut Vec<PathBuf>, issues: &mut Vec<Val
 #[derive(Clone, Copy)]
 enum Kind {
     Entity,
-    Map,
     Placements,
     Item,
     ItemPresentation,
@@ -503,11 +686,6 @@ fn load_file(
             let raw: RawEntity = parse(path, &text)?;
             let def = raw.into_def(path, domain)?;
             registry.insert_entity(def)
-        }
-        Kind::Map => {
-            let raw: RawMap = parse(path, &text)?;
-            let def = raw.into_def(path, domain)?;
-            registry.insert_map(def)
         }
         Kind::Placements => {
             let raw: RawPlacements = parse(path, &text)?;
@@ -873,8 +1051,10 @@ struct RawMap {
     debug_name: String,
     bounds: RawBounds,
     spawn_points: Vec<RawSpawn>,
+    #[serde(default)]
     platforms: Vec<RawPlatform>,
-    restore: RawRestore,
+    #[serde(default)]
+    restore: Option<RawRestore>,
 }
 
 #[derive(Deserialize)]
@@ -1586,14 +1766,6 @@ impl RawMap {
                 "invalid bounds",
             ));
         }
-        if self.spawn_points.is_empty() {
-            return Err(ContentError::from_path(
-                path.to_path_buf(),
-                &self.id,
-                "spawn_points",
-                "at least one spawn point is required",
-            ));
-        }
         let mut spawn_points = Vec::new();
         for sp in self.spawn_points {
             spawn_points.push(SpawnPoint {
@@ -1633,7 +1805,10 @@ impl RawMap {
                 kind,
             });
         }
-        let restore = parse_restore(path, &self.id, &self.restore, &spawn_points)?;
+        let restore = match &self.restore {
+            Some(raw) => Some(parse_restore(path, &self.id, raw, &spawn_points)?),
+            None => None,
+        };
         Ok(MapDefinition {
             content_id,
             authored_id: self.id,
@@ -1761,6 +1936,86 @@ mod tests {
         write_file(&tmp.join("shared/maps"), "bad.json", "{ not json");
         let err = load_registry(&tmp, LoadMode::Shared).expect_err("malformed");
         assert!(err.to_string().contains("json") || err.to_string().contains("expected"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sidecar_is_known_without_a_hand_written_spawn_and_typos_stay_unknown() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-map-owner-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::write(
+            {
+                fs::create_dir_all(&tmp).unwrap();
+                tmp.join("CONTENT_ID_CATALOG.md")
+            },
+            "# Content ID Catalog\n\n### Maps — 50,000–59,999\n\n| ID | Label | Status |\n| ---: | --- | --- |\n| `50009` | `map.map9` | active |\n\n### Items — 30,000–39,999\n",
+        )
+        .unwrap();
+        let source = crate::MapAuthoringSource {
+            schema_version: crate::MAP_AUTHORING_SCHEMA_VERSION,
+            content_id: 50_009,
+            id: "map.map9".into(),
+            visual_source: "../../../Graphic/assets/maps/50009.tmx".into(),
+            pixels_per_world_unit: 100.0,
+        };
+        let gameplay = MapGameplayAuthoring::empty("map.map9");
+        let projection =
+            crate::serialize_runtime_map_projection(&source, [0.0, 0.0, 23.2, 13.0], &gameplay)
+                .unwrap();
+        assert_eq!(
+            projection,
+            crate::serialize_runtime_map_projection(&source, [0.0, 0.0, 23.2, 13.0], &gameplay)
+                .unwrap()
+        );
+        let authoring = tmp.join("authoring").join("maps");
+        write_file(&authoring, "map.map9.purgatory-map.json", &{
+            let mut bytes = serde_json::to_vec_pretty(&source).unwrap();
+            bytes.push(b'\n');
+            String::from_utf8(bytes).unwrap()
+        });
+        write_file(
+            &authoring,
+            "map.map9.gameplay.json",
+            &String::from_utf8(serde_json::to_vec_pretty(&gameplay).unwrap()).unwrap(),
+        );
+        write_file(
+            &tmp.join("shared").join("maps"),
+            "map.map9.json",
+            &String::from_utf8(projection.clone()).unwrap(),
+        );
+
+        let registry = load_registry(&tmp, LoadMode::Shared).expect("known authored map");
+        let map = registry.map("map.map9").expect("map.map9");
+        assert_eq!(map.content_id.raw(), Some(50_009));
+        assert!(map.spawn_points.is_empty());
+        assert!(map.restore.is_none());
+        assert!(!map.is_gameplay_ready());
+        assert!((map.bounds.max_x - 23.2).abs() < 1.0e-5);
+        let err = crate::map_plan(
+            &registry,
+            "map.map9",
+            crate::world_address_for_map(
+                &registry,
+                map.content_id,
+                purgatory_common::ChannelId::DEFAULT,
+                purgatory_common::InstanceId::DEFAULT,
+            )
+            .unwrap(),
+        )
+        .expect_err("not enterable");
+        assert!(err.to_string().contains("GAMEPLAY NOT READY"));
+        assert!(!err.to_string().contains("unknown map"));
+
+        write_file(
+            &authoring,
+            "map.mpa999.gameplay.json",
+            r#"{"schema_version":1,"map_authored":"map.mpa999","name":"typo","foothold_paths":[],"spawn_points":[]}"#,
+        );
+        let unknown = load_registry(&tmp, LoadMode::Shared).expect_err("typo");
+        assert!(unknown.to_string().contains("unknown map"));
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -2276,13 +2531,38 @@ mod tests {
     #[test]
     fn workspace_pack_loads_numeric_maps_and_shared_content() {
         let registry = load_registry(&default_content_root(), LoadMode::Full).expect("pack");
-        assert_eq!(registry.map_count(), 2);
+        assert_eq!(registry.map_count(), 3);
         assert!(registry.entity_count() >= 4);
 
         let map1 = registry.map(purgatory_common::MAP1_AUTHORED).expect("MAP1");
         let map2 = registry.map(purgatory_common::MAP2_AUTHORED).expect("MAP2");
+        let map3 = registry.map("map.map3").expect("MAP3");
         assert_eq!(map1.content_id, purgatory_common::MAP1);
         assert_eq!(map2.content_id, purgatory_common::MAP2);
+        assert_eq!(map3.content_id.raw(), Some(50_003));
+        assert!(map1.is_gameplay_ready());
+        assert!(map2.is_gameplay_ready());
+        assert!(!map3.is_gameplay_ready());
+        assert!(map3.spawn_points.is_empty());
+        assert!(map3.restore.is_none());
+        assert!((map1.bounds.max_x - 23.2).abs() < 1e-4);
+        assert!((map1.bounds.max_y - 13.0).abs() < 1e-4);
+        assert!((map2.bounds.max_x - 40.0).abs() < 1e-4);
+        assert!((map2.bounds.max_y - 13.0).abs() < 1e-4);
+        assert!(matches!(
+            map2.restore,
+            Some(RestorePolicy::SafePoint { ref point_id }) if point_id == "default"
+        ));
+        let restored = crate::resolve_restore(
+            &registry,
+            &purgatory_common::RestoreIntent {
+                map_authored: "map.map2".into(),
+                point_id: "default".into(),
+                checkpoint_id: None,
+            },
+        );
+        assert_eq!(restored.map_authored, "map.map2");
+        assert_eq!(restored.point_id, "default");
         assert_eq!(
             registry.map_id(purgatory_common::MAP1),
             Some(purgatory_common::MapId::from_raw(1))
@@ -2291,9 +2571,13 @@ mod tests {
             registry.map_id(purgatory_common::MAP2),
             Some(purgatory_common::MapId::from_raw(2))
         );
+        assert_eq!(
+            registry.map_id(map3.content_id),
+            Some(purgatory_common::MapId::from_raw(3))
+        );
 
         let shared = load_registry(&default_content_root(), LoadMode::Shared).expect("shared");
-        assert_eq!(shared.map_count(), 2);
+        assert_eq!(shared.map_count(), 3);
         assert_eq!(shared.entity_count(), 0);
         assert!(shared.item_count() >= 11);
         assert!(shared.item("item.package").is_some());

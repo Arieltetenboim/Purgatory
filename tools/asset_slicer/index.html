@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PURGATORY Asset Slicer</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#11161c;
+    --panel:#19212a;
+    --panel2:#202a35;
+    --line:#334252;
+    --text:#eef4f8;
+    --muted:#91a2b2;
+    --cyan:#5ed6e8;
+    --green:#72d9a5;
+    --danger:#ff6b75;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text)}
+  body{display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+  header{height:58px;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1px solid var(--line);background:#151c24}
+  header h1{font-size:18px;margin:0;letter-spacing:.3px}
+  header .sub{font-size:12px;color:var(--muted)}
+  main{display:grid;grid-template-columns:280px minmax(0,1fr) 300px;min-height:0}
+  aside{padding:14px;border-right:1px solid var(--line);background:var(--panel);overflow:auto}
+  aside.right{border-right:0;border-left:1px solid var(--line)}
+  .section{margin-bottom:18px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);margin:0 0 9px}
+  .drop{display:block;border:1px dashed #4f6275;border-radius:8px;padding:16px;text-align:center;cursor:pointer;background:#141b23}
+  .drop.drag{border-color:var(--cyan);background:#18262e}
+  .drop strong{display:block;font-size:13px;margin-bottom:5px}
+  .small{font-size:11px;color:var(--muted)}
+  input[type=file]{display:none}
+  .control{margin:10px 0}
+  .control label{display:flex;justify-content:space-between;font-size:12px;color:#d6e0e7;margin-bottom:5px}
+  input[type=range]{width:100%}
+  button{border:1px solid #435567;background:#263341;color:var(--text);border-radius:6px;padding:9px 10px;font-weight:600;cursor:pointer}
+  button:hover:not(:disabled){border-color:#60798f;background:#304052}
+  button.primary{background:#176c78;border-color:#258b99}
+  button.good{background:#246743;border-color:#348a5a}
+  button:disabled{opacity:.42;cursor:default}
+  .buttons{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .buttons.one{grid-template-columns:1fr}
+  #stageWrap{position:relative;min-width:0;min-height:0;overflow:hidden;background:
+    linear-gradient(45deg,#1a2028 25%,transparent 25%) 0 0/24px 24px,
+    linear-gradient(45deg,transparent 75%,#1a2028 75%) 0 0/24px 24px,
+    linear-gradient(45deg,transparent 75%,#1a2028 75%) 12px -12px/24px 24px,
+    linear-gradient(45deg,#1a2028 25%,#12171d 25%) 12px -12px/24px 24px}
+  #viewport{width:100%;height:100%;display:block;cursor:default}
+  #empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);pointer-events:none;text-align:center}
+  .info{font-size:12px;line-height:1.55;color:#dbe5ec}
+  .info b{color:white}
+  #list{display:flex;flex-direction:column;gap:6px}
+  .item{display:grid;grid-template-columns:36px 1fr;gap:9px;align-items:center;padding:7px;border:1px solid var(--line);border-radius:6px;background:#171e26;cursor:pointer}
+  .item:hover{border-color:#50667a}
+  .item.active{border-color:var(--cyan);box-shadow:inset 3px 0 0 var(--cyan)}
+  .thumb{width:36px;height:36px;object-fit:contain;background:
+    linear-gradient(45deg,#2a333d 25%,transparent 25%) 0 0/10px 10px,
+    linear-gradient(45deg,transparent 75%,#2a333d 75%) 0 0/10px 10px,
+    linear-gradient(45deg,transparent 75%,#2a333d 75%) 5px -5px/10px 10px,
+    linear-gradient(45deg,#2a333d 25%,#202830 25%) 5px -5px/10px 10px}
+  .status{margin-top:8px;min-height:34px;font-size:11px;color:var(--muted);white-space:pre-wrap}
+  .count{font-variant-numeric:tabular-nums;color:var(--cyan)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Asset Slicer</h1>
+  <div class="sub">Detect transparent-image islands and export each object as its own PNG.</div>
+</header>
+<main>
+  <aside>
+    <div class="section">
+      <h2>1. Source image</h2>
+      <label class="drop" id="dropZone" for="fileInput">
+        <strong>Load PNG / JPG / WebP</strong>
+        <span class="small">Drop image here or click to browse</span>
+      </label>
+      <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp">
+      <div id="sourceInfo" class="status">No image loaded.</div>
+    </div>
+
+    <div class="section">
+      <h2>2. Island detection</h2>
+      <div class="control">
+        <label><span>Alpha cutoff</span><span id="alphaVal">1</span></label>
+        <input id="alphaCut" type="range" min="0" max="254" value="1">
+      </div>
+      <div class="control">
+        <label><span>Minimum solid pixels</span><span id="minVal">20</span></label>
+        <input id="minPixels" type="range" min="1" max="1000" value="20">
+      </div>
+      <div class="buttons one">
+        <button class="primary" id="detectBtn" disabled>Detect islands</button>
+      </div>
+      <div id="detectStatus" class="status">Load an image to begin.</div>
+    </div>
+
+    <div class="section">
+      <h2>3. Export</h2>
+      <div class="control">
+        <label><span>Transparent padding</span><span id="padVal">0 px</span></label>
+        <input id="padding" type="range" min="0" max="64" value="0">
+      </div>
+      <div class="buttons">
+        <button id="exportSelectedBtn" disabled>Export selected</button>
+        <button class="good" id="exportAllBtn" disabled>Export all</button>
+      </div>
+      <div id="exportStatus" class="status"></div>
+    </div>
+  </aside>
+
+  <section id="stageWrap">
+    <canvas id="viewport"></canvas>
+    <div id="empty">Load an image.<br><span class="small">Detected islands will be boxed here.</span></div>
+  </section>
+
+  <aside class="right">
+    <div class="section">
+      <h2>Selection</h2>
+      <div id="selectionInfo" class="info">No island selected.</div>
+    </div>
+    <div class="section">
+      <h2>Detected islands <span class="count" id="islandCount">0</span></h2>
+      <div id="list"></div>
+    </div>
+  </aside>
+</main>
+
+<canvas id="sourceCanvas" hidden></canvas>
+<script src="asset_slicer_runtime.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  const runtime = window.PURGATORY_ASSET_SLICER;
+  const fileInput = document.getElementById('fileInput');
+  const dropZone = document.getElementById('dropZone');
+  const sourceInfo = document.getElementById('sourceInfo');
+  const detectStatus = document.getElementById('detectStatus');
+  const exportStatus = document.getElementById('exportStatus');
+  const detectBtn = document.getElementById('detectBtn');
+  const exportSelectedBtn = document.getElementById('exportSelectedBtn');
+  const exportAllBtn = document.getElementById('exportAllBtn');
+  const alphaCut = document.getElementById('alphaCut');
+  const minPixels = document.getElementById('minPixels');
+  const padding = document.getElementById('padding');
+  const alphaVal = document.getElementById('alphaVal');
+  const minVal = document.getElementById('minVal');
+  const padVal = document.getElementById('padVal');
+  const selectionInfo = document.getElementById('selectionInfo');
+  const islandCount = document.getElementById('islandCount');
+  const list = document.getElementById('list');
+  const viewport = document.getElementById('viewport');
+  const stageWrap = document.getElementById('stageWrap');
+  const empty = document.getElementById('empty');
+  const sourceCanvas = document.getElementById('sourceCanvas');
+  const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently:true });
+  const viewCtx = viewport.getContext('2d');
+
+  let sourceName = 'asset';
+  let sourceImageData = null;
+  let components = [];
+  let selectedIndex = null;
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  alphaCut.addEventListener('input', () => alphaVal.textContent = alphaCut.value);
+  minPixels.addEventListener('input', () => minVal.textContent = minPixels.value);
+  padding.addEventListener('input', () => padVal.textContent = padding.value + ' px');
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files && fileInput.files[0]) loadFile(fileInput.files[0]);
+  });
+
+  for (const event of ['dragenter','dragover']) {
+    dropZone.addEventListener(event, e => {
+      e.preventDefault();
+      dropZone.classList.add('drag');
+    });
+  }
+  for (const event of ['dragleave','drop']) {
+    dropZone.addEventListener(event, e => {
+      e.preventDefault();
+      dropZone.classList.remove('drag');
+    });
+  }
+  dropZone.addEventListener('drop', e => {
+    const file = e.dataTransfer?.files?.[0];
+    if (file) loadFile(file);
+  });
+
+  async function loadFile(file) {
+    if (!file.type.startsWith('image/')) {
+      sourceInfo.textContent = 'Unsupported file type.';
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      sourceCanvas.width = image.naturalWidth;
+      sourceCanvas.height = image.naturalHeight;
+      sourceCtx.clearRect(0,0,sourceCanvas.width,sourceCanvas.height);
+      sourceCtx.drawImage(image,0,0);
+      sourceImageData = sourceCtx.getImageData(0,0,sourceCanvas.width,sourceCanvas.height);
+      sourceName = file.name.replace(/\.[^.]+$/, '') || 'asset';
+      sourceInfo.textContent = file.name + '\n' + image.naturalWidth + ' × ' + image.naturalHeight + ' px';
+      components = [];
+      selectedIndex = null;
+      detectBtn.disabled = false;
+      empty.style.display = 'none';
+      renderList();
+      fitView();
+      redraw();
+      detectComponents();
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      sourceInfo.textContent = 'Could not decode image.';
+    };
+    image.src = url;
+  }
+
+  function detectComponents() {
+    if (!sourceImageData) return;
+    const started = performance.now();
+    components = runtime.detectComponents(
+      sourceImageData.data,
+      sourceCanvas.width,
+      sourceCanvas.height,
+      Number(alphaCut.value),
+      Number(minPixels.value)
+    );
+    selectedIndex = components.length ? 0 : null;
+    const elapsed = performance.now() - started;
+    detectStatus.textContent = components.length
+      ? components.length + ' island' + (components.length === 1 ? '' : 's') + ' detected · ' + elapsed.toFixed(1) + ' ms'
+      : 'No islands matched these settings.';
+    renderList();
+    redraw();
+  }
+  detectBtn.addEventListener('click', detectComponents);
+
+  function fitView() {
+    resizeViewport();
+    if (!sourceCanvas.width || !sourceCanvas.height) return;
+    const margin = 28;
+    scale = Math.min(
+      Math.max(0.01, (viewport.width - margin * 2) / sourceCanvas.width),
+      Math.max(0.01, (viewport.height - margin * 2) / sourceCanvas.height)
+    );
+    scale = Math.min(scale, 1);
+    offsetX = (viewport.width - sourceCanvas.width * scale) / 2;
+    offsetY = (viewport.height - sourceCanvas.height * scale) / 2;
+  }
+
+  function resizeViewport() {
+    const rect = stageWrap.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    viewport.width = Math.max(1, Math.round(rect.width * dpr));
+    viewport.height = Math.max(1, Math.round(rect.height * dpr));
+    viewport.style.width = rect.width + 'px';
+    viewport.style.height = rect.height + 'px';
+  }
+
+  function redraw() {
+    resizeViewport();
+    const dpr = window.devicePixelRatio || 1;
+    viewCtx.setTransform(1,0,0,1,0,0);
+    viewCtx.clearRect(0,0,viewport.width,viewport.height);
+    if (!sourceImageData) return;
+
+    viewCtx.imageSmoothingEnabled = false;
+    viewCtx.save();
+    viewCtx.scale(dpr,dpr);
+    const cssScale = scale / dpr;
+    const cssOffsetX = offsetX / dpr;
+    const cssOffsetY = offsetY / dpr;
+    viewCtx.globalAlpha = 1;
+    viewCtx.drawImage(sourceCanvas, cssOffsetX, cssOffsetY, sourceCanvas.width * cssScale, sourceCanvas.height * cssScale);
+
+    components.forEach((c, index) => {
+      const active = index === selectedIndex;
+      viewCtx.strokeStyle = active ? '#5ed6e8' : 'rgba(255,255,255,.55)';
+      viewCtx.lineWidth = active ? 2 : 1;
+      const x = cssOffsetX + c.minX * cssScale;
+      const y = cssOffsetY + c.minY * cssScale;
+      const w = (c.maxX - c.minX + 1) * cssScale;
+      const h = (c.maxY - c.minY + 1) * cssScale;
+      viewCtx.strokeRect(x - .5, y - .5, w + 1, h + 1);
+      if (active) {
+        viewCtx.fillStyle = 'rgba(94,214,232,.12)';
+        viewCtx.fillRect(x,y,w,h);
+      }
+    });
+    viewCtx.restore();
+  }
+
+  window.addEventListener('resize', () => {
+    if (sourceImageData) fitView();
+    redraw();
+  });
+
+  viewport.addEventListener('click', event => {
+    if (!sourceImageData || !components.length) return;
+    const rect = viewport.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const px = ((event.clientX - rect.left) * dpr - offsetX) / scale;
+    const py = ((event.clientY - rect.top) * dpr - offsetY) / scale;
+    let best = null;
+    let bestArea = Infinity;
+    components.forEach((c,index) => {
+      if (px >= c.minX && px <= c.maxX + 1 && py >= c.minY && py <= c.maxY + 1) {
+        const area = (c.maxX-c.minX+1) * (c.maxY-c.minY+1);
+        if (area < bestArea) {
+          best = index;
+          bestArea = area;
+        }
+      }
+    });
+    if (best !== null) select(best);
+  });
+
+  function renderList() {
+    list.innerHTML = '';
+    islandCount.textContent = String(components.length);
+    exportAllBtn.disabled = components.length === 0;
+    exportSelectedBtn.disabled = selectedIndex === null;
+
+    components.forEach((c,index) => {
+      const item = document.createElement('div');
+      item.className = 'item' + (index === selectedIndex ? ' active' : '');
+      const thumb = document.createElement('canvas');
+      thumb.className = 'thumb';
+      thumb.width = 72;
+      thumb.height = 72;
+      drawThumb(thumb, c);
+      const text = document.createElement('div');
+      text.innerHTML = '<b>Island ' + String(index+1).padStart(2,'0') + '</b><br>' +
+        '<span class="small">' + (c.maxX-c.minX+1) + ' × ' + (c.maxY-c.minY+1) + ' px · ' +
+        c.count.toLocaleString() + ' solid</span>';
+      item.append(thumb,text);
+      item.addEventListener('click', () => select(index));
+      list.appendChild(item);
+    });
+    renderSelectionInfo();
+  }
+
+  function drawThumb(canvas, component) {
+    if (!sourceImageData) return;
+    const crop = runtime.extractComponent(
+      sourceImageData.data, sourceCanvas.width, sourceCanvas.height, component, 0
+    );
+    const scratch = document.createElement('canvas');
+    scratch.width = crop.width;
+    scratch.height = crop.height;
+    scratch.getContext('2d').putImageData(new ImageData(crop.data,crop.width,crop.height),0,0);
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.imageSmoothingEnabled = false;
+    const s = Math.min(canvas.width/crop.width,canvas.height/crop.height);
+    const w = crop.width*s, h=crop.height*s;
+    ctx.drawImage(scratch,(canvas.width-w)/2,(canvas.height-h)/2,w,h);
+  }
+
+  function select(index) {
+    selectedIndex = index;
+    renderList();
+    redraw();
+  }
+
+  function renderSelectionInfo() {
+    if (selectedIndex === null || !components[selectedIndex]) {
+      selectionInfo.textContent = 'No island selected.';
+      return;
+    }
+    const c = components[selectedIndex];
+    selectionInfo.innerHTML =
+      '<b>Island ' + String(selectedIndex+1).padStart(2,'0') + '</b><br>' +
+      'Bounds: ' + c.minX + ', ' + c.minY + ' → ' + c.maxX + ', ' + c.maxY + '<br>' +
+      'Size: ' + (c.maxX-c.minX+1) + ' × ' + (c.maxY-c.minY+1) + ' px<br>' +
+      'Solid pixels: ' + c.count.toLocaleString();
+  }
+
+  async function componentBlob(component) {
+    const crop = runtime.extractComponent(
+      sourceImageData.data,
+      sourceCanvas.width,
+      sourceCanvas.height,
+      component,
+      Number(padding.value)
+    );
+    const canvas = document.createElement('canvas');
+    canvas.width = crop.width;
+    canvas.height = crop.height;
+    canvas.getContext('2d').putImageData(new ImageData(crop.data,crop.width,crop.height),0,0);
+    return await new Promise((resolve,reject) => {
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('PNG encoding failed')), 'image/png');
+    });
+  }
+
+  function filename(index) {
+    return sourceName + '_island_' + String(index+1).padStart(2,'0') + '.png';
+  }
+
+  function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  exportSelectedBtn.addEventListener('click', async () => {
+    if (selectedIndex === null) return;
+    try {
+      const blob = await componentBlob(components[selectedIndex]);
+      downloadBlob(blob, filename(selectedIndex));
+      exportStatus.textContent = 'Exported ' + filename(selectedIndex);
+    } catch (err) {
+      exportStatus.textContent = 'Export failed: ' + err.message;
+    }
+  });
+
+  exportAllBtn.addEventListener('click', async () => {
+    if (!components.length) return;
+    exportAllBtn.disabled = true;
+    exportStatus.textContent = 'Preparing ' + components.length + ' PNG files…';
+    try {
+      if (window.showDirectoryPicker) {
+        const dir = await window.showDirectoryPicker({mode:'readwrite'});
+        for (let i=0;i<components.length;i+=1) {
+          exportStatus.textContent = 'Saving ' + (i+1) + ' / ' + components.length + '…';
+          const blob = await componentBlob(components[i]);
+          const handle = await dir.getFileHandle(filename(i), {create:true});
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+        }
+        exportStatus.textContent = 'Saved ' + components.length + ' PNG files.';
+      } else {
+        for (let i=0;i<components.length;i+=1) {
+          const blob = await componentBlob(components[i]);
+          downloadBlob(blob, filename(i));
+          await new Promise(resolve => setTimeout(resolve, 80));
+        }
+        exportStatus.textContent = 'Exported ' + components.length + ' PNG files.';
+      }
+    } catch (err) {
+      exportStatus.textContent = err?.name === 'AbortError' ? 'Export cancelled.' : 'Export failed: ' + err.message;
+    } finally {
+      exportAllBtn.disabled = components.length === 0;
+    }
+  });
+
+  fitView();
+  redraw();
+})();
+</script>
+</body>
+</html>
