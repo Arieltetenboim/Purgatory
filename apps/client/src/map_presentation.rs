@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use purgatory_content::{
-    CloudFieldAuthoring, CloudInstanceSpec, ContentRegistry,
+    CloudFieldAuthoring, CloudInstanceSpec, CloudStackPosition, ContentRegistry,
     MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION,
     MapEnvironmentPresentation, MapPresentation, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
     PresentationSprite, SkyGradient, cloud_field_seed, cloud_instance_count, cloud_instance_specs,
@@ -250,6 +250,22 @@ impl RuntimeMapPresentation {
         let pixels_per_world_unit = self.pixels_per_world_unit;
         let environment_time_seconds = self.environment_time_seconds;
         let visual_seed = self.visual_seed;
+
+        for field in self
+            .cloud_fields
+            .iter_mut()
+            .filter(|field| field.authored.stack_position == CloudStackPosition::BeforeAll)
+        {
+            quads.extend(cloud_field_quads(
+                field,
+                camera,
+                world_bounds,
+                pixels_per_world_unit,
+                environment_time_seconds,
+                visual_seed,
+            ));
+        }
+
         for depth in ParallaxDepth::ALL {
             for layer in self
                 .parallax_layers
@@ -258,10 +274,11 @@ impl RuntimeMapPresentation {
             {
                 quads.extend(self.parallax_quads(layer, camera));
             }
+            let stack_position = CloudStackPosition::for_depth(depth);
             for field in self
                 .cloud_fields
                 .iter_mut()
-                .filter(|field| field.authored.depth == depth)
+                .filter(|field| field.authored.stack_position == stack_position)
             {
                 quads.extend(cloud_field_quads(
                     field,
