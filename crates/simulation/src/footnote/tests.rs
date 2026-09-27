@@ -1,11 +1,11 @@
 //! FOOTNOTE dynamics, OneWay, and drop-through tests.
 
+use crate::PlayerState;
 use crate::body::PLAYER_HALF_EXTENTS;
 use crate::entity::EntityId;
 use crate::footnote::FootnoteConfig;
 use crate::health::Health;
 use crate::input::PlayerInput;
-use crate::PlayerState;
 use crate::platform::{
     FLOOR, ONEWAY_A, ONEWAY_A_POSITION, ONEWAY_B, PlatformKind, RAISED_PLATFORM,
     RAISED_PLATFORM_POSITION,
