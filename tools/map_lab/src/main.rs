@@ -8,9 +8,10 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
     CloudFieldAuthoring, CloudStackPosition, FootholdKind, FootholdPath, GameplaySpawnPoint,
     LoadMode, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
-    Placement, PlacementKind, PresentationSprite, SkyGradient, TileTransform, cloud_field_seed,
+    Placement, PlacementKind, PortalLink, PresentationSprite, SkyGradient, TileTransform,
+    cloud_field_seed,
     cloud_instance_count, cloud_instance_specs, default_content_root, load_registry,
-    resolve_png_asset_folder,
+    portal_runtime_authored, resolve_png_asset_folder,
 };
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
@@ -59,8 +60,7 @@ enum EntityCatalogKind {
 }
 
 impl EntityCatalogKind {
-    const ALL: [Self; 5] = [
-        Self::Portal,
+    const ALL: [Self; 4] = [
         Self::Npc,
         Self::Interactable,
         Self::Entity,
@@ -85,6 +85,18 @@ impl EntityCatalogKind {
             Self::Entity => "entity",
             Self::Mob => "mob",
         }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PortalTarget {
+    map_authored: String,
+    portal_id: String,
+}
+
+impl PortalTarget {
+    fn label(&self) -> String {
+        format!("{} · {}", self.map_authored, self.portal_id)
     }
 }
 
@@ -116,6 +128,8 @@ struct MapLabApp {
     environment_dirty: bool,
     placements_dirty: bool,
     entity_catalog: Vec<EntityCatalogEntry>,
+    portal_targets: Vec<PortalTarget>,
+    portal_brush: bool,
     selected_catalog: Option<usize>,
     selected_placement: Option<usize>,
     selected_point: Option<(usize, usize)>,
@@ -147,6 +161,8 @@ impl MapLabApp {
             environment_dirty: false,
             placements_dirty: false,
             entity_catalog: Vec::new(),
+            portal_targets: Vec::new(),
+            portal_brush: false,
             selected_catalog: None,
             selected_placement: None,
             selected_point: None,
@@ -198,7 +214,11 @@ impl MapLabApp {
             load_environment_textures(ctx, &document),
             load_entity_catalog(),
         ) {
-            (Ok(textures), Ok((environment_textures, cloud_textures)), Ok(entity_catalog)) => {
+            (
+                Ok(textures),
+                Ok((environment_textures, cloud_textures)),
+                Ok((entity_catalog, portal_targets)),
+            ) => {
                 self.path_text = document.sidecar_path.display().to_string();
                 self.preview_layers = document
                     .presentation
@@ -226,6 +246,8 @@ impl MapLabApp {
                 self.environment_textures = environment_textures;
                 self.cloud_textures = cloud_textures;
                 self.entity_catalog = entity_catalog;
+                self.portal_targets = portal_targets;
+                self.portal_brush = false;
                 self.selected_catalog = None;
                 self.selected_placement = None;
                 self.fit_requested = true;
@@ -242,6 +264,8 @@ impl MapLabApp {
         self.environment_textures.clear();
         self.cloud_textures.clear();
         self.entity_catalog.clear();
+        self.portal_targets.clear();
+        self.portal_brush = false;
         self.selected_catalog = None;
         self.selected_placement = None;
         self.preview_layers.clear();
@@ -377,9 +401,10 @@ impl MapLabApp {
         self.editor_mode = EditorMode::Entity;
         self.selected_point = None;
         self.draft_points.clear();
+        self.portal_brush = false;
         self.selected_catalog = None;
         self.selected_placement = None;
-        self.status = "ENTITY · choose a library entry, then click the map to place it".to_owned();
+        self.status = "ENTITY · add a Portal or choose a library entry, then click the map".to_owned();
     }
 
     fn place_entity(&mut self, catalog_index: usize, position: [f32; 2]) {
@@ -389,18 +414,6 @@ impl MapLabApp {
         let Some(document) = self.document.as_mut() else {
             return;
         };
-        if entry.category == EntityCatalogKind::Portal
-            && document.placements.iter().any(|placement| {
-                placement.kind == PlacementKind::Entity
-                    && placement.content_authored == entry.authored_id
-            })
-        {
-            self.status = format!(
-                "ENTITY · portal {} is already placed on this map",
-                entry.authored_id
-            );
-            return;
-        }
         let [min_x, min_y, max_x, max_y] = document.presentation.world_bounds;
         let id = next_placement_id(entry.category, &document.placements);
         document.placements.push(Placement {
@@ -411,10 +424,79 @@ impl MapLabApp {
                 position[0].clamp(min_x, max_x),
                 position[1].clamp(min_y, max_y),
             ],
+            portal_link: None,
         });
         self.selected_placement = Some(document.placements.len() - 1);
         self.placements_dirty = true;
         self.status = format!("ENTITY · placed {id} · {}", entry.debug_name);
+    }
+
+    fn add_portal_brush(&mut self) {
+        self.portal_brush = true;
+        self.selected_catalog = None;
+        self.selected_placement = None;
+        self.status = "ENTITY · PORTAL brush · click the map to place a new portal".to_owned();
+    }
+
+    fn place_portal(&mut self, position: [f32; 2]) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let [min_x, min_y, max_x, max_y] = document.presentation.world_bounds;
+        let id = next_portal_id(&document.placements);
+        let runtime_authored = portal_runtime_authored(&document.source.id, &id);
+        document.placements.push(Placement {
+            id: id.clone(),
+            kind: PlacementKind::Portal,
+            content_authored: runtime_authored,
+            position: [
+                position[0].clamp(min_x, max_x),
+                position[1].clamp(min_y, max_y),
+            ],
+            portal_link: None,
+        });
+        self.selected_placement = Some(document.placements.len() - 1);
+        self.portal_brush = false;
+        self.placements_dirty = true;
+        self.status = format!("ENTITY · placed {id} · choose Linked Portal");
+    }
+
+    fn set_selected_portal_link(&mut self, link: Option<PortalLink>) {
+        let Some(index) = self.selected_placement else {
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let Some(placement) = document.placements.get_mut(index) else {
+            return;
+        };
+        if placement.kind != PlacementKind::Portal {
+            return;
+        }
+        placement.portal_link = link;
+        self.placements_dirty = true;
+    }
+
+    fn portal_choices(&self) -> Vec<PortalTarget> {
+        let mut targets = self.portal_targets.clone();
+        if let Some(document) = &self.document {
+            for placement in &document.placements {
+                if placement.kind == PlacementKind::Portal {
+                    targets.push(PortalTarget {
+                        map_authored: document.source.id.clone(),
+                        portal_id: placement.id.clone(),
+                    });
+                }
+            }
+        }
+        targets.sort_by(|a, b| {
+            a.map_authored
+                .cmp(&b.map_authored)
+                .then(a.portal_id.cmp(&b.portal_id))
+        });
+        targets.dedup();
+        targets
     }
 
     fn edit_selected_placement(&mut self, x: f32, y: f32) {
@@ -1434,23 +1516,30 @@ impl eframe::App for MapLabApp {
                             ui.separator();
 
                             ui.horizontal(|ui| {
-                                ui.label("LIBRARY");
-                                if self.selected_catalog.is_some()
+                                if ui
+                                    .selectable_label(self.portal_brush, "+ Add Portal")
+                                    .clicked()
+                                {
+                                    self.add_portal_brush();
+                                }
+                                if (self.portal_brush || self.selected_catalog.is_some())
                                     && ui.small_button("Clear Brush").clicked()
                                 {
+                                    self.portal_brush = false;
                                     self.selected_catalog = None;
                                     self.status =
                                         "ENTITY · placement brush cleared · click a marker to select it"
                                             .to_owned();
                                 }
                             });
+                            ui.small("Portal is map-owned. Place it first, then choose its Linked Portal.");
+                            ui.separator();
+                            ui.label("LIBRARY");
                             for category in EntityCatalogKind::ALL {
                                 egui::CollapsingHeader::new(category.label())
                                     .default_open(matches!(
                                         category,
-                                        EntityCatalogKind::Portal
-                                            | EntityCatalogKind::Npc
-                                            | EntityCatalogKind::Mob
+                                        EntityCatalogKind::Npc | EntityCatalogKind::Mob
                                     ))
                                     .show(ui, |ui| {
                                         for (index, entry) in self
@@ -1470,6 +1559,7 @@ impl eframe::App for MapLabApp {
                                                 )
                                                 .clicked()
                                             {
+                                                self.portal_brush = false;
                                                 self.selected_catalog = Some(index);
                                                 self.selected_placement = None;
                                                 self.status = format!(
@@ -1492,13 +1582,65 @@ impl eframe::App for MapLabApp {
                                 })
                             });
                             if let Some((index, placement)) = selected_data {
+                                let map_id = self
+                                    .document
+                                    .as_ref()
+                                    .map(|document| document.source.id.clone())
+                                    .unwrap_or_default();
+                                let portal_choices = self.portal_choices();
                                 ui.group(|ui| {
-                                    ui.label(format!("Selected: {}", placement.id));
-                                    ui.small(format!(
-                                        "{} · {}",
-                                        placement.kind.as_str(),
-                                        placement.content_authored
-                                    ));
+                                    if placement.kind == PlacementKind::Portal {
+                                        ui.heading("PORTAL");
+                                        ui.label(format!("Map ID: {map_id}"));
+                                        ui.label(format!("Portal ID: {}", placement.id));
+                                        ui.separator();
+                                        ui.label("Linked Portal");
+                                        let selected_text = placement
+                                            .portal_link
+                                            .as_ref()
+                                            .map(|link| {
+                                                format!(
+                                                    "{} · {}",
+                                                    link.map_authored, link.portal_id
+                                                )
+                                            })
+                                            .unwrap_or_else(|| "Unlinked".to_owned());
+                                        let mut chosen = placement.portal_link.clone();
+                                        egui::ComboBox::from_id_salt((
+                                            "linked_portal",
+                                            &placement.id,
+                                        ))
+                                        .selected_text(selected_text)
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut chosen, None, "Unlinked");
+                                            ui.separator();
+                                            for target in &portal_choices {
+                                                if target.map_authored == map_id
+                                                    && target.portal_id == placement.id
+                                                {
+                                                    continue;
+                                                }
+                                                ui.selectable_value(
+                                                    &mut chosen,
+                                                    Some(PortalLink {
+                                                        map_authored: target.map_authored.clone(),
+                                                        portal_id: target.portal_id.clone(),
+                                                    }),
+                                                    target.label(),
+                                                );
+                                            }
+                                        });
+                                        if chosen != placement.portal_link {
+                                            self.set_selected_portal_link(chosen);
+                                        }
+                                    } else {
+                                        ui.label(format!("Selected: {}", placement.id));
+                                        ui.small(format!(
+                                            "{} · {}",
+                                            placement.kind.as_str(),
+                                            placement.content_authored
+                                        ));
+                                    }
                                     let mut x = placement.position[0];
                                     let mut y = placement.position[1];
                                     ui.horizontal(|ui| {
@@ -1531,10 +1673,14 @@ impl eframe::App for MapLabApp {
                                     if ui
                                         .selectable_label(
                                             selected,
-                                            format!(
-                                                "{} · {}",
-                                                placement.id, placement.content_authored
-                                            ),
+                                            if placement.kind == PlacementKind::Portal {
+                                                format!("{} · PORTAL", placement.id)
+                                            } else {
+                                                format!(
+                                                    "{} · {}",
+                                                    placement.id, placement.content_authored
+                                                )
+                                            },
                                         )
                                         .clicked()
                                     {
@@ -1548,7 +1694,7 @@ impl eframe::App for MapLabApp {
                                 self.save_placements();
                             }
                             ui.small(
-                                "Click library → click map to place · click marker to select · X/Y moves · Save writes Placement V2.",
+                                "+ Add Portal or choose Library → click map · Portal Inspector shows Map ID + Portal ID + Linked Portal · Save writes Placement V2.",
                             );
                         });
                 } else if self.editor_mode == EditorMode::Footnote {
@@ -2369,6 +2515,7 @@ impl MapLabApp {
             self.set_default_spawn(point);
         } else if let Some(index) = clicked_entity_placement {
             self.selected_placement = Some(index);
+            self.portal_brush = false;
             self.selected_catalog = None;
             if let Some(placement) = self
                 .document
@@ -2378,19 +2525,55 @@ impl MapLabApp {
                 self.status = format!("ENTITY · selected {}", placement.id);
             }
         } else if let Some(point) = clicked_entity_world {
-            if let Some(catalog_index) = self.selected_catalog {
+            if self.portal_brush {
+                self.place_portal(point);
+            } else if let Some(catalog_index) = self.selected_catalog {
                 self.place_entity(catalog_index, point);
             } else {
-                self.status = "ENTITY · choose a library entry before placing".to_owned();
+                self.status =
+                    "ENTITY · use + Add Portal or choose a library entry before placing".to_owned();
             }
         }
     }
 }
 
-fn load_entity_catalog() -> Result<Vec<EntityCatalogEntry>, String> {
+fn load_entity_catalog() -> Result<(Vec<EntityCatalogEntry>, Vec<PortalTarget>), String> {
     let registry = load_registry(&default_content_root(), LoadMode::Full)
         .map_err(|error| error.to_string())?;
     let mut entries = Vec::new();
+    let mut portal_targets = Vec::new();
+    for map in registry.iter_maps() {
+        for placement in registry.placements(&map.authored_id) {
+            match placement.kind {
+                PlacementKind::Portal => portal_targets.push(PortalTarget {
+                    map_authored: map.authored_id.clone(),
+                    portal_id: placement.id.clone(),
+                }),
+                PlacementKind::Entity => {
+                    if registry
+                        .entity(&placement.content_authored)
+                        .is_some_and(|entity| {
+                            entity.interactable
+                                == Some(purgatory_simulation::InteractableKind::Portal)
+                        })
+                    {
+                        portal_targets.push(PortalTarget {
+                            map_authored: map.authored_id.clone(),
+                            portal_id: placement.content_authored.clone(),
+                        });
+                    }
+                }
+                PlacementKind::Monster => {}
+            }
+        }
+    }
+    portal_targets.sort_by(|a, b| {
+        a.map_authored
+            .cmp(&b.map_authored)
+            .then(a.portal_id.cmp(&b.portal_id))
+    });
+    portal_targets.dedup();
+
     for entity in registry.iter_entities() {
         let category = match entity.interactable {
             Some(purgatory_simulation::InteractableKind::Portal) => EntityCatalogKind::Portal,
@@ -2422,7 +2605,17 @@ fn load_entity_catalog() -> Result<Vec<EntityCatalogEntry>, String> {
             .cmp(&b.category)
             .then(a.authored_id.cmp(&b.authored_id))
     });
-    Ok(entries)
+    Ok((entries, portal_targets))
+}
+
+fn next_portal_id(placements: &[Placement]) -> String {
+    for index in 1..=9999 {
+        let candidate = format!("portal.{index:03}");
+        if placements.iter().all(|placement| placement.id != candidate) {
+            return candidate;
+        }
+    }
+    "portal.overflow".to_owned()
 }
 
 fn next_placement_id(category: EntityCatalogKind, placements: &[Placement]) -> String {
@@ -2437,6 +2630,9 @@ fn next_placement_id(category: EntityCatalogKind, placements: &[Placement]) -> S
 }
 
 fn placement_color(placement: &Placement, catalog: &[EntityCatalogEntry]) -> Color32 {
+    if placement.kind == PlacementKind::Portal {
+        return Color32::from_rgb(80, 210, 255);
+    }
     let category = catalog
         .iter()
         .find(|entry| {
