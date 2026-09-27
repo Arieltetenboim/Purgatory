@@ -56,12 +56,46 @@ impl ParallaxDepth {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParallaxFillMode {
+    Natural,
+    #[default]
+    Repeat,
+    Stretch,
+    Fit,
+    Cover,
+}
+
+impl ParallaxFillMode {
+    pub const ALL: [Self; 5] = [
+        Self::Natural,
+        Self::Repeat,
+        Self::Stretch,
+        Self::Fit,
+        Self::Cover,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Natural => "Natural",
+            Self::Repeat => "Repeat",
+            Self::Stretch => "Stretch",
+            Self::Fit => "Fit",
+            Self::Cover => "Cover",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParallaxLayer {
     pub id: String,
     pub asset_path: String,
     pub depth: ParallaxDepth,
+    #[serde(default)]
+    pub fill_mode: ParallaxFillMode,
     /// 0 = screen-fixed, 1 = world-locked.
     pub parallax: f32,
     #[serde(default)]
@@ -105,6 +139,22 @@ mod tests {
         let gradient = SkyGradient::default();
         assert_eq!(gradient.top_rgba[3], 255);
         assert_eq!(gradient.bottom_rgba[3], 255);
+    }
+
+    #[test]
+    fn legacy_parallax_defaults_to_repeat_fill() {
+        let json = r#"{
+            "id":"bg",
+            "asset_path":"assets/maps/BG.png",
+            "depth":"far",
+            "parallax":0.18,
+            "offset_world":[0.0,0.0],
+            "repeat_x":true,
+            "repeat_y":false,
+            "opacity":1.0
+        }"#;
+        let layer: ParallaxLayer = serde_json::from_str(json).unwrap();
+        assert_eq!(layer.fill_mode, ParallaxFillMode::Repeat);
     }
 
     #[test]
