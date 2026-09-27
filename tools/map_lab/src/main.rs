@@ -68,6 +68,7 @@ struct MapLabApp {
     environment_dirty: bool,
     selected_point: Option<(usize, usize)>,
     settings_open: bool,
+    gradient_color_clipboard: Option<[u8; 4]>,
 }
 
 impl MapLabApp {
@@ -94,6 +95,7 @@ impl MapLabApp {
             environment_dirty: false,
             selected_point: None,
             settings_open: false,
+            gradient_color_clipboard: None,
         };
         app.open(ctx, &path);
         app
@@ -699,6 +701,28 @@ impl eframe::App for MapLabApp {
                                                 sky.top_rgba = top.to_array();
                                                 self.environment_dirty = true;
                                             }
+                                            if ui.small_button("Copy").clicked() {
+                                                self.gradient_color_clipboard =
+                                                    Some(top.to_array());
+                                            }
+                                            let clipboard = self.gradient_color_clipboard;
+                                            if ui
+                                                .add_enabled(
+                                                    clipboard.is_some(),
+                                                    egui::Button::new("Paste"),
+                                                )
+                                                .clicked()
+                                                && let Some(rgba) = clipboard
+                                                && let Some(document) = self.document.as_mut()
+                                                && let Some(sky) =
+                                                    document.environment.sky_gradient.as_mut()
+                                            {
+                                                top = Color32::from_rgba_unmultiplied(
+                                                    rgba[0], rgba[1], rgba[2], rgba[3],
+                                                );
+                                                sky.top_rgba = rgba;
+                                                self.environment_dirty = true;
+                                            }
                                         });
                                         ui.horizontal(|ui| {
                                             ui.label("Bottom");
@@ -708,6 +732,28 @@ impl eframe::App for MapLabApp {
                                                     document.environment.sky_gradient.as_mut()
                                             {
                                                 sky.bottom_rgba = bottom.to_array();
+                                                self.environment_dirty = true;
+                                            }
+                                            if ui.small_button("Copy").clicked() {
+                                                self.gradient_color_clipboard =
+                                                    Some(bottom.to_array());
+                                            }
+                                            let clipboard = self.gradient_color_clipboard;
+                                            if ui
+                                                .add_enabled(
+                                                    clipboard.is_some(),
+                                                    egui::Button::new("Paste"),
+                                                )
+                                                .clicked()
+                                                && let Some(rgba) = clipboard
+                                                && let Some(document) = self.document.as_mut()
+                                                && let Some(sky) =
+                                                    document.environment.sky_gradient.as_mut()
+                                            {
+                                                bottom = Color32::from_rgba_unmultiplied(
+                                                    rgba[0], rgba[1], rgba[2], rgba[3],
+                                                );
+                                                sky.bottom_rgba = rgba;
                                                 self.environment_dirty = true;
                                             }
                                         });
