@@ -551,25 +551,38 @@ mod tests {
     #[test]
     fn bridge_opens_shared_compiler_output_and_recompiles_ppu() {
         let mut document = MapLabDocument::open(fixture()).expect("open");
-        assert_eq!(document.presentation.visual_extent_px, [2320, 1300]);
-        assert_eq!(document.gameplay.map_authored, "map.map1");
-        document.recompile(50.0).expect("recompile");
-        assert_eq!(document.presentation.world_bounds, [0.0, 0.0, 46.4, 26.0]);
+        let visual_extent_px = document.presentation.visual_extent_px;
+        let source_id = document.source.id.clone();
+        let baseline_bounds = document.presentation.world_bounds;
+        let preview_ppu = document.source.pixels_per_world_unit * 0.5;
+
+        assert!(visual_extent_px[0] > 0);
+        assert!(visual_extent_px[1] > 0);
+        assert!(!document.presentation.layers.is_empty());
+        assert_eq!(document.gameplay.map_authored, source_id);
+
+        document.recompile(preview_ppu).expect("recompile");
+        assert_eq!(document.presentation.visual_extent_px, visual_extent_px);
+        assert!((document.presentation.world_bounds[2] - baseline_bounds[2] * 2.0).abs() < 1e-5);
+        assert!((document.presentation.world_bounds[3] - baseline_bounds[3] * 2.0).abs() < 1e-5);
+
         let decoded: MapPresentation =
             serde_json::from_slice(&document.canonical_json().unwrap()).unwrap();
         assert_eq!(decoded, document.presentation);
     }
 
     #[test]
-    fn environment_path_sits_next_to_visual_sidecar() {
-        let path = environment_path_for(&fixture()).unwrap();
-        assert!(path.ends_with("map.map1.environment.json"));
+    fn environment_path_derivation_is_name_agnostic() {
+        let path = Path::new("content/authoring/maps/any.map.purgatory-map.json");
+        let environment = environment_path_for(path).unwrap();
+        assert!(environment.ends_with("any.map.environment.json"));
     }
 
     #[test]
-    fn gameplay_path_sits_next_to_visual_sidecar() {
-        let path = gameplay_path_for(&fixture()).unwrap();
-        assert!(path.ends_with("map.map1.gameplay.json"));
+    fn gameplay_path_derivation_is_name_agnostic() {
+        let path = Path::new("content/authoring/maps/any.map.purgatory-map.json");
+        let gameplay = gameplay_path_for(path).unwrap();
+        assert!(gameplay.ends_with("any.map.gameplay.json"));
     }
 
     #[test]

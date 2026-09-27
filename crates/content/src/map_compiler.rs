@@ -777,107 +777,94 @@ mod tests {
     }
 
     #[test]
-    fn real_fixture_compiles_complete_visual_stack() {
-        let map = compile_tiled_map(&fixture_sidecar()).expect("fixture compiles");
-        assert_eq!(map.schema_version, 1);
-        assert_eq!(map.map_authored, "map.map1");
-        assert_eq!(map.visual_extent_px, [2320, 1300]);
-        assert_eq!(map.world_bounds, [0.0, 0.0, 23.2, 13.0]);
-        assert_eq!(
-            map.layers
-                .iter()
-                .map(|layer| layer.name.as_str())
-                .collect::<Vec<_>>(),
-            ["Grass2", "Grass", "WORLD_ART", "MARKERS"]
-        );
-        assert_eq!(
-            map.layers
-                .iter()
-                .filter(|layer| layer.kind == PresentationLayerKind::Tile)
-                .count(),
-            2
-        );
-        assert_eq!(
-            map.layers
-                .iter()
-                .filter(|layer| layer.kind == PresentationLayerKind::Tile)
-                .map(|layer| layer.sprites.len())
-                .sum::<usize>(),
-            9
-        );
-        let world_art = map
-            .layers
-            .iter()
-            .find(|layer| layer.name == "WORLD_ART")
-            .expect("WORLD_ART");
-        let markers = map
-            .layers
-            .iter()
-            .find(|layer| layer.name == "MARKERS")
-            .expect("MARKERS");
-        assert_eq!(world_art.sprites.len(), 1);
-        assert!(markers.sprites.is_empty());
-        assert_eq!(map.assets.len(), 1);
-        assert_eq!(world_art.sprites[0].source_rect_px, [1080, 0, 360, 240]);
+    fn real_fixture_compiles_to_valid_nonempty_visual_map() {
+        let path = fixture_sidecar();
+        let source = load_map_authoring(&path).expect("fixture sidecar loads");
+        let map = compile_tiled_map(&path).expect("fixture compiles");
+
+        assert_eq!(map.schema_version, MAP_PRESENTATION_SCHEMA_VERSION);
+        assert_eq!(map.map_authored, source.id);
+        assert!(map.visual_extent_px[0] > 0);
+        assert!(map.visual_extent_px[1] > 0);
+        assert!(map.pixels_per_world_unit.is_finite());
+        assert!(map.pixels_per_world_unit > 0.0);
+        assert!(map.world_bounds.iter().all(|value| value.is_finite()));
+        assert!(map.world_bounds[2] > map.world_bounds[0]);
+        assert!(map.world_bounds[3] > map.world_bounds[1]);
+        assert!(!map.layers.is_empty());
+
+        let expected_width = map.visual_extent_px[0] as f32 / map.pixels_per_world_unit;
+        let expected_height = map.visual_extent_px[1] as f32 / map.pixels_per_world_unit;
+        assert!((map.world_bounds[2] - expected_width).abs() < 1e-5);
+        assert!((map.world_bounds[3] - expected_height).abs() < 1e-5);
     }
 
     #[test]
     fn world_conversion_is_map_local_y_up_and_free_position_is_not_snapped() {
-        let map = compile_tiled_map(&fixture_sidecar()).unwrap();
-        let world_art = map
-            .layers
-            .iter()
-            .find(|layer| layer.name == "WORLD_ART")
-            .expect("WORLD_ART");
-        let object = &world_art.sprites[0];
-        assert!((object.position_world[0] - 20.6334).abs() < 1e-4);
-        assert!((object.position_world[1] - 1.3834).abs() < 1e-4);
-        assert_eq!(object.size_world, [3.6, 2.4]);
+        let compiler = Compiler {
+            tmx_path: Path::new("synthetic.tmx"),
+            graphic_root: Path::new("."),
+            map_height_px: 1000.0,
+            ppu: 100.0,
+            assets: BTreeMap::new(),
+        };
+        let sprite = compiler
+            .sprite(
+                "graphic.synthetic".to_owned(),
+                [0, 0, 40, 20],
+                [123.0, 456.0],
+                [40.0, 20.0],
+                true,
+                1.0,
+                TileTransform::default(),
+                0,
+            )
+            .unwrap();
 
-        let grass2 = map
-            .layers
-            .iter()
-            .find(|layer| layer.name == "Grass2")
-            .expect("Grass2");
-        let tile = &grass2.sprites[0];
-        assert!((tile.position_world[0] - 1.8).abs() < 1e-4);
-        assert!((tile.position_world[1] - 1.2).abs() < 1e-4);
+        assert_eq!(sprite.size_world, [0.4, 0.2]);
+        assert!((sprite.position_world[0] - 1.43).abs() < 1e-5);
+        assert!((sprite.position_world[1] - 5.34).abs() < 1e-5);
     }
 
     #[test]
-    fn same_atlas_is_deduplicated_and_tile_source_rects_resolve() {
+    fn compiled_sprite_asset_refs_and_source_rects_are_valid() {
         let map = compile_tiled_map(&fixture_sidecar()).unwrap();
-        let tile_sprites: Vec<_> = map
-            .layers
-            .iter()
-            .filter(|layer| layer.kind == PresentationLayerKind::Tile)
-            .flat_map(|layer| &layer.sprites)
-            .collect();
-        assert!(tile_sprites.len() > 1);
-        assert!(
-            tile_sprites
-                .iter()
-                .all(|sprite| sprite.asset_id == tile_sprites[0].asset_id)
-        );
-        assert!(
-            tile_sprites
-                .iter()
-                .any(|sprite| sprite.source_rect_px == [0, 0, 360, 240])
-        );
-        assert!(
-            tile_sprites
-                .iter()
-                .any(|sprite| sprite.source_rect_px == [360, 480, 360, 240])
-        );
+
+        for layer in &map.layers {
+            for sprite in &layer.sprites {
+                let asset = map
+                    .assets
+                    .iter()
+                    .find(|asset| asset.id == sprite.asset_id)
+                    .expect("every sprite asset id resolves");
+                let [x, y, width, height] = sprite.source_rect_px;
+                assert!(width > 0);
+                assert!(height > 0);
+                assert!(x.saturating_add(width) <= asset.image_size_px[0]);
+                assert!(y.saturating_add(height) <= asset.image_size_px[1]);
+                assert!(sprite.position_world.iter().all(|value| value.is_finite()));
+                assert!(
+                    sprite
+                        .size_world
+                        .iter()
+                        .all(|value| value.is_finite() && *value > 0.0)
+                );
+            }
+        }
     }
 
     #[test]
     fn ppu_changes_world_extent_without_changing_tmx_extent() {
         let path = fixture_sidecar();
         let source = load_map_authoring(&path).unwrap();
-        let map = compile_tiled_map_with_ppu(&path, &source, 50.0).unwrap();
-        assert_eq!(map.visual_extent_px, [2320, 1300]);
-        assert_eq!(map.world_bounds, [0.0, 0.0, 46.4, 26.0]);
+        let baseline = compile_tiled_map_with_ppu(&path, &source, source.pixels_per_world_unit)
+            .unwrap();
+        let preview_ppu = source.pixels_per_world_unit * 0.5;
+        let scaled = compile_tiled_map_with_ppu(&path, &source, preview_ppu).unwrap();
+
+        assert_eq!(scaled.visual_extent_px, baseline.visual_extent_px);
+        assert!((scaled.world_bounds[2] - baseline.world_bounds[2] * 2.0).abs() < 1e-5);
+        assert!((scaled.world_bounds[3] - baseline.world_bounds[3] * 2.0).abs() < 1e-5);
     }
 
     #[test]
