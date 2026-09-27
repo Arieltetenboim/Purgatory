@@ -857,8 +857,8 @@ mod tests {
     fn ppu_changes_world_extent_without_changing_tmx_extent() {
         let path = fixture_sidecar();
         let source = load_map_authoring(&path).unwrap();
-        let baseline = compile_tiled_map_with_ppu(&path, &source, source.pixels_per_world_unit)
-            .unwrap();
+        let baseline =
+            compile_tiled_map_with_ppu(&path, &source, source.pixels_per_world_unit).unwrap();
         let preview_ppu = source.pixels_per_world_unit * 0.5;
         let scaled = compile_tiled_map_with_ppu(&path, &source, preview_ppu).unwrap();
 
