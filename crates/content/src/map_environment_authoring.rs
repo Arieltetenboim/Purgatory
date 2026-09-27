@@ -1,7 +1,7 @@
 //! Map Lab-owned environment authoring.
 //!
 //! Tiled owns static world composition. This file owns map-level presentation
-//! behavior such as sky gradients and, in later slices, parallax/motion.
+//! behavior such as sky gradients and camera-relative parallax layers.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,56 @@ impl Default for SkyGradient {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParallaxDepth {
+    Sky,
+    Far,
+    Mid,
+    Near,
+}
+
+impl ParallaxDepth {
+    pub const ALL: [Self; 4] = [Self::Sky, Self::Far, Self::Mid, Self::Near];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sky => "Sky",
+            Self::Far => "Far",
+            Self::Mid => "Mid",
+            Self::Near => "Near",
+        }
+    }
+
+    #[must_use]
+    pub const fn default_parallax(self) -> f32 {
+        match self {
+            Self::Sky => 0.0,
+            Self::Far => 0.18,
+            Self::Mid => 0.38,
+            Self::Near => 0.68,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParallaxLayer {
+    pub id: String,
+    pub asset_path: String,
+    pub depth: ParallaxDepth,
+    /// 0 = screen-fixed, 1 = world-locked.
+    pub parallax: f32,
+    #[serde(default)]
+    pub offset_world: [f32; 2],
+    #[serde(default)]
+    pub repeat_x: bool,
+    #[serde(default)]
+    pub repeat_y: bool,
+    pub opacity: f32,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MapEnvironmentAuthoring {
@@ -30,6 +80,8 @@ pub struct MapEnvironmentAuthoring {
     pub map_authored: String,
     #[serde(default)]
     pub sky_gradient: Option<SkyGradient>,
+    #[serde(default)]
+    pub parallax_layers: Vec<ParallaxLayer>,
 }
 
 impl MapEnvironmentAuthoring {
@@ -39,6 +91,7 @@ impl MapEnvironmentAuthoring {
             schema_version: MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION,
             map_authored: map_authored.into(),
             sky_gradient: None,
+            parallax_layers: Vec::new(),
         }
     }
 }
@@ -52,5 +105,12 @@ mod tests {
         let gradient = SkyGradient::default();
         assert_eq!(gradient.top_rgba[3], 255);
         assert_eq!(gradient.bottom_rgba[3], 255);
+    }
+
+    #[test]
+    fn semantic_depths_have_stable_parallax_defaults() {
+        assert_eq!(ParallaxDepth::Sky.default_parallax(), 0.0);
+        assert!(ParallaxDepth::Far.default_parallax() < ParallaxDepth::Mid.default_parallax());
+        assert!(ParallaxDepth::Mid.default_parallax() < ParallaxDepth::Near.default_parallax());
     }
 }
