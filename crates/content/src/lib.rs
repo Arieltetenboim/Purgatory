@@ -49,7 +49,7 @@ pub use map_compiler::{
 };
 pub use map_environment_authoring::{
     CLOUDS_PER_VIEWPORT_AT_FULL_DENSITY, CloudFieldAuthoring, CloudFieldPresentation,
-    CloudInstanceSpec, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION,
+    CloudInstanceSpec, CloudStackPosition, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION,
     MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION, MAX_CLOUDS_PER_FIELD, MapEnvironmentAuthoring,
     MapEnvironmentPresentation, ParallaxDepth, ParallaxFillMode, ParallaxLayer, SkyGradient,
     cloud_field_seed, cloud_instance_count, cloud_instance_specs, validate_cloud_field,

@@ -159,6 +159,48 @@ impl ParallaxLayer {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudStackPosition {
+    BeforeAll,
+    AfterSky,
+    #[default]
+    AfterFar,
+    AfterMid,
+    AfterNear,
+}
+
+impl CloudStackPosition {
+    pub const ALL: [Self; 5] = [
+        Self::BeforeAll,
+        Self::AfterSky,
+        Self::AfterFar,
+        Self::AfterMid,
+        Self::AfterNear,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BeforeAll => "Behind all backgrounds",
+            Self::AfterSky => "After Sky · before Far",
+            Self::AfterFar => "After Far · before Mid",
+            Self::AfterMid => "After Mid · before Near",
+            Self::AfterNear => "After Near · frontmost environment",
+        }
+    }
+
+    #[must_use]
+    pub const fn for_depth(depth: ParallaxDepth) -> Self {
+        match depth {
+            ParallaxDepth::Sky => Self::AfterSky,
+            ParallaxDepth::Far => Self::AfterFar,
+            ParallaxDepth::Mid => Self::AfterMid,
+            ParallaxDepth::Near => Self::AfterNear,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CloudFieldAuthoring {
@@ -166,6 +208,9 @@ pub struct CloudFieldAuthoring {
     /// Directory relative to Graphic/. PNG discovery is non-recursive.
     pub asset_folder: String,
     pub depth: ParallaxDepth,
+    /// Explicit visual placement relative to semantic parallax bands.
+    #[serde(default)]
+    pub stack_position: CloudStackPosition,
     /// 0 = screen-fixed, 1 = world-locked.
     pub parallax: f32,
     /// Semantic amount from 0..=1, converted to instance count from coverage width.
@@ -536,6 +581,7 @@ mod tests {
             id: "clouds.far".to_owned(),
             asset_folder: "assets/skys/clouds".to_owned(),
             depth: ParallaxDepth::Far,
+            stack_position: CloudStackPosition::AfterFar,
             parallax: ParallaxDepth::Far.default_parallax(),
             density: 0.5,
             scale_range: [0.5, 0.8],
@@ -543,6 +589,10 @@ mod tests {
             height_range: [0.6, 0.9],
             opacity_range: [0.6, 0.9],
         };
+        assert_eq!(
+            CloudStackPosition::for_depth(ParallaxDepth::Mid),
+            CloudStackPosition::AfterMid
+        );
         let first = cloud_instance_specs(&field, 10, 123, 6);
         let second = cloud_instance_specs(&field, 10, 123, 6);
         assert_eq!(first, second);
