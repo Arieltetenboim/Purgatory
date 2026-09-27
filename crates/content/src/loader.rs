@@ -810,18 +810,13 @@ fn check_ability_schema(path: &Path, version: u32, def: &str) -> Result<(), Cont
 fn check_placement_id(path: &Path, id: &str) -> Result<(), ContentError> {
     let valid = !id.is_empty()
         && id.len() <= purgatory_common::MAX_AUTHORED_CONTENT_ID_LEN
-        && id
-            .split('.')
-            .all(|segment| {
-                !segment.is_empty()
-                    && segment
-                        .chars()
-                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
-            })
-        && id
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_ascii_lowercase());
+        && id.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        })
+        && id.chars().next().is_some_and(|ch| ch.is_ascii_lowercase());
     if valid {
         Ok(())
     } else {
