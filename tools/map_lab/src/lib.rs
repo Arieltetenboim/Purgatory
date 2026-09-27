@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use purgatory_content::{
-    LoadMode, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
-    MapAuthoringSource, MapEnvironmentAuthoring, MapGameplayAuthoring, MapPresentation, Placement,
+    LoadMode, MAP_AUTHORING_SCHEMA_VERSION, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION,
+    MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION, MapAuthoringSource, MapEnvironmentAuthoring,
+    MapGameplayAuthoring, MapPresentation, Placement,
     compile_tiled_map_with_ppu, default_content_root, load_map_authoring, load_placement_file,
     load_registry, resolve_png_asset_folder, serialize_map_pretty, serialize_placements_v2,
     validate_cloud_field,
@@ -216,6 +217,153 @@ pub fn discover_authored_maps(directory: &Path) -> Result<Vec<PathBuf>, String> 
     }
     maps.sort();
     Ok(maps)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MapImportCandidate {
+    pub tmx_path: PathBuf,
+    pub content_id: u32,
+    pub authored_id: String,
+}
+
+fn repository_root_from_authoring(authoring_directory: &Path) -> Result<PathBuf, String> {
+    authoring_directory
+        .ancestors()
+        .find(|candidate| {
+            candidate.join("Graphic").join("assets").join("maps").is_dir()
+                && candidate.join("content").join("CONTENT_ID_CATALOG.md").is_file()
+        })
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            format!(
+                "cannot locate repository root above {}",
+                authoring_directory.display()
+            )
+        })
+}
+
+pub fn discover_unimported_tmx(
+    authoring_directory: &Path,
+) -> Result<Vec<MapImportCandidate>, String> {
+    let repository_root = repository_root_from_authoring(authoring_directory)?;
+    let graphic_maps = repository_root.join("Graphic").join("assets").join("maps");
+    let mut imported = std::collections::HashSet::new();
+    for sidecar in discover_authored_maps(authoring_directory)? {
+        let source = load_map_authoring(&sidecar).map_err(|error| error.to_string())?;
+        imported.insert(source.content_id);
+    }
+
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(&graphic_maps)
+        .map_err(|error| format!("read {}: {error}", graphic_maps.display()))?
+    {
+        let path = entry
+            .map_err(|error| format!("read {}: {error}", graphic_maps.display()))?
+            .path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("tmx") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let Ok(content_id) = stem.parse::<u32>() else {
+            continue;
+        };
+        if !(purgatory_common::CONTENT_MAP_START..=purgatory_common::CONTENT_MAP_END)
+            .contains(&content_id)
+            || imported.contains(&content_id)
+        {
+            continue;
+        }
+        candidates.push(MapImportCandidate {
+            tmx_path: path,
+            content_id,
+            authored_id: format!(
+                "map.map{}",
+                content_id - purgatory_common::CONTENT_MAP_START
+            ),
+        });
+    }
+    candidates.sort_by_key(|candidate| candidate.content_id);
+    Ok(candidates)
+}
+
+fn record_map_allocation(
+    repository_root: &Path,
+    content_id: u32,
+    authored_id: &str,
+) -> Result<(), String> {
+    let catalog = repository_root.join("content").join("CONTENT_ID_CATALOG.md");
+    let mut text = std::fs::read_to_string(&catalog)
+        .map_err(|error| format!("read {}: {error}", catalog.display()))?;
+    let id_cell = format!("| `{content_id}` |");
+    if text.contains(&id_cell) {
+        let expected = format!("| `{content_id}` | `{authored_id}` | active |");
+        return if text.contains(&expected) {
+            Ok(())
+        } else {
+            Err(format!("ContentId {content_id} is already allocated"))
+        };
+    }
+    let marker = "\n\n### Items";
+    let insert_at = text
+        .find(marker)
+        .ok_or_else(|| format!("{}: Maps catalog section terminator not found", catalog.display()))?;
+    text.insert_str(
+        insert_at,
+        &format!("\n| `{content_id}` | `{authored_id}` | active |"),
+    );
+    std::fs::write(&catalog, text)
+        .map_err(|error| format!("write {}: {error}", catalog.display()))
+}
+
+pub fn import_numeric_tmx(
+    authoring_directory: &Path,
+    candidate: &MapImportCandidate,
+) -> Result<PathBuf, String> {
+    let repository_root = repository_root_from_authoring(authoring_directory)?;
+    let expected_maps = repository_root.join("Graphic").join("assets").join("maps");
+    if candidate.tmx_path.parent() != Some(expected_maps.as_path()) {
+        return Err("TMX import must come from Graphic/assets/maps".to_owned());
+    }
+    let expected_name = format!("{}.tmx", candidate.content_id);
+    if candidate.tmx_path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
+        return Err("TMX filename must equal its numeric ContentId".to_owned());
+    }
+    if !(purgatory_common::CONTENT_MAP_START..=purgatory_common::CONTENT_MAP_END)
+        .contains(&candidate.content_id)
+    {
+        return Err("map ContentId must be in 50,000-59,999".to_owned());
+    }
+
+    let sidecar = authoring_directory.join(format!("{}.purgatory-map.json", candidate.authored_id));
+    if sidecar.exists() {
+        return Err(format!("{} already exists", sidecar.display()));
+    }
+    let source = MapAuthoringSource {
+        schema_version: MAP_AUTHORING_SCHEMA_VERSION,
+        content_id: candidate.content_id,
+        id: candidate.authored_id.clone(),
+        visual_source: format!(
+            "../../../Graphic/assets/maps/{}",
+            expected_name
+        ),
+        pixels_per_world_unit: PURGATORY_STANDARD_PPU,
+    };
+    let mut bytes = serde_json::to_vec_pretty(&source)
+        .map_err(|error| format!("serialize map sidecar: {error}"))?;
+    bytes.push(b'\n');
+    std::fs::write(&sidecar, bytes)
+        .map_err(|error| format!("write {}: {error}", sidecar.display()))?;
+    if let Err(error) = record_map_allocation(
+        &repository_root,
+        candidate.content_id,
+        &candidate.authored_id,
+    ) {
+        let _ = std::fs::remove_file(&sidecar);
+        return Err(error);
+    }
+    Ok(sidecar)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -749,6 +897,38 @@ mod tests {
             assert!(name.starts_with(&document.source.id));
             assert_eq!(document.sidecar_path, *path);
         }
+    }
+
+    #[test]
+    fn numeric_tmx_import_creates_sidecar_and_catalog_allocation() {
+        let root = std::env::temp_dir().join(format!(
+            "purgatory-map-import-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let graphic_maps = root.join("Graphic/assets/maps");
+        let authoring = root.join("content/authoring/maps");
+        std::fs::create_dir_all(&graphic_maps).unwrap();
+        std::fs::create_dir_all(&authoring).unwrap();
+        std::fs::write(graphic_maps.join("50077.tmx"), "<map/>").unwrap();
+        std::fs::write(
+            root.join("content/CONTENT_ID_CATALOG.md"),
+            "# Content ID Catalog\n\n### Maps — 50,000–59,999\n\n| ID | Label | Status |\n| ---: | --- | --- |\n\n### Items — 30,000–39,999\n",
+        )
+        .unwrap();
+
+        let candidates = discover_unimported_tmx(&authoring).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].content_id, 50_077);
+        assert_eq!(candidates[0].authored_id, "map.map77");
+        let sidecar = import_numeric_tmx(&authoring, &candidates[0]).unwrap();
+        let source = load_map_authoring(&sidecar).unwrap();
+        assert_eq!(source.content_id, 50_077);
+        assert_eq!(source.id, "map.map77");
+        let catalog =
+            std::fs::read_to_string(root.join("content/CONTENT_ID_CATALOG.md")).unwrap();
+        assert!(catalog.contains("| `50077` | `map.map77` | active |"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

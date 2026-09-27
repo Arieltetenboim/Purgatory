@@ -13,8 +13,9 @@ use purgatory_content::{
     load_registry, portal_runtime_authored, resolve_png_asset_folder,
 };
 use purgatory_map_lab::{
-    MapLabDocument, MapSwitchChoice, MapSwitchKind, PURGATORY_STANDARD_PPU,
+    MapImportCandidate, MapLabDocument, MapSwitchChoice, MapSwitchKind, PURGATORY_STANDARD_PPU,
     apply_map_switch_choice, classify_map_switch, discover_authored_maps,
+    discover_unimported_tmx, import_numeric_tmx,
 };
 
 const CAMERA_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
@@ -143,6 +144,7 @@ struct MapLabApp {
     settings_open: bool,
     gradient_color_clipboard: Option<[u8; 4]>,
     available_maps: Vec<PathBuf>,
+    unimported_maps: Vec<MapImportCandidate>,
     pending_map_switch: Option<PathBuf>,
 }
 
@@ -178,6 +180,7 @@ impl MapLabApp {
             settings_open: false,
             gradient_color_clipboard: None,
             available_maps: Vec::new(),
+            unimported_maps: Vec::new(),
             pending_map_switch: None,
         };
         app.open(ctx, &path);
@@ -217,9 +220,32 @@ impl MapLabApp {
             .as_ref()
             .and_then(MapLabDocument::discover_directory)
             .map(Path::to_path_buf);
-        self.available_maps = directory
-            .and_then(|directory| discover_authored_maps(&directory).ok())
-            .unwrap_or_default();
+        if let Some(directory) = directory {
+            self.available_maps = discover_authored_maps(&directory).unwrap_or_default();
+            self.unimported_maps = discover_unimported_tmx(&directory).unwrap_or_default();
+        } else {
+            self.available_maps.clear();
+            self.unimported_maps.clear();
+        }
+    }
+
+    fn import_map(&mut self, ctx: &egui::Context, candidate: MapImportCandidate) {
+        let Some(directory) = self
+            .document
+            .as_ref()
+            .and_then(MapLabDocument::discover_directory)
+            .map(Path::to_path_buf)
+        else {
+            self.status = "IMPORT ERROR\nNo authoring directory".to_owned();
+            return;
+        };
+        match import_numeric_tmx(&directory, &candidate) {
+            Ok(sidecar) => {
+                self.refresh_available_maps();
+                self.request_map_switch(ctx, sidecar, false);
+            }
+            Err(error) => self.status = format!("IMPORT ERROR\n{error}"),
+        }
     }
 
     fn request_map_switch(&mut self, ctx: &egui::Context, target: PathBuf, reload: bool) {
@@ -896,9 +922,10 @@ impl MapLabApp {
             .as_ref()
             .map(|document| document.sidecar_path.clone());
         let maps = self.available_maps.clone();
+        let imports = self.unimported_maps.clone();
         egui::ComboBox::from_id_salt("map_lab_map_selector")
             .selected_text(current)
-            .width(170.0)
+            .width(190.0)
             .show_ui(ui, |ui| {
                 if maps.is_empty() {
                     ui.label("No authored maps");
@@ -912,6 +939,26 @@ impl MapLabApp {
                     let selected = current_path.as_ref() == Some(&path);
                     if ui.selectable_label(selected, label).clicked() {
                         self.request_map_switch(ui.ctx(), path, false);
+                    }
+                }
+                if !imports.is_empty() {
+                    ui.separator();
+                    ui.label("IMPORT NUMERIC TMX");
+                    for candidate in imports {
+                        let filename = candidate
+                            .tmx_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("map.tmx");
+                        if ui
+                            .button(format!(
+                                "{filename} → {} · #{}",
+                                candidate.authored_id, candidate.content_id
+                            ))
+                            .clicked()
+                        {
+                            self.import_map(ui.ctx(), candidate);
+                        }
                     }
                 }
             });
@@ -3710,7 +3757,7 @@ mod tests {
             .find(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("map.dev.footnote"))
+                    .is_some_and(|name| name.starts_with("map.map2"))
             })
             .expect("second authored map")
             .clone();
@@ -3723,7 +3770,7 @@ mod tests {
             .id
             .clone();
         assert_ne!(second, first);
-        assert_eq!(second, "map.dev.footnote");
+        assert_eq!(second, "map.map2");
         assert!(app.selected_placement.is_none());
         assert!(app.selected_catalog.is_none());
         assert!(app.selected_point.is_none());

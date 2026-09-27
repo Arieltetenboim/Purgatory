@@ -26,3 +26,13 @@ writes an inspection artifact under `target/map-lab/`.
 
 W1.3A is visual-only. FOOTNOTE, NPC, Mob, portal, trigger, spawn, and runtime
 start-map authoring are intentionally deferred.
+
+## Adding maps
+
+Map visual assets use their stable numeric map ContentId as the TMX filename
+(`50001.tmx`, `50002.tmx`, ...). The map selector discovers numeric TMX files
+under `Graphic/assets/maps` that do not yet have a sidecar and offers an import
+action. Import derives the authored label (`50002` → `map.map2`), writes the
+versioned sidecar with that ContentId, records the allocation in
+`content/CONTENT_ID_CATALOG.md`, then opens it through the normal Map Lab path.
+
