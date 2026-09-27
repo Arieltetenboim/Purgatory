@@ -591,7 +591,7 @@ impl ContentRegistry {
         for content in maps {
             let map_id = if content.kind() == Some(ContentKind::Map) {
                 let raw = content.raw().expect("numeric Map ContentId");
-                MapId::from_raw(raw - CONTENT_MAP_START + 1)
+                MapId::from_raw(raw - CONTENT_MAP_START)
             } else {
                 while self
                     .content_by_map_id
