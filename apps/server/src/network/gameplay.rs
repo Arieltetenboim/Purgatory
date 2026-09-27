@@ -6040,7 +6040,7 @@ mod tests {
             connection_id: client_a,
             target: wire_id(portal),
         });
-        let dest_portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         assert_eq!(
             owner.world().address_of(actor_a),
             owner.world().address_of(dest_portal),
