@@ -31,6 +31,7 @@ impl MapLabDocument {
         let source = load_map_authoring(path).map_err(|error| error.to_string())?;
         let presentation = compile_tiled_map_with_ppu(path, &source, source.pixels_per_world_unit)
             .map_err(|error| error.to_string())?;
+        sync_runtime_bounds_file(path, &source.id, presentation.world_bounds)?;
         let gameplay_path = gameplay_path_for(path)?;
         let environment_path = environment_path_for(path)?;
         let gameplay = if gameplay_path.is_file() {
@@ -76,17 +77,6 @@ impl MapLabDocument {
 
     pub fn canonical_json(&self) -> Result<Vec<u8>, String> {
         serialize_map_pretty(&self.presentation).map_err(|error| error.to_string())
-    }
-
-    /// Keep runtime world bounds derived from the authoritative TMX extent.
-    ///
-    /// Missing runtime definitions are allowed for visual-only authoring drafts.
-    pub fn sync_runtime_bounds(&self) -> Result<bool, String> {
-        sync_runtime_bounds_file(
-            &self.sidecar_path,
-            &self.source.id,
-            self.presentation.world_bounds,
-        )
     }
 
     #[must_use]

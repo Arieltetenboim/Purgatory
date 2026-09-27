@@ -97,10 +97,6 @@ impl MapLabApp {
         self.clear_compiled("Compiling...");
         match MapLabDocument::open(path) {
             Ok(document) => {
-                if let Err(error) = document.sync_runtime_bounds() {
-                    self.clear_compiled(&format!("SYNC ERROR\n{error}"));
-                    return;
-                }
                 self.ppu_text = document.source.pixels_per_world_unit.to_string();
                 self.install_document(ctx, document);
                 self.gameplay_dirty = false;
