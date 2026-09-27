@@ -867,7 +867,7 @@ mod tests {
         assert!(
             tile_sprites
                 .iter()
-                .any(|sprite| sprite.source_rect_px == [1080, 0, 360, 240])
+                .any(|sprite| sprite.source_rect_px == [360, 480, 360, 240])
         );
     }
 
