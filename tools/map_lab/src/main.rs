@@ -1303,6 +1303,11 @@ struct PreviewTextureChunk {
     texture: TextureHandle,
 }
 
+struct EnvironmentPreviewTexture {
+    texture: TextureHandle,
+    image_size_px: [u32; 2],
+}
+
 type TextureRegions = HashMap<String, HashMap<[u32; 4], Vec<PreviewTextureChunk>>>;
 
 fn load_textures(ctx: &egui::Context, document: &MapLabDocument) -> Result<TextureRegions, String> {
@@ -1393,6 +1398,38 @@ fn load_textures(ctx: &egui::Context, document: &MapLabDocument) -> Result<Textu
         textures.insert(asset.id.clone(), regions);
     }
 
+    Ok(textures)
+}
+
+fn load_environment_textures(
+    ctx: &egui::Context,
+    document: &MapLabDocument,
+) -> Result<HashMap<String, EnvironmentPreviewTexture>, String> {
+    let graphic = find_graphic_root(&document.sidecar_path)?;
+    let mut textures = HashMap::new();
+    for layer in &document.environment.parallax_layers {
+        let path = graphic.join(&layer.asset_path);
+        let image = image::open(&path)
+            .map_err(|error| format!("decode {}: {error}", path.display()))?
+            .to_rgba8();
+        let size = [image.width(), image.height()];
+        let color = egui::ColorImage::from_rgba_unmultiplied(
+            [image.width() as usize, image.height() as usize],
+            image.as_raw(),
+        );
+        let texture = ctx.load_texture(
+            format!("environment:{}", layer.id),
+            color,
+            egui::TextureOptions::LINEAR,
+        );
+        textures.insert(
+            layer.id.clone(),
+            EnvironmentPreviewTexture {
+                texture,
+                image_size_px: size,
+            },
+        );
+    }
     Ok(textures)
 }
 
