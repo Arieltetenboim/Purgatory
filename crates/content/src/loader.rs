@@ -28,7 +28,7 @@ use crate::monster::{
 };
 use crate::registry::ContentRegistry;
 use crate::schema::{
-    CONTENT_SCHEMA_VERSION, PLACEMENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform,
+    CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, PLACEMENT_SCHEMA_VERSION,
     Placement, PlacementKind, RestorePolicy, SpawnPoint, TransitionRef,
 };
 use purgatory_common::{ContentId, ContentKind, allocated_id_for_label, validate_authored_id};
@@ -582,11 +582,7 @@ fn placements_from_raw(
                 id: format!("placement.legacy_{:04}", index + 1),
                 kind: PlacementKind::Entity,
                 content_authored: legacy.entity,
-                position: pair(
-                    path,
-                    &format!("{field}.position"),
-                    legacy.position,
-                )?,
+                position: pair(path, &format!("{field}.position"), legacy.position)?,
             }
         } else {
             let authored: RawPlacementV2 = serde_json::from_value(value).map_err(|error| {
@@ -615,11 +611,7 @@ fn placements_from_raw(
                 id: authored.id,
                 kind,
                 content_authored: authored.content,
-                position: pair(
-                    path,
-                    &format!("{field}.position"),
-                    authored.position,
-                )?,
+                position: pair(path, &format!("{field}.position"), authored.position)?,
             }
         };
 
