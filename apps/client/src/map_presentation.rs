@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use purgatory_content::{
     ContentRegistry, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION,
-    MapEnvironmentAuthoring, MapPresentation, ParallaxDepth, ParallaxLayer, PresentationSprite,
-    SkyGradient,
+    MapEnvironmentAuthoring, MapPresentation, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
+    PresentationSprite, SkyGradient,
 };
 use purgatory_simulation::MapId;
 use serde_json::from_slice;
@@ -248,17 +248,24 @@ impl RuntimeMapPresentation {
         camera: &Camera,
     ) -> Vec<DrawQuad> {
         let ppu = self.pixels_per_world_unit.max(f32::EPSILON);
-        let size = [
+        let natural_size = [
             layer.image_dimensions[0] as f32 / ppu,
             layer.image_dimensions[1] as f32 / ppu,
         ];
-        if size[0] <= 0.0 || size[1] <= 0.0 {
+        if natural_size[0] <= 0.0 || natural_size[1] <= 0.0 {
             return Vec::new();
         }
 
         let [min_x, min_y, max_x, max_y] = self.world_bounds;
+        let map_size = [max_x - min_x, max_y - min_y];
         let map_center = [(min_x + max_x) * 0.5, (min_y + max_y) * 0.5];
         let p = layer.authored.parallax;
+        let coverage = parallax_coverage_size(
+            map_size,
+            [camera.viewport_width, camera.viewport_height],
+            p,
+        );
+        let size = fill_size(layer.authored.fill_mode, natural_size, coverage);
         let base = [
             camera.position[0] * (1.0 - p)
                 + map_center[0] * p
@@ -268,8 +275,17 @@ impl RuntimeMapPresentation {
                 + layer.authored.offset_world[1],
         ];
 
-        let x_radius = repeat_radius(layer.authored.repeat_x, camera.viewport_width, size[0]);
-        let y_radius = repeat_radius(layer.authored.repeat_y, camera.viewport_height, size[1]);
+        let repeat = layer.authored.fill_mode == ParallaxFillMode::Repeat;
+        let x_radius = repeat_radius(
+            repeat && layer.authored.repeat_x,
+            camera.viewport_width,
+            size[0],
+        );
+        let y_radius = repeat_radius(
+            repeat && layer.authored.repeat_y,
+            camera.viewport_height,
+            size[1],
+        );
         let uvs = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
         let mut quads = Vec::new();
         for y in -y_radius..=y_radius {
@@ -295,6 +311,35 @@ impl RuntimeMapPresentation {
             }
         }
         quads
+    }
+}
+
+fn parallax_coverage_size(map_size: [f32; 2], viewport: [f32; 2], parallax: f32) -> [f32; 2] {
+    let p = parallax.clamp(0.0, 1.0);
+    [
+        viewport[0] + p * (map_size[0] - viewport[0]).max(0.0),
+        viewport[1] + p * (map_size[1] - viewport[1]).max(0.0),
+    ]
+}
+
+fn fill_size(
+    mode: ParallaxFillMode,
+    natural: [f32; 2],
+    coverage: [f32; 2],
+) -> [f32; 2] {
+    match mode {
+        ParallaxFillMode::Natural | ParallaxFillMode::Repeat => natural,
+        ParallaxFillMode::Stretch => coverage,
+        ParallaxFillMode::Fit | ParallaxFillMode::Cover => {
+            let sx = coverage[0] / natural[0];
+            let sy = coverage[1] / natural[1];
+            let scale = if mode == ParallaxFillMode::Fit {
+                sx.min(sy)
+            } else {
+                sx.max(sy)
+            };
+            [natural[0] * scale, natural[1] * scale]
+        }
     }
 }
 
@@ -353,6 +398,23 @@ mod tests {
         let transformed = sprite_uv_transform(true, false, true);
         assert_eq!(transformed[0], [0.0, 0.0]);
         assert_eq!(transformed[2], [1.0, 1.0]);
+    }
+
+    #[test]
+    fn cover_preserves_aspect_and_fills_coverage() {
+        let size = fill_size(ParallaxFillMode::Cover, [20.0, 10.0], [23.0, 13.0]);
+        assert!((size[0] - 26.0).abs() < 1e-5);
+        assert!((size[1] - 13.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn stretch_matches_parallax_coverage_exactly() {
+        let coverage = parallax_coverage_size([46.0, 20.0], [23.0, 13.0], 0.5);
+        assert_eq!(coverage, [34.5, 16.5]);
+        assert_eq!(
+            fill_size(ParallaxFillMode::Stretch, [4.0, 4.0], coverage),
+            coverage
+        );
     }
 
     #[test]
