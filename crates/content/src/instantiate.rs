@@ -299,7 +299,6 @@ pub fn world_address_for_map(
     Some(WorldAddress::new(map, channel, instance))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

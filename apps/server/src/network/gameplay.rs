@@ -31,9 +31,8 @@ use purgatory_simulation::{
     ActionKind, Cadence, CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot,
     FOOTNOTE_SPAWN_X, Health, InputGateReason, InteractionCloseReason, InteractionReject,
     ItemRuntimeError, PLAYER_HALF_EXTENTS, PLAYER_HEALTH_MAX, PlayerInput, PlayerState,
-    PresentationOneShotKind, RuntimeSpawnRequest,
-    ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
-    validate_command_preamble,
+    PresentationOneShotKind, RuntimeSpawnRequest, ScheduleOwner, SimulationTick, TICK_RATE_HZ,
+    Transform, WorkLane, World, validate_command_preamble,
 };
 
 use super::dialogue::{
@@ -3392,10 +3391,7 @@ impl GameplayOwner {
             return;
         }
 
-        let floor_position = [
-            position[0] + 1.5,
-            position[1] - PLAYER_HALF_EXTENTS[1],
-        ];
+        let floor_position = [position[0] + 1.5, position[1] - PLAYER_HALF_EXTENTS[1]];
         let Ok(request) = monster_spawn_request(
             &self.registry,
             monster_content_id,
