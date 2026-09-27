@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex};
 
 use purgatory_common::{
     ContentId, DEFAULT_DEV_ADMIN_PORT, DEV_ADMIN_MAX_LINE_BYTES, DEV_ADMIN_PORT_ENV,
-    DevAdminContentEntry, DevAdminPlayer, DevAdminRequest, DevAdminResponse, DevAdminSnapshot,
+    DevAdminContentEntry, DevAdminMapEntry, DevAdminPlayer, DevAdminRequest, DevAdminResponse,
+    DevAdminSnapshot,
 };
 use purgatory_content::{
-    DialogueAction, DialogueCondition, LoadMode, default_content_root, load_registry,
+    DialogueAction, DialogueCondition, LoadMode, PlacementKind, default_content_root, load_registry,
 };
 use purgatory_protocol::ConnectionId;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -27,6 +28,7 @@ struct AdminCatalog {
     monsters: Arc<Vec<DevAdminContentEntry>>,
     items: Arc<Vec<DevAdminContentEntry>>,
     facts: Arc<Vec<String>>,
+    maps: Arc<Vec<DevAdminMapEntry>>,
 }
 
 pub(crate) fn spawn(
@@ -85,11 +87,40 @@ pub(crate) fn spawn(
         }
     }
 
+    let mut maps = registry
+        .iter_maps()
+        .map(|map| {
+            let mut portals = registry
+                .placements(&map.authored_id)
+                .iter()
+                .filter_map(|placement| match placement.kind {
+                    PlacementKind::Portal => Some(placement.id.clone()),
+                    PlacementKind::Entity => registry
+                        .entity(&placement.content_authored)
+                        .filter(|entity| {
+                            entity.interactable
+                                == Some(purgatory_simulation::InteractableKind::Portal)
+                        })
+                        .map(|_| placement.content_authored.clone()),
+                    PlacementKind::Monster => None,
+                })
+                .collect::<Vec<_>>();
+            portals.sort();
+            portals.dedup();
+            DevAdminMapEntry {
+                authored_id: map.authored_id.clone(),
+                portals,
+            }
+        })
+        .collect::<Vec<_>>();
+    maps.sort_by(|a, b| a.authored_id.cmp(&b.authored_id));
+
     let catalog = AdminCatalog {
         npcs: Arc::new(npcs),
         monsters: Arc::new(monsters),
         items: Arc::new(items),
         facts: Arc::new(facts.into_iter().collect()),
+        maps: Arc::new(maps),
     };
 
     tokio::spawn(async move {
@@ -193,6 +224,7 @@ async fn dispatch(
                     monsters: catalog.monsters.as_ref().clone(),
                     items: catalog.items.as_ref().clone(),
                     facts: catalog.facts.as_ref().clone(),
+                    maps: catalog.maps.as_ref().clone(),
                 },
             }
         }
@@ -368,6 +400,45 @@ async fn dispatch(
                     .send_dev_reset_player(ConnectionId::from_raw(connection_id))
                     .await,
                 format!("Reset connection {connection_id} to map spawn"),
+            )
+        }
+        DevAdminRequest::TransitionPlayer {
+            connection_id,
+            map_authored,
+            portal_id,
+        } => {
+            if !session_exists(sessions, connection_id) {
+                return inactive(connection_id);
+            }
+            let Some(map) = catalog
+                .maps
+                .iter()
+                .find(|map| map.authored_id == map_authored)
+            else {
+                return DevAdminResponse::command_err(format!(
+                    "unknown authored map {map_authored}"
+                ));
+            };
+            if let Some(portal) = portal_id.as_deref()
+                && !map.portals.iter().any(|candidate| candidate == portal)
+            {
+                return DevAdminResponse::command_err(format!(
+                    "portal {portal} is not placed on {map_authored}"
+                ));
+            }
+            let arrival = portal_id
+                .as_deref()
+                .map(|portal| format!("{map_authored} · {portal}"))
+                .unwrap_or_else(|| format!("{map_authored} · Default Spawn"));
+            narrative_result(
+                gameplay
+                    .send_dev_transition(
+                        ConnectionId::from_raw(connection_id),
+                        map_authored,
+                        portal_id,
+                    )
+                    .await,
+                format!("Transition connection {connection_id} to {arrival}"),
             )
         }
         DevAdminRequest::SetChannel {

@@ -29,6 +29,8 @@ pub struct ServerCommandsState {
     narrative_fact_id: String,
     narrative_fact_value: bool,
     channel: u32,
+    selected_map: Option<String>,
+    selected_portal: Option<String>,
     history: Vec<String>,
     sender: Sender<AdminReply>,
     receiver: Receiver<AdminReply>,
@@ -50,6 +52,8 @@ impl Default for ServerCommandsState {
             narrative_fact_id: "welcome.workshop.package_delivered".into(),
             narrative_fact_value: true,
             channel: 1,
+            selected_map: None,
+            selected_portal: None,
             history: Vec::new(),
             sender,
             receiver,
@@ -138,6 +142,24 @@ impl ServerCommandsState {
             }) {
                 self.selected_item = snapshot.items.first().map(|item| item.content_id);
             }
+            if self.selected_map.as_ref().is_none_or(|selected| {
+                !snapshot.maps.iter().any(|map| &map.authored_id == selected)
+            }) {
+                self.selected_map = snapshot.maps.first().map(|map| map.authored_id.clone());
+                self.selected_portal = None;
+            }
+            if let Some(selected_map) = self.selected_map.as_deref()
+                && self.selected_portal.as_ref().is_some_and(|selected_portal| {
+                    snapshot
+                        .maps
+                        .iter()
+                        .find(|map| map.authored_id == selected_map)
+                        .is_none_or(|map| !map.portals.contains(selected_portal))
+                })
+            {
+                self.selected_portal = None;
+            }
+
             if !snapshot.facts.is_empty()
                 && !snapshot
                     .facts
@@ -395,6 +417,73 @@ impl ServerCommandsState {
                     && let Some(connection_id) = self.selected_player
                 {
                     self.send(DevAdminRequest::ResetPlayer { connection_id });
+                }
+
+                ui.label("Map");
+                let previous_map = self.selected_map.clone();
+                egui::ComboBox::from_id_salt("server_commands_map")
+                    .width(220.0)
+                    .selected_text(
+                        self.selected_map
+                            .as_deref()
+                            .unwrap_or("No authored maps"),
+                    )
+                    .show_ui(ui, |ui| {
+                        for map in &snapshot.maps {
+                            ui.selectable_value(
+                                &mut self.selected_map,
+                                Some(map.authored_id.clone()),
+                                &map.authored_id,
+                            );
+                        }
+                    });
+                if self.selected_map != previous_map {
+                    self.selected_portal = None;
+                }
+
+                let selected_map_entry = self
+                    .selected_map
+                    .as_deref()
+                    .and_then(|selected| {
+                        snapshot.maps.iter().find(|map| map.authored_id == selected)
+                    });
+                egui::ComboBox::from_id_salt("server_commands_map_arrival")
+                    .width(220.0)
+                    .selected_text(
+                        self.selected_portal
+                            .as_deref()
+                            .map(|portal| format!("Portal · {portal}"))
+                            .unwrap_or_else(|| "Default Spawn".into()),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.selected_portal, None, "Default Spawn");
+                        if let Some(map) = selected_map_entry {
+                            for portal in &map.portals {
+                                ui.selectable_value(
+                                    &mut self.selected_portal,
+                                    Some(portal.clone()),
+                                    format!("Portal · {portal}"),
+                                );
+                            }
+                        }
+                    });
+                if ui
+                    .add_enabled(
+                        ready && self.selected_player.is_some() && self.selected_map.is_some(),
+                        btn_primary("Transition"),
+                    )
+                    .on_hover_text(
+                        "Server-authoritative map transition. Preserves channel/instance and uses normal map/replication/input transition barriers.",
+                    )
+                    .clicked()
+                    && let (Some(connection_id), Some(map_authored)) =
+                        (self.selected_player, self.selected_map.clone())
+                {
+                    self.send(DevAdminRequest::TransitionPlayer {
+                        connection_id,
+                        map_authored,
+                        portal_id: self.selected_portal.clone(),
+                    });
                 }
 
                 ui.label("Channel");

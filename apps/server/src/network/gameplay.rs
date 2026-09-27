@@ -595,6 +595,12 @@ pub enum InputUpdate {
         connection_id: ConnectionId,
         target: WireEntityId,
     },
+    DevTransition {
+        connection_id: ConnectionId,
+        map_authored: String,
+        portal_id: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     DevSetChannel {
         connection_id: ConnectionId,
         channel: u32,
@@ -980,6 +986,33 @@ impl GameplayTx {
             .send(InputUpdate::DevResetPlayer { connection_id })
             .await
             .is_ok()
+    }
+
+    pub async fn send_dev_transition(
+        &self,
+        connection_id: ConnectionId,
+        map_authored: String,
+        portal_id: Option<String>,
+    ) -> Result<(), String> {
+        let (reply, result) = tokio::sync::oneshot::channel();
+        self.input
+            .try_send(InputUpdate::DevTransition {
+                connection_id,
+                map_authored,
+                portal_id,
+                reply,
+            })
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    "gameplay command queue full".to_string()
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    "gameplay command queue closed".to_string()
+                }
+            })?;
+        result
+            .await
+            .map_err(|_| "gameplay owner dropped command reply".to_string())?
     }
 
     pub async fn send_respawn(&self, connection_id: ConnectionId) -> bool {
@@ -1599,6 +1632,7 @@ impl GameplayOwner {
                 | InputUpdate::DialogueAdvance { .. }
                 | InputUpdate::DialogueChoose { .. }
                 | InputUpdate::PortalActivate { .. }
+                | InputUpdate::DevTransition { .. }
                 | InputUpdate::DevSetChannel { .. }
                 | InputUpdate::DevSetSpeed { .. }
                 | InputUpdate::DevSetJump { .. }
@@ -1636,6 +1670,16 @@ impl GameplayOwner {
                     connection_id,
                     target,
                 } => self.handle_portal_activate(connection_id, target),
+                InputUpdate::DevTransition {
+                    connection_id,
+                    map_authored,
+                    portal_id,
+                    reply,
+                } => {
+                    let result =
+                        self.handle_dev_transition(connection_id, &map_authored, portal_id.as_deref());
+                    let _ = reply.send(result);
+                }
                 InputUpdate::DevSetChannel {
                     connection_id,
                     channel,
@@ -1767,6 +1811,7 @@ impl GameplayOwner {
             | InputUpdate::DialogueAdvance { .. }
             | InputUpdate::DialogueChoose { .. }
             | InputUpdate::PortalActivate { .. }
+            | InputUpdate::DevTransition { .. }
             | InputUpdate::DevSetChannel { .. }
             | InputUpdate::DevSetSpeed { .. }
             | InputUpdate::DevSetJump { .. }
@@ -2058,43 +2103,43 @@ impl GameplayOwner {
             .unwrap_or(WorldAddress::DEV)
     }
 
-    fn apply_content_transition(
+    fn ensure_dev_transition_map(
         &mut self,
-        connection_id: ConnectionId,
         actor: EntityId,
-        tr: &purgatory_content::TransitionRef,
-    ) -> Result<EntityId, InteractionReject> {
-        let dest_content = ContentId::from_authored(&tr.map_authored)
-            .map_err(|_| InteractionReject::Unavailable)?;
-        let dest_portal_content = self
-            .registry
-            .portal_content_id(&tr.map_authored, &tr.portal_authored)
+        map_authored: &str,
+    ) -> Result<WorldAddress, InteractionReject> {
+        let dest_content =
+            ContentId::from_authored(map_authored).map_err(|_| InteractionReject::Unavailable)?;
+        let current = self
+            .world
+            .address_of(actor)
             .ok_or(InteractionReject::Unavailable)?;
-        let Some(current) = self.world.address_of(actor) else {
-            return Err(InteractionReject::Unavailable);
-        };
-        let Some(dest) = world_address_for_map(
+        let dest = world_address_for_map(
             &self.registry,
             dest_content,
             current.channel,
             current.instance,
-        ) else {
-            return Err(InteractionReject::Unavailable);
-        };
-        let plan = map_plan(&self.registry, &tr.map_authored, dest)
-            .map_err(|_| InteractionReject::Unavailable)?;
+        )
+        .ok_or(InteractionReject::Unavailable)?;
+        let plan =
+            map_plan(&self.registry, map_authored, dest).map_err(|_| InteractionReject::Unavailable)?;
         self.world
             .ensure_map(&plan)
             .map_err(|_| InteractionReject::Unavailable)?;
-        let Some(dest_portal) = self.world.entity_with_content_at(dest, dest_portal_content) else {
-            return Err(InteractionReject::Unavailable);
-        };
-        let Some(portal_pos) = self.world.transform_of(dest_portal).map(|t| t.position) else {
-            return Err(InteractionReject::Unavailable);
-        };
+        Ok(dest)
+    }
+
+    fn finalize_map_transition(
+        &mut self,
+        connection_id: ConnectionId,
+        actor: EntityId,
+        dest: WorldAddress,
+        anchor: [f32; 2],
+        portal_lock: Option<EntityId>,
+    ) -> Result<(), InteractionReject> {
         let pos = self
-            .standing_pose_on_map(dest, portal_pos[0])
-            .unwrap_or(portal_pos);
+            .standing_pose_on_map(dest, anchor[0])
+            .unwrap_or(anchor);
         if !self.world.transition_entity(actor, dest, pos) {
             return Err(InteractionReject::Unavailable);
         }
@@ -2127,22 +2172,102 @@ impl GameplayOwner {
             }
         }
         self.begin_transition_input_barrier(connection_id, InputGateReason::MapTransition);
-        self.world.lock_portal_reentry(actor, dest_portal);
+        if let Some(portal) = portal_lock {
+            self.world.lock_portal_reentry(actor, portal);
+        } else {
+            self.world.release_portal_reentry(actor);
+        }
         let epoch = self
             .bindings
             .get(&connection_id)
-            .map(|b| b.interest.epoch)
+            .map(|binding| binding.interest.epoch)
             .unwrap_or(0);
         let pose = self
             .world
             .transform_of(actor)
-            .map(|t| t.position)
+            .map(|transform| transform.position)
             .unwrap_or(pos);
         println!(
-            "6D_POSE server_dest_ready actor={actor} dest={dest} portal={dest_portal} pose=({:.3},{:.3}) epoch={epoch} before_tick=true",
+            "6D_POSE server_dest_ready actor={actor} dest={dest} pose=({:.3},{:.3}) epoch={epoch} before_tick=true",
             pose[0], pose[1]
         );
         self.publish_snapshots(false);
+        Ok(())
+    }
+
+    fn handle_dev_transition(
+        &mut self,
+        connection_id: ConnectionId,
+        map_authored: &str,
+        portal_id: Option<&str>,
+    ) -> Result<(), String> {
+        let actor = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+            .ok_or_else(|| format!("connection {connection_id} has no gameplay binding"))?;
+        let dest = self
+            .ensure_dev_transition_map(actor, map_authored)
+            .map_err(|_| format!("cannot prepare authored map {map_authored}"))?;
+
+        if let Some(portal_id) = portal_id {
+            let portal_content = self
+                .registry
+                .portal_content_id(map_authored, portal_id)
+                .ok_or_else(|| format!("portal {portal_id} is not placed on {map_authored}"))?;
+            let portal = self
+                .world
+                .entity_with_content_at(dest, portal_content)
+                .ok_or_else(|| format!("portal {portal_id} did not instantiate on {map_authored}"))?;
+            let anchor = self
+                .world
+                .transform_of(portal)
+                .map(|transform| transform.position)
+                .ok_or_else(|| format!("portal {portal_id} has no runtime transform"))?;
+            self.finalize_map_transition(connection_id, actor, dest, anchor, Some(portal))
+                .map_err(|_| format!("transition to {map_authored} · {portal_id} failed"))?;
+        } else {
+            let map = self
+                .registry
+                .map(map_authored)
+                .ok_or_else(|| format!("unknown authored map {map_authored}"))?;
+            let spawn = map
+                .spawn_points
+                .iter()
+                .find(|spawn| spawn.id == "default")
+                .or_else(|| map.spawn_points.first())
+                .map(|spawn| spawn.position)
+                .ok_or_else(|| format!("map {map_authored} has no spawn point"))?;
+            self.finalize_map_transition(connection_id, actor, dest, spawn, None)
+                .map_err(|_| format!("transition to {map_authored} · Default Spawn failed"))?;
+        }
+        Ok(())
+    }
+
+    fn apply_content_transition(
+        &mut self,
+        connection_id: ConnectionId,
+        actor: EntityId,
+        tr: &purgatory_content::TransitionRef,
+    ) -> Result<EntityId, InteractionReject> {
+        let dest_portal_content = self
+            .registry
+            .portal_content_id(&tr.map_authored, &tr.portal_authored)
+            .ok_or(InteractionReject::Unavailable)?;
+        let dest = self.ensure_dev_transition_map(actor, &tr.map_authored)?;
+        let Some(dest_portal) = self.world.entity_with_content_at(dest, dest_portal_content) else {
+            return Err(InteractionReject::Unavailable);
+        };
+        let Some(portal_pos) = self.world.transform_of(dest_portal).map(|t| t.position) else {
+            return Err(InteractionReject::Unavailable);
+        };
+        self.finalize_map_transition(
+            connection_id,
+            actor,
+            dest,
+            portal_pos,
+            Some(dest_portal),
+        )?;
         Ok(dest_portal)
     }
 

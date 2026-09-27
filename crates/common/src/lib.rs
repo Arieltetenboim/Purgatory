@@ -33,7 +33,7 @@ pub use content_catalog::{
 };
 pub use dev_admin::{
     DEFAULT_DEV_ADMIN_PORT, DEV_ADMIN_MAX_LINE_BYTES, DEV_ADMIN_PORT_ENV, DevAdminContentEntry,
-    DevAdminPlayer, DevAdminRequest, DevAdminResponse, DevAdminSnapshot,
+    DevAdminMapEntry, DevAdminPlayer, DevAdminRequest, DevAdminResponse, DevAdminSnapshot,
 };
 pub use identity::{
     AuthoredIdError, CHARACTER_NAME_MAX_LEN, CHARACTER_NAME_MIN_LEN, CONTENT_ABILITY_END,
