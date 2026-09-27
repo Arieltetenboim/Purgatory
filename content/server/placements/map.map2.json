@@ -5,11 +5,50 @@
     {
       "id": "portal.001",
       "kind": "portal",
-      "position": [2.0, 1.0],
+      "position": [
+        2.0,
+        1.0
+      ],
       "linked_portal": {
         "map": "map.map1",
         "portal": "portal.001"
       }
+    },
+    {
+      "id": "placement.mob_001",
+      "kind": "monster",
+      "content": "monster.moss_crab",
+      "position": [
+        10.323935,
+        1.5059018
+      ]
+    },
+    {
+      "id": "placement.mob_002",
+      "kind": "monster",
+      "content": "monster.moss_crab",
+      "position": [
+        13.513443,
+        1.6737704
+      ]
+    },
+    {
+      "id": "placement.mob_003",
+      "kind": "monster",
+      "content": "monster.moss_crab",
+      "position": [
+        27.068851,
+        1.7996721
+      ]
+    },
+    {
+      "id": "placement.mob_004",
+      "kind": "monster",
+      "content": "monster.moss_crab",
+      "position": [
+        32.314754,
+        1.9675412
+      ]
     }
   ]
 }
