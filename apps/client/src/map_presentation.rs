@@ -246,6 +246,10 @@ impl RuntimeMapPresentation {
             self.environment_time_seconds += f64::from(frame_dt);
         }
         let mut quads = self.sky_quads(camera);
+        let world_bounds = self.world_bounds;
+        let pixels_per_world_unit = self.pixels_per_world_unit;
+        let environment_time_seconds = self.environment_time_seconds;
+        let visual_seed = self.visual_seed;
         for depth in ParallaxDepth::ALL {
             for layer in self
                 .parallax_layers
@@ -262,10 +266,10 @@ impl RuntimeMapPresentation {
                 quads.extend(cloud_field_quads(
                     field,
                     camera,
-                    self.world_bounds,
-                    self.pixels_per_world_unit,
-                    self.environment_time_seconds,
-                    self.visual_seed,
+                    world_bounds,
+                    pixels_per_world_unit,
+                    environment_time_seconds,
+                    visual_seed,
                 ));
             }
         }

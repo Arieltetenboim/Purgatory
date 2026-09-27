@@ -565,6 +565,33 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "map-authoring")]
+    #[test]
+    fn cloud_folder_discovery_is_sorted_non_recursive_and_png_only() {
+        let root = std::env::temp_dir().join(format!(
+            "purgatory-cloud-folder-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let folder = root.join("assets/skys/clouds");
+        std::fs::create_dir_all(folder.join("nested")).unwrap();
+        std::fs::write(folder.join("zeta.PNG"), b"png").unwrap();
+        std::fs::write(folder.join("alpha.png"), b"png").unwrap();
+        std::fs::write(folder.join("notes.txt"), b"ignore").unwrap();
+        std::fs::write(folder.join("nested/hidden.png"), b"ignore").unwrap();
+
+        let resolved = resolve_png_asset_folder(&root, "assets/skys/clouds").unwrap();
+        assert_eq!(
+            resolved,
+            vec![
+                "assets/skys/clouds/alpha.png".to_owned(),
+                "assets/skys/clouds/zeta.PNG".to_owned(),
+            ]
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn semantic_depths_have_stable_parallax_defaults() {
         assert_eq!(ParallaxDepth::Sky.default_parallax(), 0.0);
