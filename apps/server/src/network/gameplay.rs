@@ -6661,10 +6661,7 @@ mod tests {
             .expect("shared Monster projection");
             assert_eq!(
                 npc.runtime_config,
-                projected
-                    .npc
-                    .expect("projected Monster NPC")
-                    .runtime_config
+                projected.npc.expect("projected Monster NPC").runtime_config
             );
         }
 
