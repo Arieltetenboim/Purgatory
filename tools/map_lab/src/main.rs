@@ -95,11 +95,21 @@ impl PortalTarget {
 }
 
 #[derive(Clone, Debug)]
+struct MonsterPreviewData {
+    health_max: f32,
+    movement_speed: f32,
+    collision: [f32; 4],
+    home_leash_radius: f32,
+    sprite_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 struct EntityCatalogEntry {
     category: EntityCatalogKind,
     placement_kind: PlacementKind,
     authored_id: String,
     debug_name: String,
+    monster_preview: Option<MonsterPreviewData>,
 }
 
 struct MapLabApp {
@@ -1578,6 +1588,9 @@ impl eframe::App for MapLabApp {
                                 })
                             });
                             if let Some((index, placement)) = selected_data {
+                                let selected_entry =
+                                    catalog_entry_for_placement(&placement, &self.entity_catalog)
+                                        .cloned();
                                 let map_id = self
                                     .document
                                     .as_ref()
@@ -1628,6 +1641,37 @@ impl eframe::App for MapLabApp {
                                         });
                                         if chosen != placement.portal_link {
                                             self.set_selected_portal_link(chosen);
+                                        }
+                                    } else if let Some(entry) = &selected_entry {
+                                        ui.heading(entry.category.label());
+                                        ui.label(format!("Placement ID: {}", placement.id));
+                                        ui.label(format!("Content: {}", placement.content_authored));
+                                        ui.small(format!("Name: {}", entry.debug_name));
+                                        if let Some(monster) = &entry.monster_preview {
+                                            ui.separator();
+                                            ui.label("Mob Definition · read-only");
+                                            ui.label(format!("HP: {:.1}", monster.health_max));
+                                            ui.label(format!(
+                                                "Move Speed: {:.2}",
+                                                monster.movement_speed
+                                            ));
+                                            ui.label(format!(
+                                                "Collision L/R/B/T: {:.2} / {:.2} / {:.2} / {:.2}",
+                                                monster.collision[0],
+                                                monster.collision[1],
+                                                monster.collision[2],
+                                                monster.collision[3]
+                                            ));
+                                            ui.label(format!(
+                                                "Home Leash: {:.2} wu",
+                                                monster.home_leash_radius
+                                            ));
+                                            if let Some(sprite_id) = &monster.sprite_id {
+                                                ui.small(format!("Sprite: {sprite_id}"));
+                                            }
+                                            ui.small(
+                                                "Edit gameplay/presentation in Mob Lab; Map Lab owns placement only.",
+                                            );
                                         }
                                     } else {
                                         ui.label(format!("Selected: {}", placement.id));
@@ -2324,16 +2368,97 @@ impl MapLabApp {
             let center = to_screen(placement.position);
             let selected = self.selected_placement == Some(index);
             let color = placement_color(placement, &self.entity_catalog);
+            let entry = catalog_entry_for_placement(placement, &self.entity_catalog);
+
+            if self.editor_mode == EditorMode::Entity {
+                if let Some(monster) = entry.and_then(|entry| entry.monster_preview.as_ref()) {
+                    let [left, right, bottom, top] = monster.collision;
+                    let collision_rect = Rect::from_two_pos(
+                        to_screen([placement.position[0] - left, placement.position[1]]),
+                        to_screen([
+                            placement.position[0] + right,
+                            placement.position[1] + bottom + top,
+                        ]),
+                    );
+                    map_painter.rect_filled(
+                        collision_rect,
+                        0.0,
+                        Color32::from_rgba_unmultiplied(255, 80, 80, if selected { 44 } else { 22 }),
+                    );
+                    map_painter.rect_stroke(
+                        collision_rect,
+                        0.0,
+                        Stroke::new(if selected { 2.0 } else { 1.0 }, color),
+                        egui::StrokeKind::Inside,
+                    );
+                    let runtime_home =
+                        to_screen([placement.position[0], placement.position[1] + bottom]);
+                    map_painter.circle_stroke(
+                        runtime_home,
+                        monster.home_leash_radius * scale,
+                        Stroke::new(
+                            if selected { 1.5 } else { 0.75 },
+                            Color32::from_rgba_unmultiplied(255, 120, 90, 150),
+                        ),
+                    );
+                }
+
+                if placement.kind == PlacementKind::Portal {
+                    let radius = if selected { 10.0 } else { 8.0 };
+                    let points = [
+                        center + Vec2::new(0.0, -radius),
+                        center + Vec2::new(radius, 0.0),
+                        center + Vec2::new(0.0, radius),
+                        center + Vec2::new(-radius, 0.0),
+                    ];
+                    for edge in 0..points.len() {
+                        map_painter.line_segment(
+                            [points[edge], points[(edge + 1) % points.len()]],
+                            Stroke::new(if selected { 2.0 } else { 1.0 }, color),
+                        );
+                    }
+                    if let Some(link) = &placement.portal_link {
+                        if link.map_authored == document.source.id {
+                            if let Some(target) = document.placements.iter().find(|candidate| {
+                                candidate.kind == PlacementKind::Portal
+                                    && candidate.id == link.portal_id
+                            }) {
+                                map_painter.line_segment(
+                                    [center, to_screen(target.position)],
+                                    Stroke::new(
+                                        if selected { 2.0 } else { 1.0 },
+                                        Color32::from_rgba_unmultiplied(80, 210, 255, 150),
+                                    ),
+                                );
+                            }
+                        } else if selected {
+                            map_painter.text(
+                                center + Vec2::new(8.0, 14.0),
+                                egui::Align2::LEFT_TOP,
+                                format!("→ {} · {}", link.map_authored, link.portal_id),
+                                egui::FontId::monospace(10.0),
+                                color,
+                            );
+                        }
+                    }
+                }
+            }
+
             map_painter.circle_filled(center, if selected { 7.0 } else { 5.0 }, color);
             map_painter.circle_stroke(
                 center,
                 if selected { 9.0 } else { 7.0 },
                 Stroke::new(if selected { 2.0 } else { 1.0 }, Color32::WHITE),
             );
+            let kind_label = if placement.kind == PlacementKind::Portal {
+                "PORTAL"
+            } else {
+                entry.map(|entry| entry.category.label()).unwrap_or("ENTITY")
+            };
             map_painter.text(
                 center + Vec2::new(8.0, -8.0),
                 egui::Align2::LEFT_BOTTOM,
-                &placement.id,
+                format!("{kind_label} · {}", placement.id),
                 egui::FontId::monospace(10.0),
                 color,
             );
@@ -2586,6 +2711,7 @@ fn load_entity_catalog() -> Result<(Vec<EntityCatalogEntry>, Vec<PortalTarget>),
             placement_kind: PlacementKind::Entity,
             authored_id: entity.authored_id.clone(),
             debug_name: entity.debug_name.clone(),
+            monster_preview: None,
         });
     }
     for monster in registry.iter_monsters() {
@@ -2594,6 +2720,20 @@ fn load_entity_catalog() -> Result<(Vec<EntityCatalogEntry>, Vec<PortalTarget>),
             placement_kind: PlacementKind::Monster,
             authored_id: monster.authored_id.clone(),
             debug_name: monster.debug_name.clone(),
+            monster_preview: Some(MonsterPreviewData {
+                health_max: monster.health_max,
+                movement_speed: monster.movement_speed,
+                collision: [
+                    monster.collision_bounds.left,
+                    monster.collision_bounds.right,
+                    monster.collision_bounds.bottom,
+                    monster.collision_bounds.top,
+                ],
+                home_leash_radius: monster.home_leash_radius,
+                sprite_id: registry
+                    .monster_presentation(&monster.authored_id)
+                    .map(|presentation| presentation.sprite_id.clone()),
+            }),
         });
     }
     entries.sort_by(|a, b| {
@@ -2625,17 +2765,20 @@ fn next_placement_id(category: EntityCatalogKind, placements: &[Placement]) -> S
     format!("placement.{prefix}_overflow")
 }
 
+fn catalog_entry_for_placement<'a>(
+    placement: &Placement,
+    catalog: &'a [EntityCatalogEntry],
+) -> Option<&'a EntityCatalogEntry> {
+    catalog.iter().find(|entry| {
+        entry.placement_kind == placement.kind && entry.authored_id == placement.content_authored
+    })
+}
+
 fn placement_color(placement: &Placement, catalog: &[EntityCatalogEntry]) -> Color32 {
     if placement.kind == PlacementKind::Portal {
         return Color32::from_rgb(80, 210, 255);
     }
-    let category = catalog
-        .iter()
-        .find(|entry| {
-            entry.placement_kind == placement.kind
-                && entry.authored_id == placement.content_authored
-        })
-        .map(|entry| entry.category);
+    let category = catalog_entry_for_placement(placement, catalog).map(|entry| entry.category);
     match category {
         Some(EntityCatalogKind::Portal) => Color32::from_rgb(80, 210, 255),
         Some(EntityCatalogKind::Npc) => Color32::from_rgb(255, 220, 90),
