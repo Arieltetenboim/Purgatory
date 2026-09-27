@@ -6,14 +6,17 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
-    FootholdKind, FootholdPath, GameplaySpawnPoint, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU,
-    ParallaxDepth, ParallaxFillMode, ParallaxLayer, PresentationSprite, SkyGradient, TileTransform,
+    CloudFieldAuthoring, FootholdKind, FootholdPath, GameplaySpawnPoint, MIN_MAP_HEIGHT_WU,
+    MIN_MAP_WIDTH_WU, ParallaxDepth, ParallaxFillMode, ParallaxLayer, PresentationSprite,
+    SkyGradient, TileTransform, cloud_field_seed, cloud_instance_count, cloud_instance_specs,
+    resolve_png_asset_folder,
 };
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
 const CAMERA_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
 const CAMERA_WIDTH_WU: f32 = CAMERA_HEIGHT_WU * purgatory_simulation::AOI_VIEWPORT_ASPECT;
 const PLAYER_PRESENTATION_SCALE: f32 = 1.15;
+const MAP_LAB_CLOUD_PREVIEW_SEED: u64 = 0x504D_4150_434C_4F55;
 const PLAYER_REFERENCE_SIZE_WU: [f32; 2] = [
     purgatory_simulation::PLAYER_HALF_EXTENTS[0] * 2.0 * PLAYER_PRESENTATION_SCALE,
     purgatory_simulation::PLAYER_HALF_EXTENTS[1] * 2.0 * PLAYER_PRESENTATION_SCALE,
@@ -49,6 +52,7 @@ struct MapLabApp {
     document: Option<MapLabDocument>,
     textures: TextureRegions,
     environment_textures: HashMap<String, EnvironmentPreviewTexture>,
+    cloud_textures: HashMap<String, Vec<EnvironmentPreviewTexture>>,
     preview_layers: Vec<bool>,
     ppu_text: String,
     compiled_ppu: Option<f32>,
@@ -74,6 +78,7 @@ impl MapLabApp {
             document: None,
             textures: HashMap::new(),
             environment_textures: HashMap::new(),
+            cloud_textures: HashMap::new(),
             preview_layers: Vec::new(),
             ppu_text: String::new(),
             compiled_ppu: None,
@@ -132,7 +137,7 @@ impl MapLabApp {
             load_textures(ctx, &document),
             load_environment_textures(ctx, &document),
         ) {
-            (Ok(textures), Ok(environment_textures)) => {
+            (Ok(textures), Ok((environment_textures, cloud_textures))) => {
                 self.path_text = document.sidecar_path.display().to_string();
                 self.preview_layers = document
                     .presentation
@@ -142,7 +147,7 @@ impl MapLabApp {
                     .collect();
                 self.compiled_ppu = Some(document.presentation.pixels_per_world_unit);
                 self.status = format!(
-                    "GREEN · schema v{} · {} layers · {} sprites · {} parallax",
+                    "GREEN · schema v{} · {} layers · {} sprites · {} parallax · {} cloud fields · {} cloud PNGs",
                     document.presentation.schema_version,
                     document.presentation.layers.len(),
                     document
@@ -151,11 +156,14 @@ impl MapLabApp {
                         .iter()
                         .map(|layer| layer.sprites.len())
                         .sum::<usize>(),
-                    document.environment.parallax_layers.len()
+                    document.environment.parallax_layers.len(),
+                    document.environment.cloud_fields.len(),
+                    cloud_textures.values().map(Vec::len).sum::<usize>(),
                 );
                 self.document = Some(document);
                 self.textures = textures;
                 self.environment_textures = environment_textures;
+                self.cloud_textures = cloud_textures;
                 self.fit_requested = true;
             }
             (Err(error), _) | (_, Err(error)) => {
@@ -168,6 +176,7 @@ impl MapLabApp {
         self.document = None;
         self.textures.clear();
         self.environment_textures.clear();
+        self.cloud_textures.clear();
         self.preview_layers.clear();
         self.compiled_ppu = None;
         self.status = status.to_owned();
@@ -339,13 +348,48 @@ impl MapLabApp {
         }
     }
 
+    fn add_cloud_field(&mut self) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let next = document.environment.cloud_fields.len() + 1;
+        let depth = ParallaxDepth::Far;
+        document.environment.cloud_fields.push(CloudFieldAuthoring {
+            id: format!("clouds.{next:03}"),
+            asset_folder: "assets/skys/clouds".to_owned(),
+            depth,
+            parallax: depth.default_parallax(),
+            density: 0.5,
+            scale_range: depth.default_cloud_scale_range(),
+            speed_range: depth.default_cloud_speed_range(),
+            height_range: [0.58, 0.92],
+            opacity_range: [0.65, 0.95],
+        });
+        self.environment_dirty = true;
+        self.status =
+            "ENVIRONMENT · cloud field added · set Folder then Reload Assets".to_owned();
+    }
+
+    fn delete_cloud_field(&mut self, index: usize) {
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        if index < document.environment.cloud_fields.len() {
+            let removed = document.environment.cloud_fields.remove(index);
+            self.cloud_textures.remove(&removed.id);
+            self.environment_dirty = true;
+            self.status = format!("ENVIRONMENT · deleted {}", removed.id);
+        }
+    }
+
     fn reload_environment_assets(&mut self, ctx: &egui::Context) {
         let Some(document) = &self.document else {
             return;
         };
         match load_environment_textures(ctx, document) {
-            Ok(textures) => {
+            Ok((textures, cloud_textures)) => {
                 self.environment_textures = textures;
+                self.cloud_textures = cloud_textures;
                 self.status = "ENVIRONMENT · preview assets reloaded".to_owned();
             }
             Err(error) => {
@@ -587,6 +631,7 @@ impl eframe::App for MapLabApp {
 
         let mut delete_foothold = None;
         let mut delete_parallax = None;
+        let mut delete_cloud = None;
         egui::Panel::left("map_lab_layers")
             .resizable(true)
             .default_size(if self.editor_mode == EditorMode::Map {
@@ -810,6 +855,105 @@ impl eframe::App for MapLabApp {
                         }
                     }
                     ui.separator();
+                    ui.heading("CLOUD FIELDS");
+                    ui.horizontal(|ui| {
+                        if ui.button("+ Add Cloud Field").clicked() {
+                            self.add_cloud_field();
+                        }
+                        ui.small("Folder-backed · client-local seeded presentation");
+                    });
+                    ui.small(
+                        "Each field scans one Graphic-relative folder non-recursively. Minimum 1 PNG.",
+                    );
+                    if let Some(document) = self.document.as_mut() {
+                        for (index, field) in
+                            document.environment.cloud_fields.iter_mut().enumerate()
+                        {
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.strong(&field.id);
+                                if ui.small_button("Delete").clicked() {
+                                    delete_cloud = Some(index);
+                                }
+                            });
+                            if ui.text_edit_singleline(&mut field.id).changed() {
+                                self.environment_dirty = true;
+                            }
+                            ui.label("Folder");
+                            if ui.text_edit_singleline(&mut field.asset_folder).changed() {
+                                self.environment_dirty = true;
+                            }
+                            let found = self
+                                .cloud_textures
+                                .get(&field.id)
+                                .map_or(0, Vec::len);
+                            ui.colored_label(
+                                if found > 0 {
+                                    Color32::LIGHT_GREEN
+                                } else {
+                                    Color32::YELLOW
+                                },
+                                format!(
+                                    "Found: {found} PNG{}{}",
+                                    if found == 1 { "" } else { "s" },
+                                    if found == 0 {
+                                        " · Reload Assets after setting folder"
+                                    } else {
+                                        ""
+                                    }
+                                ),
+                            );
+
+                            let old_depth = field.depth;
+                            egui::ComboBox::from_id_salt(("cloud_depth", index))
+                                .selected_text(field.depth.as_str())
+                                .show_ui(ui, |ui| {
+                                    for depth in ParallaxDepth::ALL {
+                                        ui.selectable_value(
+                                            &mut field.depth,
+                                            depth,
+                                            depth.as_str(),
+                                        );
+                                    }
+                                });
+                            if field.depth != old_depth {
+                                field.parallax = field.depth.default_parallax();
+                                self.environment_dirty = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut field.parallax, 0.0..=1.0)
+                                        .text("Parallax"),
+                                )
+                                .changed()
+                            {
+                                self.environment_dirty = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut field.density, 0.0..=1.0)
+                                        .text("Density"),
+                                )
+                                .changed()
+                            {
+                                self.environment_dirty = true;
+                            }
+                            if range_row(ui, "Scale", &mut field.scale_range, 0.01) {
+                                self.environment_dirty = true;
+                            }
+                            if range_row(ui, "Speed", &mut field.speed_range, 0.01) {
+                                self.environment_dirty = true;
+                            }
+                            if range_row(ui, "Height", &mut field.height_range, 0.01) {
+                                self.environment_dirty = true;
+                            }
+                            ui.small("Height is normalized: 0 = bottom · 1 = top.");
+                            if range_row(ui, "Opacity", &mut field.opacity_range, 0.01) {
+                                self.environment_dirty = true;
+                            }
+                        }
+                    }
+                    ui.separator();
                     ui.label("NEXT");
                     ui.small("Foreground atmosphere");
                 } else if self.editor_mode == EditorMode::Footnote {
@@ -1000,6 +1144,9 @@ impl eframe::App for MapLabApp {
         }
         if let Some(index) = delete_parallax {
             self.delete_parallax_layer(index);
+        }
+        if let Some(index) = delete_cloud {
+            self.delete_cloud_field(index);
         }
 
         egui::Panel::right("map_lab_info")
@@ -1271,6 +1418,11 @@ impl MapLabApp {
                 .motion_world_per_second
                 .iter()
                 .any(|value| value.abs() > f32::EPSILON)
+        }) || document.environment.cloud_fields.iter().any(|field| {
+            field
+                .speed_range
+                .iter()
+                .any(|value| value.abs() > f32::EPSILON)
         }) {
             ui.ctx().request_repaint();
         }
@@ -1286,6 +1438,27 @@ impl MapLabApp {
                         &map_painter,
                         layer,
                         texture,
+                        map.pixels_per_world_unit,
+                        [world_width * 0.5, world_height * 0.5],
+                        [world_width, world_height],
+                        preview_camera,
+                        [CAMERA_WIDTH_WU, CAMERA_HEIGHT_WU],
+                        environment_time_seconds,
+                        &to_screen,
+                    );
+                }
+            }
+            for field in document
+                .environment
+                .cloud_fields
+                .iter()
+                .filter(|field| field.depth == depth)
+            {
+                if let Some(textures) = self.cloud_textures.get(&field.id) {
+                    paint_cloud_field_preview(
+                        &map_painter,
+                        field,
+                        textures,
                         map.pixels_per_world_unit,
                         [world_width * 0.5, world_height * 0.5],
                         [world_width, world_height],
@@ -1491,6 +1664,20 @@ impl MapLabApp {
     }
 }
 
+fn range_row(ui: &mut egui::Ui, label: &str, range: &mut [f32; 2], speed: f64) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        changed |= ui
+            .add(egui::DragValue::new(&mut range[0]).speed(speed).prefix("Min "))
+            .changed();
+        changed |= ui
+            .add(egui::DragValue::new(&mut range[1]).speed(speed).prefix("Max "))
+            .changed();
+    });
+    changed
+}
+
 fn lerp_color32(bottom: [u8; 4], top: [u8; 4], t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let channel = |index: usize| {
@@ -1604,6 +1791,86 @@ fn paint_parallax_preview(
             }
         }
     }
+}
+
+fn paint_cloud_field_preview(
+    painter: &egui::Painter,
+    field: &CloudFieldAuthoring,
+    textures: &[EnvironmentPreviewTexture],
+    pixels_per_world_unit: f32,
+    map_center: [f32; 2],
+    map_size: [f32; 2],
+    camera_center: [f32; 2],
+    camera_size: [f32; 2],
+    elapsed_seconds: f64,
+    to_screen: &impl Fn([f32; 2]) -> Pos2,
+) {
+    if textures.is_empty() {
+        return;
+    }
+    let p = field.parallax.clamp(0.0, 1.0);
+    let coverage = parallax_coverage_size(map_size, camera_size, p);
+    let count = cloud_instance_count(field.density, coverage[0], camera_size[0]);
+    let specs = cloud_instance_specs(
+        field,
+        textures.len(),
+        cloud_field_seed(&field.id, MAP_LAB_CLOUD_PREVIEW_SEED),
+        count,
+    );
+    let base = [
+        camera_center[0] * (1.0 - p) + map_center[0] * p,
+        camera_center[1] * (1.0 - p) + map_center[1] * p,
+    ];
+    let ppu = pixels_per_world_unit.max(f32::EPSILON);
+
+    for cloud in specs {
+        let Some(texture) = textures.get(cloud.asset_index) else {
+            continue;
+        };
+        let x = wrap_centered_preview(
+            cloud.x_unit * coverage[0]
+                + cloud.speed_world_per_second * elapsed_seconds as f32,
+            coverage[0],
+        );
+        let center = [
+            base[0] + x,
+            base[1] + (cloud.height_unit - 0.5) * camera_size[1],
+        ];
+        let size = [
+            texture.image_size_px[0] as f32 / ppu * cloud.scale,
+            texture.image_size_px[1] as f32 / ppu * cloud.scale,
+        ];
+        let left = center[0] - size[0] * 0.5;
+        let top = center[1] + size[1] * 0.5;
+        let alpha = (cloud.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+        for chunk in &texture.chunks {
+            let [cx, cy, cw, ch] = chunk.source_rect_px;
+            let u0 = cx as f32 / texture.image_size_px[0] as f32;
+            let u1 = (cx + cw) as f32 / texture.image_size_px[0] as f32;
+            let v0 = cy as f32 / texture.image_size_px[1] as f32;
+            let v1 = (cy + ch) as f32 / texture.image_size_px[1] as f32;
+            let positions = [
+                to_screen([left + u0 * size[0], top - v1 * size[1]]),
+                to_screen([left + u1 * size[0], top - v1 * size[1]]),
+                to_screen([left + u1 * size[0], top - v0 * size[1]]),
+                to_screen([left + u0 * size[0], top - v0 * size[1]]),
+            ];
+            let uv = [
+                Pos2::new(0.0, 1.0),
+                Pos2::new(1.0, 1.0),
+                Pos2::new(1.0, 0.0),
+                Pos2::new(0.0, 0.0),
+            ];
+            paint_textured_quad(painter, &chunk.texture, positions, uv, alpha);
+        }
+    }
+}
+
+fn wrap_centered_preview(value: f32, period: f32) -> f32 {
+    if !period.is_finite() || period <= f32::EPSILON {
+        return 0.0;
+    }
+    value.rem_euclid(period) - period * 0.5
 }
 
 fn foothold_color(kind: FootholdKind) -> Color32 {
@@ -1753,42 +2020,76 @@ fn load_textures(ctx: &egui::Context, document: &MapLabDocument) -> Result<Textu
 fn load_environment_textures(
     ctx: &egui::Context,
     document: &MapLabDocument,
-) -> Result<HashMap<String, EnvironmentPreviewTexture>, String> {
+) -> Result<
+    (
+        HashMap<String, EnvironmentPreviewTexture>,
+        HashMap<String, Vec<EnvironmentPreviewTexture>>,
+    ),
+    String,
+> {
     let graphic = find_graphic_root(&document.sidecar_path)?;
     let max_texture_side = ctx.input(|input| input.raw.max_texture_side.unwrap_or(2048));
     let mut textures = HashMap::new();
     for layer in &document.environment.parallax_layers {
-        let path = graphic.join(&layer.asset_path);
-        let image = image::open(&path)
-            .map_err(|error| format!("decode {}: {error}", path.display()))?
-            .to_rgba8();
-        let size = [image.width(), image.height()];
-        let mut chunks = Vec::new();
-        for rect in split_source_rect([0, 0, size[0], size[1]], max_texture_side.max(1) as u32) {
-            let [x, y, width, height] = rect;
-            let region = image::imageops::crop_imm(&image, x, y, width, height).to_image();
-            let color = egui::ColorImage::from_rgba_unmultiplied(
-                [width as usize, height as usize],
-                region.as_raw(),
-            );
-            chunks.push(PreviewTextureChunk {
-                source_rect_px: rect,
-                texture: ctx.load_texture(
-                    format!("environment:{}@{x},{y}:{width}x{height}", layer.id),
-                    color,
-                    egui::TextureOptions::LINEAR,
-                ),
-            });
-        }
         textures.insert(
             layer.id.clone(),
-            EnvironmentPreviewTexture {
-                chunks,
-                image_size_px: size,
-            },
+            load_environment_preview_texture(
+                ctx,
+                &graphic.join(&layer.asset_path),
+                &format!("environment:{}", layer.id),
+                max_texture_side,
+            )?,
         );
     }
-    Ok(textures)
+
+    let mut cloud_textures = HashMap::new();
+    for field in &document.environment.cloud_fields {
+        let asset_paths = resolve_png_asset_folder(&graphic, &field.asset_folder)?;
+        let mut variants = Vec::with_capacity(asset_paths.len());
+        for (index, asset_path) in asset_paths.iter().enumerate() {
+            variants.push(load_environment_preview_texture(
+                ctx,
+                &graphic.join(asset_path),
+                &format!("cloud:{}:{index}", field.id),
+                max_texture_side,
+            )?);
+        }
+        cloud_textures.insert(field.id.clone(), variants);
+    }
+    Ok((textures, cloud_textures))
+}
+
+fn load_environment_preview_texture(
+    ctx: &egui::Context,
+    path: &Path,
+    texture_key: &str,
+    max_texture_side: usize,
+) -> Result<EnvironmentPreviewTexture, String> {
+    let image = image::open(path)
+        .map_err(|error| format!("decode {}: {error}", path.display()))?
+        .to_rgba8();
+    let size = [image.width(), image.height()];
+    let mut chunks = Vec::new();
+    for rect in split_source_rect([0, 0, size[0], size[1]], max_texture_side.max(1) as u32) {
+        let [x, y, width, height] = rect;
+        let region = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+        let color = egui::ColorImage::from_rgba_unmultiplied(
+            [width as usize, height as usize],
+            region.as_raw(),
+        );
+        chunks.push(PreviewTextureChunk {
+            source_rect_px: rect,
+            texture: ctx.load_texture(
+                format!("{texture_key}@{x},{y}:{width}x{height}"),
+                color,
+                egui::TextureOptions::LINEAR,
+            ),
+        });
+    }
+    Ok(EnvironmentPreviewTexture {
+        chunks,
+        image_size_px: size,
+    })
 }
 
 fn find_graphic_root(sidecar: &Path) -> Result<PathBuf, String> {

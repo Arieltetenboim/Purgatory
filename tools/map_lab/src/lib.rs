@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use purgatory_content::{
     MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
     MapAuthoringSource, MapEnvironmentAuthoring, MapGameplayAuthoring, MapPresentation,
-    compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
+    compile_tiled_map_with_ppu, load_map_authoring, resolve_png_asset_folder,
+    serialize_map_pretty, validate_cloud_field,
 };
 
 /// Production visual-scale standard for ordinary PURGATORY maps.
@@ -235,6 +236,26 @@ fn validate_environment(
                 path.display(),
                 layer.id
             ));
+        }
+    }
+    if !environment.cloud_fields.is_empty() {
+        let graphic = path
+            .ancestors()
+            .map(|ancestor| ancestor.join("Graphic"))
+            .find(|candidate| candidate.is_dir())
+            .ok_or_else(|| format!("cannot locate Graphic/ above {}", path.display()))?;
+        for field in &environment.cloud_fields {
+            validate_cloud_field(field)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            if !ids.insert(field.id.as_str()) {
+                return Err(format!(
+                    "{}: environment layer id {} is duplicated",
+                    path.display(),
+                    field.id
+                ));
+            }
+            resolve_png_asset_folder(&graphic, &field.asset_folder)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
         }
     }
     Ok(())
