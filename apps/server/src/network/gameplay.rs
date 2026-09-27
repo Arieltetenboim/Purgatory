@@ -6650,22 +6650,21 @@ mod tests {
                 npc.runtime_config.collision_center_offset,
                 definition.collision_bounds.center_offset()
             );
+            let projected = monster_spawn_request(
+                &owner.registry,
+                content_id,
+                WorldAddress::DEV,
+                [0.0, 0.0],
+                1,
+                SimulationTick::from_count(0),
+            )
+            .expect("shared Monster projection");
             assert_eq!(
-                npc.runtime_config.approach_bounds,
-                Some(NpcApproachBounds {
-                    left: (definition.collision_bounds.left + PLAYER_HALF_EXTENTS[0]
-                        - CONTACT_EPSILON)
-                        .max(0.0),
-                    right: (definition.collision_bounds.right + PLAYER_HALF_EXTENTS[0]
-                        - CONTACT_EPSILON)
-                        .max(0.0),
-                    bottom: (definition.collision_bounds.bottom + PLAYER_HALF_EXTENTS[1]
-                        - CONTACT_EPSILON)
-                        .max(0.0),
-                    top: (definition.collision_bounds.top + PLAYER_HALF_EXTENTS[1]
-                        - CONTACT_EPSILON)
-                        .max(0.0),
-                })
+                npc.runtime_config,
+                projected
+                    .npc
+                    .expect("projected Monster NPC")
+                    .runtime_config
             );
         }
 
@@ -7690,11 +7689,10 @@ mod tests {
             monster_content_id: MONSTER_MOSS_CRAB,
         });
         let player = owner.entity_of(connection).unwrap();
-        let creature = owner
-            .world()
-            .iter()
-            .find(|&entity| owner.world().npc_of(entity).is_some())
-            .expect("live creature");
+        let creature = *owner
+            .dev_spawned_monsters
+            .last()
+            .expect("DEV-spawned creature");
         let creature_x = owner.world().transform_of(creature).unwrap().position[0];
         assert!(owner.set_player_x(connection, creature_x - 0.5));
 
@@ -7723,16 +7721,10 @@ mod tests {
             monster_content_id: MONSTER_MOSS_CRAB,
         });
         let player = owner.entity_of(connection).expect("player");
-        let creature = owner
-            .world()
-            .iter()
-            .find(|&entity| {
-                owner
-                    .world()
-                    .npc_of(entity)
-                    .is_some_and(|npc| npc.type_token == LIVE_COMBAT_CREATURE_TYPE_TOKEN)
-            })
-            .expect("live combat creature");
+        let creature = *owner
+            .dev_spawned_monsters
+            .last()
+            .expect("live DEV combat creature");
         let creature_x = owner.world().transform_of(creature).unwrap().position[0];
         assert!(owner.set_player_x(connection, creature_x - 1.0));
 
@@ -7758,12 +7750,11 @@ mod tests {
             .world()
             .iter()
             .find(|&entity| {
-                owner
-                    .world()
-                    .npc_of(entity)
-                    .is_some_and(|npc| npc.type_token == LIVE_COMBAT_CREATURE_TYPE_TOKEN)
+                entity != creature
+                    && owner.world().content_id_of(entity) == Some(MONSTER_MOSS_CRAB)
+                    && owner.world().npc_of(entity).is_some()
             })
-            .expect("respawned creature");
+            .expect("respawned authored creature");
         assert_ne!(respawned, creature);
         assert_eq!(
             owner.world().content_id_of(respawned),
