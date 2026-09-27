@@ -1304,7 +1304,7 @@ struct PreviewTextureChunk {
 }
 
 struct EnvironmentPreviewTexture {
-    texture: TextureHandle,
+    chunks: Vec<PreviewTextureChunk>,
     image_size_px: [u32; 2],
 }
 
@@ -1406,6 +1406,7 @@ fn load_environment_textures(
     document: &MapLabDocument,
 ) -> Result<HashMap<String, EnvironmentPreviewTexture>, String> {
     let graphic = find_graphic_root(&document.sidecar_path)?;
+    let max_texture_side = ctx.input(|input| input.raw.max_texture_side.unwrap_or(2048));
     let mut textures = HashMap::new();
     for layer in &document.environment.parallax_layers {
         let path = graphic.join(&layer.asset_path);
@@ -1413,19 +1414,27 @@ fn load_environment_textures(
             .map_err(|error| format!("decode {}: {error}", path.display()))?
             .to_rgba8();
         let size = [image.width(), image.height()];
-        let color = egui::ColorImage::from_rgba_unmultiplied(
-            [image.width() as usize, image.height() as usize],
-            image.as_raw(),
-        );
-        let texture = ctx.load_texture(
-            format!("environment:{}", layer.id),
-            color,
-            egui::TextureOptions::LINEAR,
-        );
+        let mut chunks = Vec::new();
+        for rect in split_source_rect([0, 0, size[0], size[1]], max_texture_side.max(1) as u32) {
+            let [x, y, width, height] = rect;
+            let region = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+            let color = egui::ColorImage::from_rgba_unmultiplied(
+                [width as usize, height as usize],
+                region.as_raw(),
+            );
+            chunks.push(PreviewTextureChunk {
+                source_rect_px: rect,
+                texture: ctx.load_texture(
+                    format!("environment:{}@{x},{y}:{width}x{height}", layer.id),
+                    color,
+                    egui::TextureOptions::LINEAR,
+                ),
+            });
+        }
         textures.insert(
             layer.id.clone(),
             EnvironmentPreviewTexture {
-                texture,
+                chunks,
                 image_size_px: size,
             },
         );
