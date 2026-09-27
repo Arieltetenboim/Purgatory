@@ -187,10 +187,20 @@ fn validate_environment(
         ));
     }
     let mut ids = std::collections::HashSet::new();
-    for layer in &environment.parallax_layers {
+    for (kind, layer) in environment
+        .parallax_layers
+        .iter()
+        .map(|layer| ("parallax", layer))
+        .chain(
+            environment
+                .foreground_layers
+                .iter()
+                .map(|layer| ("foreground", layer)),
+        )
+    {
         if layer.id.trim().is_empty() || !ids.insert(layer.id.as_str()) {
             return Err(format!(
-                "{}: parallax layer ids must be non-empty and unique",
+                "{}: environment layer ids must be non-empty and unique",
                 path.display()
             ));
         }
@@ -200,28 +210,28 @@ fn validate_environment(
             || asset.components().any(|part| matches!(part, std::path::Component::ParentDir))
         {
             return Err(format!(
-                "{}: parallax layer {} asset_path must be a Graphic-relative path without '..'",
+                "{}: {kind} layer {} asset_path must be a Graphic-relative path without '..'",
                 path.display(),
                 layer.id
             ));
         }
         if !layer.parallax.is_finite() || !(0.0..=1.0).contains(&layer.parallax) {
             return Err(format!(
-                "{}: parallax layer {} parallax must be within 0..=1",
+                "{}: {kind} layer {} parallax must be within 0..=1",
                 path.display(),
                 layer.id
             ));
         }
         if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) {
             return Err(format!(
-                "{}: parallax layer {} opacity must be within 0..=1",
+                "{}: {kind} layer {} opacity must be within 0..=1",
                 path.display(),
                 layer.id
             ));
         }
         if !layer.offset_world.iter().all(|value| value.is_finite()) {
             return Err(format!(
-                "{}: parallax layer {} offset must be finite",
+                "{}: {kind} layer {} offset must be finite",
                 path.display(),
                 layer.id
             ));
@@ -232,7 +242,7 @@ fn validate_environment(
             .all(|value| value.is_finite())
         {
             return Err(format!(
-                "{}: parallax layer {} motion must be finite",
+                "{}: {kind} layer {} motion must be finite",
                 path.display(),
                 layer.id
             ));

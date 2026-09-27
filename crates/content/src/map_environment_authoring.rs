@@ -242,6 +242,8 @@ pub struct MapEnvironmentPresentation {
     #[serde(default)]
     pub parallax_layers: Vec<ParallaxLayer>,
     #[serde(default)]
+    pub foreground_layers: Vec<ParallaxLayer>,
+    #[serde(default)]
     pub cloud_fields: Vec<CloudFieldPresentation>,
 }
 
@@ -267,6 +269,8 @@ pub struct MapEnvironmentAuthoring {
     #[serde(default)]
     pub parallax_layers: Vec<ParallaxLayer>,
     #[serde(default)]
+    pub foreground_layers: Vec<ParallaxLayer>,
+    #[serde(default)]
     pub cloud_fields: Vec<CloudFieldAuthoring>,
 }
 
@@ -278,6 +282,7 @@ impl MapEnvironmentAuthoring {
             map_authored: map_authored.into(),
             sky_gradient: None,
             parallax_layers: Vec::new(),
+            foreground_layers: Vec::new(),
             cloud_fields: Vec::new(),
         }
     }
@@ -465,7 +470,11 @@ pub fn compile_map_environment(
         ));
     }
     let mut ids = std::collections::HashSet::new();
-    for layer in &authoring.parallax_layers {
+    for layer in authoring
+        .parallax_layers
+        .iter()
+        .chain(authoring.foreground_layers.iter())
+    {
         if layer.id.trim().is_empty() || !ids.insert(layer.id.as_str()) {
             return Err("environment layer ids must be non-empty and unique".to_owned());
         }
@@ -488,6 +497,7 @@ pub fn compile_map_environment(
         map_authored: authoring.map_authored.clone(),
         sky_gradient: authoring.sky_gradient,
         parallax_layers: authoring.parallax_layers.clone(),
+        foreground_layers: authoring.foreground_layers.clone(),
         cloud_fields,
     })
 }
