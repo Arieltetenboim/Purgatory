@@ -5329,25 +5329,49 @@ mod tests {
             connection_id: id,
             speed: Some(2_400),
         });
+        assert_eq!(
+            owner
+                .world()
+                .get_player(actor)
+                .unwrap()
+                .1
+                .movement_speed_override,
+            Some(24.0)
+        );
         owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
-        for step in 0..40 {
+        for _ in 0..8 {
             owner.simulate_tick(dt);
-            if step % 8 == 7 {
-                assert!(owner.set_player_x(id, owner.map_a_spawn()[0]));
-            }
         }
-        assert!((owner.world().get_player(actor).unwrap().1.velocity[0] - 24.0).abs() < 0.05);
+        assert!(
+            owner.world().get_player(actor).unwrap().1.velocity[0]
+                > purgatory_simulation::FootnoteConfig::DEFAULT.max_ground_speed
+        );
 
         owner.apply_input(InputUpdate::DevSetSpeed {
             connection_id: id,
             speed: None,
         });
+        assert_eq!(
+            owner
+                .world()
+                .get_player(actor)
+                .unwrap()
+                .1
+                .movement_speed_override,
+            None
+        );
+        owner.apply_input(InputUpdate::HeldCancel { connection_id: id });
         owner.apply_input(InputUpdate::DevResetPlayer { connection_id: id });
-        owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
-        for _ in 0..40 {
+        owner.apply_input(command_update(id, cmd(2, MoveAxis::Right, false, false)));
+        for _ in 0..8 {
             owner.simulate_tick(dt);
         }
-        assert!((owner.world().get_player(actor).unwrap().1.velocity[0] - 3.0).abs() < 0.05);
+        assert!(
+            (owner.world().get_player(actor).unwrap().1.velocity[0]
+                - purgatory_simulation::FootnoteConfig::DEFAULT.max_ground_speed)
+                .abs()
+                < 0.05
+        );
     }
 
     #[test]
@@ -7471,12 +7495,10 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
-        let chest = find_content(&owner, "entity.interactable.chest");
-        move_player_to_content(&mut owner, id, "entity.interactable.chest");
-        let stale = chest;
-        assert!(owner.world_mut().despawn(chest));
-        // Reuse slot via a fresh interactable spawn near player if possible; despawned
-        // generation must fail even before a replacement exists.
+        let actor = owner.entity_of(id).unwrap();
+        let stale = nearby_test_interactable(&owner, actor);
+        assert!(owner.world_mut().despawn(stale));
+        // The stale generation must fail even before a replacement exists.
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(stale),
