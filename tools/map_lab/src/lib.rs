@@ -361,10 +361,10 @@ mod tests {
     #[test]
     fn bridge_opens_shared_compiler_output_and_recompiles_ppu() {
         let mut document = MapLabDocument::open(fixture()).expect("open");
-        assert_eq!(document.presentation.visual_extent_px, [4644, 1080]);
+        assert_eq!(document.presentation.visual_extent_px, [4644, 1332]);
         assert_eq!(document.gameplay.map_authored, "map.map1");
         document.recompile(50.0).expect("recompile");
-        assert_eq!(document.presentation.world_bounds, [0.0, 0.0, 92.88, 21.6]);
+        assert_eq!(document.presentation.world_bounds, [0.0, 0.0, 92.88, 26.64]);
         let decoded: MapPresentation =
             serde_json::from_slice(&document.canonical_json().unwrap()).unwrap();
         assert_eq!(decoded, document.presentation);
