@@ -1247,6 +1247,7 @@ impl MapLabApp {
                         texture,
                         map.pixels_per_world_unit,
                         [world_width * 0.5, world_height * 0.5],
+                        [world_width, world_height],
                         preview_camera,
                         [CAMERA_WIDTH_WU, CAMERA_HEIGHT_WU],
                         &to_screen,
@@ -1467,31 +1468,65 @@ fn preview_repeat_radius(repeat: bool, viewport: f32, tile: f32) -> i32 {
     ((viewport / tile).ceil() as i32 / 2 + 2).clamp(1, 8)
 }
 
+fn parallax_coverage_size(map_size: [f32; 2], camera_size: [f32; 2], parallax: f32) -> [f32; 2] {
+    let p = parallax.clamp(0.0, 1.0);
+    [
+        camera_size[0] + p * (map_size[0] - camera_size[0]).max(0.0),
+        camera_size[1] + p * (map_size[1] - camera_size[1]).max(0.0),
+    ]
+}
+
+fn parallax_fill_size(
+    mode: ParallaxFillMode,
+    natural: [f32; 2],
+    coverage: [f32; 2],
+) -> [f32; 2] {
+    match mode {
+        ParallaxFillMode::Natural | ParallaxFillMode::Repeat => natural,
+        ParallaxFillMode::Stretch => coverage,
+        ParallaxFillMode::Fit | ParallaxFillMode::Cover => {
+            let sx = coverage[0] / natural[0];
+            let sy = coverage[1] / natural[1];
+            let scale = if mode == ParallaxFillMode::Fit {
+                sx.min(sy)
+            } else {
+                sx.max(sy)
+            };
+            [natural[0] * scale, natural[1] * scale]
+        }
+    }
+}
+
 fn paint_parallax_preview(
     painter: &egui::Painter,
     layer: &ParallaxLayer,
     texture: &EnvironmentPreviewTexture,
     pixels_per_world_unit: f32,
     map_center: [f32; 2],
+    map_size: [f32; 2],
     camera_center: [f32; 2],
     camera_size: [f32; 2],
     to_screen: &impl Fn([f32; 2]) -> Pos2,
 ) {
     let ppu = pixels_per_world_unit.max(f32::EPSILON);
-    let size = [
+    let natural_size = [
         texture.image_size_px[0] as f32 / ppu,
         texture.image_size_px[1] as f32 / ppu,
     ];
-    if size[0] <= 0.0 || size[1] <= 0.0 {
+    if natural_size[0] <= 0.0 || natural_size[1] <= 0.0 {
         return;
     }
+
     let p = layer.parallax.clamp(0.0, 1.0);
+    let coverage = parallax_coverage_size(map_size, camera_size, p);
+    let size = parallax_fill_size(layer.fill_mode, natural_size, coverage);
     let base = [
         camera_center[0] * (1.0 - p) + map_center[0] * p + layer.offset_world[0],
         camera_center[1] * (1.0 - p) + map_center[1] * p + layer.offset_world[1],
     ];
-    let x_radius = preview_repeat_radius(layer.repeat_x, camera_size[0], size[0]);
-    let y_radius = preview_repeat_radius(layer.repeat_y, camera_size[1], size[1]);
+    let repeat = layer.fill_mode == ParallaxFillMode::Repeat;
+    let x_radius = preview_repeat_radius(repeat && layer.repeat_x, camera_size[0], size[0]);
+    let y_radius = preview_repeat_radius(repeat && layer.repeat_y, camera_size[1], size[1]);
     let alpha = (layer.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
     let mut copies = 0usize;
     for y in -y_radius..=y_radius {
