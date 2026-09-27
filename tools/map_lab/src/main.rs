@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
-    FootholdKind, FootholdPath, GameplaySpawnPoint, ParallaxDepth, ParallaxFillMode,
-    ParallaxLayer, PresentationSprite, SkyGradient, TileTransform,
+    FootholdKind, FootholdPath, GameplaySpawnPoint, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU,
+    ParallaxDepth, ParallaxFillMode, ParallaxLayer, PresentationSprite, SkyGradient, TileTransform,
 };
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
@@ -1025,20 +1025,21 @@ impl eframe::App for MapLabApp {
                         ui.colored_label(
                             Color32::LIGHT_GREEN,
                             format!(
-                                "MAP COVERS CAMERA · {:.0}% width · {:.0}% height",
+                                "MAP CONTRACT PASS · {:.0}% width · {:.0}% height",
                                 width_coverage, height_coverage
                             ),
                         );
+                        ui.small(format!(
+                            "Hard minimum: {:.3} × {:.3} wu (one full gameplay camera).",
+                            MIN_MAP_WIDTH_WU, MIN_MAP_HEIGHT_WU
+                        ));
                     } else {
                         ui.colored_label(
-                            Color32::YELLOW,
+                            Color32::LIGHT_RED,
                             format!(
-                                "MAP SMALLER THAN CAMERA · {:.0}% width · {:.0}% height",
-                                width_coverage, height_coverage
+                                "MAP CONTRACT FAIL · minimum {:.3} × {:.3} wu",
+                                MIN_MAP_WIDTH_WU, MIN_MAP_HEIGHT_WU
                             ),
-                        );
-                        ui.small(
-                            "Keep 100 PPU. Enlarge the TMX canvas if this map should fill or exceed one gameplay view.",
                         );
                     }
                     ui.separator();
