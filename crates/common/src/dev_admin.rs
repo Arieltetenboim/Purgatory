@@ -187,7 +187,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn transition_request_roundtrip_keeps_map_and_optional_portal() {
         let request = DevAdminRequest::TransitionPlayer {
             connection_id: 12,
