@@ -18,7 +18,7 @@
   "parallax_layers": [
     {
       "id": "background.001",
-      "asset_path": "assets/skys/parallax_far.png",
+      "asset_path": "assets/skys/parallax_far2.png",
       "depth": "far",
       "fill_mode": "cover",
       "parallax": 0.18,
@@ -51,6 +51,31 @@
       "repeat_x": false,
       "repeat_y": false,
       "opacity": 1.0
+    }
+  ],
+  "cloud_fields": [
+    {
+      "id": "clouds",
+      "asset_folder": "assets/skys/cloud_mid",
+      "depth": "far",
+      "parallax": 0.18,
+      "density": 1.0,
+      "scale_range": [
+        3.0,
+        5.0
+      ],
+      "speed_range": [
+        0.08,
+        0.16
+      ],
+      "height_range": [
+        0.58,
+        0.92
+      ],
+      "opacity_range": [
+        0.65,
+        0.95
+      ]
     }
   ]
 }
