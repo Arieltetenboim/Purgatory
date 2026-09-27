@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
-    FootholdKind, FootholdPath, GameplaySpawnPoint, PresentationSprite, SkyGradient, TileTransform,
+    FootholdKind, FootholdPath, GameplaySpawnPoint, ParallaxDepth, ParallaxLayer,
+    PresentationSprite, SkyGradient, TileTransform,
 };
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
@@ -47,6 +48,7 @@ struct MapLabApp {
     path_text: String,
     document: Option<MapLabDocument>,
     textures: TextureRegions,
+    environment_textures: HashMap<String, EnvironmentPreviewTexture>,
     preview_layers: Vec<bool>,
     ppu_text: String,
     compiled_ppu: Option<f32>,
@@ -71,6 +73,7 @@ impl MapLabApp {
             path_text: path.display().to_string(),
             document: None,
             textures: HashMap::new(),
+            environment_textures: HashMap::new(),
             preview_layers: Vec::new(),
             ppu_text: String::new(),
             compiled_ppu: None,
@@ -125,8 +128,11 @@ impl MapLabApp {
     }
 
     fn install_document(&mut self, ctx: &egui::Context, document: MapLabDocument) {
-        match load_textures(ctx, &document) {
-            Ok(textures) => {
+        match (
+            load_textures(ctx, &document),
+            load_environment_textures(ctx, &document),
+        ) {
+            (Ok(textures), Ok(environment_textures)) => {
                 self.path_text = document.sidecar_path.display().to_string();
                 self.preview_layers = document
                     .presentation
@@ -136,7 +142,7 @@ impl MapLabApp {
                     .collect();
                 self.compiled_ppu = Some(document.presentation.pixels_per_world_unit);
                 self.status = format!(
-                    "GREEN · schema v{} · {} layers · {} sprites",
+                    "GREEN · schema v{} · {} layers · {} sprites · {} parallax",
                     document.presentation.schema_version,
                     document.presentation.layers.len(),
                     document
@@ -144,19 +150,24 @@ impl MapLabApp {
                         .layers
                         .iter()
                         .map(|layer| layer.sprites.len())
-                        .sum::<usize>()
+                        .sum::<usize>(),
+                    document.environment.parallax_layers.len()
                 );
                 self.document = Some(document);
                 self.textures = textures;
+                self.environment_textures = environment_textures;
                 self.fit_requested = true;
             }
-            Err(error) => self.clear_compiled(&format!("ASSET ERROR\n{error}")),
+            (Err(error), _) | (_, Err(error)) => {
+                self.clear_compiled(&format!("ASSET ERROR\n{error}"));
+            }
         }
     }
 
     fn clear_compiled(&mut self, status: &str) {
         self.document = None;
         self.textures.clear();
+        self.environment_textures.clear();
         self.preview_layers.clear();
         self.compiled_ppu = None;
         self.status = status.to_owned();
