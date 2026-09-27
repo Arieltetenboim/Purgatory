@@ -41,6 +41,14 @@ pub fn map_plan(
             "WorldAddress.map does not match registry MapId",
         )));
     }
+    if !map.is_gameplay_ready() {
+        return Err(ContentError::one(ValidationIssue::new(
+            map_authored,
+            map_authored,
+            "map",
+            "GAMEPLAY NOT READY",
+        )));
+    }
     let mut platforms = Vec::new();
     for p in &map.platforms {
         platforms.push(PlanPlatform {

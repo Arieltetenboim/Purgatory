@@ -19,7 +19,7 @@
       ]
     }
   ],
-  "spawn_points": [
+    "spawn_points": [
     {
       "id": "default",
       "position": [
@@ -27,5 +27,9 @@
         1.0
       ]
     }
-  ]
+  ],
+  "restore": {
+    "policy": "safe_point",
+    "point": "default"
+  }
 }

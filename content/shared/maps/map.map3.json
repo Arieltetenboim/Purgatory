@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "content_id": 50003,
+  "id": "map.map3",
+  "debug_name": "map3",
+  "bounds": {
+    "min_x": 0.0,
+    "max_x": 23.2,
+    "min_y": 0.0,
+    "max_y": 30.0
+  },
+  "spawn_points": [],
+  "platforms": []
+}

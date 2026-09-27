@@ -12,7 +12,10 @@
   "spawn_points": [
     {
       "id": "default",
-      "position": [2.0, 1.0]
+      "position": [
+        2.0,
+        1.0
+      ]
     }
   ],
   "restore": {

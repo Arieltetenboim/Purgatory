@@ -15,7 +15,7 @@ author data
 
 Human-editable JSON lives under `/content`:
 
-- `shared/maps/` — client-safe map geometry, bounds, spawn points
+- `shared/maps/` — generated runtime projection. Identity, bounds, spawn, and restore in these files are derived from the sidecar, the TMX compiler, and gameplay authoring. They are not a second authoring source. The server loads this JSON and does not parse TMX.
 - `shared/entities/` — client-safe entity definitions (none required for 6C)
 - `shared/items/` — generic item gameplay definitions (schema v3: numeric canonical `id`, metadata `label`, `category`, `stack_limit`)
 - `shared/item_presentation/` — optional client-safe item icon selection (schema v2) for the same numeric Item `ContentId`
@@ -40,9 +40,13 @@ Human-editable JSON lives under `/content`:
   New maps are created in Map Lab, which allocates the next unused map ContentId from
   `content/CONTENT_ID_CATALOG.md` (retired IDs stay retired), writes
   `Graphic/assets/maps/<ContentId>.tmx`, and writes the sidecar, gameplay, environment,
-  and placement files. The numeric TMX filename follows that ContentId. Importing an
-  existing numeric TMX remains available for exceptional cases. Reloading a TMX updates
-  the visual compile only; gameplay, environment, and placements stay as authored, including
+  and placement files. The numeric TMX filename follows that ContentId. The same create
+  and compile path writes `content/shared/maps/<authored id>.json` as a deterministic
+  runtime projection: ContentId and authored id from the sidecar, bounds from the TMX
+  compile, and display name, spawn, and restore from gameplay authoring. An incomplete
+  map is still a known authored map. It does not receive a fake spawn or restore point.
+  Importing an existing numeric TMX remains available for exceptional cases. Reloading a TMX updates
+  the visual compile and the projected bounds only; gameplay, environment, and placements stay as authored, including
   when a later bounds change leaves them outside the map.
 - `authoring/npcs/` — canonical NPC Lab JSON. Recursively validated in Shared
   and Full modes; projected into client-safe dialogue presentation in both and
@@ -53,7 +57,7 @@ Human-editable JSON lives under `/content`:
 
 JSON does not contain runtime `MapId`, channel, or instance. Stable map identity is the numeric `ContentId`; the registry derives runtime `MapId` from the map ContentId block.
 
-Each map authors a **restore** policy (`safe_point`, `checkpoint`, or `non_reenterable`). That is restore semantics, not a `WorldAddress`. Channel and runtime Instance are assigned by a separate placement layer (Phase 6E currently uses DEFAULT). See ADR-0044.
+Each map's gameplay authoring owns its **restore** policy (`safe_point`, `checkpoint`, or `non_reenterable`) when one has been authored. That is restore semantics, not a `WorldAddress`. A new map omits the policy until it is authored. Channel and runtime Instance are assigned by a separate placement layer (Phase 6E currently uses DEFAULT). See ADR-0044 and ADR-0067.
 
 Development-only hard-coded fixtures (`World::footnote_test_stage`) remain for unit tests. Live server/client paths load this pack.
 

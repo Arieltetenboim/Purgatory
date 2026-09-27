@@ -9,7 +9,7 @@ use purgatory_content::{
     MapGameplayAuthoring, MapPresentation, Placement, PlacementKind, compile_tiled_map_with_ppu,
     default_content_root, load_map_authoring, load_placement_file, load_registry,
     resolve_png_asset_folder, serialize_map_pretty, serialize_placements_v2,
-    validate_canonical_map_grid, validate_cloud_field,
+    serialize_runtime_map_projection, validate_canonical_map_grid, validate_cloud_field,
 };
 
 /// Production visual-scale standard for ordinary PURGATORY maps.
@@ -52,7 +52,6 @@ impl MapLabDocument {
         validate_canonical_map_grid(&tmx_path).map_err(|error| error.to_string())?;
         let presentation = compile_tiled_map_with_ppu(path, &source, source.pixels_per_world_unit)
             .map_err(|error| error.to_string())?;
-        sync_runtime_bounds_file(path, &source.id, presentation.world_bounds)?;
         let gameplay_path = gameplay_path_for(path)?;
         let environment_path = environment_path_for(path)?;
         let placements_path = placements_path_for(path, &source.id)?;
@@ -94,6 +93,7 @@ impl MapLabDocument {
         } else {
             MapEnvironmentAuthoring::empty(source.id.clone())
         };
+        write_runtime_projection(path, &source, &presentation, &gameplay)?;
         Ok(Self {
             sidecar_path: path.to_path_buf(),
             gameplay_path,
@@ -252,7 +252,14 @@ impl MapLabDocument {
             .map_err(|error| format!("serialize gameplay authoring: {error}"))?;
         bytes.push(b'\n');
         std::fs::write(&self.gameplay_path, bytes)
-            .map_err(|error| format!("write {}: {error}", self.gameplay_path.display()))
+            .map_err(|error| format!("write {}: {error}", self.gameplay_path.display()))?;
+        write_runtime_projection(
+            &self.sidecar_path,
+            &self.source,
+            &self.presentation,
+            &self.gameplay,
+        )?;
+        Ok(())
     }
 }
 
@@ -532,6 +539,9 @@ pub fn create_new_map(
             &mut created,
         )?;
         write_new_file(&placements_path, &placements, &mut created)?;
+        let projection = runtime_map_path_for(&sidecar_path, &authored_id)?;
+        created.push(projection);
+        MapLabDocument::open(&sidecar_path)?;
         record_map_allocation(&repository_root, content_id, &authored_id, false)
     })();
     if let Err(error) = write_result {
@@ -970,79 +980,25 @@ fn runtime_map_path_for(sidecar: &Path, map_authored: &str) -> Result<PathBuf, S
         .join(format!("{map_authored}.json")))
 }
 
-fn sync_runtime_bounds_file(
+fn write_runtime_projection(
     sidecar: &Path,
-    map_authored: &str,
-    world_bounds: [f32; 4],
+    source: &MapAuthoringSource,
+    presentation: &MapPresentation,
+    gameplay: &MapGameplayAuthoring,
 ) -> Result<bool, String> {
-    let runtime_path = runtime_map_path_for(sidecar, map_authored)?;
-    if !runtime_path.is_file() {
+    let runtime_path = runtime_map_path_for(sidecar, &source.id)?;
+    let bytes = serialize_runtime_map_projection(source, presentation.world_bounds, gameplay)
+        .map_err(|error| error.to_string())?;
+    if runtime_path.is_file()
+        && std::fs::read(&runtime_path).ok().as_deref() == Some(bytes.as_slice())
+    {
         return Ok(false);
     }
-
-    let text = std::fs::read_to_string(&runtime_path)
-        .map_err(|error| format!("read {}: {error}", runtime_path.display()))?;
-    let json: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|error| format!("parse {}: {error}", runtime_path.display()))?;
-    let bounds = json
-        .get("bounds")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| format!("{}: missing bounds object", runtime_path.display()))?;
-
-    let [min_x, min_y, max_x, max_y] = world_bounds;
-    let expected = [
-        ("min_x", min_x),
-        ("max_x", max_x),
-        ("min_y", min_y),
-        ("max_y", max_y),
-    ];
-    let already_synced = expected.iter().all(|(key, value)| {
-        bounds
-            .get(*key)
-            .and_then(serde_json::Value::as_f64)
-            .is_some_and(|current| (current - f64::from(*value)).abs() <= 1.0e-5)
-    });
-    if already_synced {
-        return Ok(false);
+    if let Some(parent) = runtime_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
     }
-
-    let bounds_key = text
-        .find("\"bounds\"")
-        .ok_or_else(|| format!("{}: bounds key not found", runtime_path.display()))?;
-    let object_start = bounds_key
-        + text[bounds_key..]
-            .find('{')
-            .ok_or_else(|| format!("{}: bounds object start not found", runtime_path.display()))?;
-    let object_end = object_start
-        + text[object_start..]
-            .find('}')
-            .ok_or_else(|| format!("{}: bounds object end not found", runtime_path.display()))?;
-    let line_start = text[..bounds_key].rfind('\n').map_or(0, |index| index + 1);
-    let indent = &text[line_start..bounds_key];
-    if !indent.chars().all(char::is_whitespace) {
-        return Err(format!(
-            "{}: bounds indentation is not plain whitespace",
-            runtime_path.display()
-        ));
-    }
-    let child_indent = format!("{indent}  ");
-    let encode = |value: f32| {
-        serde_json::to_string(&value)
-            .map_err(|error| format!("serialize {} bounds: {error}", runtime_path.display()))
-    };
-    let replacement = format!(
-        "{{\n{child_indent}\"min_x\": {},\n{child_indent}\"max_x\": {},\n{child_indent}\"min_y\": {},\n{child_indent}\"max_y\": {}\n{indent}}}",
-        encode(min_x)?,
-        encode(max_x)?,
-        encode(min_y)?,
-        encode(max_y)?,
-    );
-
-    let mut updated = String::with_capacity(text.len() + replacement.len());
-    updated.push_str(&text[..object_start]);
-    updated.push_str(&replacement);
-    updated.push_str(&text[object_end + 1..]);
-    std::fs::write(&runtime_path, updated)
+    std::fs::write(&runtime_path, bytes)
         .map_err(|error| format!("write {}: {error}", runtime_path.display()))?;
     Ok(true)
 }
@@ -1211,12 +1167,25 @@ mod tests {
             .join("../../content/authoring/maps/map.map1.purgatory-map.json")
     }
 
-    struct RestoreFiles(Vec<(PathBuf, Vec<u8>)>);
+    struct RestoreFiles {
+        directory: PathBuf,
+        files: Vec<(PathBuf, Vec<u8>)>,
+    }
 
     impl Drop for RestoreFiles {
         fn drop(&mut self) {
-            for (path, bytes) in &self.0 {
+            for (path, bytes) in &self.files {
                 let _ = std::fs::write(path, bytes);
+            }
+            if let Ok(entries) = std::fs::read_dir(&self.directory) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                        && !self.files.iter().any(|(saved, _)| saved == &path)
+                    {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
             }
         }
     }
@@ -1234,7 +1203,7 @@ mod tests {
                 }
             }
         }
-        RestoreFiles(files)
+        RestoreFiles { directory, files }
     }
 
     #[test]
@@ -1275,50 +1244,88 @@ mod tests {
     }
 
     #[test]
-    fn runtime_bounds_follow_tmx_extent_and_sync_is_stable() {
-        let root = std::env::temp_dir().join(format!(
-            "purgatory-map-lab-bounds-sync-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let authoring_maps = root.join("content/authoring/maps");
-        let shared_maps = root.join("content/shared/maps");
-        std::fs::create_dir_all(&authoring_maps).unwrap();
-        std::fs::create_dir_all(&shared_maps).unwrap();
-
-        let sidecar = authoring_maps.join("map.test.purgatory-map.json");
-        std::fs::write(&sidecar, "{}\n").unwrap();
-        let runtime = shared_maps.join("map.test.json");
-        std::fs::write(
-            &runtime,
-            r#"{
-  "schema_version": 1,
-  "id": "map.test",
-  "debug_name": "TEST",
-  "bounds": {
-    "min_x": 0,
-    "max_x": 46.44,
-    "min_y": 0,
-    "max_y": 13.32
-  },
-  "spawn_points": [],
-  "platforms": [],
-  "restore": {
-    "policy": "safe_point",
-    "point": "default"
-  }
-}
-"#,
+    fn runtime_projection_follows_tmx_extent_and_is_deterministic() {
+        let (root, authoring) = temp_authoring(
+            "projection",
+            &catalog_with("| `50002` | `map.map2` | active |\n"),
+        );
+        let created = create_new_map(
+            &authoring,
+            &NewMapRequest {
+                display_name: "West Road".to_owned(),
+                width_tiles: 116,
+                height_tiles: 65,
+            },
         )
         .unwrap();
+        let authored = &created.authored_id;
+        let gameplay_path = authoring.join(format!("{authored}.gameplay.json"));
+        let environment_path = authoring.join(format!("{authored}.environment.json"));
+        let placements_path = root
+            .join("content/server/placements")
+            .join(format!("{authored}.json"));
+        let before = (
+            std::fs::read(&gameplay_path).unwrap(),
+            std::fs::read(&environment_path).unwrap(),
+            std::fs::read(&placements_path).unwrap(),
+        );
+        let projection = root
+            .join("content/shared/maps")
+            .join(format!("{authored}.json"));
+        let first = std::fs::read_to_string(&projection).unwrap();
+        assert!(first.contains("\"spawn_points\": []"));
+        assert!(!first.contains("\"restore\""));
+        assert!(first.contains("\"content_id\": 50003"));
 
-        assert!(sync_runtime_bounds_file(&sidecar, "map.test", [0.0, 0.0, 23.2, 13.0]).unwrap());
-        let first = std::fs::read_to_string(&runtime).unwrap();
-        assert!(first.contains("\"debug_name\": \"TEST\""));
-        assert!(first.contains("\"max_x\": 23.2"));
-        assert!(first.contains("\"max_y\": 13.0"));
-        assert!(!sync_runtime_bounds_file(&sidecar, "map.test", [0.0, 0.0, 23.2, 13.0]).unwrap());
-        assert_eq!(first, std::fs::read_to_string(&runtime).unwrap());
+        std::fs::write(&created.tmx_path, canonical_tmx_document(200, 65)).unwrap();
+        let document = MapLabDocument::open(&created.sidecar_path).unwrap();
+        let updated = std::fs::read_to_string(&projection).unwrap();
+        assert!(updated.contains("\"max_x\": 40.0"));
+        assert!((document.presentation.world_bounds[2] - 40.0).abs() < 1e-4);
+        assert!(document.gameplay.foothold_paths.is_empty());
+        assert!(document.gameplay.spawn_points.is_empty());
+        assert_eq!(
+            (
+                std::fs::read(&gameplay_path).unwrap(),
+                std::fs::read(&environment_path).unwrap(),
+                std::fs::read(&placements_path).unwrap(),
+            ),
+            before
+        );
+        MapLabDocument::open(&created.sidecar_path).unwrap();
+        assert_eq!(updated, std::fs::read_to_string(&projection).unwrap());
+        assert_ne!(first, updated);
+
+        let registry = load_registry(&root.join("content"), purgatory_content::LoadMode::Shared)
+            .expect("new map is known");
+        let map = registry.map(authored).expect("authored map");
+        assert_eq!(map.content_id.raw(), Some(50_003));
+        assert!(map.spawn_points.is_empty());
+        assert!(map.restore.is_none());
+        assert!(!map.is_gameplay_ready());
+        let plan_error = purgatory_content::map_plan(
+            &registry,
+            authored,
+            purgatory_content::world_address_for_map(
+                &registry,
+                map.content_id,
+                purgatory_common::ChannelId::DEFAULT,
+                purgatory_common::InstanceId::DEFAULT,
+            )
+            .unwrap(),
+        )
+        .expect_err("incomplete map is not enterable");
+        assert!(plan_error.to_string().contains("GAMEPLAY NOT READY"));
+        assert!(!plan_error.to_string().contains("unknown map"));
+
+        std::fs::write(
+            authoring.join("map.mpa999.gameplay.json"),
+            br#"{"schema_version":1,"map_authored":"map.mpa999","name":"typo","foothold_paths":[],"spawn_points":[]}"#,
+        )
+        .unwrap();
+        let unknown = load_registry(&root.join("content"), purgatory_content::LoadMode::Shared)
+            .expect_err("typo map");
+        assert!(unknown.to_string().contains("unknown map"));
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1344,6 +1351,18 @@ mod tests {
         assert!(names.len() >= 2);
         assert!(names.contains(&"map.map1.purgatory-map.json"));
         assert!(names.contains(&"map.map2.purgatory-map.json"));
+
+        let map3 = directory.join("map.map3.purgatory-map.json");
+        let catalog = std::fs::read(directory.join("../../CONTENT_ID_CATALOG.md")).unwrap();
+        let document = MapLabDocument::open(&map3).expect("open existing map.map3");
+        assert_eq!(document.source.content_id, 50_003);
+        assert_eq!(document.source.id, "map.map3");
+        assert!(document.gameplay.spawn_points.is_empty());
+        assert!(document.gameplay_readiness().is_err());
+        assert_eq!(
+            std::fs::read(directory.join("../../CONTENT_ID_CATALOG.md")).unwrap(),
+            catalog
+        );
 
         for path in &maps {
             let document = MapLabDocument::open(path).expect("open discovered map");
@@ -1624,6 +1643,11 @@ mod tests {
         assert!(document.environment.parallax_layers.is_empty());
         assert!(document.placements.is_empty());
         assert!(document.gameplay_readiness().is_err());
+        assert!(
+            root.join("content/shared/maps")
+                .join(format!("{}.json", created.authored_id))
+                .is_file()
+        );
         let discovered = discover_authored_maps(&authoring).unwrap();
         assert!(discovered.contains(&created.sidecar_path));
         std::fs::remove_dir_all(root).unwrap();
@@ -1720,6 +1744,7 @@ mod tests {
                 id: "default".to_owned(),
                 position: [4.0, 1.6],
             }],
+            restore: None,
         };
         let mut environment = purgatory_content::MapEnvironmentAuthoring::empty(authored);
         environment.sky_gradient = Some(purgatory_content::SkyGradient {
@@ -1846,6 +1871,7 @@ mod tests {
                 id: "default".to_owned(),
                 position: [31.0, 1.6],
             }],
+            restore: None,
         };
         let placements = purgatory_content::serialize_placements_v2(
             &created.authored_id,
@@ -1938,5 +1964,23 @@ mod tests {
         assert!(error.contains("tile-size migration is not supported"));
         assert_eq!(authored_bytes(&root, &created.authored_id), before);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checked_in_runtime_projections_are_stable() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for authored in ["map.map1", "map.map2", "map.map3"] {
+            let sidecar = root.join(format!(
+                "content/authoring/maps/{authored}.purgatory-map.json"
+            ));
+            MapLabDocument::open(&sidecar).expect(authored);
+            let path = root.join(format!("content/shared/maps/{authored}.json"));
+            let once = std::fs::read(&path).expect(authored);
+            MapLabDocument::open(&sidecar).expect(authored);
+            assert_eq!(once, std::fs::read(&path).unwrap(), "{authored}");
+            let text = String::from_utf8(once).unwrap();
+            assert!(text.contains(&format!("\"id\": \"{authored}\"")));
+            assert!(text.contains("\"platforms\": []"));
+        }
     }
 }

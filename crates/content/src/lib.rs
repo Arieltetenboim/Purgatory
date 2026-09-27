@@ -8,6 +8,7 @@ mod error;
 mod instantiate;
 mod item;
 mod loader;
+mod map_authoring;
 #[cfg(feature = "map-authoring")]
 mod map_compiler;
 mod map_environment_authoring;
@@ -45,11 +46,14 @@ pub use item::{
 pub use loader::{
     LoadMode, default_content_root, load_placement_file, load_registry, serialize_placements_v2,
 };
+pub use map_authoring::{
+    MAP_AUTHORING_SCHEMA_VERSION, MapAuthoringSource, canonical_map_authored_id,
+    load_map_authoring, serialize_runtime_map_projection,
+};
 #[cfg(feature = "map-authoring")]
 pub use map_compiler::{
-    CANONICAL_MAP_TILE_PX, MAP_AUTHORING_SCHEMA_VERSION, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU,
-    MapAuthoringSource, compile_tiled_map, compile_tiled_map_with_ppu, load_map_authoring,
-    serialize_map_pretty, validate_canonical_map_grid,
+    CANONICAL_MAP_TILE_PX, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, compile_tiled_map,
+    compile_tiled_map_with_ppu, serialize_map_pretty, validate_canonical_map_grid,
 };
 pub use map_environment_authoring::{
     CLOUDS_PER_VIEWPORT_AT_FULL_DENSITY, CloudFieldAuthoring, CloudFieldPresentation,
@@ -63,8 +67,8 @@ pub use map_environment_authoring::{
     compile_map_environment, resolve_png_asset_folder, serialize_map_environment_pretty,
 };
 pub use map_gameplay_authoring::{
-    FootholdKind, FootholdPath, GameplaySpawnPoint, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
-    MapGameplayAuthoring,
+    FootholdKind, FootholdPath, GameplayRestore, GameplaySpawnPoint,
+    MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION, MapGameplayAuthoring,
 };
 pub use map_presentation::{
     MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationAsset, PresentationLayer,

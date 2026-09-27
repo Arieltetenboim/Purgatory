@@ -2234,6 +2234,13 @@ impl GameplayOwner {
             .get(&connection_id)
             .map(|binding| binding.entity)
             .ok_or_else(|| format!("connection {connection_id} has no gameplay binding"))?;
+        match self.registry.map(map_authored) {
+            None => return Err(format!("unknown authored map {map_authored}")),
+            Some(map) if !map.is_gameplay_ready() => {
+                return Err(format!("GAMEPLAY NOT READY · {map_authored}"));
+            }
+            Some(_) => {}
+        }
         let dest = self
             .ensure_dev_transition_map(actor, map_authored)
             .map_err(|_| format!("cannot prepare authored map {map_authored}"))?;
@@ -2267,7 +2274,7 @@ impl GameplayOwner {
                 .find(|spawn| spawn.id == "default")
                 .or_else(|| map.spawn_points.first())
                 .map(|spawn| spawn.position)
-                .ok_or_else(|| format!("map {map_authored} has no spawn point"))?;
+                .ok_or_else(|| format!("GAMEPLAY NOT READY · {map_authored}"))?;
             self.finalize_map_transition(connection_id, actor, dest, spawn, None)
                 .map_err(|_| format!("transition to {map_authored} · Default Spawn failed"))?;
         }

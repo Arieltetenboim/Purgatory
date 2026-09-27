@@ -356,6 +356,7 @@ impl ContentRegistry {
         name: &str,
         foothold_paths: Vec<crate::FootholdPath>,
         spawn_points: Vec<crate::GameplaySpawnPoint>,
+        restore: Option<crate::RestorePolicy>,
     ) -> Result<(), ContentError> {
         let Some(map) = self.maps.get_mut(authored) else {
             return Err(ContentError::one(ValidationIssue::new(
@@ -369,15 +370,14 @@ impl ContentRegistry {
             map.debug_name = name.trim().to_owned();
         }
         map.foothold_paths = foothold_paths;
-        if !spawn_points.is_empty() {
-            map.spawn_points = spawn_points
-                .into_iter()
-                .map(|spawn| crate::SpawnPoint {
-                    id: spawn.id,
-                    position: spawn.position,
-                })
-                .collect();
-        }
+        map.spawn_points = spawn_points
+            .into_iter()
+            .map(|spawn| crate::SpawnPoint {
+                id: spawn.id,
+                position: spawn.position,
+            })
+            .collect();
+        map.restore = restore;
         Ok(())
     }
 
@@ -761,7 +761,10 @@ impl ContentRegistry {
             }
         }
         for map in self.maps.values() {
-            match &map.restore {
+            let Some(policy) = &map.restore else {
+                continue;
+            };
+            match policy {
                 RestorePolicy::SafePoint { point_id } | RestorePolicy::Checkpoint { point_id } => {
                     if !map.spawn_points.iter().any(|s| s.id == *point_id) {
                         issues.push(ValidationIssue::new(
@@ -1013,9 +1016,9 @@ mod tests {
                 kind: PlatformKind::Solid,
             }],
             foothold_paths: Vec::new(),
-            restore: RestorePolicy::SafePoint {
+            restore: Some(RestorePolicy::SafePoint {
                 point_id: "default".into(),
-            },
+            }),
         }
     }
 

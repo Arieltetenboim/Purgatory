@@ -56,7 +56,14 @@ pub fn resolve_restore(
         );
         return fallback_destination();
     };
-    match &map.restore {
+    let Some(policy) = &map.restore else {
+        eprintln!(
+            "PURGATORY restore map '{}' is not gameplay ready — falling back to {MAP1_AUTHORED}/{DEFAULT_RESTORE_POINT}",
+            map.authored_id
+        );
+        return fallback_destination();
+    };
+    match policy {
         RestorePolicy::SafePoint { point_id } => {
             let chosen = if map_has_point(registry, &map.authored_id, &intent.point_id) {
                 intent.point_id.clone()
@@ -158,7 +165,7 @@ mod tests {
                 kind: PlatformKind::Solid,
             }],
             foothold_paths: Vec::new(),
-            restore,
+            restore: Some(restore),
         }
     }
 

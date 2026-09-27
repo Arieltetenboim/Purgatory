@@ -5,22 +5,19 @@
 //! object anchors, or TMX/TSX path semantics.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use tiled::{
     DrawOrder, FillMode, Layer, LayerType, ObjectAlignment, ObjectShape, Orientation, RenderOrder,
     TileLayer, TileRenderSize, Tileset,
 };
 
 use crate::error::{ContentError, ValidationIssue};
+use crate::map_authoring::{MapAuthoringSource, load_map_authoring, validate_ppu};
 use crate::map_presentation::{
     MAP_PRESENTATION_SCHEMA_VERSION, MapPresentation, PresentationAsset, PresentationLayer,
     PresentationLayerKind, PresentationSprite, TileTransform,
 };
-
-pub const MAP_AUTHORING_SCHEMA_VERSION: u32 = 2;
 
 /// Canonical Tiled map grid used by the production sources
 /// `Graphic/assets/maps/50001.tmx` and `50002.tmx`.
@@ -32,24 +29,6 @@ pub const CANONICAL_MAP_TILE_PX: u32 = 20;
 /// Every authored map must contain at least one full gameplay camera viewport.
 pub const MIN_MAP_HEIGHT_WU: f32 = purgatory_simulation::FOOTNOTE_TEST_VIEWPORT_HEIGHT;
 pub const MIN_MAP_WIDTH_WU: f32 = MIN_MAP_HEIGHT_WU * purgatory_simulation::AOI_VIEWPORT_ASPECT;
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct MapAuthoringSource {
-    pub schema_version: u32,
-    pub content_id: u32,
-    pub id: String,
-    pub visual_source: String,
-    pub pixels_per_world_unit: f32,
-}
-
-pub fn load_map_authoring(path: &Path) -> Result<MapAuthoringSource, ContentError> {
-    let bytes = fs::read(path).map_err(|error| ContentError::from_io(path, &error))?;
-    let source: MapAuthoringSource = serde_json::from_slice(&bytes)
-        .map_err(|error| issue(path, "-", "json", error.to_string()))?;
-    validate_authoring(path, &source)?;
-    Ok(source)
-}
 
 pub fn compile_tiled_map(path: &Path) -> Result<MapPresentation, ContentError> {
     let source = load_map_authoring(path)?;
@@ -491,41 +470,6 @@ impl Compiler<'_> {
     }
 }
 
-fn validate_authoring(path: &Path, source: &MapAuthoringSource) -> Result<(), ContentError> {
-    if source.schema_version != MAP_AUTHORING_SCHEMA_VERSION {
-        return Err(issue(
-            path,
-            &source.id,
-            "schema_version",
-            format!(
-                "expected {}, got {}",
-                MAP_AUTHORING_SCHEMA_VERSION, source.schema_version
-            ),
-        ));
-    }
-    purgatory_common::ContentId::from_authored(&source.id)
-        .map_err(|error| issue(path, &source.id, "id", format!("{error:?}")))?;
-    let content_id = purgatory_common::ContentId::from_raw(source.content_id);
-    if content_id.kind() != Some(purgatory_common::ContentKind::Map) {
-        return Err(issue(
-            path,
-            &source.id,
-            "content_id",
-            "must be an allocated map ContentId in 50,000-59,999",
-        ));
-    }
-    let visual = Path::new(&source.visual_source);
-    if visual.as_os_str().is_empty() || visual.is_absolute() {
-        return Err(issue(
-            path,
-            &source.id,
-            "visual_source",
-            "must be a nonempty relative path",
-        ));
-    }
-    validate_ppu(path, source.pixels_per_world_unit)
-}
-
 /// Reject tile-size or orientation drift from the canonical map grid.
 ///
 /// Width and height may change. Tile size and orientation may not.
@@ -554,18 +498,6 @@ pub fn validate_canonical_map_grid(tmx_path: &Path) -> Result<(), ContentError> 
                 "tile size {}×{} px does not match the canonical {CANONICAL_MAP_TILE_PX}×{CANONICAL_MAP_TILE_PX} px map grid; tile-size migration is not supported",
                 map.tile_width, map.tile_height
             ),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_ppu(path: &Path, ppu: f32) -> Result<(), ContentError> {
-    if !ppu.is_finite() || ppu <= 0.0 {
-        return Err(issue(
-            path,
-            "-",
-            "pixels_per_world_unit",
-            "must be finite and positive",
         ));
     }
     Ok(())

@@ -32,6 +32,18 @@ pub struct GameplaySpawnPoint {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct GameplayRestore {
+    pub policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_map: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_point: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MapGameplayAuthoring {
     pub schema_version: u32,
     pub map_authored: String,
@@ -41,6 +53,9 @@ pub struct MapGameplayAuthoring {
     pub foothold_paths: Vec<FootholdPath>,
     #[serde(default)]
     pub spawn_points: Vec<GameplaySpawnPoint>,
+    /// Login restore. Absent on a new map; not invented to satisfy runtime entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<GameplayRestore>,
 }
 
 impl MapGameplayAuthoring {
@@ -53,6 +68,7 @@ impl MapGameplayAuthoring {
             map_authored,
             foothold_paths: Vec::new(),
             spawn_points: Vec::new(),
+            restore: None,
         }
     }
 }

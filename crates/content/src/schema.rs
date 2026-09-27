@@ -48,7 +48,16 @@ pub struct MapDefinition {
     pub spawn_points: Vec<SpawnPoint>,
     pub platforms: Vec<MapPlatform>,
     pub foothold_paths: Vec<FootholdPath>,
-    pub restore: RestorePolicy,
+    pub restore: Option<RestorePolicy>,
+}
+
+impl MapDefinition {
+    /// Footnote paths plus a default spawn. Distinct from merely being a known authored map.
+    #[must_use]
+    pub fn is_gameplay_ready(&self) -> bool {
+        !self.foothold_paths.is_empty()
+            && self.spawn_points.iter().any(|spawn| spawn.id == "default")
+    }
 }
 
 /// Authored restore policy. Not a WorldAddress and not Channel/Instance.

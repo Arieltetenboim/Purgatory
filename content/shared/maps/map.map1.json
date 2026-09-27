@@ -2,7 +2,7 @@
   "schema_version": 1,
   "content_id": 50001,
   "id": "map.map1",
-  "debug_name": "MAP1",
+  "debug_name": "map.map1",
   "bounds": {
     "min_x": 0.0,
     "max_x": 23.2,
@@ -13,8 +13,8 @@
     {
       "id": "default",
       "position": [
-        15.31,
-        0.88
+        6.4766116,
+        1.0
       ]
     }
   ],
