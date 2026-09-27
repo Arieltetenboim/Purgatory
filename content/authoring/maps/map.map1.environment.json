@@ -15,5 +15,32 @@
       255
     ]
   },
-  "parallax_layers": []
+  "parallax_layers": [
+    {
+      "id": "background.001",
+      "asset_path": "assets/skys/parallax_far.png",
+      "depth": "far",
+      "parallax": 0.18,
+      "offset_world": [
+        0.0,
+        0.0
+      ],
+      "repeat_x": false,
+      "repeat_y": false,
+      "opacity": 1.0
+    },
+    {
+      "id": "background.002",
+      "asset_path": "assets/skys/parallax_mid.png",
+      "depth": "mid",
+      "parallax": 0.38,
+      "offset_world": [
+        0.0,
+        0.0
+      ],
+      "repeat_x": false,
+      "repeat_y": false,
+      "opacity": 1.0
+    }
+  ]
 }
