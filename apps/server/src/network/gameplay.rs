@@ -2094,13 +2094,23 @@ impl GameplayOwner {
     }
 
     fn map_b_address(&self) -> WorldAddress {
-        world_address_for_map(&self.registry, MAP2, ChannelId::DEFAULT, InstanceId::DEFAULT)
-            .expect("MAP2 registered")
+        world_address_for_map(
+            &self.registry,
+            MAP2,
+            ChannelId::DEFAULT,
+            InstanceId::DEFAULT,
+        )
+        .expect("MAP2 registered")
     }
 
     fn map_a_address(&self) -> WorldAddress {
-        world_address_for_map(&self.registry, MAP1, ChannelId::DEFAULT, InstanceId::DEFAULT)
-            .expect("MAP1 registered")
+        world_address_for_map(
+            &self.registry,
+            MAP1,
+            ChannelId::DEFAULT,
+            InstanceId::DEFAULT,
+        )
+        .expect("MAP1 registered")
     }
 
     fn ensure_dev_transition_map(
@@ -4095,9 +4105,12 @@ struct PublishTimings {
 
 fn instantiate_startup_maps(world: &mut World, registry: &ContentRegistry) {
     for (authored, content_id) in [(MAP1_AUTHORED, MAP1), (MAP2_AUTHORED, MAP2)] {
-        let Some(addr) =
-            world_address_for_map(registry, content_id, ChannelId::DEFAULT, InstanceId::DEFAULT)
-        else {
+        let Some(addr) = world_address_for_map(
+            registry,
+            content_id,
+            ChannelId::DEFAULT,
+            InstanceId::DEFAULT,
+        ) else {
             panic!("no MapId for {authored}");
         };
         let plan = map_plan(registry, authored, addr).unwrap_or_else(|err| {
@@ -5751,11 +5764,7 @@ mod tests {
             .unwrap_or_else(|| panic!("missing {authored} at {address}"))
     }
 
-    fn find_portal(
-        owner: &GameplayOwner,
-        map_authored: &str,
-        portal_id: &str,
-    ) -> EntityId {
+    fn find_portal(owner: &GameplayOwner, map_authored: &str, portal_id: &str) -> EntityId {
         let content = owner
             .registry
             .portal_content_id(map_authored, portal_id)
@@ -5898,10 +5907,7 @@ mod tests {
         let actor_b = owner.entity_of(client_b).expect("client B");
         let map1 = owner.world().address_of(actor_a).expect("MAP1 address");
         assert_eq!(owner.world().address_of(actor_b), Some(map1));
-        let map1_id = owner
-            .registry
-            .map_id(MAP1)
-            .expect("MAP1 MapId");
+        let map1_id = owner.registry.map_id(MAP1).expect("MAP1 MapId");
         assert_eq!(map1.map, map1_id);
 
         let identities = authored_identities(&owner, map1);
@@ -5926,10 +5932,7 @@ mod tests {
             .registry
             .portal_transition_by_id(portal_content)
             .expect("MAP1 portal link");
-        assert_eq!(
-            transition.map_authored,
-            MAP2_AUTHORED
-        );
+        assert_eq!(transition.map_authored, MAP2_AUTHORED);
         assert_eq!(transition.portal_authored, "portal.001");
 
         let npc = owner

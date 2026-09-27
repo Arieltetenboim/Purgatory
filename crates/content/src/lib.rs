@@ -129,7 +129,11 @@ mod tests {
         let map2_portal = registry
             .portal_content_id(MAP2_AUTHORED, "portal.001")
             .expect("MAP2 portal content");
-        assert!(world.iter().any(|id| world.content_id_of(id) == Some(map2_portal)));
+        assert!(
+            world
+                .iter()
+                .any(|id| world.content_id_of(id) == Some(map2_portal))
+        );
         assert!(world.iter().all(|id| world.persistent_id_of(id).is_none()));
     }
 

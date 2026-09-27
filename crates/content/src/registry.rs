@@ -593,7 +593,10 @@ impl ContentRegistry {
                 let raw = content.raw().expect("numeric Map ContentId");
                 MapId::from_raw(raw - CONTENT_MAP_START + 1)
             } else {
-                while self.content_by_map_id.contains_key(&MapId::from_raw(legacy_next)) {
+                while self
+                    .content_by_map_id
+                    .contains_key(&MapId::from_raw(legacy_next))
+                {
                     legacy_next = legacy_next.saturating_add(1);
                 }
                 let id = MapId::from_raw(legacy_next);

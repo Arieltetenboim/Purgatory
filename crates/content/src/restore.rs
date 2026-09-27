@@ -15,8 +15,7 @@
 use crate::registry::ContentRegistry;
 use crate::schema::RestorePolicy;
 use purgatory_common::{
-    ChannelId, DEFAULT_RESTORE_POINT, InstanceId, MAP1_AUTHORED, RestoreIntent,
-    WorldAddress,
+    ChannelId, DEFAULT_RESTORE_POINT, InstanceId, MAP1_AUTHORED, RestoreIntent, WorldAddress,
 };
 
 use crate::instantiate::{spawn_point_position, world_address_for_map};
