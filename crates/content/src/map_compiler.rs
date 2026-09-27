@@ -781,22 +781,21 @@ mod tests {
         let map = compile_tiled_map(&fixture_sidecar()).expect("fixture compiles");
         assert_eq!(map.schema_version, 1);
         assert_eq!(map.map_authored, "map.map1");
-        assert_eq!(map.visual_extent_px, [4644, 1080]);
-        assert_eq!(map.world_bounds, [0.0, 0.0, 46.44, 10.8]);
+        assert_eq!(map.visual_extent_px, [2320, 1300]);
+        assert_eq!(map.world_bounds, [0.0, 0.0, 23.2, 13.0]);
         assert_eq!(
             map.layers
                 .iter()
                 .map(|layer| layer.name.as_str())
                 .collect::<Vec<_>>(),
-            ["BACKGROUND", "3", "4", "2", "1", "WORLD_ART", "MARKERS"]
+            ["Grass2", "Grass", "WORLD_ART", "MARKERS"]
         );
-        assert_eq!(map.layers[0].sprites.len(), 1);
         assert_eq!(
             map.layers
                 .iter()
                 .filter(|layer| layer.kind == PresentationLayerKind::Tile)
                 .count(),
-            4
+            2
         );
         assert_eq!(
             map.layers
@@ -804,31 +803,54 @@ mod tests {
                 .filter(|layer| layer.kind == PresentationLayerKind::Tile)
                 .map(|layer| layer.sprites.len())
                 .sum::<usize>(),
-            13
+            9
         );
-        assert_eq!(map.layers[5].sprites.len(), 1);
-        assert!(map.layers[6].sprites.is_empty());
-        assert_eq!(map.assets.len(), 2);
-        assert_eq!(map.layers[5].sprites[0].source_rect_px, [1080, 0, 360, 240]);
+        let world_art = map
+            .layers
+            .iter()
+            .find(|layer| layer.name == "WORLD_ART")
+            .expect("WORLD_ART");
+        let markers = map
+            .layers
+            .iter()
+            .find(|layer| layer.name == "MARKERS")
+            .expect("MARKERS");
+        assert_eq!(world_art.sprites.len(), 1);
+        assert!(markers.sprites.is_empty());
+        assert_eq!(map.assets.len(), 1);
+        assert_eq!(world_art.sprites[0].source_rect_px, [1080, 0, 360, 240]);
     }
 
     #[test]
     fn world_conversion_is_map_local_y_up_and_free_position_is_not_snapped() {
         let map = compile_tiled_map(&fixture_sidecar()).unwrap();
-        let object = &map.layers[5].sprites[0];
-        assert!((object.position_world[0] - 17.1933).abs() < 1e-4);
-        assert!((object.position_world[1] - 2.08).abs() < 1e-4);
+        let world_art = map
+            .layers
+            .iter()
+            .find(|layer| layer.name == "WORLD_ART")
+            .expect("WORLD_ART");
+        let object = &world_art.sprites[0];
+        assert!((object.position_world[0] - 20.6334).abs() < 1e-4);
+        assert!((object.position_world[1] - 1.3834).abs() < 1e-4);
         assert_eq!(object.size_world, [3.6, 2.4]);
-        let background = &map.layers[0].sprites[0];
-        assert!((background.position_world[0] - 23.220833).abs() < 1e-4);
-        assert!((background.position_world[1] - 5.400833).abs() < 1e-4);
+
+        let grass2 = map
+            .layers
+            .iter()
+            .find(|layer| layer.name == "Grass2")
+            .expect("Grass2");
+        let tile = &grass2.sprites[0];
+        assert!((tile.position_world[0] - 1.8).abs() < 1e-4);
+        assert!((tile.position_world[1] - 1.2).abs() < 1e-4);
     }
 
     #[test]
     fn same_atlas_is_deduplicated_and_tile_source_rects_resolve() {
         let map = compile_tiled_map(&fixture_sidecar()).unwrap();
-        let tile_sprites: Vec<_> = map.layers[1..5]
+        let tile_sprites: Vec<_> = map
+            .layers
             .iter()
+            .filter(|layer| layer.kind == PresentationLayerKind::Tile)
             .flat_map(|layer| &layer.sprites)
             .collect();
         assert!(tile_sprites.len() > 1);
@@ -854,8 +876,8 @@ mod tests {
         let path = fixture_sidecar();
         let source = load_map_authoring(&path).unwrap();
         let map = compile_tiled_map_with_ppu(&path, &source, 50.0).unwrap();
-        assert_eq!(map.visual_extent_px, [4644, 1080]);
-        assert_eq!(map.world_bounds, [0.0, 0.0, 92.88, 21.6]);
+        assert_eq!(map.visual_extent_px, [2320, 1300]);
+        assert_eq!(map.world_bounds, [0.0, 0.0, 46.4, 26.0]);
     }
 
     #[test]
