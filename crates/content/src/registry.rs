@@ -228,7 +228,7 @@ impl ContentRegistry {
         })?;
         let entity = self.entities.get(&legacy.content_authored)?;
         (entity.interactable == Some(purgatory_simulation::InteractableKind::Portal))
-            .then(|| entity.content_id)
+            .then_some(entity.content_id)
     }
 
     #[must_use]
@@ -638,15 +638,16 @@ impl ContentRegistry {
                 ));
             }
             match p.kind {
-                PlacementKind::Entity => match self.entities.get(&p.content_authored) {
-                    None => issues.push(ValidationIssue::new(
-                        map_authored,
-                        &p.content_authored,
-                        format!("placements[{i}].content"),
-                        "unresolved entity reference",
-                    )),
-                    Some(_) => {}
-                },
+                PlacementKind::Entity => {
+                    if self.entities.get(&p.content_authored).is_none() {
+                        issues.push(ValidationIssue::new(
+                            map_authored,
+                            &p.content_authored,
+                            format!("placements[{i}].content"),
+                            "unresolved entity reference",
+                        ));
+                    }
+                }
                 PlacementKind::Monster => {
                     if !self.monsters.contains_key(&p.content_authored) {
                         issues.push(ValidationIssue::new(
