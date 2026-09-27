@@ -9,7 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use purgatory_common::{
-    ChannelId, CharacterId, ContentId, InstanceId, MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED,
+    ChannelId, CharacterId, ContentId, InstanceId, MAP1, MAP1_AUTHORED, MAP2, MAP2_AUTHORED,
     RestoreIntent, WorldAddress,
 };
 use purgatory_content::{
@@ -1095,7 +1095,7 @@ pub fn gameplay_channels(
 }
 
 impl GameplayOwner {
-    /// Content-backed maps. Dev-eager Map A + Map B; runtime still supports lazy ensure/destroy.
+    /// Content-backed MAP1 + MAP2; runtime still supports lazy ensure/destroy.
     #[must_use]
     pub fn new() -> Self {
         let registry =
@@ -1108,7 +1108,7 @@ impl GameplayOwner {
     #[must_use]
     pub fn with_registry(registry: ContentRegistry) -> Self {
         let mut world = World::new();
-        instantiate_dev_maps(&mut world, &registry);
+        instantiate_startup_maps(&mut world, &registry);
         log_dev_interaction_fixtures(&world);
         Self {
             world,
@@ -1303,25 +1303,30 @@ impl GameplayOwner {
         }
         let address = self.map_a_address();
         let n = self.bindings.len();
-        let spawn_x = match self.placement {
-            // Default cluster and hotspot both pack near spawn. Hotspot keeps
-            // every index within ~2 wu so AOI leave rects fully overlap.
-            LoadPlacement::Cluster => FOOTNOTE_SPAWN_X,
-            LoadPlacement::Hotspot => FOOTNOTE_SPAWN_X + (n as f32 % 8.0) * 0.25,
-            LoadPlacement::Spread => FOOTNOTE_SPAWN_X + (n as f32 % 8.0) * 5.0,
-            LoadPlacement::MultiMap => FOOTNOTE_SPAWN_X,
-        };
         let spawn_address = match self.placement {
             LoadPlacement::MultiMap if n % 2 == 1 => self.map_b_address(),
             _ => address,
         };
+        let base_spawn = self
+            .registry
+            .map_by_map_id(spawn_address.map)
+            .and_then(|map| map.spawn_points.iter().find(|spawn| spawn.id == "default"))
+            .map(|spawn| spawn.position)
+            .unwrap_or([0.0, 0.0]);
+        let spawn_x = match self.placement {
+            // Default cluster and hotspot both pack near spawn. Hotspot keeps
+            // every index within ~2 wu so AOI leave rects fully overlap.
+            LoadPlacement::Cluster | LoadPlacement::MultiMap => base_spawn[0],
+            LoadPlacement::Hotspot => base_spawn[0] + (n as f32 % 8.0) * 0.25,
+            LoadPlacement::Spread => base_spawn[0] + (n as f32 % 8.0) * 5.0,
+        };
         let _ = self.spawn_player_binding(
             connection_id,
             spawn_address,
-            [spawn_x, -3.0],
+            [spawn_x, base_spawn[1]],
             None,
             0,
-            RestoreIntent::footnote_default(),
+            RestoreIntent::map1_default(),
             None,
             None,
         );
@@ -2089,21 +2094,13 @@ impl GameplayOwner {
     }
 
     fn map_b_address(&self) -> WorldAddress {
-        ContentId::from_authored(MAP_SECOND_AUTHORED)
-            .ok()
-            .and_then(|id| {
-                world_address_for_map(&self.registry, id, ChannelId::DEFAULT, InstanceId::DEFAULT)
-            })
-            .unwrap_or(WorldAddress::DEV)
+        world_address_for_map(&self.registry, MAP2, ChannelId::DEFAULT, InstanceId::DEFAULT)
+            .expect("MAP2 registered")
     }
 
     fn map_a_address(&self) -> WorldAddress {
-        ContentId::from_authored(MAP_FOOTNOTE_AUTHORED)
-            .ok()
-            .and_then(|id| {
-                world_address_for_map(&self.registry, id, ChannelId::DEFAULT, InstanceId::DEFAULT)
-            })
-            .unwrap_or(WorldAddress::DEV)
+        world_address_for_map(&self.registry, MAP1, ChannelId::DEFAULT, InstanceId::DEFAULT)
+            .expect("MAP1 registered")
     }
 
     fn ensure_dev_transition_map(
@@ -4096,13 +4093,10 @@ struct PublishTimings {
     enqueue_us: u64,
 }
 
-fn instantiate_dev_maps(world: &mut World, registry: &ContentRegistry) {
-    for authored in [MAP_FOOTNOTE_AUTHORED, MAP_SECOND_AUTHORED] {
-        let cid = ContentId::from_authored(authored).unwrap_or_else(|_| {
-            panic!("authored id {authored}");
-        });
+fn instantiate_startup_maps(world: &mut World, registry: &ContentRegistry) {
+    for (authored, content_id) in [(MAP1_AUTHORED, MAP1), (MAP2_AUTHORED, MAP2)] {
         let Some(addr) =
-            world_address_for_map(registry, cid, ChannelId::DEFAULT, InstanceId::DEFAULT)
+            world_address_for_map(registry, content_id, ChannelId::DEFAULT, InstanceId::DEFAULT)
         else {
             panic!("no MapId for {authored}");
         };
@@ -5108,7 +5102,7 @@ mod tests {
         owner.attach(b);
         let pipe = bind_pipe(&mut owner, a);
         let other = purgatory_simulation::WorldAddress::new(
-            purgatory_simulation::MapId::DEV,
+            purgatory_simulation::MapId::from_raw(1),
             purgatory_simulation::ChannelId::DEFAULT,
             purgatory_simulation::InstanceId::from_raw(2),
         );
@@ -5456,7 +5450,7 @@ mod tests {
         );
         let map_before = owner.world().address_of(actor).unwrap().map;
         let dest_addr = owner.world().address_of(actor).unwrap();
-        let portal = find_content_at(&owner, "entity.portal.to_second", dest_addr);
+        let portal = find_portal_at(&owner, MAP1_AUTHORED, "portal.001", dest_addr);
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -5757,6 +5751,42 @@ mod tests {
             .unwrap_or_else(|| panic!("missing {authored} at {address}"))
     }
 
+    fn find_portal(
+        owner: &GameplayOwner,
+        map_authored: &str,
+        portal_id: &str,
+    ) -> EntityId {
+        let content = owner
+            .registry
+            .portal_content_id(map_authored, portal_id)
+            .unwrap_or_else(|| panic!("missing portal {map_authored}/{portal_id}"));
+        owner
+            .world()
+            .iter()
+            .find(|&eid| owner.world().content_id_of(eid) == Some(content))
+            .unwrap_or_else(|| panic!("portal not instantiated {map_authored}/{portal_id}"))
+    }
+
+    fn find_portal_at(
+        owner: &GameplayOwner,
+        map_authored: &str,
+        portal_id: &str,
+        address: purgatory_simulation::WorldAddress,
+    ) -> EntityId {
+        let content = owner
+            .registry
+            .portal_content_id(map_authored, portal_id)
+            .unwrap_or_else(|| panic!("missing portal {map_authored}/{portal_id}"));
+        owner
+            .world()
+            .iter()
+            .find(|&eid| {
+                owner.world().content_id_of(eid) == Some(content)
+                    && owner.world().address_of(eid) == Some(address)
+            })
+            .unwrap_or_else(|| panic!("portal not instantiated at {address}"))
+    }
+
     #[test]
     fn portal_e_does_not_activate() {
         let mut owner = GameplayOwner::new();
@@ -5764,7 +5794,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
-        let portal = find_content(&owner, "entity.portal.to_second");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
@@ -5779,7 +5809,7 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         assert_eq!(
             owner.world().address_of(actor).unwrap().map,
-            purgatory_simulation::MapId::DEV
+            purgatory_simulation::MapId::from_raw(1)
         );
     }
 
@@ -5790,7 +5820,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
-        let portal = find_content(&owner, "entity.portal.to_second");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         assert!(owner.set_player_x(id, 4.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -5870,7 +5900,7 @@ mod tests {
         assert_eq!(owner.world().address_of(actor_b), Some(map1));
         let map1_id = owner
             .registry
-            .map_id(ContentId::from_authored(MAP1_AUTHORED).expect("MAP1 content"))
+            .map_id(MAP1)
             .expect("MAP1 MapId");
         assert_eq!(map1.map, map1_id);
 
@@ -5898,9 +5928,9 @@ mod tests {
             .expect("MAP1 portal link");
         assert_eq!(
             transition.map_authored,
-            purgatory_common::MAP_FOOTNOTE_AUTHORED
+            MAP2_AUTHORED
         );
-        assert_eq!(transition.portal_authored, "entity.portal.to_second");
+        assert_eq!(transition.portal_authored, "portal.001");
 
         let npc = owner
             .world()
@@ -5986,7 +6016,7 @@ mod tests {
             connection_id: client_a,
             target: wire_id(portal),
         });
-        let dest_portal = find_content(&owner, "entity.portal.to_second");
+        let dest_portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         assert_eq!(
             owner.world().address_of(actor_a),
             owner.world().address_of(dest_portal),
@@ -6024,8 +6054,8 @@ mod tests {
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
         let actor = owner.entity_of(id).unwrap();
-        let portal = find_content(&owner, "entity.portal.to_second");
-        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -6062,8 +6092,8 @@ mod tests {
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
         let actor = owner.entity_of(id).unwrap();
-        let portal = find_content(&owner, "entity.portal.to_second");
-        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
@@ -6117,8 +6147,8 @@ mod tests {
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
         let actor = owner.entity_of(id).unwrap();
-        let portal = find_content(&owner, "entity.portal.to_second");
-        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
@@ -6152,8 +6182,8 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
-        let portal = find_content(&owner, "entity.portal.to_second");
-        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
@@ -6269,8 +6299,8 @@ mod tests {
         drain(&pipe, &mut view);
         let epoch_before = owner.bindings.get(&id).unwrap().interest.epoch;
         let actor = owner.entity_of(id).unwrap();
-        let portal = find_content(&owner, "entity.portal.to_second");
-        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -6335,8 +6365,8 @@ mod tests {
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
         let actor = owner.entity_of(id).unwrap();
-        let a_portal = find_content(&owner, "entity.portal.to_second");
-        let b_portal = find_content(&owner, "entity.portal.to_footnote");
+        let a_portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let b_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -6374,7 +6404,7 @@ mod tests {
         });
         assert_eq!(
             owner.world().address_of(actor).unwrap().map,
-            purgatory_simulation::MapId::DEV
+            purgatory_simulation::MapId::from_raw(1)
         );
         let pos = owner.world().transform_of(actor).unwrap().position;
         let a_pos = owner.world().transform_of(a_portal).unwrap().position;
@@ -6387,8 +6417,8 @@ mod tests {
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
         let actor = owner.entity_of(id).unwrap();
-        let a_portal = find_content(&owner, "entity.portal.to_second");
-        let b_portal = find_content(&owner, "entity.portal.to_footnote");
+        let a_portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let b_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -6409,7 +6439,7 @@ mod tests {
         });
         assert_eq!(
             owner.world().address_of(actor).unwrap().map,
-            purgatory_simulation::MapId::DEV
+            purgatory_simulation::MapId::from_raw(1)
         );
     }
 
@@ -6420,9 +6450,9 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
-        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         assert!(owner.world_mut().despawn(dest_portal));
-        let portal = find_content(&owner, "entity.portal.to_second");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -6437,7 +6467,7 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         assert_eq!(
             owner.world().address_of(actor).unwrap().map,
-            purgatory_simulation::MapId::DEV
+            purgatory_simulation::MapId::from_raw(1)
         );
     }
 
@@ -7183,7 +7213,7 @@ mod tests {
         owner.attach(id);
         assert!(owner.set_player_x(id, 6.0));
         let actor = owner.entity_of(id).unwrap();
-        let portal = find_content(&owner, "entity.portal.to_second");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let actor_pos = owner.world().transform_of(actor).unwrap().position;
         let portal_pos = owner.world().transform_of(portal).unwrap().position;
         owner
@@ -7229,7 +7259,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
-        let portal = find_content(&owner, "entity.portal.to_second");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         let map_a_traveler = find_content(&owner, "npc.welcome.traveler_stayed");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
@@ -7262,7 +7292,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
-        let portal_a = find_content(&owner, "entity.portal.to_second");
+        let portal_a = find_portal(&owner, MAP1_AUTHORED, "portal.001");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -7297,8 +7327,8 @@ mod tests {
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
         let actor = owner.entity_of(id).unwrap();
-        let portal = find_content(&owner, "entity.portal.to_second");
-        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
             connection_id: id,
@@ -7334,8 +7364,8 @@ mod tests {
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
         let actor = owner.entity_of(id).unwrap();
-        let portal = find_content(&owner, "entity.portal.to_second");
-        let dest_portal = find_content(&owner, "entity.portal.to_footnote");
+        let portal = find_portal(&owner, MAP1_AUTHORED, "portal.001");
+        let dest_portal = find_portal(&owner, MAP2_AUTHORED, "portal.001");
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
         assert!(owner.set_player_x(id, 6.0));
         owner.apply_input(InputUpdate::PortalActivate {
