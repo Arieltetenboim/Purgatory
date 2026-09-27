@@ -48,7 +48,8 @@ pub use map_compiler::{
     compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
 };
 pub use map_environment_authoring::{
-    MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MapEnvironmentAuthoring, SkyGradient,
+    MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MapEnvironmentAuthoring, ParallaxDepth,
+    ParallaxLayer, SkyGradient,
 };
 pub use map_gameplay_authoring::{
     FootholdKind, FootholdPath, GameplaySpawnPoint, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
