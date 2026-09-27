@@ -18,9 +18,8 @@ pub const NPC_WELCOME_GATE_WATCHMAN: ContentId = ContentId::from_raw(20_002);
 pub const NPC_WELCOME_SHOPKEEPER: ContentId = ContentId::from_raw(20_003);
 pub const NPC_WELCOME_WORKSHOP_CRAFTSPERSON: ContentId = ContentId::from_raw(20_004);
 
-pub const MAP_FOOTNOTE: ContentId = ContentId::from_raw(50_001);
-pub const MAP_SECOND: ContentId = ContentId::from_raw(50_002);
-pub const MAP1: ContentId = ContentId::from_raw(50_003);
+pub const MAP1: ContentId = ContentId::from_raw(50_001);
+pub const MAP2: ContentId = ContentId::from_raw(50_002);
 
 pub const ITEM_CLOTH_CAP: ContentId = ContentId::from_raw(30_001);
 pub const ITEM_CLOTH_PANTS: ContentId = ContentId::from_raw(30_002);
@@ -59,9 +58,8 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
         "npc.welcome.gate_watchman" => NPC_WELCOME_GATE_WATCHMAN,
         "npc.welcome.shopkeeper" => NPC_WELCOME_SHOPKEEPER,
         "npc.welcome.workshop_craftsperson" => NPC_WELCOME_WORKSHOP_CRAFTSPERSON,
-        "map.dev.footnote" => MAP_FOOTNOTE,
-        "map.dev.second" => MAP_SECOND,
         "map.map1" => MAP1,
+        "map.map2" => MAP2,
         "equipment.debug.cloth_cap" => ITEM_CLOTH_CAP,
         "equipment.debug.cloth_pants" => ITEM_CLOTH_PANTS,
         "equipment.debug.iron_boots" => ITEM_IRON_BOOTS,
@@ -98,9 +96,8 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
         NPC_WELCOME_GATE_WATCHMAN => "npc.welcome.gate_watchman",
         NPC_WELCOME_SHOPKEEPER => "npc.welcome.shopkeeper",
         NPC_WELCOME_WORKSHOP_CRAFTSPERSON => "npc.welcome.workshop_craftsperson",
-        MAP_FOOTNOTE => "map.dev.footnote",
-        MAP_SECOND => "map.dev.second",
         MAP1 => "map.map1",
+        MAP2 => "map.map2",
         ITEM_CLOTH_CAP => "equipment.debug.cloth_cap",
         ITEM_CLOTH_PANTS => "equipment.debug.cloth_pants",
         ITEM_IRON_BOOTS => "equipment.debug.iron_boots",
