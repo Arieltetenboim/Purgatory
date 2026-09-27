@@ -48,8 +48,15 @@ pub use map_compiler::{
     compile_tiled_map, compile_tiled_map_with_ppu, load_map_authoring, serialize_map_pretty,
 };
 pub use map_environment_authoring::{
-    MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MapEnvironmentAuthoring, ParallaxDepth,
-    ParallaxFillMode, ParallaxLayer, SkyGradient,
+    CLOUDS_PER_VIEWPORT_AT_FULL_DENSITY, CloudFieldAuthoring, CloudFieldPresentation,
+    CloudInstanceSpec, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION,
+    MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION, MAX_CLOUDS_PER_FIELD, MapEnvironmentAuthoring,
+    MapEnvironmentPresentation, ParallaxDepth, ParallaxFillMode, ParallaxLayer, SkyGradient,
+    cloud_field_seed, cloud_instance_count, cloud_instance_specs, validate_cloud_field,
+};
+#[cfg(feature = "map-authoring")]
+pub use map_environment_authoring::{
+    compile_map_environment, resolve_png_asset_folder, serialize_map_environment_pretty,
 };
 pub use map_gameplay_authoring::{
     FootholdKind, FootholdPath, GameplaySpawnPoint, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
