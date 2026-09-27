@@ -639,7 +639,7 @@ impl ContentRegistry {
             }
             match p.kind {
                 PlacementKind::Entity => {
-                    if self.entities.get(&p.content_authored).is_none() {
+                    if !self.entities.contains_key(&p.content_authored) {
                         issues.push(ValidationIssue::new(
                             map_authored,
                             &p.content_authored,
