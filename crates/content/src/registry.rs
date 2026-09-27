@@ -672,12 +672,9 @@ impl ContentRegistry {
                 .placements
                 .get(&tr.map_authored)
                 .is_none_or(|placements| {
-                    placements
-                        .iter()
-                        .all(|p| {
-                            p.kind != PlacementKind::Entity
-                                || p.content_authored != tr.portal_authored
-                        })
+                    placements.iter().all(|p| {
+                        p.kind != PlacementKind::Entity || p.content_authored != tr.portal_authored
+                    })
                 })
             {
                 issues.push(ValidationIssue::new(
