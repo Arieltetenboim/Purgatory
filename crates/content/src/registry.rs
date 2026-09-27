@@ -13,7 +13,9 @@ use crate::monster::{
     MonsterDefinition, MonsterPresentationDefinition, validate_monster_definition,
     validate_monster_presentation,
 };
-use crate::schema::{EntityDefinition, MapDefinition, Placement, PlacementKind, RestorePolicy};
+use crate::schema::{
+    EntityDefinition, MapDefinition, Placement, PlacementKind, RestorePolicy, TransitionRef,
+};
 use purgatory_common::{ContentId, MAP_FOOTNOTE_AUTHORED, MapId};
 use purgatory_simulation::AbilityDefinition;
 
