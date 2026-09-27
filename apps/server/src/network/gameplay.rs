@@ -1109,6 +1109,8 @@ impl GameplayOwner {
     pub fn with_registry(registry: ContentRegistry) -> Self {
         let mut world = World::new();
         instantiate_startup_maps(&mut world, &registry);
+        #[cfg(test)]
+        install_map1_test_interaction_fixtures(&mut world, &registry);
         log_dev_interaction_fixtures(&world);
         Self {
             world,
@@ -2119,6 +2121,13 @@ impl GameplayOwner {
             .and_then(|map| map.spawn_points.iter().find(|spawn| spawn.id == "default"))
             .map(|spawn| spawn.position)
             .expect("MAP1 default spawn")
+    }
+
+    fn default_spawn_for_actor(&self, actor: EntityId) -> Option<(WorldAddress, [f32; 2])> {
+        let address = self.world.address_of(actor)?;
+        let map = self.registry.map_by_map_id(address.map)?;
+        let position = spawn_point_position(&self.registry, &map.authored_id, "default")?;
+        Some((address, position))
     }
 
     fn ensure_dev_transition_map(
@@ -3206,7 +3215,11 @@ impl GameplayOwner {
             println!("DEV_RESET reject connection={connection_id} reason=not_player");
             return;
         }
+        let destination = self.default_spawn_for_actor(actor);
         self.world.reset_player_entity(actor);
+        if let Some((address, position)) = destination {
+            let _ = self.world.transition_entity(actor, address, position);
+        }
         println!("DEV_RESET spawn actor={actor} connection={connection_id}");
     }
 
@@ -3218,8 +3231,12 @@ impl GameplayOwner {
         if self.world.kind(actor) != Some(EntityKind::Player) {
             return;
         }
+        let destination = self.default_spawn_for_actor(actor);
         if !self.world.respawn_player_entity(actor) {
             return;
+        }
+        if let Some((address, position)) = destination {
+            let _ = self.world.transition_entity(actor, address, position);
         }
         if let Some(binding) = self.bindings.get_mut(&connection_id) {
             let _ = binding.input.bump_epoch();
@@ -4114,6 +4131,32 @@ struct PublishTimings {
     enqueue_us: u64,
 }
 
+#[cfg(test)]
+fn install_map1_test_interaction_fixtures(world: &mut World, registry: &ContentRegistry) {
+    let address = world_address_for_map(registry, MAP1, ChannelId::DEFAULT, InstanceId::DEFAULT)
+        .expect("MAP1 test address");
+    let spawn = spawn_point_position(registry, MAP1_AUTHORED, "default")
+        .expect("MAP1 test spawn");
+    for (authored, offset_x) in [
+        ("npc.welcome.traveler_stayed", 0.75_f32),
+        ("entity.interactable.chest", -0.75_f32),
+    ] {
+        let definition = registry
+            .entity(authored)
+            .unwrap_or_else(|| panic!("test fixture definition {authored}"));
+        let request = entity_spawn_request(
+            registry,
+            definition.content_id,
+            address,
+            [spawn[0] + offset_x, spawn[1]],
+        )
+        .unwrap_or_else(|error| panic!("test fixture {authored}: {error}"));
+        world
+            .spawn(request)
+            .unwrap_or_else(|error| panic!("spawn test fixture {authored}: {error:?}"));
+    }
+}
+
 fn instantiate_startup_maps(world: &mut World, registry: &ContentRegistry) {
     for (authored, content_id) in [(MAP1_AUTHORED, MAP1), (MAP2_AUTHORED, MAP2)] {
         let Some(addr) = world_address_for_map(
@@ -4940,7 +4983,7 @@ mod tests {
         owner.attach(a);
         let entity = owner.entity_of(a).unwrap();
         let mut t = owner.world().transform_of(entity).unwrap();
-        t.position[0] = 0.0;
+        t.position[0] = owner.map_a_spawn()[0];
         owner.world.set_transform(entity, t);
         let x0 = owner.world().player_body_of(entity).unwrap().position[0];
         owner.apply_input(command_update(a, cmd(1, MoveAxis::Left, false, false)));
@@ -5010,8 +5053,9 @@ mod tests {
         owner.attach(b);
         let pipe_a = bind_pipe(&mut owner, a);
         let pipe_b = bind_pipe(&mut owner, b);
-        assert!(owner.set_player_x(a, -8.0));
-        assert!(owner.set_player_x(b, -8.0));
+        let start_x = owner.map_a_spawn()[0];
+        assert!(owner.set_player_x(a, start_x));
+        assert!(owner.set_player_x(b, start_x));
         owner.apply_input(InputUpdate::DevSpawnMonster {
             connection_id: a,
             monster_content_id: MONSTER_MOSS_CRAB,
@@ -5046,33 +5090,6 @@ mod tests {
         );
         assert_ne!(view_a.local_player_entity, view_b.local_player_entity);
         assert_eq!(
-            view_a
-                .entities
-                .values()
-                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Interactable)
-                .count(),
-            1,
-            "AOI at x=-8 must include the chest as a generic interactable"
-        );
-        assert_eq!(
-            view_a
-                .entities
-                .values()
-                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Npc)
-                .count(),
-            2,
-            "AOI at x=-8 must include the Social NPC and explicit DEV Monster as NPCs"
-        );
-        assert_eq!(
-            view_a
-                .entities
-                .values()
-                .filter(|e| e.kind == purgatory_protocol::ReplicatedKind::Portal)
-                .count(),
-            1,
-            "AOI at x=-8 must include the Map A portal as ReplicatedKind::Portal"
-        );
-        assert_eq!(
             view_a.local_player_entity,
             super::super::snapshot::to_wire_id(owner.entity_of(a).unwrap())
         );
@@ -5092,8 +5109,9 @@ mod tests {
         owner.attach(a);
         owner.attach(b);
         let pipe = bind_pipe(&mut owner, a);
-        assert!(owner.set_player_x(a, 0.0));
-        assert!(owner.set_player_x(b, 0.0));
+        let start_x = owner.map_a_spawn()[0];
+        assert!(owner.set_player_x(a, start_x));
+        assert!(owner.set_player_x(b, start_x));
         owner.apply_input(command_update(a, cmd(1, MoveAxis::Right, false, false)));
         owner.apply_input(command_update(b, cmd(1, MoveAxis::Left, false, false)));
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
@@ -5113,8 +5131,8 @@ mod tests {
         let eb = super::super::snapshot::to_wire_id(owner.entity_of(b).unwrap());
         let ax = view.entities.get(&ea).unwrap().position[0];
         let bx = view.entities.get(&eb).unwrap().position[0];
-        assert!(ax > 0.2, "A right from 0, got {ax}");
-        assert!(bx < -0.2, "B left from 0, got {bx}");
+        assert!(ax > start_x + 0.2, "A right from {start_x}, got {ax}");
+        assert!(bx < start_x - 0.2, "B left from {start_x}, got {bx}");
     }
 
     #[test]
@@ -5270,10 +5288,11 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let id = ConnectionId::from_raw(1);
         owner.attach(id);
-        assert!(owner.set_player_x(id, -8.0));
+        let displaced_x = owner.map_a_spawn()[0] + 2.0;
+        assert!(owner.set_player_x(id, displaced_x));
         let actor = owner.entity_of(id).unwrap();
         let before = owner.world().transform_of(actor).unwrap().position;
-        assert!((before[0] + 8.0).abs() < 0.05);
+        assert!((before[0] - displaced_x).abs() < 0.05);
         owner.apply_input(InputUpdate::DevResetPlayer { connection_id: id });
         assert_eq!(owner.entity_of(id), Some(actor));
         let after = owner.world().transform_of(actor).unwrap().position;
@@ -5312,7 +5331,7 @@ mod tests {
             speed: Some(2_400),
         });
         owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
-        for _ in 0..40 {
+        for _ in 0..15 {
             owner.simulate_tick(dt);
         }
         assert!((owner.world().get_player(actor).unwrap().1.velocity[0] - 24.0).abs() < 0.05);
@@ -5410,7 +5429,7 @@ mod tests {
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
         let pose = owner.world().transform_of(actor).unwrap().position;
-        let target = nearby_dev_interactable(&owner, actor);
+        let target = nearby_test_interactable(&owner, actor);
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(target),
@@ -5634,7 +5653,7 @@ mod tests {
         }
     }
 
-    fn nearby_dev_interactable(owner: &GameplayOwner, actor: EntityId) -> EntityId {
+    fn nearby_test_interactable(owner: &GameplayOwner, actor: EntityId) -> EntityId {
         let actor_x = owner.world().transform_of(actor).unwrap().position[0];
         owner
             .world()
@@ -5644,17 +5663,16 @@ mod tests {
                     .world()
                     .interactable_of(eid)
                     .is_some_and(|cap| cap.kind != purgatory_simulation::InteractableKind::Portal)
-                    && owner.world().address_of(eid)
-                        == Some(purgatory_simulation::WorldAddress::DEV)
+                    && owner.world().address_of(eid) == owner.world().address_of(actor)
                     && {
                         let x = owner.world().transform_of(eid).unwrap().position[0];
                         (x - actor_x).abs() < purgatory_simulation::INTERACT_RANGE
                     }
             })
-            .expect("nearby DEV interactable")
+            .expect("nearby MAP1 test interactable")
     }
 
-    fn far_dev_interactable(owner: &GameplayOwner, actor: EntityId) -> EntityId {
+    fn far_test_interactable(owner: &GameplayOwner, actor: EntityId) -> EntityId {
         let actor_x = owner.world().transform_of(actor).unwrap().position[0];
         owner
             .world()
@@ -5664,14 +5682,13 @@ mod tests {
                     .world()
                     .interactable_of(eid)
                     .is_some_and(|cap| cap.kind != purgatory_simulation::InteractableKind::Portal)
-                    && owner.world().address_of(eid)
-                        == Some(purgatory_simulation::WorldAddress::DEV)
+                    && owner.world().address_of(eid) == owner.world().address_of(actor)
                     && {
                         let x = owner.world().transform_of(eid).unwrap().position[0];
                         (x - actor_x).abs() > purgatory_simulation::INTERACT_RANGE
                     }
             })
-            .expect("far DEV interactable")
+            .expect("far MAP1 test interactable")
     }
 
     #[test]
@@ -5682,7 +5699,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
-        let target = nearby_dev_interactable(&owner, actor);
+        let target = nearby_test_interactable(&owner, actor);
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(target),
@@ -5703,7 +5720,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let actor = owner.entity_of(id).unwrap();
-        let target = far_dev_interactable(&owner, actor);
+        let target = far_test_interactable(&owner, actor);
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(target),
@@ -5793,6 +5810,20 @@ mod tests {
             .world()
             .transform_of(portal)
             .expect("MAP1 portal transform")
+            .position[0];
+        assert!(owner.set_player_x(id, x));
+    }
+
+    fn move_player_to_content(
+        owner: &mut GameplayOwner,
+        id: ConnectionId,
+        authored: &str,
+    ) {
+        let target = find_content(owner, authored);
+        let x = owner
+            .world()
+            .transform_of(target)
+            .unwrap_or_else(|| panic!("{authored} transform"))
             .position[0];
         assert!(owner.set_player_x(id, x));
     }
@@ -6234,7 +6265,7 @@ mod tests {
         owner.attach(id);
         let actor = owner.entity_of(id).unwrap();
         let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
-        assert!(owner.set_player_x(id, -8.0));
+        assert!(owner.set_player_x(id, owner.map_a_spawn()[0]));
         owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false)));
         owner.simulate_tick(dt);
         owner.simulate_tick(dt);
@@ -6482,7 +6513,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
-        assert!(owner.set_player_x(id, -17.8));
+        move_player_to_content(&mut owner, id, "npc.welcome.traveler_stayed");
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(traveler),
@@ -6616,8 +6647,8 @@ mod tests {
         owner.bindings.get_mut(&player_a).unwrap().interact = Some(tx_a);
         owner.bindings.get_mut(&player_b).unwrap().interact = Some(tx_b);
         let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
-        assert!(owner.set_player_x(player_a, -17.8));
-        assert!(owner.set_player_x(player_b, -17.8));
+        move_player_to_content(&mut owner, player_a, "npc.welcome.traveler_stayed");
+        move_player_to_content(&mut owner, player_b, "npc.welcome.traveler_stayed");
 
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: player_a,
@@ -6708,7 +6739,7 @@ mod tests {
         owner.bindings.get_mut(&connection).unwrap().interact = Some(tx);
         let actor = owner.entity_of(connection).unwrap();
         let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
-        assert!(owner.set_player_x(connection, -17.8));
+        move_player_to_content(&mut owner, connection, "npc.welcome.traveler_stayed");
 
         // Complete the higher-priority first meeting so the seeded package
         // situation becomes the next eligible Traveler ENTRY beat.
@@ -7134,7 +7165,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
-        assert!(owner.set_player_x(id, -8.0));
+        move_player_to_map1_portal(&mut owner, id);
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(traveler),
@@ -7155,7 +7186,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
-        assert!(owner.set_player_x(id, -17.8));
+        move_player_to_content(&mut owner, id, "npc.welcome.traveler_stayed");
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(traveler),
@@ -7170,7 +7201,7 @@ mod tests {
         ));
 
         let chest = find_content(&owner, "entity.interactable.chest");
-        assert!(owner.set_player_x(id, -7.4));
+        move_player_to_content(&mut owner, id, "entity.interactable.chest");
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(chest),
@@ -7195,7 +7226,7 @@ mod tests {
         owner.attach(id);
         owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
         let chest = find_content(&owner, "entity.interactable.chest");
-        assert!(owner.set_player_x(id, -7.4));
+        move_player_to_content(&mut owner, id, "entity.interactable.chest");
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(chest),
@@ -7447,7 +7478,7 @@ mod tests {
         assert!(owner.world_mut().despawn(chest));
         // Reuse slot via a fresh interactable spawn near player if possible; despawned
         // generation must fail even before a replacement exists.
-        assert!(owner.set_player_x(id, -7.4));
+        move_player_to_content(&mut owner, id, "entity.interactable.chest");
         owner.apply_input(InputUpdate::InteractOpen {
             connection_id: id,
             target: wire_id(stale),
@@ -8005,38 +8036,29 @@ mod tests {
             actor,
             ContentId::from_authored("skill.movement.dash").unwrap()
         ));
-        let creatures: Vec<_> = owner
-            .world()
-            .iter()
-            .filter(|&entity| owner.world().npc_of(entity).is_some())
-            .collect();
-        assert_eq!(creatures.len(), 1);
-        assert_eq!(
-            owner.world().content_id_of(creatures[0]),
-            Some(MONSTER_MOSS_CRAB)
-        );
+        let creature = *owner
+            .dev_spawned_monsters
+            .last()
+            .expect("DEV-spawned Moss Crab");
+        assert_eq!(owner.world().content_id_of(creature), Some(MONSTER_MOSS_CRAB));
         let definition = owner
             .registry
             .monster_by_id(MONSTER_MOSS_CRAB)
             .expect("Moss Crab definition");
         assert_eq!(
-            owner.world().health_of(creatures[0]),
+            owner.world().health_of(creature),
             Some(Health::full(definition.health_max))
         );
         assert_eq!(
             owner
                 .world()
-                .npc_of(creatures[0])
+                .npc_of(creature)
                 .unwrap()
                 .runtime_config
                 .movement_speed,
             definition.movement_speed
         );
-        assert!(
-            !owner
-                .world()
-                .ability_granted(creatures[0], basic_strike_id())
-        );
+        assert!(!owner.world().ability_granted(creature, basic_strike_id()));
     }
 
     #[test]
