@@ -584,6 +584,7 @@ impl eframe::App for MapLabApp {
             });
 
         let mut delete_foothold = None;
+        let mut delete_parallax = None;
         egui::Panel::left("map_lab_layers")
             .resizable(true)
             .default_size(if self.editor_mode == EditorMode::Map {
@@ -650,8 +651,110 @@ impl eframe::App for MapLabApp {
                         ui.small("Preview updates immediately. Runtime applies after client rebuild.");
                     }
                     ui.separator();
+                    ui.heading("PARALLAX BACKGROUNDS");
+                    ui.horizontal(|ui| {
+                        if ui.button("+ Add Background").clicked() {
+                            self.add_parallax_layer();
+                        }
+                        if ui.button("Reload Assets").clicked() {
+                            self.reload_environment_assets(ui.ctx());
+                        }
+                    });
+                    ui.small(
+                        "Asset paths are relative to Graphic/. Natural image size uses the map PPU.",
+                    );
+
+                    if let Some(document) = self.document.as_mut() {
+                        for (index, layer) in
+                            document.environment.parallax_layers.iter_mut().enumerate()
+                        {
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.strong(&layer.id);
+                                if ui.small_button("Delete").clicked() {
+                                    delete_parallax = Some(index);
+                                }
+                            });
+                            if ui.text_edit_singleline(&mut layer.id).changed() {
+                                self.environment_dirty = true;
+                            }
+                            ui.label("Asset");
+                            if ui.text_edit_singleline(&mut layer.asset_path).changed() {
+                                self.environment_dirty = true;
+                            }
+
+                            let old_depth = layer.depth;
+                            egui::ComboBox::from_id_salt(("parallax_depth", index))
+                                .selected_text(layer.depth.as_str())
+                                .show_ui(ui, |ui| {
+                                    for depth in ParallaxDepth::ALL {
+                                        ui.selectable_value(
+                                            &mut layer.depth,
+                                            depth,
+                                            depth.as_str(),
+                                        );
+                                    }
+                                });
+                            if layer.depth != old_depth {
+                                layer.parallax = layer.depth.default_parallax();
+                                self.environment_dirty = true;
+                            }
+
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut layer.parallax, 0.0..=1.0)
+                                        .text("Parallax"),
+                                )
+                                .changed()
+                            {
+                                self.environment_dirty = true;
+                            }
+                            ui.small("0 = screen-fixed · 1 = world-locked");
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut layer.opacity, 0.0..=1.0)
+                                        .text("Opacity"),
+                                )
+                                .changed()
+                            {
+                                self.environment_dirty = true;
+                            }
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut layer.repeat_x, "Repeat X").changed() {
+                                    self.environment_dirty = true;
+                                }
+                                if ui.checkbox(&mut layer.repeat_y, "Repeat Y").changed() {
+                                    self.environment_dirty = true;
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Offset");
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut layer.offset_world[0])
+                                            .speed(0.05)
+                                            .prefix("X "),
+                                    )
+                                    .changed()
+                                {
+                                    self.environment_dirty = true;
+                                }
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut layer.offset_world[1])
+                                            .speed(0.05)
+                                            .prefix("Y "),
+                                    )
+                                    .changed()
+                                {
+                                    self.environment_dirty = true;
+                                }
+                            });
+                        }
+                    }
+                    ui.separator();
                     ui.label("NEXT");
-                    ui.small("Parallax layers · celestial objects · cloud motion");
+                    ui.small("Celestial bodies · cloud motion · foreground atmosphere");
                 } else if self.editor_mode == EditorMode::Footnote {
                     ui.heading("FOOTNOTE EDIT");
                     ui.small("Polyline authoring · gameplay-owned · Tiled stays visual-only");
@@ -837,6 +940,9 @@ impl eframe::App for MapLabApp {
             });
         if let Some(index) = delete_foothold {
             self.delete_foothold_path(index);
+        }
+        if let Some(index) = delete_parallax {
+            self.delete_parallax_layer(index);
         }
 
         egui::Panel::right("map_lab_info")
