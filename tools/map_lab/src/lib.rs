@@ -184,6 +184,47 @@ fn validate_environment(
             source.id
         ));
     }
+    let mut ids = std::collections::HashSet::new();
+    for layer in &environment.parallax_layers {
+        if layer.id.trim().is_empty() || !ids.insert(layer.id.as_str()) {
+            return Err(format!(
+                "{}: parallax layer ids must be non-empty and unique",
+                path.display()
+            ));
+        }
+        let asset = std::path::Path::new(&layer.asset_path);
+        if layer.asset_path.trim().is_empty()
+            || asset.is_absolute()
+            || asset.components().any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(format!(
+                "{}: parallax layer {} asset_path must be a Graphic-relative path without '..'",
+                path.display(),
+                layer.id
+            ));
+        }
+        if !layer.parallax.is_finite() || !(0.0..=1.0).contains(&layer.parallax) {
+            return Err(format!(
+                "{}: parallax layer {} parallax must be within 0..=1",
+                path.display(),
+                layer.id
+            ));
+        }
+        if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) {
+            return Err(format!(
+                "{}: parallax layer {} opacity must be within 0..=1",
+                path.display(),
+                layer.id
+            ));
+        }
+        if !layer.offset_world.iter().all(|value| value.is_finite()) {
+            return Err(format!(
+                "{}: parallax layer {} offset must be finite",
+                path.display(),
+                layer.id
+            ));
+        }
+    }
     Ok(())
 }
 
