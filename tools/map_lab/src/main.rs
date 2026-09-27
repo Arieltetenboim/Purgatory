@@ -2165,6 +2165,8 @@ fn parallax_fill_size(mode: ParallaxFillMode, natural: [f32; 2], coverage: [f32;
     }
 }
 
+// Rendering parity keeps the map/camera contract explicit at this leaf helper.
+#[allow(clippy::too_many_arguments)]
 fn paint_parallax_preview(
     painter: &egui::Painter,
     layer: &ParallaxLayer,
@@ -2232,6 +2234,8 @@ fn paint_parallax_preview(
     }
 }
 
+// Cloud preview mirrors runtime placement inputs one-for-one.
+#[allow(clippy::too_many_arguments)]
 fn paint_cloud_field_preview(
     painter: &egui::Painter,
     field: &CloudFieldAuthoring,
@@ -2466,6 +2470,8 @@ fn load_textures(ctx: &egui::Context, document: &MapLabDocument) -> Result<Textu
     Ok(textures)
 }
 
+// The two maps are intentionally distinct caches: single-layer textures and cloud variant pools.
+#[allow(clippy::type_complexity)]
 fn load_environment_textures(
     ctx: &egui::Context,
     document: &MapLabDocument,
