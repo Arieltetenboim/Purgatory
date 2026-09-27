@@ -10,6 +10,27 @@
         2.4097576,
         2.4350557
       ]
+    },
+    {
+      "id": "portal.001",
+      "kind": "portal",
+      "position": [
+        21.858204,
+        1.0
+      ],
+      "linked_portal": {
+        "map": "map.dev.footnote",
+        "portal": "entity.portal.to_second"
+      }
+    },
+    {
+      "id": "placement.npc_001",
+      "kind": "entity",
+      "content": "npc.welcome.gate_watchman",
+      "position": [
+        14.555908,
+        1.0
+      ]
     }
   ]
 }
