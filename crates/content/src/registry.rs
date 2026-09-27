@@ -610,8 +610,7 @@ impl ContentRegistry {
                         "unresolved entity reference",
                     )),
                     Some(ent) => {
-                        if ent.interactable
-                            == Some(purgatory_simulation::InteractableKind::Portal)
+                        if ent.interactable == Some(purgatory_simulation::InteractableKind::Portal)
                             && !placed_portals.insert(ent.authored_id.as_str())
                         {
                             issues.push(ValidationIssue::new(

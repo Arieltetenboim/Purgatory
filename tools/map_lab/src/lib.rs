@@ -3,11 +3,11 @@
 use std::path::{Path, PathBuf};
 
 use purgatory_content::{
-    MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
-    LoadMode, MapAuthoringSource, MapEnvironmentAuthoring, MapGameplayAuthoring, MapPresentation,
-    Placement, compile_tiled_map_with_ppu, default_content_root, load_map_authoring,
-    load_placement_file, load_registry, resolve_png_asset_folder, serialize_map_pretty,
-    serialize_placements_v2, validate_cloud_field,
+    LoadMode, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
+    MapAuthoringSource, MapEnvironmentAuthoring, MapGameplayAuthoring, MapPresentation, Placement,
+    compile_tiled_map_with_ppu, default_content_root, load_map_authoring, load_placement_file,
+    load_registry, resolve_png_asset_folder, serialize_map_pretty, serialize_placements_v2,
+    validate_cloud_field,
 };
 
 /// Production visual-scale standard for ordinary PURGATORY maps.
@@ -155,8 +155,8 @@ impl MapLabDocument {
     }
 
     pub fn save_placements(&self) -> Result<(), String> {
-        let registry =
-            load_registry(&default_content_root(), LoadMode::Full).map_err(|error| error.to_string())?;
+        let registry = load_registry(&default_content_root(), LoadMode::Full)
+            .map_err(|error| error.to_string())?;
         registry
             .validate_placements(&self.source.id, &self.placements)
             .map_err(|error| error.to_string())?;

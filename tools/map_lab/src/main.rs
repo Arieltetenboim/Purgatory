@@ -2388,8 +2388,8 @@ impl MapLabApp {
 }
 
 fn load_entity_catalog() -> Result<Vec<EntityCatalogEntry>, String> {
-    let registry =
-        load_registry(&default_content_root(), LoadMode::Full).map_err(|error| error.to_string())?;
+    let registry = load_registry(&default_content_root(), LoadMode::Full)
+        .map_err(|error| error.to_string())?;
     let mut entries = Vec::new();
     for entity in registry.iter_entities() {
         let category = match entity.interactable {
@@ -2438,7 +2438,8 @@ fn placement_color(placement: &Placement, catalog: &[EntityCatalogEntry]) -> Col
     let category = catalog
         .iter()
         .find(|entry| {
-            entry.placement_kind == placement.kind && entry.authored_id == placement.content_authored
+            entry.placement_kind == placement.kind
+                && entry.authored_id == placement.content_authored
         })
         .map(|entry| entry.category);
     match category {
@@ -2446,9 +2447,8 @@ fn placement_color(placement: &Placement, catalog: &[EntityCatalogEntry]) -> Col
         Some(EntityCatalogKind::Npc) => Color32::from_rgb(255, 220, 90),
         Some(EntityCatalogKind::Interactable) => Color32::from_rgb(190, 120, 255),
         Some(EntityCatalogKind::Entity) => Color32::from_rgb(180, 180, 190),
-        Some(EntityCatalogKind::Mob) | None if placement.kind == PlacementKind::Monster => {
-            Color32::from_rgb(255, 100, 90)
-        }
+        Some(EntityCatalogKind::Mob) => Color32::from_rgb(255, 100, 90),
+        None if placement.kind == PlacementKind::Monster => Color32::from_rgb(255, 100, 90),
         None => Color32::LIGHT_GRAY,
     }
 }
