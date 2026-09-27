@@ -4431,7 +4431,7 @@ mod tests {
             binding.character_id = Some(character_id);
             binding.persistence_revision = 5;
             binding.restore = RestoreIntent {
-                map_authored: MAP_SECOND_AUTHORED.into(),
+                map_authored: MAP2_AUTHORED.into(),
                 point_id: "default".into(),
                 checkpoint_id: None,
             };
@@ -4445,7 +4445,7 @@ mod tests {
         let deferred = persist.deferred_for_test(character_id).unwrap();
         assert_eq!(deferred.character_id, character_id);
         assert_eq!(deferred.persistence_revision, 6);
-        assert_eq!(deferred.restore.map_authored, MAP_SECOND_AUTHORED);
+        assert_eq!(deferred.restore.map_authored, MAP2_AUTHORED);
         let diagnostics = persist.diagnostics();
         assert_eq!(diagnostics.queue_full, 1);
         assert_eq!(diagnostics.deferred_latest, 1);
