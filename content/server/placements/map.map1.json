@@ -28,8 +28,8 @@
         1.0
       ],
       "linked_portal": {
-        "map": "map.dev.footnote",
-        "portal": "entity.portal.to_second"
+        "map": "map.map2",
+        "portal": "portal.001"
       }
     },
     {
