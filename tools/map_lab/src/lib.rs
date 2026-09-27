@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 
 use purgatory_content::{
     MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_GAMEPLAY_AUTHORING_SCHEMA_VERSION,
-    MapAuthoringSource, MapEnvironmentAuthoring, MapGameplayAuthoring, MapPresentation,
-    compile_tiled_map_with_ppu, load_map_authoring, resolve_png_asset_folder, serialize_map_pretty,
-    validate_cloud_field,
+    LoadMode, MapAuthoringSource, MapEnvironmentAuthoring, MapGameplayAuthoring, MapPresentation,
+    Placement, compile_tiled_map_with_ppu, default_content_root, load_map_authoring,
+    load_placement_file, load_registry, resolve_png_asset_folder, serialize_map_pretty,
+    serialize_placements_v2, validate_cloud_field,
 };
 
 /// Production visual-scale standard for ordinary PURGATORY maps.
@@ -20,10 +21,12 @@ pub struct MapLabDocument {
     pub sidecar_path: PathBuf,
     pub gameplay_path: PathBuf,
     pub environment_path: PathBuf,
+    pub placements_path: PathBuf,
     pub source: MapAuthoringSource,
     pub presentation: MapPresentation,
     pub gameplay: MapGameplayAuthoring,
     pub environment: MapEnvironmentAuthoring,
+    pub placements: Vec<Placement>,
 }
 
 impl MapLabDocument {
@@ -35,6 +38,7 @@ impl MapLabDocument {
         sync_runtime_bounds_file(path, &source.id, presentation.world_bounds)?;
         let gameplay_path = gameplay_path_for(path)?;
         let environment_path = environment_path_for(path)?;
+        let placements_path = placements_path_for(path, &source.id)?;
         let gameplay = if gameplay_path.is_file() {
             let bytes = std::fs::read(&gameplay_path)
                 .map_err(|error| format!("read {}: {error}", gameplay_path.display()))?;
@@ -47,6 +51,21 @@ impl MapLabDocument {
             gameplay
         } else {
             MapGameplayAuthoring::empty(source.id.clone())
+        };
+        let placements = if placements_path.is_file() {
+            let (map_authored, placements) =
+                load_placement_file(&placements_path).map_err(|error| error.to_string())?;
+            if map_authored != source.id {
+                return Err(format!(
+                    "{}: placement map {} does not match source {}",
+                    placements_path.display(),
+                    map_authored,
+                    source.id
+                ));
+            }
+            placements
+        } else {
+            Vec::new()
         };
         let environment = if environment_path.is_file() {
             let bytes = std::fs::read(&environment_path)
@@ -62,10 +81,12 @@ impl MapLabDocument {
             sidecar_path: path.to_path_buf(),
             gameplay_path,
             environment_path,
+            placements_path,
             source,
             presentation,
             gameplay,
             environment,
+            placements,
         })
     }
 
@@ -133,6 +154,24 @@ impl MapLabDocument {
             .map_err(|error| format!("write {}: {error}", self.environment_path.display()))
     }
 
+    pub fn save_placements(&self) -> Result<(), String> {
+        let registry =
+            load_registry(&default_content_root(), LoadMode::Full).map_err(|error| error.to_string())?;
+        registry
+            .validate_placements(&self.source.id, &self.placements)
+            .map_err(|error| error.to_string())?;
+        let parent = self
+            .placements_path
+            .parent()
+            .ok_or_else(|| "invalid placements path".to_owned())?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+        let bytes = serialize_placements_v2(&self.source.id, &self.placements)
+            .map_err(|error| error.to_string())?;
+        std::fs::write(&self.placements_path, bytes)
+            .map_err(|error| format!("write {}: {error}", self.placements_path.display()))
+    }
+
     pub fn save_gameplay(&self) -> Result<(), String> {
         validate_gameplay(
             &self.gameplay_path,
@@ -152,6 +191,17 @@ impl MapLabDocument {
         std::fs::write(&self.gameplay_path, bytes)
             .map_err(|error| format!("write {}: {error}", self.gameplay_path.display()))
     }
+}
+
+fn placements_path_for(sidecar: &Path, map_authored: &str) -> Result<PathBuf, String> {
+    let content_root = sidecar
+        .ancestors()
+        .find(|ancestor| ancestor.join("server").is_dir() && ancestor.join("shared").is_dir())
+        .ok_or_else(|| format!("cannot locate content/ root above {}", sidecar.display()))?;
+    Ok(content_root
+        .join("server")
+        .join("placements")
+        .join(format!("{map_authored}.json")))
 }
 
 fn environment_path_for(sidecar: &Path) -> Result<PathBuf, String> {
