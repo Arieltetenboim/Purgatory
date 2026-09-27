@@ -8,6 +8,17 @@ fn main() {
     println!("cargo:rerun-if-changed={}", map.display());
     let environment = root.join("content/authoring/maps/map.map1.environment.json");
     println!("cargo:rerun-if-changed={}", environment.display());
+    let environment_bytes = fs::read(&environment)
+        .unwrap_or_else(|error| panic!("read {}: {error}", environment.display()));
+    let environment_authoring: purgatory_content::MapEnvironmentAuthoring =
+        serde_json::from_slice(&environment_bytes)
+            .unwrap_or_else(|error| panic!("parse {}: {error}", environment.display()));
+    for field in &environment_authoring.cloud_fields {
+        println!(
+            "cargo:rerun-if-changed={}",
+            root.join("Graphic").join(&field.asset_folder).display()
+        );
+    }
     println!(
         "cargo:rerun-if-changed={}",
         root.join("Graphic/assets/maps/map1.tmx").display()
@@ -33,6 +44,15 @@ fn main() {
         purgatory_content::serialize_map_pretty(&presentation).expect("serialize map presentation"),
     )
     .expect("write compiled map presentation");
-    fs::copy(&environment, output.join("map.map1.environment.json"))
-        .expect("copy map environment authoring");
+    let compiled_environment = purgatory_content::compile_map_environment(
+        &environment_authoring,
+        &root.join("Graphic"),
+    )
+    .unwrap_or_else(|error| panic!("PURGATORY environment compilation failed:\n{error}"));
+    fs::write(
+        output.join("map.map1.environment.json"),
+        purgatory_content::serialize_map_environment_pretty(&compiled_environment)
+            .expect("serialize map environment presentation"),
+    )
+    .expect("write compiled map environment presentation");
 }

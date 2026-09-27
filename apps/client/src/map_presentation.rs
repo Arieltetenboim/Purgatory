@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
 use purgatory_content::{
-    ContentRegistry, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION,
-    MapEnvironmentAuthoring, MapPresentation, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
-    PresentationSprite, SkyGradient,
+    CloudFieldAuthoring, CloudInstanceSpec, ContentRegistry,
+    MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION, MAP_PRESENTATION_SCHEMA_VERSION,
+    MapEnvironmentPresentation, MapPresentation, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
+    PresentationSprite, SkyGradient, cloud_field_seed, cloud_instance_count, cloud_instance_specs,
+    validate_cloud_field,
 };
 use purgatory_simulation::MapId;
 use serde_json::from_slice;
@@ -23,8 +25,10 @@ pub(crate) struct RuntimeMapPresentation {
     pixels_per_world_unit: f32,
     sky_gradient: Option<SkyGradient>,
     parallax_layers: Vec<RuntimeParallaxLayer>,
+    cloud_fields: Vec<RuntimeCloudField>,
     sprites: Vec<RuntimeSprite>,
     environment_time_seconds: f64,
+    visual_seed: u64,
 }
 
 struct RuntimeSprite {
@@ -38,6 +42,17 @@ struct RuntimeParallaxLayer {
     authored: ParallaxLayer,
     texture: SpriteTextureId,
     image_dimensions: [u32; 2],
+}
+
+struct RuntimeCloudVariant {
+    texture: SpriteTextureId,
+    image_dimensions: [u32; 2],
+}
+
+struct RuntimeCloudField {
+    authored: CloudFieldAuthoring,
+    variants: Vec<RuntimeCloudVariant>,
+    instances: Vec<CloudInstanceSpec>,
 }
 
 impl RuntimeMapPresentation {
@@ -58,12 +73,12 @@ impl RuntimeMapPresentation {
             ));
         }
 
-        let environment: MapEnvironmentAuthoring = from_slice(COMPILED_ENVIRONMENT)
+        let environment: MapEnvironmentPresentation = from_slice(COMPILED_ENVIRONMENT)
             .map_err(|error| format!("decode compiled map environment: {error}"))?;
-        if environment.schema_version != MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION {
+        if environment.schema_version != MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION {
             return Err(format!(
                 "compiled map environment schema {} is unsupported; expected {}",
-                environment.schema_version, MAP_ENVIRONMENT_AUTHORING_SCHEMA_VERSION
+                environment.schema_version, MAP_ENVIRONMENT_PRESENTATION_SCHEMA_VERSION
             ));
         }
         if environment.map_authored != map.map_authored {
@@ -134,6 +149,38 @@ impl RuntimeMapPresentation {
             });
         }
 
+        let mut cloud_fields = Vec::new();
+        for (field_index, field) in environment.cloud_fields.into_iter().enumerate() {
+            validate_cloud_field(&field.authored)
+                .map_err(|error| format!("compiled cloud field invalid: {error}"))?;
+            if field.asset_paths.is_empty() {
+                return Err(format!(
+                    "compiled cloud field {} has no resolved PNG assets",
+                    field.authored.id
+                ));
+            }
+            let mut variants = Vec::with_capacity(field.asset_paths.len());
+            for (asset_index, asset_path) in field.asset_paths.iter().enumerate() {
+                let texture_id = format!("map.cloud.{field_index}.{asset_index}");
+                let texture = loader.load_png(&texture_id, asset_path)?;
+                let image = loader.runtime().resource(texture).ok_or_else(|| {
+                    format!(
+                        "cloud asset {}:{} was not registered",
+                        field.authored.id, asset_index
+                    )
+                })?;
+                variants.push(RuntimeCloudVariant {
+                    texture,
+                    image_dimensions: [image.image.width(), image.image.height()],
+                });
+            }
+            cloud_fields.push(RuntimeCloudField {
+                authored: field.authored,
+                variants,
+                instances: Vec::new(),
+            });
+        }
+
         let mut sprites = Vec::new();
         for layer in map.layers.into_iter().filter(|layer| layer.visible) {
             for authored in layer.sprites.into_iter().filter(|sprite| sprite.visible) {
@@ -181,8 +228,10 @@ impl RuntimeMapPresentation {
             pixels_per_world_unit,
             sky_gradient: environment.sky_gradient,
             parallax_layers,
+            cloud_fields,
             sprites,
             environment_time_seconds: 0.0,
+            visual_seed: local_visual_seed(),
         })
     }
 
@@ -204,6 +253,20 @@ impl RuntimeMapPresentation {
                 .filter(|layer| layer.authored.depth == depth)
             {
                 quads.extend(self.parallax_quads(layer, camera));
+            }
+            for field in self
+                .cloud_fields
+                .iter_mut()
+                .filter(|field| field.authored.depth == depth)
+            {
+                quads.extend(cloud_field_quads(
+                    field,
+                    camera,
+                    self.world_bounds,
+                    self.pixels_per_world_unit,
+                    self.environment_time_seconds,
+                    self.visual_seed,
+                ));
             }
         }
         quads.extend(
@@ -329,6 +392,86 @@ impl RuntimeMapPresentation {
     }
 }
 
+fn cloud_field_quads(
+    field: &mut RuntimeCloudField,
+    camera: &Camera,
+    world_bounds: [f32; 4],
+    pixels_per_world_unit: f32,
+    elapsed_seconds: f64,
+    visual_seed: u64,
+) -> Vec<DrawQuad> {
+    let [min_x, min_y, max_x, max_y] = world_bounds;
+    let map_size = [max_x - min_x, max_y - min_y];
+    let map_center = [(min_x + max_x) * 0.5, (min_y + max_y) * 0.5];
+    let p = field.authored.parallax.clamp(0.0, 1.0);
+    let viewport = [camera.viewport_width, camera.viewport_height];
+    let coverage = parallax_coverage_size(map_size, viewport, p);
+    let count = cloud_instance_count(field.authored.density, coverage[0], viewport[0]);
+    if field.instances.len() != count {
+        field.instances = cloud_instance_specs(
+            &field.authored,
+            field.variants.len(),
+            cloud_field_seed(&field.authored.id, visual_seed),
+            count,
+        );
+    }
+
+    let base = [
+        camera.position[0] * (1.0 - p) + map_center[0] * p,
+        camera.position[1] * (1.0 - p) + map_center[1] * p,
+    ];
+    let ppu = pixels_per_world_unit.max(f32::EPSILON);
+    let uvs = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+    field
+        .instances
+        .iter()
+        .filter_map(|cloud| {
+            let variant = field.variants.get(cloud.asset_index)?;
+            let x = wrap_centered(
+                cloud.x_unit * coverage[0]
+                    + cloud.speed_world_per_second * elapsed_seconds as f32,
+                coverage[0],
+            );
+            let y = (cloud.height_unit - 0.5) * viewport[1];
+            let size = [
+                variant.image_dimensions[0] as f32 / ppu * cloud.scale,
+                variant.image_dimensions[1] as f32 / ppu * cloud.scale,
+            ];
+            let center = [base[0] + x, base[1] + y];
+            let mut quad = DrawQuad::textured_sprite(
+                variant.texture,
+                center,
+                [
+                    [-size[0] * 0.5, -size[1] * 0.5],
+                    [size[0] * 0.5, -size[1] * 0.5],
+                    [size[0] * 0.5, size[1] * 0.5],
+                    [-size[0] * 0.5, size[1] * 0.5],
+                ],
+                uvs,
+                0.0,
+            );
+            quad.color[3] = cloud.opacity;
+            Some(quad)
+        })
+        .collect()
+}
+
+fn wrap_centered(value: f32, period: f32) -> f32 {
+    if !period.is_finite() || period <= f32::EPSILON {
+        return 0.0;
+    }
+    value.rem_euclid(period) - period * 0.5
+}
+
+fn local_visual_seed() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    (nanos as u64) ^ ((nanos >> 64) as u64) ^ u64::from(std::process::id())
+}
+
 fn parallax_coverage_size(map_size: [f32; 2], viewport: [f32; 2], parallax: f32) -> [f32; 2] {
     let p = parallax.clamp(0.0, 1.0);
     [
@@ -430,6 +573,13 @@ mod tests {
             fill_size(ParallaxFillMode::Stretch, [4.0, 4.0], coverage),
             coverage
         );
+    }
+
+    #[test]
+    fn cloud_wrap_stays_inside_centered_period() {
+        assert!((wrap_centered(0.0, 10.0) + 5.0).abs() < 1e-5);
+        assert!((wrap_centered(14.0, 10.0) + 1.0).abs() < 1e-5);
+        assert!((wrap_centered(-1.0, 10.0) - 4.0).abs() < 1e-5);
     }
 
     #[test]
