@@ -2,12 +2,14 @@
 
 use crate::error::{ContentError, ValidationIssue};
 use crate::map_gameplay_authoring::FootholdKind;
+use crate::monster::{MonsterBehavior, MonsterDefinition};
 use crate::registry::ContentRegistry;
 use crate::schema::{EntityDefinition, PlacementKind};
 use purgatory_common::{ContentId, WorldAddress};
 use purgatory_simulation::{
-    EquipmentState, Interactable, InteractableKind, MapRuntimePlan, PlanPlatform, Platform,
-    RuntimeSpawnRequest, Transform,
+    CONTACT_EPSILON, EquipmentState, Interactable, InteractableKind, MapRuntimePlan,
+    NpcApproachBounds, NpcRuntimeConfig, PLAYER_HALF_EXTENTS, PlanPlatform, Platform,
+    RuntimeSpawnRequest, SimulationTick, Transform, World,
 };
 
 pub fn map_plan(
@@ -70,7 +72,7 @@ pub fn map_plan(
         }
     }
     let mut placements = Vec::new();
-    for place in registry.placements(map_authored) {
+    for (placement_index, place) in registry.placements(map_authored).iter().enumerate() {
         match place.kind {
             PlacementKind::Entity => {
                 let entity = registry.entity(&place.content_authored).ok_or_else(|| {
@@ -84,12 +86,26 @@ pub fn map_plan(
                 placements.push(spawn_request_for_entity(entity, address, place.position));
             }
             PlacementKind::Monster => {
-                return Err(ContentError::one(ValidationIssue::new(
-                    map_authored,
-                    &place.id,
-                    "kind",
-                    "monster placement is validated by Entity E0 but requires the Entity E2 runtime spawn adapter",
-                )));
+                let definition = registry.monster(&place.content_authored).ok_or_else(|| {
+                    ContentError::one(ValidationIssue::new(
+                        map_authored,
+                        &place.content_authored,
+                        "content",
+                        "unresolved monster reference",
+                    ))
+                })?;
+                let ordinal = u32::try_from(placement_index.saturating_add(1)).unwrap_or(u32::MAX);
+                let seed = definition
+                    .content_id
+                    .token()
+                    .wrapping_add(ordinal.wrapping_mul(0x9E37_79B9));
+                placements.push(spawn_request_for_monster(
+                    definition,
+                    address,
+                    place.position,
+                    seed,
+                    SimulationTick::from_count(0),
+                ));
             }
             PlacementKind::Portal => {
                 let content_id =
@@ -118,6 +134,84 @@ pub fn map_plan(
         platforms,
         placements,
     })
+}
+
+/// Build one authored Monster runtime request from a floor/contact point.
+pub fn monster_spawn_request(
+    registry: &ContentRegistry,
+    content_id: ContentId,
+    address: WorldAddress,
+    floor_position: [f32; 2],
+    seed: u32,
+    now: SimulationTick,
+) -> Result<RuntimeSpawnRequest, ContentError> {
+    let definition = registry.monster_by_id(content_id).ok_or_else(|| {
+        ContentError::one(ValidationIssue::new(
+            format!("content_id={content_id}"),
+            "-",
+            "monster",
+            "ContentId does not resolve to a Monster definition",
+        ))
+    })?;
+    Ok(spawn_request_for_monster(
+        definition,
+        address,
+        floor_position,
+        seed,
+        now,
+    ))
+}
+
+fn spawn_request_for_monster(
+    definition: &MonsterDefinition,
+    address: WorldAddress,
+    floor_position: [f32; 2],
+    seed: u32,
+    now: SimulationTick,
+) -> RuntimeSpawnRequest {
+    const MONSTER_RUNTIME_TYPE_TOKEN: u32 = 9_000;
+
+    let spawn_position = [
+        floor_position[0],
+        floor_position[1] + definition.collision_bounds.bottom,
+    ];
+    let approach_bounds = match definition.behavior {
+        MonsterBehavior::ChaseContactWhenAttacked => Some(NpcApproachBounds {
+            left: (definition.collision_bounds.left + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
+                .max(0.0),
+            right: (definition.collision_bounds.right + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
+                .max(0.0),
+            bottom: (definition.collision_bounds.bottom + PLAYER_HALF_EXTENTS[1] - CONTACT_EPSILON)
+                .max(0.0),
+            top: (definition.collision_bounds.top + PLAYER_HALF_EXTENTS[1] - CONTACT_EPSILON)
+                .max(0.0),
+        }),
+    };
+    let runtime_config = NpcRuntimeConfig {
+        movement_speed: definition.movement_speed,
+        half_extents: definition.collision_bounds.half_extents(),
+        collision_center_offset: definition.collision_bounds.center_offset(),
+        approach_bounds,
+        ..NpcRuntimeConfig::default()
+    };
+    let mut request = World::npc_spawn_request_with_runtime_config(
+        address,
+        spawn_position,
+        MONSTER_RUNTIME_TYPE_TOKEN,
+        definition.home_leash_radius,
+        seed,
+        now,
+        true,
+        definition.health_max,
+        runtime_config,
+    )
+    .with_content(definition.content_id);
+    if let Some(npc) = request.npc.as_mut() {
+        // Preserve the existing authored-Monster DEV behavior: spawn idle,
+        // then enter the deterministic patrol schedule.
+        npc.walking = false;
+    }
+    request
 }
 
 /// Build one runtime entity from validated content at a caller-supplied
@@ -205,4 +299,55 @@ pub fn world_address_for_map(
 ) -> Option<WorldAddress> {
     let map = registry.map_id(map_content)?;
     Some(WorldAddress::new(map, channel, instance))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::monster::{MonsterCollisionBounds, MonsterDefinition};
+    use purgatory_common::ContentId;
+
+    #[test]
+    fn authored_monster_projection_uses_floor_position_and_definition_stats() {
+        let definition = MonsterDefinition {
+            content_id: ContentId::from_authored("monster.synthetic").unwrap(),
+            authored_id: "monster.synthetic".into(),
+            debug_name: "Synthetic".into(),
+            health_max: 37.0,
+            collision_bounds: MonsterCollisionBounds {
+                left: 0.3,
+                right: 0.5,
+                bottom: 0.4,
+                top: 0.8,
+            },
+            movement_speed: 1.75,
+            behavior: MonsterBehavior::ChaseContactWhenAttacked,
+            home_leash_radius: 6.5,
+        };
+
+        let request = spawn_request_for_monster(
+            &definition,
+            WorldAddress::DEV,
+            [3.0, 2.0],
+            123,
+            SimulationTick::from_count(7),
+        );
+
+        assert_eq!(
+            request.transform.map(|transform| transform.position),
+            Some([3.0, 2.4])
+        );
+        assert_eq!(request.content_id, Some(definition.content_id));
+        assert_eq!(request.health.map(|health| health.max), Some(37.0));
+        let npc = request.npc.expect("monster NPC capability");
+        assert_eq!(npc.home, [3.0, 2.4]);
+        assert_eq!(npc.hotspot_radius, 6.5);
+        assert_eq!(npc.runtime_config.movement_speed, 1.75);
+        assert_eq!(npc.runtime_config.half_extents, [0.4, 0.6]);
+        assert_eq!(npc.runtime_config.collision_center_offset, [0.1, 0.2]);
+        assert!(npc.runtime_config.approach_bounds.is_some());
+        assert!(!npc.walking);
+        assert!(npc.active);
+    }
 }

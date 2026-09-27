@@ -35,7 +35,8 @@ pub use equipment::{
 };
 pub use error::{ContentError, ValidationIssue};
 pub use instantiate::{
-    entity_spawn_request, geometry_plan, map_plan, spawn_point_position, world_address_for_map,
+    entity_spawn_request, geometry_plan, map_plan, monster_spawn_request, spawn_point_position,
+    world_address_for_map,
 };
 pub use item::{
     ITEM_CONTENT_SCHEMA_VERSION, ITEM_PRESENTATION_SCHEMA_VERSION, ItemCategory, ItemDefinition,

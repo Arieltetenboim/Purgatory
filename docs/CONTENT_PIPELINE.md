@@ -99,7 +99,7 @@ The Monster schema v4 contract is
 [`MONSTER_AUTHORING_RUNTIME.md`](MONSTER_AUTHORING_RUNTIME.md). The Red Slime
 normal-session proof resolves Health, collision half-extents, movement speed, damage-triggered chase behavior and home leash from the validated Full registry. Workload-only NPC
 presets and tokens remain owned by simulation/server code and are not monster
-identity. Monster definitions remain owned by Mob Lab. Entity E0 adds validated monster references to placement schema v2, but static monster runtime spawning is intentionally deferred to the Entity E2 spawn-adapter slice; E0 does not duplicate the DEV monster spawn path.
+identity. Monster definitions remain owned by Mob Lab. Entity E2 projects both Map Lab monster placements and DEV monster spawns through the same content-backed runtime adapter, so HP, collision, movement speed, approach bounds and home leash have one owner. A Map Lab monster placement position is the monster's floor/contact point; the adapter derives the runtime entity origin from authored collision bounds.
 
 Portal links are map-placement data. New portals are authored in Map Lab as map-owned placements with a map-local Portal ID and `linked_portal: { "map": "<destination MapID>", "portal": "<destination Portal ID>" }`. The editor displays targets as `MapID · PortalID`; choosing a portal therefore carries both pieces of identity explicitly. Arrival is at that linked portal, not the map's generic spawn. Links are one-way unless the destination portal also links back. Legacy portal entity `transition` metadata remains read-compatible during migration but is not the forward authoring workflow.
 

@@ -13,8 +13,8 @@ use purgatory_common::{
     RestoreIntent, WorldAddress,
 };
 use purgatory_content::{
-    ContentRegistry, EquipmentAuthError, LoadMode, MonsterBehavior, authorize_equip,
-    default_content_root, entity_spawn_request, load_registry, map_plan, resolve_restore,
+    ContentRegistry, EquipmentAuthError, LoadMode, authorize_equip, default_content_root,
+    entity_spawn_request, load_registry, map_plan, monster_spawn_request, resolve_restore,
     runtime_placement, world_address_for_map,
 };
 use purgatory_persistence::{PersistentCharacter, PersistentCharacterSnapshot};
@@ -28,10 +28,10 @@ use purgatory_protocol::{
 };
 use purgatory_simulation::{
     AbilityActivation, AbilityRejectReason, AbilityRequest, ActionEnd, ActionGateContext,
-    ActionKind, CONTACT_EPSILON, Cadence, CommandClass, CommandDenial, EntityId, EntityKind,
-    EquipmentSlot, FOOTNOTE_SPAWN_X, Health, InputGateReason, InteractionCloseReason,
-    InteractionReject, ItemRuntimeError, NpcApproachBounds, NpcRuntimeConfig, PLAYER_HALF_EXTENTS,
-    PLAYER_HEALTH_MAX, PlayerInput, PlayerState, PresentationOneShotKind, RuntimeSpawnRequest,
+    ActionKind, Cadence, CommandClass, CommandDenial, EntityId, EntityKind, EquipmentSlot,
+    FOOTNOTE_SPAWN_X, Health, InputGateReason, InteractionCloseReason, InteractionReject,
+    ItemRuntimeError, PLAYER_HALF_EXTENTS, PLAYER_HEALTH_MAX, PlayerInput, PlayerState,
+    PresentationOneShotKind, RuntimeSpawnRequest,
     ScheduleOwner, SimulationTick, TICK_RATE_HZ, Transform, WorkLane, World,
     validate_command_preamble,
 };
@@ -78,7 +78,6 @@ const WELCOME_NARRATIVE_INITIAL_FACTS: [(&str, bool); 3] = [
     ("welcome.workshop.package_at_inn", true),
     ("welcome.workshop.package_delivered", false),
 ];
-const LIVE_COMBAT_CREATURE_TYPE_TOKEN: u32 = 9_000;
 
 fn validate_dev_narrative_id(kind: &str, value: &str) -> Result<(), String> {
     let trimmed = value.trim();
@@ -3380,12 +3379,12 @@ impl GameplayOwner {
             println!("DEV_MONSTER_SPAWN reject connection={connection_id} reason=no_transform");
             return;
         };
-        let Some(definition) = self.registry.monster_by_id(monster_content_id).cloned() else {
+        if self.registry.monster_by_id(monster_content_id).is_none() {
             println!(
                 "DEV_MONSTER_SPAWN reject connection={connection_id} monster={monster_content_id} reason=not_authored_monster"
             );
             return;
-        };
+        }
         if self.dev_spawned_monsters.len() >= DEV_SPAWNED_MONSTER_CAP {
             println!(
                 "DEV_MONSTER_SPAWN reject connection={connection_id} monster={monster_content_id} reason=cap cap={DEV_SPAWNED_MONSTER_CAP}"
@@ -3393,54 +3392,33 @@ impl GameplayOwner {
             return;
         }
 
-        let floor_y = position[1] - PLAYER_HALF_EXTENTS[1];
-        let spawn_position = [
+        let floor_position = [
             position[0] + 1.5,
-            floor_y + definition.collision_bounds.bottom,
+            position[1] - PLAYER_HALF_EXTENTS[1],
         ];
-        let approach_bounds = match definition.behavior {
-            MonsterBehavior::ChaseContactWhenAttacked => Some(NpcApproachBounds {
-                left: (definition.collision_bounds.left + PLAYER_HALF_EXTENTS[0] - CONTACT_EPSILON)
-                    .max(0.0),
-                right: (definition.collision_bounds.right + PLAYER_HALF_EXTENTS[0]
-                    - CONTACT_EPSILON)
-                    .max(0.0),
-                bottom: (definition.collision_bounds.bottom + PLAYER_HALF_EXTENTS[1]
-                    - CONTACT_EPSILON)
-                    .max(0.0),
-                top: (definition.collision_bounds.top + PLAYER_HALF_EXTENTS[1] - CONTACT_EPSILON)
-                    .max(0.0),
-            }),
-        };
-        let runtime_config = NpcRuntimeConfig {
-            movement_speed: definition.movement_speed,
-            half_extents: definition.collision_bounds.half_extents(),
-            collision_center_offset: definition.collision_bounds.center_offset(),
-            approach_bounds,
-            ..NpcRuntimeConfig::default()
-        };
-        let request = World::npc_spawn_request_with_runtime_config(
+        let Ok(request) = monster_spawn_request(
+            &self.registry,
+            monster_content_id,
             address,
-            spawn_position,
-            LIVE_COMBAT_CREATURE_TYPE_TOKEN,
-            definition.home_leash_radius,
-            self.ticks as u32 ^ monster_content_id.token() as u32,
+            floor_position,
+            self.ticks as u32 ^ monster_content_id.token(),
             SimulationTick::from_count(self.ticks),
-            true,
-            definition.health_max,
-            runtime_config,
-        )
-        .with_content(definition.content_id);
+        ) else {
+            println!(
+                "DEV_MONSTER_SPAWN reject connection={connection_id} monster={monster_content_id} reason=content_projection"
+            );
+            return;
+        };
+        let spawn_position = request
+            .transform
+            .map(|transform| transform.position)
+            .unwrap_or(floor_position);
         let Some(entity) = self.world.spawn(request) else {
             println!(
                 "DEV_MONSTER_SPAWN reject connection={connection_id} monster={monster_content_id} reason=world_spawn"
             );
             return;
         };
-        if let Some(mut npc) = self.world.npc_of(entity) {
-            npc.walking = false;
-            let _ = self.world.set_npc(entity, npc);
-        }
         self.dev_spawned_monsters.push(entity);
         println!(
             "DEV_MONSTER_SPAWN spawned connection={connection_id} actor={actor} entity={entity} monster={monster_content_id} address={address} position=({:.3},{:.3}) count={}",
