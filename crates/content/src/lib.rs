@@ -72,7 +72,7 @@ pub use monster::{
 pub use registry::ContentRegistry;
 pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement};
 pub use schema::{
-    CONTENT_SCHEMA_VERSION, PLACEMENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform,
+    CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, PLACEMENT_SCHEMA_VERSION,
     Placement, PlacementKind, RestorePolicy, SpawnPoint, TransitionRef,
 };
 
