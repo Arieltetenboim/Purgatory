@@ -3479,9 +3479,6 @@ impl ReplicaView {
             .count()
     }
 
-    fn kind_count(&self, kind: ReplicatedKind) -> usize {
-        self.entities.values().filter(|e| e.kind == kind).count()
-    }
 }
 
 async fn read_replication_frame(recv: &mut RecvStream) -> ReplicationFrame {
