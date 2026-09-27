@@ -544,12 +544,11 @@ impl eframe::App for MapLabApp {
                         .as_ref()
                         .and_then(|document| document.environment.sky_gradient)
                         .is_some();
-                    if ui.checkbox(&mut enabled, "Sky Gradient").changed() {
-                        if let Some(document) = self.document.as_mut() {
-                            document.environment.sky_gradient =
-                                enabled.then(SkyGradient::default);
-                            self.environment_dirty = true;
-                        }
+                    if ui.checkbox(&mut enabled, "Sky Gradient").changed()
+                        && let Some(document) = self.document.as_mut()
+                    {
+                        document.environment.sky_gradient = enabled.then(SkyGradient::default);
+                        self.environment_dirty = true;
                     }
                     if enabled {
                         let gradient = self
@@ -571,24 +570,22 @@ impl eframe::App for MapLabApp {
                         );
                         ui.horizontal(|ui| {
                             ui.label("Top");
-                            if ui.color_edit_button_srgba(&mut top).changed() {
-                                if let Some(document) = self.document.as_mut()
-                                    && let Some(sky) = document.environment.sky_gradient.as_mut()
-                                {
-                                    sky.top_rgba = top.to_array();
-                                    self.environment_dirty = true;
-                                }
+                            if ui.color_edit_button_srgba(&mut top).changed()
+                                && let Some(document) = self.document.as_mut()
+                                && let Some(sky) = document.environment.sky_gradient.as_mut()
+                            {
+                                sky.top_rgba = top.to_array();
+                                self.environment_dirty = true;
                             }
                         });
                         ui.horizontal(|ui| {
                             ui.label("Bottom");
-                            if ui.color_edit_button_srgba(&mut bottom).changed() {
-                                if let Some(document) = self.document.as_mut()
-                                    && let Some(sky) = document.environment.sky_gradient.as_mut()
-                                {
-                                    sky.bottom_rgba = bottom.to_array();
-                                    self.environment_dirty = true;
-                                }
+                            if ui.color_edit_button_srgba(&mut bottom).changed()
+                                && let Some(document) = self.document.as_mut()
+                                && let Some(sky) = document.environment.sky_gradient.as_mut()
+                            {
+                                sky.bottom_rgba = bottom.to_array();
+                                self.environment_dirty = true;
                             }
                         });
                         ui.small("Preview updates immediately. Runtime applies after client rebuild.");
