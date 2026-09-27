@@ -7,9 +7,10 @@ use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
     CloudFieldAuthoring, CloudStackPosition, FootholdKind, FootholdPath, GameplaySpawnPoint,
-    MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
-    PresentationSprite, SkyGradient, TileTransform, cloud_field_seed, cloud_instance_count,
-    cloud_instance_specs, resolve_png_asset_folder,
+    LoadMode, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
+    Placement, PlacementKind, PresentationSprite, SkyGradient, TileTransform, cloud_field_seed,
+    cloud_instance_count, cloud_instance_specs, default_content_root, load_registry,
+    resolve_png_asset_folder,
 };
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
@@ -44,7 +45,55 @@ enum EditorMode {
     Map,
     Footnote,
     Spawn,
+    Entity,
     Environment,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum EntityCatalogKind {
+    Portal,
+    Npc,
+    Interactable,
+    Entity,
+    Mob,
+}
+
+impl EntityCatalogKind {
+    const ALL: [Self; 5] = [
+        Self::Portal,
+        Self::Npc,
+        Self::Interactable,
+        Self::Entity,
+        Self::Mob,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Portal => "PORTALS",
+            Self::Npc => "NPCS",
+            Self::Interactable => "INTERACTABLES",
+            Self::Entity => "ENTITIES",
+            Self::Mob => "MOBS",
+        }
+    }
+
+    const fn id_prefix(self) -> &'static str {
+        match self {
+            Self::Portal => "portal",
+            Self::Npc => "npc",
+            Self::Interactable => "interactable",
+            Self::Entity => "entity",
+            Self::Mob => "mob",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct EntityCatalogEntry {
+    category: EntityCatalogKind,
+    placement_kind: PlacementKind,
+    authored_id: String,
+    debug_name: String,
 }
 
 struct MapLabApp {
@@ -65,6 +114,10 @@ struct MapLabApp {
     draft_points: Vec<[f32; 2]>,
     gameplay_dirty: bool,
     environment_dirty: bool,
+    placements_dirty: bool,
+    entity_catalog: Vec<EntityCatalogEntry>,
+    selected_catalog: Option<usize>,
+    selected_placement: Option<usize>,
     selected_point: Option<(usize, usize)>,
     settings_open: bool,
     gradient_color_clipboard: Option<[u8; 4]>,
@@ -92,6 +145,10 @@ impl MapLabApp {
             draft_points: Vec::new(),
             gameplay_dirty: false,
             environment_dirty: false,
+            placements_dirty: false,
+            entity_catalog: Vec::new(),
+            selected_catalog: None,
+            selected_placement: None,
             selected_point: None,
             settings_open: false,
             gradient_color_clipboard: None,
@@ -108,6 +165,7 @@ impl MapLabApp {
                 self.install_document(ctx, document);
                 self.gameplay_dirty = false;
                 self.environment_dirty = false;
+                self.placements_dirty = false;
             }
             Err(error) => self.status = format!("COMPILE ERROR\n{error}"),
         }
@@ -138,8 +196,9 @@ impl MapLabApp {
         match (
             load_textures(ctx, &document),
             load_environment_textures(ctx, &document),
+            load_entity_catalog(),
         ) {
-            (Ok(textures), Ok((environment_textures, cloud_textures))) => {
+            (Ok(textures), Ok((environment_textures, cloud_textures)), Ok(entity_catalog)) => {
                 self.path_text = document.sidecar_path.display().to_string();
                 self.preview_layers = document
                     .presentation
@@ -166,9 +225,12 @@ impl MapLabApp {
                 self.textures = textures;
                 self.environment_textures = environment_textures;
                 self.cloud_textures = cloud_textures;
+                self.entity_catalog = entity_catalog;
+                self.selected_catalog = None;
+                self.selected_placement = None;
                 self.fit_requested = true;
             }
-            (Err(error), _) | (_, Err(error)) => {
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
                 self.clear_compiled(&format!("ASSET ERROR\n{error}"));
             }
         }
@@ -179,6 +241,9 @@ impl MapLabApp {
         self.textures.clear();
         self.environment_textures.clear();
         self.cloud_textures.clear();
+        self.entity_catalog.clear();
+        self.selected_catalog = None;
+        self.selected_placement = None;
         self.preview_layers.clear();
         self.compiled_ppu = None;
         self.status = status.to_owned();
@@ -306,6 +371,97 @@ impl MapLabApp {
             self.gameplay_dirty = true;
             self.status = format!("FOOTNOTE EDIT · deleted {}", removed.id);
         }
+    }
+
+    fn enter_entity_editor(&mut self) {
+        self.editor_mode = EditorMode::Entity;
+        self.selected_point = None;
+        self.draft_points.clear();
+        self.selected_catalog = None;
+        self.selected_placement = None;
+        self.status = "ENTITY · choose a library entry, then click the map to place it".to_owned();
+    }
+
+    fn place_entity(&mut self, catalog_index: usize, position: [f32; 2]) {
+        let Some(entry) = self.entity_catalog.get(catalog_index).cloned() else {
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        if entry.category == EntityCatalogKind::Portal
+            && document.placements.iter().any(|placement| {
+                placement.kind == PlacementKind::Entity
+                    && placement.content_authored == entry.authored_id
+            })
+        {
+            self.status = format!(
+                "ENTITY · portal {} is already placed on this map",
+                entry.authored_id
+            );
+            return;
+        }
+        let [min_x, min_y, max_x, max_y] = document.presentation.world_bounds;
+        let id = next_placement_id(entry.category, &document.placements);
+        document.placements.push(Placement {
+            id: id.clone(),
+            kind: entry.placement_kind,
+            content_authored: entry.authored_id.clone(),
+            position: [
+                position[0].clamp(min_x, max_x),
+                position[1].clamp(min_y, max_y),
+            ],
+        });
+        self.selected_placement = Some(document.placements.len() - 1);
+        self.placements_dirty = true;
+        self.status = format!("ENTITY · placed {id} · {}", entry.debug_name);
+    }
+
+    fn edit_selected_placement(&mut self, x: f32, y: f32) {
+        let Some(index) = self.selected_placement else {
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        let [min_x, min_y, max_x, max_y] = document.presentation.world_bounds;
+        let Some(placement) = document.placements.get_mut(index) else {
+            self.selected_placement = None;
+            return;
+        };
+        placement.position = [x.clamp(min_x, max_x), y.clamp(min_y, max_y)];
+        self.placements_dirty = true;
+    }
+
+    fn delete_selected_placement(&mut self) {
+        let Some(index) = self.selected_placement.take() else {
+            return;
+        };
+        let Some(document) = self.document.as_mut() else {
+            return;
+        };
+        if index < document.placements.len() {
+            let removed = document.placements.remove(index);
+            self.placements_dirty = true;
+            self.status = format!("ENTITY · deleted {}", removed.id);
+        }
+    }
+
+    fn save_placements(&mut self) {
+        let Some(document) = &self.document else {
+            self.status = "SAVE ERROR\nNo current map".to_owned();
+            return;
+        };
+        self.status = match document.save_placements() {
+            Ok(()) => {
+                self.placements_dirty = false;
+                format!(
+                    "SAVED PLACEMENTS\n{}\nRestart the server to apply runtime content.",
+                    document.placements_path.display()
+                )
+            }
+            Err(error) => format!("SAVE ERROR\n{error}"),
+        };
     }
 
     fn enter_environment_editor(&mut self) {
@@ -559,7 +715,7 @@ impl MapLabApp {
                 .parse::<f32>()
                 .is_ok_and(|edited| (edited - compiled).abs() > f32::EPSILON)
         });
-        ppu_dirty || self.gameplay_dirty || self.environment_dirty
+        ppu_dirty || self.gameplay_dirty || self.environment_dirty || self.placements_dirty
     }
 }
 
@@ -576,7 +732,7 @@ impl eframe::App for MapLabApp {
                     self.finish_foothold_path();
                 }
             }
-            EditorMode::Spawn | EditorMode::Environment => {
+            EditorMode::Spawn | EditorMode::Entity | EditorMode::Environment => {
                 if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
                     self.back_to_map();
                 }
@@ -601,6 +757,12 @@ impl eframe::App for MapLabApp {
                             }
                             ui.heading("SPAWN");
                         }
+                        EditorMode::Entity => {
+                            if ui.button("← BACK").clicked() {
+                                self.back_to_map();
+                            }
+                            ui.heading("ENTITY");
+                        }
                         EditorMode::Environment => {
                             if ui.button("← BACK").clicked() {
                                 self.back_to_map();
@@ -614,6 +776,9 @@ impl eframe::App for MapLabApp {
                             }
                             if ui.button("SPAWN").clicked() && self.document.is_some() {
                                 self.enter_spawn_editor();
+                            }
+                            if ui.button("ENTITY").clicked() && self.document.is_some() {
+                                self.enter_entity_editor();
                             }
                             if ui.button("ENVIRONMENT").clicked() && self.document.is_some() {
                                 self.enter_environment_editor();
@@ -641,6 +806,10 @@ impl eframe::App for MapLabApp {
                     if matches!(self.editor_mode, EditorMode::Footnote | EditorMode::Spawn) {
                         if ui.button("Save Gameplay").clicked() {
                             self.save_gameplay();
+                        }
+                    } else if self.editor_mode == EditorMode::Entity {
+                        if ui.button("Save Placements").clicked() {
+                            self.save_placements();
                         }
                     } else if self.editor_mode == EditorMode::Environment {
                         if ui.button("Save Environment").clicked() {
@@ -671,10 +840,10 @@ impl eframe::App for MapLabApp {
         let mut delete_foreground = None;
         egui::Panel::left("map_lab_layers")
             .resizable(true)
-            .default_size(if self.editor_mode == EditorMode::Map {
-                210.0
-            } else {
-                250.0
+            .default_size(match self.editor_mode {
+                EditorMode::Map => 210.0,
+                EditorMode::Entity => 300.0,
+                _ => 250.0,
             })
             .min_size(180.0)
             .show(ui, |ui| {
@@ -1255,6 +1424,133 @@ impl eframe::App for MapLabApp {
                             ui.small("Ambient sprite fields · weather events");
                             ui.add_space(12.0);
                         });
+                } else if self.editor_mode == EditorMode::Entity {
+                    egui::ScrollArea::vertical()
+                        .id_salt("map_lab_entity_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.heading("ENTITY");
+                            ui.small("Server placement authoring · definitions stay owned by their source labs");
+                            ui.separator();
+
+                            ui.horizontal(|ui| {
+                                ui.label("LIBRARY");
+                                if self.selected_catalog.is_some()
+                                    && ui.small_button("Clear Brush").clicked()
+                                {
+                                    self.selected_catalog = None;
+                                    self.status =
+                                        "ENTITY · placement brush cleared · click a marker to select it"
+                                            .to_owned();
+                                }
+                            });
+                            for category in EntityCatalogKind::ALL {
+                                egui::CollapsingHeader::new(category.label())
+                                    .default_open(matches!(
+                                        category,
+                                        EntityCatalogKind::Portal
+                                            | EntityCatalogKind::Npc
+                                            | EntityCatalogKind::Mob
+                                    ))
+                                    .show(ui, |ui| {
+                                        for (index, entry) in self
+                                            .entity_catalog
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(_, entry)| entry.category == category)
+                                        {
+                                            let selected = self.selected_catalog == Some(index);
+                                            if ui
+                                                .selectable_label(
+                                                    selected,
+                                                    format!(
+                                                        "{}\n  {}",
+                                                        entry.debug_name, entry.authored_id
+                                                    ),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.selected_catalog = Some(index);
+                                                self.selected_placement = None;
+                                                self.status = format!(
+                                                    "ENTITY · {} selected · click map to place",
+                                                    entry.authored_id
+                                                );
+                                            }
+                                        }
+                                    });
+                            }
+
+                            ui.separator();
+                            ui.heading("PLACEMENTS");
+                            let selected_data = self.selected_placement.and_then(|index| {
+                                self.document.as_ref().and_then(|document| {
+                                    document
+                                        .placements
+                                        .get(index)
+                                        .map(|placement| (index, placement.clone()))
+                                })
+                            });
+                            if let Some((index, placement)) = selected_data {
+                                ui.group(|ui| {
+                                    ui.label(format!("Selected: {}", placement.id));
+                                    ui.small(format!(
+                                        "{} · {}",
+                                        placement.kind.as_str(),
+                                        placement.content_authored
+                                    ));
+                                    let mut x = placement.position[0];
+                                    let mut y = placement.position[1];
+                                    ui.horizontal(|ui| {
+                                        ui.label("X");
+                                        let x_changed = ui
+                                            .add(egui::DragValue::new(&mut x).speed(0.05))
+                                            .changed();
+                                        ui.label("Y");
+                                        let y_changed = ui
+                                            .add(egui::DragValue::new(&mut y).speed(0.05))
+                                            .changed();
+                                        if x_changed || y_changed {
+                                            self.edit_selected_placement(x, y);
+                                        }
+                                    });
+                                    if ui.button("Delete Placement").clicked() {
+                                        self.delete_selected_placement();
+                                    }
+                                    ui.small(format!("#{}", index + 1));
+                                });
+                            } else {
+                                ui.small("Select a marker on the map to inspect or move it.");
+                            }
+
+                            if let Some(document) = &self.document {
+                                ui.separator();
+                                ui.label(format!("{} placement(s)", document.placements.len()));
+                                for (index, placement) in document.placements.iter().enumerate() {
+                                    let selected = self.selected_placement == Some(index);
+                                    if ui
+                                        .selectable_label(
+                                            selected,
+                                            format!(
+                                                "{} · {}",
+                                                placement.id, placement.content_authored
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.selected_placement = Some(index);
+                                        self.selected_catalog = None;
+                                    }
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Save Placements").clicked() {
+                                self.save_placements();
+                            }
+                            ui.small(
+                                "Click library → click map to place · click marker to select · X/Y moves · Save writes Placement V2.",
+                            );
+                        });
                 } else if self.editor_mode == EditorMode::Footnote {
                     ui.heading("FOOTNOTE EDIT");
                     ui.small("Polyline authoring · gameplay-owned · Tiled stays visual-only");
@@ -1624,6 +1920,9 @@ impl eframe::App for MapLabApp {
                         EditorMode::Spawn => {
                             "Click place spawn · Space+drag pan · wheel zoom · Esc/BACK exit"
                         }
+                        EditorMode::Entity => {
+                            "Library select → click place · marker click selects · X/Y moves · Save Placements persists"
+                        }
                         EditorMode::Environment => {
                             "Edit environment · preview is live · Save Environment persists"
                         }
@@ -1879,6 +2178,25 @@ impl MapLabApp {
             );
         }
 
+        for (index, placement) in document.placements.iter().enumerate() {
+            let center = to_screen(placement.position);
+            let selected = self.selected_placement == Some(index);
+            let color = placement_color(placement, &self.entity_catalog);
+            map_painter.circle_filled(center, if selected { 7.0 } else { 5.0 }, color);
+            map_painter.circle_stroke(
+                center,
+                if selected { 9.0 } else { 7.0 },
+                Stroke::new(if selected { 2.0 } else { 1.0 }, Color32::WHITE),
+            );
+            map_painter.text(
+                center + Vec2::new(8.0, -8.0),
+                egui::Align2::LEFT_BOTTOM,
+                &placement.id,
+                egui::FontId::monospace(10.0),
+                color,
+            );
+        }
+
         let clicked_existing_point = if self.editor_mode == EditorMode::Footnote
             && !ui.input(|input| input.key_down(egui::Key::Space))
             && response.clicked()
@@ -1929,6 +2247,45 @@ impl MapLabApp {
         };
 
         let clicked_spawn_world = if self.editor_mode == EditorMode::Spawn
+            && !ui.input(|input| input.key_down(egui::Key::Space))
+            && response.clicked()
+        {
+            response.interact_pointer_pos().and_then(|position| {
+                map_rect.contains(position).then(|| {
+                    [
+                        ((position.x - center.x) / scale + world_width * 0.5)
+                            .clamp(0.0, world_width),
+                        (world_height * 0.5 - (position.y - center.y) / scale)
+                            .clamp(0.0, world_height),
+                    ]
+                })
+            })
+        } else {
+            None
+        };
+
+        let clicked_entity_placement = if self.editor_mode == EditorMode::Entity
+            && !ui.input(|input| input.key_down(egui::Key::Space))
+            && response.clicked()
+        {
+            response.interact_pointer_pos().and_then(|position| {
+                document
+                    .placements
+                    .iter()
+                    .enumerate()
+                    .map(|(index, placement)| {
+                        (index, to_screen(placement.position).distance(position))
+                    })
+                    .filter(|(_, distance)| *distance <= 10.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(index, _)| index)
+            })
+        } else {
+            None
+        };
+
+        let clicked_entity_world = if self.editor_mode == EditorMode::Entity
+            && clicked_entity_placement.is_none()
             && !ui.input(|input| input.key_down(egui::Key::Space))
             && response.clicked()
         {
@@ -2010,7 +2367,89 @@ impl MapLabApp {
             );
         } else if let Some(point) = clicked_spawn_world {
             self.set_default_spawn(point);
+        } else if let Some(index) = clicked_entity_placement {
+            self.selected_placement = Some(index);
+            self.selected_catalog = None;
+            if let Some(placement) = self
+                .document
+                .as_ref()
+                .and_then(|document| document.placements.get(index))
+            {
+                self.status = format!("ENTITY · selected {}", placement.id);
+            }
+        } else if let Some(point) = clicked_entity_world {
+            if let Some(catalog_index) = self.selected_catalog {
+                self.place_entity(catalog_index, point);
+            } else {
+                self.status = "ENTITY · choose a library entry before placing".to_owned();
+            }
         }
+    }
+}
+
+fn load_entity_catalog() -> Result<Vec<EntityCatalogEntry>, String> {
+    let registry =
+        load_registry(&default_content_root(), LoadMode::Full).map_err(|error| error.to_string())?;
+    let mut entries = Vec::new();
+    for entity in registry.iter_entities() {
+        let category = match entity.interactable {
+            Some(purgatory_simulation::InteractableKind::Portal) => EntityCatalogKind::Portal,
+            Some(purgatory_simulation::InteractableKind::Npc) => EntityCatalogKind::Npc,
+            Some(purgatory_simulation::InteractableKind::Generic) => {
+                EntityCatalogKind::Interactable
+            }
+            None => EntityCatalogKind::Entity,
+        };
+        entries.push(EntityCatalogEntry {
+            category,
+            placement_kind: PlacementKind::Entity,
+            authored_id: entity.authored_id.clone(),
+            debug_name: entity.debug_name.clone(),
+        });
+    }
+    for monster in registry.iter_monsters() {
+        entries.push(EntityCatalogEntry {
+            category: EntityCatalogKind::Mob,
+            placement_kind: PlacementKind::Monster,
+            authored_id: monster.authored_id.clone(),
+            debug_name: monster.debug_name.clone(),
+        });
+    }
+    entries.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then(a.authored_id.cmp(&b.authored_id))
+    });
+    Ok(entries)
+}
+
+fn next_placement_id(category: EntityCatalogKind, placements: &[Placement]) -> String {
+    let prefix = category.id_prefix();
+    for index in 1..=9999 {
+        let candidate = format!("placement.{prefix}_{index:03}");
+        if placements.iter().all(|placement| placement.id != candidate) {
+            return candidate;
+        }
+    }
+    format!("placement.{prefix}_overflow")
+}
+
+fn placement_color(placement: &Placement, catalog: &[EntityCatalogEntry]) -> Color32 {
+    let category = catalog
+        .iter()
+        .find(|entry| {
+            entry.placement_kind == placement.kind && entry.authored_id == placement.content_authored
+        })
+        .map(|entry| entry.category);
+    match category {
+        Some(EntityCatalogKind::Portal) => Color32::from_rgb(80, 210, 255),
+        Some(EntityCatalogKind::Npc) => Color32::from_rgb(255, 220, 90),
+        Some(EntityCatalogKind::Interactable) => Color32::from_rgb(190, 120, 255),
+        Some(EntityCatalogKind::Entity) => Color32::from_rgb(180, 180, 190),
+        Some(EntityCatalogKind::Mob) | None if placement.kind == PlacementKind::Monster => {
+            Color32::from_rgb(255, 100, 90)
+        }
+        None => Color32::LIGHT_GRAY,
     }
 }
 
