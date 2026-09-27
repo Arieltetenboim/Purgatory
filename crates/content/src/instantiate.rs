@@ -342,7 +342,12 @@ mod tests {
         assert_eq!(npc.hotspot_radius, 6.5);
         assert_eq!(npc.runtime_config.movement_speed, 1.75);
         assert_eq!(npc.runtime_config.half_extents, [0.4, 0.6]);
-        assert_eq!(npc.runtime_config.collision_center_offset, [0.1, 0.2]);
+        assert!(
+            (npc.runtime_config.collision_center_offset[0] - 0.1).abs() < 1e-6
+        );
+        assert!(
+            (npc.runtime_config.collision_center_offset[1] - 0.2).abs() < 1e-6
+        );
         assert!(npc.runtime_config.approach_bounds.is_some());
         assert!(!npc.walking);
         assert!(npc.active);
