@@ -95,9 +95,7 @@ pub fn map_plan(
                     ))
                 })?;
                 let ordinal = u32::try_from(placement_index.saturating_add(1)).unwrap_or(u32::MAX);
-                let seed = definition
-                    .content_id
-                    .token()
+                let seed = (definition.content_id.token() as u32)
                     .wrapping_add(ordinal.wrapping_mul(0x9E37_79B9));
                 placements.push(spawn_request_for_monster(
                     definition,

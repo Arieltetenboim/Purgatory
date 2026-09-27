@@ -3401,7 +3401,7 @@ impl GameplayOwner {
             monster_content_id,
             address,
             floor_position,
-            self.ticks as u32 ^ monster_content_id.token(),
+            self.ticks as u32 ^ monster_content_id.token() as u32,
             SimulationTick::from_count(self.ticks),
         ) else {
             println!(
