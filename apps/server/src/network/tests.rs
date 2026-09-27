@@ -3533,8 +3533,7 @@ async fn client_receives_authoritative_snapshot() {
             .world()
             .iter()
             .filter(|&entity| {
-                g.owner.world().content_id_of(entity)
-                    == Some(purgatory_common::MONSTER_MOSS_CRAB)
+                g.owner.world().content_id_of(entity) == Some(purgatory_common::MONSTER_MOSS_CRAB)
             })
             .collect();
         g.owner
@@ -3570,7 +3569,9 @@ async fn client_receives_authoritative_snapshot() {
     assert!(player.position[0] > purgatory_simulation::FOOTNOTE_SPAWN_X);
     let dev_monster_wire = super::snapshot::to_wire_id(dev_monster);
     assert_eq!(
-        snap.entities.get(&dev_monster_wire).map(|entity| entity.kind),
+        snap.entities
+            .get(&dev_monster_wire)
+            .map(|entity| entity.kind),
         Some(ReplicatedKind::Npc),
         "snapshot must include the explicit DEV Monster regardless of authored map NPC count"
     );
