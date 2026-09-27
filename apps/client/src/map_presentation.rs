@@ -135,27 +135,29 @@ impl RuntimeMapPresentation {
 
     pub(crate) fn quads(&self) -> Vec<DrawQuad> {
         let mut quads = self.sky_quads();
-        quads.extend(self.sprites
-            .iter()
-            .map(|sprite| {
-                let uvs = sprite.uvs_for();
-                let [w, h] = sprite.authored.size_world;
-                let mut quad = DrawQuad::textured_sprite(
-                    sprite.texture,
-                    sprite.authored.position_world,
-                    [
-                        [-w / 2.0, -h / 2.0],
-                        [w / 2.0, -h / 2.0],
-                        [w / 2.0, h / 2.0],
-                        [-w / 2.0, h / 2.0],
-                    ],
-                    uvs,
-                    0.0,
-                );
-                quad.color[3] = sprite.opacity * sprite.authored.opacity;
-                quad
-            })
-            .collect::<Vec<_>>());
+        quads.extend(
+            self.sprites
+                .iter()
+                .map(|sprite| {
+                    let uvs = sprite.uvs_for();
+                    let [w, h] = sprite.authored.size_world;
+                    let mut quad = DrawQuad::textured_sprite(
+                        sprite.texture,
+                        sprite.authored.position_world,
+                        [
+                            [-w / 2.0, -h / 2.0],
+                            [w / 2.0, -h / 2.0],
+                            [w / 2.0, h / 2.0],
+                            [-w / 2.0, h / 2.0],
+                        ],
+                        uvs,
+                        0.0,
+                    );
+                    quad.color[3] = sprite.opacity * sprite.authored.opacity;
+                    quad
+                })
+                .collect::<Vec<_>>(),
+        );
         quads
     }
 
