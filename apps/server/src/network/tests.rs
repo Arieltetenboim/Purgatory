@@ -3478,7 +3478,6 @@ impl ReplicaView {
             .filter(|e| e.kind == ReplicatedKind::Player)
             .count()
     }
-
 }
 
 async fn read_replication_frame(recv: &mut RecvStream) -> ReplicationFrame {
