@@ -550,6 +550,19 @@ mod tests {
     }
 
     #[test]
+    fn legacy_environment_defaults_foreground_layers_empty() {
+        let json = r#"{
+            "schema_version":1,
+            "map_authored":"map.legacy",
+            "sky_gradient":null,
+            "parallax_layers":[],
+            "cloud_fields":[]
+        }"#;
+        let environment: MapEnvironmentAuthoring = serde_json::from_str(json).unwrap();
+        assert!(environment.foreground_layers.is_empty());
+    }
+
+    #[test]
     fn legacy_parallax_defaults_to_repeat_fill() {
         let json = r#"{
             "id":"bg",
