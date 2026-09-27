@@ -1848,7 +1848,7 @@ mod tests {
                         "kind": "portal",
                         "position": [3.0, 2.0],
                         "linked_portal": {
-                            "map": "map.dev.other",
+                            "map": "map.test.other",
                             "portal": "portal.002"
                         }
                     }
@@ -1863,7 +1863,7 @@ mod tests {
         assert_eq!(
             placements[0].portal_link,
             Some(PortalLink {
-                map_authored: "map.dev.other".into(),
+                map_authored: "map.test.other".into(),
                 portal_id: "portal.002".into(),
             })
         );
