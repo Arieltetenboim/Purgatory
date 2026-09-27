@@ -3110,6 +3110,9 @@ impl ClientApp {
             {
                 quads.extend(npc_debug_aabb_quads(&self.replica, &self.interp));
             }
+            if canonical_map_visuals {
+                quads.extend(self.map_presentation.foreground_quads(&camera));
+            }
             self.trace_scene_once(&camera, local_pose, interactable_n, quads.len());
             #[cfg(feature = "dev-diagnostics")]
             if overlay_open {

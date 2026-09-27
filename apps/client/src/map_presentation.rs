@@ -25,6 +25,7 @@ pub(crate) struct RuntimeMapPresentation {
     pixels_per_world_unit: f32,
     sky_gradient: Option<SkyGradient>,
     parallax_layers: Vec<RuntimeParallaxLayer>,
+    foreground_layers: Vec<RuntimeParallaxLayer>,
     cloud_fields: Vec<RuntimeCloudField>,
     sprites: Vec<RuntimeSprite>,
     environment_time_seconds: f64,
@@ -53,6 +54,46 @@ struct RuntimeCloudField {
     authored: CloudFieldAuthoring,
     variants: Vec<RuntimeCloudVariant>,
     instances: Vec<CloudInstanceSpec>,
+}
+
+fn load_runtime_environment_layer(
+    loader: &mut ClientAssetLoader<'_>,
+    layer: ParallaxLayer,
+    kind: &str,
+) -> Result<RuntimeParallaxLayer, String> {
+    if layer.asset_path.trim().is_empty() {
+        return Err(format!("{kind} layer {} has empty asset path", layer.id));
+    }
+    if !layer.parallax.is_finite() || !(0.0..=1.0).contains(&layer.parallax) {
+        return Err(format!(
+            "{kind} layer {} has invalid parallax {}",
+            layer.id, layer.parallax
+        ));
+    }
+    if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) {
+        return Err(format!(
+            "{kind} layer {} has invalid opacity {}",
+            layer.id, layer.opacity
+        ));
+    }
+    if !layer
+        .motion_world_per_second
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return Err(format!("{kind} layer {} has non-finite motion", layer.id));
+    }
+    let texture_id = format!("map.environment.{kind}.{}", layer.id);
+    let texture = loader.load_png(&texture_id, &layer.asset_path)?;
+    let image = loader
+        .runtime()
+        .resource(texture)
+        .ok_or_else(|| format!("{kind} asset {} was not registered", layer.id))?;
+    Ok(RuntimeParallaxLayer {
+        authored: layer,
+        texture,
+        image_dimensions: [image.image.width(), image.image.height()],
+    })
 }
 
 impl RuntimeMapPresentation {
@@ -111,42 +152,20 @@ impl RuntimeMapPresentation {
 
         let mut parallax_layers = Vec::new();
         for layer in environment.parallax_layers {
-            if layer.asset_path.trim().is_empty() {
-                return Err(format!("environment layer {} has empty asset path", layer.id));
-            }
-            if !layer.parallax.is_finite() || !(0.0..=1.0).contains(&layer.parallax) {
-                return Err(format!(
-                    "environment layer {} has invalid parallax {}",
-                    layer.id, layer.parallax
-                ));
-            }
-            if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) {
-                return Err(format!(
-                    "environment layer {} has invalid opacity {}",
-                    layer.id, layer.opacity
-                ));
-            }
-            if !layer
-                .motion_world_per_second
-                .iter()
-                .all(|value| value.is_finite())
-            {
-                return Err(format!(
-                    "environment layer {} has non-finite motion",
-                    layer.id
-                ));
-            }
-            let texture_id = format!("map.environment.{}", layer.id);
-            let texture = loader.load_png(&texture_id, &layer.asset_path)?;
-            let image = loader
-                .runtime()
-                .resource(texture)
-                .ok_or_else(|| format!("environment asset {} was not registered", layer.id))?;
-            parallax_layers.push(RuntimeParallaxLayer {
-                authored: layer,
-                texture,
-                image_dimensions: [image.image.width(), image.image.height()],
-            });
+            parallax_layers.push(load_runtime_environment_layer(
+                &mut loader,
+                layer,
+                "background",
+            )?);
+        }
+
+        let mut foreground_layers = Vec::new();
+        for layer in environment.foreground_layers {
+            foreground_layers.push(load_runtime_environment_layer(
+                &mut loader,
+                layer,
+                "foreground",
+            )?);
         }
 
         let mut cloud_fields = Vec::new();
@@ -228,6 +247,7 @@ impl RuntimeMapPresentation {
             pixels_per_world_unit,
             sky_gradient: environment.sky_gradient,
             parallax_layers,
+            foreground_layers,
             cloud_fields,
             sprites,
             environment_time_seconds: 0.0,
@@ -314,6 +334,13 @@ impl RuntimeMapPresentation {
                 .collect::<Vec<_>>(),
         );
         quads
+    }
+
+    pub(crate) fn foreground_quads(&self, camera: &Camera) -> Vec<DrawQuad> {
+        self.foreground_layers
+            .iter()
+            .flat_map(|layer| self.parallax_quads(layer, camera))
+            .collect()
     }
 
     fn sky_quads(&self, camera: &Camera) -> Vec<DrawQuad> {
