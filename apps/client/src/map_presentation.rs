@@ -448,16 +448,18 @@ fn cloud_field_quads(
         .iter()
         .filter_map(|cloud| {
             let variant = field.variants.get(cloud.asset_index)?;
-            let x = wrap_centered(
-                cloud.x_unit * coverage[0]
-                    + cloud.speed_world_per_second * elapsed_seconds as f32,
-                coverage[0],
-            );
-            let y = (cloud.height_unit - 0.5) * viewport[1];
             let size = [
                 variant.image_dimensions[0] as f32 / ppu * cloud.scale,
                 variant.image_dimensions[1] as f32 / ppu * cloud.scale,
             ];
+            let x = wrap_cloud_center(
+                cloud.x_unit,
+                cloud.speed_world_per_second,
+                elapsed_seconds,
+                coverage[0],
+                size[0],
+            );
+            let y = (cloud.height_unit - 0.5) * viewport[1];
             let center = [base[0] + x, base[1] + y];
             let mut quad = DrawQuad::textured_sprite(
                 variant.texture,
@@ -477,11 +479,20 @@ fn cloud_field_quads(
         .collect()
 }
 
-fn wrap_centered(value: f32, period: f32) -> f32 {
-    if !period.is_finite() || period <= f32::EPSILON {
+fn wrap_cloud_center(
+    x_unit: f32,
+    speed_world_per_second: f32,
+    elapsed_seconds: f64,
+    coverage_width: f32,
+    sprite_width: f32,
+) -> f32 {
+    let travel_width = coverage_width + sprite_width.max(0.0);
+    if !travel_width.is_finite() || travel_width <= f32::EPSILON {
         return 0.0;
     }
-    value.rem_euclid(period) - period * 0.5
+    let value =
+        x_unit * travel_width + speed_world_per_second * elapsed_seconds as f32;
+    value.rem_euclid(travel_width) - travel_width * 0.5
 }
 
 fn local_visual_seed() -> u64 {
@@ -597,10 +608,18 @@ mod tests {
     }
 
     #[test]
-    fn cloud_wrap_stays_inside_centered_period() {
-        assert!((wrap_centered(0.0, 10.0) + 5.0).abs() < 1e-5);
-        assert!((wrap_centered(14.0, 10.0) + 1.0).abs() < 1e-5);
-        assert!((wrap_centered(-1.0, 10.0) - 4.0).abs() < 1e-5);
+    fn cloud_wrap_keeps_sprite_fully_outside_before_reentry() {
+        let coverage = 10.0;
+        let sprite = 4.0;
+        assert!(
+            (wrap_cloud_center(0.0, 0.0, 0.0, coverage, sprite) + 7.0).abs()
+                < 1e-5
+        );
+        let almost_wrapped =
+            wrap_cloud_center(0.0, 1.0, 13.999, coverage, sprite);
+        assert!(almost_wrapped > 6.9);
+        let wrapped = wrap_cloud_center(0.0, 1.0, 14.0, coverage, sprite);
+        assert!((wrapped + 7.0).abs() < 1e-5);
     }
 
     #[test]

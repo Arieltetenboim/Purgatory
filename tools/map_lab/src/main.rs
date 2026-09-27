@@ -2066,18 +2066,20 @@ fn paint_cloud_field_preview(
         let Some(texture) = textures.get(cloud.asset_index) else {
             continue;
         };
-        let x = wrap_centered_preview(
-            cloud.x_unit * coverage[0]
-                + cloud.speed_world_per_second * elapsed_seconds as f32,
+        let size = [
+            texture.image_size_px[0] as f32 / ppu * cloud.scale,
+            texture.image_size_px[1] as f32 / ppu * cloud.scale,
+        ];
+        let x = wrap_cloud_center_preview(
+            cloud.x_unit,
+            cloud.speed_world_per_second,
+            elapsed_seconds,
             coverage[0],
+            size[0],
         );
         let center = [
             base[0] + x,
             base[1] + (cloud.height_unit - 0.5) * camera_size[1],
-        ];
-        let size = [
-            texture.image_size_px[0] as f32 / ppu * cloud.scale,
-            texture.image_size_px[1] as f32 / ppu * cloud.scale,
         ];
         let left = center[0] - size[0] * 0.5;
         let top = center[1] + size[1] * 0.5;
@@ -2105,11 +2107,20 @@ fn paint_cloud_field_preview(
     }
 }
 
-fn wrap_centered_preview(value: f32, period: f32) -> f32 {
-    if !period.is_finite() || period <= f32::EPSILON {
+fn wrap_cloud_center_preview(
+    x_unit: f32,
+    speed_world_per_second: f32,
+    elapsed_seconds: f64,
+    coverage_width: f32,
+    sprite_width: f32,
+) -> f32 {
+    let travel_width = coverage_width + sprite_width.max(0.0);
+    if !travel_width.is_finite() || travel_width <= f32::EPSILON {
         return 0.0;
     }
-    value.rem_euclid(period) - period * 0.5
+    let value =
+        x_unit * travel_width + speed_world_per_second * elapsed_seconds as f32;
+    value.rem_euclid(travel_width) - travel_width * 0.5
 }
 
 fn foothold_color(kind: FootholdKind) -> Color32 {
