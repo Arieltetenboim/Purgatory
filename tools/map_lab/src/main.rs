@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use purgatory_content::{
-    CloudFieldAuthoring, FootholdKind, FootholdPath, GameplaySpawnPoint, MIN_MAP_HEIGHT_WU,
+    CloudFieldAuthoring, CloudStackPosition, FootholdKind, FootholdPath, GameplaySpawnPoint,
+    MIN_MAP_HEIGHT_WU,
     MIN_MAP_WIDTH_WU, ParallaxDepth, ParallaxFillMode, ParallaxLayer, PresentationSprite,
     SkyGradient, TileTransform, cloud_field_seed, cloud_instance_count, cloud_instance_specs,
     resolve_png_asset_folder,
@@ -358,6 +359,7 @@ impl MapLabApp {
             id: format!("clouds.{next:03}"),
             asset_folder: "assets/skys/clouds".to_owned(),
             depth,
+            stack_position: CloudStackPosition::for_depth(depth),
             parallax: depth.default_parallax(),
             density: 0.5,
             scale_range: depth.default_cloud_scale_range(),
@@ -642,320 +644,487 @@ impl eframe::App for MapLabApp {
             .min_size(180.0)
             .show(ui, |ui| {
                 if self.editor_mode == EditorMode::Environment {
-                    ui.heading("ENVIRONMENT");
-                    ui.small("Map-level presentation · independent from gameplay/Tiled visuals");
-                    ui.separator();
-
-                    let mut enabled = self
-                        .document
-                        .as_ref()
-                        .and_then(|document| document.environment.sky_gradient)
-                        .is_some();
-                    if ui.checkbox(&mut enabled, "Sky Gradient").changed()
-                        && let Some(document) = self.document.as_mut()
-                    {
-                        document.environment.sky_gradient = enabled.then(SkyGradient::default);
-                        self.environment_dirty = true;
-                    }
-                    if enabled {
-                        let gradient = self
-                            .document
-                            .as_ref()
-                            .and_then(|document| document.environment.sky_gradient)
-                            .unwrap_or_default();
-                        let mut top = Color32::from_rgba_unmultiplied(
-                            gradient.top_rgba[0],
-                            gradient.top_rgba[1],
-                            gradient.top_rgba[2],
-                            gradient.top_rgba[3],
-                        );
-                        let mut bottom = Color32::from_rgba_unmultiplied(
-                            gradient.bottom_rgba[0],
-                            gradient.bottom_rgba[1],
-                            gradient.bottom_rgba[2],
-                            gradient.bottom_rgba[3],
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label("Top");
-                            if ui.color_edit_button_srgba(&mut top).changed()
-                                && let Some(document) = self.document.as_mut()
-                                && let Some(sky) = document.environment.sky_gradient.as_mut()
-                            {
-                                sky.top_rgba = top.to_array();
-                                self.environment_dirty = true;
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Bottom");
-                            if ui.color_edit_button_srgba(&mut bottom).changed()
-                                && let Some(document) = self.document.as_mut()
-                                && let Some(sky) = document.environment.sky_gradient.as_mut()
-                            {
-                                sky.bottom_rgba = bottom.to_array();
-                                self.environment_dirty = true;
-                            }
-                        });
-                        ui.small("Preview updates immediately. Runtime applies after client rebuild.");
-                    }
-                    ui.separator();
-                    ui.heading("PARALLAX BACKGROUNDS");
-                    ui.horizontal(|ui| {
-                        if ui.button("+ Add Background").clicked() {
-                            self.add_parallax_layer();
-                        }
-                        if ui.button("Reload Assets").clicked() {
-                            self.reload_environment_assets(ui.ctx());
-                        }
-                    });
-                    ui.small(
-                        "Asset paths are relative to Graphic/. Natural image size uses the map PPU.",
-                    );
-
-                    if let Some(document) = self.document.as_mut() {
-                        for (index, layer) in
-                            document.environment.parallax_layers.iter_mut().enumerate()
-                        {
-                            ui.separator();
-                            ui.horizontal(|ui| {
-                                ui.strong(&layer.id);
-                                if ui.small_button("Delete").clicked() {
-                                    delete_parallax = Some(index);
-                                }
-                            });
-                            if ui.text_edit_singleline(&mut layer.id).changed() {
-                                self.environment_dirty = true;
-                            }
-                            ui.label("Asset");
-                            if ui.text_edit_singleline(&mut layer.asset_path).changed() {
-                                self.environment_dirty = true;
-                            }
-
-                            let old_depth = layer.depth;
-                            egui::ComboBox::from_id_salt(("parallax_depth", index))
-                                .selected_text(layer.depth.as_str())
-                                .show_ui(ui, |ui| {
-                                    for depth in ParallaxDepth::ALL {
-                                        ui.selectable_value(
-                                            &mut layer.depth,
-                                            depth,
-                                            depth.as_str(),
-                                        );
-                                    }
-                                });
-                            if layer.depth != old_depth {
-                                layer.parallax = layer.depth.default_parallax();
-                                self.environment_dirty = true;
-                            }
-
-                            let old_fill = layer.fill_mode;
-                            egui::ComboBox::from_id_salt(("parallax_fill", index))
-                                .selected_text(layer.fill_mode.as_str())
-                                .show_ui(ui, |ui| {
-                                    for mode in ParallaxFillMode::ALL {
-                                        ui.selectable_value(
-                                            &mut layer.fill_mode,
-                                            mode,
-                                            mode.as_str(),
-                                        );
-                                    }
-                                });
-                            if layer.fill_mode != old_fill {
-                                self.environment_dirty = true;
-                            }
-                            ui.small(match layer.fill_mode {
-                                ParallaxFillMode::Natural => "Natural size · single copy",
-                                ParallaxFillMode::Repeat => "Natural size · tile on enabled axes",
-                                ParallaxFillMode::Stretch => "Stretch to guaranteed parallax coverage",
-                                ParallaxFillMode::Fit => "Preserve aspect · fit inside coverage",
-                                ParallaxFillMode::Cover => "Preserve aspect · fully cover camera travel",
-                            });
-
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut layer.parallax, 0.0..=1.0)
-                                        .text("Parallax"),
-                                )
-                                .changed()
-                            {
-                                self.environment_dirty = true;
-                            }
-                            ui.small("0 = screen-fixed · 1 = world-locked");
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut layer.opacity, 0.0..=1.0)
-                                        .text("Opacity"),
-                                )
-                                .changed()
-                            {
-                                self.environment_dirty = true;
-                            }
-                            if layer.fill_mode == ParallaxFillMode::Repeat {
-                                ui.horizontal(|ui| {
-                                    if ui.checkbox(&mut layer.repeat_x, "Repeat X").changed() {
-                                        self.environment_dirty = true;
-                                    }
-                                    if ui.checkbox(&mut layer.repeat_y, "Repeat Y").changed() {
-                                        self.environment_dirty = true;
-                                    }
-                                });
-                            }
-                            ui.horizontal(|ui| {
-                                ui.label("Offset");
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut layer.offset_world[0])
-                                            .speed(0.05)
-                                            .prefix("X "),
-                                    )
-                                    .changed()
-                                {
-                                    self.environment_dirty = true;
-                                }
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(&mut layer.offset_world[1])
-                                            .speed(0.05)
-                                            .prefix("Y "),
-                                    )
-                                    .changed()
-                                {
-                                    self.environment_dirty = true;
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Motion");
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(
-                                            &mut layer.motion_world_per_second[0],
-                                        )
-                                        .speed(0.01)
-                                        .prefix("X "),
-                                    )
-                                    .changed()
-                                {
-                                    self.environment_dirty = true;
-                                }
-                                if ui
-                                    .add(
-                                        egui::DragValue::new(
-                                            &mut layer.motion_world_per_second[1],
-                                        )
-                                        .speed(0.01)
-                                        .prefix("Y "),
-                                    )
-                                    .changed()
-                                {
-                                    self.environment_dirty = true;
-                                }
-                            });
+                    egui::ScrollArea::vertical()
+                        .id_salt("map_lab_environment_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.heading("ENVIRONMENT");
                             ui.small(
-                                "Motion uses world units/second · Repeat motion wraps seamlessly.",
+                                "Map-level presentation · independent from gameplay/Tiled visuals",
                             );
-                        }
-                    }
-                    ui.separator();
-                    ui.heading("CLOUD FIELDS");
-                    ui.horizontal(|ui| {
-                        if ui.button("+ Add Cloud Field").clicked() {
-                            self.add_cloud_field();
-                        }
-                        ui.small("Folder-backed · client-local seeded presentation");
-                    });
-                    ui.small(
-                        "Each field scans one Graphic-relative folder non-recursively. Minimum 1 PNG.",
-                    );
-                    if let Some(document) = self.document.as_mut() {
-                        for (index, field) in
-                            document.environment.cloud_fields.iter_mut().enumerate()
-                        {
                             ui.separator();
-                            ui.horizontal(|ui| {
-                                ui.strong(&field.id);
-                                if ui.small_button("Delete").clicked() {
-                                    delete_cloud = Some(index);
-                                }
-                            });
-                            if ui.text_edit_singleline(&mut field.id).changed() {
-                                self.environment_dirty = true;
-                            }
-                            ui.label("Folder");
-                            if ui.text_edit_singleline(&mut field.asset_folder).changed() {
-                                self.environment_dirty = true;
-                            }
-                            let found = self
-                                .cloud_textures
-                                .get(&field.id)
-                                .map_or(0, Vec::len);
-                            ui.colored_label(
-                                if found > 0 {
-                                    Color32::LIGHT_GREEN
-                                } else {
-                                    Color32::YELLOW
-                                },
-                                format!(
-                                    "Found: {found} PNG{}{}",
-                                    if found == 1 { "" } else { "s" },
-                                    if found == 0 {
-                                        " · Reload Assets after setting folder"
-                                    } else {
-                                        ""
-                                    }
-                                ),
-                            );
 
-                            let old_depth = field.depth;
-                            egui::ComboBox::from_id_salt(("cloud_depth", index))
-                                .selected_text(field.depth.as_str())
-                                .show_ui(ui, |ui| {
-                                    for depth in ParallaxDepth::ALL {
-                                        ui.selectable_value(
-                                            &mut field.depth,
-                                            depth,
-                                            depth.as_str(),
+                            egui::CollapsingHeader::new("SKY GRADIENT")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    let mut enabled = self
+                                        .document
+                                        .as_ref()
+                                        .and_then(|document| document.environment.sky_gradient)
+                                        .is_some();
+                                    if ui.checkbox(&mut enabled, "Enabled").changed()
+                                        && let Some(document) = self.document.as_mut()
+                                    {
+                                        document.environment.sky_gradient =
+                                            enabled.then(SkyGradient::default);
+                                        self.environment_dirty = true;
+                                    }
+                                    if enabled {
+                                        let gradient = self
+                                            .document
+                                            .as_ref()
+                                            .and_then(|document| {
+                                                document.environment.sky_gradient
+                                            })
+                                            .unwrap_or_default();
+                                        let mut top = Color32::from_rgba_unmultiplied(
+                                            gradient.top_rgba[0],
+                                            gradient.top_rgba[1],
+                                            gradient.top_rgba[2],
+                                            gradient.top_rgba[3],
+                                        );
+                                        let mut bottom = Color32::from_rgba_unmultiplied(
+                                            gradient.bottom_rgba[0],
+                                            gradient.bottom_rgba[1],
+                                            gradient.bottom_rgba[2],
+                                            gradient.bottom_rgba[3],
+                                        );
+                                        ui.horizontal(|ui| {
+                                            ui.label("Top");
+                                            if ui.color_edit_button_srgba(&mut top).changed()
+                                                && let Some(document) = self.document.as_mut()
+                                                && let Some(sky) =
+                                                    document.environment.sky_gradient.as_mut()
+                                            {
+                                                sky.top_rgba = top.to_array();
+                                                self.environment_dirty = true;
+                                            }
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Bottom");
+                                            if ui.color_edit_button_srgba(&mut bottom).changed()
+                                                && let Some(document) = self.document.as_mut()
+                                                && let Some(sky) =
+                                                    document.environment.sky_gradient.as_mut()
+                                            {
+                                                sky.bottom_rgba = bottom.to_array();
+                                                self.environment_dirty = true;
+                                            }
+                                        });
+                                        ui.small(
+                                            "Preview updates immediately. Runtime applies after client rebuild.",
                                         );
                                     }
                                 });
-                            if field.depth != old_depth {
-                                field.parallax = field.depth.default_parallax();
-                                self.environment_dirty = true;
-                            }
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut field.parallax, 0.0..=1.0)
-                                        .text("Parallax"),
-                                )
-                                .changed()
-                            {
-                                self.environment_dirty = true;
-                            }
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut field.density, 0.0..=1.0)
-                                        .text("Density"),
-                                )
-                                .changed()
-                            {
-                                self.environment_dirty = true;
-                            }
-                            if range_row(ui, "Scale", &mut field.scale_range, 0.01) {
-                                self.environment_dirty = true;
-                            }
-                            if range_row(ui, "Speed", &mut field.speed_range, 0.01) {
-                                self.environment_dirty = true;
-                            }
-                            if range_row(ui, "Height", &mut field.height_range, 0.01) {
-                                self.environment_dirty = true;
-                            }
-                            ui.small("Height is normalized: 0 = bottom · 1 = top.");
-                            if range_row(ui, "Opacity", &mut field.opacity_range, 0.01) {
-                                self.environment_dirty = true;
-                            }
-                        }
-                    }
-                    ui.separator();
-                    ui.label("NEXT");
-                    ui.small("Foreground atmosphere");
+
+                            ui.separator();
+                            egui::CollapsingHeader::new("PARALLAX BACKGROUNDS")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.button("+ Add Background").clicked() {
+                                            self.add_parallax_layer();
+                                        }
+                                        if ui.button("Reload Assets").clicked() {
+                                            self.reload_environment_assets(ui.ctx());
+                                        }
+                                    });
+                                    ui.small(
+                                        "Asset paths are relative to Graphic/. Natural image size uses the map PPU.",
+                                    );
+
+                                    if let Some(document) = self.document.as_mut() {
+                                        for (index, layer) in document
+                                            .environment
+                                            .parallax_layers
+                                            .iter_mut()
+                                            .enumerate()
+                                        {
+                                            ui.separator();
+                                            egui::CollapsingHeader::new(&layer.id)
+                                                .id_salt(("parallax_layer", index))
+                                                .default_open(index == 0)
+                                                .show(ui, |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label("ID");
+                                                        if ui
+                                                            .text_edit_singleline(&mut layer.id)
+                                                            .changed()
+                                                        {
+                                                            self.environment_dirty = true;
+                                                        }
+                                                        if ui.small_button("Delete").clicked() {
+                                                            delete_parallax = Some(index);
+                                                        }
+                                                    });
+                                                    ui.label("Asset");
+                                                    if ui
+                                                        .text_edit_singleline(&mut layer.asset_path)
+                                                        .changed()
+                                                    {
+                                                        self.environment_dirty = true;
+                                                    }
+
+                                                    let old_depth = layer.depth;
+                                                    egui::ComboBox::from_id_salt((
+                                                        "parallax_depth",
+                                                        index,
+                                                    ))
+                                                    .selected_text(layer.depth.as_str())
+                                                    .show_ui(ui, |ui| {
+                                                        for depth in ParallaxDepth::ALL {
+                                                            ui.selectable_value(
+                                                                &mut layer.depth,
+                                                                depth,
+                                                                depth.as_str(),
+                                                            );
+                                                        }
+                                                    });
+                                                    if layer.depth != old_depth {
+                                                        layer.parallax =
+                                                            layer.depth.default_parallax();
+                                                        self.environment_dirty = true;
+                                                    }
+
+                                                    let old_fill = layer.fill_mode;
+                                                    egui::ComboBox::from_id_salt((
+                                                        "parallax_fill",
+                                                        index,
+                                                    ))
+                                                    .selected_text(layer.fill_mode.as_str())
+                                                    .show_ui(ui, |ui| {
+                                                        for mode in ParallaxFillMode::ALL {
+                                                            ui.selectable_value(
+                                                                &mut layer.fill_mode,
+                                                                mode,
+                                                                mode.as_str(),
+                                                            );
+                                                        }
+                                                    });
+                                                    if layer.fill_mode != old_fill {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    ui.small(match layer.fill_mode {
+                                                        ParallaxFillMode::Natural => {
+                                                            "Natural size · single copy"
+                                                        }
+                                                        ParallaxFillMode::Repeat => {
+                                                            "Natural size · tile on enabled axes"
+                                                        }
+                                                        ParallaxFillMode::Stretch => {
+                                                            "Stretch to guaranteed parallax coverage"
+                                                        }
+                                                        ParallaxFillMode::Fit => {
+                                                            "Preserve aspect · fit inside coverage"
+                                                        }
+                                                        ParallaxFillMode::Cover => {
+                                                            "Preserve aspect · fully cover camera travel"
+                                                        }
+                                                    });
+
+                                                    if ui
+                                                        .add(
+                                                            egui::Slider::new(
+                                                                &mut layer.parallax,
+                                                                0.0..=1.0,
+                                                            )
+                                                            .text("Parallax"),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    ui.small("0 = screen-fixed · 1 = world-locked");
+                                                    if ui
+                                                        .add(
+                                                            egui::Slider::new(
+                                                                &mut layer.opacity,
+                                                                0.0..=1.0,
+                                                            )
+                                                            .text("Opacity"),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    if layer.fill_mode
+                                                        == ParallaxFillMode::Repeat
+                                                    {
+                                                        ui.horizontal(|ui| {
+                                                            if ui
+                                                                .checkbox(
+                                                                    &mut layer.repeat_x,
+                                                                    "Repeat X",
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                self.environment_dirty = true;
+                                                            }
+                                                            if ui
+                                                                .checkbox(
+                                                                    &mut layer.repeat_y,
+                                                                    "Repeat Y",
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                self.environment_dirty = true;
+                                                            }
+                                                        });
+                                                    }
+                                                    ui.horizontal(|ui| {
+                                                        ui.label("Offset");
+                                                        if ui
+                                                            .add(
+                                                                egui::DragValue::new(
+                                                                    &mut layer.offset_world[0],
+                                                                )
+                                                                .speed(0.05)
+                                                                .prefix("X "),
+                                                            )
+                                                            .changed()
+                                                        {
+                                                            self.environment_dirty = true;
+                                                        }
+                                                        if ui
+                                                            .add(
+                                                                egui::DragValue::new(
+                                                                    &mut layer.offset_world[1],
+                                                                )
+                                                                .speed(0.05)
+                                                                .prefix("Y "),
+                                                            )
+                                                            .changed()
+                                                        {
+                                                            self.environment_dirty = true;
+                                                        }
+                                                    });
+                                                    ui.horizontal(|ui| {
+                                                        ui.label("Motion");
+                                                        if ui
+                                                            .add(
+                                                                egui::DragValue::new(
+                                                                    &mut layer
+                                                                        .motion_world_per_second[0],
+                                                                )
+                                                                .speed(0.01)
+                                                                .prefix("X "),
+                                                            )
+                                                            .changed()
+                                                        {
+                                                            self.environment_dirty = true;
+                                                        }
+                                                        if ui
+                                                            .add(
+                                                                egui::DragValue::new(
+                                                                    &mut layer
+                                                                        .motion_world_per_second[1],
+                                                                )
+                                                                .speed(0.01)
+                                                                .prefix("Y "),
+                                                            )
+                                                            .changed()
+                                                        {
+                                                            self.environment_dirty = true;
+                                                        }
+                                                    });
+                                                    ui.small(
+                                                        "Motion uses world units/second · Repeat motion wraps seamlessly.",
+                                                    );
+                                                });
+                                        }
+                                    }
+                                });
+
+                            ui.separator();
+                            egui::CollapsingHeader::new("CLOUD FIELDS")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.button("+ Add Cloud Field").clicked() {
+                                            self.add_cloud_field();
+                                        }
+                                        if ui.button("Reload Assets").clicked() {
+                                            self.reload_environment_assets(ui.ctx());
+                                        }
+                                    });
+                                    ui.small(
+                                        "Folder-backed · client-local seeded presentation · minimum 1 PNG.",
+                                    );
+
+                                    if let Some(document) = self.document.as_mut() {
+                                        for (index, field) in document
+                                            .environment
+                                            .cloud_fields
+                                            .iter_mut()
+                                            .enumerate()
+                                        {
+                                            ui.separator();
+                                            egui::CollapsingHeader::new(&field.id)
+                                                .id_salt(("cloud_field", index))
+                                                .default_open(index == 0)
+                                                .show(ui, |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label("ID");
+                                                        if ui
+                                                            .text_edit_singleline(&mut field.id)
+                                                            .changed()
+                                                        {
+                                                            self.environment_dirty = true;
+                                                        }
+                                                        if ui.small_button("Delete").clicked() {
+                                                            delete_cloud = Some(index);
+                                                        }
+                                                    });
+                                                    ui.label("Folder");
+                                                    if ui
+                                                        .text_edit_singleline(
+                                                            &mut field.asset_folder,
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    let found = self
+                                                        .cloud_textures
+                                                        .get(&field.id)
+                                                        .map_or(0, Vec::len);
+                                                    ui.colored_label(
+                                                        if found > 0 {
+                                                            Color32::LIGHT_GREEN
+                                                        } else {
+                                                            Color32::YELLOW
+                                                        },
+                                                        format!(
+                                                            "Found: {found} PNG{}{}",
+                                                            if found == 1 { "" } else { "s" },
+                                                            if found == 0 {
+                                                                " · Reload Assets after setting folder"
+                                                            } else {
+                                                                ""
+                                                            }
+                                                        ),
+                                                    );
+
+                                                    ui.label("Depth behavior");
+                                                    let old_depth = field.depth;
+                                                    egui::ComboBox::from_id_salt((
+                                                        "cloud_depth",
+                                                        index,
+                                                    ))
+                                                    .selected_text(field.depth.as_str())
+                                                    .show_ui(ui, |ui| {
+                                                        for depth in ParallaxDepth::ALL {
+                                                            ui.selectable_value(
+                                                                &mut field.depth,
+                                                                depth,
+                                                                depth.as_str(),
+                                                            );
+                                                        }
+                                                    });
+                                                    if field.depth != old_depth {
+                                                        field.parallax =
+                                                            field.depth.default_parallax();
+                                                        field.stack_position =
+                                                            CloudStackPosition::for_depth(
+                                                                field.depth,
+                                                            );
+                                                        self.environment_dirty = true;
+                                                    }
+
+                                                    ui.label("Stack Position");
+                                                    let old_stack = field.stack_position;
+                                                    egui::ComboBox::from_id_salt((
+                                                        "cloud_stack",
+                                                        index,
+                                                    ))
+                                                    .selected_text(
+                                                        field.stack_position.as_str(),
+                                                    )
+                                                    .show_ui(ui, |ui| {
+                                                        for position in CloudStackPosition::ALL {
+                                                            ui.selectable_value(
+                                                                &mut field.stack_position,
+                                                                position,
+                                                                position.as_str(),
+                                                            );
+                                                        }
+                                                    });
+                                                    if field.stack_position != old_stack {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    ui.small(
+                                                        "Draw order only. Example: After Far = before Mid.",
+                                                    );
+
+                                                    if ui
+                                                        .add(
+                                                            egui::Slider::new(
+                                                                &mut field.parallax,
+                                                                0.0..=1.0,
+                                                            )
+                                                            .text("Parallax"),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    if ui
+                                                        .add(
+                                                            egui::Slider::new(
+                                                                &mut field.density,
+                                                                0.0..=1.0,
+                                                            )
+                                                            .text("Density"),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    if range_row(
+                                                        ui,
+                                                        "Scale",
+                                                        &mut field.scale_range,
+                                                        0.01,
+                                                    ) {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    if range_row(
+                                                        ui,
+                                                        "Speed",
+                                                        &mut field.speed_range,
+                                                        0.01,
+                                                    ) {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    if range_row(
+                                                        ui,
+                                                        "Height",
+                                                        &mut field.height_range,
+                                                        0.01,
+                                                    ) {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                    ui.small(
+                                                        "Height is normalized: 0 = bottom · 1 = top.",
+                                                    );
+                                                    if range_row(
+                                                        ui,
+                                                        "Opacity",
+                                                        &mut field.opacity_range,
+                                                        0.01,
+                                                    ) {
+                                                        self.environment_dirty = true;
+                                                    }
+                                                });
+                                        }
+                                    }
+                                });
+
+                            ui.separator();
+                            ui.label("NEXT");
+                            ui.small("Foreground atmosphere");
+                            ui.add_space(12.0);
+                        });
                 } else if self.editor_mode == EditorMode::Footnote {
                     ui.heading("FOOTNOTE EDIT");
                     ui.small("Polyline authoring · gameplay-owned · Tiled stays visual-only");
@@ -1426,6 +1595,28 @@ impl MapLabApp {
         }) {
             ui.ctx().request_repaint();
         }
+        for field in document
+            .environment
+            .cloud_fields
+            .iter()
+            .filter(|field| field.stack_position == CloudStackPosition::BeforeAll)
+        {
+            if let Some(textures) = self.cloud_textures.get(&field.id) {
+                paint_cloud_field_preview(
+                    &map_painter,
+                    field,
+                    textures,
+                    map.pixels_per_world_unit,
+                    [world_width * 0.5, world_height * 0.5],
+                    [world_width, world_height],
+                    preview_camera,
+                    [CAMERA_WIDTH_WU, CAMERA_HEIGHT_WU],
+                    environment_time_seconds,
+                    &to_screen,
+                );
+            }
+        }
+
         for depth in ParallaxDepth::ALL {
             for layer in document
                 .environment
@@ -1448,11 +1639,13 @@ impl MapLabApp {
                     );
                 }
             }
+
+            let stack_position = CloudStackPosition::for_depth(depth);
             for field in document
                 .environment
                 .cloud_fields
                 .iter()
-                .filter(|field| field.depth == depth)
+                .filter(|field| field.stack_position == stack_position)
             {
                 if let Some(textures) = self.cloud_textures.get(&field.id) {
                     paint_cloud_field_preview(
