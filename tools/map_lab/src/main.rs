@@ -9,9 +9,8 @@ use purgatory_content::{
     CloudFieldAuthoring, CloudStackPosition, FootholdKind, FootholdPath, GameplaySpawnPoint,
     LoadMode, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, ParallaxDepth, ParallaxFillMode, ParallaxLayer,
     Placement, PlacementKind, PortalLink, PresentationSprite, SkyGradient, TileTransform,
-    cloud_field_seed,
-    cloud_instance_count, cloud_instance_specs, default_content_root, load_registry,
-    portal_runtime_authored, resolve_png_asset_folder,
+    cloud_field_seed, cloud_instance_count, cloud_instance_specs, default_content_root,
+    load_registry, portal_runtime_authored, resolve_png_asset_folder,
 };
 use purgatory_map_lab::{MapLabDocument, PURGATORY_STANDARD_PPU};
 
@@ -60,12 +59,7 @@ enum EntityCatalogKind {
 }
 
 impl EntityCatalogKind {
-    const ALL: [Self; 4] = [
-        Self::Npc,
-        Self::Interactable,
-        Self::Entity,
-        Self::Mob,
-    ];
+    const ALL: [Self; 4] = [Self::Npc, Self::Interactable, Self::Entity, Self::Mob];
 
     const fn label(self) -> &'static str {
         match self {
@@ -404,7 +398,8 @@ impl MapLabApp {
         self.portal_brush = false;
         self.selected_catalog = None;
         self.selected_placement = None;
-        self.status = "ENTITY · add a Portal or choose a library entry, then click the map".to_owned();
+        self.status =
+            "ENTITY · add a Portal or choose a library entry, then click the map".to_owned();
     }
 
     fn place_entity(&mut self, catalog_index: usize, position: [f32; 2]) {

@@ -92,14 +92,15 @@ pub fn map_plan(
                 )));
             }
             PlacementKind::Portal => {
-                let content_id = ContentId::from_authored(&place.content_authored).map_err(|_| {
-                    ContentError::one(ValidationIssue::new(
-                        map_authored,
-                        &place.id,
-                        "id",
-                        "portal runtime identity is invalid",
-                    ))
-                })?;
+                let content_id =
+                    ContentId::from_authored(&place.content_authored).map_err(|_| {
+                        ContentError::one(ValidationIssue::new(
+                            map_authored,
+                            &place.id,
+                            "id",
+                            "portal runtime identity is invalid",
+                        ))
+                    })?;
                 placements.push(
                     RuntimeSpawnRequest::transient_at(address)
                         .with_transform(Transform::from_position(place.position))

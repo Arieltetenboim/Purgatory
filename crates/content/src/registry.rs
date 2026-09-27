@@ -216,20 +216,14 @@ impl ContentRegistry {
         if let Some(placement) = self
             .placements(map_authored)
             .iter()
-            .find(|placement| {
-                placement.kind == PlacementKind::Portal && placement.id == portal_id
-            })
+            .find(|placement| placement.kind == PlacementKind::Portal && placement.id == portal_id)
         {
             return ContentId::from_authored(&placement.content_authored).ok();
         }
 
-        let legacy = self
-            .placements(map_authored)
-            .iter()
-            .find(|placement| {
-                placement.kind == PlacementKind::Entity
-                    && placement.content_authored == portal_id
-            })?;
+        let legacy = self.placements(map_authored).iter().find(|placement| {
+            placement.kind == PlacementKind::Entity && placement.content_authored == portal_id
+        })?;
         let entity = self.entities.get(&legacy.content_authored)?;
         (entity.interactable == Some(purgatory_simulation::InteractableKind::Portal))
             .then(|| entity.content_id)
