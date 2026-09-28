@@ -1,6 +1,6 @@
 # Phase 12 entry — Character Continuity
 
-Status: **entry/design active** (2026-09-28). Root `PHASE` = `12.entry`.
+Status: **design accepted; implementation pending** (2026-09-28). Root `PHASE` = `12.entry`.
 Phase 11 is closed; 12A–12C are planned, not accepted or implemented by this entry.
 
 ## Entry evidence and first gate
@@ -11,8 +11,10 @@ Phase 11 is closed; 12A–12C are planned, not accepted or implemented by this e
 - `PersistentCharacter` still has schema v1 with CharacterId, revision and
   restore/instance-exit state. Inventory/equipment are runtime-owned and not
   durable. Roster/selected-character entry already exist; do not rebuild them.
-- Issue #10 is the **first Phase 12 step**. Produce and review a compact design
-  before changing the character schema or promising durable inventory.
+- Issue #10 is the **first Phase 12 step**. Its accepted design is
+  [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md):
+  implement and verify it before promising durable inventory. This entry
+  itself still implements no durable items.
 
 ## Issue #10 acceptance boundary
 
@@ -25,9 +27,11 @@ define reconnect, logout/login, clean restart, process crash, map/channel
 transition and later character selection semantics. Distinguish queued,
 written and crash-durable states; do not infer one from another.
 
-Keep `EntityId`, `ConnectionId`, transient drops, session/replication state,
-runtime `WorldAddress` and exact coordinates out of the durable record. Reuse
-the existing persistence worker and CharacterId ownership; no filesystem or
+Keep `EntityId`, `ConnectionId`, session/replication state, runtime
+`WorldAddress` and coordinates out of the **character** record. Map-owned
+Drop has a separate durable record with stable map-space identity, position,
+pickup eligibility and active-time expiry; never persist its runtime entity.
+Reuse the existing persistence worker and CharacterId ownership; no filesystem or
 serialization work on the 30 Hz simulation thread. The design should name the
 smallest implementation steps and their focused tests. An unresolved ownership
 or durability conflict stops implementation for an explicit decision.
