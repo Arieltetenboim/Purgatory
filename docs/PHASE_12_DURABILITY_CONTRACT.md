@@ -40,6 +40,8 @@ but does not remove that player's inventory/equipped records. Restoring the
 same item IDs into a new actor therefore also requires explicit old-owner
 cleanup after snapshot handoff and before re-entry; despawn alone is not proof
 that the old runtime ownership disappeared.
+An owned item can also be dropped by one player and picked up by another.
+That is a transfer between two character files, not a single-character save.
 
 ## Durable record and ownership
 
@@ -118,6 +120,9 @@ an already applied change cannot be rolled back merely because the queue is
 full. A projection failure suspends durable mutations for that actor and
 retains its live state for diagnosis rather than acknowledging a partial save.
 This does not add a second gameplay authority.
+This whole-record atomicity covers **one CharacterId**. It does not make a
+transfer between two character files atomic; such transfers need the separate
+policy at the end of this document.
 
 ## Commit, recovery and lifecycle guarantees
 
@@ -129,7 +134,7 @@ This does not add a second gameplay authority.
 | Normal reconnect after completed detach | Enter only after the prior session's latest revision has committed, then load that record and restore the same item IDs into the new actor. |
 | Logout / return to login | A user-interface claim of **saved** requires a server acknowledgement for the latest revision. The current disconnect control flow has no such acknowledgement, so its presentation must not imply this guarantee until the required control path is added. |
 | Clean server shutdown | Flush latest snapshots and report success/failure within the configured bound; only a successful worker acknowledgement proves completion. |
-| Process crash | Recover the last committed valid character record. Mutations accepted by gameplay but not yet committed may roll back. Never merge a partial inventory with a newer equipment state. |
+| Process crash | Recover the last committed valid character record. Mutations accepted by gameplay but not yet committed may roll back. Never merge a partial inventory with a newer equipment state. No cross-character transfer guarantee exists without a transfer transaction. |
 | Map/channel transition | Keep the same CharacterId, item instances and authoritative actor ownership. Snapshot restore changes with the full item set; do not serialize runtime topology. |
 | Later selection of another character | Load exactly the selected owned CharacterId; no inventory inheritance from the prior character or DEV login roster. |
 
@@ -188,19 +193,33 @@ mere enqueue, completed rename or graceful disconnect as power-loss durable.
    owner-private presentation before Welcome. Test pickup→equip→disconnect→
    reconnect/restart, failed equip rollback, full inventory, multi-character
    isolation, old-owner cleanup/re-entry, map/channel transition and crash at
-   each file-replacement boundary. Keep world drops transient unless separately
-   approved.
+   each file-replacement boundary. Reject character-owned drop while its
+   cross-character transfer policy is unresolved; test that no path bypasses
+   the rejection. Ordinary transient loot drops remain outside the character
+   record.
 
 ### Owner decision before 12C
 
-Dropping an owned item moves it to a transient world drop. If its removal from
-the character file commits and the process crashes, the world drop is lost.
-Likewise, an accepted pickup that has not committed can vanish on a crash if
-its transient source drop is not recreated. These are item-loss windows, not
-merely a visual rollback.
-The proposed narrow Phase 12 policy accepts this explicit loss on a voluntary
-drop and the acknowledged-but-uncommitted pickup window; it does not promise
-persistent world loot. If that is unacceptable, a durable transaction/ack
-boundary for pickup and world-drop persistence needs a separate design gate;
-do not conceal it inside the character record. The owner must accept the
-policy before 12C ships.
+The existing player Drop command moves an owned item from character A into a
+transient world drop; player B can pick it up. Separate saves of A and B can
+commit in either order. A crash after B commits but before A's removal commits
+can duplicate the same `ItemInstanceId`; the opposite order can lose it. A
+single-character snapshot cannot solve this by save ordering alone. Even a
+voluntary drop left unclaimed can vanish after its removal commits and the
+world restarts.
+
+The proposed **smallest safe 12C boundary** rejects dropping a durable owned
+item into the world until a cross-character/world transfer transaction is
+designed. This changes the current Drop behavior and requires owner approval.
+If Drop must remain available, first design a durable world-drop/transfer
+journal with recovery and an atomic claim rule across the two characters;
+do not silently write two unrelated character snapshots and call it atomic.
+
+Ordinary transient loot spawned without a prior durable owner can still be
+picked up. If the server acknowledges pickup before the character snapshot
+commits and then crashes, that loot may disappear entirely because the source
+drop is not restored. The proposal labels the gameplay acceptance as
+non-durable and requires a separate commit acknowledgement before a **saved**
+claim. If even this window is unacceptable, pickup acknowledgement must wait
+for a durable commit or the source world drop must become recoverable. The
+owner must choose these gameplay/durability boundaries before 12C ships.

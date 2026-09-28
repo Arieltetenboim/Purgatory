@@ -92,7 +92,8 @@ their relevant code is present on `master`. Design acceptance is still open;
 entering Phase 12 does not claim persistent inventory/equipment or a GREEN
 implementation gate. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md). Issue #10's
 proposed contract is [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md);
-owner review and the voluntary-drop decision remain open before 12C.
+owner review and the cross-character Drop/loot durability decision remain open
+before 12C.
 
 | Slice | Name | Status |
 |---|---|---|
