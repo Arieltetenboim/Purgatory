@@ -4,7 +4,8 @@
 //! through a bounded queue with latest-per-character pressure coalescing. JSON,
 //! the ownership log, and other filesystem work happen only on this worker.
 //! Item-id reservation, map drops, and the active clock use the same service;
-//! gameplay must not call them from the 30 Hz tick.
+//! gameplay must not call them from the 30 Hz tick. The worker checkpoints the
+//! durable log when it reaches its size bound and again at clean shutdown.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -170,11 +171,17 @@ impl PersistenceHandle {
                             }
                         }
                         flush_deferred_latest(&mut service, &worker_shared);
+                        if let Err(err) = service.compact_durable_log() {
+                            eprintln!("PURGATORY durable checkpoint at shutdown failed: {err}");
+                        }
                         let _ = reply.send(());
                         break;
                     }
                 }
                 flush_deferred_latest(&mut service, &worker_shared);
+                if let Err(err) = service.maintain_durable_log() {
+                    eprintln!("PURGATORY durable checkpoint failed: {err}");
+                }
             }
             flush_deferred_latest(&mut service, &worker_shared);
         });

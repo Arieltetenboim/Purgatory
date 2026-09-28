@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use purgatory_common::CharacterId;
 
@@ -8,7 +9,7 @@ use crate::domain::{
     ReservedItemIds,
 };
 use crate::error::PersistError;
-use crate::journal;
+use crate::journal::Store;
 
 #[must_use]
 pub fn character_file_name(id: CharacterId) -> String {
@@ -16,22 +17,23 @@ pub fn character_file_name(id: CharacterId) -> String {
 }
 
 /// File-backed character records. One logical writer per Character (the
-/// persistence worker).
+/// persistence worker). Recovered state is held in memory after `open`; the
+/// directory must have no other writer while this repository is open.
 #[derive(Debug)]
 pub struct FileCharacterRepository {
     dir: PathBuf,
     rules: DurableContentRules,
+    store: Mutex<Store>,
 }
 
 impl FileCharacterRepository {
     pub fn open(dir: &Path) -> Result<Self, PersistError> {
         std::fs::create_dir_all(dir).map_err(|e| PersistError::io(dir, e))?;
-        let repo = Self {
+        Ok(Self {
             dir: dir.to_path_buf(),
             rules: DurableContentRules::new(),
-        };
-        repo.migrate_pending()?;
-        Ok(repo)
+            store: Mutex::new(Store::open(dir)?),
+        })
     }
 
     pub fn set_durable_content_rules(&mut self, rules: DurableContentRules) {
@@ -44,13 +46,11 @@ impl FileCharacterRepository {
     }
 
     pub fn load(&self, id: CharacterId) -> Result<Option<PersistentCharacter>, PersistError> {
-        self.migrate_pending()?;
-        let live = journal::recover(&self.dir)?;
-        let Some(character) = live.characters.get(&id.raw()) else {
+        let Some(character) = self.store()?.probe_unindexed(id)? else {
             return Ok(None);
         };
-        self.ensure_character_content(character)?;
-        Ok(Some(character.clone()))
+        self.ensure_character_content(&character)?;
+        Ok(Some(character))
     }
 
     /// Load an existing character, or create the normal default only when the
@@ -70,14 +70,13 @@ impl FileCharacterRepository {
     /// items; a restore-only snapshot uses [`Self::save_restore_snapshot`].
     /// An unreadable existing record fails without replacement.
     pub fn save(&self, character: &PersistentCharacter) -> Result<(), PersistError> {
-        self.migrate_pending()?;
-        let live = journal::recover(&self.dir)?;
-        if let Some(existing) = live.characters.get(&character.character_id.raw()) {
+        let mut store = self.store()?;
+        if let Some(existing) = store.probe_unindexed(character.character_id)? {
             if character.persistence_revision < existing.persistence_revision {
                 return Ok(());
             }
             if character.persistence_revision == existing.persistence_revision {
-                if character.body_eq(existing) {
+                if character.body_eq(&existing) {
                     return Ok(());
                 }
                 return Err(PersistError::integrity(
@@ -86,7 +85,8 @@ impl FileCharacterRepository {
                 ));
             }
         }
-        self.commit_ownership(OwnershipChange::character(character.clone()))
+        store
+            .commit_ownership(&self.rules, OwnershipChange::character(character.clone()))
             .map(|_| ())
     }
 
@@ -97,9 +97,8 @@ impl FileCharacterRepository {
         &self,
         snapshot: PersistentCharacterSnapshot,
     ) -> Result<(), PersistError> {
-        self.migrate_pending()?;
-        let live = journal::recover(&self.dir)?;
-        let Some(existing) = live.characters.get(&snapshot.character_id.raw()).cloned() else {
+        let existing = self.store()?.probe_unindexed(snapshot.character_id)?;
+        let Some(existing) = existing else {
             return self.save(&snapshot.into_character());
         };
         if snapshot.persistence_revision < existing.persistence_revision {
@@ -123,14 +122,18 @@ impl FileCharacterRepository {
         self.save(&next)
     }
 
+    /// Commits one ownership change. Characters the log does not know are
+    /// checked against existing bytes at their path first.
     pub fn commit_ownership(&self, change: OwnershipChange) -> Result<CommitResult, PersistError> {
-        self.migrate_pending()?;
-        journal::commit_ownership(&self.dir, &self.rules, change)
+        let mut store = self.store()?;
+        for character in &change.characters {
+            store.probe_unindexed(character.character_id)?;
+        }
+        store.commit_ownership(&self.rules, change)
     }
 
     pub fn reserve_item_instance_ids(&self, count: u32) -> Result<ReservedItemIds, PersistError> {
-        self.migrate_pending()?;
-        journal::reserve_ids(&self.dir, count)
+        self.store()?.reserve_ids(count)
     }
 
     pub fn checkpoint_active_clock(
@@ -138,40 +141,42 @@ impl FileCharacterRepository {
         tick: u64,
         kind: ClockCheckpointKind,
     ) -> Result<CommitResult, PersistError> {
-        self.migrate_pending()?;
-        journal::checkpoint_clock(&self.dir, tick, kind)
+        self.store()?.checkpoint_clock(tick, kind)
     }
 
     pub fn active_clock_tick(&self) -> Result<u64, PersistError> {
-        self.migrate_pending()?;
-        Ok(journal::recover(&self.dir)?.clock_tick)
+        Ok(self.store()?.clock_tick())
     }
 
     pub fn map_drops(&self) -> Result<Vec<MapDropRecord>, PersistError> {
-        self.migrate_pending()?;
-        let live = journal::recover(&self.dir)?;
-        let mut drops: Vec<_> = live.drops.into_values().collect();
-        drops.sort_by_key(|drop| drop.item_instance_id.raw());
+        let drops: Vec<_> = self.store()?.drops().cloned().collect();
+        let path = self.dir.join("map_drops.json");
         for drop in &drops {
-            let path = self.dir.join("map_drops.json");
             domain::validate_drop_content(drop, &self.rules, &path)?;
         }
         Ok(drops)
     }
 
+    /// Write a checkpoint of all committed state and restart the log after it.
     pub fn compact_durable_log(&self) -> Result<(), PersistError> {
-        self.migrate_pending()?;
-        journal::compact(&self.dir)
+        self.store()?.checkpoint()
     }
 
-    fn migrate_pending(&self) -> Result<(), PersistError> {
-        loop {
-            let pending = journal::pending_migrations(&self.dir)?;
-            let Some(v1) = pending.into_iter().next() else {
-                return Ok(());
-            };
-            journal::migrate_one(&self.dir, &v1)?;
-        }
+    /// Once the log reaches its size bound, run one bounded step of checkpoint
+    /// work. Returns whether any work ran.
+    pub fn maintain_durable_log(&self) -> Result<bool, PersistError> {
+        self.store()?.maintain()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_checkpoint_step(&self, budget: usize) -> Result<bool, PersistError> {
+        self.store()?.checkpoint_step(budget)
+    }
+
+    fn store(&self) -> Result<MutexGuard<'_, Store>, PersistError> {
+        self.store.lock().map_err(|_| {
+            PersistError::integrity(&self.dir, "durable store lock was poisoned by a panic")
+        })
     }
 
     fn ensure_character_content(
@@ -248,6 +253,10 @@ mod tests {
         let character = repo.load_or_default(id).unwrap();
         assert_eq!(character.character_id, id);
         assert_eq!(character.restore.map_authored, "map.map1");
+        drop(repo);
+        let repo = FileCharacterRepository::open(&dir).unwrap();
+        assert!(repo.load(id).unwrap().unwrap().body_eq(&character));
+        repo.compact_durable_log().unwrap();
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -320,7 +329,9 @@ mod tests {
         let mut character = PersistentCharacter::new_default(id);
         character.persistence_revision = 4;
         repo.save(&character).unwrap();
-        let path = repo.path_for(id);
+        repo.compact_durable_log().unwrap();
+        drop(repo);
+        let path = dir.join(character_file_name(id));
         let bak = {
             let mut s = path.as_os_str().to_os_string();
             s.push(".bak");
@@ -328,6 +339,7 @@ mod tests {
         };
         std::fs::rename(&path, &bak).unwrap();
         assert!(!path.exists());
+        let repo = FileCharacterRepository::open(&dir).unwrap();
         let loaded = repo.load(id).unwrap().unwrap();
         assert_eq!(loaded.persistence_revision, 4);
         assert!(path.exists());

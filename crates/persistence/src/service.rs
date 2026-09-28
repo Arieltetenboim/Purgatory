@@ -86,6 +86,16 @@ impl PersistenceService {
         self.repo.map_drops()
     }
 
+    /// Checkpoint once the durable log reaches its size bound.
+    pub fn maintain_durable_log(&mut self) -> Result<bool, PersistError> {
+        self.repo.maintain_durable_log()
+    }
+
+    /// Checkpoint all committed state, for example before a clean stop.
+    pub fn compact_durable_log(&mut self) -> Result<(), PersistError> {
+        self.repo.compact_durable_log()
+    }
+
     #[must_use]
     pub fn lookup(&self, login: &DevLogin) -> Option<CharacterId> {
         self.identity.lookup(login)

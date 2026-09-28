@@ -136,6 +136,39 @@ Full equipment domain (occupied-mask + tokens; no Enter presence byte):
 
 One-slot deltas: equip **10**, unequip **2**. ContentId (8 bytes) dominates occupied payloads; compact mapping is deferred. Stable equipment after convergence emits **zero** equipment Update records until the next mutation. See [`PHASE_8C_REPORT.md`](PHASE_8C_REPORT.md).
 
+## Phase 12A durable file backend (measured; not a capacity claim)
+
+Budget: the persistence worker must commit a periodic active-clock checkpoint
+at least once per second (`ACTIVE_SERVER_TICKS_PER_SECOND`). Probe:
+`PURGATORY_DURABLE_PROBE_COUNTS=100,1000,10000,50000 cargo test -p
+purgatory-persistence --release durable_cost_probe -- --ignored --nocapture`.
+Host: i7-13650HX, NVMe SSD, Windows, `%TEMP%`, release build, empty characters,
+2026-09-28.
+
+Before the fix, every commit re-read every character file, replayed the whole
+log, and rewrote every character file with a sync:
+
+| Stored characters | Clock commit | Character save |
+|---:|---:|---:|
+| 100 | 259 ms | 263 ms |
+| 1,000 | 3,040 ms | 3,808 ms |
+| 2,000 | 7,907 ms | 9,330 ms |
+
+After the fix, a commit is one appended frame with one sync, and checkpoints
+write only changed characters, 64 per worker step:
+
+| Stored characters | Clock commit | Character save | One 64-file checkpoint step | Reopen after checkpoint | Checkpoint of every character |
+|---:|---:|---:|---:|---:|---:|
+| 100 | 14 ms | 12 ms | 83 ms | 16 ms | 151 ms |
+| 1,000 | 15 ms | 16 ms | 109 ms | 203 ms | 1.9 s |
+| 10,000 | 11 ms | 11 ms | 110 ms | 1.3 s | 18.1 s |
+| 50,000 | 10 ms | 11 ms | 87 ms | 8.4 s | 159 s |
+
+Commit time is one sync on this disk and does not depend on how many
+characters are stored. Startup, and a checkpoint of every character at once,
+still grow with the stored-character count. See
+[`PHASE_12A_DURABLE_DOMAIN.md`](PHASE_12A_DURABLE_DOMAIN.md).
+
 ## Phase 8D presentation bridge cost (not a capacity claim)
 
 Per visible player: Humanoid v0 `copy_bind` + `evaluate` O(16). Pose buffers allocated on AOI enter and reused. `BoneTarget` → `BoneIndex` is bound once per `CharacterPresentationSet`, not per frame. Sync copies a small `Vec` of Copy presentation states. Local S2 debug evaluate is still separate this slice. See [`PHASE_8D_REPORT.md`](PHASE_8D_REPORT.md).

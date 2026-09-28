@@ -38,7 +38,6 @@ pub const CHARACTER_RECORD_SCHEMA_V1: u32 = 1;
 pub const CHARACTER_RECORD_SCHEMA_VERSION: u32 = 2;
 
 pub const MAP_DROP_SCHEMA_VERSION: u32 = 1;
-pub const DURABLE_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 /// The six equipment slots, spelled like the simulation slot names.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]

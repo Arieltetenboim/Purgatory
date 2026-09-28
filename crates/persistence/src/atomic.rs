@@ -1,7 +1,8 @@
 //! Crash-safe recoverable file replacement.
 //!
-//! On Windows, `rename` cannot replace an existing destination. The sequence
-//! is therefore:
+//! `std::fs::rename` replaces an existing destination on both Unix and
+//! Windows; the durable journal relies on that for its log and `.next` files.
+//! This older helper still keeps a `.bak` of the destination:
 //!
 //! ```text
 //! write tmp → sync → dest → .bak (if dest exists) → tmp → dest → delete .bak

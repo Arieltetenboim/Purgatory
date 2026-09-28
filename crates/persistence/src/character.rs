@@ -15,8 +15,9 @@ pub const PERSISTENCE_SCHEMA_VERSION: u32 = CHARACTER_RECORD_SCHEMA_VERSION;
 #[serde(deny_unknown_fields)]
 pub struct PersistentCharacter {
     pub schema_version: u32,
-    /// Transaction id of the checkpoint that wrote this file. Zero only before
-    /// the first commit. The log, not this field, is the authority.
+    /// Transaction id that last changed this record (its checkpoint version).
+    /// Zero only before the first commit. The log, not this field, is the
+    /// authority.
     pub applied_transaction_id: u64,
     pub character_id: CharacterId,
     pub persistence_revision: u64,
