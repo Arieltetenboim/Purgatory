@@ -56,7 +56,7 @@ py -3 -m unittest discover -s .\tools\mob_lab -p "test_*.py"
 ## ContentId boundary
 
 Mob Lab allocates new Monster IDs only from the frozen Monster block
-(`10001–19999`) and writes the existing checked catalog/ledger owned by issue #24.
+(`10001–19999`) and writes the checked catalog in `content/CONTENT_ID_CATALOG.md`.
 It does not introduce a second identity scheme. NEW MONSTER updates the Rust catalog,
 the checked ledger, and the runtime Monster JSON as one validated transaction; a
 failed runtime validation rolls all of them back.
