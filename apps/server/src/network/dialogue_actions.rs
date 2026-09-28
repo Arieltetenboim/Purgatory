@@ -274,6 +274,7 @@ mod tests {
 
         assert!(outcome.inventory_changed);
         let dash = registry.ability("skill.movement.dash").unwrap().id;
+        assert_eq!(dash, purgatory_common::ABILITY_MOVEMENT_DASH);
         assert_eq!(outcome.abilities_to_grant, vec![dash]);
         assert_eq!(world.inventory_count(actor), 1);
         assert!(!narrative.fact(actor, "welcome.workshop.package_at_inn"));

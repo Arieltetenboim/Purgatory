@@ -120,11 +120,12 @@ Phase **8A** stores equipped appearance as `EquipmentSlot → Option<ContentId>`
 
 ## Ability definition (Phase 9A / 9B)
 
-Runtime contract lives in `purgatory-simulation` (`AbilityId` = `ContentId`). Pack files live in `content/shared/abilities/`. v1 example (`skill.basic.strike`):
+Runtime contract lives in `purgatory-simulation` (`AbilityId` = `ContentId`). Pack files live in `content/shared/abilities/`. Schema v2 example (`skill.basic.strike`):
 
 ```text
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "content_id": 40001,
   "id": "skill.basic.strike",
   "timing": { "windup_ticks": 3, "active_ticks": 2, "recovery_ticks": 4, "cooldown_ticks": 12 },
   "activation": "independent",
@@ -133,7 +134,7 @@ Runtime contract lives in `purgatory-simulation` (`AbilityId` = `ContentId`). Pa
 }
 ```
 
-- `id` uses the existing authored-id rules.
+- `content_id` is the canonical Ability-block catalog ID (`40,000–49,999`) from `content/CONTENT_ID_CATALOG.md`. `id` remains the human-readable authored label and must be the permanent allocation for that `content_id`.
 - Timing is simulation ticks (30 Hz). Zero skips that live Action phase.
 - `activation` is who is required to **start** (`independent` | `selected_entity`). It is not the hit list.
 - `delivery` is who is affected at Active (`forward_query` | `selected_entity`). Zero hits is valid.

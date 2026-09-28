@@ -7,6 +7,7 @@ use crate::ContentId;
 
 pub const ABILITY_BASIC_STRIKE: ContentId = ContentId::from_raw(40_001);
 pub const ABILITY_PRACTICE_SWORD_STRIKE: ContentId = ContentId::from_raw(40_002);
+pub const ABILITY_MOVEMENT_DASH: ContentId = ContentId::from_raw(40_003);
 
 pub const MONSTER_RED_SLIME: ContentId = ContentId::from_raw(10_001);
 pub const MONSTER_MOSS_CRAB: ContentId = ContentId::from_raw(10_002);
@@ -50,6 +51,7 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
     Some(match label {
         "skill.basic.strike" => ABILITY_BASIC_STRIKE,
         "skill.debug.practice_sword_strike" => ABILITY_PRACTICE_SWORD_STRIKE,
+        "skill.movement.dash" => ABILITY_MOVEMENT_DASH,
         "monster.slime.red" => MONSTER_RED_SLIME,
         "monster.moss_crab" => MONSTER_MOSS_CRAB,
 
@@ -88,6 +90,7 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
     Some(match id {
         ABILITY_BASIC_STRIKE => "skill.basic.strike",
         ABILITY_PRACTICE_SWORD_STRIKE => "skill.debug.practice_sword_strike",
+        ABILITY_MOVEMENT_DASH => "skill.movement.dash",
         MONSTER_RED_SLIME => "monster.slime.red",
         MONSTER_MOSS_CRAB => "monster.moss_crab",
 
@@ -146,7 +149,11 @@ mod tests {
         ] {
             assert_eq!(id.kind(), Some(ContentKind::Item));
         }
-        for id in [ABILITY_BASIC_STRIKE, ABILITY_PRACTICE_SWORD_STRIKE] {
+        for id in [
+            ABILITY_BASIC_STRIKE,
+            ABILITY_PRACTICE_SWORD_STRIKE,
+            ABILITY_MOVEMENT_DASH,
+        ] {
             assert_eq!(id.kind(), Some(ContentKind::Ability));
         }
         for id in [MONSTER_RED_SLIME, MONSTER_MOSS_CRAB] {
@@ -178,6 +185,8 @@ mod tests {
     fn migration_labels_round_trip_through_one_allocation() {
         for label in [
             "skill.basic.strike",
+            "skill.debug.practice_sword_strike",
+            "skill.movement.dash",
             "monster.slime.red",
             "monster.moss_crab",
             "npc.welcome.traveler_stayed",

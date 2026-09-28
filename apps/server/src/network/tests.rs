@@ -4036,7 +4036,7 @@ async fn reconnect_reconstructs_remote_equipment_from_baseline() {
 }
 
 fn basic_strike_id() -> purgatory_common::ContentId {
-    purgatory_common::ContentId::from_authored("skill.basic.strike").unwrap()
+    purgatory_common::ABILITY_BASIC_STRIKE
 }
 
 async fn expect_ability(recv: &mut RecvStream) -> ServerAbility {

@@ -94,7 +94,6 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use purgatory_common::ContentId;
 
     #[test]
     fn version_is_nonempty() {
@@ -184,10 +183,7 @@ mod tests {
             .ability("skill.basic.strike")
             .expect("authored basic strike")
             .clone();
-        assert_eq!(
-            def.id,
-            ContentId::from_authored("skill.basic.strike").unwrap()
-        );
+        assert_eq!(def.id, purgatory_common::ABILITY_BASIC_STRIKE);
         assert_eq!(def.activation, AbilityActivation::Independent);
         assert_eq!(
             def.delivery,

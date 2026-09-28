@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "content_id": 40001,
   "id": "skill.basic.strike",
   "timing": {
     "windup_ticks": 3,

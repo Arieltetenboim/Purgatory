@@ -331,7 +331,7 @@ fn proof_equipment_grants_and_unequips_only_its_authored_ability() {
     let mut world = World::dev_stage();
     let actor = world.player_id().expect("player");
     let item = pickup_item(&mut world, actor, purgatory_common::ITEM_PRACTICE_SWORD);
-    let proof_ability = ContentId::from_authored("skill.debug.practice_sword_strike").unwrap();
+    let proof_ability = purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE;
     let unrelated = ContentId::from_authored("skill.basic.strike").unwrap();
     world.grant_ability(actor, unrelated);
 

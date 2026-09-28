@@ -17,6 +17,7 @@ Rules:
 | ---: | --- | --- |
 | `40001` | `skill.basic.strike` | active |
 | `40002` | `skill.debug.practice_sword_strike` | active |
+| `40003` | `skill.movement.dash` | active |
 
 ### Maps — 50,000–59,999
 
