@@ -7,10 +7,11 @@
 //!
 //! A checkpoint stages changed character files and the map-drop file as
 //! `.next` files, commits a manifest recording every checkpoint file's version
-//! and CRC, installs the staged files, and then replaces the log with an empty
-//! one that starts after the manifest. Recovery accepts a checkpoint file only
-//! when it matches the manifest (a matching `.next` is rolled forward), then
-//! replays the log suffix. Paths, framing and `sync_all` stay in this module.
+//! and CRC, installs the staged files in bounded batches, and then replaces the
+//! log with one that starts after the manifest and keeps any later frames.
+//! Recovery accepts a checkpoint file only when it matches the manifest (a
+//! matching `.next` is rolled forward), then replays the log suffix. Paths,
+//! framing and `sync_all` stay in this module.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -37,7 +38,7 @@ const STAGED_SUFFIX: &str = ".next";
 const MANIFEST_SCHEMA_VERSION: u32 = 2;
 const WAL_MAGIC: &[u8; 8] = b"PGWAL001";
 const HEADER_LEN: usize = 20;
-const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 const MAX_RECORD_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
 const MIGRATION_BATCH: usize = 256;
@@ -137,6 +138,8 @@ struct SchemaProbe {
 struct WalScan {
     first_transaction_id: u64,
     txns: Vec<TxnRecord>,
+    /// File offset immediately after each parsed frame, in transaction order.
+    frame_ends: Vec<u64>,
     torn_tail: bool,
     good_len: u64,
 }
@@ -268,6 +271,12 @@ pub(crate) struct Store {
     dirty: BTreeSet<u64>,
     /// Synced `.next` files written for the checkpoint in progress.
     staged: BTreeMap<u64, FileVersion>,
+    /// Manifest-named `.next` files still waiting to be renamed into place.
+    install_queue: Vec<(PathBuf, PathBuf)>,
+    /// Leading log bytes already covered by the manifest. The suffix after
+    /// this length was committed later and must survive log replacement.
+    obsolete_prefix_len: Option<u64>,
+    frames_in_obsolete_prefix: u64,
     fault: Option<String>,
 }
 
@@ -385,33 +394,47 @@ impl Store {
     /// after it. Cost is proportional to characters changed since the last
     /// checkpoint plus the manifest index.
     pub(crate) fn checkpoint(&mut self) -> Result<(), PersistError> {
-        while !self.checkpoint_step(usize::MAX)? {}
+        while !self.checkpoint_step(CHECKPOINT_STAGE_BATCH)? {}
         Ok(())
     }
 
     /// One bounded unit of checkpoint work, once the log is due or a
-    /// checkpoint is already partly staged. Returns whether work ran.
+    /// checkpoint is already in progress. Returns whether work ran.
+    ///
+    /// Staging, the manifest write, each install batch and the log replacement
+    /// are separate calls, so none of them waits behind the whole backlog.
     pub(crate) fn maintain(&mut self) -> Result<bool, PersistError> {
-        if self.staged.is_empty() && !self.checkpoint_due() {
+        let in_progress = !self.staged.is_empty()
+            || !self.install_queue.is_empty()
+            || self.obsolete_prefix_len.is_some();
+        if !in_progress && !self.checkpoint_due() {
             return Ok(false);
         }
         self.checkpoint_step(CHECKPOINT_STAGE_BATCH)?;
         Ok(true)
     }
 
-    /// Stage up to `budget` changed characters. Once every changed character
-    /// is staged at its current version, commit the checkpoint. Returns true
-    /// when no checkpoint work remains.
+    /// Advance one checkpoint phase by at most `budget` files. Returns true
+    /// when the manifest, installs and log replacement are all caught up.
     pub(crate) fn checkpoint_step(&mut self, budget: usize) -> Result<bool, PersistError> {
         self.ensure_usable()?;
         let applied = self.state.last_transaction_id;
         if applied == 0 && !self.checkpoint.present {
             return Ok(true);
         }
+        if !self.install_queue.is_empty() {
+            self.install_batch(budget)?;
+            return Ok(false);
+        }
+        if self.obsolete_prefix_len.is_some() {
+            self.replace_obsolete_prefix()?;
+            return Ok(false);
+        }
         if self.checkpoint.present
             && self.checkpoint.applied_transaction_id == applied
             && self.dirty.is_empty()
-            && self.log.frames == 0
+            && self.staged.is_empty()
+            && self.log.first_transaction_id == applied + 1
         {
             return Ok(true);
         }
@@ -425,12 +448,20 @@ impl Store {
             })
             .take(budget.saturating_add(1))
             .collect();
+        let staging = todo.len().min(budget);
         for &id in todo.iter().take(budget) {
             self.stage_character(id)?;
         }
-        if todo.len() > budget {
+        if todo.len() > budget || staging > 0 {
             return Ok(false);
         }
+        self.commit_manifest(applied)?;
+        Ok(false)
+    }
+
+    /// Record the staged checkpoint in the manifest. Installing the files and
+    /// replacing the log happen on later calls.
+    fn commit_manifest(&mut self, applied: u64) -> Result<(), PersistError> {
         let mut installs: Vec<(PathBuf, PathBuf)> = self
             .staged
             .keys()
@@ -496,16 +527,24 @@ impl Store {
             characters,
             map_drops,
         };
+        self.install_queue = installs;
+        self.obsolete_prefix_len = Some(self.log.len);
+        self.frames_in_obsolete_prefix = self.log.frames;
         self.dirty.clear();
         self.staged.clear();
-        if let Err(err) = self.install_staged(&installs) {
+        Ok(())
+    }
+
+    fn install_batch(&mut self, budget: usize) -> Result<(), PersistError> {
+        let count = budget.min(self.install_queue.len());
+        let batch: Vec<_> = self.install_queue.drain(..count).collect();
+        if let Err(err) = self.install_staged(&batch) {
             self.fault = Some(format!(
                 "checkpoint install failed after the manifest: {err}"
             ));
             return Err(err);
         }
-        self.replace_log(applied)?;
-        Ok(true)
+        Ok(())
     }
 
     /// Write one changed character as a synced `.next` file. It becomes a
@@ -538,15 +577,39 @@ impl Store {
         Ok(())
     }
 
-    /// Install an empty log starting after `applied`. `rename` replaces the
-    /// old log in one step, so the log name never points at nothing.
-    fn replace_log(&mut self, applied: u64) -> Result<(), PersistError> {
+    /// Replace the log with a header after the manifest plus any frames
+    /// committed after that manifest. `rename` replaces the old log in one step.
+    fn replace_obsolete_prefix(&mut self) -> Result<(), PersistError> {
+        let Some(prefix) = self.obsolete_prefix_len else {
+            return Ok(());
+        };
         let canonical = self.dir.join(WAL_NAME);
         let staged = self.dir.join(WAL_STAGED_NAME);
+        let applied = self.checkpoint.applied_transaction_id;
         let first = applied
             .checked_add(1)
             .ok_or_else(|| PersistError::integrity(&canonical, "transaction id overflow"))?;
-        if let Err(err) = write_synced(&staged, &header_bytes(first)).and_then(|()| {
+        let on_disk = fs::metadata(&canonical)
+            .map_err(|err| PersistError::io(&canonical, err))?
+            .len();
+        if on_disk < prefix || self.log.frames < self.frames_in_obsolete_prefix {
+            return Err(PersistError::integrity(
+                &canonical,
+                "ownership log is shorter than the checkpointed prefix",
+            ));
+        }
+        let mut suffix = Vec::new();
+        if on_disk > prefix {
+            let mut file =
+                File::open(&canonical).map_err(|err| PersistError::io(&canonical, err))?;
+            file.seek(SeekFrom::Start(prefix))
+                .map_err(|err| PersistError::io(&canonical, err))?;
+            file.read_to_end(&mut suffix)
+                .map_err(|err| PersistError::io(&canonical, err))?;
+        }
+        let mut bytes = header_bytes(first).to_vec();
+        bytes.extend_from_slice(&suffix);
+        if let Err(err) = write_synced(&staged, &bytes).and_then(|()| {
             atomic::sync_directory(&self.dir)
                 .map(|_| ())
                 .map_err(|err| PersistError::io(&self.dir, err))
@@ -564,9 +627,11 @@ impl Store {
         atomic::sync_directory(&self.dir).map_err(|err| PersistError::io(&self.dir, err))?;
         self.log = LogCursor {
             first_transaction_id: first,
-            frames: 0,
-            len: HEADER_LEN as u64,
+            frames: self.log.frames - self.frames_in_obsolete_prefix,
+            len: bytes.len() as u64,
         };
+        self.obsolete_prefix_len = None;
+        self.frames_in_obsolete_prefix = 0;
         Ok(())
     }
 
@@ -1086,9 +1151,7 @@ fn recover(dir: &Path) -> Result<(Store, Vec<V1Character>), PersistError> {
             "ownership log ends before the checkpoint manifest",
         ));
     }
-    if install_staged_log
-        && (scan.first_transaction_id != applied + 1 || !scan.txns.is_empty() || scan.torn_tail)
-    {
+    if install_staged_log && (scan.first_transaction_id != applied + 1 || scan.torn_tail) {
         return Err(PersistError::integrity(
             &staged_log,
             "staged ownership log does not start after the checkpoint manifest",
@@ -1196,10 +1259,11 @@ fn recover(dir: &Path) -> Result<(Store, Vec<V1Character>), PersistError> {
         check_txn(&state, txn, dir)?;
         apply_txn(&mut state, txn);
     }
+    let migration_images = first_logged_characters(&scan, applied);
     let mut pending_v1 = Vec::new();
     for v1 in v1_files {
         if state.characters.contains_key(&v1.character_id.raw()) {
-            check_migrated_v1(dir, &v1, &scan, applied)?;
+            check_migrated_v1(dir, &v1, migration_images.get(&v1.character_id.raw()))?;
         } else {
             pending_v1.push(v1);
         }
@@ -1242,6 +1306,7 @@ fn recover(dir: &Path) -> Result<(Store, Vec<V1Character>), PersistError> {
     // Reservations belong to the process that made them. Ids a crashed
     // process reserved and never used stay gaps; they are never issued.
     state.unissued = IdRanges::default();
+    let obsolete = obsolete_log_prefix(&scan, applied);
     let store = Store {
         dir: dir.to_path_buf(),
         state,
@@ -1253,6 +1318,9 @@ fn recover(dir: &Path) -> Result<(Store, Vec<V1Character>), PersistError> {
         checkpoint: index,
         dirty,
         staged: BTreeMap::new(),
+        install_queue: Vec::new(),
+        obsolete_prefix_len: obsolete.map(|(prefix_len, _)| prefix_len),
+        frames_in_obsolete_prefix: obsolete.map_or(0, |(_, frames)| frames),
         fault: None,
     };
     Ok((store, pending_v1))
@@ -1448,26 +1516,46 @@ fn index_base(state: &mut State, path: &Path) -> Result<(), PersistError> {
     Ok(())
 }
 
+/// First logged post-state of each character after the manifest, from one scan.
+fn first_logged_characters(scan: &WalScan, applied: u64) -> BTreeMap<u64, &PersistentCharacter> {
+    let mut images = BTreeMap::new();
+    for txn in scan.txns.iter().filter(|txn| txn.transaction_id > applied) {
+        for character in &txn.characters {
+            images
+                .entry(character.character_id.raw())
+                .or_insert(character);
+        }
+    }
+    images
+}
+
+/// Byte length and frame count of the log prefix the manifest already covers.
+fn obsolete_log_prefix(scan: &WalScan, applied: u64) -> Option<(u64, u64)> {
+    if applied == 0 || scan.first_transaction_id > applied {
+        return None;
+    }
+    let mut frames = 0u64;
+    let mut end = HEADER_LEN as u64;
+    for (txn, &frame_end) in scan.txns.iter().zip(&scan.frame_ends) {
+        if txn.transaction_id > applied {
+            break;
+        }
+        frames += 1;
+        end = frame_end;
+    }
+    Some((end, frames))
+}
+
 /// A v1 file whose character the log suffix already holds is a stale
 /// checkpoint only when the first logged image is exactly its migration.
 fn check_migrated_v1(
     dir: &Path,
     v1: &V1Character,
-    scan: &WalScan,
-    applied: u64,
+    first: Option<&&PersistentCharacter>,
 ) -> Result<(), PersistError> {
     let path = character_path(dir, v1.character_id);
-    let first = scan
-        .txns
-        .iter()
-        .filter(|txn| txn.transaction_id > applied)
-        .find_map(|txn| {
-            txn.characters
-                .iter()
-                .find(|character| character.character_id == v1.character_id)
-        });
     let expected_revision = v1.persistence_revision.checked_add(1);
-    let image = first.is_some_and(|post| {
+    let image = first.copied().is_some_and(|post| {
         post.items.is_empty()
             && Some(post.persistence_revision) == expected_revision
             && post.restore == v1.restore
@@ -1661,6 +1749,7 @@ fn scan_wal(path: &Path) -> Result<WalScan, PersistError> {
     let empty = |torn_tail| WalScan {
         first_transaction_id: 1,
         txns: Vec::new(),
+        frame_ends: Vec::new(),
         torn_tail,
         good_len: 0,
     };
@@ -1696,30 +1785,33 @@ fn scan_wal(path: &Path) -> Result<WalScan, PersistError> {
     }
     let mut offset = HEADER_LEN;
     let mut txns = Vec::new();
-    let torn = |txns, offset: usize| WalScan {
+    let mut frame_ends = Vec::new();
+    let torn = |txns, frame_ends, offset: usize| WalScan {
         first_transaction_id: first,
         txns,
+        frame_ends,
         torn_tail: true,
         good_len: offset as u64,
     };
     while offset < bytes.len() {
         let remaining = bytes.len() - offset;
         if remaining < 4 {
-            return Ok(torn(txns, offset));
+            return Ok(torn(txns, frame_ends, offset));
         }
         let len =
             u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes")) as usize;
-        let Some(frame_len) = len.checked_add(8) else {
-            return Ok(torn(txns, offset));
-        };
-        if remaining < frame_len {
-            return Ok(torn(txns, offset));
-        }
+        // A length we would never write is corruption of a committed frame,
+        // even when the file ends before that many bytes. Only a short tail
+        // whose length is a legal frame size is incomplete and repairable.
         if len == 0 || len > MAX_FRAME_LEN {
             return Err(PersistError::integrity(
                 path,
                 "transaction frame length is not a committed record",
             ));
+        }
+        let frame_len = len + 8;
+        if remaining < frame_len {
+            return Ok(torn(txns, frame_ends, offset));
         }
         let payload = &bytes[offset + 4..offset + 4 + len];
         let stored = u32::from_le_bytes(
@@ -1738,10 +1830,12 @@ fn scan_wal(path: &Path) -> Result<WalScan, PersistError> {
         })?;
         txns.push(txn);
         offset += frame_len;
+        frame_ends.push(offset as u64);
     }
     Ok(WalScan {
         first_transaction_id: first,
         txns,
+        frame_ends,
         torn_tail: false,
         good_len: offset as u64,
     })

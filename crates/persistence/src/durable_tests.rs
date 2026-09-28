@@ -387,13 +387,16 @@ fn incomplete_log_tail_is_not_a_commit() {
     .unwrap();
     let wal = testing_wal_path(&dir);
     let good = std::fs::read(&wal).unwrap();
-    std::fs::write(&wal, [good.clone(), b"torn".to_vec()].concat()).unwrap();
+    // A legal frame length whose payload was not finished. An illegal length is
+    // corruption, covered by the oversized-length test, and is not truncated.
+    let mut torn = 100u32.to_le_bytes().to_vec();
+    torn.extend_from_slice(&[0u8; 10]);
+    std::fs::write(&wal, [good.clone(), torn].concat()).unwrap();
     drop(repo);
     let repo = open_with_rules(&dir);
     assert_eq!(owners(&repo), vec![(reserved.first.raw(), "character", 10)]);
     let repaired = std::fs::read(&wal).unwrap();
     assert_eq!(repaired, good);
-    assert!(!repaired.ends_with(b"torn"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -791,6 +794,37 @@ fn compaction_crash_while_the_log_is_replaced_recovers_the_surviving_log() {
 }
 
 #[test]
+fn oversized_frame_length_before_a_later_commit_fails_closed_without_truncation() {
+    let dir = temp_dir();
+    let repo = open_with_rules(&dir);
+    let reserved = repo.reserve_item_instance_ids(1).unwrap();
+    repo.save(&character(
+        10,
+        1,
+        vec![item(reserved.first.raw(), 30_011, 1, 0)],
+    ))
+    .unwrap();
+    drop(repo);
+    let wal = testing_wal_path(&dir);
+    let mut bytes = std::fs::read(&wal).unwrap();
+    let first_len = u32::from_le_bytes(bytes[20..24].try_into().unwrap()) as usize;
+    let second_frame = 20 + 4 + first_len + 4;
+    assert!(
+        bytes.len() > second_frame,
+        "the corrupted frame must have a later committed frame after it"
+    );
+    let illegal = u32::try_from(crate::journal::MAX_FRAME_LEN).unwrap() + 1;
+    bytes[20..24].copy_from_slice(&illegal.to_le_bytes());
+    std::fs::write(&wal, &bytes).unwrap();
+    assert!(matches!(
+        FileCharacterRepository::open(&dir),
+        Err(PersistError::Integrity { .. })
+    ));
+    assert_eq!(std::fs::read(&wal).unwrap(), bytes);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn complete_final_frame_with_a_bad_checksum_fails_closed_without_truncation() {
     let dir = temp_dir();
     let repo = open_with_rules(&dir);
@@ -998,7 +1032,7 @@ fn incremental_checkpoint_stages_bounded_batches_and_restages_changed_characters
     assert!(!repo.testing_checkpoint_step(2).unwrap());
     assert_eq!(staged_files(&dir), 4);
     repo.save(&character(10, 3, Vec::new())).unwrap();
-    assert!(repo.testing_checkpoint_step(10).unwrap());
+    while !repo.testing_checkpoint_step(10).unwrap() {}
     assert_eq!(staged_files(&dir), 0);
     assert_eq!(std::fs::metadata(testing_wal_path(&dir)).unwrap().len(), 20);
     drop(repo);
@@ -1018,6 +1052,146 @@ fn incremental_checkpoint_stages_bounded_batches_and_restages_changed_characters
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrated_v1_file_that_does_not_match_its_transaction_fails_closed() {
+    let dir = temp_dir();
+    for id in [1u64, 2] {
+        std::fs::write(
+            dir.join(crate::character_file_name(CharacterId::from_raw(id))),
+            format!(
+                r#"{{"schema_version":1,"character_id":{id},"persistence_revision":1,"restore":{{"map_authored":"map.map1","point_id":"default"}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+    drop(FileCharacterRepository::open(&dir).unwrap());
+    let path = dir.join(crate::character_file_name(CharacterId::from_raw(2)));
+    let original = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
+    let edited = original.replace("\"persistence_revision\":1", "\"persistence_revision\":9");
+    assert_ne!(edited, original);
+    std::fs::write(&path, &edited).unwrap();
+    assert!(matches!(
+        FileCharacterRepository::open(&dir),
+        Err(PersistError::Integrity { .. })
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), edited.as_bytes());
+    let untouched = dir.join(crate::character_file_name(CharacterId::from_raw(1)));
+    assert!(untouched.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn checkpoint_install_is_bounded_and_a_clock_commit_during_it_survives() {
+    let dir = temp_dir();
+    let repo = open_with_rules(&dir);
+    for id in 1..=200 {
+        repo.save(&character(id, 1, Vec::new())).unwrap();
+    }
+    let mut manifest_with_backlog = false;
+    for _ in 0..1000 {
+        if dir.join("durable_manifest.json").exists() && staged_files(&dir) > 64 {
+            manifest_with_backlog = true;
+            break;
+        }
+        assert!(
+            !repo
+                .testing_checkpoint_step(crate::journal::CHECKPOINT_STAGE_BATCH)
+                .unwrap()
+        );
+    }
+    assert!(manifest_with_backlog);
+    let before = staged_files(&dir);
+    repo.checkpoint_active_clock(15, ClockCheckpointKind::Periodic)
+        .unwrap();
+    assert!(
+        !repo
+            .testing_checkpoint_step(crate::journal::CHECKPOINT_STAGE_BATCH)
+            .unwrap()
+    );
+    let installed = before - staged_files(&dir);
+    assert!(installed > 0 && installed <= 64, "installed {installed}");
+    assert!(staged_files(&dir) > 0);
+    while !repo
+        .testing_checkpoint_step(crate::journal::CHECKPOINT_STAGE_BATCH)
+        .unwrap()
+    {}
+    drop(repo);
+    let repo = open_with_rules(&dir);
+    assert_eq!(repo.active_clock_tick().unwrap(), 15);
+    assert_eq!(
+        repo.load(CharacterId::from_raw(200))
+            .unwrap()
+            .unwrap()
+            .persistence_revision,
+        1
+    );
+    assert_eq!(staged_files(&dir), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Reopen cost after a v1 migration and before its first checkpoint, plus each
+/// checkpoint phase once every character is dirty.
+fn migration_before_checkpoint(sibling: &Path, count: u64) -> String {
+    use std::time::Instant;
+    let dir = sibling.with_file_name(format!(
+        "{}-migrate-{count}",
+        sibling.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    for id in 1..=count {
+        std::fs::write(
+            dir.join(crate::character_file_name(CharacterId::from_raw(id))),
+            format!(
+                r#"{{"schema_version":1,"character_id":{id},"persistence_revision":1,"restore":{{"map_authored":"map.map1","point_id":"default"}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+    let started = Instant::now();
+    let repo = FileCharacterRepository::open(&dir).unwrap();
+    let migrate = started.elapsed();
+    drop(repo);
+    let started = Instant::now();
+    let repo = FileCharacterRepository::open(&dir).unwrap();
+    let reopen = started.elapsed();
+    let manifest = dir.join("durable_manifest.json");
+    let mut stage_max = std::time::Duration::ZERO;
+    let mut manifest_step = std::time::Duration::ZERO;
+    let mut install_max = std::time::Duration::ZERO;
+    let mut log_replace = std::time::Duration::ZERO;
+    let _caught_up = loop {
+        let had_manifest = manifest.exists();
+        let staged_before = staged_files(&dir);
+        let started = Instant::now();
+        let done = repo
+            .testing_checkpoint_step(crate::journal::CHECKPOINT_STAGE_BATCH)
+            .unwrap();
+        let step = started.elapsed();
+        if done {
+            break step;
+        } else if !had_manifest && manifest.exists() {
+            manifest_step = step;
+        } else if staged_before > staged_files(&dir) {
+            install_max = install_max.max(step);
+        } else if had_manifest && staged_before == 0 {
+            log_replace = step;
+        } else {
+            stage_max = stage_max.max(step);
+        }
+    };
+    drop(repo);
+    let _ = std::fs::remove_dir_all(&dir);
+    format!(
+        "migrate_ms={:.1}|reopen_before_checkpoint_ms={:.1}|stage_step_max_ms={:.1}|manifest_step_ms={:.1}|install_step_max_ms={:.1}|log_replace_ms={:.1}",
+        migrate.as_secs_f64() * 1e3,
+        reopen.as_secs_f64() * 1e3,
+        stage_max.as_secs_f64() * 1e3,
+        manifest_step.as_secs_f64() * 1e3,
+        install_max.as_secs_f64() * 1e3,
+        log_replace.as_secs_f64() * 1e3,
+    )
 }
 
 /// Cost probe for representative stored-character counts. Not a gate.
@@ -1074,6 +1248,7 @@ fn durable_cost_probe() {
         let started = Instant::now();
         let repo = open_with_rules(&dir);
         let reopen_compacted = started.elapsed();
+        let migration = migration_before_checkpoint(&dir, count);
         let changed = count.min(200);
         for id in 1..=changed {
             repo.save(&character(id + 1_000, 10, Vec::new())).unwrap();
@@ -1086,7 +1261,7 @@ fn durable_cost_probe() {
         repo.compact_durable_log().unwrap();
         let finish = started.elapsed();
         println!(
-            "DURABLE_PROBE|characters={count}|populate_ms={:.1}|clock_commit_ms={:.2}|character_save_ms={:.2}|reopen_ms={:.1}|full_checkpoint_ms={:.1}|reopen_after_checkpoint_ms={:.1}|stage_step_ms={:.1}|finish_{changed}_changed_ms={:.1}",
+            "DURABLE_PROBE|characters={count}|populate_ms={:.1}|clock_commit_ms={:.2}|character_save_ms={:.2}|reopen_ms={:.1}|full_checkpoint_ms={:.1}|reopen_after_checkpoint_ms={:.1}|stage_step_ms={:.1}|finish_{changed}_changed_ms={:.1}|{migration}",
             populate.as_secs_f64() * 1e3,
             clock.as_secs_f64() * 1e3,
             save.as_secs_f64() * 1e3,

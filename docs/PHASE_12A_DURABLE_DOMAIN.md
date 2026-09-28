@@ -49,14 +49,20 @@ back to the last acknowledged length. If that truncation also fails, the store
 refuses further writes until it is reopened. The store also refuses to append
 when the log length on disk differs from what it last wrote.
 
-**Checkpoint.** Changed characters are written as synced `.next` files, at most
-64 per maintenance call. Once every changed character is staged at its current
-version, the map-drop file is staged and the manifest is replaced. The manifest
-is the commit point. The staged files are then renamed into place, and the log
-is replaced by an empty one that starts after the manifest. `rename` replaces
-the old log in one step, so the log name is never left empty. The worker runs
-one bounded step whenever the log reaches 4096 frames or 8 MiB, and a full
-checkpoint at clean shutdown.
+**Checkpoint.** Each maintenance call does one phase, and at most 64 files:
+
+1. Stage changed characters as synced `.next` files.
+2. Write the manifest. This is the commit point. It names every checkpoint
+   file, including ones that did not change.
+3. Rename staged files into place, 64 per call.
+4. Replace the log with one that starts after the manifest. Frames committed
+   after the manifest, including a clock checkpoint during the install, are
+   copied into the replacement. `rename` does that in one step, so the log
+   name is never left empty.
+
+The worker runs one phase when the log reaches 4096 frames or 8 MiB, then one
+phase after each later command until the checkpoint is caught up. A clean
+shutdown runs every remaining phase before it returns.
 
 **Recovery.** Every file is read and checked before anything on disk changes:
 
@@ -66,9 +72,12 @@ checkpoint at clean shutdown.
   deleted.
 - The log must cover every transaction after the manifest. Suffix transactions
   are replayed with the same checks as a commit.
-- Only an incomplete final frame is a torn tail and is truncated. A complete
-  frame that fails its checksum or does not parse fails closed, whether or not
-  it is last.
+- Only an incomplete final frame is a torn tail, and only when its length
+  field is a size the log would actually write (1 through 16 MiB) but the
+  payload is short. A length of 0 or above that limit fails closed and is not
+  truncated, even when the file ends before that many bytes and a later
+  committed frame follows it. A complete frame that fails its checksum or does
+  not parse fails closed, whether or not it is last.
 - If `ownership.wal` is missing but a staged replacement exists, as can happen
   on a filesystem where replacing a file takes two steps, the staged log is
   installed only if it starts exactly after the manifest. A missing log with a
@@ -78,7 +87,8 @@ checkpoint at clean shutdown.
 
 v1 records migrate at open in batches of 256 characters per transaction. The
 old v1 file stays on disk until the first checkpoint that includes that
-character.
+character. Reopen checks each old file against the first logged image of that
+character. Those images are indexed once while the log is scanned.
 
 ## What a later consistent migration must copy and validate
 
@@ -113,8 +123,12 @@ points, drops it, and reopens from disk:
   checkpoint and after an earlier compaction
 - after the manifest and before the staged files are installed
 - after the replacement log is staged, including a missing `ownership.wal`
-- an incomplete final frame, a complete final frame with a bad checksum, and a
+- an incomplete final frame, a complete final frame with a bad checksum, a
+  frame length above the maximum with a later committed frame after it, and a
   corrupt frame before later frames
+- an install stopped between batches, including a clock commit during that
+  install
+- a v1 file that does not match its first committed migration image
 - a tampered checkpoint file, a tampered manifest, a deleted manifest, and a
   missing log
 
@@ -145,9 +159,13 @@ timings are in [`PERFORMANCE_BUDGETS.md`](PERFORMANCE_BUDGETS.md).
 - If a failed append cannot be truncated, the frame may be replayed on the next
   open even though the caller saw an error. The store refuses further writes
   until then. 12B owns the gameplay reply for that window.
-- Recovered state is held in memory, and opening the store reads and checks
-  every checkpoint file. Startup time and memory grow with the number of stored
-  characters. A checkpoint of every character at once, for example after a
-  large v1 migration or at a shutdown with a long backlog, grows the same way.
+- One worker step at 10,000 dirty characters stayed under the one-second clock
+  bound (slowest measured step 307 ms). The manifest write grows with the
+  number of stored characters and was 12 ms at 10,000; it is still one call.
+  A clean shutdown runs every step before returning: checkpointing all 10,000
+  characters took about 15 seconds. Opening the store still reads every
+  character file: about 0.94 seconds for 10,000 migrated characters before
+  their first checkpoint, and about 1.0 second after it. Those startup and
+  shutdown costs are the unresolved capacity limit of this file backend.
 - The repository assumes it is the directory's only writer. The log-length
   check catches another writer's appends; it is not a lock.

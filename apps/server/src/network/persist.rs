@@ -4,8 +4,10 @@
 //! through a bounded queue with latest-per-character pressure coalescing. JSON,
 //! the ownership log, and other filesystem work happen only on this worker.
 //! Item-id reservation, map drops, and the active clock use the same service;
-//! gameplay must not call them from the 30 Hz tick. The worker checkpoints the
-//! durable log when it reaches its size bound and again at clean shutdown.
+//! gameplay must not call them from the 30 Hz tick. When the durable log is due,
+//! the worker advances one bounded checkpoint step after each command, and a
+//! clean shutdown drains the rest. A clock commit is not stuck behind a full
+//! install.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

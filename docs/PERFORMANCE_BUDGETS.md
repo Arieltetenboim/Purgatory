@@ -165,8 +165,24 @@ write only changed characters, 64 per worker step:
 | 50,000 | 10 ms | 11 ms | 87 ms | 8.4 s | 159 s |
 
 Commit time is one sync on this disk and does not depend on how many
-characters are stored. Startup, and a checkpoint of every character at once,
-still grow with the stored-character count. See
+characters are stored.
+
+The call that used to install every staged file and write the whole manifest,
+measured with every character dirty (a v1 migration before its first
+checkpoint). Same host and probe, 2026-09-28. Before that split, 10,000 dirty
+characters made one 4.2 second call. After it, each phase is its own call:
+
+| Dirty characters | Finish call before | Stage step max | Manifest write | Install step max | Log replace | Reopen before first checkpoint |
+|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 83 ms | 75 ms | 2.9 ms | 22 ms | 1.4 ms | 16 ms |
+| 1,000 | 429 ms | 78 ms | 4.0 ms | 27 ms | 18 ms | 101 ms |
+| 10,000 | 4,186 ms | 307 ms | 12 ms | 191 ms | 25 ms | 942 ms |
+
+Indexing each character's first migration image changed the 10,000-character
+reopen from 1,013 ms to 942 ms. Reading the old files is the rest. The
+per-file log walk it replaced grows with the square of the character count, so
+the index stays even though it is the smaller term at 10,000. The 50,000-row
+checkpoint above was not repeated as separate phases. See
 [`PHASE_12A_DURABLE_DOMAIN.md`](PHASE_12A_DURABLE_DOMAIN.md).
 
 ## Phase 8D presentation bridge cost (not a capacity claim)
