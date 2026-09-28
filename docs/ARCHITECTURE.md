@@ -598,7 +598,7 @@ The client hosts an in-window **development** overlay. It is not production game
 - Input: movement stays live while the overlay is open except when a text-like egui widget owns key presses.
 - Render order: parallax → world primitives → FOOTNOTE/debug gizmos → egui (`LoadOp::Load`).
 
-`DebugCommand::ResetToSpawn` is client-only as a request. When the client is in Game, it sends DEV `DevResetPlayer` (protocol v14); the server resets the bound actor with `World::reset_player_entity`. The client does not apply a local spawn while connected. Offline, it applies simulation `DebugAction::ResetPlayer` locally and centers the camera. EntityIds are not changed. **Reanchor Prediction** (`DebugCommand::ResetPlayer`) snaps client prediction to the replica. Confirmations are a center-screen toast (~3s) using ASCII text only.
+`DebugCommand::ResetToSpawn` is client-only as a request. When the client is in Game, it sends DEV `DevResetPlayer` (protocol v14). The server resolves the current map's authored default spawn, restores player runtime state with `World::restore_player_for_placement` (no fixture coordinate), and places the actor there. A missing authored default spawn rejects the request and leaves the actor unchanged. The client does not apply a local spawn while connected. Offline, it applies simulation `DebugAction::ResetPlayer` locally and centers the camera. EntityIds are not changed. **Reanchor Prediction** (`DebugCommand::ResetPlayer`) snaps client prediction to the replica. Confirmations are a center-screen toast (~3s) using ASCII text only.
 
 The DEV NPC Spawner follows the same authority boundary through its own narrow
 `DevSpawnNpc` envelope. The overlay selects a stable NPC `ContentId`; the server
