@@ -589,6 +589,13 @@ Owner Phase 0 clarifications:
 - Date: 2026-09-07
 - Notes: Manual normal client/server proof passed: visible real world Item drop; `E` pickup; owned Inventory Item; DEV selection by real `ItemInstanceId`; equip and sword presentation; equipment-granted attack ability; unequip returning the same Item to Inventory; and removal of the equipment-derived ability. Production Inventory UI, Phase 12 persistence, advanced stacking, trading, currency, and economy remain deferred. Temporary/dev presentation or diagnostics rough edges do not reopen Phase 11. Report: [`docs/PHASE_11_CLOSEOUT_REPORT.md`](PHASE_11_CLOSEOUT_REPORT.md).
 
+## Gate 12.entry — Character Continuity design entry
+
+- Status: **opened 2026-09-28; design gate open.** `PHASE=12.entry` starts Phase 12 without claiming 12A–12C implementation or persistence acceptance.
+- Prerequisites checked against `master` at `e0d54e4`: #87, #88, #89 and #24 are closed; fail-closed load, bounded/coalesced save handoff and first-party numeric content IDs are present. Issue #10 remains open as the first design gate.
+- Validation for this entry change: documentation and marker consistency plus `git diff --check`; no runtime code changed and no workspace quality gate was rerun. The latest merged #113 PR reports `check.ps1` passed; this entry does not claim a separate `master` CI run.
+- Next acceptance: approve the Issue #10 contract for state ownership, schema/migration, atomic inventory/equipment snapshot, save ordering/durability and recovery before implementing durable item state. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
+
 ## Gate Production UI I1 — Inventory window foundation
 
 - Status: **complete (GREEN) 2026-09-14; merge candidate.** This parallel presentation foundation does not reopen Phase 11 and does not start Phase 12.

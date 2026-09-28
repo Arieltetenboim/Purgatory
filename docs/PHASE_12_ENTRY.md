@@ -1,0 +1,46 @@
+# Phase 12 entry — Character Continuity
+
+Status: **entry/design active** (2026-09-28). Root `PHASE` = `12.entry`.
+Phase 11 is closed; 12A–12C are planned, not accepted or implemented by this entry.
+
+## Entry evidence and first gate
+
+- Issues #87, #88, #89 and #24 are closed. The current `master` has fail-closed
+  character load, a bounded save handoff with latest-per-character pressure
+  coalescing, and numeric catalog IDs for first-party item definitions.
+- `PersistentCharacter` still has schema v1 with CharacterId, revision and
+  restore/instance-exit state. Inventory/equipment are runtime-owned and not
+  durable. Roster/selected-character entry already exist; do not rebuild them.
+- Issue #10 is the **first Phase 12 step**. Produce and review a compact design
+  before changing the character schema or promising durable inventory.
+
+## Issue #10 acceptance boundary
+
+Trace authoritative runtime inventory/equipment through the single snapshot
+projection, persistence worker, character record and enter-world restoration.
+Specify the durable fields and identities, v1 migration, inventory/equipment
+atomicity, revision ordering/coalescing, save acknowledgement and logout
+guarantee, missing/retired content-ID policy, and fail-closed recovery. Explicitly
+define reconnect, logout/login, clean restart, process crash, map/channel
+transition and later character selection semantics. Distinguish queued,
+written and crash-durable states; do not infer one from another.
+
+Keep `EntityId`, `ConnectionId`, transient drops, session/replication state,
+runtime `WorldAddress` and exact coordinates out of the durable record. Reuse
+the existing persistence worker and CharacterId ownership; no filesystem or
+serialization work on the 30 Hz simulation thread. The design should name the
+smallest implementation steps and their focused tests. An unresolved ownership
+or durability conflict stops implementation for an explicit decision.
+
+## Planned implementation stages
+
+| Stage | Intended capability | Entry condition |
+|---|---|---|
+| 12A | Persistent Character State | Issue #10 contract accepted |
+| 12B | Save / Load | 12A boundary and failure semantics verified |
+| 12C | Inventory & Equipment Persistence | Numeric item IDs and atomic snapshot/recovery contract verified |
+
+The stage names are roadmap intent, not a promise that the design must implement
+them in this exact technical split. Update the roadmap and gates as each bounded
+step is accepted. The FORGE W map pipeline remains a parallel track; no map
+runtime acceptance is implied by this phase entry.

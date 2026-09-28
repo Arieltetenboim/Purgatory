@@ -7,13 +7,13 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 ## Current
 
 - **ERA II — Combat & First Playable Loop**
-- **Phase 11 — Item Loop: complete + closeout**
-- **Root `PHASE`: `11.closeout`**
-- **Master version:** `0.11.F`
+- **Phase 12 — Character Continuity: entry/design gate active; implementation not started**
+- **Root `PHASE`: `12.entry`**
+- **Master version:** `0.12.A`
 - **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
 - **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
 - **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
-- **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
+- **Main gameplay:** Issue #10 durable-state design, then the agreed 12A–12C implementation steps
 - **Dash / learned abilities:** authoritative Dash + NPC `GrantAbility` restored to current `master`; presentation polish remains tracked separately
 - **Protocol: v31**
 
@@ -83,7 +83,14 @@ Inventory window without reopening Phase 11 or starting Phase 12. Currency
 authority, item interaction, bags/capacity policy, and persistence remain
 deferred.
 
-## 12 — Character Continuity — planned
+## 12 — Character Continuity — entry active
+
+Phase 11 remains closed. The Phase 12 entry gate is the contract in Issue #10:
+durable character/item ownership, migration, atomic inventory/equipment saves,
+ordering and recovery. The prerequisites #87, #88, #89 and #24 are closed and
+their relevant code is present on `master`. Design acceptance is still open;
+entering Phase 12 does not claim persistent inventory/equipment or a GREEN
+implementation gate. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
 
 | Slice | Name | Status |
 |---|---|---|
@@ -91,6 +98,8 @@ deferred.
 | 12B | Save / Load | planned |
 | 12C | Inventory & Equipment Persistence | planned |
 
+12A–12C remain planned until Issue #10 settles the durability boundary and
+their implementation steps and tests can be specified without guessing.
 Further Phase 12+ slicing should be added only when the current design is agreed, rather than preserving obsolete legacy numbering.
 
 ---

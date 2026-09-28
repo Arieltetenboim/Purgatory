@@ -8,13 +8,13 @@ This README is intentionally small. It is the project entry point, not the proje
 
 ## Current
 
-- **Master version:** `0.11.F`
-- **Phase:** `11.closeout` — Phase 11 Item Loop complete
+- **Master version:** `0.12.A`
+- **Phase:** `12.entry` — Character Continuity design gate active; 12A–12C not implemented
 - **FORGE M:** M4 implementation is merged to `master`; GitHub Issue #75 remains open for the recorded manual two-Monster visual smoke and final M4/M5 closeout evidence
 - **FORGE N:** NPC authoring/runtime N10a-N10f complete and merged
 - **Character Lab:** integrated on `master`; Hub launch, Humanoid v0 contract export, Template V1 (2048×2048) import/validation/conversion, and the current visual-pack/atlas path are present
 - **Production client UI:** Inventory foundation, player-facing Settings, and the Glyphon production-text foundation are merged
-- **Main gameplay next:** Phase 12 — Character Continuity, intentionally not started
+- **Main gameplay:** Phase 12 — Character Continuity; first entry step is the durable-state contract in Issue #10
 - **Dash / learned ability:** authoritative Dash + NPC `GrantAbility` integration restored on `master`; Shift activates Dash after it has been granted
 - **Protocol:** v31
 - **Simulation:** server authoritative
@@ -113,10 +113,10 @@ does not parse TMX/TSX at runtime.
 ## Branch & version policy
 
 - `master` is the canonical current development/release branch.
-- Root `VERSION` is the human-facing master version label (currently `0.11.F`).
+- Root `VERSION` is the human-facing master version label (currently `0.12.A`).
 - `DEVELOPMENT` is a deliberate stable checkpoint/rollback branch. It is **not** a parallel development line and is advanced only after selected stable master versions.
 - Feature/fix/salvage branches are temporary. Once their useful work is integrated or explicitly superseded, delete them instead of keeping long-lived stale branches.
-- Cargo package versioning remains valid Semantic Versioning (SemVer); the master label may use the project's `0.11.F` scheme independently.
+- Cargo package versioning remains valid Semantic Versioning (SemVer); the master label may use the project's `0.12.A` scheme independently.
 
 
 Main local quality gate:
