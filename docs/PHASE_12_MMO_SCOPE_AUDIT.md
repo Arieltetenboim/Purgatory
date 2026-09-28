@@ -108,6 +108,31 @@ of the user belongs to a separate production-login gate; Phase 12 can prove
 logical ownership with the current DEV identity without claiming account
 security. The three-character roster cap is still a separate product choice.
 
+## Later database migration boundary
+
+**Requirement added 2026-09-28:** the 12A file-backed implementation must be
+replaceable by a database without changing item ownership, CharacterId or
+ItemInstanceId meaning, gameplay commands, or success/commit semantics. The
+current persistence service/worker is already the natural boundary: expose
+operations in terms of versioned character/map records, transaction commit,
+ID reservation and active-server clock; keep file paths, JSON encoding,
+log framing, checkpoint replacement and sync details inside its file-backed
+implementation. Keep validation and single-owner invariants independent of
+the storage encoding. The accepted Issue #10 log and checkpoint rules still
+apply to **this** backend; a future database may implement the same atomic
+contract using its own transaction mechanism.
+
+Document a future cutover inventory and consistency boundary covering the
+identity roster, characters, map Drops, allocator, active clock and eventually
+recoverable command results. A later migration must copy a consistent
+committed state, validate IDs, ownership, revisions and pending timer values,
+then switch to exactly one authority with an explicit rollback plan. Do not
+add a database dependency, speculative generic repository hierarchy, dual
+writes or a migration tool in 12A. The specific database product and date of
+cutover remain future decisions; if cutover is moved into Phase 12, revisit
+the accepted file-log investment before implementation rather than silently
+discarding it.
+
 ## Recommended Phase 12 gate expansion
 
 Keep 12A–12C as the accepted Issue #10 implementation boundary, then add
@@ -115,7 +140,9 @@ explicit gates before declaring Phase 12 complete:
 
 1. **12A — durable domain:** v2 item/character validation and migration,
    recoverable transaction log, map-drop records, stable item IDs and active
-   Drop clock. No gameplay wiring.
+   Drop clock. Preserve storage-independent record/commit semantics at the
+   existing worker boundary; document the later database cutover inventory.
+   No gameplay wiring or database implementation.
 2. **12B — save/load lifecycle:** bounded admission, commit/failure reply,
    reconnect barrier, idempotent retry, shutdown/replay and failure visibility.
 3. **12C — item paths:** wire pickup, Drop, equip/unequip, inventory and map
