@@ -1,6 +1,6 @@
 # Phase 12 durability contract — Issue #10
 
-Status: **proposed for owner review**, 2026-09-28. This is a design for the
+Status: **accepted design for Issue #10**, 2026-09-28. This is a design for the
 first Character Continuity implementation, not a claim that item state is
 currently durable. ADR-0068 records the ownership decision. Phase 11's
 [`ITEM_DOMAIN.md`](ITEM_DOMAIN.md) remains the runtime item contract.
@@ -113,7 +113,10 @@ an applied transaction ID, never independently authoritative writes. Recovery
 replays committed transactions after the checkpoint idempotently. Corruption
 of a committed transaction or an inconsistent checkpoint fails closed; safe
 checkpoint compaction retains the log until the replacement and its directory
-entry are synced. The implementation must prove the append/sync/rename
+entry are synced. Never discard a transaction until **every** affected
+character/map-drop checkpoint has applied it, or a synced global checkpoint
+manifest proves an equivalent consistent replay boundary. The implementation
+must prove the append/sync/rename
 boundaries on its supported filesystems before claiming power-loss durability.
 
 For each command, reserve its affected item IDs and character actors, validate

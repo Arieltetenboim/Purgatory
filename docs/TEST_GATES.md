@@ -594,12 +594,12 @@ Owner Phase 0 clarifications:
 - Status: **opened 2026-09-28; design gate open.** `PHASE=12.entry` starts Phase 12 without claiming 12A–12C implementation or persistence acceptance.
 - Prerequisites checked against `master` at `e0d54e4`: #87, #88, #89 and #24 are closed; fail-closed load, bounded/coalesced save handoff and first-party numeric content IDs are present. Issue #10 remains open as the first design gate.
 - Validation for this entry change: documentation and marker consistency plus `git diff --check`; GitHub Quality Gate [run #36406969412](https://github.com/Arieltetenboim/Purgatory/actions/runs/36406969412) on `master` commit `18b5cdf` passed `./scripts/check.sh`. No runtime code changed or manual runtime proof was claimed by the entry.
-- Next acceptance: approve the Issue #10 contract for state ownership, schema/migration, atomic inventory/equipment snapshot, save ordering/durability and recovery before implementing durable item state. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
+- Next acceptance: Issue #10 design accepted in PR #114; implement and verify 12A before any durable item gameplay claim. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
 
-## Gate 12 design proposal — Issue #10
+## Gate 12 design accepted — Issue #10
 
-- Status: **proposed for owner review**, not an implementation or acceptance gate. [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md) and ADR-0068 specify character/map ownership, atomic item mutations, pickup eligibility, timed Drop expiry, save/recovery semantics and future Trade compatibility. Unexpired map Drops recover with their remaining active time; server downtime pauses their timers. Crash recovery may regain at most one second due to durable clock checkpointing.
-- Validation: documentation-only diff and link/marker consistency; no runtime code or wire contract changed. Issue #10 remains open until the proposal is reviewed and the stated gaps are resolved in implementation.
+- Status: **accepted design 2026-09-28**, not an implementation gate. [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md) and ADR-0068 specify character/map ownership, atomic item mutations, pickup eligibility, timed Drop expiry, save/recovery semantics and future Trade compatibility. Unexpired map Drops recover with their remaining active time; server downtime pauses their timers. Crash recovery may regain at most one second due to durable clock checkpointing.
+- Validation: documentation-only diff and link/marker consistency; no runtime code or wire contract changed. Issue #10 closes on merge; 12A–12C remain unimplemented until their own gates pass.
 
 ## Gate Production UI I1 — Inventory window foundation
 

@@ -85,15 +85,15 @@ deferred.
 
 ## 12 — Character Continuity — entry active
 
-Phase 11 remains closed. The Phase 12 entry gate is the contract in Issue #10:
+Phase 11 remains closed. The Phase 12 entry gate is the accepted contract in Issue #10:
 durable character/item ownership, migration, atomic inventory/equipment saves,
 ordering and recovery. The prerequisites #87, #88, #89 and #24 are closed and
-their relevant code is present on `master`. Design acceptance is still open;
-entering Phase 12 does not claim persistent inventory/equipment or a GREEN
-implementation gate. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md). Issue #10's
-proposed contract is [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md);
-owner review remains open. The proposed contract treats player Drop as a
-transfer to map ownership with expiry and pickup rules; later Trade uses the
+their relevant code is present on `master`. Design acceptance does not claim
+persistent inventory/equipment or a GREEN implementation gate. See
+[`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md). Issue #10's
+accepted contract is [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md).
+The contract treats player Drop as a transfer to map ownership with expiry
+and pickup rules; later Trade uses the
 same atomic transfer primitive. Monster loot design and Trade UI remain later
 feature work, not prerequisites to writing the durability contract.
 
@@ -103,9 +103,10 @@ feature work, not prerequisites to writing the durability contract.
 | 12B | Save / Load | planned |
 | 12C | Inventory & Equipment Persistence | planned |
 
-12A–12C remain planned until Issue #10 accepts the durability boundary and
-their implementation steps and tests can be specified without guessing.
-Further Phase 12+ slicing should be added only when the current design is agreed, rather than preserving obsolete legacy numbering.
+12A–12C remain planned; Issue #10 defines their durability boundary and
+implementation proof gates. Start 12A from the accepted contract.
+Add further Phase 12+ slices as implementation evidence requires; do not
+revive obsolete legacy numbering.
 
 ---
 
