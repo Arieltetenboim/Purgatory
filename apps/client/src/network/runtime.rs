@@ -35,6 +35,8 @@ use super::state::{ConnectionAttemptId, NetworkCommand, NetworkEvent};
 
 const CMD_CAP: usize = 8;
 const INPUT_CAP: usize = 128;
+/// One slot stays free so `HeldCancel` can still be queued when gameplay input is saturated.
+const HELD_CANCEL_RESERVE: usize = 1;
 const LIFECYCLE_CAP: usize = 16;
 const TELEMETRY_CAP: usize = 32;
 const STALL_CAP: usize = 8;
@@ -293,6 +295,24 @@ impl EventSink {
     }
 }
 
+/// Queue a gameplay message without blocking the render thread.
+///
+/// Non-cancel messages leave one slot free. `HeldCancel` may use that slot.
+/// If a cancel is already queued and the channel is full, another cancel is
+/// treated as success: server handling is idempotent.
+fn try_enqueue_gameplay(input: &mpsc::Sender<ClientGameplayMsg>, msg: ClientGameplayMsg) -> bool {
+    let held_cancel = matches!(msg, ClientGameplayMsg::HeldCancel);
+    if !held_cancel && input.capacity() <= HELD_CANCEL_RESERVE {
+        return false;
+    }
+    match input.try_send(msg) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+        Err(mpsc::error::TrySendError::Full(_)) if held_cancel => true,
+        Err(mpsc::error::TrySendError::Full(_)) => false,
+    }
+}
+
 /// Handle owned by the winit thread.
 pub struct NetworkHandle {
     commands: mpsc::Sender<RuntimeCommand>,
@@ -438,124 +458,104 @@ impl NetworkHandle {
         }
     }
 
-    /// Non-blocking gameplay input. Dropped if the queue is full. Never stalls
-    /// the render thread. The session task ignores leftovers until Connected.
+    /// Non-blocking gameplay input. Dropped if the queue cannot take it without
+    /// consuming the HeldCancel reserve. Never stalls the render thread.
+    /// The session task ignores leftovers until Connected.
     pub fn try_send_input(&self, command: InputCommand) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::Input(command))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::Input(command))
     }
 
-    /// Pathological focus-loss barrier. No sequence. Dropped if the queue is full.
+    /// Whether another [`InputCommand`] can be queued without using the HeldCancel reserve.
+    #[must_use]
+    pub fn can_enqueue_input(&self) -> bool {
+        self.input.capacity() > HELD_CANCEL_RESERVE
+    }
+
+    /// Focus-loss / full send-window barrier. No sequence.
+    ///
+    /// Succeeds when the receiver is alive even if gameplay input has filled
+    /// every non-reserved slot. A second cancel while one already occupies the
+    /// reserve is idempotent and does not need another slot.
     pub fn try_send_held_cancel(&self) -> bool {
-        self.input.try_send(ClientGameplayMsg::HeldCancel).is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::HeldCancel)
     }
 
     pub fn try_send_interact_open(&self, target: purgatory_protocol::WireEntityId) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::InteractOpen(target))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::InteractOpen(target))
     }
 
     pub fn try_send_interact_close(&self, session_id: u32) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::InteractClose(session_id))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::InteractClose(session_id))
     }
 
     pub fn try_send_dialogue_advance(&self, session_id: u32) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::DialogueAdvance(session_id))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::DialogueAdvance(session_id))
     }
 
     pub fn try_send_dialogue_choose(&self, request: purgatory_protocol::DialogueChoose) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::DialogueChoose(request))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::DialogueChoose(request))
     }
 
     pub fn try_send_portal_activate(&self, target: purgatory_protocol::WireEntityId) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::PortalActivate(target))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::PortalActivate(target))
     }
 
     pub fn try_send_dev_set_channel(&self, channel: u32) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::DevSetChannel(channel))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::DevSetChannel(channel))
     }
 
     pub fn try_send_dev_set_speed(&self, speed: Option<u16>) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::DevSetSpeed(speed))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::DevSetSpeed(speed))
     }
 
     pub fn try_send_dev_set_jump(&self, jump: Option<u16>) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::DevSetJump(jump))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::DevSetJump(jump))
     }
 
     pub fn try_send_dev_spawn_npc(&self, npc_content_id: purgatory_common::ContentId) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::DevSpawnNpc(npc_content_id))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::DevSpawnNpc(npc_content_id))
     }
 
     pub fn try_send_dev_spawn_monster(
         &self,
         monster_content_id: purgatory_common::ContentId,
     ) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::DevSpawnMonster(monster_content_id))
-            .is_ok()
+        try_enqueue_gameplay(
+            &self.input,
+            ClientGameplayMsg::DevSpawnMonster(monster_content_id),
+        )
     }
 
     #[allow(dead_code)]
     pub fn try_send_equip(&self, request: purgatory_protocol::EquipRequest) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::Equip(request))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::Equip(request))
     }
 
     #[allow(dead_code)]
     pub fn try_send_unequip(&self, request: purgatory_protocol::UnequipRequest) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::Unequip(request))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::Unequip(request))
     }
 
     #[allow(dead_code)]
     pub fn try_send_pickup(&self, request: purgatory_protocol::PickupRequest) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::Pickup(request))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::Pickup(request))
     }
 
     #[allow(dead_code)]
     pub fn try_send_drop(&self, request: purgatory_protocol::DropRequest) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::Drop(request))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::Drop(request))
     }
 
     pub fn try_send_dev_presentation_oneshot(&self, kind: u8) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::DevPresentationOneShot(kind))
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::DevPresentationOneShot(kind))
     }
 
     pub fn try_send_dev_reset_player(&self) -> bool {
-        self.input
-            .try_send(ClientGameplayMsg::DevResetPlayer)
-            .is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::DevResetPlayer)
     }
 
     pub fn try_send_respawn(&self) -> bool {
-        self.input.try_send(ClientGameplayMsg::Respawn).is_ok()
+        try_enqueue_gameplay(&self.input, ClientGameplayMsg::Respawn)
     }
 
     /// Atomically enqueue the ability request with the InputCommand that owns
@@ -569,9 +569,10 @@ impl NetworkHandle {
     ) -> bool {
         debug_assert_eq!(command.input_epoch, request.input_epoch);
         debug_assert_eq!(command.sequence, request.input_sequence);
-        self.input
-            .try_send(ClientGameplayMsg::InputWithAbility { command, request })
-            .is_ok()
+        try_enqueue_gameplay(
+            &self.input,
+            ClientGameplayMsg::InputWithAbility { command, request },
+        )
     }
 
     /// Drain lifecycle events first, then telemetry. Caller applies them to
@@ -1709,6 +1710,113 @@ mod tests {
 
     fn attempt() -> ConnectionAttemptId {
         ConnectionAttemptId::from_raw(1)
+    }
+
+    fn axis_cmd(seq: u32, axis: purgatory_protocol::MoveAxis, down_held: bool) -> InputCommand {
+        InputCommand {
+            input_epoch: 0,
+            sequence: seq,
+            move_axis: axis,
+            jump_pressed: false,
+            down_held,
+            portal_held: false,
+        }
+    }
+
+    fn drain_gameplay(rx: &mut mpsc::Receiver<ClientGameplayMsg>) -> Vec<ClientGameplayMsg> {
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            out.push(msg);
+        }
+        out
+    }
+
+    /// Right (or Left) held, input queue saturated, focus loss, Neutral, focus
+    /// regain, then the opposite tap. The stale axis must not be queued again.
+    #[test]
+    fn focus_loss_held_cancel_survives_full_input_queue() {
+        for held in [
+            purgatory_protocol::MoveAxis::Right,
+            purgatory_protocol::MoveAxis::Left,
+        ] {
+            let other = match held {
+                purgatory_protocol::MoveAxis::Right => purgatory_protocol::MoveAxis::Left,
+                purgatory_protocol::MoveAxis::Left => purgatory_protocol::MoveAxis::Right,
+                purgatory_protocol::MoveAxis::Neutral => unreachable!(),
+            };
+            let (tx, mut rx) = mpsc::channel(INPUT_CAP);
+            let mut seq = 1u32;
+            let mut queued_held = 0usize;
+            while try_enqueue_gameplay(&tx, ClientGameplayMsg::Input(axis_cmd(seq, held, true))) {
+                seq += 1;
+                queued_held += 1;
+            }
+            assert!(
+                queued_held < INPUT_CAP,
+                "one slot must remain reserved for HeldCancel"
+            );
+            let neutral = axis_cmd(seq, purgatory_protocol::MoveAxis::Neutral, false);
+            assert!(
+                !try_enqueue_gameplay(&tx, ClientGameplayMsg::Input(neutral)),
+                "saturated queue must drop a Neutral command"
+            );
+            assert!(try_enqueue_gameplay(&tx, ClientGameplayMsg::HeldCancel));
+            assert!(
+                try_enqueue_gameplay(&tx, ClientGameplayMsg::HeldCancel),
+                "a second cancel is idempotent while the reserve is occupied"
+            );
+
+            let queued = drain_gameplay(&mut rx);
+            assert_eq!(queued.len(), queued_held + 1);
+            assert!(matches!(queued.last(), Some(ClientGameplayMsg::HeldCancel)));
+            for msg in &queued[..queued_held] {
+                match msg {
+                    ClientGameplayMsg::Input(cmd) => {
+                        assert_eq!(cmd.move_axis, held);
+                        assert!(cmd.down_held);
+                    }
+                    other_msg => panic!("pre-cancel message must be held input, got {other_msg:?}"),
+                }
+            }
+
+            // Focus regain synthesizes no movement command.
+            assert!(rx.try_recv().is_err());
+
+            assert!(try_enqueue_gameplay(
+                &tx,
+                ClientGameplayMsg::Input(axis_cmd(seq, other, false)),
+            ));
+            seq += 1;
+            assert!(try_enqueue_gameplay(
+                &tx,
+                ClientGameplayMsg::Input(axis_cmd(
+                    seq,
+                    purgatory_protocol::MoveAxis::Neutral,
+                    false,
+                )),
+            ));
+            let after = drain_gameplay(&mut rx);
+            assert_eq!(after.len(), 2);
+            match &after[0] {
+                ClientGameplayMsg::Input(cmd) => assert_eq!(cmd.move_axis, other),
+                other_msg => panic!("expected opposite press, got {other_msg:?}"),
+            }
+            match &after[1] {
+                ClientGameplayMsg::Input(cmd) => {
+                    assert_eq!(cmd.move_axis, purgatory_protocol::MoveAxis::Neutral);
+                    assert!(!cmd.down_held);
+                }
+                other_msg => panic!("expected release, got {other_msg:?}"),
+            }
+            assert!(
+                after.iter().all(|msg| match msg {
+                    ClientGameplayMsg::Input(cmd) => cmd.move_axis != held,
+                    ClientGameplayMsg::HeldCancel => false,
+                    _ => false,
+                }),
+                "stale held axis must not reappear after HeldCancel"
+            );
+        }
     }
 
     #[test]

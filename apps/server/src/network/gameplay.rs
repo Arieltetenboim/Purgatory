@@ -4826,6 +4826,48 @@ mod tests {
         assert_eq!(s.take_for_tick().move_axis, 0);
     }
 
+    /// Focus loss is a HeldCancel boundary: latched Right/Left/Down does not
+    /// survive, focus regain adds nothing, and a later opposite tap cannot
+    /// restore the pre-focus axis.
+    #[test]
+    fn focus_loss_held_cancel_stays_neutral_across_regain() {
+        for held in [MoveAxis::Right, MoveAxis::Left] {
+            let other = match held {
+                MoveAxis::Right => MoveAxis::Left,
+                MoveAxis::Left => MoveAxis::Right,
+                MoveAxis::Neutral => unreachable!(),
+            };
+            let mut s = SessionInput::new();
+            assert_eq!(s.apply(cmd(1, held, false, true)), SeqDecision::Accept);
+            let consumed = s.take_for_tick();
+            assert_eq!(consumed.move_axis, held.to_i8());
+            assert!(consumed.down_held);
+            let latched = s.take_for_tick();
+            assert_eq!(latched.move_axis, held.to_i8());
+            assert!(latched.down_held);
+            assert_eq!(s.apply(cmd(2, held, false, true)), SeqDecision::Accept);
+            s.held_cancel();
+            assert_eq!(s.move_axis, MoveAxis::Neutral);
+            assert!(!s.down_held);
+            assert_eq!(s.queued_len(), 0);
+            let regained = s.take_for_tick();
+            assert_eq!(regained.move_axis, 0);
+            assert!(!regained.down_held);
+            let still = s.take_for_tick();
+            assert_eq!(still.move_axis, 0);
+            assert!(!still.down_held);
+            assert_eq!(s.apply(cmd(3, other, false, false)), SeqDecision::Accept);
+            assert_eq!(s.take_for_tick().move_axis, other.to_i8());
+            assert_eq!(
+                s.apply(cmd(4, MoveAxis::Neutral, false, false)),
+                SeqDecision::Accept
+            );
+            assert_eq!(s.take_for_tick().move_axis, 0);
+            assert_eq!(s.take_for_tick().move_axis, 0);
+            assert_ne!(s.move_axis, held);
+        }
+    }
+
     #[test]
     fn epoch_at_max_next_bump_does_not_wrap() {
         let mut s = SessionInput::new();
