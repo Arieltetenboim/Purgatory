@@ -33,7 +33,7 @@ First-party references (consulted 2026-09-28):
 
 | State / operation | Proven today | Phase 12 continuity requirement | Feature beyond current continuity |
 |---|---|---|---|
-| Identity and character selection | Persistent roster and exact owned `CharacterId` selection; current login identity is `DevLogin`. | Re-entry uses the selected owner only, blocks duplicate sessions and never leaks one character's state into another. Document account/world ownership for future migration. | Production authentication, character deletion/rename, cross-world transfer. |
+| User, roster and character selection | A `DevLogin` owns an ordered roster of up to three distinct `CharacterId`s today. Entry checks roster ownership and blocks a second session for the *same character*; separate characters under one DEV login can enter concurrently. `DevLogin` is not production authentication. | Model one logical user/account → many characters; recheck ownership on every entry. Save earned state under the selected CharacterId, never the login string or roster slot. Keep character records isolated across selection, reconnect and parallel sessions; explicitly decide the per-account concurrency policy. | Production authentication, account-wide assets, character deletion/rename, cross-world transfer and any new roster-size policy. |
 | Position, map and health | Restore intent is durable; entry spawns at a safe point with full health. World/channel/entity identity is runtime-only. | State the safe-point and death/respawn policy on logout, reconnect and crash. Keep transient combat state out unless a concrete rule requires it; test map/channel transitions. | Persistent injuries, penalties, buffs or exact logout position only when game rules require them. |
 | Item inventory, equipment and map Drop | `World` owns item records; character schema v1 saves none; Drop/pickup/equip acknowledgements precede durable commit. | Issue #10: one durable ownership domain, item IDs, v2 migration, committed results, map-drop eligibility/active timers, equip projection and replay. Cover **every** existing item mutation, including NPC grant/removal. | Advanced stacks, enhancements, binding rules, account storage, marketplaces, full monster loot policy. |
 | NPC facts and choices | `NarrativeRuntime` is keyed by ephemeral `EntityId`; entry seeds defaults, detach forgets all facts, met NPCs and heard dialogue. `execute_dialogue_actions` can grant/remove items and change facts in one choice. | Persist character-owned facts/met/heard in a versioned record. A dialogue choice that changes facts, items or learned abilities must commit **one** outcome and acknowledge after commit; reconnect cannot repeat the reward. Validate/retire authored fact/NPC/beat keys when content changes. | Full quest journal, branching campaign and generic quest engine. |
@@ -55,6 +55,51 @@ in separate files or at separate times does not close this race. The accepted
 Issue #10 document explicitly defers learned abilities and narrative facts,
 so it cannot alone certify
 **Character Continuity**.
+
+## User, account and character boundary
+
+The user's rule is **one user owns multiple characters**. The current
+`crates/persistence/src/identity.rs` roster already implements that shape for
+`DevLogin`, with a current limit of three entries. A roster entry contains a
+stable CharacterId and a display name; its position and name are not durable
+gameplay ownership keys. `load_owned_character` verifies membership before
+loading the exact character record. The gameplay `occupancy` map prevents two
+connections from controlling the same CharacterId at once. An existing
+network test also proves that two different characters in one DEV roster can
+be online simultaneously. The current login is a DEV name supplied by the
+client, not a verified production user account; do not label this a secure
+account system or change the three-character limit by inference.
+
+- **Character-owned:** inventory, equipment, restore intent, narrative
+  facts/met/heard, learned abilities, and future character XP/level/stats.
+  Character A and B must each recover their own state even under the same
+  user. A successful switch back to selection must settle or explicitly
+  report pending writes for A before claiming A is saved; entry of B reads
+  only B. A must not become enterable in a second session with stale state.
+- **Map-owned:** a dropped item leaves A's inventory and belongs to the map.
+  B may pick it up only through the normal server pickup/eligibility rules,
+  whether B has the same user or a different one. Switching characters never
+  copies an item directly. Its remaining active timer and map ownership
+  survive a restart under Issue #10.
+- **User/account-owned only when explicitly designed:** roster metadata and
+  any future shared bank, achievements, benefits or balances. A shared benefit
+  requires its own durable owner, authorization and transaction rules; do not
+  infer sharing from a common login or copy character data into the roster.
+  Future world/realm ownership must likewise be explicit before cross-world
+  movement or a shared economy is offered.
+- **Identity consistency:** reject a character load that is not owned by the
+  requesting user, an identity/character ID mismatch, duplicate roster IDs,
+  or an inconsistent recovery state. Define what happens to orphan records
+  before any future delete, rename or account migration; never silently
+  assign another user's items to an available roster slot.
+
+**Unsettled product choice:** permit multiple characters of one user to be
+online concurrently (current DEV behavior), or limit the user to one active
+character while allowing many in the roster. Both can be correct game rules.
+Phase 12 must pick one for its acceptance tests; it must always prohibit two
+active sessions for the *same* CharacterId. Authentication of the user belongs
+to a separate production-login gate; Phase 12 can prove logical ownership
+with the current DEV identity without claiming account security.
 
 ## Recommended Phase 12 gate expansion
 
@@ -81,7 +126,9 @@ explicit gates before declaring Phase 12 complete:
    acceptance proof.
 6. **12F — recovery and acceptance:** backup/restore rehearsal and a normal
    two-client proof of grant→equip→Drop→pickup, dialogue reward→disconnect→
-   reconnect/restart, character switching, crash at commit boundaries, queue
+   reconnect/restart, same-user A/B state isolation, another user's rejection,
+   duplicate-character entry, same-user concurrent entry according to the
+   decided policy, switch/save settlement, crash at commit boundaries, queue
    saturation, retired content and map/channel/death handling. Record latency
    and storage pressure without claiming a production capacity from a local
    smoke test.
@@ -99,9 +146,12 @@ feature parity while they are absent.
    player-visible earned state* (items, NPC facts/met/heard, learned abilities,
    restore) plus proof through the existing normal client loop. Defer building new XP, currency,
    Trade, storage and equipment-enhancement systems to named follow-ups.
-2. **Character/account/world ownership:** current `DevLogin` and selected
-   CharacterId are not a production account model. Specify scope per future
-   domain before adding shared bank, currency or cross-character benefits.
+2. **Character/account/world ownership:** one user owns multiple CharacterIds;
+   the current DEV roster caps them at three and permits distinct characters
+   online concurrently. Confirm whether that concurrency and capacity are
+   intended product rules. `DevLogin` is not production authentication.
+   Specify scope per future domain before adding shared bank, currency or
+   cross-character benefits.
 3. **Death and timers:** current entry uses full health/safe point; state this
    policy explicitly. Drop downtime pauses per Issue #10; other future item,
    reward, buff or quest expiry clocks require their *own* policy.
