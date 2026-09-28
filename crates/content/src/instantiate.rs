@@ -114,15 +114,29 @@ pub fn map_plan(
                 ));
             }
             PlacementKind::Portal => {
+                let content_id = place.content_id.ok_or_else(|| {
+                    ContentError::one(ValidationIssue::new(
+                        map_authored,
+                        &place.id,
+                        "content_id",
+                        "portal requires a numeric ContentId",
+                    ))
+                })?;
                 let content_id =
-                    ContentId::from_authored(&place.content_authored).map_err(|_| {
-                        ContentError::one(ValidationIssue::new(
-                            map_authored,
-                            &place.id,
-                            "id",
-                            "portal runtime identity is invalid",
-                        ))
-                    })?;
+                    crate::resolve_portal_content_id(map_authored, &place.id, content_id)
+                        .ok_or_else(|| {
+                            ContentError::one(ValidationIssue::new(
+                                map_authored,
+                                &place.id,
+                                "content_id",
+                                crate::portal_identity_error(
+                                    map_authored,
+                                    &place.id,
+                                    place.content_id,
+                                )
+                                .unwrap_or("unknown portal ContentId"),
+                            ))
+                        })?;
                 placements.push(
                     RuntimeSpawnRequest::transient_at(address)
                         .with_transform(Transform::from_position(place.position))

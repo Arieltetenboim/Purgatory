@@ -4,7 +4,7 @@ Status: **accepted owner architecture principle**
 
 This document is authoritative for future content identity work. It supersedes the **canonical authored-string identity** portion of ADR-0036 and any later documentation that treats a string such as `item.foo` or `npc.area.name` as the permanent identity of content.
 
-The current implementation has **not yet been migrated**. Existing string-backed `ContentId` behavior remains a temporary compatibility state until the dedicated migration in issue #24 is performed.
+First-party definitions now resolve through the numeric catalog. Production code does not build those IDs with `ContentId::from_authored`; that constructor remains for tests and synthetic fixtures. `ContentId` is still a `u64` token, so the current 8-byte protocol representation is unchanged.
 
 ## Principle
 
@@ -111,7 +111,7 @@ Local IDs inside one definition (for example a dialogue beat ID, animation-track
 
 ## Migration boundary
 
-The existing code currently defines `ContentId` as a `u64` FNV-1a hash of a canonical authored string and uses strings as registry keys. Existing protocol paths serialize that 64-bit token. This is now legacy behavior to be replaced, not the target architecture.
+The existing `ContentId` value is a `u64` token. First-party definitions store a stable numeric catalog ID in that token. `ContentId::from_authored` remains only for tests and synthetic fixtures. Protocol paths still serialize the 8-byte token.
 
 A migration must deliberately cover the shared identity boundary rather than changing one content type in isolation:
 
@@ -123,6 +123,8 @@ A migration must deliberately cover the shared identity boundary rather than cha
 6. update protocol codecs and bump protocol version if the wire representation changes from the current 8-byte token;
 7. migrate FORGE authoring schemas, including NPC references, after the shared identity primitive is stable;
 8. before persistence ships, define the catalog/retirement process that prevents accidental ID reuse.
+
+First-party monster, NPC, item, ability, map, and world-object definitions, including map-owned portals, now use catalog IDs. The 8-byte protocol token is unchanged.
 
 Do not perform this as opportunistic cleanup inside an unrelated Phase/FORGE slice.
 

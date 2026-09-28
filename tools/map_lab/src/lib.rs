@@ -1460,6 +1460,7 @@ mod tests {
             id: "placement.mob_999".into(),
             kind: purgatory_content::PlacementKind::Monster,
             content_authored: "monster.not_authored".into(),
+            content_id: None,
             position: [0.0, 0.0],
             portal_link: None,
         });
@@ -1758,6 +1759,7 @@ mod tests {
                     id: "placement.mob_001".to_owned(),
                     kind: purgatory_content::PlacementKind::Monster,
                     content_authored: "monster.moss_crab".to_owned(),
+                    content_id: None,
                     position: [8.0, 1.0],
                     portal_link: None,
                 },
@@ -1765,6 +1767,7 @@ mod tests {
                     id: "portal.001".to_owned(),
                     kind: purgatory_content::PlacementKind::Portal,
                     content_authored: String::new(),
+                    content_id: Some(purgatory_common::ContentId::from_raw(60_099)),
                     position: [6.0, 1.0],
                     portal_link: Some(purgatory_content::PortalLink {
                         map_authored: "map.map1".to_owned(),
@@ -1880,6 +1883,7 @@ mod tests {
                     id: "placement.mob_001".to_owned(),
                     kind: purgatory_content::PlacementKind::Monster,
                     content_authored: "monster.moss_crab".to_owned(),
+                    content_id: None,
                     position: [31.0, 1.0],
                     portal_link: None,
                 },
@@ -1887,6 +1891,7 @@ mod tests {
                     id: "placement.npc_001".to_owned(),
                     kind: purgatory_content::PlacementKind::Entity,
                     content_authored: "npc.welcome.gate_watchman".to_owned(),
+                    content_id: None,
                     position: [31.0, 1.5],
                     portal_link: None,
                 },
@@ -1894,6 +1899,7 @@ mod tests {
                     id: "portal.001".to_owned(),
                     kind: purgatory_content::PlacementKind::Portal,
                     content_authored: String::new(),
+                    content_id: Some(purgatory_common::ContentId::from_raw(60_099)),
                     position: [31.0, 2.0],
                     portal_link: Some(purgatory_content::PortalLink {
                         map_authored: "map.map1".to_owned(),

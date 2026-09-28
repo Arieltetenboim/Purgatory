@@ -10,7 +10,7 @@ use purgatory_content::{
     GameplaySpawnPoint, LoadMode, MIN_MAP_HEIGHT_WU, MIN_MAP_WIDTH_WU, ParallaxDepth,
     ParallaxFillMode, ParallaxLayer, Placement, PlacementKind, PortalLink, PresentationSprite,
     SkyGradient, TileTransform, cloud_field_seed, cloud_instance_count, cloud_instance_specs,
-    default_content_root, load_registry, portal_runtime_authored, resolve_png_asset_folder,
+    default_content_root, load_registry, resolve_png_asset_folder,
 };
 use purgatory_map_lab::{
     MapImportCandidate, MapLabDocument, MapSwitchChoice, MapSwitchKind, NewMapRequest,
@@ -553,6 +553,7 @@ impl MapLabApp {
             id: id.clone(),
             kind: entry.placement_kind,
             content_authored: entry.authored_id.clone(),
+            content_id: None,
             position: [
                 position[0].clamp(min_x, max_x),
                 position[1].clamp(min_y, max_y),
@@ -577,11 +578,17 @@ impl MapLabApp {
         };
         let [min_x, min_y, max_x, max_y] = document.presentation.world_bounds;
         let id = next_portal_id(&document.placements);
-        let runtime_authored = portal_runtime_authored(&document.source.id, &id);
+        let Some(content_id) =
+            purgatory_content::catalog_portal_content_id(&document.source.id, &id)
+        else {
+            self.status = format!("ENTITY · {id} has no World Object ContentId allocation");
+            return;
+        };
         document.placements.push(Placement {
             id: id.clone(),
             kind: PlacementKind::Portal,
-            content_authored: runtime_authored,
+            content_authored: String::new(),
+            content_id: Some(content_id),
             position: [
                 position[0].clamp(min_x, max_x),
                 position[1].clamp(min_y, max_y),
@@ -1916,6 +1923,11 @@ impl eframe::App for MapLabApp {
                                         ui.heading("PORTAL");
                                         ui.label(format!("Map ID: {map_id}"));
                                         ui.label(format!("Portal ID: {}", placement.id));
+                                        if let Some(raw) =
+                                            placement.content_id.and_then(|id| id.raw())
+                                        {
+                                            ui.label(format!("Content ID: {raw}"));
+                                        }
                                         ui.separator();
                                         ui.label("Linked Portal");
                                         let selected_text = placement
@@ -3926,6 +3938,7 @@ mod tests {
             id: "placement.mob_999".into(),
             kind: PlacementKind::Monster,
             content_authored: "monster.not_authored".into(),
+            content_id: None,
             position: [0.0, 0.0],
             portal_link: None,
         });

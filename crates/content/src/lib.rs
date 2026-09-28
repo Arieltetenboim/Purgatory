@@ -83,7 +83,7 @@ pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement}
 pub use schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, PLACEMENT_SCHEMA_VERSION,
     Placement, PlacementKind, PortalLink, RestorePolicy, SpawnPoint, TransitionRef,
-    portal_runtime_authored,
+    catalog_portal_content_id, portal_identity_error, resolve_portal_content_id,
 };
 
 /// Cargo package version for this crate.
@@ -134,6 +134,7 @@ mod tests {
         let map2_portal = registry
             .portal_content_id(MAP2_AUTHORED, "portal.001")
             .expect("MAP2 portal content");
+        assert_eq!(map2_portal, purgatory_common::WORLD_OBJECT_MAP2_PORTAL_001);
         assert!(
             world
                 .iter()
