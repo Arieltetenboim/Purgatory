@@ -605,6 +605,7 @@ Owner Phase 0 clarifications:
 
 - Status: **under review**, not an implementation or GREEN gate. [`PHASE_12_MMO_SCOPE_AUDIT.md`](PHASE_12_MMO_SCOPE_AUDIT.md) maps current character/item/narrative/learned state and normal client behavior against first-party MMORPG product references. It proposes 12D–12F because Item-only Issue #10 does not save NPC facts or learned grants and does not prove normal-client commit/resync or crash recovery.
 - Next decision: approve or revise the Phase 12 completion bar. The accepted Issue #10 contract and planned 12A–12C remain intact; XP/level, currency, Trade, storage and enhancement are explicitly unimplemented future systems, not silently certified by this gate.
+- Accepted user/character rule (2026-09-28): one user may own several characters but only one may be active in gameplay. Current DEV entry permits two different characters under one login at once; the Phase 12 client/lifecycle gate must close this gap and prove simultaneous A/B entry rejects one, switching settles A before B enters, and neither character inherits the other's state. The current three-character cap and production authentication are separate decisions.
 
 ## Gate Production UI I1 — Inventory window foundation
 
