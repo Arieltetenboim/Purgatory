@@ -593,7 +593,7 @@ Owner Phase 0 clarifications:
 
 - Status: **opened 2026-09-28; design gate open.** `PHASE=12.entry` starts Phase 12 without claiming 12A–12C implementation or persistence acceptance.
 - Prerequisites checked against `master` at `e0d54e4`: #87, #88, #89 and #24 are closed; fail-closed load, bounded/coalesced save handoff and first-party numeric content IDs are present. Issue #10 remains open as the first design gate.
-- Validation for this entry change: documentation and marker consistency plus `git diff --check`; no runtime code changed and no workspace quality gate was rerun. The latest merged #113 PR reports `check.ps1` passed; this entry does not claim a separate `master` CI run.
+- Validation for this entry change: documentation and marker consistency plus `git diff --check`; GitHub Quality Gate [run #36406969412](https://github.com/Arieltetenboim/Purgatory/actions/runs/36406969412) on `master` commit `18b5cdf` passed `./scripts/check.sh`. No runtime code changed or manual runtime proof was claimed by the entry.
 - Next acceptance: approve the Issue #10 contract for state ownership, schema/migration, atomic inventory/equipment snapshot, save ordering/durability and recovery before implementing durable item state. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
 
 ## Gate Production UI I1 — Inventory window foundation
