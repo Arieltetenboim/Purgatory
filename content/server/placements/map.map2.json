@@ -5,6 +5,7 @@
     {
       "id": "portal.001",
       "kind": "portal",
+      "content_id": 60005,
       "position": [2.0, 1.0],
       "linked_portal": {
         "map": "map.map1",

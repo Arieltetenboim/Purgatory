@@ -2,7 +2,7 @@
 
 use crate::domain::ContentDomain;
 use crate::map_gameplay_authoring::FootholdPath;
-use purgatory_common::ContentId;
+use purgatory_common::{ContentId, ContentKind, allocated_id_for_label, label_for_allocated_id};
 use purgatory_simulation::{InteractableKind, WorldBounds};
 
 pub const CONTENT_SCHEMA_VERSION: u32 = 1;
@@ -99,13 +99,53 @@ pub struct PortalLink {
     pub portal_id: String,
 }
 
+/// Why a map-owned portal ContentId cannot be used.
+///
+/// `None` means `content_id` is the catalog allocation for `{map}.{portal_id}`.
 #[must_use]
-pub fn portal_runtime_authored(map_authored: &str, portal_id: &str) -> String {
-    format!(
-        "portal.{}.{}",
-        map_authored.replace('.', "_"),
-        portal_id.replace('.', "_")
-    )
+pub fn portal_identity_error(
+    map_authored: &str,
+    portal_id: &str,
+    content_id: Option<ContentId>,
+) -> Option<&'static str> {
+    let Some(content_id) = content_id else {
+        return Some("portal requires a numeric ContentId");
+    };
+    if content_id.kind() != Some(ContentKind::WorldObject) {
+        return Some("portal ContentId is outside the World Object block");
+    }
+    let label = format!("{map_authored}.{portal_id}");
+    match label_for_allocated_id(content_id) {
+        Some(recorded)
+            if recorded == label && allocated_id_for_label(&label) == Some(content_id) =>
+        {
+            None
+        }
+        Some(_) => Some("portal ContentId is not allocated to this portal"),
+        None => Some("unknown portal ContentId"),
+    }
+}
+
+/// Catalog ContentId for a map-owned portal, when the label is allocated.
+#[must_use]
+pub fn catalog_portal_content_id(map_authored: &str, portal_id: &str) -> Option<ContentId> {
+    let label = format!("{map_authored}.{portal_id}");
+    let content_id = allocated_id_for_label(&label)?;
+    portal_identity_error(map_authored, portal_id, Some(content_id))
+        .is_none()
+        .then_some(content_id)
+}
+
+/// Accepted portal identity. Unknown, duplicate-label, and wrong-domain IDs are rejected.
+#[must_use]
+pub fn resolve_portal_content_id(
+    map_authored: &str,
+    portal_id: &str,
+    content_id: ContentId,
+) -> Option<ContentId> {
+    portal_identity_error(map_authored, portal_id, Some(content_id))
+        .is_none()
+        .then_some(content_id)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -113,8 +153,12 @@ pub struct Placement {
     /// Stable editor identity. Unique within one map placement document.
     pub id: String,
     pub kind: PlacementKind,
-    /// Authored content reference resolved according to `kind`.
+    /// Authored content reference for entity and monster placements.
+    ///
+    /// Map-owned portals keep this empty. Their canonical identity is [`Placement::content_id`].
     pub content_authored: String,
+    /// Numeric World Object identity for a map-owned portal.
+    pub content_id: Option<ContentId>,
     pub position: [f32; 2],
     pub portal_link: Option<PortalLink>,
 }

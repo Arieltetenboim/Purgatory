@@ -31,7 +31,6 @@ use crate::registry::ContentRegistry;
 use crate::schema::{
     CONTENT_SCHEMA_VERSION, EntityDefinition, MapDefinition, MapPlatform, PLACEMENT_SCHEMA_VERSION,
     Placement, PlacementKind, PortalLink, RestorePolicy, SpawnPoint, TransitionRef,
-    portal_runtime_authored,
 };
 use purgatory_common::{ContentId, ContentKind, allocated_id_for_label, validate_authored_id};
 use purgatory_simulation::{
@@ -742,8 +741,36 @@ pub fn serialize_placements_v2(
     let mut raw_placements = Vec::with_capacity(placements.len());
     for (index, placement) in placements.iter().enumerate() {
         check_placement_id(path, &placement.id)?;
-        if placement.kind != PlacementKind::Portal {
+        if placement.kind == PlacementKind::Portal {
+            if placement.content_id.is_none() {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    map_authored,
+                    &format!("placements[{index}].content_id"),
+                    "portal requires a numeric ContentId",
+                ));
+            }
+            if placement
+                .content_id
+                .is_some_and(|id| id.kind() != Some(ContentKind::WorldObject))
+            {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    map_authored,
+                    &format!("placements[{index}].content_id"),
+                    "portal ContentId is outside the World Object block",
+                ));
+            }
+        } else {
             check_authored(path, &placement.content_authored)?;
+            if placement.content_id.is_some() {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    map_authored,
+                    &format!("placements[{index}].content_id"),
+                    "content_id is only valid on portal placements",
+                ));
+            }
         }
         if !placement.position.iter().all(|value| value.is_finite()) {
             return Err(ContentError::from_path(
@@ -770,6 +797,7 @@ pub fn serialize_placements_v2(
             kind: placement.kind.as_str(),
             content: (placement.kind != PlacementKind::Portal)
                 .then_some(placement.content_authored.as_str()),
+            content_id: placement.content_id.and_then(ContentId::raw),
             position: placement.position,
             linked_portal,
         });
@@ -809,6 +837,7 @@ fn placements_from_raw(
     }
 
     let mut ids = HashSet::new();
+    let mut portal_content_ids = HashSet::new();
     let mut placements = Vec::with_capacity(raw.placements.len());
     for (index, value) in raw.placements.into_iter().enumerate() {
         let field = format!("placements[{index}]");
@@ -826,6 +855,7 @@ fn placements_from_raw(
                 id: format!("placement.legacy_{:04}", index + 1),
                 kind: PlacementKind::Entity,
                 content_authored: legacy.entity,
+                content_id: None,
                 position: pair(path, &format!("{field}.position"), legacy.position)?,
                 portal_link: None,
             }
@@ -839,7 +869,15 @@ fn placements_from_raw(
                 )
             })?;
             check_placement_id(path, &authored.id)?;
-            let (kind, content_authored, portal_link) = match authored.kind.as_str() {
+            if authored.kind != "portal" && authored.content_id.is_some() {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    &raw.map,
+                    &format!("{field}.content_id"),
+                    "content_id is only valid on portal placements",
+                ));
+            }
+            let (kind, content_authored, content_id, portal_link) = match authored.kind.as_str() {
                 "entity" => {
                     let content = authored.content.ok_or_else(|| {
                         ContentError::from_path(
@@ -850,7 +888,7 @@ fn placements_from_raw(
                         )
                     })?;
                     check_authored(path, &content)?;
-                    (PlacementKind::Entity, content, None)
+                    (PlacementKind::Entity, content, None, None)
                 }
                 "monster" => {
                     let content = authored.content.ok_or_else(|| {
@@ -862,11 +900,42 @@ fn placements_from_raw(
                         )
                     })?;
                     check_authored(path, &content)?;
-                    (PlacementKind::Monster, content, None)
+                    (PlacementKind::Monster, content, None, None)
                 }
                 "portal" => {
-                    let runtime_authored = portal_runtime_authored(&raw.map, &authored.id);
-                    check_authored(path, &runtime_authored)?;
+                    if authored.content.is_some() {
+                        return Err(ContentError::from_path(
+                            path.to_path_buf(),
+                            &raw.map,
+                            &format!("{field}.content"),
+                            "portal identity is content_id, not an authored content string",
+                        ));
+                    }
+                    let raw_id = authored.content_id.ok_or_else(|| {
+                        ContentError::from_path(
+                            path.to_path_buf(),
+                            &authored.id,
+                            &format!("{field}.content_id"),
+                            "portal requires a numeric ContentId",
+                        )
+                    })?;
+                    let content_id = ContentId::from_raw(raw_id);
+                    if content_id.kind() != Some(ContentKind::WorldObject) {
+                        return Err(ContentError::from_path(
+                            path.to_path_buf(),
+                            &authored.id,
+                            &format!("{field}.content_id"),
+                            "portal ContentId is outside the World Object block",
+                        ));
+                    }
+                    if !portal_content_ids.insert(content_id) {
+                        return Err(ContentError::from_path(
+                            path.to_path_buf(),
+                            &authored.id,
+                            &format!("{field}.content_id"),
+                            format!("duplicate portal ContentId {raw_id}"),
+                        ));
+                    }
                     let link = authored
                         .linked_portal
                         .map(|link| {
@@ -878,7 +947,7 @@ fn placements_from_raw(
                             })
                         })
                         .transpose()?;
-                    (PlacementKind::Portal, runtime_authored, link)
+                    (PlacementKind::Portal, String::new(), Some(content_id), link)
                 }
                 other => {
                     return Err(ContentError::from_path(
@@ -895,6 +964,7 @@ fn placements_from_raw(
                 id: authored.id,
                 kind,
                 content_authored,
+                content_id,
                 position: pair(path, &format!("{field}.position"), authored.position)?,
                 portal_link,
             }
@@ -1111,6 +1181,8 @@ struct RawPlacementV2 {
     kind: String,
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    content_id: Option<u32>,
     position: [f32; 2],
     #[serde(default)]
     linked_portal: Option<RawPortalLink>,
@@ -1136,6 +1208,8 @@ struct RawPlacementV2Out<'a> {
     kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_id: Option<u32>,
     position: [f32; 2],
     #[serde(skip_serializing_if = "Option::is_none")]
     linked_portal: Option<RawPortalLinkOut<'a>>,
@@ -1721,7 +1795,23 @@ impl RawEntity {
             }
             content_id
         } else {
-            ContentId::from_authored(&self.id).expect("validated")
+            let content_id = allocated_id_for_label(&self.id).ok_or_else(|| {
+                ContentError::from_path(
+                    path.to_path_buf(),
+                    &self.id,
+                    "id",
+                    "world object requires a numeric ContentId allocation",
+                )
+            })?;
+            if content_id.kind() != Some(ContentKind::WorldObject) {
+                return Err(ContentError::from_path(
+                    path.to_path_buf(),
+                    &self.id,
+                    "id",
+                    "world object ContentId must be allocated in the World Object block",
+                ));
+            }
+            content_id
         };
         Ok(EntityDefinition {
             content_id,
@@ -2064,6 +2154,7 @@ mod tests {
                 id: "placement.legacy_0001".into(),
                 kind: PlacementKind::Entity,
                 content_authored: "entity.portal.test".into(),
+                content_id: None,
                 position: [1.0, 2.0],
                 portal_link: None,
             }]
@@ -2111,6 +2202,7 @@ mod tests {
                     {
                         "id": "portal.001",
                         "kind": "portal",
+                        "content_id": 60004,
                         "position": [3.0, 2.0],
                         "linked_portal": {
                             "map": "map.test.other",
@@ -2125,6 +2217,10 @@ mod tests {
             placements_from_raw(Path::new("placements.json"), raw).expect("portal placement");
         assert_eq!(placements[0].kind, PlacementKind::Portal);
         assert_eq!(placements[0].id, "portal.001");
+        assert_eq!(
+            placements[0].content_id.and_then(ContentId::raw),
+            Some(60_004)
+        );
         assert_eq!(
             placements[0].portal_link,
             Some(PortalLink {
@@ -2157,6 +2253,37 @@ mod tests {
                     ]
                 }"#,
                 "unknown placement kind",
+            ),
+            (
+                r#"{
+                    "schema_version": 2,
+                    "map": "map.test.fixture",
+                    "placements": [
+                        { "id": "portal.001", "kind": "portal", "position": [0, 0] }
+                    ]
+                }"#,
+                "portal requires a numeric ContentId",
+            ),
+            (
+                r#"{
+                    "schema_version": 2,
+                    "map": "map.map1",
+                    "placements": [
+                        { "id": "portal.001", "kind": "portal", "content_id": 50001, "position": [0, 0] }
+                    ]
+                }"#,
+                "outside the World Object block",
+            ),
+            (
+                r#"{
+                    "schema_version": 2,
+                    "map": "map.map1",
+                    "placements": [
+                        { "id": "portal.001", "kind": "portal", "content_id": 60004, "position": [0, 0] },
+                        { "id": "portal.002", "kind": "portal", "content_id": 60004, "position": [1, 0] }
+                    ]
+                }"#,
+                "duplicate portal ContentId",
             ),
         ] {
             let raw: RawPlacements = serde_json::from_str(body).unwrap();
@@ -2333,6 +2460,53 @@ mod tests {
             error
                 .to_string()
                 .contains("NPC entity requires a numeric ContentId allocation")
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn world_object_entity_without_catalog_allocation_fails_clearly() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-content-world-object-allocation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("server/entities"),
+            "unallocated.json",
+            r#"{
+                "schema_version": 1,
+                "id": "entity.interactable.unallocated",
+                "debug_name": "Unallocated",
+                "visible": true,
+                "interactable": "chest"
+            }"#,
+        );
+        let error =
+            load_registry(&tmp, LoadMode::Full).expect_err("missing world object allocation");
+        assert!(
+            error
+                .to_string()
+                .contains("world object requires a numeric ContentId allocation")
+        );
+
+        write_file(
+            &tmp.join("server/entities"),
+            "wrong-domain.json",
+            r#"{
+                "schema_version": 1,
+                "id": "npc.welcome.traveler_stayed",
+                "debug_name": "Wrong domain",
+                "visible": true,
+                "interactable": "chest"
+            }"#,
+        );
+        let _ = fs::remove_file(tmp.join("server/entities/unallocated.json"));
+        let error = load_registry(&tmp, LoadMode::Full).expect_err("wrong domain");
+        assert!(
+            error
+                .to_string()
+                .contains("must be allocated in the World Object block")
         );
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -2624,13 +2798,34 @@ mod tests {
         assert!((*speed - 9.0).abs() < f32::EPSILON);
         assert_eq!(*duration_ticks, 5);
 
-        let legacy_portal = registry
-            .entity("entity.portal.to_second")
-            .expect("legacy portal definition remains loadable");
-        assert!(legacy_portal.transition.as_ref().is_some_and(|transition| {
-            transition.map_authored == purgatory_common::MAP2_AUTHORED
-                && transition.portal_authored == "portal.001"
-        }));
+        let chest = registry
+            .entity("entity.interactable.chest")
+            .expect("chest world object");
+        let map_b_switch = registry
+            .entity("entity.interactable.map_b_switch")
+            .expect("map b switch");
+        let switch = registry
+            .entity("entity.interactable.switch")
+            .expect("switch world object");
+        assert_eq!(chest.content_id, purgatory_common::WORLD_OBJECT_CHEST);
+        assert_eq!(
+            map_b_switch.content_id,
+            purgatory_common::WORLD_OBJECT_MAP_B_SWITCH
+        );
+        assert_eq!(switch.content_id, purgatory_common::WORLD_OBJECT_SWITCH);
+        for id in [chest.content_id, map_b_switch.content_id, switch.content_id] {
+            assert_eq!(id.kind(), Some(purgatory_common::ContentKind::WorldObject));
+        }
+        assert_eq!(
+            registry.portal_content_id(purgatory_common::MAP1_AUTHORED, "portal.001"),
+            Some(purgatory_common::WORLD_OBJECT_MAP1_PORTAL_001)
+        );
+        assert_eq!(
+            registry.portal_content_id(purgatory_common::MAP2_AUTHORED, "portal.001"),
+            Some(purgatory_common::WORLD_OBJECT_MAP2_PORTAL_001)
+        );
+        assert!(registry.entity("entity.portal.to_footnote").is_none());
+        assert!(registry.entity("entity.portal.to_second").is_none());
 
         let cap = registry
             .equipment("equipment.debug.cloth_cap")

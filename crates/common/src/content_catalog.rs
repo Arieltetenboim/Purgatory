@@ -40,8 +40,8 @@ pub const ITEM_WATCH_SIGNAL_LANTERN: ContentId = ContentId::from_raw(30_014);
 pub const WORLD_OBJECT_CHEST: ContentId = ContentId::from_raw(60_001);
 pub const WORLD_OBJECT_MAP_B_SWITCH: ContentId = ContentId::from_raw(60_002);
 pub const WORLD_OBJECT_SWITCH: ContentId = ContentId::from_raw(60_003);
-pub const WORLD_OBJECT_PORTAL_TO_FOOTNOTE: ContentId = ContentId::from_raw(60_004);
-pub const WORLD_OBJECT_PORTAL_TO_SECOND: ContentId = ContentId::from_raw(60_005);
+pub const WORLD_OBJECT_MAP1_PORTAL_001: ContentId = ContentId::from_raw(60_004);
+pub const WORLD_OBJECT_MAP2_PORTAL_001: ContentId = ContentId::from_raw(60_005);
 
 /// Temporary migration lookup for existing authored labels.
 ///
@@ -79,8 +79,8 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
         "entity.interactable.chest" => WORLD_OBJECT_CHEST,
         "entity.interactable.map_b_switch" => WORLD_OBJECT_MAP_B_SWITCH,
         "entity.interactable.switch" => WORLD_OBJECT_SWITCH,
-        "entity.portal.to_footnote" => WORLD_OBJECT_PORTAL_TO_FOOTNOTE,
-        "entity.portal.to_second" => WORLD_OBJECT_PORTAL_TO_SECOND,
+        "map.map1.portal.001" => WORLD_OBJECT_MAP1_PORTAL_001,
+        "map.map2.portal.001" => WORLD_OBJECT_MAP2_PORTAL_001,
         _ => return None,
     })
 }
@@ -118,8 +118,8 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
         WORLD_OBJECT_CHEST => "entity.interactable.chest",
         WORLD_OBJECT_MAP_B_SWITCH => "entity.interactable.map_b_switch",
         WORLD_OBJECT_SWITCH => "entity.interactable.switch",
-        WORLD_OBJECT_PORTAL_TO_FOOTNOTE => "entity.portal.to_footnote",
-        WORLD_OBJECT_PORTAL_TO_SECOND => "entity.portal.to_second",
+        WORLD_OBJECT_MAP1_PORTAL_001 => "map.map1.portal.001",
+        WORLD_OBJECT_MAP2_PORTAL_001 => "map.map2.portal.001",
         _ => return None,
     })
 }
@@ -174,8 +174,8 @@ mod tests {
             WORLD_OBJECT_CHEST,
             WORLD_OBJECT_MAP_B_SWITCH,
             WORLD_OBJECT_SWITCH,
-            WORLD_OBJECT_PORTAL_TO_FOOTNOTE,
-            WORLD_OBJECT_PORTAL_TO_SECOND,
+            WORLD_OBJECT_MAP1_PORTAL_001,
+            WORLD_OBJECT_MAP2_PORTAL_001,
         ] {
             assert_eq!(id.kind(), Some(ContentKind::WorldObject));
         }
@@ -199,7 +199,9 @@ mod tests {
             "item.debug.small_potion",
             "item.package",
             "item.welcome.watch_signal_lantern",
-            "entity.portal.to_second",
+            "entity.interactable.chest",
+            "map.map1.portal.001",
+            "map.map2.portal.001",
         ] {
             let id = allocated_id_for_label(label).expect("allocated label");
             assert_eq!(label_for_allocated_id(id), Some(label));

@@ -55,8 +55,10 @@ The matching equipment gameplay and equipment-presentation facets use the same I
 | `60001` | `entity.interactable.chest` | active |
 | `60002` | `entity.interactable.map_b_switch` | active |
 | `60003` | `entity.interactable.switch` | active |
-| `60004` | `entity.portal.to_footnote` | active |
-| `60005` | `entity.portal.to_second` | active |
+| `60004` | `map.map1.portal.001` | active |
+| `60005` | `map.map2.portal.001` | active |
+
+`60004` and `60005` previously named the removed DEV definitions `entity.portal.to_footnote` and `entity.portal.to_second`. Those definitions were deleted in a controlled migration, and the owner explicitly approved reusing the IDs for the MAP1 and MAP2 map-owned portals. `portal.001` remains the map-local authoring label; the number is the canonical identity.
 
 ### Monsters — 10,000–19,999
 

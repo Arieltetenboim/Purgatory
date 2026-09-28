@@ -1,6 +1,6 @@
 //! Owned validated content. No global singleton.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::dialogue::{
     DialogueAction, DialogueCondition, NpcDialogueDefinition, NpcDialoguePresentation,
@@ -15,6 +15,7 @@ use crate::monster::{
 };
 use crate::schema::{
     EntityDefinition, MapDefinition, Placement, PlacementKind, RestorePolicy, TransitionRef,
+    portal_identity_error, resolve_portal_content_id,
 };
 use purgatory_common::{CONTENT_MAP_START, ContentId, ContentKind, MapId};
 use purgatory_simulation::AbilityDefinition;
@@ -220,7 +221,8 @@ impl ContentRegistry {
             .iter()
             .find(|placement| placement.kind == PlacementKind::Portal && placement.id == portal_id)
         {
-            return ContentId::from_authored(&placement.content_authored).ok();
+            let content_id = placement.content_id?;
+            return resolve_portal_content_id(map_authored, portal_id, content_id);
         }
 
         let legacy = self.placements(map_authored).iter().find(|placement| {
@@ -233,10 +235,11 @@ impl ContentRegistry {
 
     #[must_use]
     pub fn portal_transition_by_id(&self, id: ContentId) -> Option<TransitionRef> {
-        for placements in self.placements.values() {
+        for (map_authored, placements) in &self.placements {
             if let Some(placement) = placements.iter().find(|placement| {
                 placement.kind == PlacementKind::Portal
-                    && ContentId::from_authored(&placement.content_authored).ok() == Some(id)
+                    && placement.content_id == Some(id)
+                    && resolve_portal_content_id(map_authored, &placement.id, id).is_some()
             }) {
                 let link = placement.portal_link.as_ref()?;
                 return Some(TransitionRef {
@@ -628,6 +631,7 @@ impl ContentRegistry {
             return issues;
         }
         let mut ids = std::collections::HashSet::new();
+        let mut seen_portal_ids = HashSet::new();
         for (i, p) in placements.iter().enumerate() {
             if !ids.insert(p.id.as_str()) {
                 issues.push(ValidationIssue::new(
@@ -659,6 +663,47 @@ impl ContentRegistry {
                     }
                 }
                 PlacementKind::Portal => {
+                    if let Some(reason) = portal_identity_error(map_authored, &p.id, p.content_id) {
+                        issues.push(ValidationIssue::new(
+                            map_authored,
+                            &p.id,
+                            format!("placements[{i}].content_id"),
+                            reason,
+                        ));
+                    }
+                    if let Some(content_id) = p.content_id {
+                        if !seen_portal_ids.insert(content_id) {
+                            issues.push(ValidationIssue::new(
+                                map_authored,
+                                &p.id,
+                                format!("placements[{i}].content_id"),
+                                format!("duplicate portal ContentId {content_id}"),
+                            ));
+                        }
+                        if self.labels.contains_key(&content_id) {
+                            issues.push(ValidationIssue::new(
+                                map_authored,
+                                &p.id,
+                                format!("placements[{i}].content_id"),
+                                format!("duplicate portal ContentId {content_id}"),
+                            ));
+                        }
+                        let reused_elsewhere = self.placements.iter().any(|(other_map, others)| {
+                            other_map != map_authored
+                                && others.iter().any(|candidate| {
+                                    candidate.kind == PlacementKind::Portal
+                                        && candidate.content_id == Some(content_id)
+                                })
+                        });
+                        if reused_elsewhere {
+                            issues.push(ValidationIssue::new(
+                                map_authored,
+                                &p.id,
+                                format!("placements[{i}].content_id"),
+                                format!("duplicate portal ContentId {content_id}"),
+                            ));
+                        }
+                    }
                     if let Some(link) = &p.portal_link {
                         if !self.maps.contains_key(&link.map_authored) {
                             issues.push(ValidationIssue::new(
@@ -1061,6 +1106,7 @@ mod tests {
                 id: "placement.missing".into(),
                 kind: PlacementKind::Entity,
                 content_authored: "entity.missing.thing".into(),
+                content_id: None,
                 position: [0.0, 0.0],
                 portal_link: None,
             }],
@@ -1084,6 +1130,7 @@ mod tests {
                 id: "placement.mob_001".into(),
                 kind: PlacementKind::Monster,
                 content_authored: "monster.missing".into(),
+                content_id: None,
                 position: [0.0, 0.0],
                 portal_link: None,
             }],
@@ -1130,49 +1177,118 @@ mod tests {
     }
 
     #[test]
-    fn map_owned_portals_link_by_map_and_portal_id() {
+    fn map_owned_portals_link_by_numeric_content_id() {
+        use purgatory_common::{WORLD_OBJECT_MAP1_PORTAL_001, WORLD_OBJECT_MAP2_PORTAL_001};
+
         let mut reg = ContentRegistry::new();
         reg.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
-        let portal_a_authored = crate::portal_runtime_authored(MAP1_AUTHORED, "portal.001");
-        let portal_b_authored = crate::portal_runtime_authored(MAP1_AUTHORED, "portal.002");
+        reg.insert_map(sample_map(MAP2_AUTHORED)).unwrap();
         reg.insert_placements(
             MAP1_AUTHORED.into(),
-            vec![
-                Placement {
-                    id: "portal.001".into(),
-                    kind: PlacementKind::Portal,
-                    content_authored: portal_a_authored.clone(),
-                    position: [0.0, 0.0],
-                    portal_link: Some(crate::PortalLink {
-                        map_authored: MAP1_AUTHORED.into(),
-                        portal_id: "portal.002".into(),
-                    }),
-                },
-                Placement {
-                    id: "portal.002".into(),
-                    kind: PlacementKind::Portal,
-                    content_authored: portal_b_authored.clone(),
-                    position: [2.0, 0.0],
-                    portal_link: Some(crate::PortalLink {
-                        map_authored: MAP1_AUTHORED.into(),
-                        portal_id: "portal.001".into(),
-                    }),
-                },
-            ],
+            vec![Placement {
+                id: "portal.001".into(),
+                kind: PlacementKind::Portal,
+                content_authored: String::new(),
+                content_id: Some(WORLD_OBJECT_MAP1_PORTAL_001),
+                position: [0.0, 0.0],
+                portal_link: Some(crate::PortalLink {
+                    map_authored: MAP2_AUTHORED.into(),
+                    portal_id: "portal.001".into(),
+                }),
+            }],
+        )
+        .unwrap();
+        reg.insert_placements(
+            MAP2_AUTHORED.into(),
+            vec![Placement {
+                id: "portal.001".into(),
+                kind: PlacementKind::Portal,
+                content_authored: String::new(),
+                content_id: Some(WORLD_OBJECT_MAP2_PORTAL_001),
+                position: [2.0, 0.0],
+                portal_link: Some(crate::PortalLink {
+                    map_authored: MAP1_AUTHORED.into(),
+                    portal_id: "portal.001".into(),
+                }),
+            }],
         )
         .unwrap();
         reg.finish().expect("linked portals validate");
 
-        let portal_a = ContentId::from_authored(&portal_a_authored).unwrap();
         let transition = reg
-            .portal_transition_by_id(portal_a)
+            .portal_transition_by_id(WORLD_OBJECT_MAP1_PORTAL_001)
             .expect("portal transition");
-        assert_eq!(transition.map_authored, MAP1_AUTHORED);
-        assert_eq!(transition.portal_authored, "portal.002");
+        assert_eq!(transition.map_authored, MAP2_AUTHORED);
+        assert_eq!(transition.portal_authored, "portal.001");
         assert_eq!(
-            reg.portal_content_id(MAP1_AUTHORED, "portal.002"),
-            ContentId::from_authored(&portal_b_authored).ok()
+            reg.portal_content_id(MAP2_AUTHORED, "portal.001"),
+            Some(WORLD_OBJECT_MAP2_PORTAL_001)
         );
+        assert_eq!(
+            reg.portal_content_id(MAP1_AUTHORED, "portal.001"),
+            Some(WORLD_OBJECT_MAP1_PORTAL_001)
+        );
+    }
+
+    #[test]
+    fn portal_ids_fail_closed_for_unknown_wrong_domain_and_duplicates() {
+        use purgatory_common::WORLD_OBJECT_MAP1_PORTAL_001;
+
+        let portal = |id: &str, content_id: ContentId| Placement {
+            id: id.into(),
+            kind: PlacementKind::Portal,
+            content_authored: String::new(),
+            content_id: Some(content_id),
+            position: [0.0, 0.0],
+            portal_link: None,
+        };
+
+        let mut unknown = ContentRegistry::new();
+        unknown.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        unknown
+            .insert_placements(
+                MAP1_AUTHORED.into(),
+                vec![portal("portal.001", ContentId::from_raw(60_099))],
+            )
+            .unwrap();
+        let err = unknown.finish().expect_err("unknown portal id");
+        assert!(err.to_string().contains("unknown portal ContentId"));
+
+        let mut wrong_domain = ContentRegistry::new();
+        wrong_domain.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        wrong_domain
+            .insert_placements(MAP1_AUTHORED.into(), vec![portal("portal.001", MAP1)])
+            .unwrap();
+        let err = wrong_domain.finish().expect_err("wrong domain");
+        assert!(err.to_string().contains("outside the World Object block"));
+
+        let mut mismatch = ContentRegistry::new();
+        mismatch.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        mismatch
+            .insert_placements(
+                MAP1_AUTHORED.into(),
+                vec![portal(
+                    "portal.001",
+                    purgatory_common::WORLD_OBJECT_MAP2_PORTAL_001,
+                )],
+            )
+            .unwrap();
+        let err = mismatch.finish().expect_err("wrong portal label");
+        assert!(err.to_string().contains("not allocated to this portal"));
+
+        let mut duplicate = ContentRegistry::new();
+        duplicate.insert_map(sample_map(MAP1_AUTHORED)).unwrap();
+        duplicate
+            .insert_placements(
+                MAP1_AUTHORED.into(),
+                vec![
+                    portal("portal.001", WORLD_OBJECT_MAP1_PORTAL_001),
+                    portal("portal.001", WORLD_OBJECT_MAP1_PORTAL_001),
+                ],
+            )
+            .unwrap();
+        let err = duplicate.finish().expect_err("duplicate portal id");
+        assert!(err.to_string().contains("duplicate portal ContentId"));
     }
 
     #[test]
