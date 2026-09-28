@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::ability::ABILITY_CONTENT_SCHEMA_VERSION;
+use crate::ability::{ABILITY_CONTENT_SCHEMA_VERSION, validate_ability_catalog_identity};
 use crate::dialogue;
 use crate::domain::ContentDomain;
 use crate::equipment::{
@@ -1331,6 +1331,7 @@ impl RawMonster {
 #[serde(deny_unknown_fields)]
 struct RawAbility {
     schema_version: u32,
+    content_id: u32,
     id: String,
     timing: RawAbilityTiming,
     activation: String,
@@ -1382,6 +1383,15 @@ impl RawAbility {
     fn into_def(self, path: &Path) -> Result<AbilityDefinition, ContentError> {
         check_ability_schema(path, self.schema_version, &self.id)?;
         check_authored(path, &self.id)?;
+        let content_id = ContentId::from_raw(self.content_id);
+        if let Err(reason) = validate_ability_catalog_identity(content_id, &self.id) {
+            return Err(ContentError::from_path(
+                path.to_path_buf(),
+                &self.id,
+                "content_id",
+                reason,
+            ));
+        }
         let activation = match self.activation.as_str() {
             "independent" => AbilityActivation::Independent,
             "selected_entity" => AbilityActivation::SelectedEntity,
@@ -1491,7 +1501,7 @@ impl RawAbility {
             }
         };
         let def = AbilityDefinition {
-            id: ContentId::from_authored(&self.id).expect("validated"),
+            id: content_id,
             timing: AbilityTiming {
                 windup_ticks: self.timing.windup_ticks,
                 active_ticks: self.timing.active_ticks,
@@ -2593,6 +2603,13 @@ mod tests {
         let dash = shared
             .ability("skill.movement.dash")
             .expect("grantable Dash ability");
+        assert_eq!(dash.id, purgatory_common::ABILITY_MOVEMENT_DASH);
+        assert_eq!(
+            shared
+                .ability_by_id(purgatory_common::ABILITY_MOVEMENT_DASH)
+                .map(|definition| definition.id),
+            Some(dash.id)
+        );
         assert_eq!(dash.presentation, AbilityPresentation::Dash);
         assert_eq!(dash.delivery, AbilityDelivery::SelfTarget);
         let [
@@ -2633,6 +2650,93 @@ mod tests {
             .equipment_presentation("equipment.debug.unadorned")
             .expect("empty attachments");
         assert!(unadorned.attachments.is_empty());
+    }
+
+    fn minimal_ability_json(content_id: u32, id: &str) -> String {
+        format!(
+            r#"{{"schema_version":2,"content_id":{content_id},"id":"{id}","timing":{{"windup_ticks":1,"active_ticks":1,"recovery_ticks":1,"cooldown_ticks":1}},"activation":"independent","delivery":{{"kind":"self"}},"effects":[{{"type":"damage","amount":1.0}}]}}"#
+        )
+    }
+
+    #[test]
+    fn ability_pack_loads_allocated_numeric_ids() {
+        let registry = load_registry(&default_content_root(), LoadMode::Shared).expect("pack");
+        assert_eq!(
+            registry.ability("skill.basic.strike").expect("strike").id,
+            purgatory_common::ABILITY_BASIC_STRIKE
+        );
+        assert_eq!(
+            registry
+                .ability("skill.debug.practice_sword_strike")
+                .expect("practice sword strike")
+                .id,
+            purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE
+        );
+        assert_eq!(
+            registry.ability("skill.movement.dash").expect("dash").id,
+            purgatory_common::ABILITY_MOVEMENT_DASH
+        );
+        assert_eq!(
+            registry
+                .ability_by_id(purgatory_common::ABILITY_MOVEMENT_DASH)
+                .map(|definition| definition.presentation),
+            Some(AbilityPresentation::Dash)
+        );
+    }
+
+    #[test]
+    fn ability_wrong_domain_content_id_is_rejected() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-ability-wrong-domain-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/abilities"),
+            "skill.basic.strike.json",
+            &minimal_ability_json(30_011, "skill.basic.strike"),
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("item id");
+        assert!(err.to_string().contains("Ability block"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ability_mismatched_catalog_allocation_is_rejected() {
+        let tmp =
+            std::env::temp_dir().join(format!("purgatory-ability-mismatch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        write_file(
+            &tmp.join("shared/abilities"),
+            "skill.basic.strike.json",
+            &minimal_ability_json(40_002, "skill.basic.strike"),
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("mismatched allocation");
+        assert!(err.to_string().contains("not allocated to label"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ability_duplicate_numeric_allocation_is_rejected() {
+        let tmp = std::env::temp_dir().join(format!(
+            "purgatory-ability-duplicate-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let body = minimal_ability_json(40_001, "skill.basic.strike");
+        write_file(
+            &tmp.join("shared/abilities"),
+            "skill.basic.strike.json",
+            &body,
+        );
+        write_file(
+            &tmp.join("shared/abilities"),
+            "skill.basic.strike.copy.json",
+            &body,
+        );
+        let err = load_registry(&tmp, LoadMode::Shared).expect_err("duplicate allocation");
+        assert!(err.to_string().contains("duplicate ContentId"));
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

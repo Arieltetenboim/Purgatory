@@ -93,11 +93,11 @@ fn validate_dev_narrative_id(kind: &str, value: &str) -> Result<(), String> {
 }
 
 fn live_basic_strike_id() -> ContentId {
-    ContentId::from_authored("skill.basic.strike").expect("authored basic strike id")
+    purgatory_common::ABILITY_BASIC_STRIKE
 }
 
 fn live_dash_id() -> ContentId {
-    ContentId::from_authored("skill.movement.dash").expect("authored Dash id")
+    purgatory_common::ABILITY_MOVEMENT_DASH
 }
 
 fn dialogue_line(active: ActiveDialogue) -> ServerDialogueLine {
@@ -8047,11 +8047,11 @@ mod tests {
     }
 
     fn basic_strike_id() -> ContentId {
-        ContentId::from_authored("skill.basic.strike").unwrap()
+        live_basic_strike_id()
     }
 
     fn dash_id() -> ContentId {
-        ContentId::from_authored("skill.movement.dash").unwrap()
+        live_dash_id()
     }
 
     fn recv_ability(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerAbility {
@@ -8122,10 +8122,7 @@ mod tests {
         let actor = owner.entity_of(id).unwrap();
         assert!(owner.world().health_of(actor).is_some());
         assert!(owner.world().ability_granted(actor, basic_strike_id()));
-        assert!(!owner.world().ability_granted(
-            actor,
-            ContentId::from_authored("skill.movement.dash").unwrap()
-        ));
+        assert!(!owner.world().ability_granted(actor, dash_id()));
         let creature = *owner
             .dev_spawned_monsters
             .last()

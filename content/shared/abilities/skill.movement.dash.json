@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "content_id": 40003,
   "id": "skill.movement.dash",
   "timing": {
     "windup_ticks": 0,
