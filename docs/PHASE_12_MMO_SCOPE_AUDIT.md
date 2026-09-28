@@ -34,7 +34,7 @@ First-party references (consulted 2026-09-28):
 | State / operation | Proven today | Phase 12 continuity requirement | Feature beyond current continuity |
 |---|---|---|---|
 | User, roster and character selection | A `DevLogin` owns an ordered roster of up to three distinct `CharacterId`s today. Entry checks roster ownership and blocks a second session for the *same character*; separate characters under one DEV login can currently enter concurrently. `DevLogin` is not production authentication. | One logical user owns multiple characters but can control **only one active character at a time**. Recheck ownership on every entry; admit a character only when the user's previous active character and pending detach have settled. Save earned state under the selected CharacterId, never the login string or roster slot; never leak it across characters. | Production authentication, account-wide assets, character deletion/rename, cross-world transfer and any new roster-size policy. |
-| Position, map and health | Restore intent is durable; entry spawns at a safe point with full health. World/channel/entity identity is runtime-only. | State the safe-point and death/respawn policy on logout, reconnect and crash. Keep transient combat state out unless a concrete rule requires it; test map/channel transitions. | Persistent injuries, penalties, buffs or exact logout position only when game rules require them. |
+| Position, map, health and combat timers | Restore intent is durable; entry spawns at a safe point with full health. Ability cooldowns are keyed by runtime actor, and temporary effects are runtime-only. World/channel/entity identity is runtime-only. | Decide and test whether logout/reconnect while damaged or dead heals/revives the character, and whether an active cooldown resets; otherwise the current entry path can bypass those states. Define the safe-point/death policy and timer clock independently of Drop expiry. Keep transient combat state out of records only when its reset is an explicit game rule; test map/channel transitions. | Persistent injuries, penalties, full buff framework or exact logout position only when game rules require them. |
 | Item inventory, equipment and map Drop | `World` owns item records; character schema v1 saves none; Drop/pickup/equip acknowledgements precede durable commit. | Issue #10: one durable ownership domain, item IDs, v2 migration, committed results, map-drop eligibility/active timers, equip projection and replay. Cover **every** existing item mutation, including NPC grant/removal. | Advanced stacks, enhancements, binding rules, account storage, marketplaces, full monster loot policy. |
 | NPC facts and choices | `NarrativeRuntime` is keyed by ephemeral `EntityId`; entry seeds defaults, detach forgets all facts, met NPCs and heard dialogue. `execute_dialogue_actions` can grant/remove items and change facts in one choice. | Persist character-owned facts/met/heard in a versioned record. A dialogue choice that changes facts, items or learned abilities must commit **one** outcome and acknowledge after commit; reconnect cannot repeat the reward. Validate/retire authored fact/NPC/beat keys when content changes. | Full quest journal, branching campaign and generic quest engine. |
 | Learned abilities | `AbilityGrantSource::Learned` is runtime-only; entry grants a basic ability and equipment grants are derived. NPC `GrantAbility` can add a learned grant, then detach loses it. | Persist learned grant IDs independently of intrinsic/equipment grants; rebuild derived grants on entry and show the correct owner-private baseline. Include learned grants in the same transaction as the reward choice. | Skill trees, points, jobs and respec rules. |
@@ -137,9 +137,9 @@ explicit gates before declaring Phase 12 complete:
    reconnect/restart, same-user A/B state isolation, another user's rejection,
    duplicate-character entry, concurrent A/B entry rejection for one user,
    switch/save settlement before B enters, crash at commit boundaries, queue
-   saturation, retired content and map/channel/death handling. Record latency
-   and storage pressure without claiming a production capacity from a local
-   smoke test.
+   saturation, retired content, damaged/dead logout and cooldown reset,
+   and map/channel handling. Record latency and storage pressure without
+   claiming a production capacity from a local smoke test.
 
 **Exit language:** `12A–12C GREEN` means durable items and their listed
 commands, not all player progression. **Phase 12 Character Continuity GREEN**
@@ -160,9 +160,13 @@ feature parity while they are absent.
    product rule. `DevLogin` is not production authentication. Specify scope
    per future domain before adding shared bank, currency or cross-character
    benefits.
-3. **Death and timers:** current entry uses full health/safe point; state this
-   policy explicitly. Drop downtime pauses per Issue #10; other future item,
-   reward, buff or quest expiry clocks require their *own* policy.
+3. **Death and timers:** current entry uses full health/safe point and resets
+   runtime ability cooldowns. Decide explicitly whether logout while damaged
+   or dead is free healing/revival and whether cooldowns restart on entry;
+   do not accidentally create a logout exploit. Current Dash cooldown is only
+   60 ticks, but longer future effects need their own rules. Drop downtime
+   pauses per Issue #10; other future item, reward, buff or quest expiry
+   clocks require their *own* policy.
 4. **Content evolution:** dialogue-heard uses `(NPC ContentId, BeatIndex)`;
    reordering authored beats can change meaning. Require stable semantic
    identifiers or a versioned migration/retirement policy before persistence.
