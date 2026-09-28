@@ -298,7 +298,7 @@ ReplicationFrame (per-recipient)
 - `jump_pressed` OR during late-collapse is **not** a generic skill-action policy. Future dash/skills need explicit late-arrival semantics (ADR-0031).
 - `PlatformSupportId` (`u16`, 0 = none) is stamped at `spawn_platform`. `last_contact` is transient and not on the wire.
 - Hitch (`ticks_executed > 1`): prediction discontinuity. Clear pose history, keep pending, restore+replay, emit one new clock command — not N catch-up commands.
-- Focus-loss: release `ActionState` immediately. Normal path: one forced `SimulationClock` Neutral step paired with a Neutral command. Full send window: `HeldCancel` with an immutable `(epoch, target_sequence)` barrier captured at send; pre-confirm snapshots are restore+replay, not a pending hole.
+- Focus-loss: release `ActionState` immediately. Normal path: one forced `SimulationClock` Neutral step paired with a Neutral command, when that command can be queued. Full send window, or a full client input queue that would drop the Neutral command: `HeldCancel` with an immutable `(epoch, target_sequence)` barrier captured at send; pre-confirm snapshots are restore+replay, not a pending hole. Focus regain does not synthesize movement.
 - Failsafes while pending > 0 skip 8 wu / VerticalSettled / LeadSafety. Empty pending may still hard-snap. DriftCorrection is not used.
 
 ## Controlled network impairment lab (Phase 5.6)

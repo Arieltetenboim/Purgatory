@@ -2299,7 +2299,10 @@ impl ClientApp {
     }
 
     /// Focus-loss: ActionState is already released. Pair a Neutral clock step
-    /// with a command, or send HeldCancel when the send window is full.
+    /// with a command when that command can be queued. A full prediction
+    /// window, or an input queue that would drop the Neutral command, arms
+    /// the existing HeldCancel barrier instead of minting a sequence the
+    /// server will never see.
     fn on_focus_loss_input(&mut self) {
         if self.frontend_runtime.gameplay_input_locked() {
             return;
@@ -2307,7 +2310,21 @@ impl ClientApp {
         if !self.lifecycle.gameplay_actions_allowed() {
             return;
         }
-        if self.send_held_cancel_if_window_full() {
+        if self.network.is_none() {
+            return;
+        }
+        let use_held_cancel = focus_loss_uses_held_cancel(
+            self.prediction.pending_window_full(),
+            self.network
+                .as_ref()
+                .is_some_and(|network| network.can_enqueue_input()),
+        );
+        if use_held_cancel {
+            // Already-pending cancel is enough: do not append a Neutral command
+            // behind a barrier, and do not mint one the queue would drop.
+            if !self.prediction.cancel_pending() {
+                let _ = self.try_arm_held_cancel();
+            }
             return;
         }
         let Some(network) = self.network.as_ref() else {
@@ -2328,7 +2345,16 @@ impl ClientApp {
 
     /// ADR-0031: full send window is a HeldCancel barrier, not silent stall.
     fn send_held_cancel_if_window_full(&mut self) -> bool {
-        if !self.prediction.pending_window_full() || self.prediction.cancel_pending() {
+        if !self.prediction.pending_window_full() {
+            return false;
+        }
+        self.try_arm_held_cancel()
+    }
+
+    /// Capture the immutable cancel barrier and enqueue `HeldCancel`.
+    /// Returns false when a cancel is already pending or the send did not arm.
+    fn try_arm_held_cancel(&mut self) -> bool {
+        if self.prediction.cancel_pending() {
             return false;
         }
         let Some(network) = self.network.as_ref() else {
@@ -5508,6 +5534,14 @@ impl ApplicationHandler for ClientApp {
     }
 }
 
+/// Focus loss must use HeldCancel when a Neutral command would be dropped
+/// or the prediction send window is already full. Otherwise keep the paired
+/// Neutral clock step.
+#[must_use]
+fn focus_loss_uses_held_cancel(pending_window_full: bool, can_enqueue_input: bool) -> bool {
+    pending_window_full || !can_enqueue_input
+}
+
 /// Game simulation advances only on the Game screen. Connection frontend
 /// never feeds elapsed time into [`SimulationClock`].
 #[must_use]
@@ -5557,6 +5591,14 @@ mod tests {
             ReplicatedKind::Npc,
             None
         )));
+    }
+
+    #[test]
+    fn focus_loss_selects_held_cancel_when_neutral_cannot_be_queued() {
+        assert!(super::focus_loss_uses_held_cancel(false, false));
+        assert!(super::focus_loss_uses_held_cancel(true, false));
+        assert!(super::focus_loss_uses_held_cancel(true, true));
+        assert!(!super::focus_loss_uses_held_cancel(false, true));
     }
 
     #[test]
