@@ -14,7 +14,10 @@ Phase 11 is closed; 12A–12C are planned, not accepted or implemented by this e
 - Issue #10 is the **first Phase 12 step**. Its accepted design is
   [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md):
   implement and verify it before promising durable inventory. This entry
-  itself still implements no durable items.
+  itself still implements no durable items. The wider character-state gaps
+  and proposed follow-on gates are in
+  [`PHASE_12_MMO_SCOPE_AUDIT.md`](PHASE_12_MMO_SCOPE_AUDIT.md); that audit is
+  under review and does not revise Issue #10.
 
 ## Issue #10 acceptance boundary
 
@@ -48,3 +51,8 @@ The stage names are roadmap intent, not a promise that the design must implement
 them in this exact technical split. Update the roadmap and gates as each bounded
 step is accepted. The FORGE W map pipeline remains a parallel track; no map
 runtime acceptance is implied by this phase entry.
+
+Character Continuity also has currently live NPC facts and learned ability
+grants that disappear on detach; item-only 12A–12C acceptance does not certify
+them or the normal client item loop. See the proposed 12D–12F gates in the
+scope audit before declaring Phase 12 complete.

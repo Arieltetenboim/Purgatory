@@ -601,6 +601,11 @@ Owner Phase 0 clarifications:
 - Status: **accepted design 2026-09-28**, not an implementation gate. [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md) and ADR-0068 specify character/map ownership, atomic item mutations, pickup eligibility, timed Drop expiry, save/recovery semantics and future Trade compatibility. Unexpired map Drops recover with their remaining active time; server downtime pauses their timers. Crash recovery may regain at most one second due to durable clock checkpointing.
 - Validation: documentation-only diff and link/marker consistency; no runtime code or wire contract changed. Issue #10 closes on merge; 12A–12C remain unimplemented until their own gates pass.
 
+## Phase 12 full-continuity scope audit — proposal
+
+- Status: **under review**, not an implementation or GREEN gate. [`PHASE_12_MMO_SCOPE_AUDIT.md`](PHASE_12_MMO_SCOPE_AUDIT.md) maps current character/item/narrative/learned state and normal client behavior against first-party MMORPG product references. It proposes 12D–12F because Item-only Issue #10 does not save NPC facts or learned grants and does not prove normal-client commit/resync or crash recovery.
+- Next decision: approve or revise the Phase 12 completion bar. The accepted Issue #10 contract and planned 12A–12C remain intact; XP/level, currency, Trade, storage and enhancement are explicitly unimplemented future systems, not silently certified by this gate.
+
 ## Gate Production UI I1 — Inventory window foundation
 
 - Status: **complete (GREEN) 2026-09-14; merge candidate.** This parallel presentation foundation does not reopen Phase 11 and does not start Phase 12.

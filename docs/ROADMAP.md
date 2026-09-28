@@ -7,13 +7,13 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 ## Current
 
 - **ERA II — Combat & First Playable Loop**
-- **Phase 12 — Character Continuity: entry/design gate active; implementation not started**
+- **Phase 12 — Character Continuity: item durability design accepted; wider scope audit open; implementation not started**
 - **Root `PHASE`: `12.entry`**
 - **Master version:** `0.12.A`
 - **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
 - **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
 - **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
-- **Main gameplay:** Issue #10 durable-state design, then the agreed 12A–12C implementation steps
+- **Main gameplay:** Issue #10 item durability design accepted; 12A–12C planned; proposed 12D–12F broader continuity gates under review
 - **Dash / learned abilities:** authoritative Dash + NPC `GrantAbility` restored to current `master`; presentation polish remains tracked separately
 - **Protocol: v31**
 
@@ -78,10 +78,11 @@ client/server runtime proof and deferred production Inventory UI, persistence,
 advanced stacking, trading, currency, and economy work:
 [`PHASE_11_CLOSEOUT_REPORT.md`](PHASE_11_CLOSEOUT_REPORT.md).
 
-The later parallel **Production UI I1** foundation implements the first read-only
-Inventory window without reopening Phase 11 or starting Phase 12. Currency
-authority, item interaction, bags/capacity policy, and persistence remain
-deferred.
+The parallel **Production UI I1** foundation first introduced a read-only
+Inventory window without reopening Phase 11 or starting Phase 12. Current
+`master` additionally routes production-window equip/unequip and Drop by
+drag/double-click through server commands. Currency authority, item use,
+bags/capacity policy and persistence remain deferred.
 
 ## 12 — Character Continuity — entry active
 
@@ -95,16 +96,24 @@ accepted contract is [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CON
 The contract treats player Drop as a transfer to map ownership with expiry
 and pickup rules; later Trade uses the
 same atomic transfer primitive. Monster loot design and Trade UI remain later
-feature work, not prerequisites to writing the durability contract.
+feature work, not prerequisites to writing the durability contract. The
+separate [`PHASE_12_MMO_SCOPE_AUDIT.md`](PHASE_12_MMO_SCOPE_AUDIT.md) finds
+existing narrative facts, learned abilities, NPC item rewards, normal-client
+commit/resync proof and recovery evidence that Issue #10 alone does not close.
 
 | Slice | Name | Status |
 |---|---|---|
 | 12A | Persistent Character State | planned |
 | 12B | Save / Load | planned |
 | 12C | Inventory & Equipment Persistence | planned |
+| 12D | Narrative + Learned Grant Continuity | proposed scope expansion |
+| 12E | Normal Client Item Continuity | proposed scope expansion |
+| 12F | Recovery + End-to-End Acceptance | proposed scope expansion |
 
-12A–12C remain planned; Issue #10 defines their durability boundary and
-implementation proof gates. Start 12A from the accepted contract.
+12A–12C remain planned; Issue #10 defines their item durability boundary and
+implementation proof gates. The 12D–12F proposals need scope review before
+becoming accepted implementation gates. Start 12A from the accepted contract,
+but do not call all of Phase 12 GREEN after item-only persistence.
 Add further Phase 12+ slices as implementation evidence requires; do not
 revive obsolete legacy numbering.
 
@@ -120,7 +129,7 @@ These tracks can progress beside the gameplay roadmap. They are deliberately sep
 - **Game Settings V1:** merged. It reuses the existing client-owned Display settings model rather than creating a second authority. The OS window is intentionally non-resizable; UI scale, display/render settings, return-to-login, and full exit actions are player-facing controls.
 - **Production text 2A:** merged. Production UI text uses the Glyphon/cosmic-text path documented in [`TEXT_RENDERING.md`](TEXT_RENDERING.md); the old fixed-raster path is retired.
 - **Authority boundary:** window state, tabs, dragging, settings interaction, and text presentation are client-local. Gameplay/item/display authority remains with the existing owners.
-- **Inventory deferred scope:** item use/equip/drag/drop interaction, bags/capacity policy, authoritative currency, persistence, shops/trading, and economy tuning.
+- **Inventory deferred scope:** item use and advanced interactions beyond current equip/unequip/Drop, bags/capacity policy, authoritative currency, persistence, shops/trading, and economy tuning.
 - **Tracked UI follow-ups:** Issues #51–#58 remain the place for unresolved renderer ordering, icon, budget, storage/currency, and chrome concerns. Do not infer that all UI debt is closed merely because Settings/text landed.
 
 
