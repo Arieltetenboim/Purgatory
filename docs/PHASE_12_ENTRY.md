@@ -1,7 +1,7 @@
 # Phase 12 entry — Character Continuity
 
-Status: **design accepted; implementation pending** (2026-09-28). Root `PHASE` = `12.entry`.
-Phase 11 is closed; 12A–12C are planned, not accepted or implemented by this entry.
+Status: **design accepted; 12A implementation pending review** (2026-09-28). Root `PHASE` = `12.entry`.
+Phase 11 is closed. 12A is not a GREEN gate. 12B and 12C are not started.
 
 ## Entry evidence and first gate
 

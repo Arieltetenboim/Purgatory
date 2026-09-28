@@ -1,8 +1,10 @@
 # Phase 12 durability contract — Issue #10
 
 Status: **accepted design for Issue #10**, 2026-09-28. This is a design for the
-first Character Continuity implementation, not a claim that item state is
-currently durable. ADR-0068 records the ownership decision. Phase 11's
+first Character Continuity implementation, not a claim that live gameplay item
+state is durable. ADR-0068 records the ownership decision. The 12A file-backed
+domain is pending review in [`PHASE_12A_DURABLE_DOMAIN.md`](PHASE_12A_DURABLE_DOMAIN.md);
+pickup and Drop are not wired. Phase 11's
 [`ITEM_DOMAIN.md`](ITEM_DOMAIN.md) remains the runtime item contract.
 
 Evidence path: `crates/simulation/src/item_runtime.rs` and `world.rs` own items;

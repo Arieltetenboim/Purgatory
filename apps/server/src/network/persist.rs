@@ -1,8 +1,10 @@
 //! Persistence worker. Owns identity allocation and character files.
 //!
 //! The simulation thread hands off owned [`PersistentCharacterSnapshot`] values
-//! through a bounded queue with latest-per-character pressure coalescing. JSON
-//! and filesystem work happen only on the persistence worker.
+//! through a bounded queue with latest-per-character pressure coalescing. JSON,
+//! the ownership log, and other filesystem work happen only on this worker.
+//! Item-id reservation, map drops, and the active clock use the same service;
+//! gameplay must not call them from the 30 Hz tick.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -487,6 +489,23 @@ mod tests {
         assert_eq!(xdg, PathBuf::from("/xdg/data/purgatory"));
         let home = resolve_data_dir(env_map(&[("HOME", "/home/dev")]));
         assert_eq!(home, PathBuf::from("/home/dev/.local/share/purgatory"));
+    }
+
+    #[test]
+    fn durable_clock_and_slots_match_the_simulation_contracts() {
+        assert_eq!(
+            purgatory_persistence::ACTIVE_SERVER_TICKS_PER_SECOND,
+            u64::from(purgatory_simulation::TICK_RATE_HZ)
+        );
+        assert_eq!(
+            usize::from(purgatory_persistence::DURABLE_INVENTORY_CAPACITY),
+            purgatory_simulation::INVENTORY_CAPACITY
+        );
+        for slot in purgatory_simulation::EquipmentSlot::ALL {
+            let durable = purgatory_persistence::DurableEquipmentSlot::parse(slot.as_str())
+                .expect("durable equipment slot name");
+            assert_eq!(durable.as_str(), slot.as_str());
+        }
     }
 
     #[test]

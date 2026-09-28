@@ -7,13 +7,13 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 ## Current
 
 - **ERA II — Combat & First Playable Loop**
-- **Phase 12 — Character Continuity: entry/design gate active; implementation not started**
+- **Phase 12 — Character Continuity: 12A durable domain pending review; 12B–12C not started**
 - **Root `PHASE`: `12.entry`**
 - **Master version:** `0.12.A`
 - **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
 - **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
 - **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
-- **Main gameplay:** Issue #10 durable-state design, then the agreed 12A–12C implementation steps
+- **Main gameplay:** Issue #10 contract accepted; 12A file-backed domain pending review; 12B–12C not started
 - **Dash / learned abilities:** authoritative Dash + NPC `GrantAbility` restored to current `master`; presentation polish remains tracked separately
 - **Protocol: v31**
 
@@ -99,12 +99,13 @@ feature work, not prerequisites to writing the durability contract.
 
 | Slice | Name | Status |
 |---|---|---|
-| 12A | Persistent Character State | planned |
+| 12A | Persistent Character State | implementation pending review |
 | 12B | Save / Load | planned |
 | 12C | Inventory & Equipment Persistence | planned |
 
-12A–12C remain planned; Issue #10 defines their durability boundary and
-implementation proof gates. Start 12A from the accepted contract.
+12A’s file-backed domain is implemented and awaiting review. It is not a GREEN
+gate and does not connect pickup, Drop, equip or client replies. Issue #10
+defines the durability boundary. 12B and 12C remain planned.
 Add further Phase 12+ slices as implementation evidence requires; do not
 revive obsolete legacy numbering.
 

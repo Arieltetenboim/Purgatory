@@ -61,8 +61,52 @@ pub fn replace_file_recoverable(dest: &Path, bytes: &[u8]) -> io::Result<()> {
         fs::rename(dest, &bak)?;
     }
     fs::rename(&tmp, dest)?;
+    if let Some(parent) = dest.parent() {
+        // Directory sync runs where the platform allows it. Failure here means
+        // the renamed file may not yet be durable in the directory entry.
+        sync_directory(parent)?;
+    }
     let _ = fs::remove_file(&bak);
     Ok(())
+}
+
+/// What `sync_directory` can actually do on this platform.
+///
+/// `FileDataSyncedOnly` means file contents were flushed with `sync_all` and
+/// the parent directory was not. That is not a hardware power-loss proof:
+/// disk write caches and torn sectors are outside this crate's evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DirectorySync {
+    /// The directory was opened and `sync_all` returned success.
+    DirectorySynced,
+    /// No safe directory fsync is available. Callers still sync file contents.
+    FileDataSyncedOnly,
+}
+
+#[must_use]
+pub fn directory_sync_capability() -> DirectorySync {
+    #[cfg(unix)]
+    {
+        DirectorySync::DirectorySynced
+    }
+    #[cfg(not(unix))]
+    {
+        DirectorySync::FileDataSyncedOnly
+    }
+}
+
+pub fn sync_directory(dir: &Path) -> io::Result<DirectorySync> {
+    #[cfg(unix)]
+    {
+        let file = File::open(dir)?;
+        file.sync_all()?;
+        Ok(DirectorySync::DirectorySynced)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(DirectorySync::FileDataSyncedOnly)
+    }
 }
 
 #[cfg(test)]

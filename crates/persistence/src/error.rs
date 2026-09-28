@@ -16,11 +16,43 @@ pub enum PersistError {
     CreateRejected(CreateCharacterRejection),
     CharacterIdsExhausted,
     CompatibilityNamesExhausted,
-    Migration { path: PathBuf, reason: String },
-    Io { path: PathBuf, source: io::Error },
-    Json { path: PathBuf, source: String },
-    Schema { path: PathBuf, found: u32 },
-    Corrupt { path: PathBuf, reason: String },
+    Migration {
+        path: PathBuf,
+        reason: String,
+    },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
+    Json {
+        path: PathBuf,
+        source: String,
+    },
+    Schema {
+        path: PathBuf,
+        found: u32,
+    },
+    Corrupt {
+        path: PathBuf,
+        reason: String,
+    },
+    /// Committed bytes disagree with the durable log or with each other.
+    Integrity {
+        path: PathBuf,
+        reason: String,
+    },
+    /// Item definition, stack, slot, or retirement rules reject the record.
+    ContentRejected {
+        path: PathBuf,
+        reason: String,
+    },
+    /// A periodic active-clock checkpoint would move more than one second.
+    ClockBound {
+        committed_tick: u64,
+        requested_tick: u64,
+    },
+    /// The durable item-id high water cannot advance.
+    ItemIdsExhausted,
 }
 
 impl PersistError {
@@ -55,6 +87,22 @@ impl PersistError {
             reason: reason.into(),
         }
     }
+
+    #[must_use]
+    pub fn integrity(path: impl Into<PathBuf>, reason: impl Into<String>) -> Self {
+        Self::Integrity {
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn content(path: impl Into<PathBuf>, reason: impl Into<String>) -> Self {
+        Self::ContentRejected {
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
 }
 
 impl fmt::Display for PersistError {
@@ -74,6 +122,20 @@ impl fmt::Display for PersistError {
                 write!(f, "{}: unsupported schema_version {found}", path.display())
             }
             Self::Corrupt { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Self::Integrity { path, reason } => {
+                write!(f, "{}: integrity error: {reason}", path.display())
+            }
+            Self::ContentRejected { path, reason } => {
+                write!(f, "{}: content rejected: {reason}", path.display())
+            }
+            Self::ClockBound {
+                committed_tick,
+                requested_tick,
+            } => write!(
+                f,
+                "active clock checkpoint {requested_tick} exceeds the one-second bound from {committed_tick}"
+            ),
+            Self::ItemIdsExhausted => f.write_str("item instance id namespace exhausted"),
         }
     }
 }

@@ -601,6 +601,13 @@ Owner Phase 0 clarifications:
 - Status: **accepted design 2026-09-28**, not an implementation gate. [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md) and ADR-0068 specify character/map ownership, atomic item mutations, pickup eligibility, timed Drop expiry, save/recovery semantics and future Trade compatibility. Unexpired map Drops recover with their remaining active time; server downtime pauses their timers. Crash recovery may regain at most one second due to durable clock checkpointing.
 - Validation: documentation-only diff and link/marker consistency; no runtime code or wire contract changed. Issue #10 closes on merge; 12A–12C remain unimplemented until their own gates pass.
 
+## Gate 12A — durable domain — pending review
+
+- Status: **not GREEN**. The file-backed domain is implemented for review. Pickup, Drop, equip, dialogue, client replies, account-session changes, the network protocol, root `PHASE` and `VERSION` are unchanged.
+- Automated evidence lives in `purgatory-persistence` durable tests and the repository quality gate recorded on the 12A pull request. Those tests cover v1 migration, invalid and retired content, duplicate ids, A→map→B ownership across reopen, torn and corrupt log frames, checkpoint replay, id non-reuse, failed reads/writes, and the one-second active-clock bound.
+- Not proven: hardware power loss, torn sectors, or disk-cache durability. On Windows the crate syncs file contents and does not fsync the parent directory. A passing reopen is in-process crash recovery of complete frames, not a power-pull test.
+- Contract: [`PHASE_12A_DURABLE_DOMAIN.md`](PHASE_12A_DURABLE_DOMAIN.md) and [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md).
+
 ## Gate Production UI I1 — Inventory window foundation
 
 - Status: **complete (GREEN) 2026-09-14; merge candidate.** This parallel presentation foundation does not reopen Phase 11 and does not start Phase 12.

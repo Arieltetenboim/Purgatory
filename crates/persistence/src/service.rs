@@ -49,7 +49,41 @@ impl PersistenceService {
         &mut self,
         snapshot: PersistentCharacterSnapshot,
     ) -> Result<(), PersistError> {
-        self.repo.save(&snapshot.into_character())
+        self.repo.save_restore_snapshot(snapshot)
+    }
+
+    pub fn set_durable_content_rules(&mut self, rules: crate::DurableContentRules) {
+        self.repo.set_durable_content_rules(rules);
+    }
+
+    pub fn commit_ownership(
+        &mut self,
+        change: crate::OwnershipChange,
+    ) -> Result<crate::CommitResult, PersistError> {
+        self.repo.commit_ownership(change)
+    }
+
+    pub fn reserve_item_instance_ids(
+        &mut self,
+        count: u32,
+    ) -> Result<crate::ReservedItemIds, PersistError> {
+        self.repo.reserve_item_instance_ids(count)
+    }
+
+    pub fn checkpoint_active_clock(
+        &mut self,
+        tick: u64,
+        kind: crate::ClockCheckpointKind,
+    ) -> Result<crate::CommitResult, PersistError> {
+        self.repo.checkpoint_active_clock(tick, kind)
+    }
+
+    pub fn active_clock_tick(&self) -> Result<u64, PersistError> {
+        self.repo.active_clock_tick()
+    }
+
+    pub fn map_drops(&self) -> Result<Vec<crate::MapDropRecord>, PersistError> {
+        self.repo.map_drops()
     }
 
     #[must_use]

@@ -661,6 +661,8 @@ animation_lab   (eframe; Hub-launched; ADR-0058)
 
 `purgatory-persistence` depends on `purgatory-common` and serde only. Simulation does not depend on it. JSON serialization and filesystem IO run on the persistence worker, not the 30 Hz simulation thread. The live data root is a per-user application-data directory (Windows `%LOCALAPPDATA%\Purgatory\`), not the source tree. `PURGATORY_DATA_DIR` overrides it.
 
+Phase 12A keeps that worker as the only durable writer. Character records, map drops, item-id reservation and the active-server clock are versioned domain operations on the persistence service. The file-backed journal owns paths, encoding, log framing, checkpoint replacement and sync. A later database must copy a consistent committed image of those records; the inventory is in [`PHASE_12A_DURABLE_DOMAIN.md`](PHASE_12A_DURABLE_DOMAIN.md). There is no database client and no second writer in this crate.
+
 `server` must not depend on `winit`, `wgpu`, `egui`, or the client crate.
 
 `purgatory-dev-runtime` must not depend on `purgatory-client`, `purgatory-simulation`, Quinn, egui, winit, or wgpu. It may depend on `purgatory-common` for metrics decode. It spawns `purgatory-load --probe`; it does not open a game protocol session itself.

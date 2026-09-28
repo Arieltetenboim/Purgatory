@@ -1,16 +1,27 @@
 //! File-backed character persistence. Simulation does not depend on this crate.
 //!
-//! JSON serialization and filesystem IO belong on the persistence worker, not
-//! the 30 Hz simulation thread.
+//! Domain operations (character/map state, ownership commit, id reservation,
+//! clock progress) are the service boundary. JSON, log framing, checkpoint
+//! replacement and filesystem sync stay in the file-backed journal. That work
+//! belongs on the persistence worker, not the 30 Hz simulation thread.
 
 mod atomic;
 mod character;
+mod domain;
 mod error;
 mod identity;
+mod journal;
 mod repository;
 mod service;
 
+pub use atomic::{DirectorySync, directory_sync_capability};
 pub use character::{PERSISTENCE_SCHEMA_VERSION, PersistentCharacter, PersistentCharacterSnapshot};
+pub use domain::{
+    ACTIVE_SERVER_TICKS_PER_SECOND, CHARACTER_RECORD_SCHEMA_VERSION, CharacterItemLocation,
+    ClockCheckpointKind, CommitResult, DURABLE_DOMAIN_VERSION, DURABLE_INVENTORY_CAPACITY,
+    DurableContentRules, DurableEquipmentSlot, ItemContentRule, MapDropPosition, MapDropRecord,
+    OwnershipChange, PersistentItem, ReservedItemIds,
+};
 pub use error::{CreateCharacterRejection, PersistError};
 pub use identity::{
     CharacterRosterEntry, DevIdentityStore, IDENTITY_FILE_NAME, IDENTITY_SCHEMA_VERSION,
@@ -23,6 +34,9 @@ pub use service::PersistenceService;
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+#[cfg(test)]
+mod durable_tests;
 
 #[cfg(test)]
 mod tests {

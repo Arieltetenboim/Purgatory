@@ -2,9 +2,13 @@ use std::path::{Path, PathBuf};
 
 use purgatory_common::CharacterId;
 
-use crate::atomic::{recover_if_needed, replace_file_recoverable};
-use crate::character::{PERSISTENCE_SCHEMA_VERSION, PersistentCharacter};
+use crate::character::{PersistentCharacter, PersistentCharacterSnapshot};
+use crate::domain::{
+    self, ClockCheckpointKind, CommitResult, DurableContentRules, MapDropRecord, OwnershipChange,
+    ReservedItemIds,
+};
 use crate::error::PersistError;
+use crate::journal;
 
 #[must_use]
 pub fn character_file_name(id: CharacterId) -> String {
@@ -16,14 +20,22 @@ pub fn character_file_name(id: CharacterId) -> String {
 #[derive(Debug)]
 pub struct FileCharacterRepository {
     dir: PathBuf,
+    rules: DurableContentRules,
 }
 
 impl FileCharacterRepository {
     pub fn open(dir: &Path) -> Result<Self, PersistError> {
         std::fs::create_dir_all(dir).map_err(|e| PersistError::io(dir, e))?;
-        Ok(Self {
+        let repo = Self {
             dir: dir.to_path_buf(),
-        })
+            rules: DurableContentRules::new(),
+        };
+        repo.migrate_pending()?;
+        Ok(repo)
+    }
+
+    pub fn set_durable_content_rules(&mut self, rules: DurableContentRules) {
+        self.rules = rules;
     }
 
     #[must_use]
@@ -32,25 +44,13 @@ impl FileCharacterRepository {
     }
 
     pub fn load(&self, id: CharacterId) -> Result<Option<PersistentCharacter>, PersistError> {
-        let path = self.path_for(id);
-        recover_if_needed(&path).map_err(|e| PersistError::io(&path, e))?;
-        if !path.exists() {
+        self.migrate_pending()?;
+        let live = journal::recover(&self.dir)?;
+        let Some(character) = live.characters.get(&id.raw()) else {
             return Ok(None);
-        }
-        let text = std::fs::read_to_string(&path).map_err(|e| PersistError::io(&path, e))?;
-        let parsed: PersistentCharacter =
-            serde_json::from_str(&text).map_err(|e| PersistError::json(&path, e))?;
-        if parsed.character_id != id {
-            return Err(PersistError::corrupt(
-                &path,
-                format!(
-                    "file character_id {} does not match {}",
-                    parsed.character_id, id
-                ),
-            ));
-        }
-        parsed.validate(&path)?;
-        Ok(Some(parsed))
+        };
+        self.ensure_character_content(character)?;
+        Ok(Some(character.clone()))
     }
 
     /// Load an existing character, or create the normal default only when the
@@ -66,18 +66,130 @@ impl FileCharacterRepository {
         }
     }
 
+    /// Writes one complete character post-state. Callers must include owned
+    /// items; a restore-only snapshot uses [`Self::save_restore_snapshot`].
+    /// An unreadable existing record fails without replacement.
     pub fn save(&self, character: &PersistentCharacter) -> Result<(), PersistError> {
-        let path = self.path_for(character.character_id);
-        character.validate(&path)?;
-        if let Ok(Some(existing)) = self.load(character.character_id)
-            && character.persistence_revision <= existing.persistence_revision
-        {
+        self.migrate_pending()?;
+        let live = journal::recover(&self.dir)?;
+        if let Some(existing) = live.characters.get(&character.character_id.raw()) {
+            if character.persistence_revision < existing.persistence_revision {
+                return Ok(());
+            }
+            if character.persistence_revision == existing.persistence_revision {
+                if character.body_eq(existing) {
+                    return Ok(());
+                }
+                return Err(PersistError::integrity(
+                    self.path_for(character.character_id),
+                    "equal revision with different content",
+                ));
+            }
+        }
+        self.commit_ownership(OwnershipChange::character(character.clone()))
+            .map(|_| ())
+    }
+
+    /// Applies restore and revision from the existing gameplay snapshot while
+    /// keeping the committed item set. Phase 12C replaces this with a snapshot
+    /// that already carries items.
+    pub fn save_restore_snapshot(
+        &self,
+        snapshot: PersistentCharacterSnapshot,
+    ) -> Result<(), PersistError> {
+        self.migrate_pending()?;
+        let live = journal::recover(&self.dir)?;
+        let Some(existing) = live.characters.get(&snapshot.character_id.raw()).cloned() else {
+            return self.save(&snapshot.into_character());
+        };
+        if snapshot.persistence_revision < existing.persistence_revision {
             return Ok(());
         }
-        let mut out = character.clone();
-        out.schema_version = PERSISTENCE_SCHEMA_VERSION;
-        let bytes = serde_json::to_vec_pretty(&out).map_err(|e| PersistError::json(&path, e))?;
-        replace_file_recoverable(&path, &bytes).map_err(|e| PersistError::io(&path, e))
+        if snapshot.persistence_revision == existing.persistence_revision {
+            if snapshot.restore == existing.restore
+                && snapshot.instance_exit == existing.instance_exit
+            {
+                return Ok(());
+            }
+            return Err(PersistError::integrity(
+                self.path_for(snapshot.character_id),
+                "equal revision with different content",
+            ));
+        }
+        let mut next = existing;
+        next.persistence_revision = snapshot.persistence_revision;
+        next.restore = snapshot.restore;
+        next.instance_exit = snapshot.instance_exit;
+        self.save(&next)
+    }
+
+    pub fn commit_ownership(&self, change: OwnershipChange) -> Result<CommitResult, PersistError> {
+        self.migrate_pending()?;
+        journal::commit_ownership(&self.dir, &self.rules, change)
+    }
+
+    pub fn reserve_item_instance_ids(&self, count: u32) -> Result<ReservedItemIds, PersistError> {
+        self.migrate_pending()?;
+        journal::reserve_ids(&self.dir, count)
+    }
+
+    pub fn checkpoint_active_clock(
+        &self,
+        tick: u64,
+        kind: ClockCheckpointKind,
+    ) -> Result<CommitResult, PersistError> {
+        self.migrate_pending()?;
+        journal::checkpoint_clock(&self.dir, tick, kind)
+    }
+
+    pub fn active_clock_tick(&self) -> Result<u64, PersistError> {
+        self.migrate_pending()?;
+        Ok(journal::recover(&self.dir)?.clock_tick)
+    }
+
+    pub fn map_drops(&self) -> Result<Vec<MapDropRecord>, PersistError> {
+        self.migrate_pending()?;
+        let live = journal::recover(&self.dir)?;
+        let mut drops: Vec<_> = live.drops.into_values().collect();
+        drops.sort_by_key(|drop| drop.item_instance_id.raw());
+        for drop in &drops {
+            let path = self.dir.join("map_drops.json");
+            domain::validate_drop_content(drop, &self.rules, &path)?;
+        }
+        Ok(drops)
+    }
+
+    pub fn compact_durable_log(&self) -> Result<(), PersistError> {
+        self.migrate_pending()?;
+        journal::compact(&self.dir)
+    }
+
+    fn migrate_pending(&self) -> Result<(), PersistError> {
+        loop {
+            let pending = journal::pending_migrations(&self.dir)?;
+            let Some(v1) = pending.into_iter().next() else {
+                return Ok(());
+            };
+            journal::migrate_one(&self.dir, &v1)?;
+        }
+    }
+
+    fn ensure_character_content(
+        &self,
+        character: &PersistentCharacter,
+    ) -> Result<(), PersistError> {
+        let path = self.path_for(character.character_id);
+        for item in &character.items {
+            domain::validate_item_content(
+                item.item_instance_id,
+                item.definition_content_id,
+                item.quantity,
+                item.location,
+                &self.rules,
+                &path,
+            )?;
+        }
+        Ok(())
     }
 }
 
