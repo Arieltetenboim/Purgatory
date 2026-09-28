@@ -75,11 +75,11 @@ Persist `ItemInstanceId` unchanged, but never `EntityId`, `ConnectionId`,
 presentation state. `CharacterId` is the owner, independent of the runtime
 player entity. Once dropped, the item belongs to the **map**, not its former
 character. A separate durable map-drop record stores the item ID, stable map
-content ID, logical map-space key and drop ID, position, absolute expiry
-deadline, and pickup policy (including eligible CharacterIds and when a
-restricted drop becomes public). The logical map-space key distinguishes
-persistent channels/instances of the
-same map; it must survive restart or have an explicit recovery mapping. The
+content ID, logical map-space key and drop ID, position, expiry and pickup
+eligibility measured in **durable active-server time** (including eligible
+CharacterIds and when a restricted drop becomes public). The logical
+map-space key distinguishes persistent channels/instances of the same map;
+it must survive restart or have an explicit recovery mapping. The
 drop's `EntityId` and runtime channel/instance IDs are not durable identity.
 Player Drop is open to A, B or C unless an explicit game rule limits it.
 Monster Drop can restrict pickup to the eligible killer/party for a
@@ -154,21 +154,32 @@ When shops, trades, mail, crafting or currency are implemented, any operation
 that exchanges assets must commit all affected assets and owners together.
 This contract does not implement those later gameplay features.
 
+**Timer recovery:** the existing `World` timer scheduler runs on simulation
+ticks. Persist a monotonic active-server tick clock through the worker and
+record each Drop's expiry/public-eligibility tick against that clock. The
+clock advances only while the server is running, so downtime consumes **zero**
+Drop time. Checkpoint clock progress at least once per second while active;
+if persistence cannot keep that bound, pause durable Drop timers and report a
+storage fault. After a crash, resume from the last committed clock value:
+the remaining lifetime and eligibility window can gain at most one second,
+never reset to their full durations or lose offline time. A clean shutdown
+syncs the final clock. Tests must prove the bound across crash/restart and
+storage-pressure cases. This is the proposed precision of "the time left
+before the crash" without synchronous disk I/O on every 30 Hz tick.
+
 **Transfer rules, not a full Drop feature specification:** Player Drop
 atomically moves an item from A to the map. The runtime map-drop entity is
 visible/claimable after commit. Pickup atomically moves it from the map to an
 eligible claimant (A, B or C) and removes that entity. Monster Drop creates
 map ownership with its configured claimant window and expiry; future loot
-rules may vary, but no pickup can bypass server eligibility. At the absolute
-expiry deadline, an unclaimed map item is **deleted**, never refunded to its
+rules may vary, but no pickup can bypass server eligibility. At its active-time
+expiry tick, an unclaimed map item is **deleted**, never refunded to its
 former owner. Pickup and expiry race through one serialized commit order, so
-exactly one wins. Working assumption for this design: an unexpired drop is
-recreated in its logical map-space after a restart with its original deadlines,
-without resetting its timer. This treats downtime as elapsed time; whether
-downtime should instead pause the remaining timer is an open gameplay choice
-for owner review. If the map cannot load, retain the record and fail closed
-until the map is repaired or explicitly migrated; do not silently return or
-delete it.
+exactly one wins. An unexpired drop is recreated in its logical map-space
+after a restart with the remaining active time and original eligibility rules;
+downtime does not advance its timer. If the map cannot load, retain the record
+and fail closed until the map is repaired or explicitly migrated; do not
+silently return or delete it.
 Future Trade uses one transaction for all exchanged items and both character
 post-states, so no half swap is acknowledged. Trade UI, currency and economy
 rules remain later work; the atomic transfer primitive is required now.
@@ -183,7 +194,7 @@ rules remain later work; the atomic transfer primitive is required now.
 | Normal reconnect after completed detach | Enter after earlier committed transactions are settled, load the latest checkpoint plus log replay, and restore the same owned item IDs into the new actor. |
 | Logout / return to login | A user-interface claim of **saved** requires settlement of all prior committed mutations and a server acknowledgement. The current disconnect flow needs that control path. |
 | Clean server shutdown | Stop admission, settle/reject pending commands, sync the committed log and report success/failure within the configured bound. |
-| Process crash | Replay complete committed transactions once: an acknowledged item is in exactly one character or map location, unless committed expiry deleted it. Uncommitted pending commands were never reported successful. Recreate unexpired drops with their original eligibility and expiry deadlines. |
+| Process crash | Replay complete committed transactions once: an acknowledged item is in exactly one character or map location, unless committed expiry deleted it. Uncommitted pending commands were never reported successful. Recreate unexpired drops with their last durable remaining active time and eligibility; downtime consumes no timer time. |
 | Map/channel transition | Keep the same CharacterId, item instances and authoritative actor ownership. Snapshot restore changes with the full item set; do not serialize runtime topology. |
 | Later selection of another character | Load exactly the selected owned CharacterId; no inventory inheritance from the prior character or DEV login roster. |
 
@@ -230,7 +241,8 @@ completed rename or graceful disconnect as power-loss durable.
 
 1. **12A — durable domain:** v2 validation/migration, fail-closed `save`,
    durable ID reservation, framed transaction log, checkpoint/replay and
-   map-drop schema. Prove single owner after restart, bytes preserved on
+   map-drop schema and durable active-server clock. Prove single owner after
+   restart, timer recovery within the one-second bound, bytes preserved on
    errors, allocator non-reuse, content validation and crash/sync boundaries.
    No item gameplay wiring yet.
 2. **12B — commit/lifecycle:** bounded transaction admission, per-command
@@ -243,8 +255,9 @@ completed rename or graceful disconnect as power-loss durable.
 3. **12C — existing gameplay integration:** wire current player Drop, pickup,
    equip/unequip and inventory moves to atomic transactions. Restore owned
    items, map drops and grants before readiness. Cover A→Drop→restart→B
-   pickup, A→Drop→A pickup, A→Drop→expiry, pickup/expiry races, eligibility
-   boundaries, same-map multi-channel isolation, full inventory,
+   pickup, A→Drop→A pickup, A→Drop→expiry, paused-downtime timer recovery,
+   pickup/expiry races, eligibility boundaries, same-map multi-channel
+   isolation, full inventory,
    multi-character isolation, map unavailable and crash at transaction/checkpoint
    boundaries. This gate specifies the
    durability/ownership hooks for monster Drop, without building its full
