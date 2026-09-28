@@ -598,7 +598,7 @@ Owner Phase 0 clarifications:
 
 ## Gate 12 design proposal — Issue #10
 
-- Status: **proposed for owner review**, not an implementation or acceptance gate. [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md) and ADR-0068 record the schema, ownership, save/recovery semantics and remaining cross-character Drop/loot durability decision.
+- Status: **proposed for owner review**, not an implementation or acceptance gate. [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md) and ADR-0068 specify character/map ownership, atomic item mutations, pickup eligibility, timed Drop expiry, save/recovery semantics and future Trade compatibility. Unexpired map Drops are recovered after restart; whether downtime counts against their timer remains an open gameplay choice.
 - Validation: documentation-only diff and link/marker consistency; no runtime code or wire contract changed. Issue #10 remains open until the proposal is reviewed and the stated gaps are resolved in implementation.
 
 ## Gate Production UI I1 — Inventory window foundation

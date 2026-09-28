@@ -92,8 +92,10 @@ their relevant code is present on `master`. Design acceptance is still open;
 entering Phase 12 does not claim persistent inventory/equipment or a GREEN
 implementation gate. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md). Issue #10's
 proposed contract is [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md);
-owner review and the cross-character Drop/loot durability decision remain open
-before 12C.
+owner review remains open. The proposed contract treats player Drop as a
+transfer to map ownership with expiry and pickup rules; later Trade uses the
+same atomic transfer primitive. Monster loot design and Trade UI remain later
+feature work, not prerequisites to writing the durability contract.
 
 | Slice | Name | Status |
 |---|---|---|
@@ -101,7 +103,7 @@ before 12C.
 | 12B | Save / Load | planned |
 | 12C | Inventory & Equipment Persistence | planned |
 
-12A–12C remain planned until Issue #10 settles the durability boundary and
+12A–12C remain planned until Issue #10 accepts the durability boundary and
 their implementation steps and tests can be specified without guessing.
 Further Phase 12+ slicing should be added only when the current design is agreed, rather than preserving obsolete legacy numbering.
 

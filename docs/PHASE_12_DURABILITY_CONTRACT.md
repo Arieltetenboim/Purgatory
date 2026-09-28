@@ -41,7 +41,8 @@ same item IDs into a new actor therefore also requires explicit old-owner
 cleanup after snapshot handoff and before re-entry; despawn alone is not proof
 that the old runtime ownership disappeared.
 An owned item can also be dropped by one player and picked up by another.
-That is a transfer between two character files, not a single-character save.
+That is a transfer through map ownership between two characters, not a
+single-character save. Future trade has the same atomicity requirement.
 
 ## Durable record and ownership
 
@@ -70,93 +71,138 @@ second `EquipmentState`: rebuild its slot/content projection and equipment
 ability grants from the canonical item records when entering the world.
 
 Persist `ItemInstanceId` unchanged, but never `EntityId`, `ConnectionId`,
-`WorldAddress`, runtime Channel/Instance, exact position, world-drop entity,
-session input, replication state or presentation state. `CharacterId` is the
-owner, independent of the runtime player entity. World drops remain outside
-this character record. Learned abilities, narrative facts, currency, character
-stats and account-wide inventory need separate scoped contracts; schema v2
-does not silently promise them.
+`WorldAddress`, runtime Channel/Instance, session input, replication state or
+presentation state. `CharacterId` is the owner, independent of the runtime
+player entity. Once dropped, the item belongs to the **map**, not its former
+character. A separate durable map-drop record stores the item ID, stable map
+content ID and drop ID, position, absolute expiry deadline, and pickup policy
+(including eligible CharacterIds and when a restricted drop becomes public).
+The drop's `EntityId` and runtime channel/instance IDs are not durable
+identity. Player Drop is open to A, B or C unless an explicit game rule limits
+it. Monster Drop can restrict pickup to the eligible killer/party for a
+configured interval, then become public; the example of one minute is not a
+hardcoded rule. Eligibility is server-checked at pickup and survives restart.
+Learned abilities, narrative
+facts, currency, character stats and account-wide inventory need separate
+scoped contracts; schema v2 does not silently promise them. When currency
+becomes tradable, it must enter the same atomic transfer domain.
 
-The existing persistence service is the sole writer of character records and
-the durable item-ID allocator. Before minting any new item, it must durably
-reserve a monotonic range of `ItemInstanceId` values; gameplay receives an
-already reserved range and never waits for file I/O in the 30 Hz tick. Gaps
-after a crash are valid; reuse is not. Exhaustion or inability to replenish a
-range blocks new item creation. The allocator may use a separate small file
-owned by the same worker, but the reservation must commit before an ID is
-issued, and its recovery must fail closed. A restart scan of only live records
-or a random/time epoch is not an equivalent non-reuse guarantee. Loaded
-character records must also reject duplicate item IDs among active characters.
+The existing persistence service is the sole writer of character records,
+map drops and the durable item-ID allocator. Before minting any new item,
+it must durably reserve a monotonic range of `ItemInstanceId` values; gameplay
+receives an already reserved range and never waits for file I/O in the 30 Hz
+tick. Gaps after a crash are valid; reuse is not. Exhaustion or inability to
+replenish a range blocks new item creation. Reservation is recorded in the
+same durable transaction domain before an ID is issued; recovery fails closed.
+A restart scan of only live records or a random/time epoch is not equivalent.
+Loaded character and map-drop records must reject duplicate active item IDs.
 
-## One snapshot, one revision
+## One transaction, one ownership result
 
-After a successful item mutation, the simulation owner projects one **complete**
-character snapshot from `World` and the binding's restore state at one tick
-boundary. It selects inventory and equipped records for that actor, checks
-unique IDs/slots, quantities and correspondence with `EquipmentState`, then
-hands an owned immutable value to the existing persistence service. Never
-write inventory and equipment as two independently committed records. A failed
-projection is an explicit invariant failure; it must not produce a partial
-snapshot. Mutations of restore and item state use the same revision sequence.
+The persistence worker serializes a **write-ahead transaction log** as the
+durable authority for item ownership, map drops, item-ID reservations and
+affected character revisions/restore state. Each transaction has a monotonic
+transaction ID, an integrity-checked framed payload and complete post-state
+for every affected character and map drop. The worker appends and syncs the
+whole transaction before acknowledging it; incomplete tail records are not
+commits. The v2 character files and map-drop index are derived checkpoints with
+an applied transaction ID, never independently authoritative writes. Recovery
+replays committed transactions after the checkpoint idempotently. Corruption
+of a committed transaction or an inconsistent checkpoint fails closed; safe
+checkpoint compaction retains the log until the replacement and its directory
+entry are synced. The implementation must prove the append/sync/rename
+boundaries on its supported filesystems before claiming power-loss durability.
 
-Issue a new strictly increasing revision after every accepted mutation that
-changes durable state (pickup, equip/unequip, inventory move, consumption or
-grant, character-owned drop, restore change). No revision bump for rejected or
-duplicate commands. Detach and clean shutdown submit the latest full snapshot,
-even if no new mutation occurred. Revision overflow fails closed rather than
-using a saturating value indefinitely.
+For each command, reserve its affected item IDs and character actors, validate
+the proposed `World` transition, project immutable complete post-state at a
+tick boundary, and enqueue one transaction. No other mutation of reserved
+state may overtake it. An acknowledged commit applies/releases the transition
+in `World` and only then emits a successful gameplay result and replication.
+On storage failure or bounded-queue exhaustion, release the reservation and
+reject the command without applying the transition or reporting success. The
+30 Hz simulation tick does not wait for disk; pending commands complete through
+an asynchronous worker acknowledgement. A failed projection is an invariant
+failure and cannot produce a partial record. The implementation must also
+define how it settles a committed transaction if the server stops between
+disk acknowledgement and runtime application.
 
-The worker keeps the greatest pending revision per CharacterId and can coalesce
-older full snapshots. A revision below the committed one is stale; an equal
-revision is idempotent only if the payload is identical, otherwise it is an
-integrity error. An acknowledgement for revision `N` means the *whole* record
-at revision `N` or a newer full snapshot committed successfully. Queue pressure
-must remain bounded by admitted/pending characters; if retention is exhausted,
-the server stops accepting further durable mutations for affected characters
-and exposes a failure instead of silently losing a save. Failed writes retain
-the latest pending snapshot for a bounded retry/recovery path and propagate
-failure to the owner. Capacity must be checked before accepting a mutation;
-an already applied change cannot be rolled back merely because the queue is
-full. A projection failure suspends durable mutations for that actor and
-retains its live state for diagnosis rather than acknowledging a partial save.
-This does not add a second gameplay authority.
-This whole-record atomicity covers **one CharacterId**. It does not make a
-transfer between two character files atomic; such transfers need the separate
-policy at the end of this document.
+Every committed durable change (pickup, equip/unequip, move, consumption,
+grant, Drop, restore) advances the affected character revisions strictly;
+cross-character transfer advances both in **one** log transaction. No revision
+bump for rejected/duplicate commands. Revision overflow fails closed. Older
+revisions are stale; an equal revision with different content is an integrity
+error. Complete inventory and equipment state are projected together, and
+`EquipmentState` is rebuilt from it. The existing latest-snapshot coalescing
+may optimize checkpoint writes only: it must not discard uncommitted
+transactions, transfer legs or pending result acknowledgements. Bound pending
+transactions by admitted actors/items; backpressure rejects new commands
+before state changes. The log and checkpoint are one logical authority, while
+`World` remains the live gameplay authority.
+
+The same rules apply to every economic item mutation, not just Drop: a grant
+creates explicit quantity, consumption or expiry destroys it, and moves,
+equips, swaps and future transfers conserve it. A stack split reserves a new
+ID and preserves total quantity; a merge retires the consumed ID. Check
+ownership, slots, capacity, quantity and content before committing, and
+record the complete outcome atomically. Each economic command needs a stable
+idempotency key and a recoverable result: reconnect/retry after a commit but
+before its reply returns the previous result instead of executing again.
+When shops, trades, mail, crafting or currency are implemented, any operation
+that exchanges assets must commit all affected assets and owners together.
+This contract does not implement those later gameplay features.
+
+**Transfer rules, not a full Drop feature specification:** Player Drop
+atomically moves an item from A to the map. The runtime map-drop entity is
+visible/claimable after commit. Pickup atomically moves it from the map to an
+eligible claimant (A, B or C) and removes that entity. Monster Drop creates
+map ownership with its configured claimant window and expiry; future loot
+rules may vary, but no pickup can bypass server eligibility. At the absolute
+expiry deadline, an unclaimed map item is **deleted**, never refunded to its
+former owner. Pickup and expiry race through one serialized commit order, so
+exactly one wins. Working assumption for this design: an unexpired drop is
+recreated after a restart with its original deadlines, without resetting its
+timer. This treats downtime as elapsed time; whether downtime should instead
+pause the remaining timer is an open gameplay choice for owner review. If the
+map cannot load, retain the record and fail closed until the
+map is repaired or explicitly migrated; do not silently return or delete it.
+Future Trade uses one transaction for all exchanged items and both character
+post-states, so no half swap is acknowledged. Trade UI, currency and economy
+rules remain later work; the atomic transfer primitive is required now.
 
 ## Commit, recovery and lifecycle guarantees
 
 | Event | Contract after implementation |
 |---|---|
-| Handoff accepted/deferred | Snapshot is held in process memory; **no disk guarantee**. |
-| Worker replacement returns success | The character file has passed validation and recoverable tmp/bak replacement; the worker may acknowledge its revision. This is process-crash recovery, not a power-loss guarantee. |
-| Write failure / worker closed / shutdown timeout | No success acknowledgement. Retain or report the unsaved state and block stale re-entry while the process lives; do not turn the failure into a default character. |
-| Normal reconnect after completed detach | Enter only after the prior session's latest revision has committed, then load that record and restore the same item IDs into the new actor. |
-| Logout / return to login | A user-interface claim of **saved** requires a server acknowledgement for the latest revision. The current disconnect control flow has no such acknowledgement, so its presentation must not imply this guarantee until the required control path is added. |
-| Clean server shutdown | Flush latest snapshots and report success/failure within the configured bound; only a successful worker acknowledgement proves completion. |
-| Process crash | Recover the last committed valid character record. Mutations accepted by gameplay but not yet committed may roll back. Never merge a partial inventory with a newer equipment state. No cross-character transfer guarantee exists without a transfer transaction. |
+| Handoff accepted/deferred | Transaction is held in process memory; **no disk guarantee or gameplay success**. |
+| Worker transaction commit acknowledgement | The entire transaction is synced and replayable; all affected character revisions and item locations commit together. Successful gameplay feedback follows this acknowledgement and runtime application. |
+| Write failure / worker closed / shutdown timeout | No success acknowledgement. Reject pending mutations and report failure; block stale re-entry while unsettled state exists, never default the character. |
+| Normal reconnect after completed detach | Enter after earlier committed transactions are settled, load the latest checkpoint plus log replay, and restore the same owned item IDs into the new actor. |
+| Logout / return to login | A user-interface claim of **saved** requires settlement of all prior committed mutations and a server acknowledgement. The current disconnect flow needs that control path. |
+| Clean server shutdown | Stop admission, settle/reject pending commands, sync the committed log and report success/failure within the configured bound. |
+| Process crash | Replay complete committed transactions once: an acknowledged item is in exactly one character or map location, unless committed expiry deleted it. Uncommitted pending commands were never reported successful. Recreate unexpired drops with their original eligibility and expiry deadlines. |
 | Map/channel transition | Keep the same CharacterId, item instances and authoritative actor ownership. Snapshot restore changes with the full item set; do not serialize runtime topology. |
 | Later selection of another character | Load exactly the selected owned CharacterId; no inventory inheritance from the prior character or DEV login roster. |
 
 The simulation tick never waits for disk. A pending detach must retain a
-per-Character re-entry barrier and the complete snapshot until commit or an
-explicit storage failure; releasing occupancy before that barrier exists can
-load an older file into a second actor. After successful restoration, rebuild
+per-Character re-entry barrier until all admitted commands settle; releasing
+occupancy before that barrier exists can load an older state into a second
+actor. After successful restoration, rebuild
 canonical item records, inventory slots, `EquipmentState` and derived grants
 before publishing owner inventory/replication readiness. A failed restore
 must leave no spawned partial actor, items, occupancy or client Welcome.
-Detach must clean the old actor's item records after a complete snapshot is
-retained, while keeping its re-entry barrier until commit. This is runtime
-cleanup, not an alternative durable item owner.
+Detach must clean the old actor's item records only after pending mutations
+settle, while keeping its re-entry barrier until then. This is runtime cleanup,
+not an alternative durable item owner.
 
 The current tmp/bak replacement syncs the temporary file, but does not provide
-an explicit directory-sync or hardware power-loss guarantee. Do not label a
-mere enqueue, completed rename or graceful disconnect as power-loss durable.
+an explicit directory-sync or hardware power-loss guarantee. The proposed log
+must add the sync and recovery proof; until then, do not label a mere enqueue,
+completed rename or graceful disconnect as power-loss durable.
 
 ## Validation, migration and content changes
 
 - On an existing v1 character, validate identity and restore fields, project
-  `items=[]`, and commit a v2 record through the worker before entry. Preserve
+  `items=[]`, and commit its migration through the worker before entry. Preserve
   the CharacterId and restore intent; advance revision once for migration,
   with overflow/error handled explicitly. A missing record creates a v2
   default only for an owned character. Identity roster schema v2 is separate
@@ -165,7 +211,8 @@ mere enqueue, completed rename or graceful disconnect as power-loss durable.
   duplicate IDs or slots, invalid quantity/capacity, unsupported location, or
   an impossible equipment projection fails closed and preserves original
   bytes. `save` must propagate an existing-record read/validation error rather
-  than replace it. Failed migration is not a blank-character fallback.
+  than replace it. Validate item IDs across characters and map drops after replay.
+  Failed migration is not a blank-character fallback.
 - A missing/retired item `ContentId`, wrong numeric domain, missing equipment
   facet or changed stack limit invalidating saved quantity blocks entry for
   that character and preserves the record. Content restoration or an explicit
@@ -177,49 +224,24 @@ mere enqueue, completed rename or graceful disconnect as power-loss durable.
 
 ## Smallest implementation and proof gates
 
-1. **12A — record/allocator safety:** v2 parser, validation, v1 migration,
-   deterministic item projection type, fail-closed `save`, durable ID-range
-   reservation and restart recovery. Tests cover bytes preserved on every
-   error, v1 identity/revision preservation, allocator gaps/non-reuse and
-   missing/retired/wrong-domain IDs. No item gameplay wiring yet.
-2. **12B — delivery/lifecycle:** bounded per-character latest snapshot,
-   commit/failure acknowledgement, retry/pressure limit, detach re-entry
-   barrier and shutdown result. Saturation, write failure, stale/equal
-   revision, reconnect race, timeout and process-restart tests prove the
-   stated guarantees. Introduce an explicit logout acknowledgement only if
-   the UI promises a saved logout; review any protocol change separately.
-3. **12C — World integration:** snapshot on every accepted durable mutation;
-   atomically project/restore inventory and equipment, rebuild grants and
-   owner-private presentation before Welcome. Test pickup→equip→disconnect→
-   reconnect/restart, failed equip rollback, full inventory, multi-character
-   isolation, old-owner cleanup/re-entry, map/channel transition and crash at
-   each file-replacement boundary. Reject character-owned drop while its
-   cross-character transfer policy is unresolved; test that no path bypasses
-   the rejection. Ordinary transient loot drops remain outside the character
-   record.
-
-### Owner decision before 12C
-
-The existing player Drop command moves an owned item from character A into a
-transient world drop; player B can pick it up. Separate saves of A and B can
-commit in either order. A crash after B commits but before A's removal commits
-can duplicate the same `ItemInstanceId`; the opposite order can lose it. A
-single-character snapshot cannot solve this by save ordering alone. Even a
-voluntary drop left unclaimed can vanish after its removal commits and the
-world restarts.
-
-The proposed **smallest safe 12C boundary** rejects dropping a durable owned
-item into the world until a cross-character/world transfer transaction is
-designed. This changes the current Drop behavior and requires owner approval.
-If Drop must remain available, first design a durable world-drop/transfer
-journal with recovery and an atomic claim rule across the two characters;
-do not silently write two unrelated character snapshots and call it atomic.
-
-Ordinary transient loot spawned without a prior durable owner can still be
-picked up. If the server acknowledges pickup before the character snapshot
-commits and then crashes, that loot may disappear entirely because the source
-drop is not restored. The proposal labels the gameplay acceptance as
-non-durable and requires a separate commit acknowledgement before a **saved**
-claim. If even this window is unacceptable, pickup acknowledgement must wait
-for a durable commit or the source world drop must become recoverable. The
-owner must choose these gameplay/durability boundaries before 12C ships.
+1. **12A — durable domain:** v2 validation/migration, fail-closed `save`,
+   durable ID reservation, framed transaction log, checkpoint/replay and
+   map-drop schema. Prove single owner after restart, bytes preserved on
+   errors, allocator non-reuse, content validation and crash/sync boundaries.
+   No item gameplay wiring yet.
+2. **12B — commit/lifecycle:** bounded transaction admission, per-command
+   commit/failure acknowledgement, recoverable idempotency keys, actor/item
+   reservation, revision ordering, detach barrier and shutdown result. Test
+   reply-lost/retry, pressure, write failure,
+   stale/equal revision, reconnect race, shutdown timeout and crash between
+   commit and runtime apply. Review protocol changes for pending/success/error
+   replies and saved logout separately.
+3. **12C — existing gameplay integration:** wire current player Drop, pickup,
+   equip/unequip and inventory moves to atomic transactions. Restore owned
+   items, map drops and grants before readiness. Cover A→Drop→restart→B
+   pickup, A→Drop→A pickup, A→Drop→expiry, pickup/expiry races, eligibility
+   boundaries, full inventory, multi-character isolation, map unavailable and
+   crash at transaction/checkpoint boundaries. This gate specifies the
+   durability/ownership hooks for monster Drop, without building its full
+   spawning, party entitlement or loot-rule system. Future Trade must use
+   the same atomic multi-character primitive and prove all-or-nothing swaps.
