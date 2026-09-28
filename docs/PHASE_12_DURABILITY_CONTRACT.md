@@ -75,15 +75,18 @@ Persist `ItemInstanceId` unchanged, but never `EntityId`, `ConnectionId`,
 presentation state. `CharacterId` is the owner, independent of the runtime
 player entity. Once dropped, the item belongs to the **map**, not its former
 character. A separate durable map-drop record stores the item ID, stable map
-content ID and drop ID, position, absolute expiry deadline, and pickup policy
-(including eligible CharacterIds and when a restricted drop becomes public).
-The drop's `EntityId` and runtime channel/instance IDs are not durable
-identity. Player Drop is open to A, B or C unless an explicit game rule limits
-it. Monster Drop can restrict pickup to the eligible killer/party for a
+content ID, logical map-space key and drop ID, position, absolute expiry
+deadline, and pickup policy (including eligible CharacterIds and when a
+restricted drop becomes public). The logical map-space key distinguishes
+persistent channels/instances of the
+same map; it must survive restart or have an explicit recovery mapping. The
+drop's `EntityId` and runtime channel/instance IDs are not durable identity.
+Player Drop is open to A, B or C unless an explicit game rule limits it.
+Monster Drop can restrict pickup to the eligible killer/party for a
 configured interval, then become public; the example of one minute is not a
 hardcoded rule. Eligibility is server-checked at pickup and survives restart.
-Learned abilities, narrative
-facts, currency, character stats and account-wide inventory need separate
+Learned abilities, narrative facts, currency, character stats and account-wide
+inventory need separate
 scoped contracts; schema v2 does not silently promise them. When currency
 becomes tradable, it must enter the same atomic transfer domain.
 
@@ -160,11 +163,12 @@ rules may vary, but no pickup can bypass server eligibility. At the absolute
 expiry deadline, an unclaimed map item is **deleted**, never refunded to its
 former owner. Pickup and expiry race through one serialized commit order, so
 exactly one wins. Working assumption for this design: an unexpired drop is
-recreated after a restart with its original deadlines, without resetting its
-timer. This treats downtime as elapsed time; whether downtime should instead
-pause the remaining timer is an open gameplay choice for owner review. If the
-map cannot load, retain the record and fail closed until the
-map is repaired or explicitly migrated; do not silently return or delete it.
+recreated in its logical map-space after a restart with its original deadlines,
+without resetting its timer. This treats downtime as elapsed time; whether
+downtime should instead pause the remaining timer is an open gameplay choice
+for owner review. If the map cannot load, retain the record and fail closed
+until the map is repaired or explicitly migrated; do not silently return or
+delete it.
 Future Trade uses one transaction for all exchanged items and both character
 post-states, so no half swap is acknowledged. Trade UI, currency and economy
 rules remain later work; the atomic transfer primitive is required now.
@@ -232,16 +236,17 @@ completed rename or graceful disconnect as power-loss durable.
 2. **12B — commit/lifecycle:** bounded transaction admission, per-command
    commit/failure acknowledgement, recoverable idempotency keys, actor/item
    reservation, revision ordering, detach barrier and shutdown result. Test
-   reply-lost/retry, pressure, write failure,
-   stale/equal revision, reconnect race, shutdown timeout and crash between
+   reply-lost/retry, pressure, write failure, stale/equal revision, reconnect
+   race, shutdown timeout and crash between
    commit and runtime apply. Review protocol changes for pending/success/error
    replies and saved logout separately.
 3. **12C — existing gameplay integration:** wire current player Drop, pickup,
    equip/unequip and inventory moves to atomic transactions. Restore owned
    items, map drops and grants before readiness. Cover A→Drop→restart→B
    pickup, A→Drop→A pickup, A→Drop→expiry, pickup/expiry races, eligibility
-   boundaries, full inventory, multi-character isolation, map unavailable and
-   crash at transaction/checkpoint boundaries. This gate specifies the
+   boundaries, same-map multi-channel isolation, full inventory,
+   multi-character isolation, map unavailable and crash at transaction/checkpoint
+   boundaries. This gate specifies the
    durability/ownership hooks for monster Drop, without building its full
    spawning, party entitlement or loot-rule system. Future Trade must use
    the same atomic multi-character primitive and prove all-or-nothing swaps.
