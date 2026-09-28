@@ -34,22 +34,34 @@ impl World {
         }
     }
 
-    /// Development reset retained for the existing local/server DEV command.
+    /// Local development reset. Places the player on the stage fixture entry.
+    ///
+    /// Connected DEV reset must not use this placement. It resolves the
+    /// authored map spawn, then [`Self::restore_player_for_placement`].
     pub fn reset_player_entity(&mut self, id: EntityId) {
         let _ = self.restore_player_entity(id, true, false);
     }
 
     /// Restore a dead player without changing its runtime identity.
     ///
-    /// Revive intentionally does not move the player. Respawn adds the
-    /// authoritative entry placement below; both use the same reset path.
+    /// Revive does not move the player.
     pub fn revive_player_entity(&mut self, id: EntityId) -> bool {
         self.restore_player_entity(id, false, true)
     }
 
-    /// Restore a dead player through normal respawn semantics.
+    /// Local development respawn. Places a dead player on the stage fixture entry.
+    ///
+    /// Connected respawn must not use this placement. It resolves the authored
+    /// map spawn, then [`Self::restore_player_for_placement`].
     pub fn respawn_player_entity(&mut self, id: EntityId) -> bool {
         self.restore_player_entity(id, true, true)
+    }
+
+    /// Restore velocity, contact, health, and presentation without a coordinate.
+    ///
+    /// `require_dead` is respawn admission. The caller owns placement.
+    pub fn restore_player_for_placement(&mut self, id: EntityId, require_dead: bool) -> bool {
+        self.restore_player_entity(id, false, require_dead)
     }
 
     fn restore_player_entity(
@@ -64,34 +76,8 @@ impl World {
         }
         self.clear_restoration_runtime(id);
         let previous = self.transform_of(id).map(|transform| transform.position);
-        // Prefer Phase-4.6 P0 floor when present; else compact FLOOR.
-        let floor = self
-            .iter_platforms()
-            .find(|view| {
-                view.platform.half_extents == P0.half_extents
-                    && (view.transform.position[0] - P0_POSITION[0]).abs() < 0.01
-                    && (view.transform.position[1] - P0_POSITION[1]).abs() < 0.01
-            })
-            .or_else(|| {
-                self.iter_platforms()
-                    .find(|view| view.platform.half_extents == FLOOR.half_extents)
-            });
-        let (position, grounded, grounded_on) = if let Some(view) = floor {
-            let x = if view.platform.half_extents == P0.half_extents {
-                FOOTNOTE_SPAWN_X
-            } else {
-                -2.0
-            };
-            (
-                [x, view.top_surface() + PLAYER_HALF_EXTENTS[1]],
-                true,
-                Some(view.id),
-            )
-        } else {
-            let top = FLOOR.top_surface(Transform::from_position(FLOOR_POSITION));
-            ([-2.0, top + PLAYER_HALF_EXTENTS[1]], false, None)
-        };
         if place_at_entry {
+            let (position, grounded, grounded_on) = self.development_fixture_entry();
             let Some((transform, player)) = self.player_parts_mut_for(id) else {
                 return false;
             };
@@ -123,6 +109,37 @@ impl World {
         // respawn position equals the prior position.
         self.bump_transform_rev(id);
         true
+    }
+
+    /// Stage-fixture entry used only by local development reset/respawn.
+    fn development_fixture_entry(&self) -> ([f32; 2], bool, Option<EntityId>) {
+        // Prefer Phase-4.6 P0 floor when present; else compact FLOOR.
+        let floor = self
+            .iter_platforms()
+            .find(|view| {
+                view.platform.half_extents == P0.half_extents
+                    && (view.transform.position[0] - P0_POSITION[0]).abs() < 0.01
+                    && (view.transform.position[1] - P0_POSITION[1]).abs() < 0.01
+            })
+            .or_else(|| {
+                self.iter_platforms()
+                    .find(|view| view.platform.half_extents == FLOOR.half_extents)
+            });
+        if let Some(view) = floor {
+            let x = if view.platform.half_extents == P0.half_extents {
+                FOOTNOTE_SPAWN_X
+            } else {
+                -2.0
+            };
+            (
+                [x, view.top_surface() + PLAYER_HALF_EXTENTS[1]],
+                true,
+                Some(view.id),
+            )
+        } else {
+            let top = FLOOR.top_surface(Transform::from_position(FLOOR_POSITION));
+            ([-2.0, top + PLAYER_HALF_EXTENTS[1]], false, None)
+        }
     }
 }
 
@@ -199,5 +216,48 @@ mod tests {
         assert_eq!(world.transform_of(id).unwrap().position, position);
         assert_eq!(world.health_of(id).unwrap(), Health::full(20.0));
         assert!(!world.revive_player_entity(id));
+    }
+
+    #[test]
+    fn restore_for_placement_keeps_position_when_fixture_floor_exists() {
+        let mut world = World::dev_stage();
+        let id = world.player_id().expect("player");
+        let before = world.transform_of(id).expect("transform").position;
+        let moved = [before[0] + 4.0, before[1] + 1.0];
+        world.set_transform(id, Transform::from_position(moved));
+        if let Some((_, player)) = world.player_parts_mut_for(id) {
+            player.velocity = [3.0, -1.0];
+        }
+
+        assert!(world.restore_player_for_placement(id, false));
+
+        assert_eq!(world.transform_of(id).unwrap().position, moved);
+        assert!((moved[0] - FOOTNOTE_SPAWN_X).abs() > 1.0);
+        let (_, player) = world.get_player(id).unwrap();
+        assert_eq!(player.velocity, [0.0, 0.0]);
+        assert_eq!(world.player_id(), Some(id));
+    }
+
+    #[test]
+    fn respawn_restore_for_placement_revives_without_fixture_move() {
+        let mut world = World::dev_stage();
+        let id = world.player_id().expect("player");
+        let before = world.transform_of(id).expect("transform").position;
+        let moved = [before[0] + 6.0, before[1]];
+        world.set_transform(id, Transform::from_position(moved));
+        world.set_health(
+            id,
+            Health {
+                current: 0.0,
+                max: 20.0,
+            },
+        );
+
+        assert!(world.restore_player_for_placement(id, true));
+
+        assert_eq!(world.transform_of(id).unwrap().position, moved);
+        assert!((moved[0] - FOOTNOTE_SPAWN_X).abs() > 1.0);
+        assert_eq!(world.health_of(id).unwrap(), Health::full(20.0));
+        assert!(!world.restore_player_for_placement(id, true));
     }
 }

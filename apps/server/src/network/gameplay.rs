@@ -3222,10 +3222,23 @@ impl GameplayOwner {
             println!("DEV_RESET reject connection={connection_id} reason=not_player");
             return;
         }
-        let destination = self.default_spawn_for_actor(actor);
-        self.world.reset_player_entity(actor);
-        if let Some((address, position)) = destination {
-            let _ = self.world.transition_entity(actor, address, position);
+        let Some((address, position)) = self.default_spawn_for_actor(actor) else {
+            println!(
+                "DEV_RESET reject connection={connection_id} actor={actor} reason=no_default_spawn"
+            );
+            return;
+        };
+        if !self.world.restore_player_for_placement(actor, false) {
+            println!(
+                "DEV_RESET reject connection={connection_id} actor={actor} reason=restore_failed"
+            );
+            return;
+        }
+        if !self.world.transition_entity(actor, address, position) {
+            println!(
+                "DEV_RESET reject connection={connection_id} actor={actor} reason=transition_failed"
+            );
+            return;
         }
         println!("DEV_RESET spawn actor={actor} connection={connection_id}");
     }
@@ -3238,12 +3251,20 @@ impl GameplayOwner {
         if self.world.kind(actor) != Some(EntityKind::Player) {
             return;
         }
-        let destination = self.default_spawn_for_actor(actor);
-        if !self.world.respawn_player_entity(actor) {
+        let Some((address, position)) = self.default_spawn_for_actor(actor) else {
+            println!(
+                "RESPAWN reject connection={connection_id} actor={actor} reason=no_default_spawn"
+            );
+            return;
+        };
+        if !self.world.restore_player_for_placement(actor, true) {
             return;
         }
-        if let Some((address, position)) = destination {
-            let _ = self.world.transition_entity(actor, address, position);
+        if !self.world.transition_entity(actor, address, position) {
+            println!(
+                "RESPAWN reject connection={connection_id} actor={actor} reason=transition_failed"
+            );
+            return;
         }
         if let Some(binding) = self.bindings.get_mut(&connection_id) {
             let _ = binding.input.bump_epoch();
@@ -8756,5 +8777,186 @@ mod tests {
                 .take_for_tick(),
             PlayerInput::idle()
         );
+    }
+
+    fn authored_default(owner: &GameplayOwner, authored: &str) -> [f32; 2] {
+        spawn_point_position(&owner.registry, authored, "default").expect("authored default spawn")
+    }
+
+    fn assert_authored_default(owner: &GameplayOwner, actor: EntityId, authored: &str) {
+        let expected = authored_default(owner, authored);
+        let position = owner
+            .world()
+            .transform_of(actor)
+            .expect("transform")
+            .position;
+        assert_eq!(position, expected, "{authored} authored default spawn");
+        assert!(
+            (position[0] - purgatory_simulation::FOOTNOTE_SPAWN_X).abs() > 0.05,
+            "P0 fixture x used: {}",
+            position[0]
+        );
+        // Compact FLOOR entry X inside development fixture placement.
+        assert!(
+            (position[0] - (-2.0)).abs() > 0.05,
+            "FLOOR fixture x used: {}",
+            position[0]
+        );
+    }
+
+    fn displace_from_spawn(owner: &mut GameplayOwner, connection: ConnectionId, spawn: [f32; 2]) {
+        let actor = owner.entity_of(connection).expect("actor");
+        let displaced = [spawn[0] + 5.0, spawn[1] + 2.0];
+        assert!(
+            owner
+                .world_mut()
+                .set_transform(actor, Transform::from_position(displaced))
+        );
+        assert_ne!(owner.world().transform_of(actor).unwrap().position, spawn);
+    }
+
+    #[test]
+    fn dev_reset_on_map1_lands_on_authored_default() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let spawn = authored_default(&owner, MAP1_AUTHORED);
+        displace_from_spawn(&mut owner, id, spawn);
+        owner.apply_input(InputUpdate::DevResetPlayer { connection_id: id });
+        assert_eq!(owner.entity_of(id), Some(actor));
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            owner.map_a_address().map
+        );
+        assert_authored_default(&owner, actor, MAP1_AUTHORED);
+        let (_, player) = owner.world().get_player(actor).unwrap();
+        assert_eq!(player.velocity, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn dev_reset_on_map2_lands_on_authored_default() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        owner
+            .handle_dev_transition(id, MAP2_AUTHORED, None)
+            .expect("MAP2");
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            owner.map_b_address().map
+        );
+        let spawn = authored_default(&owner, MAP2_AUTHORED);
+        assert_ne!(spawn, authored_default(&owner, MAP1_AUTHORED));
+        displace_from_spawn(&mut owner, id, spawn);
+        owner.apply_input(InputUpdate::DevResetPlayer { connection_id: id });
+        assert_eq!(owner.entity_of(id), Some(actor));
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            owner.map_b_address().map
+        );
+        assert_authored_default(&owner, actor, MAP2_AUTHORED);
+    }
+
+    #[test]
+    fn respawn_lands_on_current_map_authored_default() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        owner
+            .handle_dev_transition(id, MAP2_AUTHORED, None)
+            .expect("MAP2");
+        let spawn = authored_default(&owner, MAP2_AUTHORED);
+        displace_from_spawn(&mut owner, id, spawn);
+        assert!(owner.world_mut().set_health(
+            actor,
+            Health {
+                current: 0.0,
+                max: PLAYER_HEALTH_MAX,
+            },
+        ));
+        let epoch = owner.bindings[&id].input.input_epoch;
+        owner.handle_respawn(id);
+        assert_eq!(owner.entity_of(id), Some(actor));
+        assert_eq!(
+            owner.world().address_of(actor).unwrap().map,
+            owner.map_b_address().map
+        );
+        assert_authored_default(&owner, actor, MAP2_AUTHORED);
+        assert_eq!(
+            owner.world().health_of(actor).unwrap().current,
+            PLAYER_HEALTH_MAX
+        );
+        assert_eq!(owner.bindings[&id].input.input_epoch, epoch + 1);
+    }
+
+    #[test]
+    fn reset_and_respawn_without_default_spawn_preserve_state() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let map = owner.registry.map("map.map3").expect("MAP3");
+        assert!(
+            map.spawn_points.iter().all(|spawn| spawn.id != "default"),
+            "MAP3 must not grow a default spawn"
+        );
+        let map_id = owner.registry.map_id(map.content_id).expect("MAP3 id");
+        let address = WorldAddress::new(map_id, ChannelId::DEFAULT, InstanceId::DEFAULT);
+        assert!(owner.set_entity_address(id, address));
+        let preserved = [4.25, 3.5];
+        assert!(
+            owner
+                .world_mut()
+                .set_transform(actor, Transform::from_position(preserved))
+        );
+        assert!(owner.world_mut().set_health(
+            actor,
+            Health {
+                current: 0.0,
+                max: PLAYER_HEALTH_MAX,
+            },
+        ));
+
+        owner.apply_input(InputUpdate::DevResetPlayer { connection_id: id });
+        assert_eq!(
+            owner.world().transform_of(actor).unwrap().position,
+            preserved
+        );
+        assert!(owner.world().health_of(actor).unwrap().is_dead());
+        assert!((preserved[0] - purgatory_simulation::FOOTNOTE_SPAWN_X).abs() > 0.05);
+        assert!((preserved[0] - (-2.0)).abs() > 0.05);
+
+        owner.handle_respawn(id);
+        assert_eq!(owner.entity_of(id), Some(actor));
+        assert_eq!(
+            owner.world().transform_of(actor).unwrap().position,
+            preserved
+        );
+        assert!(owner.world().health_of(actor).unwrap().is_dead());
+        assert_eq!(owner.bindings[&id].input.input_epoch, 0);
+    }
+
+    #[test]
+    fn same_map_channel_change_preserves_transform() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let spawn = authored_default(&owner, MAP1_AUTHORED);
+        displace_from_spawn(&mut owner, id, spawn);
+        let before = owner.world().transform_of(actor).unwrap().position;
+        let map = owner.world().address_of(actor).unwrap().map;
+        owner.apply_input(InputUpdate::DevSetChannel {
+            connection_id: id,
+            channel: 1,
+        });
+        let address = owner.world().address_of(actor).unwrap();
+        assert_eq!(address.map, map);
+        assert_eq!(address.channel, ChannelId::from_raw(1));
+        assert_eq!(owner.world().transform_of(actor).unwrap().position, before);
+        assert_eq!(owner.entity_of(id), Some(actor));
     }
 }

@@ -143,7 +143,8 @@ These are authoring-tool constraints gathered while planning C1–C8.
   normal client/server runtime proof. The local Health HUD reads replicated
   Health directly; it does not maintain a second client value.
 - Player death remains authoritative Dead until an explicit Respawn intent is
-  validated by the server. Respawn reuses `World::respawn_player_entity` and
+  validated by the server. Respawn restores the same entity without a fixture
+  coordinate, places it at the current map's authored default spawn, and
   rebases the input epoch.
 - The live combat creature uses 2 damage against 20 Health, giving roughly
   ten successful hits before death.

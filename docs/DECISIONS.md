@@ -422,7 +422,7 @@ ECS = Entity Component System: an architecture that stores entity data as compon
 ## ADR-0059: DEV `DevResetPlayer` (protocol v14)
 
 - Status: accepted
-- Decision: Bump `PROTOCOL_VERSION` from 13 to 14. Add client control `DevResetPlayer` (tag **24**, tag-only). The DEV overlay **Reset to Spawn Point** button sends this request while in Game. The server resets the bound player with `World::reset_player_entity` (same spawn/contact clear as local `DebugAction::ResetPlayer`). The client must not apply a local spawn while connected. Offline/local overlay still uses `DebugAction::ResetPlayer` on the client World. Replica `Enter`/`Update` remains the authority the client predicts against.
+- Decision: Bump `PROTOCOL_VERSION` from 13 to 14. Add client control `DevResetPlayer` (tag **24**, tag-only). The DEV overlay **Reset to Spawn Point** button sends this request while in Game. The server resolves the current map's authored default spawn, restores runtime state with `World::restore_player_for_placement` (velocity, contact, health, presentation; no fixture coordinate), and places the actor there. The client must not apply a local spawn while connected. Offline/local overlay still uses `DebugAction::ResetPlayer` on the client World, which may use the local stage fixture entry. Replica `Enter`/`Update` remains the authority the client predicts against.
 - Reason: A client-only spawn while connected is immediately overwritten by the replica. That is not a spawn reset.
 - Consequences: v13 peers are rejected at Hello. Historical v1–v13 goldens stay frozen. Not a gameplay teleport envelope for shipping clients; DEV overlay only. Not a second movement-intent. Report: overlay Debug tab + center-screen ASCII toast.
 

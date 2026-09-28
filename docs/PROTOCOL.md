@@ -52,13 +52,14 @@ Protocol v12 adds client equipment request envelopes (`Equip` / `Unequip`) and a
 
 Protocol v13 adds DEV presentation oneshot controls: client `DevPresentationOneShot` (tag 22, kind `1`=Attack / `2`=Hurt) and server `PresentationOneShot` (tag 23, entity + kind + `until_tick`). No bones, `sample_t`, or animation events. Enter/Update snapshot layout is unchanged (0 per-frame animation traffic).
 
-Protocol v14 adds DEV-only `DevResetPlayer` (tag **24**, tag-only payload). The server resets the bound player entity to the development spawn. The client must not apply a local spawn while connected.
+Protocol v14 adds DEV-only `DevResetPlayer` (tag **24**, tag-only payload). The server resets the bound player to the current map's authored default spawn. The client must not apply a local spawn while connected.
 
 Protocol v15 adds ability activation: client `AbilityActivate` (tag **25**) and server `Ability` Accepted/Rejected (tags **26**/**27**). The client sends ability id + optional selected entity. It never sends hits, damage, query dimensions, facing, or Health.
 
 Protocol v16 adds client `Respawn` (tag **28**). The server accepts it only
-for the bound player while authoritative Health is Dead, then reuses the
-existing `World::respawn_player_entity` lifecycle path.
+for the bound player while authoritative Health is Dead, restores that player
+without a fixture coordinate, and places them at the current map's authored
+default spawn.
 
 Protocol v17 adds `damage_immunity_active` to every replicated Health payload.
 It is authoritative presentation state for the victim's current damage-immunity
