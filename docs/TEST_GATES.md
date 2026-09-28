@@ -596,6 +596,11 @@ Owner Phase 0 clarifications:
 - Validation for this entry change: documentation and marker consistency plus `git diff --check`; GitHub Quality Gate [run #36406969412](https://github.com/Arieltetenboim/Purgatory/actions/runs/36406969412) on `master` commit `18b5cdf` passed `./scripts/check.sh`. No runtime code changed or manual runtime proof was claimed by the entry.
 - Next acceptance: approve the Issue #10 contract for state ownership, schema/migration, atomic inventory/equipment snapshot, save ordering/durability and recovery before implementing durable item state. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
 
+## Gate 12 design proposal — Issue #10
+
+- Status: **proposed for owner review**, not an implementation or acceptance gate. [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md) and ADR-0068 record the schema, ownership, save/recovery semantics and remaining transient-world-drop decision.
+- Validation: documentation-only diff and link/marker consistency; no runtime code or wire contract changed. Issue #10 remains open until the proposal is reviewed and the stated gaps are resolved in implementation.
+
 ## Gate Production UI I1 — Inventory window foundation
 
 - Status: **complete (GREEN) 2026-09-14; merge candidate.** This parallel presentation foundation does not reopen Phase 11 and does not start Phase 12.

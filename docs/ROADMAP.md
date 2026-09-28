@@ -90,7 +90,9 @@ durable character/item ownership, migration, atomic inventory/equipment saves,
 ordering and recovery. The prerequisites #87, #88, #89 and #24 are closed and
 their relevant code is present on `master`. Design acceptance is still open;
 entering Phase 12 does not claim persistent inventory/equipment or a GREEN
-implementation gate. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
+implementation gate. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md). Issue #10's
+proposed contract is [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md);
+owner review and the voluntary-drop decision remain open before 12C.
 
 | Slice | Name | Status |
 |---|---|---|

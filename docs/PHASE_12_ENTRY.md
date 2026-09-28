@@ -13,6 +13,8 @@ Phase 11 is closed; 12A–12C are planned, not accepted or implemented by this e
   durable. Roster/selected-character entry already exist; do not rebuild them.
 - Issue #10 is the **first Phase 12 step**. Produce and review a compact design
   before changing the character schema or promising durable inventory.
+  The current proposal is [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md);
+  its owner decision is not yet accepted.
 
 ## Issue #10 acceptance boundary
 
