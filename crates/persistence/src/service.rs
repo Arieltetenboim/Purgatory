@@ -122,6 +122,13 @@ impl PersistenceService {
         }
     }
 
+    #[cfg(test)]
+    pub fn hide_next_commit_reply_for_test(&mut self) {
+        if let Backend::Postgres(store) = &mut self.backend {
+            store.hide_next_commit_reply();
+        }
+    }
+
     pub fn item(&mut self, id: ItemInstanceId) -> Result<Option<ItemRecord>, PersistError> {
         match &mut self.backend {
             Backend::Files { .. } => Err(PersistError::migration(

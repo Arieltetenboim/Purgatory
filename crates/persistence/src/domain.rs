@@ -379,7 +379,7 @@ fn validate_quantity_location(
     Ok(())
 }
 
-fn validate_item_content(
+pub(crate) fn validate_item_content(
     definition: ContentId,
     quantity: u32,
     location: CharacterItemLocation,

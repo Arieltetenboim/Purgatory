@@ -348,7 +348,12 @@ fn invalid_import_preserves_source_and_writes_no_rows() {
             identity
         );
         assert_eq!(std::fs::read(&character).unwrap(), original);
-        assert!(!dir.join(postgres::DURABLE_WRITER_FILE).exists());
+        assert!(dir.join(postgres::DURABLE_WRITER_FILE).exists());
+        let err = match PersistenceService::open(dir) {
+            Ok(_) => panic!("a fenced directory must not accept the file writer"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, PersistError::Migration { .. }), "{err}");
         assert_eq!(postgres::count_table(settings, "dev_users").unwrap(), 0);
         assert_eq!(postgres::count_table(settings, "characters").unwrap(), 0);
     });
@@ -567,5 +572,342 @@ fn representative_command_workload_is_measured_not_a_capacity_claim() {
             elapsed.as_millis(),
             elapsed.as_micros() / u128::from(commands)
         );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn moving_a_non_equippable_item_into_weapon_is_rejected() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let placed = service
+            .commit_durable(&DurableCommand {
+                key: "stack".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .unwrap();
+        let item_id = placed.minted_item_ids[0];
+        let err = service
+            .commit_durable(&DurableCommand {
+                key: "equip-stack".into(),
+                expected_revisions: vec![(entry.character_id, 2)],
+                place_new: Vec::new(),
+                moves: vec![MoveItem {
+                    item_instance_id: item_id,
+                    to: LiveDestination::Character {
+                        character_id: entry.character_id,
+                        location: CharacterItemLocation::Equipped {
+                            slot: DurableEquipmentSlot::Weapon,
+                        },
+                    },
+                }],
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, PersistError::ContentRejected { .. }), "{err}");
+        assert_eq!(
+            service.item(item_id).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+        assert_eq!(
+            service
+                .load_owned_character(&alice, entry.character_id)
+                .unwrap()
+                .unwrap()
+                .persistence_revision,
+            2
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn file_writer_is_fenced_before_import_commits() {
+    with_db(|dir, settings| {
+        let identity = br#"{"schema_version":1,"next_character_id":8,"logins":{"zed":7}}"#;
+        std::fs::write(dir.join(IDENTITY_FILE_NAME), identity).unwrap();
+        let character = dir.join(crate::character_file_name(CharacterId::from_raw(7)));
+        let body = br#"{"schema_version":1,"character_id":7,"persistence_revision":4,"restore":{"map_authored":"map.map2","point_id":"gate"}}"#;
+        std::fs::write(&character, body).unwrap();
+        postgres::fence_file_writer(dir).unwrap();
+        let err = match PersistenceService::open(dir) {
+            Ok(_) => panic!("file writer must refuse once the cutover fence exists"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, PersistError::Migration { .. }), "{err}");
+        let mut service = open(dir, settings);
+        let loaded = service
+            .load_owned_character(&login("zed"), CharacterId::from_raw(7))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.point_id, "gate");
+        std::fs::write(&character, b"{\"schema_version\":1}").unwrap();
+        let again = PersistenceService::open_postgresql(dir, settings).unwrap();
+        drop(again);
+        let loaded = service
+            .load_owned_character(&login("zed"), CharacterId::from_raw(7))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.point_id, "gate");
+        assert_eq!(loaded.persistence_revision, 4);
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn marker_write_failure_does_not_commit_import() {
+    with_db(|dir, settings| {
+        postgres::fail_next_marker_write();
+        let err = match PersistenceService::open_postgresql(dir, settings) {
+            Ok(_) => panic!("marker failure must not open a writer"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, PersistError::Io { .. }), "{err}");
+        assert!(!dir.join(postgres::DURABLE_WRITER_FILE).exists());
+        assert_eq!(postgres::count_table(settings, "characters").unwrap(), 0);
+        let mut files = PersistenceService::open(dir).unwrap();
+        files.create_character(&login("alice"), "Alice").unwrap();
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn gameplay_save_at_the_command_revision_keeps_its_restore() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        service
+            .commit_durable(&DurableCommand {
+                key: "advance".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .unwrap();
+        // Gameplay loads revision 1, then detach and request_save both emit
+        // loaded+1. A durable command consumes that same next revision.
+        service
+            .save_snapshot(crate::PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 2,
+                restore: RestoreIntent {
+                    map_authored: "map.map2".into(),
+                    point_id: "gate".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.persistence_revision, 2);
+        assert_eq!(loaded.restore.point_id, "gate");
+        service
+            .save_snapshot(crate::PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 1,
+                restore: RestoreIntent {
+                    map_authored: "map.map1".into(),
+                    point_id: "stale".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.point_id, "gate");
+        assert_eq!(loaded.persistence_revision, 2);
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn lost_commit_reply_and_later_rule_change_return_the_stored_result() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let command = DurableCommand {
+            key: "grant-once".into(),
+            expected_revisions: vec![(entry.character_id, 1)],
+            place_new: vec![place(entry.character_id, 1)],
+            moves: Vec::new(),
+            retire: Vec::new(),
+            narrative: Vec::new(),
+            learned: vec![LearnedAbilityWrite {
+                character_id: entry.character_id,
+                ability_content_id: ContentId::from_raw(40_001),
+            }],
+        };
+        service.hide_next_commit_reply_for_test();
+        let hidden = service.commit_durable(&command).unwrap();
+        assert_eq!(hidden.minted_item_ids.len(), 1);
+        assert!(service.item(hidden.minted_item_ids[0]).unwrap().is_some());
+        let mut retired = rules();
+        retired
+            .insert_item(ItemContentRule {
+                content_id: ContentId::from_raw(30_011),
+                stack_limit: 20,
+                equip_slot: None,
+                retired: true,
+            })
+            .unwrap();
+        retired
+            .insert_ability(ContentId::from_raw(40_001), true)
+            .unwrap();
+        service.set_durable_content_rules(retired);
+        let retry = service.commit_durable(&command).unwrap();
+        assert_eq!(hidden, retry);
+        let err = service
+            .commit_durable(&DurableCommand {
+                key: "after-rule-change".into(),
+                expected_revisions: vec![(entry.character_id, retry.revisions[0].1)],
+                place_new: vec![place(entry.character_id, 2)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, PersistError::ContentRejected { .. }), "{err}");
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let first = service
+            .commit_durable(&DurableCommand {
+                key: "two".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0), place(entry.character_id, 1)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .unwrap();
+        let left = first.minted_item_ids[0];
+        let right = first.minted_item_ids[1];
+        service
+            .commit_durable(&DurableCommand {
+                key: "swap".into(),
+                expected_revisions: vec![(entry.character_id, 2)],
+                place_new: Vec::new(),
+                moves: vec![
+                    MoveItem {
+                        item_instance_id: left,
+                        to: LiveDestination::Character {
+                            character_id: entry.character_id,
+                            location: CharacterItemLocation::Inventory { slot: 1 },
+                        },
+                    },
+                    MoveItem {
+                        item_instance_id: right,
+                        to: LiveDestination::Character {
+                            character_id: entry.character_id,
+                            location: CharacterItemLocation::Inventory { slot: 0 },
+                        },
+                    },
+                ],
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            service.item(left).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 1 },
+            }
+        );
+        assert_eq!(
+            service.item(right).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+        let replaced = service
+            .commit_durable(&DurableCommand {
+                key: "replace-slot".into(),
+                expected_revisions: vec![(entry.character_id, 3)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: vec![right],
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            service.item(right).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        assert_eq!(
+            service
+                .item(replaced.minted_item_ids[0])
+                .unwrap()
+                .unwrap()
+                .owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn distinct_runtime_role_can_commit_and_cannot_create_tables() {
+    with_db(|dir, settings| {
+        let roles = postgres::provision_ephemeral_roles(settings).expect("distinct test roles");
+        let mut service = PersistenceService::open_postgresql(dir, &roles.runtime).unwrap();
+        service.set_durable_content_rules(rules());
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let committed = service
+            .commit_durable(&DurableCommand {
+                key: "runtime".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: vec![NarrativeWrite::SetFact {
+                    character_id: entry.character_id,
+                    fact_key: "fact.road".into(),
+                    value: true,
+                }],
+                learned: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(committed.minted_item_ids.len(), 1);
+        assert!(postgres::runtime_cannot_create_table(&roles.runtime).unwrap());
     });
 }

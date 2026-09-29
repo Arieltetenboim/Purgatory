@@ -51,24 +51,57 @@ and it does not wire live Drop, pickup, equip, dialogue, or client replies.
    Neither URL is assumed to be localhost. Optional
    `PURGATORY_DATABASE_SCHEMA` defaults to `public`.
 6. Start the server once. The persistence worker, not the 30 Hz tick:
-   - applies migration `1` and refuses a changed or unknown history
+   - writes `durable_writer.json` before the import transaction commits
+   - applies migration `1` as the migration role and refuses a changed or
+     unknown history
+   - grants the runtime role usage of the schema, read of `schema_migrations`,
+     and only the row changes it needs: select/insert/update on meta,
+     characters, and items; select/insert on users, NPC-met, dialogue heard,
+     learned abilities, and command keys; select/insert/update/delete on facts
    - imports the inventoried files in one transaction, or records a fresh
      database when the directory has no identity file
-   - writes `durable_writer.json` with `{"schema_version":1,"writer":"postgresql"}`
-7. Confirm character counts and ids. After that marker exists, opening the
+7. Confirm character counts and ids. The marker is
+   `{"schema_version":1,"writer":"postgresql"}`. After it exists, opening the
    file writer fails. Later edits to the JSON files are not imported again
-   and are not written by the server. Unset the URL only after an explicit
-   repair plan; the marker will refuse the file writer rather than silently
-   resume it.
+   and are not written by the server. If the marker write fails, the import
+   is not committed and the file writer still opens. If the process stops
+   after the marker and before commit, the file writer stays closed and the
+   next open imports the unchanged files. If a cutover row exists and the
+   marker is missing, open fails closed instead of ignoring file edits.
+   Unset the URL only after an explicit repair plan.
 8. A corrupt, unknown, duplicate, or unowned record aborts the import.
-   Source files are left in place. No default character replaces them.
-   A roster entry with no character file becomes a character row at revision
-   1 with default restore and no items, facts, or grants. That is the current
-   create-before-first-save case, not a repair of a broken file.
+   Source files are left in place. The marker may already exist, so the file
+   writer does not accept a repair that PostgreSQL would later skip. No
+   default character replaces a corrupt file. A roster entry with no character
+   file becomes a character row at revision 1 with default restore and no
+   items, facts, or grants. That is the current create-before-first-save case,
+   not a repair of a broken file.
 
-The worker's restore snapshot updates restore fields and revision only. It
-does not delete item, fact, or learned-ability rows. On the pre-cutover file
-writer, a character file with unknown fields fails to load and is not replaced.
+The two roles must be distinct non-superusers. The runtime role is not granted
+`CREATE` or `DROP`. `PersistenceHandle::commit_durable` sends the command to
+the persistence worker and waits for the stored result. A queue handoff is not
+success. Gameplay does not call it yet. The simulation tick does not.
+
+A move onto a character slot checks the committed item definition against the
+installed content rule, including equip slot. Retire and a temporary ground
+park happen before new inserts, so one command can free a slot and fill it, or
+swap two slots, and still roll back if two live items would share a final slot.
+
+A restore snapshot older than the committed revision is ignored. The same
+revision is idempotent when the restore payload matches. When it differs, the
+restore fields are stored and the revision stays. That matches the current
+gameplay save, which emits `loaded revision + 1` from detach and from
+`request_save` even if a durable command already consumed that number. A newer
+snapshot still advances the revision. The snapshot does not delete item, fact,
+or learned-ability rows.
+
+A retry looks up the command key before applying current content rules. The
+same key and request return the stored result after an item or ability rule
+changes. If `COMMIT` itself fails, the worker reads the key before deciding.
+A matching stored result is returned. If the connection cannot be read, the
+error starts with `commit outcome unknown` and is not treated as proof that
+the command was not applied. The caller must open a new connection and retry
+the same key.
 
 ## Tests
 
@@ -82,6 +115,13 @@ cargo test -p purgatory-persistence --lib postgres_tests -- --ignored --nocaptur
 `PostgresSettings::for_tests` refuses database names `purgatory_dev`,
 `postgres`, `template0`, and `template1` before connecting. Each test creates
 and drops a `p12a_` schema. It does not modify `Purgatory_dev`.
+`distinct_runtime_role_can_commit_and_cannot_create_tables` creates two
+ephemeral non-superuser roles in that database and drops them afterward.
+
+These PostgreSQL tests were not executed on 2026-09-29. `psql -w` against
+local PostgreSQL 18 returned `fe_sendauth: no password supplied`.
+`PURGATORY_TEST_DATABASE_URL` is unset. They must not be pointed at
+`Purgatory_dev`. No command-latency sample was collected.
 
 ## Explicitly not in 12A
 

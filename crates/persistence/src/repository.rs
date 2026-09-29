@@ -74,10 +74,20 @@ impl FileCharacterRepository {
         // so this writer cannot erase permanent state it does not understand.
         if path.exists() || crate::atomic::bak_path(&path).exists() {
             let existing = self.load(character.character_id)?;
-            if let Some(existing) = existing
-                && character.persistence_revision <= existing.persistence_revision
-            {
-                return Ok(());
+            if let Some(existing) = existing {
+                // Older snapshots are stale. An equal revision is idempotent
+                // only when the restore payload matches; gameplay's first save
+                // uses loaded+1, which a durable command may already have
+                // consumed without writing that restore.
+                if character.persistence_revision < existing.persistence_revision {
+                    return Ok(());
+                }
+                if character.persistence_revision == existing.persistence_revision
+                    && character.restore == existing.restore
+                    && character.instance_exit == existing.instance_exit
+                {
+                    return Ok(());
+                }
             }
         }
         let mut out = character.clone();
@@ -129,6 +139,13 @@ mod tests {
         let again = repo.load(id).unwrap().unwrap();
         assert_eq!(again.persistence_revision, 3);
         assert_eq!(again.restore.point_id, "default");
+
+        let mut same_revision = again.clone();
+        same_revision.restore.point_id = "gate".into();
+        repo.save(&same_revision).unwrap();
+        let kept = repo.load(id).unwrap().unwrap();
+        assert_eq!(kept.persistence_revision, 3);
+        assert_eq!(kept.restore.point_id, "gate");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

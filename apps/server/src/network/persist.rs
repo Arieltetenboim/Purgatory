@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use purgatory_common::DevLogin;
 use purgatory_persistence::{
-    CreateCharacterRejection, PersistError, PersistenceService, PersistentCharacterSnapshot,
+    CreateCharacterRejection, DurableCommand, DurableCommandResult, PersistError,
+    PersistenceService, PersistentCharacterSnapshot,
 };
 
 enum PersistCmd {
@@ -43,6 +44,11 @@ enum PersistCmd {
         login: DevLogin,
         name: String,
         reply: tokio::sync::oneshot::Sender<purgatory_protocol::CreateCharacterResult>,
+    },
+    #[cfg_attr(not(test), allow(dead_code))]
+    CommitDurable {
+        command: DurableCommand,
+        reply: tokio::sync::oneshot::Sender<Result<DurableCommandResult, PersistError>>,
     },
     Save(PersistentCharacterSnapshot),
     Shutdown {
@@ -180,6 +186,9 @@ impl PersistenceHandle {
                         };
                         let _ = reply.send(result);
                     }
+                    PersistCmd::CommitDurable { command, reply } => {
+                        let _ = reply.send(service.commit_durable(&command));
+                    }
                     PersistCmd::Save(snapshot) => {
                         save_snapshot_observed(&mut service, &worker_shared, snapshot);
                     }
@@ -265,6 +274,22 @@ impl PersistenceHandle {
             return failure;
         }
         rx.await.unwrap_or(failure)
+    }
+
+    /// Ask the persistence worker to commit one durable command and wait for
+    /// the stored result. A queue send is not success. Callers are connection
+    /// tasks; the 30 Hz simulation tick must not call this or block on it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn commit_durable(
+        &self,
+        command: DurableCommand,
+    ) -> Result<DurableCommandResult, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::CommitDurable { command, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
     }
 
     pub fn try_save(&self, snapshot: PersistentCharacterSnapshot) -> SaveHandoff {
@@ -753,5 +778,37 @@ mod frontend_worker_tests {
         assert_eq!(worker.roster(login).await.unwrap(), second);
         worker.shutdown(Duration::from_secs(2)).await;
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn durable_command_waits_for_the_worker_result() {
+        let dir = std::env::temp_dir().join(format!(
+            "purgatory-12a-worker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let err = worker
+            .commit_durable(DurableCommand {
+                key: "not-wired".into(),
+                expected_revisions: Vec::new(),
+                place_new: Vec::new(),
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .await
+            .expect_err("file mode has no durable command result");
+        let text = err.to_string();
+        assert!(
+            text.contains("postgresql"),
+            "the worker must return the service result, not a handoff: {text}"
+        );
+        worker.shutdown(Duration::from_secs(2)).await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

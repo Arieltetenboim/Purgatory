@@ -79,6 +79,18 @@ impl PostgresSettings {
         Ok(settings)
     }
 
+    /// Runtime and migration URLs must name the same kind of dedicated database.
+    pub fn with_migration_url(mut self, url: String) -> Result<Self, PersistError> {
+        let migration = Self {
+            url,
+            migration_url: None,
+            schema: self.schema.clone(),
+        };
+        migration.refuse_reserved_database()?;
+        self.migration_url = Some(migration.url);
+        Ok(self)
+    }
+
     fn refuse_reserved_database(&self) -> Result<(), PersistError> {
         let name = database_name(&self.url)?;
         if RESERVED_DATABASES
@@ -96,6 +108,8 @@ impl PostgresSettings {
 pub(crate) struct PostgresStore {
     client: Client,
     rules: DurableContentRules,
+    #[cfg(test)]
+    hide_commit_reply: bool,
 }
 
 impl PostgresStore {
@@ -105,6 +119,14 @@ impl PostgresStore {
             let mut migrator = connect_url(migration_url)?;
             prepare_schema(&mut migrator, &settings.schema, true)?;
             migrate(&mut migrator)?;
+            let runtime_user = database_user(&settings.url)?;
+            let migration_user = database_user(migration_url)?;
+            if runtime_user.eq_ignore_ascii_case(&migration_user) {
+                return Err(PersistError::storage(
+                    "migration role and runtime role must be distinct",
+                ));
+            }
+            grant_runtime(&mut migrator, &settings.schema, &runtime_user)?;
             warn_durability(&mut migrator);
         }
         let mut client = connect_url(&settings.url)?;
@@ -117,11 +139,17 @@ impl PostgresStore {
             migrate(&mut client)?;
         }
         warn_durability(&mut client);
+        // Fence the file writer before the import transaction commits. A crash
+        // in that interval leaves the marker and no cutover row, so the next
+        // open imports the unchanged files instead of ignoring later file writes.
+        fence_before_import(&mut client, dir)?;
         initialize(&mut client, dir)?;
         write_marker(dir)?;
         Ok(Self {
             client,
             rules: DurableContentRules::new(),
+            #[cfg(test)]
+            hide_commit_reply: false,
         })
     }
 
@@ -133,15 +161,52 @@ impl PostgresStore {
         &mut self,
         command: &DurableCommand,
     ) -> Result<DurableCommandResult, PersistError> {
-        domain::validate_command(command, &self.rules)?;
         let request = canonical_request(command)?;
-        match commit_once(&mut self.client, command, &request) {
-            Ok(result) => Ok(result),
-            Err(err) if command_key_race(&err) => {
-                read_committed_command(&mut self.client, &command.key, &request)
+        // A stored result is returned before content rules are applied again.
+        // Retry after a catalog change must still answer the original commit.
+        if let Some(result) = stored_result_if_same(&mut self.client, &command.key, &request)? {
+            return Ok(result);
+        }
+        domain::validate_command(command, &self.rules)?;
+        match commit_once(&mut self.client, command, &request, &self.rules) {
+            Ok(result) => {
+                if self.consume_hidden_reply() {
+                    return recover_hidden_commit(&mut self.client, &command.key, &request);
+                }
+                Ok(result)
+            }
+            Err(err) if command_key_race(&err) || commit_reply_lost(&err) => {
+                match stored_result_if_same(&mut self.client, &command.key, &request) {
+                    Ok(Some(result)) => Ok(result),
+                    Ok(None) if commit_reply_lost(&err) => Err(PersistError::storage(
+                        "commit outcome unknown: the command key was not committed and the connection could not prove it",
+                    )),
+                    Ok(None) => Err(err),
+                    Err(read_err) => Err(PersistError::storage(format!(
+                        "commit outcome unknown: {read_err}"
+                    ))),
+                }
             }
             Err(err) => Err(err),
         }
+    }
+
+    fn consume_hidden_reply(&mut self) -> bool {
+        #[cfg(test)]
+        {
+            let hide = self.hide_commit_reply;
+            self.hide_commit_reply = false;
+            hide
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hide_next_commit_reply(&mut self) {
+        self.hide_commit_reply = true;
     }
 
     pub(crate) fn save_restore(
@@ -275,8 +340,34 @@ struct WriterMarker {
 
 fn write_marker(dir: &Path) -> Result<(), PersistError> {
     let path = dir.join(DURABLE_WRITER_FILE);
+    #[cfg(test)]
+    if MARKER_WRITE_FAILS.swap(false, Ordering::Relaxed) {
+        return Err(PersistError::io(
+            &path,
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated durable writer marker failure",
+            ),
+        ));
+    }
     let bytes = br#"{"schema_version":1,"writer":"postgresql"}"#;
     replace_file_recoverable(&path, bytes).map_err(|err| PersistError::io(&path, err))
+}
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(test)]
+static MARKER_WRITE_FAILS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn fail_next_marker_write() {
+    MARKER_WRITE_FAILS.store(true, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn fence_file_writer(dir: &Path) -> Result<(), PersistError> {
+    write_marker(dir)
 }
 
 fn connect_url(url: &str) -> Result<Client, PersistError> {
@@ -322,6 +413,41 @@ fn database_name(url: &str) -> Result<String, PersistError> {
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .ok_or_else(|| PersistError::storage("database url is missing a database name"))
+}
+
+fn database_user(url: &str) -> Result<String, PersistError> {
+    let config =
+        Config::from_str(url).map_err(|_| PersistError::storage("invalid database url"))?;
+    config
+        .get_user()
+        .filter(|user| !user.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| PersistError::storage("database url is missing a user"))
+}
+
+fn grant_runtime(
+    client: &mut Client,
+    schema: &str,
+    runtime_user: &str,
+) -> Result<(), PersistError> {
+    let schema_sql: String = client
+        .query_one("SELECT quote_ident($1)", &[&schema])
+        .map_err(map_sql)?
+        .get(0);
+    let user_sql: String = client
+        .query_one("SELECT quote_ident($1)", &[&runtime_user])
+        .map_err(map_sql)?
+        .get(0);
+    // Runtime can read the migration history and change character-owned rows.
+    // It cannot create or drop objects. Fact clears are the only deletes.
+    let sql = format!(
+        "GRANT USAGE ON SCHEMA {schema_sql} TO {user_sql};
+         GRANT SELECT ON {schema_sql}.schema_migrations TO {user_sql};
+         GRANT SELECT, INSERT, UPDATE ON {schema_sql}.durable_meta, {schema_sql}.characters, {schema_sql}.item_instances TO {user_sql};
+         GRANT SELECT, INSERT ON {schema_sql}.dev_users, {schema_sql}.character_npcs_met, {schema_sql}.character_dialogue_heard, {schema_sql}.character_learned_abilities, {schema_sql}.durable_commands TO {user_sql};
+         GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_facts TO {user_sql};"
+    );
+    client.batch_execute(&sql).map_err(map_sql)
 }
 
 fn validated_schema(name: &str) -> Result<(), PersistError> {
@@ -419,10 +545,10 @@ fn initialize(client: &mut Client, dir: &Path) -> Result<(), PersistError> {
         if existing.is_some() {
             return Ok(());
         }
-        if marker_is_postgresql(dir)? {
+        if !marker_is_postgresql(dir)? {
             return Err(PersistError::migration(
                 dir,
-                "durable writer marker is present but this database has no cutover; refusing to import",
+                "refusing to import before the file writer is fenced",
             ));
         }
         let plan = inventory_source(dir)?;
@@ -430,12 +556,41 @@ fn initialize(client: &mut Client, dir: &Path) -> Result<(), PersistError> {
         Ok(())
     })();
     match result {
-        Ok(()) => tx.commit().map_err(map_sql),
+        Ok(()) => tx.commit().map_err(|err| ambiguous_commit(map_sql(err))),
         Err(err) => {
             let _ = tx.rollback();
             Err(err)
         }
     }
+}
+
+fn fence_before_import(client: &mut Client, dir: &Path) -> Result<(), PersistError> {
+    let cutover = cutover_present(client)?;
+    let marker = marker_is_postgresql(dir)?;
+    if cutover && !marker {
+        return Err(PersistError::migration(
+            dir,
+            "database cutover is committed but durable_writer.json is missing; refusing to open so file changes are not ignored",
+        ));
+    }
+    if !cutover {
+        write_marker(dir)?;
+    }
+    Ok(())
+}
+
+fn cutover_present(client: &mut Client) -> Result<bool, PersistError> {
+    let present: bool = client
+        .query_one("SELECT to_regclass('durable_meta') IS NOT NULL", &[])
+        .map_err(map_sql)?
+        .get(0);
+    if !present {
+        return Ok(false);
+    }
+    let row = client
+        .query_opt("SELECT value FROM durable_meta WHERE key = 'cutover'", &[])
+        .map_err(map_sql)?;
+    Ok(row.is_some())
 }
 
 fn marker_is_postgresql(dir: &Path) -> Result<bool, PersistError> {
@@ -659,14 +814,15 @@ fn commit_once(
     client: &mut Client,
     command: &DurableCommand,
     request: &str,
+    rules: &DurableContentRules,
 ) -> Result<DurableCommandResult, PersistError> {
     let mut tx = client.transaction().map_err(map_sql)?;
-    let result = apply_command(&mut tx, command, request);
+    let result = apply_command(&mut tx, command, request, rules);
     match result {
-        Ok(value) => {
-            tx.commit().map_err(map_sql)?;
-            Ok(value)
-        }
+        Ok(value) => match tx.commit() {
+            Ok(()) => Ok(value),
+            Err(err) => Err(ambiguous_commit(map_sql(err))),
+        },
         Err(err) => {
             let _ = tx.rollback();
             Err(err)
@@ -678,6 +834,7 @@ fn apply_command(
     tx: &mut postgres::Transaction<'_>,
     command: &DurableCommand,
     request: &str,
+    rules: &DurableContentRules,
 ) -> Result<DurableCommandResult, PersistError> {
     if let Some(result) = locked_command(tx, &command.key, request)? {
         return Ok(result);
@@ -728,12 +885,20 @@ fn apply_command(
             "command revisions do not match the characters that own or receive the change",
         ));
     }
-    let minted = place_items(tx, command)?;
-    for item in &command.moves {
-        move_item(tx, item.item_instance_id, item.to)?;
-    }
+    // Retire and park before inserts. A reward can reuse a slot that this
+    // command frees, and two live items can exchange slots, while uniqueness
+    // still rejects two final occupants.
     for id in &command.retire {
         retire_item(tx, *id)?;
+    }
+    for item in &command.moves {
+        if matches!(item.to, LiveDestination::Character { .. }) {
+            move_item(tx, item.item_instance_id, LiveDestination::Ground, rules)?;
+        }
+    }
+    let minted = place_items(tx, command)?;
+    for item in &command.moves {
+        move_item(tx, item.item_instance_id, item.to, rules)?;
     }
     for write in &command.narrative {
         apply_narrative(tx, write)?;
@@ -949,7 +1114,12 @@ fn move_item(
     tx: &mut postgres::Transaction<'_>,
     id: ItemInstanceId,
     to: LiveDestination,
+    rules: &DurableContentRules,
 ) -> Result<(), PersistError> {
+    if let LiveDestination::Character { location, .. } = to {
+        let (definition, quantity) = committed_item_content(tx, id)?;
+        domain::validate_item_content(definition, quantity, location, rules)?;
+    }
     let raw = id_bytes(id.raw());
     let (owner, kind, inventory, equipment): (Option<Vec<u8>>, &str, Option<i16>, Option<String>) =
         match to {
@@ -989,6 +1159,32 @@ fn move_item(
         ));
     }
     Ok(())
+}
+
+fn committed_item_content(
+    tx: &mut postgres::Transaction<'_>,
+    id: ItemInstanceId,
+) -> Result<(ContentId, u32), PersistError> {
+    let raw = id_bytes(id.raw());
+    let row = tx
+        .query_opt(
+            "SELECT definition_content_id, quantity FROM item_instances WHERE item_instance_id = $1",
+            &[&raw.as_slice()],
+        )
+        .map_err(map_sql)?;
+    let Some(row) = row else {
+        return Err(PersistError::conflict(
+            db_path(),
+            format!("item {} does not exist", id.raw()),
+        ));
+    };
+    let definition: i32 = row.get(0);
+    let quantity: i32 = row.get(1);
+    let definition = u32::try_from(definition)
+        .map_err(|_| PersistError::integrity(db_path(), "stored item definition is negative"))?;
+    let quantity = u32::try_from(quantity)
+        .map_err(|_| PersistError::integrity(db_path(), "stored item quantity is negative"))?;
+    Ok((ContentId::from_raw(definition), quantity))
 }
 
 fn retire_item(tx: &mut postgres::Transaction<'_>, id: ItemInstanceId) -> Result<(), PersistError> {
@@ -1081,11 +1277,28 @@ fn apply_narrative(
     Ok(())
 }
 
-fn read_committed_command(
+fn command_key_race(err: &PersistError) -> bool {
+    matches!(err, PersistError::Conflict { reason, .. } if reason.contains("durable_commands_pkey"))
+}
+
+fn commit_reply_lost(err: &PersistError) -> bool {
+    matches!(err, PersistError::Storage { reason } if reason.starts_with("commit outcome unknown"))
+}
+
+fn ambiguous_commit(err: PersistError) -> PersistError {
+    match err {
+        PersistError::Storage { reason } => {
+            PersistError::storage(format!("commit outcome unknown: {reason}"))
+        }
+        other => other,
+    }
+}
+
+fn stored_result_if_same(
     client: &mut Client,
     key: &str,
     request: &str,
-) -> Result<DurableCommandResult, PersistError> {
+) -> Result<Option<DurableCommandResult>, PersistError> {
     let row = client
         .query_opt(
             "SELECT request_json, result_json FROM durable_commands WHERE command_key = $1",
@@ -1093,10 +1306,7 @@ fn read_committed_command(
         )
         .map_err(map_sql)?;
     let Some(row) = row else {
-        return Err(PersistError::conflict(
-            db_path(),
-            "durable command lost a uniqueness race and was not committed",
-        ));
+        return Ok(None);
     };
     let stored_request: String = row.get(0);
     if stored_request != request {
@@ -1109,11 +1319,20 @@ fn read_committed_command(
     let parsed: StoredResult = serde_json::from_str(&stored_result).map_err(|err| {
         PersistError::integrity(db_path(), format!("stored command result: {err}"))
     })?;
-    Ok(parsed.into_public())
+    Ok(Some(parsed.into_public()))
 }
 
-fn command_key_race(err: &PersistError) -> bool {
-    matches!(err, PersistError::Conflict { reason, .. } if reason.contains("durable_commands_pkey"))
+fn recover_hidden_commit(
+    client: &mut Client,
+    key: &str,
+    request: &str,
+) -> Result<DurableCommandResult, PersistError> {
+    match stored_result_if_same(client, key, request)? {
+        Some(result) => Ok(result),
+        None => Err(PersistError::storage(
+            "commit outcome unknown: the commit reply was lost and the command key is not stored",
+        )),
+    }
 }
 
 fn save_restore(
@@ -1125,7 +1344,9 @@ fn save_restore(
         let raw = id_bytes(snapshot.character_id.raw());
         let row = tx
             .query_opt(
-                "SELECT persistence_revision FROM characters WHERE character_id = $1 FOR UPDATE",
+                "SELECT persistence_revision, restore_map_authored, restore_point_id,
+                        restore_checkpoint_id, instance_exit_reason
+                 FROM characters WHERE character_id = $1 FOR UPDATE",
                 &[&raw.as_slice()],
             )
             .map_err(map_sql)?;
@@ -1141,15 +1362,52 @@ fn save_restore(
         let current: i64 = row.get(0);
         let current = u64::try_from(current)
             .map_err(|_| PersistError::integrity(db_path(), "stored revision is negative"))?;
-        if snapshot.persistence_revision <= current {
+        let stored_map: String = row.get(1);
+        let stored_point: String = row.get(2);
+        let stored_checkpoint: Option<String> = row.get(3);
+        let stored_exit: Option<String> = row.get(4);
+        let same_restore = stored_map == snapshot.restore.map_authored
+            && stored_point == snapshot.restore.point_id
+            && stored_checkpoint.as_deref() == snapshot.restore.checkpoint_id.as_deref()
+            && stored_exit.as_deref()
+                == snapshot
+                    .instance_exit
+                    .as_ref()
+                    .and_then(|exit| exit.reason.as_deref());
+        if snapshot.persistence_revision < current
+            || (snapshot.persistence_revision == current && same_restore)
+        {
             return Ok(());
         }
-        let revision = revision_i64(snapshot.persistence_revision)?;
-        let checkpoint = snapshot.restore.checkpoint_id.as_deref();
-        let exit_reason = snapshot
-            .instance_exit
-            .as_ref()
-            .and_then(|exit| exit.reason.as_deref());
+        if snapshot.persistence_revision > current {
+            let revision = revision_i64(snapshot.persistence_revision)?;
+            write_restore(&mut tx, &raw, Some(revision), &snapshot)?;
+        } else {
+            write_restore(&mut tx, &raw, None, &snapshot)?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => tx.commit().map_err(map_sql),
+        Err(err) => {
+            let _ = tx.rollback();
+            Err(err)
+        }
+    }
+}
+
+fn write_restore(
+    tx: &mut postgres::Transaction<'_>,
+    raw: &[u8; 8],
+    revision: Option<i64>,
+    snapshot: &PersistentCharacterSnapshot,
+) -> Result<(), PersistError> {
+    let checkpoint = snapshot.restore.checkpoint_id.as_deref();
+    let exit_reason = snapshot
+        .instance_exit
+        .as_ref()
+        .and_then(|exit| exit.reason.as_deref());
+    let updated = if let Some(revision) = revision {
         tx.execute(
             "UPDATE characters
              SET persistence_revision = $2, restore_map_authored = $3, restore_point_id = $4,
@@ -1164,16 +1422,30 @@ fn save_restore(
                 &exit_reason,
             ],
         )
-        .map_err(map_sql)?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => tx.commit().map_err(map_sql),
-        Err(err) => {
-            let _ = tx.rollback();
-            Err(err)
-        }
+        .map_err(map_sql)?
+    } else {
+        tx.execute(
+            "UPDATE characters
+             SET restore_map_authored = $2, restore_point_id = $3,
+                 restore_checkpoint_id = $4, instance_exit_reason = $5
+             WHERE character_id = $1",
+            &[
+                &raw.as_slice() as &(dyn ToSql + Sync),
+                &snapshot.restore.map_authored.as_str(),
+                &snapshot.restore.point_id.as_str(),
+                &checkpoint,
+                &exit_reason,
+            ],
+        )
+        .map_err(map_sql)?
+    };
+    if updated != 1 {
+        return Err(PersistError::conflict(
+            db_path(),
+            "character restore changed during the save",
+        ));
     }
+    Ok(())
 }
 
 fn create_character(
@@ -1756,4 +2028,136 @@ enum CanonNarrative {
         npc_content_id: u64,
         beat_id: String,
     },
+}
+
+#[cfg(test)]
+pub(crate) struct EphemeralRoles {
+    pub runtime: PostgresSettings,
+    admin_url: String,
+    migration_role: String,
+    runtime_role: String,
+}
+
+#[cfg(test)]
+impl Drop for EphemeralRoles {
+    fn drop(&mut self) {
+        if let Err(err) =
+            release_ephemeral_roles(&self.admin_url, &self.migration_role, &self.runtime_role)
+        {
+            eprintln!("PURGATORY ephemeral role cleanup failed: {err}");
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn provision_ephemeral_roles(
+    admin: &PostgresSettings,
+) -> Result<EphemeralRoles, PersistError> {
+    let mut client = connect_url(&admin.url)?;
+    let seq = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let migration_role = format!("p12a_m_{}_{seq}", std::process::id());
+    let runtime_role = format!("p12a_r_{}_{seq}", std::process::id());
+    let password = format!("p12a{seq}");
+    for role in [&migration_role, &runtime_role] {
+        let sql: String = client
+            .query_one(
+                "SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD %L', $1::text, $2::text)",
+                &[role, &password],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        client.batch_execute(&sql).map_err(map_sql)?;
+    }
+    let database = database_name(&admin.url)?;
+    let grant_create: String = client
+        .query_one(
+            "SELECT format('GRANT CREATE ON DATABASE %I TO %I', $1::text, $2::text)",
+            &[&database, &migration_role],
+        )
+        .map_err(map_sql)?
+        .get(0);
+    client.batch_execute(&grant_create).map_err(map_sql)?;
+    let runtime = PostgresSettings::for_tests(
+        replace_userinfo(&admin.url, &runtime_role, &password)?,
+        admin.schema.clone(),
+    )?
+    .with_migration_url(replace_userinfo(&admin.url, &migration_role, &password)?)?;
+    Ok(EphemeralRoles {
+        runtime,
+        admin_url: admin.url.clone(),
+        migration_role,
+        runtime_role,
+    })
+}
+
+#[cfg(test)]
+fn release_ephemeral_roles(
+    admin_url: &str,
+    migration_role: &str,
+    runtime_role: &str,
+) -> Result<(), PersistError> {
+    let mut client = connect_url(admin_url)?;
+    for role in [migration_role, runtime_role] {
+        let exists: bool = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)",
+                &[&role],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        if !exists {
+            continue;
+        }
+        let reassign: String = client
+            .query_one(
+                "SELECT format('REASSIGN OWNED BY %I TO CURRENT_USER', $1::text)",
+                &[&role],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        client.batch_execute(&reassign).map_err(map_sql)?;
+        let drop_owned: String = client
+            .query_one("SELECT format('DROP OWNED BY %I', $1::text)", &[&role])
+            .map_err(map_sql)?
+            .get(0);
+        client.batch_execute(&drop_owned).map_err(map_sql)?;
+        let drop_role: String = client
+            .query_one("SELECT format('DROP ROLE %I', $1::text)", &[&role])
+            .map_err(map_sql)?
+            .get(0);
+        client.batch_execute(&drop_role).map_err(map_sql)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn replace_userinfo(url: &str, user: &str, password: &str) -> Result<String, PersistError> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| PersistError::storage("invalid database url"))?;
+    let after_user = rest.split_once('@').map(|(_, after)| after).unwrap_or(rest);
+    Ok(format!("{scheme}://{user}:{password}@{after_user}"))
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_cannot_create_table(
+    settings: &PostgresSettings,
+) -> Result<bool, PersistError> {
+    let mut client = connect_url(&settings.url)?;
+    prepare_schema(&mut client, &settings.schema, false)?;
+    match client.batch_execute("CREATE TABLE runtime_must_not_create (id integer)") {
+        Ok(()) => Ok(false),
+        Err(err) => {
+            let mapped = map_sql(err);
+            let text = mapped.to_string().to_ascii_lowercase();
+            if text.contains("permission denied") || text.contains("must be owner") {
+                Ok(true)
+            } else {
+                Err(mapped)
+            }
+        }
+    }
 }
