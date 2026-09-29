@@ -19,6 +19,7 @@ mod dialogue_actions;
 mod endpoint;
 mod gameplay;
 mod handshake;
+mod lease_clock;
 mod load_pressure;
 mod metrics_export;
 mod narrative;
@@ -115,14 +116,15 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     println!("PURGATORY persist data_dir={}", data_dir.display());
     let persist = persist::PersistenceHandle::spawn_from_env(&data_dir)?;
     let channel_live = Arc::new(AtomicBool::new(true));
-    let held_channel = claim_startup_channel(&persist).await?;
+    let held_channel = claim_startup_channel(&persist, &channel_live).await?;
     let (stop_channel_tx, stop_channel_rx) = tokio::sync::watch::channel(false);
-    if let Some((channel_id, generation)) = held_channel {
+    if let Some((channel_id, generation, deadline)) = held_channel {
         spawn_channel_renewal(
             persist.clone(),
             gameplay_tx.clone(),
             channel_live.clone(),
             stop_channel_rx,
+            deadline,
             channel_id,
             generation,
         );
@@ -263,8 +265,10 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                 owner.flush_persistent_snapshots();
                 domains.force_write();
                 let _ = stop_channel_tx.send(true);
-                let status = persist
-                    .shutdown(config.persistence_shutdown_timeout, held_channel)
+                let status = persist.shutdown(
+                    config.persistence_shutdown_timeout,
+                    held_channel.map(|(channel_id, generation, _)| (channel_id, generation)),
+                )
                     .await;
                 match status {
                     persist::PersistenceShutdown::Drained { save_failures } => {
@@ -292,13 +296,15 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
 
 async fn claim_startup_channel(
     persist: &persist::PersistenceHandle,
-) -> Result<Option<(i64, u64)>, String> {
+    channel_live: &AtomicBool,
+) -> Result<Option<(i64, u64, lease_clock::LocalLeaseDeadline)>, String> {
     if purgatory_persistence::PostgresSettings::from_env()
         .map_err(|err| format!("postgresql settings: {err}"))?
         .is_none()
     {
         return Ok(None);
     }
+    let sent = tokio::time::Instant::now();
     match persist
         .claim_channel(0)
         .await
@@ -309,10 +315,24 @@ async fn claim_startup_channel(
             generation,
             retired_ground,
         } => {
+            let deadline = lease_clock::LocalLeaseDeadline::from_request(
+                sent,
+                purgatory_persistence::CHANNEL_GENERATION_EXPIRY,
+            );
+            if !deadline.reply_still_authorizes(tokio::time::Instant::now()) {
+                channel_live.store(false, Ordering::Relaxed);
+                if let Err(err) = persist.release_channel(channel_id, generation).await {
+                    eprintln!("PURGATORY channel release after a late claim reply failed: {err}");
+                }
+                return Err(
+                    "channel claim reply crossed the local generation deadline; refusing to start"
+                        .into(),
+                );
+            }
             println!(
                 "PURGATORY channel claimed id={channel_id} generation={generation} retired_ground={retired_ground}"
             );
-            Ok(Some((channel_id, generation)))
+            Ok(Some((channel_id, generation, deadline)))
         }
         purgatory_persistence::ChannelClaim::Busy {
             channel_id,
@@ -327,32 +347,31 @@ fn spawn_channel_renewal(
     worker: persist::PersistenceHandle,
     gameplay: gameplay::GameplayTx,
     channel_live: Arc<AtomicBool>,
-    mut stop: tokio::sync::watch::Receiver<bool>,
+    stop: tokio::sync::watch::Receiver<bool>,
+    deadline: lease_clock::LocalLeaseDeadline,
     channel_id: i64,
     generation: u64,
 ) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(purgatory_persistence::CHANNEL_GENERATION_RENEWAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        interval.tick().await;
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if worker.renew_channel(channel_id, generation).await.is_err() {
-                        channel_live.store(false, Ordering::Relaxed);
-                        eprintln!(
-                            "PURGATORY channel generation renewal failed; gameplay admission stopped"
-                        );
-                        let _ = gameplay.lose_all_authority().await;
-                        break;
-                    }
+        let stop = lease_clock::supervise_renewal(
+            move || {
+                let worker = worker.clone();
+                async move {
+                    worker
+                        .renew_channel(channel_id, generation)
+                        .await
+                        .map_err(|_| ())
                 }
-                result = stop.changed() => {
-                    if result.is_err() || *stop.borrow() {
-                        break;
-                    }
-                }
-            }
+            },
+            deadline,
+            purgatory_persistence::CHANNEL_GENERATION_RENEWAL,
+            stop,
+        )
+        .await;
+        if lease_clock::authority_ends(stop) {
+            channel_live.store(false, Ordering::Relaxed);
+            eprintln!("PURGATORY channel generation renewal stopped; gameplay admission stopped");
+            let _ = gameplay.lose_all_authority().await;
         }
     });
 }

@@ -317,6 +317,14 @@ impl PersistenceService {
     }
 
     #[cfg(test)]
+    pub fn unstamp_ground_for_test(&mut self, id: ItemInstanceId) -> Result<(), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Ok(()),
+            Backend::Postgres(store) => store.unstamp_ground_for_test(id),
+        }
+    }
+
+    #[cfg(test)]
     pub fn hide_next_commit_reply_for_test(&mut self) {
         if let Backend::Postgres(store) = &mut self.backend {
             store.hide_next_commit_reply();

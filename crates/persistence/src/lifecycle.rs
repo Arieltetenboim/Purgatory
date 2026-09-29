@@ -378,22 +378,28 @@ pub(crate) fn release_channel(
     channel_id: i64,
     generation: u64,
 ) -> Result<(), PersistError> {
-    let deleted = tx
+    // Expire in place. Deleting the row would let the next claim insert
+    // generation 1 again, so a ground item stamped with generation 1 would
+    // survive the restart and the released generation could renew.
+    let expired = tx
         .execute(
-            "DELETE FROM channel_generations WHERE channel_id = $1 AND generation = $2",
+            "UPDATE channel_generations
+             SET expires_at = clock_timestamp() - interval '1 second'
+             WHERE channel_id = $1 AND generation = $2
+               AND expires_at > clock_timestamp()",
             &[&channel_id, &revision_i64(generation)?],
         )
         .map_err(map_sql)?;
-    if deleted != 1 {
+    if expired != 1 {
         Err(PersistError::LeaseLost)
     } else {
         Ok(())
     }
 }
 
-/// Retire ordinary ground rows for one channel generation. Rows owned by
-/// another generation are left in place. Null-scoped rows are previous-run
-/// drops and are retired only when no other channel generation is live.
+/// Retire ordinary ground rows for one channel generation. Rows stamped for
+/// another channel are left in place. Null-scoped rows are previous-run drops
+/// and are retired on this claim even when another channel is live.
 pub(crate) fn retire_ground(
     tx: &mut Transaction<'_>,
     channel_id: i64,
@@ -433,14 +439,10 @@ pub(crate) fn retire_ground(
                  SELECT item_instance_id FROM item_instances
                  WHERE state = 'live' AND location_kind = 'ground'
                    AND ground_channel_id IS NULL
-                   AND NOT EXISTS (
-                       SELECT 1 FROM channel_generations
-                       WHERE channel_id <> $1 AND expires_at > clock_timestamp()
-                   )
                  ORDER BY item_instance_id
-                 LIMIT $2
+                 LIMIT $1
              )",
-            &[&channel_id, &remaining],
+            &[&remaining],
         )
         .map_err(map_sql)?;
     Ok(scoped.saturating_add(unscoped))

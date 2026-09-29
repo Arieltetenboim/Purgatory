@@ -1520,6 +1520,166 @@ fn ground_retirement_is_scoped_idempotent_and_does_not_reuse_ids() {
 
 #[test]
 #[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn clean_channel_release_keeps_generation_monotonic_and_retires_stamped_ground() {
+    with_db(|dir, settings| {
+        let mut holder = open(dir, settings);
+        let alice = login("alice");
+        let id = holder
+            .create_character(&alice, "Alpha")
+            .unwrap()
+            .character_id;
+        let ChannelClaim::Claimed {
+            generation: first, ..
+        } = holder.claim_channel(0, None).unwrap()
+        else {
+            panic!("channel 0 should be claimed");
+        };
+        let item = holder
+            .commit_durable(&mint(id, 1, "stamped"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut holder, id, item, 2);
+        holder.release_channel(0, first).unwrap();
+        assert!(matches!(
+            holder.renew_channel(0, first),
+            Err(PersistError::LeaseLost)
+        ));
+        assert!(matches!(
+            holder.release_channel(0, first),
+            Err(PersistError::LeaseLost)
+        ));
+        drop(holder);
+
+        let mut restarted = open(dir, settings);
+        let ChannelClaim::Claimed {
+            generation: second,
+            retired_ground,
+            ..
+        } = restarted.claim_channel(0, None).unwrap()
+        else {
+            panic!("restart after clean release should claim");
+        };
+        assert!(
+            second > first,
+            "generation reused after clean release: {first} then {second}"
+        );
+        assert!(retired_ground >= 1);
+        assert_eq!(
+            restarted.item(item).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        let mut stale = open(dir, settings);
+        assert!(matches!(
+            stale.renew_channel(0, first),
+            Err(PersistError::LeaseLost)
+        ));
+        assert!(matches!(
+            stale.release_channel(0, first),
+            Err(PersistError::LeaseLost)
+        ));
+
+        drop(restarted);
+        let mut crashed = open(dir, settings);
+        assert!(matches!(
+            crashed.claim_channel(0, None).unwrap(),
+            ChannelClaim::Busy { generation, .. } if generation == second
+        ));
+        crashed.expire_channel_for_test(0).unwrap();
+        let ChannelClaim::Claimed {
+            generation: third, ..
+        } = crashed.claim_channel(0, None).unwrap()
+        else {
+            panic!("expired channel should be claimable");
+        };
+        assert!(third > second);
+        assert!(matches!(
+            crashed.renew_channel(0, second),
+            Err(PersistError::LeaseLost)
+        ));
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn unscoped_ground_is_retired_before_admission_while_another_channel_is_live() {
+    with_db(|dir, settings| {
+        let mut live_a = open(dir, settings);
+        let mut live_b = open(dir, settings);
+        let mut starter = open(dir, settings);
+        let alice = login("alice");
+        let id = live_a
+            .create_character(&alice, "Alpha")
+            .unwrap()
+            .character_id;
+        let ChannelClaim::Claimed {
+            generation: gen_a, ..
+        } = live_a.claim_channel(1, None).unwrap()
+        else {
+            panic!("channel 1 should be claimed");
+        };
+        let ChannelClaim::Claimed {
+            generation: gen_b, ..
+        } = live_b.claim_channel(2, None).unwrap()
+        else {
+            panic!("channel 2 should be claimed");
+        };
+        let kept_b = live_b
+            .commit_durable(&mint(id, 1, "kept-b"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut live_b, id, kept_b, 2);
+        let kept_a = live_a
+            .commit_durable(&mint(id, 3, "kept-a"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut live_a, id, kept_a, 4);
+        let old = live_a
+            .commit_durable(&mint(id, 5, "unscoped"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut live_a, id, old, 6);
+        live_a.unstamp_ground_for_test(old).unwrap();
+        assert_eq!(live_a.item(old).unwrap().unwrap().owner, ItemOwner::Ground);
+
+        let ChannelClaim::Claimed { retired_ground, .. } = starter.claim_channel(0, None).unwrap()
+        else {
+            panic!("startup claim should proceed while other channels are live");
+        };
+        assert!(
+            retired_ground >= 1,
+            "unscoped ground was not retired before admission"
+        );
+        assert_eq!(
+            starter.item(old).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        assert_eq!(
+            live_a.item(kept_a).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+        assert_eq!(
+            live_b.item(kept_b).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+        assert!(matches!(
+            starter.admit(&alice, id).unwrap(),
+            SessionAdmission::Granted { .. }
+        ));
+        assert_eq!(
+            starter.item(old).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        assert_eq!(
+            live_b.item(kept_b).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+        live_a.renew_channel(1, gen_a).unwrap();
+        live_b.renew_channel(2, gen_b).unwrap();
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
 fn process_exit_leaves_a_committed_lease_until_expiry() {
     if std::env::var("P12B_CRASH_CHILD").ok().as_deref() == Some("1") {
         crash_child_admits_and_aborts();

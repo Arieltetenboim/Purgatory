@@ -5652,6 +5652,96 @@ mod tests {
         assert_eq!(owner.ticks(), 0);
     }
 
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stalled_lease_renewal_stops_gameplay_before_another_world_takes_input() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let mut owner = GameplayOwner::new();
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(7));
+        let connection = ConnectionId::from_raw(1);
+        owner
+            .enter(connection, character.clone(), None, None)
+            .unwrap();
+        owner.set_authority(connection, test_lease(character.character_id, 1));
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(1, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept
+        );
+
+        let (late_tx, late_rx) = tokio::sync::oneshot::channel::<()>();
+        let late_rx = Arc::new(Mutex::new(Some(late_rx)));
+        let started = Arc::new(AtomicBool::new(false));
+        let started_flag = started.clone();
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let expiry = purgatory_persistence::CHARACTER_LEASE_EXPIRY;
+        let renewal = purgatory_persistence::CHARACTER_LEASE_RENEWAL;
+        let supervise = tokio::spawn(crate::network::lease_clock::supervise_renewal(
+            move || {
+                let started_flag = started_flag.clone();
+                let late_rx = late_rx.clone();
+                async move {
+                    started_flag.store(true, Ordering::SeqCst);
+                    let rx = late_rx.lock().expect("lock").take().expect("one renewal");
+                    let _ = rx.await;
+                    Ok(())
+                }
+            },
+            crate::network::lease_clock::LocalLeaseDeadline::from_request(
+                tokio::time::Instant::now(),
+                expiry,
+            ),
+            renewal,
+            stop_rx,
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(renewal + std::time::Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            started.load(Ordering::SeqCst),
+            "renewal did not start before the deadline"
+        );
+        tokio::time::advance(expiry.saturating_sub(renewal) + std::time::Duration::from_millis(50))
+            .await;
+        tokio::task::yield_now().await;
+        assert!(
+            supervise.is_finished(),
+            "local deadline did not stop a renewal still blocked on the worker"
+        );
+        let stop = supervise.await.unwrap();
+        assert!(crate::network::lease_clock::authority_ends(stop));
+        assert!(late_tx.is_closed());
+        owner.lose_authority(connection);
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(2, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale
+        );
+
+        let mut takeover = GameplayOwner::new();
+        let takeover_connection = ConnectionId::from_raw(2);
+        takeover
+            .enter(takeover_connection, character, None, None)
+            .unwrap();
+        assert_eq!(
+            takeover.apply_input(command_update(
+                takeover_connection,
+                cmd(1, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept
+        );
+        let channel_live = AtomicBool::new(true);
+        if crate::network::lease_clock::authority_ends(stop) {
+            channel_live.store(false, Ordering::Relaxed);
+        }
+        assert!(!channel_live.load(Ordering::Relaxed));
+    }
+
     #[test]
     fn packet_burst_does_not_create_ticks() {
         let mut owner = GameplayOwner::new();

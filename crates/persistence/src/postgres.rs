@@ -513,6 +513,33 @@ impl PostgresStore {
         Ok(())
     }
 
+    /// Leave a live ground row with no channel stamp. Production ground writes
+    /// stamp the one claimed channel; this only recreates a legacy row.
+    #[cfg(test)]
+    pub(crate) fn unstamp_ground_for_test(
+        &mut self,
+        id: ItemInstanceId,
+    ) -> Result<(), PersistError> {
+        let raw = id_bytes(id.raw());
+        let updated = self
+            .client
+            .execute(
+                "UPDATE item_instances
+                 SET ground_channel_id = NULL, ground_generation = NULL
+                 WHERE item_instance_id = $1 AND state = 'live' AND location_kind = 'ground'",
+                &[&raw.as_slice()],
+            )
+            .map_err(map_sql)?;
+        if updated != 1 {
+            Err(PersistError::integrity(
+                db_path(),
+                "ground item was not unstamped",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) fn create_character(
         &mut self,
         login: &DevLogin,

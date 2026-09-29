@@ -437,7 +437,10 @@ async fn activate_owned_character(
         ReplicationPipe,
         tokio::sync::watch::Receiver<u64>,
         tokio::sync::mpsc::Receiver<ServerControl>,
-        Option<purgatory_persistence::LeaseAuthority>,
+        Option<(
+            purgatory_persistence::LeaseAuthority,
+            super::lease_clock::LocalLeaseDeadline,
+        )>,
     ),
     purgatory_protocol::CharacterEnterRejection,
 > {
@@ -447,11 +450,12 @@ async fn activate_owned_character(
     if !channel_live.load(Ordering::Relaxed) {
         return Err(R::StorageFailure);
     }
+    let admit_sent = tokio::time::Instant::now();
     let admission = worker
         .admit(login.clone(), character_id)
         .await
         .map_err(|_| R::StorageFailure)?;
-    let (owned, authority) = match admission {
+    let (owned, authority, deadline) = match admission {
         SessionAdmission::NotOwned => return Err(R::NotOwned),
         SessionAdmission::Held => {
             let stopped = tx
@@ -469,15 +473,46 @@ async fn activate_owned_character(
                 );
                 return Err(R::StorageFailure);
             }
+            let supersede_sent = tokio::time::Instant::now();
             match worker.supersede(old).await {
-                Ok((authority, owned)) => (owned, Some(authority)),
+                Ok((authority, owned)) => {
+                    let deadline = super::lease_clock::LocalLeaseDeadline::from_request(
+                        supersede_sent,
+                        purgatory_persistence::CHARACTER_LEASE_EXPIRY,
+                    );
+                    if !deadline.reply_still_authorizes(tokio::time::Instant::now()) {
+                        release_unused_lease(worker, Some(authority)).await;
+                        eprintln!(
+                            "PURGATORY persist supersede reply crossed the local lease deadline; gameplay was not entered"
+                        );
+                        return Err(R::StorageFailure);
+                    }
+                    (owned, Some(authority), Some(deadline))
+                }
                 Err(err) => {
                     eprintln!("PURGATORY persist supersede failed: {err}");
                     return Err(R::StorageFailure);
                 }
             }
         }
-        SessionAdmission::Granted { authority, restore } => (*restore, authority),
+        SessionAdmission::Granted { authority, restore } => {
+            let deadline = authority.as_ref().map(|_| {
+                super::lease_clock::LocalLeaseDeadline::from_request(
+                    admit_sent,
+                    purgatory_persistence::CHARACTER_LEASE_EXPIRY,
+                )
+            });
+            if deadline
+                .is_some_and(|bound| !bound.reply_still_authorizes(tokio::time::Instant::now()))
+            {
+                release_unused_lease(worker, authority).await;
+                eprintln!(
+                    "PURGATORY persist admit reply crossed the local lease deadline; gameplay was not entered"
+                );
+                return Err(R::StorageFailure);
+            }
+            (*restore, authority, deadline)
+        }
     };
     let (pipe, wake) = ReplicationPipe::new();
     let (interact_tx, rx) = tokio::sync::mpsc::channel(16);
@@ -491,7 +526,19 @@ async fn activate_owned_character(
         )
         .await
     {
-        Ok(Ok(())) => Ok((pipe, wake, rx, authority)),
+        Ok(Ok(())) => {
+            let leased = match authority {
+                Some(authority) => {
+                    let Some(deadline) = deadline else {
+                        release_unused_lease(worker, Some(authority)).await;
+                        return Err(R::StorageFailure);
+                    };
+                    Some((authority, deadline))
+                }
+                None => None,
+            };
+            Ok((pipe, wake, rx, leased))
+        }
         Ok(Err(EnterError::Occupied | EnterError::Pending)) => {
             release_unused_lease(worker, authority).await;
             Err(R::Occupied)
@@ -523,29 +570,26 @@ fn spawn_lease_renewal(
     gameplay: GameplayTx,
     connection_id: purgatory_protocol::ConnectionId,
     authority: purgatory_persistence::LeaseAuthority,
+    deadline: super::lease_clock::LocalLeaseDeadline,
 ) -> tokio::sync::watch::Sender<bool> {
-    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(purgatory_persistence::CHARACTER_LEASE_RENEWAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        interval.tick().await;
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if worker.renew_lease(authority.clone()).await.is_err() {
-                        eprintln!(
-                            "PURGATORY persist lease renewal failed; gameplay stopped connection={connection_id}"
-                        );
-                        let _ = gameplay.lose_authority(connection_id).await;
-                        break;
-                    }
-                }
-                result = stop_rx.changed() => {
-                    if result.is_err() || *stop_rx.borrow() {
-                        break;
-                    }
-                }
-            }
+        let stop = super::lease_clock::supervise_renewal(
+            move || {
+                let worker = worker.clone();
+                let authority = authority.clone();
+                async move { worker.renew_lease(authority).await.map_err(|_| ()) }
+            },
+            deadline,
+            purgatory_persistence::CHARACTER_LEASE_RENEWAL,
+            stop_rx,
+        )
+        .await;
+        if super::lease_clock::authority_ends(stop) {
+            eprintln!(
+                "PURGATORY persist lease renewal stopped; gameplay stopped connection={connection_id}"
+            );
+            let _ = gameplay.lose_authority(connection_id).await;
         }
     });
     stop_tx
@@ -696,18 +740,19 @@ async fn serve_connection(live: LiveSession) {
                                     )
                                     .await
                                     {
-                                        Ok((pipe, wake, rx, authority)) => {
+                                        Ok((pipe, wake, rx, leased)) => {
                                             occupancy = Some(OccupancyLease::new(tx.clone(), id));
                                             replication = Some((pipe, wake));
                                             interact_rx = Some(rx);
                                             active = true;
                                             uni_opened = false;
-                                            if let Some(authority) = authority {
+                                            if let Some((authority, deadline)) = leased {
                                                 lease_renewal = Some(spawn_lease_renewal(
                                                     worker.clone(),
                                                     tx.clone(),
                                                     id,
                                                     authority,
+                                                    deadline,
                                                 ));
                                             }
                                             Ok(())
