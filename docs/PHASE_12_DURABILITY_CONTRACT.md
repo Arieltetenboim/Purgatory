@@ -1,8 +1,12 @@
 # Phase 12 durability contract — Issue #10
 
-Status: **accepted design for Issue #10**, 2026-09-28. This is a design for the
-first Character Continuity implementation, not a claim that item state is
-currently durable. ADR-0068 records the ownership decision. Phase 11's
+Status: **historical accepted Issue #10 design, superseded for new work by**
+[`PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md).
+It records why PR #116 used a file-backed log and restored ground Drops; those
+requirements are no longer the product direction. Do not use its 12A–12C
+recipe as the implementation gate or merge PR #116 unchanged. It was accepted
+on 2026-09-28 and never claimed that item state was already durable.
+ADR-0068 records that former decision. Phase 11's
 [`ITEM_DOMAIN.md`](ITEM_DOMAIN.md) remains the runtime item contract.
 
 Evidence path: `crates/simulation/src/item_runtime.rs` and `world.rs` own items;
