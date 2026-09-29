@@ -110,7 +110,7 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     }
     let data_dir = persist::data_dir_from_env();
     println!("PURGATORY persist data_dir={}", data_dir.display());
-    let persist = persist::PersistenceHandle::spawn(&data_dir)?;
+    let persist = persist::PersistenceHandle::spawn_from_env(&data_dir)?;
     let mut owner = gameplay::GameplayOwner::new();
     owner.set_persist(persist.clone());
     let pressure = Arc::new(network_pressure::NetworkPressureBook::new());

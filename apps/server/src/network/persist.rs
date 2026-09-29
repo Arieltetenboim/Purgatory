@@ -35,7 +35,9 @@ enum PersistCmd {
     },
     Roster {
         login: DevLogin,
-        reply: tokio::sync::oneshot::Sender<Vec<purgatory_protocol::CharacterSummary>>,
+        reply: tokio::sync::oneshot::Sender<
+            Result<Vec<purgatory_protocol::CharacterSummary>, PersistError>,
+        >,
     },
     CreateCharacter {
         login: DevLogin,
@@ -106,9 +108,25 @@ pub struct PersistenceHandle {
 }
 
 impl PersistenceHandle {
+    /// Pre-cutover file writer. Tests use this so an ambient database URL cannot
+    /// redirect them onto a developer database. The server binary uses
+    /// [`Self::spawn_from_env`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn spawn(dir: &Path) -> Result<Self, String> {
-        let mut service =
+        let service =
             PersistenceService::open(dir).map_err(|err| format!("persistence open: {err}"))?;
+        Self::spawn_opened(service)
+    }
+
+    /// Server startup. PostgreSQL is the only writer when `PURGATORY_DATABASE_URL`
+    /// is set. The URL is not assumed to be localhost.
+    pub fn spawn_from_env(dir: &Path) -> Result<Self, String> {
+        let service = PersistenceService::open_from_env(dir)
+            .map_err(|err| format!("persistence open: {err}"))?;
+        Self::spawn_opened(service)
+    }
+
+    fn spawn_opened(mut service: PersistenceService) -> Result<Self, String> {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let shared = Arc::new(SharedSaveState::default());
         let worker_shared = shared.clone();
@@ -132,15 +150,19 @@ impl PersistenceHandle {
                         let _ = reply.send(service.resolve_or_create(&login));
                     }
                     PersistCmd::Roster { login, reply } => {
-                        let _ = reply.send(roster(&service, &login));
+                        let _ = reply.send(roster(&mut service, &login));
                     }
                     PersistCmd::CreateCharacter { login, name, reply } => {
                         use purgatory_protocol::{
                             CharacterCreateRejection as Rejection, CreateCharacterResult as Result,
                         };
                         let result = match service.create_character(&login, &name) {
-                            Ok(_) => Result::Created {
-                                roster: roster(&service, &login),
+                            Ok(_) => match roster(&mut service, &login) {
+                                Ok(roster) => Result::Created { roster },
+                                Err(err) => {
+                                    eprintln!("PURGATORY character roster read failed: {err}");
+                                    Result::Rejected(Rejection::StorageFailure)
+                                }
                             },
                             Err(PersistError::CreateRejected(reason)) => {
                                 Result::Rejected(match reason {
@@ -222,7 +244,7 @@ impl PersistenceHandle {
             .send(PersistCmd::Roster { login, reply })
             .await
             .map_err(|_| worker_closed())?;
-        rx.await.map_err(|_| worker_closed())
+        rx.await.map_err(|_| worker_closed())?
     }
 
     pub async fn create_character(
@@ -442,6 +464,19 @@ mod tests {
     }
 
     #[test]
+    fn durable_slots_match_the_simulation_contracts() {
+        assert_eq!(
+            usize::from(purgatory_persistence::DURABLE_INVENTORY_CAPACITY),
+            purgatory_simulation::INVENTORY_CAPACITY
+        );
+        for slot in purgatory_simulation::EquipmentSlot::ALL {
+            let durable = purgatory_persistence::DurableEquipmentSlot::parse(slot.as_str())
+                .expect("durable equipment slot name");
+            assert_eq!(durable.as_str(), slot.as_str());
+        }
+    }
+
+    #[test]
     fn override_wins_over_platform_default() {
         let dir = resolve_data_dir(env_map(&[
             ("PURGATORY_DATA_DIR", r"D:\forced\persist"),
@@ -620,17 +655,17 @@ fn worker_closed() -> PersistError {
 }
 
 fn roster(
-    service: &PersistenceService,
+    service: &mut PersistenceService,
     login: &DevLogin,
-) -> Vec<purgatory_protocol::CharacterSummary> {
-    service
-        .roster(login)
+) -> Result<Vec<purgatory_protocol::CharacterSummary>, PersistError> {
+    Ok(service
+        .roster(login)?
         .into_iter()
         .map(|entry| purgatory_protocol::CharacterSummary {
             character_id: entry.character_id,
             display_name: entry.display_name.as_str().to_owned(),
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]

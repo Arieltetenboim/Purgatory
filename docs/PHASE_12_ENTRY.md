@@ -1,8 +1,9 @@
 # Phase 12 entry — Character Continuity
 
-Status: **revised design accepted; implementation pending**
-(2026-09-29). Root `PHASE` = `12.entry`.
-Phase 11 is closed; 12A–12C are planned, not accepted or implemented by this entry.
+Status: **revised design accepted; 12A pending review** (2026-09-29).
+Root `PHASE` = `12.entry`. Phase 11 is closed. 12A is implemented and pending
+review in [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). 12B and 12C
+are not started. This entry does not accept Phase 12.
 
 ## Entry evidence and first gate
 
@@ -17,7 +18,8 @@ Phase 11 is closed; 12A–12C are planned, not accepted or implemented by this e
   Later product decisions supersede its file-backed log and map-drop recovery.
   The revised implementation contract is now
   [`PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md).
-  Draft PR #116 cannot be merged unchanged. This entry implements no durable items.
+  Draft PR #116 cannot be merged unchanged. The 12A writer is pending review
+  and is not accepted by this entry.
 
 ## Acceptance boundary carried into the revised design
 
@@ -42,7 +44,7 @@ steps and focused tests.
 
 | Stage | Intended capability | Entry condition |
 |---|---|---|
-| 12A | PostgreSQL durable foundation | Revised contract accepted; PR #116 disposition reviewed |
+| 12A | PostgreSQL durable foundation | Pending review; not an entry condition for 12B until verified |
 | 12B | Save / Load and lifecycle | 12A transaction and failure semantics verified |
 | 12C | Existing item and NPC-earned state integration | Atomic commit/recovery contract and lifecycle verified |
 

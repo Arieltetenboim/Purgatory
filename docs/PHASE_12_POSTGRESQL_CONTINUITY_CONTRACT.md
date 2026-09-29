@@ -3,9 +3,10 @@
 Status: **Phase 12 revised design**, 2026-09-29. The product rules
 on ordinary ground drops and the choice of PostgreSQL were made after Issue
 #10 closed. This document supersedes its file-backed implementation plan and
-drop-recovery rule for future work. It does **not** claim that
-12A is implemented. ADR-0069 records the change; PR #116 remains a draft and
-must not be merged as the Phase 12 foundation in its current form.
+drop-recovery rule for future work. It does **not** accept 12A.
+[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md) is the pending
+implementation record. ADR-0069 records the product change; PR #116 remains a
+draft and must not be merged as the Phase 12 foundation.
 
 ## Scope and owners
 

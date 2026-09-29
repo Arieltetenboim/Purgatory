@@ -607,6 +607,17 @@ Owner Phase 0 clarifications:
 - Acceptance across the future 12A–12C gates: committed character state survives restart without duplicate or retired IDs; ordinary unclaimed ground items disappear after clean shutdown and crash without refunds; restore cannot accept another user's character; concurrent entry permits one active character per user; retry after a lost reply returns the first result. Proof uses failure injection at transaction/acknowledgement, startup cleanup and concurrent pickup points. This row does not claim those tests have passed.
 - Documentation validation: `git diff --check` and link/marker review; no database, gameplay or wire code changed by this revision.
 
+## Gate 12A — PostgreSQL foundation (pending review)
+
+- Status: **implemented, pending review, not accepted.** Root `PHASE` stays `12.entry`. 12B and 12C are not started. Draft PR #116 stays unmerged.
+- What this gate contains: versioned migration `0001_foundation`, one PostgreSQL transaction for owners plus a durable command key/result, fail-closed v1 file import, and the existing persistence worker as the only caller. Ordinary ground ownership can be retired without refund or id reuse. Startup cleanup, admission fencing, and live Drop/pickup/dialogue are not wired.
+- Automated tests that do not need PostgreSQL: persistence domain, import-reader, and restore-only file tests run in `cargo test -p purgatory-persistence`.
+- PostgreSQL integration tests, all `#[ignore]`d until `PURGATORY_TEST_DATABASE_URL` points at a dedicated database other than `Purgatory_dev`: `revision_conflict_rolls_the_loser_back`, `same_slot_conflict_rolls_back_the_whole_command`, `retired_ids_survive_reconnect_and_are_not_reused`, `lost_reply_retry_returns_the_committed_result`, `invalid_import_preserves_source_and_writes_no_rows`, `supported_v1_import_preserves_identity_and_invents_nothing`, `ownership_is_isolated_and_restore_does_not_erase_items`, `representative_command_workload_is_measured_not_a_capacity_claim`.
+- These integration tests were **not executed** in this review. PostgreSQL 18 is installed and running locally, `PURGATORY_TEST_DATABASE_URL` is unset, and `psql` as `postgres` waits for a password. They must not be pointed at `Purgatory_dev`.
+- Command when a dedicated database exists: `cargo test -p purgatory-persistence --lib postgres_tests -- --ignored --nocapture`
+- Workload measurement: not collected. Do not treat that absence as a capacity result.
+- Quality gate actually run: `./scripts/check.ps1` on 2026-09-29 **PASS** (`PURGATORY quality gate OK`). `purgatory-persistence` lib tests: 35 passed, 8 ignored (the PostgreSQL tests above).
+
 ## Gate Production UI I1 — Inventory window foundation
 
 - Status: **complete (GREEN) 2026-09-14; merge candidate.** This parallel presentation foundation does not reopen Phase 11 and does not start Phase 12.

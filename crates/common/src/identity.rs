@@ -156,7 +156,9 @@ impl std::fmt::Display for PersistentId {
 
 /// Server-minted persistent character identity. Distinct from `EntityId`,
 /// `ConnectionId`, `ContentId`, and [`PersistentId`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(transparent)]
 pub struct CharacterId(u64);
 

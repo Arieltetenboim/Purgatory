@@ -2,11 +2,12 @@
 
 Status: **research and design proposal**, 2026-09-29. This document does not
 implement quests, allocate a new content ID block, or make NPC rewards durable.
-Phase 12A remains an unmerged draft in PR #116. The later revised
+Draft PR #116 remains the unmerged file-journal branch and must not merge.
+The PostgreSQL 12A foundation is a separate review. The revised
 [`PostgreSQL continuity contract`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md)
 reconciles the newly chosen rule that ordinary ground drops disappear on clean
 shutdown and crash with the database cutover. The original Issue #10 file
-contract remains historical; PR #116 must not merge unchanged.
+contract remains historical.
 
 ## What the reference servers establish
 

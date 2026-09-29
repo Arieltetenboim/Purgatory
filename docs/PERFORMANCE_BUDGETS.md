@@ -75,7 +75,7 @@ The 30 Hz / ~33.33 ms figures below are **tick spacing**, not permission for sim
 - Write measurements when a phase affects scale.
 - Include machine specification, build mode, scenario, and observed bottleneck.
 - Do not claim MMO scale from an unmeasured prototype.
-- Database latency must not stall the simulation tick.
+- Database latency must not stall the simulation tick. A 12A command-latency sample was not collected: the local PostgreSQL 18 service was running, but `PURGATORY_TEST_DATABASE_URL` was unset and a non-interactive login to that service waits for a password. Do not infer production capacity from a later local sample.
 - Do not treat the tick interval as a CPU budget.
 
 The previously observed load-only stall around 128 clients is **not** an established server bottleneck and is **not** a budget. 6G.2 did not reproduce a server-domain hang; 6G.7B/C showed replication remaining cheap at 128 and healthy server-side ticks at 256 under the validated workload. Higher-load saturation/timeouts are unattributed (simulation/tick vs server transport vs harness/client). Client `pending_window_stall_ticks` counts skipped predicted ticks when the 128-command pending window is full. Do not raise `PREDICTION_PENDING_CAP` from this document. Do not invent player-capacity or tick p95/p99 targets here.

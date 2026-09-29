@@ -69,10 +69,16 @@ impl FileCharacterRepository {
     pub fn save(&self, character: &PersistentCharacter) -> Result<(), PersistError> {
         let path = self.path_for(character.character_id);
         character.validate(&path)?;
-        if let Ok(Some(existing)) = self.load(character.character_id)
-            && character.persistence_revision <= existing.persistence_revision
-        {
-            return Ok(());
+        // A restore snapshot is the whole v1 record. Unknown fields (items,
+        // narrative, learned grants) must fail the load before any replace,
+        // so this writer cannot erase permanent state it does not understand.
+        if path.exists() || crate::atomic::bak_path(&path).exists() {
+            let existing = self.load(character.character_id)?;
+            if let Some(existing) = existing
+                && character.persistence_revision <= existing.persistence_revision
+            {
+                return Ok(());
+            }
         }
         let mut out = character.clone();
         out.schema_version = PERSISTENCE_SCHEMA_VERSION;
@@ -219,6 +225,22 @@ mod tests {
         let loaded = repo.load(id).unwrap().unwrap();
         assert_eq!(loaded.persistence_revision, 4);
         assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_does_not_replace_a_record_with_unknown_permanent_fields() {
+        let dir = unique_dir();
+        let repo = FileCharacterRepository::open(&dir).unwrap();
+        let id = CharacterId::from_raw(9);
+        let path = repo.path_for(id);
+        let original = br#"{"schema_version":1,"character_id":9,"persistence_revision":2,"restore":{"map_authored":"map.map1","point_id":"default"},"items":[]}"#.to_vec();
+        std::fs::write(&path, &original).unwrap();
+        let mut character = PersistentCharacter::new_default(id);
+        character.persistence_revision = 3;
+        let err = repo.save(&character).unwrap_err();
+        assert!(matches!(err, PersistError::Json { .. }), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

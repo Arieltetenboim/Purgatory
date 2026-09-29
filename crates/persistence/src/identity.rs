@@ -229,7 +229,7 @@ impl DevIdentityStore {
 
 /// Enumerate all case-insensitive names: 000..zzz, 0000..zzzz, ... (base 36).
 /// The ordinal is unrelated to CharacterId; even u64::MAX IDs can migrate.
-fn compatibility_name(mut ordinal: u64) -> Option<CharacterName> {
+pub(crate) fn compatibility_name(mut ordinal: u64) -> Option<CharacterName> {
     const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     for width in CHARACTER_NAME_MIN_LEN..=CHARACTER_NAME_MAX_LEN {
         let count = 36_u64.pow(width as u32);
@@ -313,6 +313,47 @@ fn validate_state(path: &Path, state: &IdentityFile) -> Result<(), PersistError>
     Ok(())
 }
 
+/// Roster snapshot read for a one-time import. Does not create or rewrite files.
+#[derive(Clone, Debug)]
+pub(crate) struct IdentitySource {
+    pub next_character_id: u64,
+    pub logins: BTreeMap<String, Vec<CharacterRosterEntry>>,
+}
+
+pub(crate) fn read_identity_source(dir: &Path) -> Result<Option<IdentitySource>, PersistError> {
+    let path = dir.join(IDENTITY_FILE_NAME);
+    let Some(bytes) = crate::atomic::read_committed_bytes(&path).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::InvalidData {
+            PersistError::corrupt(&path, err.to_string())
+        } else {
+            PersistError::io(&path, err)
+        }
+    })?
+    else {
+        return Ok(None);
+    };
+    let text = String::from_utf8(bytes)
+        .map_err(|_| PersistError::corrupt(&path, "identity file is not utf-8"))?;
+    #[derive(Deserialize)]
+    struct Header {
+        schema_version: u32,
+    }
+    let header: Header =
+        serde_json::from_str(&text).map_err(|err| PersistError::json(&path, err))?;
+    let parsed = match header.schema_version {
+        1 => migrate_v1(&path, &text)?,
+        IDENTITY_SCHEMA_VERSION => serde_json::from_str(&text).map_err(|err| {
+            PersistError::corrupt(&path, format!("invalid identity state: {err}"))
+        })?,
+        version => return Err(PersistError::schema(&path, version)),
+    };
+    validate_state(&path, &parsed)?;
+    Ok(Some(IdentitySource {
+        next_character_id: parsed.next_character_id,
+        logins: parsed.logins,
+    }))
+}
+
 fn persist_state(path: &Path, state: &IdentityFile) -> Result<(), PersistError> {
     let bytes = serde_json::to_vec_pretty(state).map_err(|e| PersistError::json(path, e))?;
     replace_file_recoverable(path, &bytes).map_err(|e| PersistError::io(path, e))
@@ -393,6 +434,27 @@ mod tests {
         );
         let text = dir.to_string_lossy().to_ascii_lowercase();
         assert!(!text.contains("localappdata"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_identity_source_keeps_v1_bytes() {
+        let dir = unique_dir();
+        let path = dir.join(IDENTITY_FILE_NAME);
+        let old = serde_json::json!({
+            "schema_version": 1,
+            "next_character_id": 8,
+            "logins": {"alice": 7}
+        });
+        let bytes = serde_json::to_vec(&old).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let source = read_identity_source(&dir).unwrap().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(source.next_character_id, 8);
+        let roster = source.logins.get("alice").unwrap();
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].character_id, CharacterId::from_raw(7));
+        assert_eq!(roster[0].display_name.as_str(), "000");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

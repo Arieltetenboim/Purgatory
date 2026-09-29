@@ -659,7 +659,7 @@ animation_lab   (eframe; Hub-launched; ADR-0058)
 
 `simulation` must not depend on `winit`, `wgpu`, renderer code, UI, or OS window APIs.
 
-`purgatory-persistence` depends on `purgatory-common` and serde only. Simulation does not depend on it. JSON serialization and filesystem IO run on the persistence worker, not the 30 Hz simulation thread. The live data root is a per-user application-data directory (Windows `%LOCALAPPDATA%\Purgatory\`), not the source tree. `PURGATORY_DATA_DIR` overrides it.
+`purgatory-persistence` depends on `purgatory-common`, serde, and the synchronous `postgres` client (ADR-0070). Simulation does not depend on it. JSON, filesystem IO, and database sessions run on the persistence worker, not the 30 Hz simulation thread. The live data root is a per-user application-data directory (Windows `%LOCALAPPDATA%\Purgatory\`), not the source tree. `PURGATORY_DATA_DIR` overrides it. `PURGATORY_DATABASE_URL` selects PostgreSQL as the only durable writer; until that URL is set, the file roster remains the pre-cutover writer. Channels do not get separate databases.
 
 `server` must not depend on `winit`, `wgpu`, `egui`, or the client crate.
 

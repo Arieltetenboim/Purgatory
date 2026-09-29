@@ -8,6 +8,7 @@ pub const PERSISTENCE_SCHEMA_VERSION: u32 = 1;
 /// Durable character record. No EntityId, ConnectionId, ChannelId, InstanceId,
 /// WorldAddress, or exact coordinates.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PersistentCharacter {
     pub schema_version: u32,
     pub character_id: CharacterId,
