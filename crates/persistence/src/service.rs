@@ -129,6 +129,15 @@ impl PersistenceService {
         }
     }
 
+    /// After the server acknowledges the next commit, drop that connection
+    /// before the reply can be read back.
+    #[cfg(test)]
+    pub fn discard_connection_after_next_commit_for_test(&mut self) {
+        if let Backend::Postgres(store) = &mut self.backend {
+            store.discard_connection_after_next_commit();
+        }
+    }
+
     pub fn item(&mut self, id: ItemInstanceId) -> Result<Option<ItemRecord>, PersistError> {
         match &mut self.backend {
             Backend::Files { .. } => Err(PersistError::migration(
@@ -368,6 +377,56 @@ mod tests {
         let mut svc = PersistenceService::open(&dir).unwrap();
         assert_eq!(svc.roster(&alice).unwrap(), vec![first]);
         assert_eq!(svc.roster(&bob).unwrap(), vec![retried]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn already_open_file_service_does_not_write_after_the_cutover_marker() {
+        let dir = unique_dir();
+        let mut files = PersistenceService::open(&dir).unwrap();
+        let alice = DevLogin::parse("alice").unwrap();
+        let entry = files.create_character(&alice, "Alice").unwrap();
+        files
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 1,
+                restore: purgatory_common::RestoreIntent {
+                    map_authored: "map.map1".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+            })
+            .unwrap();
+        let identity = std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap();
+        let character_path = dir.join(character_file_name(entry.character_id));
+        let character = std::fs::read(&character_path).unwrap();
+        crate::postgres::fence_file_writer(&dir).unwrap();
+        let save = files.save_snapshot(PersistentCharacterSnapshot {
+            character_id: entry.character_id,
+            persistence_revision: 2,
+            restore: purgatory_common::RestoreIntent {
+                map_authored: "map.map2".into(),
+                point_id: "after-cutover".into(),
+                checkpoint_id: None,
+            },
+            instance_exit: None,
+        });
+        assert!(
+            matches!(save, Err(PersistError::Migration { .. })),
+            "{save:?}"
+        );
+        let created = files.create_character(&DevLogin::parse("bob").unwrap(), "Bob");
+        assert!(
+            matches!(created, Err(PersistError::Migration { .. })),
+            "{created:?}"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(),
+            identity
+        );
+        assert_eq!(std::fs::read(&character_path).unwrap(), character);
+        assert_eq!(files.roster(&alice).unwrap(), vec![entry]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

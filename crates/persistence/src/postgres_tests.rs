@@ -911,3 +911,185 @@ fn distinct_runtime_role_can_commit_and_cannot_create_tables() {
         assert!(postgres::runtime_cannot_create_table(&roles.runtime).unwrap());
     });
 }
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn already_open_file_service_cannot_change_source_files_after_cutover() {
+    with_db(|dir, settings| {
+        let mut files = PersistenceService::open(dir).unwrap();
+        let alice = login("alice");
+        let entry = files.create_character(&alice, "Alice").unwrap();
+        files
+            .save_snapshot(crate::PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 1,
+                restore: RestoreIntent {
+                    map_authored: "map.map1".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+            })
+            .unwrap();
+        let identity = std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap();
+        let character_path = dir.join(crate::character_file_name(entry.character_id));
+        let character = std::fs::read(&character_path).unwrap();
+        let mut durable = open(dir, settings);
+        let save = files.save_snapshot(crate::PersistentCharacterSnapshot {
+            character_id: entry.character_id,
+            persistence_revision: 2,
+            restore: RestoreIntent {
+                map_authored: "map.map2".into(),
+                point_id: "after-cutover".into(),
+                checkpoint_id: None,
+            },
+            instance_exit: None,
+        });
+        assert!(
+            matches!(save, Err(PersistError::Migration { .. })),
+            "{save:?}"
+        );
+        let created = files.create_character(&login("bob"), "Bob");
+        assert!(
+            matches!(created, Err(PersistError::Migration { .. })),
+            "{created:?}"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(),
+            identity
+        );
+        assert_eq!(std::fs::read(&character_path).unwrap(), character);
+        let loaded = durable
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.point_id, "default");
+        assert_eq!(loaded.persistence_revision, 1);
+        assert!(durable.roster(&login("bob")).unwrap().is_empty());
+        assert_eq!(durable.roster(&alice).unwrap().len(), 1);
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn later_equal_revision_restore_does_not_replace_the_recorded_one() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        service
+            .commit_durable(&DurableCommand {
+                key: "advance".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .unwrap();
+        service
+            .save_snapshot(crate::PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 2,
+                restore: RestoreIntent {
+                    map_authored: "map.map2".into(),
+                    point_id: "gate".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+            })
+            .unwrap();
+        service
+            .save_snapshot(crate::PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 2,
+                restore: RestoreIntent {
+                    map_authored: "map.map1".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.point_id, "gate");
+        assert_eq!(loaded.persistence_revision, 2);
+        service
+            .save_snapshot(crate::PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 3,
+                restore: RestoreIntent {
+                    map_authored: "map.map3".into(),
+                    point_id: "town".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.point_id, "town");
+        assert_eq!(loaded.persistence_revision, 3);
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn unusable_connection_at_the_commit_reply_stays_unknown_until_retry() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let command = DurableCommand {
+            key: "once".into(),
+            expected_revisions: vec![(entry.character_id, 1)],
+            place_new: vec![place(entry.character_id, 0)],
+            moves: Vec::new(),
+            retire: Vec::new(),
+            narrative: Vec::new(),
+            learned: Vec::new(),
+        };
+        // The persistence worker returns this Result on its oneshot. It does
+        // not decide whether the command was applied.
+        service.discard_connection_after_next_commit_for_test();
+        let err = service.commit_durable(&command).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("commit outcome unknown"), "{text}");
+        assert!(!text.contains("not committed"), "{text}");
+        let again = service.commit_durable(&command).unwrap_err();
+        let again_text = again.to_string();
+        assert!(
+            again_text.contains("commit outcome unknown"),
+            "{again_text}"
+        );
+        let mut recovered = open(dir, settings);
+        let result = recovered.commit_durable(&command).unwrap();
+        assert_eq!(result.revisions, vec![(entry.character_id, 2)]);
+        assert_eq!(result.minted_item_ids.len(), 1);
+        let loaded = recovered
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.persistence_revision, 2);
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+        assert_eq!(
+            postgres::count_table(settings, "durable_commands").unwrap(),
+            1
+        );
+        let repeated = recovered.commit_durable(&command).unwrap();
+        assert_eq!(repeated, result);
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+    });
+}

@@ -63,8 +63,13 @@ and it does not wire live Drop, pickup, equip, dialogue, or client replies.
      database when the directory has no identity file
 7. Confirm character counts and ids. The marker is
    `{"schema_version":1,"writer":"postgresql"}`. After it exists, opening the
-   file writer fails. Later edits to the JSON files are not imported again
-   and are not written by the server. If the marker write fails, the import
+   file writer fails, and a file service that is already open refuses the next
+   identity or character replace. That check is at the replace, not only at
+   open. Later edits to the JSON files are not imported again and are not
+   written by that service. A replace that has already passed the marker check
+   can still finish while the marker is being written. Stopping the file
+   process before cutover is the way to avoid that window; 12A does not take
+   a lock that makes cutover wait. If the marker write fails, the import
    is not committed and the file writer still opens. If the process stops
    after the marker and before commit, the file writer stays closed and the
    next open imports the unchanged files. If a cutover row exists and the
@@ -88,21 +93,36 @@ installed content rule, including equip slot. Retire and a temporary ground
 park happen before new inserts, so one command can free a slot and fill it, or
 swap two slots, and still roll back if two live items would share a final slot.
 
-A restore snapshot older than the committed revision is ignored. The same
-revision is idempotent when the restore payload matches. When it differs, the
-restore fields are stored and the revision stays. That matches the current
-gameplay save, which emits `loaded revision + 1` from detach and from
-`request_save` even if a durable command already consumed that number. A newer
-snapshot still advances the revision. The snapshot does not delete item, fact,
-or learned-ability rows.
+A restore snapshot older than the committed revision is ignored. Each character
+stores `restore_revision`, the revision at which its current restore was
+recorded. Import and character creation set it equal to `persistence_revision`.
+A durable command advances `persistence_revision` only. The first snapshot
+whose revision equals that new character revision records the restore and sets
+`restore_revision` forward. That is the collision with gameplay's first save:
+detach and `request_save` emit `loaded revision + 1`, which one durable
+command may already have consumed. A different restore at a revision that
+already has `restore_revision` equal to it is stale and does not overwrite,
+including when it arrives last. That is not idempotency and it is not
+last-writer-wins. An identical restore at that revision is the idempotent
+retry. A newer snapshot still advances both revisions. The snapshot does not
+delete item, fact, or learned-ability rows.
+
+This does not cover a session whose saved revision stays behind more than one
+durable command. Once `persistence_revision` is greater than `loaded + 1`,
+that gameplay snapshot is stale and its restore is not recorded. Advancing
+the session from the command result before the next save is a 12B invariant.
+12A does not wire gameplay or admission.
 
 A retry looks up the command key before applying current content rules. The
 same key and request return the stored result after an item or ability rule
 changes. If `COMMIT` itself fails, the worker reads the key before deciding.
 A matching stored result is returned. If the connection cannot be read, the
 error starts with `commit outcome unknown` and is not treated as proof that
-the command was not applied. The caller must open a new connection and retry
-the same key.
+the command was not applied. A connection closed after the server acknowledges
+`COMMIT` returns that same unknown outcome, and another attempt on the closed
+connection stays unknown. The caller must open a new connection and retry the
+same key. That retry returns the stored result and does not apply the command
+again. The persistence worker returns this result unchanged.
 
 ## Tests
 

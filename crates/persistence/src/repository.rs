@@ -93,6 +93,10 @@ impl FileCharacterRepository {
         let mut out = character.clone();
         out.schema_version = PERSISTENCE_SCHEMA_VERSION;
         let bytes = serde_json::to_vec_pretty(&out).map_err(|e| PersistError::json(&path, e))?;
+        // The marker is checked at the replace, not only when the service
+        // opened. An already-open file writer must not change source files
+        // after cutover.
+        crate::postgres::reject_file_writer_if_cut_over(&self.dir)?;
         replace_file_recoverable(&path, &bytes).map_err(|e| PersistError::io(&path, e))
     }
 }

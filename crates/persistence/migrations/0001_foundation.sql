@@ -26,6 +26,7 @@ CREATE TABLE characters (
     name_key text NOT NULL,
     roster_position integer NOT NULL,
     persistence_revision bigint NOT NULL,
+    restore_revision bigint NOT NULL,
     restore_map_authored text NOT NULL,
     restore_point_id text NOT NULL,
     restore_checkpoint_id text,
@@ -33,6 +34,8 @@ CREATE TABLE characters (
     CONSTRAINT characters_id_width CHECK (octet_length(character_id) = 8),
     CONSTRAINT characters_id_nonzero CHECK (character_id <> '\x0000000000000000'::bytea),
     CONSTRAINT characters_revision_positive CHECK (persistence_revision > 0),
+    CONSTRAINT characters_restore_revision_positive CHECK (restore_revision > 0),
+    CONSTRAINT characters_restore_revision_not_ahead CHECK (restore_revision <= persistence_revision),
     CONSTRAINT characters_roster_position CHECK (roster_position >= 0 AND roster_position < 3),
     CONSTRAINT characters_restore_present CHECK (
         char_length(restore_map_authored) > 0 AND char_length(restore_point_id) > 0

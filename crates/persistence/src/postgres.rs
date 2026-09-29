@@ -110,6 +110,12 @@ pub(crate) struct PostgresStore {
     rules: DurableContentRules,
     #[cfg(test)]
     hide_commit_reply: bool,
+    #[cfg(test)]
+    discard_connection_after_commit: bool,
+    /// Set when a commit reply cannot be read. Later calls on this connection
+    /// stay unknown until the caller opens a new one.
+    #[cfg(test)]
+    connection_closed: bool,
 }
 
 impl PostgresStore {
@@ -150,6 +156,10 @@ impl PostgresStore {
             rules: DurableContentRules::new(),
             #[cfg(test)]
             hide_commit_reply: false,
+            #[cfg(test)]
+            discard_connection_after_commit: false,
+            #[cfg(test)]
+            connection_closed: false,
         })
     }
 
@@ -161,6 +171,11 @@ impl PostgresStore {
         &mut self,
         command: &DurableCommand,
     ) -> Result<DurableCommandResult, PersistError> {
+        if self.connection_is_closed() {
+            return Err(PersistError::storage(
+                "commit outcome unknown: the database connection is closed",
+            ));
+        }
         let request = canonical_request(command)?;
         // A stored result is returned before content rules are applied again.
         // Retry after a catalog change must still answer the original commit.
@@ -172,6 +187,13 @@ impl PostgresStore {
             Ok(result) => {
                 if self.consume_hidden_reply() {
                     return recover_hidden_commit(&mut self.client, &command.key, &request);
+                }
+                #[cfg(test)]
+                if self.consume_discard_connection() {
+                    return recover_on_unusable_connection(
+                        &mut self.client,
+                        &mut self.connection_closed,
+                    );
                 }
                 Ok(result)
             }
@@ -191,6 +213,17 @@ impl PostgresStore {
         }
     }
 
+    fn connection_is_closed(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.connection_closed
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
     fn consume_hidden_reply(&mut self) -> bool {
         #[cfg(test)]
         {
@@ -205,8 +238,20 @@ impl PostgresStore {
     }
 
     #[cfg(test)]
+    fn consume_discard_connection(&mut self) -> bool {
+        let discard = self.discard_connection_after_commit;
+        self.discard_connection_after_commit = false;
+        discard
+    }
+
+    #[cfg(test)]
     pub(crate) fn hide_next_commit_reply(&mut self) {
         self.hide_commit_reply = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn discard_connection_after_next_commit(&mut self) {
+        self.discard_connection_after_commit = true;
     }
 
     pub(crate) fn save_restore(
@@ -793,9 +838,9 @@ fn insert_character_row(
     tx.execute(
         "INSERT INTO characters (
             character_id, owner_login, display_name, name_key, roster_position,
-            persistence_revision, restore_map_authored, restore_point_id,
+            persistence_revision, restore_revision, restore_map_authored, restore_point_id,
             restore_checkpoint_id, instance_exit_reason
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9, $10)",
         &[
             &id.as_slice() as &(dyn ToSql + Sync),
             &login,
@@ -1338,6 +1383,26 @@ fn recover_hidden_commit(
     }
 }
 
+/// The server has acknowledged `COMMIT`. This connection is then made unusable
+/// before the caller can observe that reply, and the follow-up read must fail.
+#[cfg(test)]
+fn recover_on_unusable_connection(
+    client: &mut Client,
+    connection_closed: &mut bool,
+) -> Result<DurableCommandResult, PersistError> {
+    let _ = client.batch_execute("SELECT pg_terminate_backend(pg_backend_pid())");
+    let read = client.query_opt("SELECT 1", &[]).map_err(map_sql);
+    *connection_closed = true;
+    match read {
+        Err(err) => Err(PersistError::storage(format!(
+            "commit outcome unknown: {err}"
+        ))),
+        Ok(_) => Err(PersistError::storage(
+            "commit outcome unknown: the database connection closed before the commit reply could be read",
+        )),
+    }
+}
+
 fn save_restore(
     client: &mut Client,
     snapshot: PersistentCharacterSnapshot,
@@ -1347,8 +1412,8 @@ fn save_restore(
         let raw = id_bytes(snapshot.character_id.raw());
         let row = tx
             .query_opt(
-                "SELECT persistence_revision, restore_map_authored, restore_point_id,
-                        restore_checkpoint_id, instance_exit_reason
+                "SELECT persistence_revision, restore_revision, restore_map_authored,
+                        restore_point_id, restore_checkpoint_id, instance_exit_reason
                  FROM characters WHERE character_id = $1 FOR UPDATE",
                 &[&raw.as_slice()],
             )
@@ -1365,10 +1430,14 @@ fn save_restore(
         let current: i64 = row.get(0);
         let current = u64::try_from(current)
             .map_err(|_| PersistError::integrity(db_path(), "stored revision is negative"))?;
-        let stored_map: String = row.get(1);
-        let stored_point: String = row.get(2);
-        let stored_checkpoint: Option<String> = row.get(3);
-        let stored_exit: Option<String> = row.get(4);
+        let recorded: i64 = row.get(1);
+        let recorded = u64::try_from(recorded).map_err(|_| {
+            PersistError::integrity(db_path(), "stored restore revision is negative")
+        })?;
+        let stored_map: String = row.get(2);
+        let stored_point: String = row.get(3);
+        let stored_checkpoint: Option<String> = row.get(4);
+        let stored_exit: Option<String> = row.get(5);
         let same_restore = stored_map == snapshot.restore.map_authored
             && stored_point == snapshot.restore.point_id
             && stored_checkpoint.as_deref() == snapshot.restore.checkpoint_id.as_deref()
@@ -1377,17 +1446,25 @@ fn save_restore(
                     .instance_exit
                     .as_ref()
                     .and_then(|exit| exit.reason.as_deref());
-        if snapshot.persistence_revision < current
-            || (snapshot.persistence_revision == current && same_restore)
-        {
+        // A durable command advances persistence_revision and leaves
+        // restore_revision behind. The first snapshot at the new revision
+        // records the restore. A different snapshot at that same revision is
+        // stale, including one that arrives later.
+        if snapshot.persistence_revision < current {
             return Ok(());
         }
-        if snapshot.persistence_revision > current {
-            let revision = revision_i64(snapshot.persistence_revision)?;
-            write_restore(&mut tx, &raw, Some(revision), &snapshot)?;
-        } else {
-            write_restore(&mut tx, &raw, None, &snapshot)?;
+        if snapshot.persistence_revision == current {
+            if recorded == current && same_restore {
+                return Ok(());
+            }
+            if recorded < current {
+                let revision = revision_i64(current)?;
+                write_restore(&mut tx, &raw, None, revision, &snapshot)?;
+            }
+            return Ok(());
         }
+        let revision = revision_i64(snapshot.persistence_revision)?;
+        write_restore(&mut tx, &raw, Some(revision), revision, &snapshot)?;
         Ok(())
     })();
     match result {
@@ -1402,7 +1479,8 @@ fn save_restore(
 fn write_restore(
     tx: &mut postgres::Transaction<'_>,
     raw: &[u8; 8],
-    revision: Option<i64>,
+    persistence_revision: Option<i64>,
+    restore_revision: i64,
     snapshot: &PersistentCharacterSnapshot,
 ) -> Result<(), PersistError> {
     let checkpoint = snapshot.restore.checkpoint_id.as_deref();
@@ -1410,15 +1488,16 @@ fn write_restore(
         .instance_exit
         .as_ref()
         .and_then(|exit| exit.reason.as_deref());
-    let updated = if let Some(revision) = revision {
+    let updated = if let Some(revision) = persistence_revision {
         tx.execute(
             "UPDATE characters
-             SET persistence_revision = $2, restore_map_authored = $3, restore_point_id = $4,
-                 restore_checkpoint_id = $5, instance_exit_reason = $6
+             SET persistence_revision = $2, restore_revision = $3, restore_map_authored = $4,
+                 restore_point_id = $5, restore_checkpoint_id = $6, instance_exit_reason = $7
              WHERE character_id = $1",
             &[
                 &raw.as_slice() as &(dyn ToSql + Sync),
                 &revision,
+                &restore_revision,
                 &snapshot.restore.map_authored.as_str(),
                 &snapshot.restore.point_id.as_str(),
                 &checkpoint,
@@ -1429,11 +1508,12 @@ fn write_restore(
     } else {
         tx.execute(
             "UPDATE characters
-             SET restore_map_authored = $2, restore_point_id = $3,
-                 restore_checkpoint_id = $4, instance_exit_reason = $5
+             SET restore_revision = $2, restore_map_authored = $3, restore_point_id = $4,
+                 restore_checkpoint_id = $5, instance_exit_reason = $6
              WHERE character_id = $1",
             &[
                 &raw.as_slice() as &(dyn ToSql + Sync),
+                &restore_revision,
                 &snapshot.restore.map_authored.as_str(),
                 &snapshot.restore.point_id.as_str(),
                 &checkpoint,

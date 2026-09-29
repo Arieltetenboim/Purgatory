@@ -356,6 +356,9 @@ pub(crate) fn read_identity_source(dir: &Path) -> Result<Option<IdentitySource>,
 
 fn persist_state(path: &Path, state: &IdentityFile) -> Result<(), PersistError> {
     let bytes = serde_json::to_vec_pretty(state).map_err(|e| PersistError::json(path, e))?;
+    if let Some(dir) = path.parent() {
+        crate::postgres::reject_file_writer_if_cut_over(dir)?;
+    }
     replace_file_recoverable(path, &bytes).map_err(|e| PersistError::io(path, e))
 }
 
