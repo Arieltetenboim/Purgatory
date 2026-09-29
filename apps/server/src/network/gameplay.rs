@@ -1797,6 +1797,30 @@ impl GameplayOwner {
         })
     }
 
+    fn control_ended(channel_expired: bool, binding: &PlayerBinding) -> bool {
+        channel_expired || binding.authority_lost || Self::deadline_expired(binding.lease_deadline)
+    }
+
+    /// Drop player-controlled work that has not landed yet. Damage and movement
+    /// already integrated on earlier ticks stay. Gravity and other bodies are
+    /// left to the normal tick.
+    fn stop_uncommitted_player_actions(&mut self) {
+        let channel_expired = Self::deadline_expired(self.channel_deadline);
+        let stopped: Vec<(ConnectionId, EntityId)> = self
+            .bindings
+            .iter()
+            .filter(|(_, binding)| Self::control_ended(channel_expired, binding))
+            .map(|(id, binding)| (*id, binding.entity))
+            .collect();
+        for (connection_id, entity) in stopped {
+            if let Some(action) = self.world.active_action(entity) {
+                let _ = self.world.end_action(action.id, ActionEnd::Interrupted);
+            }
+            let _ = self.world.clear_player_dash(entity);
+            self.reject_pending_abilities(connection_id, AbilityCommandReject::StaleInputAnchor);
+        }
+    }
+
     fn note_channel_deadline(&mut self, deadline: super::lease_clock::LocalLeaseDeadline) {
         self.channel_deadline = Some(deadline);
     }
@@ -2620,6 +2644,7 @@ impl GameplayOwner {
             if !self.load_pressure.is_active() {
                 self.maybe_arm_runtime_probe(tick);
             }
+            self.stop_uncommitted_player_actions();
             sample.entity_lifecycle += t0.elapsed();
             drain_us = drain_us.saturating_add(self.world.drain_critical_scheduler());
         } else {
@@ -2629,6 +2654,7 @@ impl GameplayOwner {
             if !self.load_pressure.is_active() {
                 self.maybe_arm_runtime_probe(tick);
             }
+            self.stop_uncommitted_player_actions();
             self.world.drain_critical_scheduler();
             sample.gameplay_services += services_t0.elapsed();
         }
@@ -2640,26 +2666,27 @@ impl GameplayOwner {
             EntityId,
             PlayerInput,
             bool,
+            bool,
             Vec<AbilityActivateRequest>,
         )> = self
             .bindings
             .iter_mut()
             .map(|(cid, binding)| {
-                let expired = channel_expired || Self::deadline_expired(binding.lease_deadline);
-                if expired {
+                let stopped = Self::control_ended(channel_expired, binding);
+                if stopped {
                     binding.input.neutralize_held();
                 }
                 let gated = binding.input.input_gated();
                 let reason = binding.input.input_gate_reason();
                 let entity = binding.entity;
-                let player_input = if expired {
+                let player_input = if stopped {
                     PlayerInput::idle()
                 } else {
                     binding.input.take_for_tick()
                 };
                 let ack = binding.input.last_acknowledged();
                 let mut due_abilities = Vec::new();
-                if !expired {
+                if !stopped {
                     while binding.pending_abilities.front().is_some_and(|request| {
                         request.input_epoch == binding.input.input_epoch
                             && request.input_sequence <= ack
@@ -2675,15 +2702,19 @@ impl GameplayOwner {
                 if gated && !binding.input.input_gated() {
                     println!("6D_INPUT unlock actor={entity} reason={reason:?}");
                 }
-                (*cid, entity, player_input, gated || expired, due_abilities)
+                (*cid, entity, player_input, gated, stopped, due_abilities)
             })
             .collect();
         sample.commands_input += input_t0.elapsed();
 
         let move_t0 = std::time::Instant::now();
-        for (connection_id, entity, player_input, gated, due_abilities) in ids {
-            if gated && let Some((_, player)) = self.world.player_parts_mut_for(entity) {
-                player.velocity = [0.0, 0.0];
+        for (connection_id, entity, player_input, gated, stopped, due_abilities) in ids {
+            if let Some((_, player)) = self.world.player_parts_mut_for(entity) {
+                if gated {
+                    player.velocity = [0.0, 0.0];
+                } else if stopped {
+                    player.velocity[0] = 0.0;
+                }
             }
             self.world
                 .note_player_horizontal_intent(entity, player_input.move_axis);
@@ -5937,6 +5968,320 @@ mod tests {
         let before = horizontal(&owner, connection);
         owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
         assert!(horizontal(&owner, connection) > before);
+    }
+
+    fn tick_dt() -> f32 {
+        purgatory_simulation::TICK_DURATION.as_secs_f32()
+    }
+
+    fn enter_leased(
+        owner: &mut GameplayOwner,
+        connection: ConnectionId,
+        character_id: u64,
+    ) -> crate::network::lease_clock::LocalLeaseDeadline {
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(character_id));
+        let deadline = lease_deadline_from_now();
+        owner
+            .enter_restored(
+                connection,
+                owned_restore(character.clone()),
+                Some(test_lease(character.character_id, 1)),
+                None,
+                None,
+                Some(deadline),
+            )
+            .unwrap();
+        deadline
+    }
+
+    fn hold_right(owner: &mut GameplayOwner, connection: ConnectionId) -> f32 {
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(1, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept
+        );
+        horizontal(owner, connection)
+    }
+
+    fn start_dash(owner: &mut GameplayOwner, connection: ConnectionId) -> f32 {
+        let actor = owner.entity_of(connection).unwrap();
+        assert!(owner.world_mut().grant_ability(actor, dash_id()));
+        owner.apply_input(command_update(
+            connection,
+            cmd(1, MoveAxis::Right, false, false),
+        ));
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: connection,
+            request: AbilityActivateRequest {
+                seq: 1,
+                input_epoch: 0,
+                input_sequence: 1,
+                ability_id: dash_id(),
+                selected: None,
+            },
+        });
+        owner.simulate_tick(tick_dt());
+        let dash = owner
+            .world()
+            .player_dash_of(actor)
+            .expect("Dash must already be active");
+        assert!(dash.remaining_ticks > 0);
+        horizontal(owner, connection)
+    }
+
+    fn arm_strike_for_next_tick(owner: &mut GameplayOwner, connection: ConnectionId) -> EntityId {
+        let actor = owner.entity_of(connection).unwrap();
+        let pos = owner.world().transform_of(actor).unwrap().position;
+        let address = owner.world().address_of(actor).unwrap();
+        let dummy = owner
+            .world_mut()
+            .spawn(
+                RuntimeSpawnRequest::transient_at(address)
+                    .with_transform(Transform::from_position([pos[0] + 1.0, pos[1]]))
+                    .with_health(Health::full(10.0))
+                    .visible(),
+            )
+            .expect("dummy");
+        activate_strike(owner, connection, 1, None);
+        for _ in 0..2 {
+            owner.simulate_tick(tick_dt());
+            assert_eq!(owner.world().health_of(dummy).unwrap().current, 10.0);
+            assert_eq!(
+                owner.world().active_action(actor).expect("windup").phase,
+                ActionPhase::Windup
+            );
+        }
+        dummy
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_held_movement_after_character_renewal_rejected() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(21);
+        let deadline = enter_leased(&mut owner, connection, 21);
+        let before = hold_right(&mut owner, connection);
+        owner.lose_authority(connection);
+        assert!(
+            deadline.reply_still_authorizes(tokio::time::Instant::now()),
+            "the local deadline must still be in the future"
+        );
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(2, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale
+        );
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            horizontal(&owner, connection),
+            before,
+            "held movement moved after character authority was lost"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_held_movement_after_channel_renewal_rejected() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(22);
+        let channel = lease_deadline_from_now();
+        owner.set_channel_deadline(Some(channel));
+        let character = enter_leased(&mut owner, connection, 22);
+        let before = hold_right(&mut owner, connection);
+        owner.lose_all_authority();
+        assert!(channel.reply_still_authorizes(tokio::time::Instant::now()));
+        assert!(character.reply_still_authorizes(tokio::time::Instant::now()));
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(2, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale
+        );
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            horizontal(&owner, connection),
+            before,
+            "held movement moved after channel authority was lost"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_dash_on_expired_character_deadline() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(23);
+        let (tx, life_rx, _input_rx) = gameplay_channels(8, 8);
+        enter_leased(&mut owner, connection, 23);
+        let before = start_dash(&mut owner, connection);
+        tx.lifecycle
+            .try_send(LifecycleCmd::LoseAuthority {
+                connection_id: connection,
+            })
+            .unwrap();
+        advance_past_expiry().await;
+        assert_eq!(life_rx.len(), 1, "the stop message must still be queued");
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            horizontal(&owner, connection),
+            before,
+            "Dash moved on the first tick after the character deadline"
+        );
+        assert_eq!(life_rx.len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_dash_on_expired_channel_deadline() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(24);
+        let (tx, life_rx, _input_rx) = gameplay_channels(8, 8);
+        owner.set_channel_deadline(Some(lease_deadline_from_now()));
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(24));
+        owner
+            .enter_restored(connection, owned_restore(character), None, None, None, None)
+            .unwrap();
+        let before = start_dash(&mut owner, connection);
+        tx.lifecycle
+            .try_send(LifecycleCmd::LoseAllAuthority)
+            .unwrap();
+        advance_past_expiry().await;
+        assert_eq!(life_rx.len(), 1);
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            horizontal(&owner, connection),
+            before,
+            "Dash moved on the first tick after the channel deadline"
+        );
+        assert_eq!(life_rx.len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_dash_after_character_renewal_rejected() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(25);
+        let deadline = enter_leased(&mut owner, connection, 25);
+        let before = start_dash(&mut owner, connection);
+        owner.lose_authority(connection);
+        assert!(deadline.reply_still_authorizes(tokio::time::Instant::now()));
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            horizontal(&owner, connection),
+            before,
+            "Dash moved after character authority was lost"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_dash_after_channel_renewal_rejected() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(26);
+        let channel = lease_deadline_from_now();
+        owner.set_channel_deadline(Some(channel));
+        enter_leased(&mut owner, connection, 26);
+        let before = start_dash(&mut owner, connection);
+        owner.lose_all_authority();
+        assert!(channel.reply_still_authorizes(tokio::time::Instant::now()));
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            horizontal(&owner, connection),
+            before,
+            "Dash moved after channel authority was lost"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_due_windup_on_expired_character_deadline() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(27);
+        let (tx, life_rx, _input_rx) = gameplay_channels(8, 8);
+        enter_leased(&mut owner, connection, 27);
+        let dummy = arm_strike_for_next_tick(&mut owner, connection);
+        tx.lifecycle
+            .try_send(LifecycleCmd::LoseAuthority {
+                connection_id: connection,
+            })
+            .unwrap();
+        advance_past_expiry().await;
+        assert_eq!(life_rx.len(), 1);
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            owner.world().health_of(dummy).unwrap().current,
+            10.0,
+            "windup damage landed on the first tick after the character deadline"
+        );
+        assert_eq!(life_rx.len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_due_windup_on_expired_channel_deadline() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(28);
+        let (tx, life_rx, _input_rx) = gameplay_channels(8, 8);
+        owner.set_channel_deadline(Some(lease_deadline_from_now()));
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(28));
+        owner
+            .enter_restored(connection, owned_restore(character), None, None, None, None)
+            .unwrap();
+        let dummy = arm_strike_for_next_tick(&mut owner, connection);
+        tx.lifecycle
+            .try_send(LifecycleCmd::LoseAllAuthority)
+            .unwrap();
+        advance_past_expiry().await;
+        assert_eq!(life_rx.len(), 1);
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            owner.world().health_of(dummy).unwrap().current,
+            10.0,
+            "windup damage landed on the first tick after the channel deadline"
+        );
+        assert_eq!(life_rx.len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_file_mode_dash_still_moves() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(29);
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(29));
+        owner.enter(connection, character, None, None).unwrap();
+        let before = start_dash(&mut owner, connection);
+        advance_past_expiry().await;
+        owner.simulate_tick(tick_dt());
+        assert!(
+            horizontal(&owner, connection) > before,
+            "file mode stopped Dash without a deadline"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn authority_stops_committed_strike_after_character_deadline() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(30);
+        let (_tx, life_rx, _input_rx) = gameplay_channels(8, 8);
+        enter_leased(&mut owner, connection, 30);
+        let actor = owner.entity_of(connection).unwrap();
+        let pos = owner.world().transform_of(actor).unwrap().position;
+        let address = owner.world().address_of(actor).unwrap();
+        let dummy = owner
+            .world_mut()
+            .spawn(
+                RuntimeSpawnRequest::transient_at(address)
+                    .with_transform(Transform::from_position([pos[0] + 1.0, pos[1]]))
+                    .with_health(Health::full(10.0))
+                    .visible(),
+            )
+            .expect("dummy");
+        activate_strike(&mut owner, connection, 1, None);
+        tick_ability(&mut owner, 8);
+        let health = owner.world().health_of(dummy).unwrap().current;
+        assert!(
+            (health - 5.0).abs() < 1e-4,
+            "strike did not commit before the deadline: {health}"
+        );
+        advance_past_expiry().await;
+        owner.simulate_tick(tick_dt());
+        assert_eq!(owner.world().health_of(dummy).unwrap().current, health);
+        assert!(life_rx.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

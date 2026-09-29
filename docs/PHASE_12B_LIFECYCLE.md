@@ -36,7 +36,7 @@ The holding process also keeps a local monotonic deadline. It is the instant the
 
 Channel authority is checked again after the admit reply, before world entry. `enter_restored` checks the character deadline and the channel deadline before it creates a binding. An already-expired deadline returns `AuthorityLost` and does not spawn an entity, so there is no simulation tick or replication to clean up. That is entry prevented. If `enter_restored` has already returned success and authority then ends before the connection task finishes, that task removes the binding without a save and releases the unused lease through the persistence worker. That second path is cleanup after an entry that was still authorized when World created the binding. A channel stop also sticks on the gameplay owner: an entry command drained after that stop does not create a binding. The character renewal supervisor still starts only after a successful entry.
 
-The simulation thread stores those same deadlines. `apply_input` and `simulate_tick` refuse new input and do not apply held movement once a deadline has passed, even while `LoseAuthority` or `LoseAllAuthority` is still queued. They do not call the database. File mode stores no deadline and keeps its current input behavior. A successful renewal delivers the extended deadline on the lifecycle channel; until that message is drained, the previous deadline still bounds gameplay. The database clock remains what another process sees.
+The simulation thread stores those same deadlines. `apply_input` and `simulate_tick` refuse new input and do not apply held movement once a deadline has passed, even while `LoseAuthority` or `LoseAllAuthority` is still queued. A rejected renewal sets `authority_lost` before that deadline; the next tick also drops held movement. Before the critical scheduler runs, an ended character or channel authority interrupts the player's active ability and clears Dash, so a windup effect due on that tick does not land and Dash does not keep moving. Damage and displacement already integrated on earlier ticks stay. Vertical motion is left to ordinary physics. The simulation thread does not call the database. File mode stores no deadline and keeps its current input and Dash behavior. A successful renewal delivers the extended deadline on the lifecycle channel; until that message is drained, the previous deadline still bounds gameplay. The database clock remains what another process sees.
 
 ## Restore
 
@@ -67,6 +67,8 @@ That proves a committed lease row is still there after process death. It does no
 `channel_stop_during_admit_does_not_enter_world` holds the admit reply after the worker has produced it, then runs the real channel renewal supervisor on a paused clock until that supervisor clears channel authority and its stop has been drained. Releasing the reply does not enter `World`, and input for that connection is stale. `character_deadline_during_enter_does_not_enter_world` queues restored entry after the pre-entry deadline check, then advances the paused clock past the character expiry before the simulation thread drains the command. World entry refuses that command before creating a binding. The character renewal supervisor is not running in that test; the deadline itself is what rejects the entry. Neither test calls `lose_authority` directly.
 
 `expired_character_deadline_rejects_input_before_the_stop_message` and `expired_channel_deadline_rejects_input_before_the_stop_message` accept movement, leave the stop message queued, then advance a paused clock past the deadline. Further input is stale and the next tick does not move the player. `expired_character_deadline_does_not_spawn_before_entry` and `expired_channel_deadline_does_not_spawn_before_entry` call world entry after the deadline and observe no entity and no replication. `file_mode_without_a_deadline_still_simulates_input` still moves after the same clock advance.
+
+`authority_stops_held_movement_after_character_renewal_rejected` and `authority_stops_held_movement_after_channel_renewal_rejected` lose authority while the local deadline is still in the future. New input is stale and the held move does not change position. `authority_stops_dash_on_expired_character_deadline` and `authority_stops_dash_on_expired_channel_deadline` leave the stop queued, advance past the deadline, and the next tick does not continue Dash. The same stop before the deadline is `authority_stops_dash_after_character_renewal_rejected` and `authority_stops_dash_after_channel_renewal_rejected`. `authority_stops_due_windup_on_expired_character_deadline` and `authority_stops_due_windup_on_expired_channel_deadline` have Basic Strike's damage due on that first expired tick; the target stays at full health. `authority_stops_committed_strike_after_character_deadline` keeps damage that already landed. `authority_stops_file_mode_dash_still_moves` still continues Dash after the same clock advance.
 
 `unusable_connection_at_the_commit_reply_stays_unknown_until_retry` still disconnects only after `COMMIT` succeeds. Injecting a fault during `COMMIT` itself remains an evidence limit from 12A.
 
@@ -100,6 +102,16 @@ Gameplay tests, without a database:
 - `expired_character_deadline_does_not_spawn_before_entry`
 - `expired_channel_deadline_does_not_spawn_before_entry`
 - `file_mode_without_a_deadline_still_simulates_input`
+- `authority_stops_held_movement_after_character_renewal_rejected`
+- `authority_stops_held_movement_after_channel_renewal_rejected`
+- `authority_stops_dash_on_expired_character_deadline`
+- `authority_stops_dash_on_expired_channel_deadline`
+- `authority_stops_dash_after_character_renewal_rejected`
+- `authority_stops_dash_after_channel_renewal_rejected`
+- `authority_stops_due_windup_on_expired_character_deadline`
+- `authority_stops_due_windup_on_expired_channel_deadline`
+- `authority_stops_file_mode_dash_still_moves`
+- `authority_stops_committed_strike_after_character_deadline`
 - `character_occupancy_rejects_second_session_and_reconnect_gets_new_entity` — file mode still rejects a second local session
 
 `network::lease_clock` tests, without a database: `queued_reply_time_counts_against_the_deadline`, `stalled_renewal_expires_while_the_worker_reply_is_still_blocked`, `renewal_reply_extends_from_the_send_instant_not_past_it`.
