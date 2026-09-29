@@ -440,11 +440,14 @@ fn grant_runtime(
         .get(0);
     // Runtime can read the migration history and change character-owned rows.
     // It cannot create or drop objects. Fact clears are the only deletes.
+    // Command retry locks the stored row with SELECT FOR UPDATE, which
+    // requires UPDATE on durable_commands even though the row is not rewritten.
     let sql = format!(
         "GRANT USAGE ON SCHEMA {schema_sql} TO {user_sql};
          GRANT SELECT ON {schema_sql}.schema_migrations TO {user_sql};
          GRANT SELECT, INSERT, UPDATE ON {schema_sql}.durable_meta, {schema_sql}.characters, {schema_sql}.item_instances TO {user_sql};
-         GRANT SELECT, INSERT ON {schema_sql}.dev_users, {schema_sql}.character_npcs_met, {schema_sql}.character_dialogue_heard, {schema_sql}.character_learned_abilities, {schema_sql}.durable_commands TO {user_sql};
+         GRANT SELECT, INSERT ON {schema_sql}.dev_users, {schema_sql}.character_npcs_met, {schema_sql}.character_dialogue_heard, {schema_sql}.character_learned_abilities TO {user_sql};
+         GRANT SELECT, INSERT, UPDATE ON {schema_sql}.durable_commands TO {user_sql};
          GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_facts TO {user_sql};"
     );
     client.batch_execute(&sql).map_err(map_sql)
@@ -1822,6 +1825,7 @@ fn map_sql(err: postgres::Error) -> PersistError {
         if db.code().code() == "23514" {
             return PersistError::conflict(db_path(), format!("check constraint {constraint}"));
         }
+        return PersistError::storage(sanitize(db.message()));
     }
     PersistError::storage(sanitize(&err.to_string()))
 }

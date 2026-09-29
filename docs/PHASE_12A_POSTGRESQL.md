@@ -56,8 +56,9 @@ and it does not wire live Drop, pickup, equip, dialogue, or client replies.
      unknown history
    - grants the runtime role usage of the schema, read of `schema_migrations`,
      and only the row changes it needs: select/insert/update on meta,
-     characters, and items; select/insert on users, NPC-met, dialogue heard,
-     learned abilities, and command keys; select/insert/update/delete on facts
+     characters, items, and durable command rows (the retry lock is
+     `SELECT FOR UPDATE`); select/insert on users, NPC-met, dialogue heard,
+     and learned abilities; select/insert/update/delete on facts
    - imports the inventoried files in one transaction, or records a fresh
      database when the directory has no identity file
 7. Confirm character counts and ids. The marker is
