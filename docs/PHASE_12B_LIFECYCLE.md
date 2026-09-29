@@ -17,7 +17,7 @@ The durations match. The identifiers do not. A character lease and a channel gen
 
 ## One active character
 
-`admit` inserts a lease or, once `clock_timestamp()` is past `expires_at`, replaces an expired one. It does not replace an unexpired lease, whether the requested character is the same or different.
+`admit` inserts a lease or, once `clock_timestamp()` is past `expires_at`, replaces an expired one and advances the generation. It does not replace an unexpired lease, whether the requested character is the same or different. Release expires the row in place. The next admit uses the following generation, so the generation that just released cannot commit again.
 
 Same-process reconnect:
 

@@ -158,7 +158,9 @@ impl PostgresStore {
         // open imports the unchanged files instead of ignoring later file writes.
         fence_before_import(&mut client, dir)?;
         initialize(&mut client, dir)?;
-        write_marker(dir)?;
+        if !marker_is_postgresql(dir)? {
+            write_marker(dir)?;
+        }
         Ok(Self {
             client,
             rules: DurableContentRules::new(),

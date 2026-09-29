@@ -234,10 +234,14 @@ pub(crate) fn release(
 ) -> Result<(), PersistError> {
     let _ = lock_lease(tx, &authority.login)?;
     pause(barrier);
-    let deleted = tx
+    // Expire in place. Deleting the row would let the next admit reuse
+    // generation 1, and the process that just released could commit again.
+    let expired = tx
         .execute(
-            "DELETE FROM character_leases
-             WHERE owner_login = $1 AND character_id = $2 AND generation = $3",
+            "UPDATE character_leases
+             SET expires_at = clock_timestamp() - interval '1 second'
+             WHERE owner_login = $1 AND character_id = $2 AND generation = $3
+               AND expires_at > clock_timestamp()",
             &[
                 &authority.login.as_str(),
                 &id_bytes(authority.character_id.raw()).as_slice(),
@@ -245,7 +249,7 @@ pub(crate) fn release(
             ],
         )
         .map_err(map_sql)?;
-    if deleted != 1 {
+    if expired != 1 {
         Err(PersistError::LeaseLost)
     } else {
         Ok(())
