@@ -7,13 +7,13 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 ## Current
 
 - **ERA II — Combat & First Playable Loop**
-- **Phase 12 — Character Continuity: 12A PostgreSQL foundation implemented and pending review; 12B/12C not started**
+- **Phase 12 — Character Continuity: 12A PostgreSQL foundation accepted; 12B/12C not started**
 - **Root `PHASE`: `12.entry`**
 - **Master version:** `0.12.A`
 - **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
 - **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
 - **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
-- **Main gameplay:** 12A PostgreSQL foundation is pending review; draft PR #116 stays unmerged
+- **Main gameplay:** 12A PostgreSQL foundation is accepted; draft PR #116 stays unmerged
 - **Dash / learned abilities:** authoritative Dash + NPC `GrantAbility` restored to current `master`; presentation polish remains tracked separately
 - **Protocol: v31**
 
@@ -92,20 +92,20 @@ unclaimed ground items on clean shutdown **and** crash. Its implementation
 recipe is superseded by the revised
 [`PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md)
 and ADR-0069. Draft PR #116 implements the older rule and must not merge
-unchanged. The PostgreSQL 12A writer is pending review in
-[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md); it is not accepted and
-does not start 12B or 12C. Existing NPC facts, learned
+unchanged. The PostgreSQL 12A writer is accepted in
+[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). That acceptance does
+not start 12B or 12C and is not a Phase 12 exit. Existing NPC facts, learned
 grants and item rewards need one atomic commit before Phase 12 can close.
 See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
 
 | Slice | Name | Status |
 |---|---|---|
-| 12A | PostgreSQL durable foundation | implemented, pending review; not accepted |
+| 12A | PostgreSQL durable foundation | accepted 2026-09-29; not a Phase 12 exit |
 | 12B | Save / Load and lifecycle | planned; not started |
 | 12C | Existing item and NPC-earned state integration | planned |
 | Phase 12 exit | Normal client continuity and recovery proof | planned |
 
-12A–12C are **revised design gates**, not accepted implementation. Saving
+12A is the accepted storage foundation. 12B and 12C are not accepted implementation. Saving
 an NPC's item without its fact/learned grant is unsafe. Live Quests,
 progression, currency, Trade and production authentication remain separately
 scoped. Do not call Phase 12 GREEN after item-only persistence.

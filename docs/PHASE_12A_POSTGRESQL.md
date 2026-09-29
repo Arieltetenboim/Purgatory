@@ -1,7 +1,8 @@
 # Phase 12A — PostgreSQL foundation
 
-Status: **implemented, pending review, not accepted.** Root `PHASE` stays
-`12.entry`. This does not start 12B or 12C. Draft PR #116 stays unmerged.
+Status: **accepted** as the Phase 12A storage foundation (2026-09-29). This is
+not a Phase 12 exit. Root `PHASE` stays `12.entry` until 12B starts. 12C is
+not started. Draft PR #116 stays unmerged.
 
 ## What 12A stores
 
