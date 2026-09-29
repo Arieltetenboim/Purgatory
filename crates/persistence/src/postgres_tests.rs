@@ -1055,8 +1055,10 @@ fn unusable_connection_at_the_commit_reply_stays_unknown_until_retry() {
             narrative: Vec::new(),
             learned: Vec::new(),
         };
-        // The persistence worker returns this Result on its oneshot. It does
-        // not decide whether the command was applied.
+        // Scope: COMMIT has already succeeded. The hook then closes that
+        // connection before the reply is read. This does not fail during COMMIT.
+        // The worker returns this Result on its oneshot and does not decide
+        // whether the command was applied.
         service.discard_connection_after_next_commit_for_test();
         let err = service.commit_durable(&command).unwrap_err();
         let text = err.to_string();

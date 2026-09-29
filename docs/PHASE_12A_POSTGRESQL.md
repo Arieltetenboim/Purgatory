@@ -28,29 +28,35 @@ and it does not wire live Drop, pickup, equip, dialogue, or client replies.
 
 ## Cutover
 
-1. Inventory the current data directory (`PURGATORY_DATA_DIR`, otherwise the
-   per-user application-data `Purgatory` directory). Supported inputs are
-   `identity.json` schema 1 or 2 and `char_<16 hex>.json` schema 1. A `.bak`
-   is read only when the destination file is missing. A lone `.tmp` fails
-   closed. Any other file fails closed. PR #116 journals and schema v2
-   character files are not imported.
-2. Create one database. Do not create a database per channel. Create a
+Do these steps in order. Inventory and import come only after the file-writing
+server is gone and the source directory is stable.
+
+1. Stop the file-writing server with a clean shutdown and wait until that
+   process has exited. Shutdown asks the persistence worker to write queued
+   saves and deferred latest snapshots before it leaves. A killed process
+   does not drain those writes. Do not start another file writer.
+2. Leave the data directory unchanged from that exit until character counts
+   and identities have been verified in step 8. The directory is
+   `PURGATORY_DATA_DIR`, otherwise the per-user application-data `Purgatory`
+   directory. Do not edit it by hand during this window.
+3. Create one database. Do not create a database per channel. Create a
    non-superuser runtime role and a separate migration role. Keep both
    passwords out of the repository.
-3. Before any production traffic, set and verify:
+4. Before any production traffic, set and verify:
    - `fsync = on`
    - `synchronous_commit = on` (a replica needs `synchronous_standby_names`
      as well; `off` is not enough for an acknowledged commit)
    - `full_page_writes = on`
    - backups whose restore point is not behind an already acknowledged commit
-4. For a remote host, use `sslmode=verify-full` with a private CA or the
+5. For a remote host, use `sslmode=verify-full` with a private CA or the
    platform trust store, and restrict the network path. A local development
    server and pgAdmin are not that control.
-5. Set `PURGATORY_DATABASE_URL` to the runtime role. Set
+6. Set `PURGATORY_DATABASE_URL` to the runtime role. Set
    `PURGATORY_DATABASE_MIGRATION_URL` when the migration role is separate.
    Neither URL is assumed to be localhost. Optional
    `PURGATORY_DATABASE_SCHEMA` defaults to `public`.
-6. Start the server once. The persistence worker, not the 30 Hz tick:
+7. Start the PostgreSQL server once. The persistence worker, not the 30 Hz
+   tick, then:
    - writes `durable_writer.json` before the import transaction commits
    - applies migration `1` as the migration role and refuses a changed or
      unknown history
@@ -59,29 +65,39 @@ and it does not wire live Drop, pickup, equip, dialogue, or client replies.
      characters, items, and durable command rows (the retry lock is
      `SELECT FOR UPDATE`); select/insert on users, NPC-met, dialogue heard,
      and learned abilities; select/insert/update/delete on facts
-   - imports the inventoried files in one transaction, or records a fresh
-     database when the directory has no identity file
-7. Confirm character counts and ids. The marker is
-   `{"schema_version":1,"writer":"postgresql"}`. After it exists, opening the
-   file writer fails, and a file service that is already open refuses the next
-   identity or character replace. That check is at the replace, not only at
-   open. Later edits to the JSON files are not imported again and are not
-   written by that service. A replace that has already passed the marker check
-   can still finish while the marker is being written. Stopping the file
-   process before cutover is the way to avoid that window; 12A does not take
-   a lock that makes cutover wait. If the marker write fails, the import
-   is not committed and the file writer still opens. If the process stops
-   after the marker and before commit, the file writer stays closed and the
-   next open imports the unchanged files. If a cutover row exists and the
-   marker is missing, open fails closed instead of ignoring file edits.
-   Unset the URL only after an explicit repair plan.
-8. A corrupt, unknown, duplicate, or unowned record aborts the import.
+   - inventories the stable directory and imports it in one transaction, or
+     records a fresh database when the directory has no identity file
+   Supported inputs are `identity.json` schema 1 or 2 and `char_<16 hex>.json`
+   schema 1. A `.bak` is read only when the destination file is missing. A
+   lone `.tmp` fails closed. Any other file fails closed. PR #116 journals
+   and schema v2 character files are not imported.
+8. Confirm character counts and ids against that same unchanged directory.
+   Only after that verification may the directory change, and only the
+   PostgreSQL writer may change durable state. The marker is
+   `{"schema_version":1,"writer":"postgresql"}`. After it exists, opening a
+   file writer fails, and a file service that is already open refuses the
+   next identity or character replace. That check is a safeguard inside this
+   process. It is not a cross-process lock, and it does not prove that step 1
+   happened. A replace that has already passed the check can still finish.
+   Later edits to the JSON files are not imported again. If the marker write
+   fails, the import is not committed and the file writer still opens. If
+   the process stops after the marker and before commit, the file writer
+   stays closed and the next open imports the unchanged files. If a cutover
+   row exists and the marker is missing, open fails closed instead of
+   ignoring file edits. Unset the URL only after an explicit repair plan.
+9. A corrupt, unknown, duplicate, or unowned record aborts the import.
    Source files are left in place. The marker may already exist, so the file
    writer does not accept a repair that PostgreSQL would later skip. No
    default character replaces a corrupt file. A roster entry with no character
    file becomes a character row at revision 1 with default restore and no
    items, facts, or grants. That is the current create-before-first-save case,
    not a repair of a broken file.
+
+This procedure does not guarantee one writer. Nothing in the server detects
+another process that is still writing the source directory, so a file server
+that was not stopped can change files during inventory and import. That is
+the remaining 12A blocker for the contract's single-writer rule. The marker
+safeguard does not remove it.
 
 The two roles must be distinct non-superusers. The runtime role is not granted
 `CREATE` or `DROP`. `PersistenceHandle::commit_durable` sends the command to
@@ -107,22 +123,32 @@ last-writer-wins. An identical restore at that revision is the idempotent
 retry. A newer snapshot still advances both revisions. The snapshot does not
 delete item, fact, or learned-ability rows.
 
-This does not cover a session whose saved revision stays behind more than one
-durable command. Once `persistence_revision` is greater than `loaded + 1`,
-that gameplay snapshot is stale and its restore is not recorded. Advancing
-the session from the command result before the next save is a 12B invariant.
-12A does not wire gameplay or admission.
+A gameplay snapshot whose revision is behind more than one durable command is
+older than the committed revision, so 12A ignores it. That is the stale-snapshot
+rule, not a broken 12A guarantee. 12A does not wire gameplay. Adopting the
+committed revision in the live session before the next restore snapshot is a
+mandatory 12B implementation and test gate. It is not a 12A blocker.
 
 A retry looks up the command key before applying current content rules. The
 same key and request return the stored result after an item or ability rule
-changes. If `COMMIT` itself fails, the worker reads the key before deciding.
-A matching stored result is returned. If the connection cannot be read, the
-error starts with `commit outcome unknown` and is not treated as proof that
-the command was not applied. A connection closed after the server acknowledges
-`COMMIT` returns that same unknown outcome, and another attempt on the closed
-connection stays unknown. The caller must open a new connection and retry the
-same key. That retry returns the stored result and does not apply the command
-again. The persistence worker returns this result unchanged.
+changes. If `COMMIT` returns a storage error, that error is prefixed with
+`commit outcome unknown` and the same connection reads `durable_commands`
+before any retry applies the command. A matching stored row is returned. A
+failed read stays `commit outcome unknown`. A read that finds no row also
+stays `commit outcome unknown` (`the command key was not committed and the
+connection could not prove it`) and does not apply the command in that call.
+The prefix is the contract. The words "was not committed" inside it are not
+proof that the server rolled the transaction back.
+
+`unusable_connection_at_the_commit_reply_stays_unknown_until_retry` covers
+only the narrower case. `COMMIT` has already returned success. The test then
+terminates that backend, so the follow-up read fails, and the worker returns
+`commit outcome unknown`. Another attempt on that same connection stays
+unknown. A new connection retrying the same key returns the stored result and
+does not insert the item again. The persistence worker returns this result
+unchanged. The test does not inject a disconnect during `COMMIT`, before the
+server's acknowledgement reaches the client. That during-`COMMIT` path is the
+storage-error branch above. No separate test injects it.
 
 ## Tests
 
@@ -144,16 +170,22 @@ and drops a `p12a_` schema. It does not modify `Purgatory_dev`.
 `distinct_runtime_role_can_commit_and_cannot_create_tables` creates two
 ephemeral non-superuser roles in that database and drops them afterward.
 
-These PostgreSQL tests were not executed on 2026-09-29. `psql -w` against
-local PostgreSQL 18 returned `fe_sendauth: no password supplied`.
-`PURGATORY_TEST_DATABASE_URL` is unset. They must not be pointed at
-`Purgatory_dev`. No command-latency sample was collected.
+Local PostgreSQL was not used. `psql -w` against local PostgreSQL 18 returned
+`fe_sendauth: no password supplied`, and `PURGATORY_TEST_DATABASE_URL` is
+unset. They must not be pointed at `Purgatory_dev`. The GitHub Actions job
+recorded in [`TEST_GATES.md`](TEST_GATES.md) is the database evidence. Its
+workload line is a debug measurement, not a capacity claim.
 
 ## Explicitly not in 12A
 
 Startup ground retirement, account admission, one-active-character fencing,
 live Drop, pickup, equip, NPC dialogue actions, ability grants from gameplay,
 and client replies. Those belong to 12B and 12C.
+
+12B must implement and test session revision advancement: after a durable
+command, the live session adopts the committed revision before it submits the
+next restore snapshot. A snapshot older than the committed revision is already
+ignored by 12A. That ignore is not a 12A defect.
 
 ## PR #116
 

@@ -120,10 +120,16 @@ when that gameplay is implemented. One turn-in transaction includes claim,
 consumption, items, facts, abilities and any later currency/experience.
 
 The cutover must inventory **all** existing v1 file character/identity
-records and any 12A-format test data that is to be retained. Validate IDs,
-roster ownership, revisions, restore fields and catalog references. Migrate
-supported state once, prove counts and identities, and switch to one writer;
-no silent blank-character fallback or concurrent file/database dual write.
+records and any 12A-format test data that is to be retained. Before that
+inventory, the file-writing server is stopped, its pending writes are drained,
+and the source directory stays unchanged through import and identity/count
+verification. The ordered steps are in
+[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). Validate IDs, roster
+ownership, revisions, restore fields and catalog references. Migrate supported
+state once, prove counts and identities, and switch to one writer; no silent
+blank-character fallback or concurrent file/database dual write. A marker
+check inside an already-open file service is a safeguard, not a cross-process
+lock.
 Already lost NPC facts or learned grants cannot be invented by migration.
 Unknown schema, invalid content, duplicate ownership or a missing migration
 fails closed and preserves source data for repair. When a persistent NPC
@@ -142,6 +148,10 @@ settle its version/retirement policy before storing it as truth.
 2. **12B — save/load and lifecycle:** bounded admission and pending-result
    handling, per-user active-character lease/fencing, detach/re-entry barrier,
    startup ground retirement, authoritative restoration and shutdown status.
+   Session revision advancement is mandatory in this gate: after a durable
+   command, the live session adopts the committed revision before its next
+   restore snapshot, and a test must show that. A snapshot older than the
+   committed revision is already ignored by 12A and is not a 12A defect.
    Test same-user concurrent A/B entry and commit-before-reply crashes.
 3. **12C — existing gameplay:** atomic Drop/pickup/equip/inventory and NPC
    item grants/removals, character-owned facts/met/heard and learned grants
