@@ -7,13 +7,13 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 ## Current
 
 - **ERA II — Combat & First Playable Loop**
-- **Phase 12 — Character Continuity: entry/design gate active; implementation not started**
+- **Phase 12 — Character Continuity: revised PostgreSQL/ground-reset design accepted; implementation not started**
 - **Root `PHASE`: `12.entry`**
 - **Master version:** `0.12.A`
 - **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
 - **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
 - **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
-- **Main gameplay:** Issue #10 durable-state design, then the agreed 12A–12C implementation steps
+- **Main gameplay:** revised design supersedes Issue #10 implementation recipe; start 12A from PostgreSQL foundation, keep draft PR #116 unmerged
 - **Dash / learned abilities:** authoritative Dash + NPC `GrantAbility` restored to current `master`; presentation polish remains tracked separately
 - **Protocol: v31**
 
@@ -85,28 +85,29 @@ deferred.
 
 ## 12 — Character Continuity — entry active
 
-Phase 11 remains closed. The Phase 12 entry gate is the accepted contract in Issue #10:
-durable character/item ownership, migration, atomic inventory/equipment saves,
-ordering and recovery. The prerequisites #87, #88, #89 and #24 are closed and
-their relevant code is present on `master`. Design acceptance does not claim
-persistent inventory/equipment or a GREEN implementation gate. See
-[`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md). Issue #10's
-accepted contract is [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md).
-The contract treats player Drop as a transfer to map ownership with expiry
-and pickup rules; later Trade uses the
-same atomic transfer primitive. Monster loot design and Trade UI remain later
-feature work, not prerequisites to writing the durability contract.
+Phase 11 remains closed. Issue #10 accepted the original file-backed design,
+preserved in [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md).
+The owner subsequently selected PostgreSQL and chose to clear ordinary
+unclaimed ground items on clean shutdown **and** crash. Its implementation
+recipe is superseded by the revised
+[`PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md)
+and ADR-0069. Draft PR #116 implements the older rule and must not merge
+unchanged. The prerequisites #87, #88, #89 and #24 are closed; no PostgreSQL
+item persistence is implemented on `master`. Existing NPC facts, learned
+grants and item rewards need one atomic commit before Phase 12 can close.
+See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
 
 | Slice | Name | Status |
 |---|---|---|
-| 12A | Persistent Character State | planned |
-| 12B | Save / Load | planned |
-| 12C | Inventory & Equipment Persistence | planned |
+| 12A | PostgreSQL durable foundation | planned; no code merged |
+| 12B | Save / Load and lifecycle | planned |
+| 12C | Existing item and NPC-earned state integration | planned |
+| Phase 12 exit | Normal client continuity and recovery proof | planned |
 
-12A–12C remain planned; Issue #10 defines their durability boundary and
-implementation proof gates. Start 12A from the accepted contract.
-Add further Phase 12+ slices as implementation evidence requires; do not
-revive obsolete legacy numbering.
+12A–12C are **revised design gates**, not accepted implementation. Saving
+an NPC's item without its fact/learned grant is unsafe. Live Quests,
+progression, currency, Trade and production authentication remain separately
+scoped. Do not call Phase 12 GREEN after item-only persistence.
 
 ---
 

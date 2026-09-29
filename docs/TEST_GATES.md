@@ -592,14 +592,20 @@ Owner Phase 0 clarifications:
 ## Gate 12.entry — Character Continuity design entry
 
 - Status: **opened 2026-09-28; design gate open.** `PHASE=12.entry` starts Phase 12 without claiming 12A–12C implementation or persistence acceptance.
-- Prerequisites checked against `master` at `e0d54e4`: #87, #88, #89 and #24 are closed; fail-closed load, bounded/coalesced save handoff and first-party numeric content IDs are present. Issue #10 remains open as the first design gate.
+- Prerequisites checked against `master` at `e0d54e4`: #87, #88, #89 and #24 are closed; fail-closed load, bounded/coalesced save handoff and first-party numeric content IDs are present. Issue #10 was then the first design gate and has since closed through PR #114.
 - Validation for this entry change: documentation and marker consistency plus `git diff --check`; GitHub Quality Gate [run #36406969412](https://github.com/Arieltetenboim/Purgatory/actions/runs/36406969412) on `master` commit `18b5cdf` passed `./scripts/check.sh`. No runtime code changed or manual runtime proof was claimed by the entry.
-- Next acceptance: Issue #10 design accepted in PR #114; implement and verify 12A before any durable item gameplay claim. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
+- Next acceptance: Issue #10 design accepted in PR #114; later product decisions require a revised 12A design before any durable item gameplay claim. See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
 
 ## Gate 12 design accepted — Issue #10
 
-- Status: **accepted design 2026-09-28**, not an implementation gate. [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md) and ADR-0068 specify character/map ownership, atomic item mutations, pickup eligibility, timed Drop expiry, save/recovery semantics and future Trade compatibility. Unexpired map Drops recover with their remaining active time; server downtime pauses their timers. Crash recovery may regain at most one second due to durable clock checkpointing.
+- Status: **accepted historical design 2026-09-28, superseded for new work by ADR-0069**, not an implementation gate. [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md) and ADR-0068 originally specified character/map ownership, atomic item mutations, pickup eligibility, timed Drop expiry, save/recovery semantics and future Trade compatibility. Under that former rule unexpired map Drops recovered and downtime paused their timers.
 - Validation: documentation-only diff and link/marker consistency; no runtime code or wire contract changed. Issue #10 closes on merge; 12A–12C remain unimplemented until their own gates pass.
+
+## Gate 12 revised continuity design — PostgreSQL and ordinary ground reset
+
+- Status: **accepted revised design 2026-09-29**, not an implementation gate. [`PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md) and ADR-0069 replace file-journal/clock/drop-recovery requirements while retaining atomic ownership, retry and fail-closed invariants. Draft PR #116 remains open and unmerged; it cannot be accepted as the new 12A without rework. Current NPC facts and learned grants join their item reward in one commit.
+- Acceptance across the future 12A–12C gates: committed character state survives restart without duplicate or retired IDs; ordinary unclaimed ground items disappear after clean shutdown and crash without refunds; restore cannot accept another user's character; concurrent entry permits one active character per user; retry after a lost reply returns the first result. Proof uses failure injection at transaction/acknowledgement, startup cleanup and concurrent pickup points. This row does not claim those tests have passed.
+- Documentation validation: `git diff --check` and link/marker review; no database, gameplay or wire code changed by this revision.
 
 ## Gate Production UI I1 — Inventory window foundation
 

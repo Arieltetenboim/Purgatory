@@ -1,12 +1,12 @@
 # Quest domain readiness before Phase 12
 
 Status: **research and design proposal**, 2026-09-29. This document does not
-implement quests, change the accepted Issue #10 durability contract, allocate a
-new content ID block, or make NPC rewards durable. Phase 12A remains an unmerged
-draft in PR #116. Review this proposal alongside the newly chosen rule that
-ordinary ground drops disappear on clean shutdown and crash and the intended
-PostgreSQL cutover; both conflict with the currently accepted file-backed
-map-drop recovery contract and must be reconciled before 12A can be merged.
+implement quests, allocate a new content ID block, or make NPC rewards durable.
+Phase 12A remains an unmerged draft in PR #116. The later revised
+[`PostgreSQL continuity contract`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md)
+reconciles the newly chosen rule that ordinary ground drops disappear on clean
+shutdown and crash with the database cutover. The original Issue #10 file
+contract remains historical; PR #116 must not merge unchanged.
 
 ## What the reference servers establish
 
@@ -96,8 +96,8 @@ reissue unbounded starter items.
 An item carried by a player remains character-owned. On a live Drop, ownership
 passes to a temporary map/ground owner; at shutdown/restart, the accepted new
 product rule is to retire every remaining ordinary ground item, with no refund
-to the former owner. The actual Phase 12 transaction/recovery contract still
-says such drops survive restart. Revise it and PR #116 before shipping either
+to the former owner. The revised Phase 12 design now specifies ground
+retirement on restart; PR #116 still needs rework before shipping either
 quest rewards or Drop persistence. Monster drops may be transient until pickup;
 no consumed item-instance ID may be reused. There is no need for an active
 server clock solely to resurrect ordinary drops under the new rule.
@@ -126,26 +126,22 @@ durable domain. A new character begins with no prior quest history. Existing
 DEV saves have no persisted narrative/quest history, so no migration can
 truthfully invent which Welcome rewards were previously claimed.
 
-## Recommended order and acceptance gates
+## Chosen order and later Quest acceptance gates
 
-1. **Pre-12 Quest readiness:** accept this product/ownership contract; identify
-   one actual Welcome delivery quest and one explicitly repeatable test quest;
-   allocate the Quest content-ID block deliberately; define typed content and
-   reject unknown references/cycles; settle abandonment and repeat period
-   behavior. Do not mark quest rewards persistent yet. No full journal UI or
-   generic script interpreter is required.
-2. **Revise Phase 12 foundation:** reconcile Issue #10/ADR-0068 with ground
-   reset and PostgreSQL as the single durable authority; specify transaction
-   and cutover from the unmerged file branch before changing gameplay success
-   semantics. Keep the existing persistence worker boundary off the 30 Hz
-   simulation thread.
-3. **Phase 12 character continuity:** persist quest attempts/claims and the
-   already implemented narrative/learned state alongside items; wire
-   acceptance, credited progress, abandonment and turn-in through one
-   acknowledged transaction. Then expose client status/interaction with
-   authoritative resync and finish the runtime proof. Quests can be developed
-   in bounded steps within this gate.
-4. **Proof:** two characters under one user cannot share progress; two users
+1. **Reconcile Phase 12 design:** the revised PostgreSQL contract settles
+   ground reset and the one durable transaction boundary while PR #116 stays
+   unmerged. Quest domain research remains a proposal, not a live feature.
+2. **Persist currently live state:** implement the revised 12A–12C and prove
+   the existing items, restore state, NPC facts/met/heard and learned grants
+   survive reconnect/restart as one committed outcome. Do not freeze a schema
+   that prevents later typed Quest records.
+3. **Return to Quests:** deliberately allocate a Quest content-ID block;
+   identify one Welcome delivery quest and one explicitly repeatable test
+   quest; define typed requirements, objectives, abandon/retry rules and
+   versioned character attempt/claim migrations. Wire them through the same
+   acknowledged transaction before offering durable rewards. A generic
+   script engine and full journal UI are not prerequisites.
+4. **Quest proof when implemented:** two characters under one user cannot share progress; two users
    cannot claim each other's reward; decline and abandon do not pay; prior
    quest/level/item gates reject invalid acceptance; a repeat pays once per
    eligible attempt; retry and crash at each commit/reply boundary cannot pay
@@ -157,7 +153,6 @@ Open product choices before runtime implementation: whether abandon deletes
 quest-issued items, whether a claimed quest can be repeated immediately or
 only after an authored wall-clock reset/cooldown, and how already owned item
 quantities count toward a newly accepted collect objective. Those choices
-must be explicit per quest where behavior differs. The immediate architectural
-choice is whether Pre-12 is **content/domain design only**, as recommended,
-or is intended to ship live durable quest rewards before the Phase 12
-transaction boundary; the latter requires doing that boundary first.
+must be explicit per quest where behavior differs. The immediate ordering
+choice is settled: Quest gameplay follows persistence of the already live
+earned state. These Quest-specific choices remain open until its runtime step.
