@@ -2316,7 +2316,14 @@ fn map_sql(err: postgres::Error) -> PersistError {
         }
         return PersistError::storage(sanitize(db.message()));
     }
-    PersistError::storage(sanitize(&err.to_string()))
+    let mut text = err.to_string();
+    let mut source = std::error::Error::source(&err);
+    while let Some(inner) = source {
+        text.push_str(": ");
+        text.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    PersistError::storage(sanitize(&text))
 }
 
 fn sanitize(text: &str) -> String {

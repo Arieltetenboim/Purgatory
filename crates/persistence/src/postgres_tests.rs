@@ -1533,7 +1533,7 @@ fn process_exit_leaves_a_committed_lease_until_expiry() {
         let ready = dir.join("crash-ready");
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
-                "process_exit_leaves_a_committed_lease_until_expiry",
+                "postgres_tests::process_exit_leaves_a_committed_lease_until_expiry",
                 "--exact",
                 "--ignored",
                 "--test-threads=1",

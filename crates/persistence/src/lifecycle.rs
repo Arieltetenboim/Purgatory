@@ -71,9 +71,11 @@ pub enum ChannelClaim {
     Busy { channel_id: i64, generation: u64 },
 }
 
-fn expiry_secs(duration: Duration) -> Result<i32, PersistError> {
-    i32::try_from(duration.as_secs())
-        .map_err(|_| PersistError::integrity(db_path(), "lease expiry does not fit an interval"))
+fn expiry_secs(duration: Duration) -> Result<f64, PersistError> {
+    // `make_interval(secs => ...)` is `double precision`, not `integer`.
+    let secs = i32::try_from(duration.as_secs())
+        .map_err(|_| PersistError::integrity(db_path(), "lease expiry does not fit an interval"))?;
+    Ok(f64::from(secs))
 }
 
 fn pause(barrier: &mut Option<LeaseBarrier>) {
@@ -539,7 +541,7 @@ fn insert_lease(
     login: &DevLogin,
     character_id: CharacterId,
     generation: i64,
-    secs: i32,
+    secs: f64,
 ) -> Result<(), PersistError> {
     tx.execute(
         "INSERT INTO character_leases (owner_login, character_id, generation, expires_at)
