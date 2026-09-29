@@ -26,14 +26,18 @@ use crate::domain::{
 };
 use crate::error::PersistError;
 use crate::identity::{self, CharacterRosterEntry, IDENTITY_FILE_NAME};
+use crate::lifecycle::{self, Admission, ChannelClaim, LeaseAuthority, LeaseBarrier, OwnedRestore};
 use crate::repository::character_file_name;
 
-const MIGRATION_VERSION: i32 = 1;
-const MIGRATION_BODY: &str = include_str!("../migrations/0001_foundation.sql");
+const MIGRATIONS: &[(i32, &str)] = &[
+    (1, include_str!("../migrations/0001_foundation.sql")),
+    (2, include_str!("../migrations/0002_lifecycle.sql")),
+];
 const IMPORT_LOCK_KEY: i64 = 0x120A_0001;
 pub(crate) const DURABLE_WRITER_FILE: &str = "durable_writer.json";
 const RESERVED_DATABASES: &[&str] = &["purgatory_dev", "postgres", "template0", "template1"];
 
+#[derive(Clone)]
 pub struct PostgresSettings {
     pub url: String,
     pub migration_url: Option<String>,
@@ -116,6 +120,10 @@ pub(crate) struct PostgresStore {
     /// stay unknown until the caller opens a new one.
     #[cfg(test)]
     connection_closed: bool,
+    /// Channel generations this process claimed. Ground writes stamp one of them.
+    channels: std::collections::BTreeMap<i64, u64>,
+    #[cfg(test)]
+    lease_barrier: Option<LeaseBarrier>,
 }
 
 impl PostgresStore {
@@ -160,6 +168,9 @@ impl PostgresStore {
             discard_connection_after_commit: false,
             #[cfg(test)]
             connection_closed: false,
+            channels: std::collections::BTreeMap::new(),
+            #[cfg(test)]
+            lease_barrier: None,
         })
     }
 
@@ -170,6 +181,7 @@ impl PostgresStore {
     pub(crate) fn commit(
         &mut self,
         command: &DurableCommand,
+        lease: Option<&LeaseAuthority>,
     ) -> Result<DurableCommandResult, PersistError> {
         if self.connection_is_closed() {
             return Err(PersistError::storage(
@@ -183,7 +195,17 @@ impl PostgresStore {
             return Ok(result);
         }
         domain::validate_command(command, &self.rules)?;
-        match commit_once(&mut self.client, command, &request, &self.rules) {
+        let channels = self.channels.clone();
+        let mut barrier = self.take_barrier();
+        match commit_once(
+            &mut self.client,
+            command,
+            &request,
+            &self.rules,
+            lease,
+            &channels,
+            &mut barrier,
+        ) {
             Ok(result) => {
                 if self.consume_hidden_reply() {
                     return recover_hidden_commit(&mut self.client, &command.key, &request);
@@ -257,8 +279,236 @@ impl PostgresStore {
     pub(crate) fn save_restore(
         &mut self,
         snapshot: PersistentCharacterSnapshot,
+        lease: Option<&LeaseAuthority>,
     ) -> Result<(), PersistError> {
-        save_restore(&mut self.client, snapshot)
+        let mut barrier = self.take_barrier();
+        save_restore(&mut self.client, snapshot, lease, &mut barrier)
+    }
+
+    fn take_barrier(&mut self) -> Option<LeaseBarrier> {
+        #[cfg(test)]
+        {
+            self.lease_barrier.take()
+        }
+        #[cfg(not(test))]
+        {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_lease_barrier(&mut self, barrier: LeaseBarrier) {
+        self.lease_barrier = Some(barrier);
+    }
+
+    pub(crate) fn admit(
+        &mut self,
+        login: &DevLogin,
+        character_id: CharacterId,
+    ) -> Result<Admission, PersistError> {
+        for _ in 0..2 {
+            let mut barrier = self.take_barrier();
+            let mut tx = self.client.transaction().map_err(map_sql)?;
+            match lifecycle::admit(&mut tx, login, character_id, &mut barrier) {
+                Ok(admission) => {
+                    tx.commit().map_err(|err| ambiguous_commit(map_sql(err)))?;
+                    return Ok(admission);
+                }
+                Err(err) if lease_insert_raced(&err) => {
+                    let _ = tx.rollback();
+                }
+                Err(err) => {
+                    let _ = tx.rollback();
+                    return Err(err);
+                }
+            }
+        }
+        Err(PersistError::conflict(
+            db_path(),
+            "character lease insert raced",
+        ))
+    }
+
+    pub(crate) fn supersede(
+        &mut self,
+        authority: &LeaseAuthority,
+    ) -> Result<(LeaseAuthority, OwnedRestore), PersistError> {
+        let mut barrier = self.take_barrier();
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        match lifecycle::supersede(&mut tx, authority, &mut barrier) {
+            Ok(next) => {
+                tx.commit().map_err(map_sql)?;
+                Ok(next)
+            }
+            Err(err) => {
+                let _ = tx.rollback();
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn renew_lease(&mut self, authority: &LeaseAuthority) -> Result<(), PersistError> {
+        let mut barrier = self.take_barrier();
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        match lifecycle::renew(&mut tx, authority, &mut barrier) {
+            Ok(()) => tx.commit().map_err(map_sql),
+            Err(err) => {
+                let _ = tx.rollback();
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn release_lease(&mut self, authority: &LeaseAuthority) -> Result<(), PersistError> {
+        let mut barrier = self.take_barrier();
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        match lifecycle::release(&mut tx, authority, &mut barrier) {
+            Ok(()) => tx.commit().map_err(map_sql),
+            Err(err) => {
+                let _ = tx.rollback();
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn claim_channel(
+        &mut self,
+        channel_id: i64,
+        retire_limit: Option<i64>,
+    ) -> Result<ChannelClaim, PersistError> {
+        let mut barrier = self.take_barrier();
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        match lifecycle::claim_channel(&mut tx, channel_id, retire_limit, &mut barrier) {
+            Ok(claim) => {
+                tx.commit().map_err(map_sql)?;
+                if let ChannelClaim::Claimed { generation, .. } = claim {
+                    self.channels.insert(channel_id, generation);
+                }
+                Ok(claim)
+            }
+            Err(err) => {
+                let _ = tx.rollback();
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn sweep_channel(
+        &mut self,
+        channel_id: i64,
+        generation: u64,
+        retire_limit: Option<i64>,
+    ) -> Result<u64, PersistError> {
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        match lifecycle::sweep_held_channel(&mut tx, channel_id, generation, retire_limit) {
+            Ok(retired) => {
+                tx.commit().map_err(map_sql)?;
+                Ok(retired)
+            }
+            Err(err) => {
+                let _ = tx.rollback();
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn renew_channel(
+        &mut self,
+        channel_id: i64,
+        generation: u64,
+    ) -> Result<(), PersistError> {
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        match lifecycle::renew_channel(&mut tx, channel_id, generation) {
+            Ok(()) => {
+                tx.commit().map_err(map_sql)?;
+                self.channels.insert(channel_id, generation);
+                Ok(())
+            }
+            Err(err) => {
+                let _ = tx.rollback();
+                self.channels.remove(&channel_id);
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn release_channel(
+        &mut self,
+        channel_id: i64,
+        generation: u64,
+    ) -> Result<(), PersistError> {
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        match lifecycle::release_channel(&mut tx, channel_id, generation) {
+            Ok(()) => {
+                tx.commit().map_err(map_sql)?;
+                self.channels.remove(&channel_id);
+                Ok(())
+            }
+            Err(err) => {
+                let _ = tx.rollback();
+                Err(err)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clock_moved_inside_one_statement(
+        &mut self,
+    ) -> Result<(bool, bool), PersistError> {
+        let row = self
+            .client
+            .query_one(
+                "SELECT now() = transaction_timestamp(), clock_timestamp() > now()
+                 FROM (SELECT pg_sleep(0.2)) AS delay",
+                &[],
+            )
+            .map_err(map_sql)?;
+        Ok((row.get(0), row.get(1)))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sessions_waiting_on_a_lock(&mut self) -> Result<i64, PersistError> {
+        let count: i64 = self
+            .client
+            .query_one(
+                "SELECT count(*)::bigint FROM pg_stat_activity
+                 WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()",
+                &[],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        Ok(count)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remember_channel_for_test(&mut self, channel_id: i64, generation: u64) {
+        self.channels.insert(channel_id, generation);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_lease_for_test(&mut self, login: &DevLogin) -> Result<(), PersistError> {
+        self.client
+            .execute(
+                "UPDATE character_leases
+                 SET expires_at = clock_timestamp() - interval '1 second'
+                 WHERE owner_login = $1",
+                &[&login.as_str()],
+            )
+            .map_err(map_sql)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_channel_for_test(&mut self, channel_id: i64) -> Result<(), PersistError> {
+        self.client
+            .execute(
+                "UPDATE channel_generations
+                 SET expires_at = clock_timestamp() - interval '1 second'
+                 WHERE channel_id = $1",
+                &[&channel_id],
+            )
+            .map_err(map_sql)?;
+        Ok(())
     }
 
     pub(crate) fn create_character(
@@ -493,7 +743,8 @@ fn grant_runtime(
          GRANT SELECT, INSERT, UPDATE ON {schema_sql}.durable_meta, {schema_sql}.characters, {schema_sql}.item_instances TO {user_sql};
          GRANT SELECT, INSERT ON {schema_sql}.dev_users, {schema_sql}.character_npcs_met, {schema_sql}.character_dialogue_heard, {schema_sql}.character_learned_abilities TO {user_sql};
          GRANT SELECT, INSERT, UPDATE ON {schema_sql}.durable_commands TO {user_sql};
-         GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_facts TO {user_sql};"
+         GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_facts TO {user_sql};
+         GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_leases, {schema_sql}.channel_generations TO {user_sql};"
     );
     client.batch_execute(&sql).map_err(map_sql)
 }
@@ -533,12 +784,14 @@ fn migrate(client: &mut Client) -> Result<(), PersistError> {
         .get(0);
     if !present {
         let mut tx = client.transaction().map_err(map_sql)?;
-        tx.batch_execute(MIGRATION_BODY).map_err(map_sql)?;
-        tx.execute(
-            "INSERT INTO schema_migrations (version, body) VALUES ($1, $2)",
-            &[&MIGRATION_VERSION, &MIGRATION_BODY],
-        )
-        .map_err(map_sql)?;
+        for (version, body) in MIGRATIONS {
+            tx.batch_execute(body).map_err(map_sql)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, body) VALUES ($1, $2)",
+                &[version, body],
+            )
+            .map_err(map_sql)?;
+        }
         return tx.commit().map_err(map_sql);
     }
     let rows = client
@@ -547,21 +800,41 @@ fn migrate(client: &mut Client) -> Result<(), PersistError> {
             &[],
         )
         .map_err(map_sql)?;
-    if rows.len() != 1 {
+    if rows.len() > MIGRATIONS.len() {
         return Err(PersistError::migration(
             db_path(),
             "unexpected postgresql migration history",
         ));
     }
-    let version: i32 = rows[0].get(0);
-    let body: String = rows[0].get(1);
-    if version != MIGRATION_VERSION || body != MIGRATION_BODY {
-        return Err(PersistError::migration(
-            db_path(),
-            "applied postgresql migration does not match this build",
-        ));
+    for (index, row) in rows.iter().enumerate() {
+        let version: i32 = row.get(0);
+        let body: String = row.get(1);
+        let Some((expected_version, expected_body)) = MIGRATIONS.get(index) else {
+            return Err(PersistError::migration(
+                db_path(),
+                "unexpected postgresql migration history",
+            ));
+        };
+        if version != *expected_version || body != *expected_body {
+            return Err(PersistError::migration(
+                db_path(),
+                "applied postgresql migration does not match this build",
+            ));
+        }
     }
-    Ok(())
+    if rows.len() == MIGRATIONS.len() {
+        return Ok(());
+    }
+    let mut tx = client.transaction().map_err(map_sql)?;
+    for (version, body) in MIGRATIONS.iter().skip(rows.len()) {
+        tx.batch_execute(body).map_err(map_sql)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, body) VALUES ($1, $2)",
+            &[version, body],
+        )
+        .map_err(map_sql)?;
+    }
+    tx.commit().map_err(map_sql)
 }
 
 fn warn_durability(client: &mut Client) {
@@ -858,14 +1131,21 @@ fn insert_character_row(
     Ok(())
 }
 
+fn lease_insert_raced(err: &PersistError) -> bool {
+    matches!(err, PersistError::Conflict { reason, .. } if reason.contains("character_leases"))
+}
+
 fn commit_once(
     client: &mut Client,
     command: &DurableCommand,
     request: &str,
     rules: &DurableContentRules,
+    lease: Option<&LeaseAuthority>,
+    channels: &std::collections::BTreeMap<i64, u64>,
+    barrier: &mut Option<LeaseBarrier>,
 ) -> Result<DurableCommandResult, PersistError> {
     let mut tx = client.transaction().map_err(map_sql)?;
-    let result = apply_command(&mut tx, command, request, rules);
+    let result = apply_command(&mut tx, command, request, rules, lease, channels, barrier);
     match result {
         Ok(value) => match tx.commit() {
             Ok(()) => Ok(value),
@@ -883,6 +1163,9 @@ fn apply_command(
     command: &DurableCommand,
     request: &str,
     rules: &DurableContentRules,
+    lease: Option<&LeaseAuthority>,
+    channels: &std::collections::BTreeMap<i64, u64>,
+    barrier: &mut Option<LeaseBarrier>,
 ) -> Result<DurableCommandResult, PersistError> {
     if let Some(result) = locked_command(tx, &command.key, request)? {
         return Ok(result);
@@ -911,6 +1194,11 @@ fn apply_command(
             ));
         }
         locked.insert(*id);
+    }
+    enforce_command_lease(tx, &locked, lease, barrier)?;
+    let ground = ground_stamp(command, channels)?;
+    if let Some((channel_id, generation)) = ground {
+        lifecycle::lock_live_channel(tx, channel_id, generation)?;
     }
     let mut item_ids: Vec<_> = command
         .moves
@@ -941,12 +1229,22 @@ fn apply_command(
     }
     for item in &command.moves {
         if matches!(item.to, LiveDestination::Character { .. }) {
-            move_item(tx, item.item_instance_id, LiveDestination::Ground, rules)?;
+            move_item(
+                tx,
+                item.item_instance_id,
+                LiveDestination::Ground,
+                rules,
+                None,
+            )?;
         }
     }
     let minted = place_items(tx, command)?;
     for item in &command.moves {
-        move_item(tx, item.item_instance_id, item.to, rules)?;
+        let stamp = match item.to {
+            LiveDestination::Ground => ground,
+            LiveDestination::Character { .. } => None,
+        };
+        move_item(tx, item.item_instance_id, item.to, rules, stamp)?;
     }
     for write in &command.narrative {
         apply_narrative(tx, write)?;
@@ -1158,11 +1456,79 @@ fn location_sql(location: CharacterItemLocation) -> LocationSql {
     }
 }
 
+fn ground_stamp(
+    command: &DurableCommand,
+    channels: &std::collections::BTreeMap<i64, u64>,
+) -> Result<Option<(i64, u64)>, PersistError> {
+    let needs_ground = command
+        .moves
+        .iter()
+        .any(|item| matches!(item.to, LiveDestination::Ground));
+    if !needs_ground {
+        return Ok(None);
+    }
+    match channels.len() {
+        1 => {
+            let (channel_id, generation) = channels.iter().next().expect("one channel");
+            Ok(Some((*channel_id, *generation)))
+        }
+        0 => Err(PersistError::conflict(
+            db_path(),
+            "ground write has no live channel generation",
+        )),
+        _ => Err(PersistError::conflict(
+            db_path(),
+            "ground channel is ambiguous",
+        )),
+    }
+}
+
+fn enforce_command_lease(
+    tx: &mut postgres::Transaction<'_>,
+    characters: &BTreeSet<CharacterId>,
+    lease: Option<&LeaseAuthority>,
+    barrier: &mut Option<LeaseBarrier>,
+) -> Result<(), PersistError> {
+    let mut owners = BTreeSet::new();
+    for id in characters {
+        let raw = id_bytes(id.raw());
+        let owner: String = tx
+            .query_one(
+                "SELECT owner_login FROM characters WHERE character_id = $1",
+                &[&raw.as_slice()],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        let leased: bool = tx
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM character_leases WHERE owner_login = $1)",
+                &[&owner],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        if leased {
+            owners.insert(owner);
+        }
+    }
+    match (owners.len(), lease) {
+        (0, None) => Ok(()),
+        (1, Some(authority)) => {
+            let owner = owners.iter().next().expect("one leased owner");
+            if owner != authority.login.as_str() || !characters.contains(&authority.character_id) {
+                return Err(PersistError::LeaseLost);
+            }
+            lifecycle::assert_live_lease(tx, authority, barrier)
+        }
+        _ => Err(PersistError::LeaseLost),
+    }
+}
+
 fn move_item(
     tx: &mut postgres::Transaction<'_>,
     id: ItemInstanceId,
     to: LiveDestination,
     rules: &DurableContentRules,
+    ground: Option<(i64, u64)>,
 ) -> Result<(), PersistError> {
     if let LiveDestination::Character { location, .. } = to {
         let (definition, quantity) = committed_item_content(tx, id)?;
@@ -1186,10 +1552,18 @@ fn move_item(
             }
         };
     let owner_param: Option<&[u8]> = owner.as_deref();
+    let (ground_channel, ground_generation) = match to {
+        LiveDestination::Ground => match ground {
+            Some((channel_id, generation)) => (Some(channel_id), Some(revision_i64(generation)?)),
+            None => (None, None),
+        },
+        LiveDestination::Character { .. } => (None, None),
+    };
     let updated = tx
         .execute(
             "UPDATE item_instances
-             SET owner_character_id = $2, location_kind = $3, inventory_slot = $4, equipment_slot = $5
+             SET owner_character_id = $2, location_kind = $3, inventory_slot = $4, equipment_slot = $5,
+                 ground_channel_id = $6, ground_generation = $7
              WHERE item_instance_id = $1 AND state = 'live'",
             &[
                 &raw.as_slice() as &(dyn ToSql + Sync),
@@ -1197,6 +1571,8 @@ fn move_item(
                 &kind,
                 &inventory,
                 &equipment,
+                &ground_channel,
+                &ground_generation,
             ],
         )
         .map_err(map_sql)?;
@@ -1241,7 +1617,8 @@ fn retire_item(tx: &mut postgres::Transaction<'_>, id: ItemInstanceId) -> Result
         .execute(
             "UPDATE item_instances
              SET state = 'retired', owner_character_id = NULL, location_kind = NULL,
-                 inventory_slot = NULL, equipment_slot = NULL
+                 inventory_slot = NULL, equipment_slot = NULL,
+                 ground_channel_id = NULL, ground_generation = NULL
              WHERE item_instance_id = $1 AND state = 'live'",
             &[&raw.as_slice()],
         )
@@ -1406,6 +1783,8 @@ fn recover_on_unusable_connection(
 fn save_restore(
     client: &mut Client,
     snapshot: PersistentCharacterSnapshot,
+    lease: Option<&LeaseAuthority>,
+    barrier: &mut Option<LeaseBarrier>,
 ) -> Result<(), PersistError> {
     let mut tx = client.transaction().map_err(map_sql)?;
     let result = (|| {
@@ -1438,6 +1817,32 @@ fn save_restore(
         let stored_point: String = row.get(3);
         let stored_checkpoint: Option<String> = row.get(4);
         let stored_exit: Option<String> = row.get(5);
+        let owner: String = tx
+            .query_one(
+                "SELECT owner_login FROM characters WHERE character_id = $1",
+                &[&raw.as_slice()],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        let leased: bool = tx
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM character_leases WHERE owner_login = $1)",
+                &[&owner],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        if leased {
+            let Some(authority) = lease else {
+                return Err(PersistError::LeaseLost);
+            };
+            if authority.login.as_str() != owner || authority.character_id != snapshot.character_id
+            {
+                return Err(PersistError::LeaseLost);
+            }
+            lifecycle::assert_live_lease(&mut tx, authority, barrier)?;
+        } else if lease.is_some() {
+            return Err(PersistError::LeaseLost);
+        }
         let same_restore = stored_map == snapshot.restore.map_authored
             && stored_point == snapshot.restore.point_id
             && stored_checkpoint.as_deref() == snapshot.restore.checkpoint_id.as_deref()
@@ -1894,6 +2299,10 @@ fn content_i32(id: ContentId) -> Result<i32, PersistError> {
         PersistError::content(db_path(), "content id is outside the numeric catalog")
     })?;
     i32::try_from(raw).map_err(|_| PersistError::content(db_path(), "content id does not fit"))
+}
+
+pub(crate) fn map_sql_pub(err: postgres::Error) -> PersistError {
+    map_sql(err)
 }
 
 fn map_sql(err: postgres::Error) -> PersistError {

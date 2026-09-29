@@ -270,6 +270,33 @@ impl ItemRuntimeState {
         Ok(())
     }
 
+    pub(crate) fn bind_equipped(
+        &mut self,
+        id: ItemInstanceId,
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+        owner: EntityId,
+        slot: crate::equipment::EquipmentSlot,
+    ) -> Result<(), ItemRuntimeError> {
+        Self::validate_quantity(quantity, stack_limit)?;
+        if self.records.contains_key(&id) {
+            return Err(ItemRuntimeError::DuplicateInstance(id));
+        }
+        if self.equipped_item(owner, slot).is_some() {
+            return Err(ItemRuntimeError::EquipmentEmpty { owner, slot });
+        }
+        self.records.insert(
+            id,
+            ItemRecord {
+                definition,
+                quantity,
+                location: ItemLocation::Equipped { owner, slot },
+            },
+        );
+        Ok(())
+    }
+
     pub(crate) fn set_quantity(
         &mut self,
         id: ItemInstanceId,

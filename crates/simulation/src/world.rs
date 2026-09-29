@@ -746,6 +746,39 @@ impl World {
     /// Mint a new canonical item instance directly into an active player's
     /// inventory. Dialogue and future reward systems use this owner API rather
     /// than writing inventory tables themselves.
+    /// Bind a durable item id into inventory. Does not mint a runtime id.
+    pub fn restore_inventory_item(
+        &mut self,
+        owner: EntityId,
+        id: ItemInstanceId,
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+        slot: u16,
+    ) -> Result<(), ItemRuntimeError> {
+        self.item_runtime
+            .bind_inventory(id, definition, quantity, stack_limit, owner, slot)
+    }
+
+    /// Bind a durable item id into equipment and rebuild the equipment grant.
+    pub fn restore_equipped_item(
+        &mut self,
+        owner: EntityId,
+        id: ItemInstanceId,
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+        slot: EquipmentSlot,
+    ) -> Result<(), ItemRuntimeError> {
+        self.item_runtime
+            .bind_equipped(id, definition, quantity, stack_limit, owner, slot)?;
+        if !self.set_equipment_slot(owner, slot, Some(definition)) {
+            return Err(ItemRuntimeError::EquipmentEmpty { owner, slot });
+        }
+        self.grant_equipment_ability(owner, id, definition);
+        Ok(())
+    }
+
     pub fn grant_inventory_item(
         &mut self,
         owner: EntityId,

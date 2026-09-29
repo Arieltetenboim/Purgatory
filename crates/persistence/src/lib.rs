@@ -10,6 +10,7 @@ mod character;
 mod domain;
 mod error;
 mod identity;
+mod lifecycle;
 mod postgres;
 mod repository;
 mod service;
@@ -25,9 +26,13 @@ pub use identity::{
     CharacterRosterEntry, DevIdentityStore, IDENTITY_FILE_NAME, IDENTITY_SCHEMA_VERSION,
     MAX_ROSTER_SIZE,
 };
+pub use lifecycle::{
+    Admission, CHANNEL_GENERATION_EXPIRY, CHANNEL_GENERATION_RENEWAL, CHARACTER_LEASE_EXPIRY,
+    CHARACTER_LEASE_RENEWAL, ChannelClaim, LeaseAuthority, LeaseBarrier, OwnedRestore,
+};
 pub use postgres::PostgresSettings;
 pub use repository::{FileCharacterRepository, character_file_name};
-pub use service::PersistenceService;
+pub use service::{PersistenceService, SessionAdmission};
 
 #[cfg(test)]
 mod postgres_tests;
