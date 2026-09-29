@@ -1869,35 +1869,57 @@ mod admission_race {
         let mut owner = GameplayOwner::new();
         let channel_live = Arc::new(AtomicBool::new(true));
         let connection_id = ConnectionId::from_raw(5);
-        let admission = tokio::spawn({
-            let worker = worker.clone();
-            let tx = tx.clone();
-            let channel_live = channel_live.clone();
-            async move {
-                activate_owned_character(
-                    &worker,
-                    &tx,
-                    &login,
-                    connection_id,
-                    character_id,
-                    &channel_live,
-                )
-                .await
+        let mut admission = std::pin::pin!(activate_owned_character(
+            &worker,
+            &tx,
+            &login,
+            connection_id,
+            character_id,
+            &channel_live,
+        ));
+        let mut outcome = None;
+        for _ in 0..100 {
+            if !life_rx.is_empty() {
+                break;
             }
-        });
-        until("enter queued after the pre-enter deadline check", || {
-            !life_rx.is_empty()
-        })
-        .await;
+            std::future::poll_fn(|cx| {
+                if outcome.is_none()
+                    && let std::task::Poll::Ready(value) = admission.as_mut().poll(cx)
+                {
+                    outcome = Some(value);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            // Real sleep, not paused Tokio time: the worker thread has to
+            // answer before the deadline is advanced.
+            std::thread::sleep(Duration::from_millis(2));
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            outcome.is_none() && !life_rx.is_empty(),
+            "enter was not queued after the pre-enter deadline check; finished={}",
+            outcome.is_some()
+        );
         advance_for(purgatory_persistence::CHARACTER_LEASE_EXPIRY).await;
         for _ in 0..100 {
             owner.drain(&mut life_rx, &mut input_rx);
-            if admission.is_finished() {
+            if outcome.is_some() {
                 break;
             }
+            std::future::poll_fn(|cx| {
+                if outcome.is_none()
+                    && let std::task::Poll::Ready(value) = admission.as_mut().poll(cx)
+                {
+                    outcome = Some(value);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            std::thread::sleep(Duration::from_millis(2));
             tokio::task::yield_now().await;
         }
-        let result = admission.await.unwrap();
+        let result = outcome.expect("admission did not finish after the character deadline");
         let accepted_before = owner.input_accepted;
         tx.input.try_send(move_command(connection_id)).unwrap();
         owner.drain(&mut life_rx, &mut input_rx);
