@@ -31,10 +31,19 @@ and it does not wire live Drop, pickup, equip, dialogue, or client replies.
 Do these steps in order. Inventory and import come only after the file-writing
 server is gone and the source directory is stable.
 
-1. Stop the file-writing server with a clean shutdown and wait until that
-   process has exited. Shutdown asks the persistence worker to write queued
-   saves and deferred latest snapshots before it leaves. A killed process
-   does not drain those writes. Do not start another file writer.
+1. Stop the one legacy file-writing server and wait until that process has
+   exited. The supported deployment is that single process, importing
+   development `identity.json` and `char_*.json` records. Production player
+   data is not imported from files. Do not start a second file writer.
+   `try_save` is a queue handoff: `Accepted` and `DeferredLatest` are not
+   durable acknowledgements. A file save is durable only after
+   `replace_file_recoverable` finishes. `commit_durable` is the path that
+   waits for the worker result. Shutdown waits up to
+   `persistence_shutdown_timeout` and then discards that wait. A timed-out
+   shutdown can leave a queued snapshot unwritten. That snapshot was never
+   acknowledged as durable. A completed replace stays in the character file.
+   A failed save is logged and leaves the previous file. Import reads those
+   files. Killing the process also skips the drain.
 2. Leave the data directory unchanged from that exit until character counts
    and identities have been verified in step 8. The directory is
    `PURGATORY_DATA_DIR`, otherwise the per-user application-data `Purgatory`
@@ -93,11 +102,13 @@ server is gone and the source directory is stable.
    items, facts, or grants. That is the current create-before-first-save case,
    not a repair of a broken file.
 
-This procedure does not guarantee one writer. Nothing in the server detects
-another process that is still writing the source directory, so a file server
-that was not stopped can change files during inventory and import. That is
-the remaining 12A blocker for the contract's single-writer rule. The marker
-safeguard does not remove it.
+After that import, PostgreSQL is the durable authority. The files are not a
+second writer. The supported threat model is one legacy file server, stopped
+before import, then one PostgreSQL server. There is no supported concurrent
+file writer. An unrelated process writing the directory is outside that
+deployment and is not a 12A defect. The marker stops a later file-mode open
+of this server. It is not a lock against an unrelated process, and 12A does
+not need one for the supported cutover. No 12A blocker remains on this point.
 
 The two roles must be distinct non-superusers. The runtime role is not granted
 `CREATE` or `DROP`. `PersistenceHandle::commit_durable` sends the command to
@@ -186,6 +197,12 @@ and client replies. Those belong to 12B and 12C.
 command, the live session adopts the committed revision before it submits the
 next restore snapshot. A snapshot older than the committed revision is already
 ignored by 12A. That ignore is not a 12A defect.
+
+12B also owns snapshot shutdown status. A queue handoff is not a durable
+save, and a shutdown that times out must become visible before anything
+reports that snapshot as saved. That is not a change to the PostgreSQL
+commit path, and it is not a defect in importing the files that already
+completed.
 
 ## PR #116
 
