@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -172,6 +174,68 @@ struct SharedSaveState {
         >,
     >,
     diagnostics: PersistenceDiagnostics,
+    /// Async barrier after the worker admit reply, so `admit().await` stays
+    /// pending without blocking the persistence thread.
+    #[cfg(test)]
+    admit_hold: Mutex<Option<CommandHoldState>>,
+    #[cfg(test)]
+    renew_channel_hold: Mutex<Option<CommandHoldState>>,
+    #[cfg(test)]
+    scripted_admit: Mutex<Option<purgatory_persistence::SessionAdmission>>,
+}
+
+#[cfg(test)]
+fn take_scripted_admit(
+    shared: &SharedSaveState,
+) -> Option<purgatory_persistence::SessionAdmission> {
+    shared
+        .scripted_admit
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .take()
+}
+
+#[cfg(test)]
+struct CommandHoldState {
+    entered: Arc<AtomicBool>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+pub struct CommandHold {
+    entered: Arc<AtomicBool>,
+    release_tx: tokio::sync::oneshot::Sender<()>,
+}
+
+#[cfg(test)]
+impl CommandHold {
+    fn pair() -> (Self, CommandHoldState) {
+        let (release_tx, release) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                entered: entered.clone(),
+                release_tx,
+            },
+            CommandHoldState { entered, release },
+        )
+    }
+
+    pub fn entered(&self) -> bool {
+        self.entered.load(Ordering::SeqCst)
+    }
+
+    pub fn release(self) {
+        let _ = self.release_tx.send(());
+    }
+}
+
+#[cfg(test)]
+async fn wait_hold(hold: Option<CommandHoldState>) {
+    if let Some(hold) = hold {
+        hold.entered.store(true, Ordering::SeqCst);
+        let _ = hold.release.await;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -287,7 +351,16 @@ impl PersistenceHandle {
                         character_id,
                         reply,
                     } => {
-                        let _ = reply.send(service.admit(&login, character_id));
+                        #[cfg(test)]
+                        let scripted = take_scripted_admit(&worker_shared);
+                        #[cfg(test)]
+                        let result = match scripted {
+                            Some(admission) => Ok(admission),
+                            None => service.admit(&login, character_id),
+                        };
+                        #[cfg(not(test))]
+                        let result = service.admit(&login, character_id);
+                        let _ = reply.send(result);
                     }
                     PersistCmd::Supersede { authority, reply } => {
                         let _ = reply.send(service.supersede(&authority));
@@ -565,7 +638,55 @@ impl PersistenceHandle {
             })
             .await
             .map_err(|_| worker_closed())?;
-        rx.await.map_err(|_| worker_closed())?
+        let result = rx.await.map_err(|_| worker_closed())?;
+        #[cfg(test)]
+        {
+            let hold = self
+                .shared
+                .admit_hold
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            wait_hold(hold).await;
+        }
+        result
+    }
+
+    /// Hold the next `admit().await` after the worker has produced its reply.
+    #[cfg(test)]
+    pub fn hold_next_admit(&self) -> CommandHold {
+        let (hold, state) = CommandHold::pair();
+        *self
+            .shared
+            .admit_hold
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(state);
+        hold
+    }
+
+    /// Replace the next admit result. File mode has no lease; tests that need
+    /// a character deadline install one here. The handoff after the reply is
+    /// still `activate_owned_character`.
+    #[cfg(test)]
+    pub fn script_next_admit(&self, admission: purgatory_persistence::SessionAdmission) {
+        *self
+            .shared
+            .scripted_admit
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(admission);
+    }
+
+    /// Hold the next channel renewal reply so the supervisor stays inside the
+    /// renewal future until the local deadline wins.
+    #[cfg(test)]
+    pub fn hold_next_channel_renewal(&self) -> CommandHold {
+        let (hold, state) = CommandHold::pair();
+        *self
+            .shared
+            .renew_channel_hold
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(state);
+        hold
     }
 
     pub async fn supersede(
@@ -636,7 +757,18 @@ impl PersistenceHandle {
             })
             .await
             .map_err(|_| worker_closed())?;
-        rx.await.map_err(|_| worker_closed())?
+        let result = rx.await.map_err(|_| worker_closed())?;
+        #[cfg(test)]
+        {
+            let hold = self
+                .shared
+                .renew_channel_hold
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            wait_hold(hold).await;
+        }
+        result
     }
 
     #[allow(dead_code)]

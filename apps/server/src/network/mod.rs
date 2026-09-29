@@ -343,7 +343,7 @@ async fn claim_startup_channel(
     }
 }
 
-fn spawn_channel_renewal(
+pub(crate) fn spawn_channel_renewal(
     worker: persist::PersistenceHandle,
     gameplay: gameplay::GameplayTx,
     channel_live: Arc<AtomicBool>,

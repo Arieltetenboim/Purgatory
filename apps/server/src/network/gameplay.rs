@@ -442,6 +442,9 @@ pub struct GameplayOwner {
     narrative: NarrativeRuntime,
     bindings: HashMap<ConnectionId, PlayerBinding>,
     occupancy: HashMap<CharacterId, ConnectionId>,
+    /// Set by a channel-generation stop. A binding created afterward must not
+    /// enter `World`; the stop may already have been drained.
+    admission_stopped: bool,
     persist: Option<PersistenceHandle>,
     ticks: u64,
     pub input_received: u64,
@@ -544,6 +547,8 @@ pub enum EnterError {
     RestoreFailed,
     SpawnFailed,
     Pending,
+    /// Channel admission was already stopped before this entry ran.
+    AuthorityLost,
 }
 
 pub enum LifecycleCmd {
@@ -611,6 +616,10 @@ pub enum LifecycleCmd {
         revision: u64,
     },
     LoseAllAuthority,
+    AbandonAdmission {
+        connection_id: ConnectionId,
+        reply: tokio::sync::oneshot::Sender<()>,
+    },
     Detach {
         connection_id: ConnectionId,
     },
@@ -803,6 +812,20 @@ impl GameplayTx {
                 authority,
                 replication,
                 interact,
+                reply,
+            })
+            .await
+            .map_err(|_| ())?;
+        rx.await.map_err(|_| ())
+    }
+
+    /// Remove a character that entered after its authority had already ended.
+    /// Nothing is saved.
+    pub async fn abandon_admission(&self, connection_id: ConnectionId) -> Result<(), ()> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.lifecycle
+            .send(LifecycleCmd::AbandonAdmission {
+                connection_id,
                 reply,
             })
             .await
@@ -1262,6 +1285,7 @@ impl GameplayOwner {
             narrative: NarrativeRuntime::default(),
             bindings: HashMap::new(),
             occupancy: HashMap::new(),
+            admission_stopped: false,
             persist: None,
             ticks: 0,
             input_received: 0,
@@ -1852,6 +1876,9 @@ impl GameplayOwner {
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
     ) -> Result<(), EnterError> {
+        if self.admission_stopped {
+            return Err(EnterError::AuthorityLost);
+        }
         let character = owned.character.clone();
         self.enter_placed(
             connection_id,
@@ -1959,6 +1986,7 @@ impl GameplayOwner {
     }
 
     pub fn lose_all_authority(&mut self) {
+        self.admission_stopped = true;
         for binding in self.bindings.values_mut() {
             if binding.authority.is_some() {
                 binding.authority_lost = true;
@@ -2425,6 +2453,13 @@ impl GameplayOwner {
                     let _ = reply.send(result);
                 }
                 LifecycleCmd::LoseAllAuthority => self.lose_all_authority(),
+                LifecycleCmd::AbandonAdmission {
+                    connection_id,
+                    reply,
+                } => {
+                    self.unlink(connection_id, false);
+                    let _ = reply.send(());
+                }
                 LifecycleCmd::BeginDurable {
                     connection_id,
                     reply,

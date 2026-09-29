@@ -34,6 +34,8 @@ On renewal failure, or any other loss of lease authority, the session stops acce
 
 The holding process also keeps a local monotonic deadline. It is the instant the admit, supersede, claim, or renewal request was sent, plus the 60-second policy expiry. Time spent queued before the reply counts against that expiry. If the reply arrives at or after the deadline, gameplay is not entered and a late channel claim refuses to start. The renewal task stops gameplay, or channel admission, when that deadline passes even if the persistence worker has not answered. The database clock is still what another process sees. A renewal that the worker has already started can still commit after the local stop; this process has already stopped accepting input, and the other process can admit only once that database row expires.
 
+Channel authority is checked again after the admit reply, before world entry. Character and channel authority are checked again after `enter_restored` returns. If either has ended during that wait, the new binding is removed without a save, the unused lease is released through the persistence worker, and character renewal is not started. A channel stop also sticks on the gameplay owner: an entry command drained after that stop does not create a binding. The character renewal supervisor still starts only after a successful entry.
+
 ## Restore
 
 A granted or superseded lease restores the owned character, live owned items, facts, NPC-met, dialogue heard, and learned grants. Derived equipment and grants are rebuilt from those rows. Runtime entity and connection ids are not restored. Unknown content, an empty restore, or a bad item fails closed and the new entity is removed. Welcome facts are seeded only for a file-mode session, which has no lease.
@@ -60,6 +62,8 @@ That proves a committed lease row is still there after process death. It does no
 
 `stalled_renewal_expires_while_the_worker_reply_is_still_blocked` and `stalled_lease_renewal_stops_gameplay_before_another_world_takes_input` use a paused Tokio clock. They prove the local deadline stops a renewal that has not replied, the old session then rejects input, and a second `World` can accept input. They do not take a second database lease. `queued_reply_time_counts_against_the_deadline` checks the send-instant arithmetic without sleeping. `renewal_reply_extends_from_the_send_instant_not_past_it` proves a successful renewal moves the local deadline to that request's send instant plus 60 seconds.
 
+`channel_stop_during_admit_does_not_enter_world` holds the admit reply after the worker has produced it, then runs the real channel renewal supervisor on a paused clock until that supervisor clears channel authority and its stop has been drained. Releasing the reply does not enter `World`, and input for that connection is stale. `character_deadline_during_enter_does_not_enter_world` queues restored entry after the pre-entry deadline check, then advances the paused clock past the character expiry before the simulation thread drains the command. The entity is removed without a save. The character renewal supervisor is not running in that test; the deadline itself is what rejects the entry. Neither test calls `lose_authority` directly.
+
 `unusable_connection_at_the_commit_reply_stays_unknown_until_retry` still disconnects only after `COMMIT` succeeds. Injecting a fault during `COMMIT` itself remains an evidence limit from 12A.
 
 ## Tests
@@ -85,6 +89,8 @@ Gameplay tests, without a database:
 - `committed_revision_is_visible_on_the_next_snapshot`
 - `lost_authority_rejects_gameplay_input`
 - `stalled_lease_renewal_stops_gameplay_before_another_world_takes_input`
+- `channel_stop_during_admit_does_not_enter_world`
+- `character_deadline_during_enter_does_not_enter_world`
 - `character_occupancy_rejects_second_session_and_reconnect_gets_new_entity` — file mode still rejects a second local session
 
 `network::lease_clock` tests, without a database: `queued_reply_time_counts_against_the_deadline`, `stalled_renewal_expires_while_the_worker_reply_is_still_blocked`, `renewal_reply_extends_from_the_send_instant_not_past_it`.
