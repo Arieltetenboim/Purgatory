@@ -17,6 +17,7 @@ use purgatory_persistence::{
 };
 
 enum PersistCmd {
+    #[allow(dead_code)]
     LoadOwned {
         login: DevLogin,
         character_id: purgatory_common::CharacterId,
@@ -50,10 +51,77 @@ enum PersistCmd {
         command: DurableCommand,
         reply: tokio::sync::oneshot::Sender<Result<DurableCommandResult, PersistError>>,
     },
-    Save(PersistentCharacterSnapshot),
-    Shutdown {
-        reply: tokio::sync::oneshot::Sender<()>,
+    Save {
+        snapshot: PersistentCharacterSnapshot,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
     },
+    SaveAwaited {
+        snapshot: PersistentCharacterSnapshot,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    Admit {
+        login: DevLogin,
+        character_id: purgatory_common::CharacterId,
+        reply: tokio::sync::oneshot::Sender<
+            Result<purgatory_persistence::SessionAdmission, PersistError>,
+        >,
+    },
+    Supersede {
+        authority: purgatory_persistence::LeaseAuthority,
+        reply: tokio::sync::oneshot::Sender<
+            Result<
+                (
+                    purgatory_persistence::LeaseAuthority,
+                    purgatory_persistence::OwnedRestore,
+                ),
+                PersistError,
+            >,
+        >,
+    },
+    RenewLease {
+        authority: purgatory_persistence::LeaseAuthority,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    ReleaseLease {
+        authority: purgatory_persistence::LeaseAuthority,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    ClaimChannel {
+        channel_id: i64,
+        reply:
+            tokio::sync::oneshot::Sender<Result<purgatory_persistence::ChannelClaim, PersistError>>,
+    },
+    RenewChannel {
+        channel_id: i64,
+        generation: u64,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    #[allow(dead_code)]
+    ReleaseChannel {
+        channel_id: i64,
+        generation: u64,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    Shutdown {
+        channel: Option<(i64, u64)>,
+        reply: tokio::sync::oneshot::Sender<PersistenceShutdown>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PersistenceShutdown {
+    /// The worker finished the queued snapshots. `save_failures` counts writes
+    /// that did not commit. Zero failures is still not a client-visible "saved"
+    /// acknowledgement by itself.
+    Drained {
+        save_failures: u64,
+    },
+    /// The drain exceeded its bound. Snapshots still queued were not confirmed.
+    TimedOut {
+        save_failures: u64,
+    },
+    WorkerClosed,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -94,7 +162,15 @@ impl PersistenceDiagnostics {
 
 #[derive(Default)]
 struct SharedSaveState {
-    latest: Mutex<HashMap<purgatory_common::CharacterId, PersistentCharacterSnapshot>>,
+    latest: Mutex<
+        HashMap<
+            purgatory_common::CharacterId,
+            (
+                PersistentCharacterSnapshot,
+                Option<purgatory_persistence::LeaseAuthority>,
+            ),
+        >,
+    >,
     diagnostics: PersistenceDiagnostics,
 }
 
@@ -189,17 +265,81 @@ impl PersistenceHandle {
                     PersistCmd::CommitDurable { command, reply } => {
                         let _ = reply.send(service.commit_durable(&command));
                     }
-                    PersistCmd::Save(snapshot) => {
-                        save_snapshot_observed(&mut service, &worker_shared, snapshot);
+                    PersistCmd::Save { snapshot, lease } => {
+                        save_snapshot_observed(&mut service, &worker_shared, snapshot, lease);
                     }
-                    PersistCmd::Shutdown { reply } => {
+                    PersistCmd::SaveAwaited {
+                        snapshot,
+                        lease,
+                        reply,
+                    } => {
+                        let result = service.save_snapshot_leased(snapshot, lease.as_ref());
+                        if result.is_err() {
+                            worker_shared
+                                .diagnostics
+                                .save_failures
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        let _ = reply.send(result);
+                    }
+                    PersistCmd::Admit {
+                        login,
+                        character_id,
+                        reply,
+                    } => {
+                        let _ = reply.send(service.admit(&login, character_id));
+                    }
+                    PersistCmd::Supersede { authority, reply } => {
+                        let _ = reply.send(service.supersede(&authority));
+                    }
+                    PersistCmd::RenewLease { authority, reply } => {
+                        let _ = reply.send(service.renew_lease(&authority));
+                    }
+                    PersistCmd::ReleaseLease { authority, reply } => {
+                        let _ = reply.send(service.release_lease(&authority));
+                    }
+                    PersistCmd::ClaimChannel { channel_id, reply } => {
+                        let _ = reply.send(service.claim_channel(channel_id, None));
+                    }
+                    PersistCmd::RenewChannel {
+                        channel_id,
+                        generation,
+                        reply,
+                    } => {
+                        let _ = reply.send(service.renew_channel(channel_id, generation));
+                    }
+                    PersistCmd::ReleaseChannel {
+                        channel_id,
+                        generation,
+                        reply,
+                    } => {
+                        let _ = reply.send(service.release_channel(channel_id, generation));
+                    }
+                    PersistCmd::Shutdown { channel, reply } => {
                         while let Ok(extra) = rx.try_recv() {
-                            if let PersistCmd::Save(snapshot) = extra {
-                                save_snapshot_observed(&mut service, &worker_shared, snapshot);
+                            if let PersistCmd::Save { snapshot, lease } = extra {
+                                save_snapshot_observed(
+                                    &mut service,
+                                    &worker_shared,
+                                    snapshot,
+                                    lease,
+                                );
                             }
                         }
                         flush_deferred_latest(&mut service, &worker_shared);
-                        let _ = reply.send(());
+                        if let Some((channel_id, generation)) = channel
+                            && let Err(err) = service.release_channel(channel_id, generation)
+                        {
+                            eprintln!(
+                                "PURGATORY channel release failed id={channel_id} generation={generation}: {err}"
+                            );
+                        }
+                        let _ = reply.send(PersistenceShutdown::Drained {
+                            save_failures: worker_shared
+                                .diagnostics
+                                .save_failures
+                                .load(Ordering::Relaxed),
+                        });
                         break;
                     }
                 }
@@ -223,6 +363,7 @@ impl PersistenceHandle {
         rx.await.map_err(|_| worker_closed())?
     }
 
+    #[allow(dead_code)]
     pub async fn load_owned_character(
         &self,
         login: DevLogin,
@@ -292,8 +433,18 @@ impl PersistenceHandle {
         rx.await.map_err(|_| worker_closed())?
     }
 
+    #[allow(dead_code)]
     pub fn try_save(&self, snapshot: PersistentCharacterSnapshot) -> SaveHandoff {
-        match self.tx.try_send(PersistCmd::Save(snapshot)) {
+        self.try_save_leased(snapshot, None)
+    }
+
+    /// Queue acceptance is not a durable save.
+    pub fn try_save_leased(
+        &self,
+        snapshot: PersistentCharacterSnapshot,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
+    ) -> SaveHandoff {
+        match self.tx.try_send(PersistCmd::Save { snapshot, lease }) {
             Ok(()) => {
                 self.shared
                     .diagnostics
@@ -301,7 +452,10 @@ impl PersistenceHandle {
                     .fetch_add(1, Ordering::Relaxed);
                 SaveHandoff::Accepted
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Full(PersistCmd::Save(snapshot))) => {
+            Err(tokio::sync::mpsc::error::TrySendError::Full(PersistCmd::Save {
+                snapshot,
+                lease,
+            })) => {
                 self.shared
                     .diagnostics
                     .queue_full
@@ -313,15 +467,15 @@ impl PersistenceHandle {
                     .unwrap_or_else(|err| err.into_inner());
                 match latest.entry(snapshot.character_id) {
                     std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(snapshot);
+                        entry.insert((snapshot, lease));
                         self.shared
                             .diagnostics
                             .deferred_latest
                             .fetch_add(1, Ordering::Relaxed);
                     }
                     std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        if snapshot.persistence_revision > entry.get().persistence_revision {
-                            entry.insert(snapshot);
+                        if snapshot.persistence_revision > entry.get().0.persistence_revision {
+                            entry.insert((snapshot, lease));
                             self.shared
                                 .diagnostics
                                 .coalesced_replaced
@@ -336,7 +490,7 @@ impl PersistenceHandle {
                 }
                 SaveHandoff::DeferredLatest
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(PersistCmd::Save(_))) => {
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(PersistCmd::Save { .. })) => {
                 self.shared
                     .diagnostics
                     .worker_closed
@@ -377,15 +531,156 @@ impl PersistenceHandle {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .get(&id)
-            .cloned()
+            .map(|(snapshot, _)| snapshot.clone())
     }
 
-    pub async fn shutdown(self, timeout: Duration) {
+    pub async fn save_leased(
+        &self,
+        snapshot: PersistentCharacterSnapshot,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
+    ) -> Result<(), PersistError> {
         let (reply, rx) = tokio::sync::oneshot::channel();
-        if self.tx.send(PersistCmd::Shutdown { reply }).await.is_err() {
-            return;
+        self.tx
+            .send(PersistCmd::SaveAwaited {
+                snapshot,
+                lease,
+                reply,
+            })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn admit(
+        &self,
+        login: DevLogin,
+        character_id: purgatory_common::CharacterId,
+    ) -> Result<purgatory_persistence::SessionAdmission, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::Admit {
+                login,
+                character_id,
+                reply,
+            })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn supersede(
+        &self,
+        authority: purgatory_persistence::LeaseAuthority,
+    ) -> Result<
+        (
+            purgatory_persistence::LeaseAuthority,
+            purgatory_persistence::OwnedRestore,
+        ),
+        PersistError,
+    > {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::Supersede { authority, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn renew_lease(
+        &self,
+        authority: purgatory_persistence::LeaseAuthority,
+    ) -> Result<(), PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::RenewLease { authority, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn release_lease(
+        &self,
+        authority: purgatory_persistence::LeaseAuthority,
+    ) -> Result<(), PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::ReleaseLease { authority, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn claim_channel(
+        &self,
+        channel_id: i64,
+    ) -> Result<purgatory_persistence::ChannelClaim, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::ClaimChannel { channel_id, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn renew_channel(
+        &self,
+        channel_id: i64,
+        generation: u64,
+    ) -> Result<(), PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::RenewChannel {
+                channel_id,
+                generation,
+                reply,
+            })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    #[allow(dead_code)]
+    pub async fn release_channel(
+        &self,
+        channel_id: i64,
+        generation: u64,
+    ) -> Result<(), PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::ReleaseChannel {
+                channel_id,
+                generation,
+                reply,
+            })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn shutdown(
+        self,
+        timeout: Duration,
+        channel: Option<(i64, u64)>,
+    ) -> PersistenceShutdown {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        if self
+            .tx
+            .send(PersistCmd::Shutdown { channel, reply })
+            .await
+            .is_err()
+        {
+            return PersistenceShutdown::WorkerClosed;
         }
-        let _ = tokio::time::timeout(timeout, rx).await;
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(status)) => status,
+            _ => PersistenceShutdown::TimedOut {
+                save_failures: self
+                    .shared
+                    .diagnostics
+                    .save_failures
+                    .load(Ordering::Relaxed),
+            },
+        }
     }
 }
 
@@ -393,8 +688,9 @@ fn save_snapshot_observed(
     service: &mut PersistenceService,
     shared: &SharedSaveState,
     snapshot: PersistentCharacterSnapshot,
+    lease: Option<purgatory_persistence::LeaseAuthority>,
 ) {
-    if let Err(err) = service.save_snapshot(snapshot) {
+    if let Err(err) = service.save_snapshot_leased(snapshot, lease.as_ref()) {
         shared
             .diagnostics
             .save_failures
@@ -406,13 +702,10 @@ fn save_snapshot_observed(
 fn flush_deferred_latest(service: &mut PersistenceService, shared: &SharedSaveState) {
     let pending = {
         let mut latest = shared.latest.lock().unwrap_or_else(|err| err.into_inner());
-        latest
-            .drain()
-            .map(|(_, snapshot)| snapshot)
-            .collect::<Vec<_>>()
+        latest.drain().map(|(_, saved)| saved).collect::<Vec<_>>()
     };
-    for snapshot in pending {
-        save_snapshot_observed(service, shared, snapshot);
+    for (snapshot, lease) in pending {
+        save_snapshot_observed(service, shared, snapshot, lease);
     }
 }
 
@@ -576,7 +869,10 @@ mod tests {
         assert_eq!(handle.try_save(stale), SaveHandoff::DeferredLatest);
 
         let queued = match rx.try_recv().unwrap() {
-            PersistCmd::Save(snapshot) => snapshot,
+            PersistCmd::Save {
+                snapshot,
+                lease: None,
+            } => snapshot,
             _ => panic!("expected save"),
         };
         assert_eq!(queued.persistence_revision, 1);
@@ -634,9 +930,9 @@ mod tests {
             .latest
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .insert(id, snapshot);
+            .insert(id, (snapshot, None));
 
-        handle.shutdown(Duration::from_secs(2)).await;
+        handle.shutdown(Duration::from_secs(2), None).await;
 
         let repo = purgatory_persistence::FileCharacterRepository::open(&dir).unwrap();
         let loaded = repo.load(id).unwrap().unwrap();
@@ -665,7 +961,7 @@ mod tests {
         let snapshot =
             purgatory_persistence::PersistentCharacterSnapshot::from_character(&character);
         assert_eq!(handle.try_save(snapshot), SaveHandoff::Accepted);
-        handle.shutdown(Duration::from_secs(2)).await;
+        handle.shutdown(Duration::from_secs(2), None).await;
         let path = dir.join(purgatory_persistence::character_file_name(id));
         assert!(
             path.exists(),
@@ -729,7 +1025,7 @@ mod frontend_worker_tests {
         );
         assert_eq!(std::fs::read(&path).unwrap(), original);
 
-        worker.shutdown(Duration::from_secs(2)).await;
+        worker.shutdown(Duration::from_secs(2), None).await;
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -773,10 +1069,10 @@ mod frontend_worker_tests {
             second[1].character_id.raw(),
             first[0].character_id.raw() + 1
         );
-        worker.shutdown(Duration::from_secs(2)).await;
+        worker.shutdown(Duration::from_secs(2), None).await;
         let worker = PersistenceHandle::spawn(&dir).unwrap();
         assert_eq!(worker.roster(login).await.unwrap(), second);
-        worker.shutdown(Duration::from_secs(2)).await;
+        worker.shutdown(Duration::from_secs(2), None).await;
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -808,7 +1104,7 @@ mod frontend_worker_tests {
             text.contains("postgresql"),
             "the worker must return the service result, not a handoff: {text}"
         );
-        worker.shutdown(Duration::from_secs(2)).await;
+        worker.shutdown(Duration::from_secs(2), None).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

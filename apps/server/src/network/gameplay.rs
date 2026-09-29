@@ -428,6 +428,10 @@ pub struct PlayerBinding {
     last_drop_seq: Option<u32>,
     last_drop_result: Option<ServerItem>,
     dialogue_reopen_after_tick: u64,
+    authority: Option<purgatory_persistence::LeaseAuthority>,
+    authority_lost: bool,
+    pending_durable: u32,
+    detach_when_idle: bool,
 }
 
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
@@ -539,6 +543,7 @@ pub enum EnterError {
     Occupied,
     RestoreFailed,
     SpawnFailed,
+    Pending,
 }
 
 pub enum LifecycleCmd {
@@ -547,6 +552,7 @@ pub enum LifecycleCmd {
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
     },
+    #[allow(dead_code)]
     Enter {
         connection_id: ConnectionId,
         character: PersistentCharacter,
@@ -554,6 +560,57 @@ pub enum LifecycleCmd {
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
         reply: tokio::sync::oneshot::Sender<Result<(), EnterError>>,
     },
+    #[allow(dead_code)]
+    SetAuthority {
+        connection_id: ConnectionId,
+        authority: purgatory_persistence::LeaseAuthority,
+    },
+    LoseAuthority {
+        connection_id: ConnectionId,
+    },
+    StopForReconnect {
+        character_id: CharacterId,
+        reply: tokio::sync::oneshot::Sender<
+            Result<
+                (
+                    purgatory_persistence::LeaseAuthority,
+                    PersistentCharacterSnapshot,
+                ),
+                EnterError,
+            >,
+        >,
+    },
+    PrepareLogout {
+        connection_id: ConnectionId,
+        reply: tokio::sync::oneshot::Sender<
+            Result<
+                Option<(
+                    purgatory_persistence::LeaseAuthority,
+                    PersistentCharacterSnapshot,
+                )>,
+                EnterError,
+            >,
+        >,
+    },
+    EnterRestored {
+        connection_id: ConnectionId,
+        owned: purgatory_persistence::OwnedRestore,
+        authority: Option<purgatory_persistence::LeaseAuthority>,
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+        reply: tokio::sync::oneshot::Sender<Result<(), EnterError>>,
+    },
+    #[allow(dead_code)]
+    BeginDurable {
+        connection_id: ConnectionId,
+        reply: tokio::sync::oneshot::Sender<bool>,
+    },
+    #[allow(dead_code)]
+    FinishDurable {
+        connection_id: ConnectionId,
+        revision: u64,
+    },
+    LoseAllAuthority,
     Detach {
         connection_id: ConnectionId,
     },
@@ -708,6 +765,7 @@ impl GameplayTx {
             .is_ok()
     }
 
+    #[allow(dead_code)]
     pub async fn enter(
         &self,
         connection_id: ConnectionId,
@@ -727,6 +785,91 @@ impl GameplayTx {
             .await
             .map_err(|_| ())?;
         rx.await.map_err(|_| ())
+    }
+
+    pub async fn enter_restored(
+        &self,
+        connection_id: ConnectionId,
+        owned: purgatory_persistence::OwnedRestore,
+        authority: Option<purgatory_persistence::LeaseAuthority>,
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+    ) -> Result<Result<(), EnterError>, ()> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.lifecycle
+            .send(LifecycleCmd::EnterRestored {
+                connection_id,
+                owned,
+                authority,
+                replication,
+                interact,
+                reply,
+            })
+            .await
+            .map_err(|_| ())?;
+        rx.await.map_err(|_| ())
+    }
+
+    pub async fn stop_for_reconnect(
+        &self,
+        character_id: CharacterId,
+    ) -> Result<
+        Result<
+            (
+                purgatory_persistence::LeaseAuthority,
+                PersistentCharacterSnapshot,
+            ),
+            EnterError,
+        >,
+        (),
+    > {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.lifecycle
+            .send(LifecycleCmd::StopForReconnect {
+                character_id,
+                reply,
+            })
+            .await
+            .map_err(|_| ())?;
+        rx.await.map_err(|_| ())
+    }
+
+    pub async fn prepare_logout(
+        &self,
+        connection_id: ConnectionId,
+    ) -> Result<
+        Result<
+            Option<(
+                purgatory_persistence::LeaseAuthority,
+                PersistentCharacterSnapshot,
+            )>,
+            EnterError,
+        >,
+        (),
+    > {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.lifecycle
+            .send(LifecycleCmd::PrepareLogout {
+                connection_id,
+                reply,
+            })
+            .await
+            .map_err(|_| ())?;
+        rx.await.map_err(|_| ())
+    }
+
+    pub async fn lose_authority(&self, connection_id: ConnectionId) -> bool {
+        self.lifecycle
+            .send(LifecycleCmd::LoseAuthority { connection_id })
+            .await
+            .is_ok()
+    }
+
+    pub async fn lose_all_authority(&self) -> bool {
+        self.lifecycle
+            .send(LifecycleCmd::LoseAllAuthority)
+            .await
+            .is_ok()
     }
 
     /// Non-blocking probe (tests / diagnostics). Production path uses [`Self::send_input`].
@@ -1331,6 +1474,7 @@ impl GameplayOwner {
             RestoreIntent::map1_default(),
             None,
             None,
+            true,
         );
     }
 
@@ -1340,6 +1484,17 @@ impl GameplayOwner {
         character: PersistentCharacter,
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+    ) -> Result<(), EnterError> {
+        self.enter_placed(connection_id, character, replication, interact, true)
+    }
+
+    fn enter_placed(
+        &mut self,
+        connection_id: ConnectionId,
+        character: PersistentCharacter,
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+        seed_welcome: bool,
     ) -> Result<(), EnterError> {
         if self.bindings.contains_key(&connection_id) {
             self.duplicate_session_detected = self.duplicate_session_detected.saturating_add(1);
@@ -1375,6 +1530,7 @@ impl GameplayOwner {
             character.restore.clone(),
             replication,
             interact,
+            seed_welcome,
         ) {
             true => Ok(()),
             false => {
@@ -1395,6 +1551,7 @@ impl GameplayOwner {
         restore: RestoreIntent,
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+        seed_welcome: bool,
     ) -> bool {
         let floor = self
             .world
@@ -1418,8 +1575,10 @@ impl GameplayOwner {
             .set_health(entity, Health::full(PLAYER_HEALTH_MAX));
         let _ = self.world.grant_ability(entity, live_basic_strike_id());
         self.narrative.initialize_actor(entity);
-        for (fact, value) in WELCOME_NARRATIVE_INITIAL_FACTS {
-            self.narrative.set_fact(entity, fact, value);
+        if seed_welcome {
+            for (fact, value) in WELCOME_NARRATIVE_INITIAL_FACTS {
+                self.narrative.set_fact(entity, fact, value);
+            }
         }
         self.bindings.insert(
             connection_id,
@@ -1442,6 +1601,10 @@ impl GameplayOwner {
                 last_drop_seq: None,
                 last_drop_result: None,
                 dialogue_reopen_after_tick: 0,
+                authority: None,
+                authority_lost: false,
+                pending_durable: 0,
+                detach_when_idle: false,
             },
         );
         self.player_entity_spawned = self.player_entity_spawned.saturating_add(1);
@@ -1539,18 +1702,305 @@ impl GameplayOwner {
         true
     }
 
+    pub fn set_authority(
+        &mut self,
+        connection_id: ConnectionId,
+        authority: purgatory_persistence::LeaseAuthority,
+    ) {
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.authority = Some(authority);
+            binding.authority_lost = false;
+        }
+    }
+
+    pub fn lose_authority(&mut self, connection_id: ConnectionId) {
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.authority_lost = true;
+        }
+    }
+
+    pub fn begin_durable(&mut self, connection_id: ConnectionId) -> bool {
+        let Some(binding) = self.bindings.get_mut(&connection_id) else {
+            return false;
+        };
+        if binding.authority_lost || binding.pending_durable > 0 {
+            return false;
+        }
+        binding.pending_durable = 1;
+        true
+    }
+
+    pub fn finish_durable(&mut self, connection_id: ConnectionId, revision: u64) {
+        let detach = if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            if revision > binding.persistence_revision {
+                binding.persistence_revision = revision;
+            }
+            binding.pending_durable = binding.pending_durable.saturating_sub(1);
+            binding.pending_durable == 0 && binding.detach_when_idle
+        } else {
+            false
+        };
+        if detach {
+            self.detach(connection_id);
+        }
+    }
+
+    /// Remove a leased character from `World` before a same-process reconnect
+    /// may take a new generation. Does not write a save. The caller awaits the
+    /// returned snapshot, then supersedes. A different process cannot call this.
+    pub fn stop_for_reconnect(
+        &mut self,
+        character_id: CharacterId,
+    ) -> Result<
+        (
+            purgatory_persistence::LeaseAuthority,
+            PersistentCharacterSnapshot,
+        ),
+        EnterError,
+    > {
+        let Some(connection_id) = self.occupancy.get(&character_id).copied() else {
+            return Err(EnterError::Occupied);
+        };
+        let handoff = {
+            let Some(binding) = self.bindings.get(&connection_id) else {
+                return Err(EnterError::Occupied);
+            };
+            if binding.pending_durable > 0 {
+                return Err(EnterError::Pending);
+            }
+            if binding.authority_lost {
+                return Err(EnterError::Occupied);
+            }
+            let Some(authority) = binding.authority.clone() else {
+                return Err(EnterError::Occupied);
+            };
+            let Some(snapshot) = logout_snapshot(binding) else {
+                return Err(EnterError::Occupied);
+            };
+            (authority, snapshot)
+        };
+        self.unlink(connection_id, false);
+        if self.occupancy.contains_key(&character_id) {
+            return Err(EnterError::Occupied);
+        }
+        Ok(handoff)
+    }
+
+    /// Stop the session in `World`. A leased character returns its snapshot so
+    /// the connection task can await the save and then release. File mode
+    /// keeps the queued save. Pending durable work stays in `World`.
+    pub fn prepare_logout(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> Result<
+        Option<(
+            purgatory_persistence::LeaseAuthority,
+            PersistentCharacterSnapshot,
+        )>,
+        EnterError,
+    > {
+        enum LogoutKind {
+            Lost,
+            File,
+            Leased(
+                purgatory_persistence::LeaseAuthority,
+                PersistentCharacterSnapshot,
+            ),
+        }
+        let kind = {
+            let Some(binding) = self.bindings.get(&connection_id) else {
+                return Ok(None);
+            };
+            if binding.pending_durable > 0 {
+                None
+            } else if binding.authority_lost {
+                Some(LogoutKind::Lost)
+            } else if let Some(authority) = binding.authority.clone() {
+                let snapshot = logout_snapshot(binding).ok_or(EnterError::RestoreFailed)?;
+                Some(LogoutKind::Leased(authority, snapshot))
+            } else {
+                Some(LogoutKind::File)
+            }
+        };
+        let Some(kind) = kind else {
+            if let Some(binding) = self.bindings.get_mut(&connection_id) {
+                binding.detach_when_idle = true;
+            }
+            return Err(EnterError::Pending);
+        };
+        match kind {
+            LogoutKind::Lost => {
+                self.unlink(connection_id, false);
+                Ok(None)
+            }
+            LogoutKind::Leased(authority, snapshot) => {
+                self.unlink(connection_id, false);
+                Ok(Some((authority, snapshot)))
+            }
+            LogoutKind::File => {
+                self.unlink(connection_id, true);
+                Ok(None)
+            }
+        }
+    }
+
+    pub fn enter_restored(
+        &mut self,
+        connection_id: ConnectionId,
+        owned: purgatory_persistence::OwnedRestore,
+        authority: Option<purgatory_persistence::LeaseAuthority>,
+        replication: Option<ReplicationPipe>,
+        interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+    ) -> Result<(), EnterError> {
+        let character = owned.character.clone();
+        self.enter_placed(
+            connection_id,
+            character,
+            replication,
+            interact,
+            authority.is_none(),
+        )?;
+        if let Some(authority) = authority {
+            self.set_authority(connection_id, authority);
+            if self.apply_durable_restore(connection_id, &owned).is_err() {
+                self.unlink(connection_id, false);
+                return Err(EnterError::RestoreFailed);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_durable_restore(
+        &mut self,
+        connection_id: ConnectionId,
+        owned: &purgatory_persistence::OwnedRestore,
+    ) -> Result<(), EnterError> {
+        use purgatory_persistence::{CharacterItemLocation, ItemOwner};
+        let entity = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+            .ok_or(EnterError::RestoreFailed)?;
+        for item in &owned.items {
+            let ItemOwner::Character {
+                character_id,
+                location,
+            } = item.owner
+            else {
+                return Err(EnterError::RestoreFailed);
+            };
+            if character_id != owned.character.character_id {
+                return Err(EnterError::RestoreFailed);
+            }
+            let Some(definition) = self.registry.item_by_id(item.definition_content_id) else {
+                return Err(EnterError::RestoreFailed);
+            };
+            if item.quantity == 0 || item.quantity > definition.stack_limit {
+                return Err(EnterError::RestoreFailed);
+            }
+            let restored = match location {
+                CharacterItemLocation::Inventory { slot } => self.world.restore_inventory_item(
+                    entity,
+                    item.item_instance_id,
+                    item.definition_content_id,
+                    item.quantity,
+                    definition.stack_limit,
+                    slot,
+                ),
+                CharacterItemLocation::Equipped { slot } => self.world.restore_equipped_item(
+                    entity,
+                    item.item_instance_id,
+                    item.definition_content_id,
+                    item.quantity,
+                    definition.stack_limit,
+                    durable_equipment_slot(slot),
+                ),
+            };
+            if restored.is_err() {
+                return Err(EnterError::RestoreFailed);
+            }
+        }
+        for (fact, value) in &owned.narrative.facts {
+            self.narrative.set_fact(entity, fact, *value);
+        }
+        for npc in &owned.narrative.npcs_met {
+            self.narrative.mark_npc_met(entity, npc);
+        }
+        for (npc_raw, beat_id) in &owned.narrative.dialogue_heard {
+            let npc_id = ContentId::from_raw(*npc_raw);
+            let Some(dialogue) = self.registry.npc_dialogue_by_id(npc_id) else {
+                return Err(EnterError::RestoreFailed);
+            };
+            let Some(index) = dialogue
+                .beats
+                .iter()
+                .position(|beat| beat.id == *beat_id)
+                .and_then(|index| u32::try_from(index).ok())
+            else {
+                return Err(EnterError::RestoreFailed);
+            };
+            self.narrative.mark_dialogue_heard(
+                entity,
+                npc_id,
+                purgatory_content::DialogueBeatIndex::from_raw(index),
+            );
+        }
+        for ability_raw in &owned.narrative.learned_abilities {
+            let ability_id = ContentId::from_raw(*ability_raw);
+            if self.registry.ability_by_id(ability_id).is_none()
+                || !self.world.grant_learned_ability(entity, ability_id)
+            {
+                return Err(EnterError::RestoreFailed);
+            }
+        }
+        self.send_inventory_snapshot(connection_id);
+        self.send_ability_grants(connection_id);
+        Ok(())
+    }
+
+    pub fn lose_all_authority(&mut self) {
+        for binding in self.bindings.values_mut() {
+            if binding.authority.is_some() {
+                binding.authority_lost = true;
+            }
+        }
+    }
+
     pub fn detach(&mut self, connection_id: ConnectionId) {
+        self.unlink(connection_id, true);
+    }
+
+    fn unlink(&mut self, connection_id: ConnectionId, save: bool) {
+        if self
+            .bindings
+            .get(&connection_id)
+            .is_some_and(|binding| binding.pending_durable > 0)
+        {
+            if let Some(binding) = self.bindings.get_mut(&connection_id) {
+                binding.detach_when_idle = true;
+            }
+            return;
+        }
         if let Some(binding) = self.bindings.remove(&connection_id) {
             self.dialogues.forget_actor(binding.entity);
             self.narrative.forget_actor(binding.entity);
             if let Some(character_id) = binding.character_id {
                 self.occupancy.remove(&character_id);
-                self.emit_save(&PersistentCharacterSnapshot {
+                let snapshot = PersistentCharacterSnapshot {
                     character_id,
                     persistence_revision: binding.persistence_revision.saturating_add(1),
                     restore: binding.restore.clone(),
                     instance_exit: None,
-                });
+                };
+                if !save || binding.authority_lost {
+                    if binding.authority_lost {
+                        eprintln!(
+                            "PURGATORY persist save refused: lease authority lost character={character_id}"
+                        );
+                    }
+                } else {
+                    self.emit_save(&snapshot, binding.authority.clone());
+                }
             }
             let closed = self
                 .world
@@ -1584,13 +2034,24 @@ impl GameplayOwner {
             restore: binding.restore.clone(),
             instance_exit: None,
         };
-        self.emit_save(&snapshot);
+        let lease = binding.authority.clone();
+        if binding.authority_lost {
+            eprintln!(
+                "PURGATORY persist save refused: lease authority lost character={character_id}"
+            );
+            return;
+        }
+        self.emit_save(&snapshot, lease);
     }
 
-    fn emit_save(&mut self, snapshot: &PersistentCharacterSnapshot) {
+    fn emit_save(
+        &mut self,
+        snapshot: &PersistentCharacterSnapshot,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
+    ) {
         if let Some(persist) = &self.persist {
             let t0 = std::time::Instant::now();
-            match persist.try_save(snapshot.clone()) {
+            match persist.try_save_leased(snapshot.clone(), lease) {
                 SaveHandoff::Accepted => {}
                 SaveHandoff::DeferredLatest => {
                     let diagnostics = persist.diagnostics();
@@ -1630,8 +2091,68 @@ impl GameplayOwner {
         binding.restore = restore;
         self.request_save(connection_id);
     }
+}
+
+fn logout_snapshot(binding: &PlayerBinding) -> Option<PersistentCharacterSnapshot> {
+    let character_id = binding.character_id?;
+    Some(PersistentCharacterSnapshot {
+        character_id,
+        persistence_revision: binding.persistence_revision.saturating_add(1),
+        restore: binding.restore.clone(),
+        instance_exit: None,
+    })
+}
+
+fn durable_equipment_slot(slot: purgatory_persistence::DurableEquipmentSlot) -> EquipmentSlot {
+    use purgatory_persistence::DurableEquipmentSlot as Slot;
+    match slot {
+        Slot::Headwear => EquipmentSlot::Headwear,
+        Slot::Bodywear => EquipmentSlot::Bodywear,
+        Slot::Pants => EquipmentSlot::Pants,
+        Slot::Gloves => EquipmentSlot::Gloves,
+        Slot::Boots => EquipmentSlot::Boots,
+        Slot::Weapon => EquipmentSlot::Weapon,
+    }
+}
+
+impl GameplayOwner {
+    fn input_connection(update: &InputUpdate) -> Option<ConnectionId> {
+        Some(match update {
+            InputUpdate::Command { connection_id, .. }
+            | InputUpdate::HeldCancel { connection_id }
+            | InputUpdate::InteractOpen { connection_id, .. }
+            | InputUpdate::InteractClose { connection_id, .. }
+            | InputUpdate::DialogueAdvance { connection_id, .. }
+            | InputUpdate::DialogueChoose { connection_id, .. }
+            | InputUpdate::PortalActivate { connection_id, .. }
+            | InputUpdate::DevTransition { connection_id, .. }
+            | InputUpdate::DevSetChannel { connection_id, .. }
+            | InputUpdate::DevSetSpeed { connection_id, .. }
+            | InputUpdate::DevSetJump { connection_id, .. }
+            | InputUpdate::DevSpawnNpc { connection_id, .. }
+            | InputUpdate::DevSpawnMonster { connection_id, .. }
+            | InputUpdate::DevSpawnItem { connection_id, .. }
+            | InputUpdate::DevNarrative { connection_id, .. }
+            | InputUpdate::Equip { connection_id, .. }
+            | InputUpdate::Unequip { connection_id, .. }
+            | InputUpdate::DevPresentationOneShot { connection_id, .. }
+            | InputUpdate::DevResetPlayer { connection_id }
+            | InputUpdate::Respawn { connection_id }
+            | InputUpdate::AbilityActivate { connection_id, .. }
+            | InputUpdate::Pickup { connection_id, .. }
+            | InputUpdate::Drop { connection_id, .. } => *connection_id,
+        })
+    }
 
     pub fn apply_input(&mut self, update: InputUpdate) -> SeqDecision {
+        if let Some(connection_id) = Self::input_connection(&update)
+            && self
+                .bindings
+                .get(&connection_id)
+                .is_some_and(|binding| binding.authority_lost)
+        {
+            return SeqDecision::Stale;
+        }
         if matches!(
             &update,
             InputUpdate::InteractOpen { .. }
@@ -1874,6 +2395,46 @@ impl GameplayOwner {
                     let result = self.enter(connection_id, character, replication, interact);
                     let _ = reply.send(result);
                 }
+                LifecycleCmd::SetAuthority {
+                    connection_id,
+                    authority,
+                } => self.set_authority(connection_id, authority),
+                LifecycleCmd::LoseAuthority { connection_id } => self.lose_authority(connection_id),
+                LifecycleCmd::StopForReconnect {
+                    character_id,
+                    reply,
+                } => {
+                    let _ = reply.send(self.stop_for_reconnect(character_id));
+                }
+                LifecycleCmd::PrepareLogout {
+                    connection_id,
+                    reply,
+                } => {
+                    let _ = reply.send(self.prepare_logout(connection_id));
+                }
+                LifecycleCmd::EnterRestored {
+                    connection_id,
+                    owned,
+                    authority,
+                    replication,
+                    interact,
+                    reply,
+                } => {
+                    let result =
+                        self.enter_restored(connection_id, owned, authority, replication, interact);
+                    let _ = reply.send(result);
+                }
+                LifecycleCmd::LoseAllAuthority => self.lose_all_authority(),
+                LifecycleCmd::BeginDurable {
+                    connection_id,
+                    reply,
+                } => {
+                    let _ = reply.send(self.begin_durable(connection_id));
+                }
+                LifecycleCmd::FinishDurable {
+                    connection_id,
+                    revision,
+                } => self.finish_durable(connection_id, revision),
                 LifecycleCmd::Detach { connection_id } => self.detach(connection_id),
             }
         }
@@ -4276,6 +4837,17 @@ impl Default for GameplayOwner {
 mod tests {
     use super::*;
     use purgatory_common::MONSTER_MOSS_CRAB;
+
+    fn test_lease(
+        character_id: CharacterId,
+        generation: u64,
+    ) -> purgatory_persistence::LeaseAuthority {
+        purgatory_persistence::LeaseAuthority {
+            login: purgatory_common::DevLogin::parse("dev.local").unwrap(),
+            character_id,
+            generation,
+        }
+    }
     use purgatory_protocol::{ReplicationRecord, SnapshotEntity, decode_replication_frame};
     use purgatory_simulation::{ActionKind, ActionPhase};
     use std::collections::HashMap;
@@ -4999,6 +5571,85 @@ mod tests {
         let second = owner.entity_of(c).expect("respawned");
         assert_ne!(first, second);
         assert!(!owner.contains_entity(first));
+    }
+
+    #[test]
+    fn pending_durable_blocks_detach_and_same_character_reconnect() {
+        let mut owner = GameplayOwner::new();
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(7));
+        let connection = ConnectionId::from_raw(1);
+        owner
+            .enter(connection, character.clone(), None, None)
+            .unwrap();
+        owner.set_authority(connection, test_lease(character.character_id, 1));
+        assert!(owner.begin_durable(connection));
+        assert_eq!(
+            owner
+                .stop_for_reconnect(character.character_id)
+                .unwrap_err(),
+            EnterError::Pending
+        );
+        assert!(owner.entity_of(connection).is_some());
+        owner.detach(connection);
+        assert!(owner.entity_of(connection).is_some());
+        owner.finish_durable(connection, 4);
+        assert!(owner.entity_of(connection).is_none());
+    }
+
+    #[test]
+    fn same_process_reconnect_removes_the_old_entity_before_the_new_enter() {
+        let mut owner = GameplayOwner::new();
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(7));
+        let first_connection = ConnectionId::from_raw(1);
+        owner
+            .enter(first_connection, character.clone(), None, None)
+            .unwrap();
+        owner.set_authority(first_connection, test_lease(character.character_id, 3));
+        let first = owner.entity_of(first_connection).unwrap();
+        let (authority, snapshot) = owner.stop_for_reconnect(character.character_id).unwrap();
+        assert_eq!(authority.generation, 3);
+        assert_eq!(
+            snapshot.persistence_revision,
+            character.persistence_revision.saturating_add(1)
+        );
+        assert!(!owner.contains_entity(first));
+        assert!(!owner.occupancy.contains_key(&character.character_id));
+        let second_connection = ConnectionId::from_raw(2);
+        owner
+            .enter(second_connection, character, None, None)
+            .unwrap();
+        assert_ne!(owner.entity_of(second_connection).unwrap(), first);
+    }
+
+    #[test]
+    fn committed_revision_is_visible_on_the_next_snapshot() {
+        let mut owner = GameplayOwner::new();
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(7));
+        let connection = ConnectionId::from_raw(1);
+        owner
+            .enter(connection, character.clone(), None, None)
+            .unwrap();
+        owner.set_authority(connection, test_lease(character.character_id, 1));
+        assert!(owner.begin_durable(connection));
+        owner.finish_durable(connection, 9);
+        let (_, snapshot) = owner.stop_for_reconnect(character.character_id).unwrap();
+        assert_eq!(snapshot.persistence_revision, 10);
+    }
+
+    #[test]
+    fn lost_authority_rejects_gameplay_input() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        owner.lose_authority(connection);
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(1, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale
+        );
+        assert_eq!(owner.ticks(), 0);
     }
 
     #[test]

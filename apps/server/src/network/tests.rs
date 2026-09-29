@@ -301,6 +301,7 @@ async fn accept_loop(
                 persist: persist.clone(),
                 lifecycle: lifecycle.clone(),
                 pressure: pressure.clone(),
+                channel_live: Arc::new(AtomicBool::new(true)),
             },
         );
     }

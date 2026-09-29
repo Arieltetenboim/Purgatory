@@ -34,7 +34,7 @@ mod tick_domains;
 
 pub use config::ServerEndpointConfig;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -57,6 +57,9 @@ pub(crate) struct IncomingDispatch {
     pub persist: Option<persist::PersistenceHandle>,
     pub lifecycle: Arc<connection_lifecycle::ConnectionLifecycleBook>,
     pub pressure: Arc<network_pressure::NetworkPressureBook>,
+    /// False after this process loses its channel generation. New gameplay
+    /// admission stops. File mode leaves this true.
+    pub channel_live: Arc<AtomicBool>,
 }
 
 pub(crate) fn dispatch_incoming(incoming: quinn::Incoming, ctx: IncomingDispatch) {
@@ -111,6 +114,19 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     let data_dir = persist::data_dir_from_env();
     println!("PURGATORY persist data_dir={}", data_dir.display());
     let persist = persist::PersistenceHandle::spawn_from_env(&data_dir)?;
+    let channel_live = Arc::new(AtomicBool::new(true));
+    let held_channel = claim_startup_channel(&persist).await?;
+    let (stop_channel_tx, stop_channel_rx) = tokio::sync::watch::channel(false);
+    if let Some((channel_id, generation)) = held_channel {
+        spawn_channel_renewal(
+            persist.clone(),
+            gameplay_tx.clone(),
+            channel_live.clone(),
+            stop_channel_rx,
+            channel_id,
+            generation,
+        );
+    }
     let mut owner = gameplay::GameplayOwner::new();
     owner.set_persist(persist.clone());
     let pressure = Arc::new(network_pressure::NetworkPressureBook::new());
@@ -163,6 +179,7 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                         persist: Some(persist.clone()),
                         lifecycle: lifecycle.clone(),
                         pressure: pressure.clone(),
+                        channel_live: channel_live.clone(),
                     },
                 );
             }
@@ -245,14 +262,99 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                 );
                 owner.flush_persistent_snapshots();
                 domains.force_write();
-                persist
-                    .shutdown(config.persistence_shutdown_timeout)
+                let _ = stop_channel_tx.send(true);
+                let status = persist
+                    .shutdown(config.persistence_shutdown_timeout, held_channel)
                     .await;
+                match status {
+                    persist::PersistenceShutdown::Drained { save_failures } => {
+                        println!(
+                            "PURGATORY persistence shutdown drained save_failures={save_failures}"
+                        );
+                    }
+                    persist::PersistenceShutdown::TimedOut { save_failures } => {
+                        eprintln!(
+                            "PURGATORY persistence shutdown timed out; snapshots were not confirmed save_failures={save_failures}"
+                        );
+                    }
+                    persist::PersistenceShutdown::WorkerClosed => {
+                        eprintln!(
+                            "PURGATORY persistence worker closed; snapshots were not confirmed"
+                        );
+                    }
+                }
                 break;
             }
         }
     }
     Ok(())
+}
+
+async fn claim_startup_channel(
+    persist: &persist::PersistenceHandle,
+) -> Result<Option<(i64, u64)>, String> {
+    if purgatory_persistence::PostgresSettings::from_env()
+        .map_err(|err| format!("postgresql settings: {err}"))?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    match persist
+        .claim_channel(0)
+        .await
+        .map_err(|err| format!("channel claim: {err}"))?
+    {
+        purgatory_persistence::ChannelClaim::Claimed {
+            channel_id,
+            generation,
+            retired_ground,
+        } => {
+            println!(
+                "PURGATORY channel claimed id={channel_id} generation={generation} retired_ground={retired_ground}"
+            );
+            Ok(Some((channel_id, generation)))
+        }
+        purgatory_persistence::ChannelClaim::Busy {
+            channel_id,
+            generation,
+        } => Err(format!(
+            "channel {channel_id} generation {generation} is still live; refusing to start and refusing to retire its ground drops"
+        )),
+    }
+}
+
+fn spawn_channel_renewal(
+    worker: persist::PersistenceHandle,
+    gameplay: gameplay::GameplayTx,
+    channel_live: Arc<AtomicBool>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    channel_id: i64,
+    generation: u64,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(purgatory_persistence::CHANNEL_GENERATION_RENEWAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if worker.renew_channel(channel_id, generation).await.is_err() {
+                        channel_live.store(false, Ordering::Relaxed);
+                        eprintln!(
+                            "PURGATORY channel generation renewal failed; gameplay admission stopped"
+                        );
+                        let _ = gameplay.lose_all_authority().await;
+                        break;
+                    }
+                }
+                result = stop.changed() => {
+                    if result.is_err() || *stop.borrow() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn gameplay_workload_from_runtime(

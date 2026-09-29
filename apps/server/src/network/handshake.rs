@@ -46,6 +46,7 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         persist,
         lifecycle,
         pressure,
+        channel_live,
         ..
     } = ctx;
     stats.enter_handshake();
@@ -332,6 +333,7 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         persist,
         lifecycle,
         pressure,
+        channel_live,
     })
     .await;
 }
@@ -388,6 +390,7 @@ struct LiveSession {
     persist: Option<super::persist::PersistenceHandle>,
     lifecycle: Arc<ConnectionLifecycleBook>,
     pressure: Arc<NetworkPressureBook>,
+    channel_live: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn handshake_streams(
@@ -422,6 +425,164 @@ async fn handshake_streams(
     Ok((send, recv, hello))
 }
 
+async fn activate_owned_character(
+    worker: &super::persist::PersistenceHandle,
+    tx: &GameplayTx,
+    login: &DevLogin,
+    connection_id: purgatory_protocol::ConnectionId,
+    character_id: purgatory_common::CharacterId,
+    channel_live: &std::sync::atomic::AtomicBool,
+) -> Result<
+    (
+        ReplicationPipe,
+        tokio::sync::watch::Receiver<u64>,
+        tokio::sync::mpsc::Receiver<ServerControl>,
+        Option<purgatory_persistence::LeaseAuthority>,
+    ),
+    purgatory_protocol::CharacterEnterRejection,
+> {
+    use purgatory_persistence::SessionAdmission;
+    use purgatory_protocol::CharacterEnterRejection as R;
+    use std::sync::atomic::Ordering;
+    if !channel_live.load(Ordering::Relaxed) {
+        return Err(R::StorageFailure);
+    }
+    let admission = worker
+        .admit(login.clone(), character_id)
+        .await
+        .map_err(|_| R::StorageFailure)?;
+    let (owned, authority) = match admission {
+        SessionAdmission::NotOwned => return Err(R::NotOwned),
+        SessionAdmission::Held => {
+            let stopped = tx
+                .stop_for_reconnect(character_id)
+                .await
+                .map_err(|_| R::GameplayEnterFailure)?;
+            let (old, snapshot) = match stopped {
+                Ok(pair) => pair,
+                Err(EnterError::Pending | EnterError::Occupied) => return Err(R::Occupied),
+                Err(_) => return Err(R::GameplayEnterFailure),
+            };
+            if let Err(err) = worker.save_leased(snapshot, Some(old.clone())).await {
+                eprintln!(
+                    "PURGATORY persist reconnect save failed; new generation was not taken: {err}"
+                );
+                return Err(R::StorageFailure);
+            }
+            match worker.supersede(old).await {
+                Ok((authority, owned)) => (owned, Some(authority)),
+                Err(err) => {
+                    eprintln!("PURGATORY persist supersede failed: {err}");
+                    return Err(R::StorageFailure);
+                }
+            }
+        }
+        SessionAdmission::Granted { authority, restore } => (*restore, authority),
+    };
+    let (pipe, wake) = ReplicationPipe::new();
+    let (interact_tx, rx) = tokio::sync::mpsc::channel(16);
+    match tx
+        .enter_restored(
+            connection_id,
+            owned,
+            authority.clone(),
+            Some(pipe.clone()),
+            Some(interact_tx),
+        )
+        .await
+    {
+        Ok(Ok(())) => Ok((pipe, wake, rx, authority)),
+        Ok(Err(EnterError::Occupied | EnterError::Pending)) => {
+            release_unused_lease(worker, authority).await;
+            Err(R::Occupied)
+        }
+        Ok(Err(_)) => {
+            release_unused_lease(worker, authority).await;
+            Err(R::GameplayEnterFailure)
+        }
+        Err(()) => {
+            release_unused_lease(worker, authority).await;
+            Err(R::GameplayEnterFailure)
+        }
+    }
+}
+
+async fn release_unused_lease(
+    worker: &super::persist::PersistenceHandle,
+    authority: Option<purgatory_persistence::LeaseAuthority>,
+) {
+    if let Some(authority) = authority
+        && let Err(err) = worker.release_lease(authority).await
+    {
+        eprintln!("PURGATORY persist unused lease release failed: {err}");
+    }
+}
+
+fn spawn_lease_renewal(
+    worker: super::persist::PersistenceHandle,
+    gameplay: GameplayTx,
+    connection_id: purgatory_protocol::ConnectionId,
+    authority: purgatory_persistence::LeaseAuthority,
+) -> tokio::sync::watch::Sender<bool> {
+    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(purgatory_persistence::CHARACTER_LEASE_RENEWAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if worker.renew_lease(authority.clone()).await.is_err() {
+                        eprintln!(
+                            "PURGATORY persist lease renewal failed; gameplay stopped connection={connection_id}"
+                        );
+                        let _ = gameplay.lose_authority(connection_id).await;
+                        break;
+                    }
+                }
+                result = stop_rx.changed() => {
+                    if result.is_err() || *stop_rx.borrow() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    stop_tx
+}
+
+async fn finish_logout(
+    worker: &super::persist::PersistenceHandle,
+    tx: &GameplayTx,
+    connection_id: purgatory_protocol::ConnectionId,
+) -> bool {
+    match tx.prepare_logout(connection_id).await {
+        Ok(Ok(Some((authority, snapshot)))) => {
+            match worker.save_leased(snapshot, Some(authority.clone())).await {
+                Ok(()) => {
+                    if let Err(err) = worker.release_lease(authority).await {
+                        eprintln!("PURGATORY persist lease release failed: {err}");
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "PURGATORY persist logout save failed; lease was not released and the save was not confirmed: {err}"
+                    );
+                }
+            }
+            true
+        }
+        Ok(Ok(None)) => true,
+        Ok(Err(EnterError::Pending)) => {
+            eprintln!(
+                "PURGATORY persist logout blocked: durable command still pending connection={connection_id}"
+            );
+            false
+        }
+        _ => tx.send_detach(connection_id).await,
+    }
+}
+
 async fn serve_connection(live: LiveSession) {
     let LiveSession {
         connection,
@@ -439,9 +600,11 @@ async fn serve_connection(live: LiveSession) {
         persist,
         lifecycle,
         pressure,
+        channel_live,
     } = live;
     let mut active = occupancy.is_some();
     let id = session.connection_id;
+    let mut lease_renewal: Option<tokio::sync::watch::Sender<bool>> = None;
     let remote = session.remote;
     let mut transport_loss = false;
     let mut abuse = ConnectionAbuse::default();
@@ -523,24 +686,33 @@ async fn serve_connection(live: LiveSession) {
                         let result = if active { Err(R::InvalidSelection) } else {
                             match (&persist, &gameplay) {
                                 (Some(worker), Some(tx)) => {
-                                    match worker.load_owned_character(login.clone(), character_id).await {
-                                        Err(reason) => Err(reason),
-                                        Ok(character) => {
-                                            let (pipe, wake) = ReplicationPipe::new();
-                                            let (interact_tx, rx) = tokio::sync::mpsc::channel(16);
-                                            match tx.enter(id, character, Some(pipe.clone()), Some(interact_tx)).await {
-                                                Ok(Ok(())) => {
-                                                    occupancy = Some(OccupancyLease::new(tx.clone(), id));
-                                                    replication = Some((pipe, wake));
-                                                    interact_rx = Some(rx);
-                                                    active = true;
-                                                    uni_opened = false;
-                                                    Ok(())
-                                                }
-                                                Ok(Err(EnterError::Occupied)) => Err(R::Occupied),
-                                                _ => Err(R::GameplayEnterFailure),
+                                    match activate_owned_character(
+                                        worker,
+                                        tx,
+                                        &login,
+                                        id,
+                                        character_id,
+                                        &channel_live,
+                                    )
+                                    .await
+                                    {
+                                        Ok((pipe, wake, rx, authority)) => {
+                                            occupancy = Some(OccupancyLease::new(tx.clone(), id));
+                                            replication = Some((pipe, wake));
+                                            interact_rx = Some(rx);
+                                            active = true;
+                                            uni_opened = false;
+                                            if let Some(authority) = authority {
+                                                lease_renewal = Some(spawn_lease_renewal(
+                                                    worker.clone(),
+                                                    tx.clone(),
+                                                    id,
+                                                    authority,
+                                                ));
                                             }
+                                            Ok(())
                                         }
+                                        Err(reason) => Err(reason),
                                     }
                                 }
                                 (None, _) => Err(R::StorageFailure),
@@ -1294,9 +1466,16 @@ async fn serve_connection(live: LiveSession) {
         }
     }
 
+    if let Some(tx) = lease_renewal.take() {
+        let _ = tx.send(true);
+    }
     if let Some(mut lease) = occupancy.take() {
-        // Disarm RAII only after the normal detach has completed.
-        if lease.tx.send_detach(id).await {
+        let logged_out = if let (Some(worker), Some(tx)) = (&persist, &gameplay) {
+            finish_logout(worker, tx, id).await
+        } else {
+            lease.tx.send_detach(id).await
+        };
+        if logged_out {
             lease.armed = false;
         } else {
             stats
