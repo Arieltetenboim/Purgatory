@@ -67,6 +67,18 @@ them. Ordinary mob spawns reset at restart, while **committed character kill
 progress remains**. A scheduled shared world event has its own per-channel
 state and only emits verified credit to an active quest.
 
+For a future PostgreSQL implementation, this suggests **logical** records
+such as `character_quests` (character, world, quest, active attempt and durable
+history), `character_quest_objectives` (attempt and stable objective key) and
+`quest_reward_claims` (unique character, quest and attempt/reset key). The
+authored QuestDefinition remains in the validated content catalog; the database
+holds the player's changing state, not a competing copy of all quest rules.
+One PostgreSQL transaction updates those records alongside affected item,
+narrative, learned-ability and future currency/progression records. These names
+describe responsibilities, **not** a schema migration or a commitment to a
+table count, indexes or physical database topology. Do not write quest
+progress from every simulation tick.
+
 ## Reward and crash boundary
 
 The same transaction must include the finished attempt and its unique claim
