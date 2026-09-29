@@ -36,3 +36,47 @@ jobs:
 
       - name: Run PURGATORY canonical quality gate
         run: ./scripts/check.sh
+
+  postgres_12a:
+    name: PostgreSQL 12A tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: purgatory_12a_ci_only
+          POSTGRES_DB: purgatory_12a_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d purgatory_12a_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable password for this GitHub Actions service only.
+      PURGATORY_TEST_DATABASE_URL: postgres://postgres:purgatory_12a_ci_only@localhost:5432/purgatory_12a_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-postgres-12a-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust toolchain and components
+        run: rustup show
+
+      - name: Run PostgreSQL 12A integration tests
+        run: cargo test -p purgatory-persistence --lib postgres_tests -- --ignored --nocapture --test-threads=1

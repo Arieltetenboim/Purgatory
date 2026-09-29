@@ -109,8 +109,13 @@ PostgreSQL tests are ignored unless this command is used with a dedicated
 database:
 
 ```text
-cargo test -p purgatory-persistence --lib postgres_tests -- --ignored --nocapture
+cargo test -p purgatory-persistence --lib postgres_tests -- --ignored --nocapture --test-threads=1
 ```
+
+The Quality Gate workflow runs that command in a separate `PostgreSQL 12A tests`
+job against a disposable `postgres:18` service database named
+`purgatory_12a_test`. Its password exists only for that service. The existing
+quality-gate job is unchanged. A database-test failure fails that job.
 
 `PostgresSettings::for_tests` refuses database names `purgatory_dev`,
 `postgres`, `template0`, and `template1` before connecting. Each test creates
