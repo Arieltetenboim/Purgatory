@@ -3,22 +3,61 @@ use std::path::Path;
 use purgatory_common::{CharacterId, DevLogin};
 
 use crate::character::{PersistentCharacter, PersistentCharacterSnapshot};
+use crate::domain::{
+    CharacterNarrativeState, DurableCommand, DurableCommandResult, DurableContentRules, ItemRecord,
+};
 use crate::error::PersistError;
 use crate::identity::{CharacterRosterEntry, DevIdentityStore};
+use crate::postgres::{self, PostgresSettings, PostgresStore};
 use crate::repository::FileCharacterRepository;
+use purgatory_common::ItemInstanceId;
 
-/// Single-threaded owner of identity allocation and character files.
+/// Single-threaded owner of identity allocation and character state.
+///
+/// `open` is the pre-cutover file writer. `open_postgresql` imports supported
+/// files once and then writes only to PostgreSQL.
 pub struct PersistenceService {
-    identity: DevIdentityStore,
-    repo: FileCharacterRepository,
+    backend: Backend,
+}
+
+enum Backend {
+    Files {
+        identity: DevIdentityStore,
+        repo: FileCharacterRepository,
+    },
+    Postgres(Box<PostgresStore>),
 }
 
 impl PersistenceService {
     pub fn open(dir: &Path) -> Result<Self, PersistError> {
+        postgres::reject_file_writer_if_cut_over(dir)?;
         Ok(Self {
-            identity: DevIdentityStore::open(dir)?,
-            repo: FileCharacterRepository::open(dir)?,
+            backend: Backend::Files {
+                identity: DevIdentityStore::open(dir)?,
+                repo: FileCharacterRepository::open(dir)?,
+            },
         })
+    }
+
+    pub fn open_postgresql(dir: &Path, settings: &PostgresSettings) -> Result<Self, PersistError> {
+        Ok(Self {
+            backend: Backend::Postgres(Box::new(PostgresStore::open(dir, settings)?)),
+        })
+    }
+
+    /// Server startup. Tests keep using [`Self::open`] so an ambient database
+    /// URL cannot redirect them onto a developer database.
+    pub fn open_from_env(dir: &Path) -> Result<Self, PersistError> {
+        match PostgresSettings::from_env()? {
+            Some(settings) => Self::open_postgresql(dir, &settings),
+            None => Self::open(dir),
+        }
+    }
+
+    pub fn set_durable_content_rules(&mut self, rules: DurableContentRules) {
+        if let Backend::Postgres(store) = &mut self.backend {
+            store.set_rules(rules);
+        }
     }
 
     /// Temporary direct-play compatibility: resolve roster slot zero, creating
@@ -28,38 +67,109 @@ impl PersistenceService {
         &mut self,
         login: &DevLogin,
     ) -> Result<PersistentCharacter, PersistError> {
-        let id = self.identity.lookup_or_allocate(login)?;
-        self.repo.load_or_default(id)
+        match &mut self.backend {
+            Backend::Files { identity, repo } => {
+                let id = identity.lookup_or_allocate(login)?;
+                repo.load_or_default(id)
+            }
+            Backend::Postgres(store) => store.resolve_or_create(login),
+        }
     }
 
-    /// Check the authoritative roster before touching the exact character file.
+    /// Check the authoritative roster before touching the character record.
     /// None means not owned; no identity is allocated by entry.
     pub fn load_owned_character(
-        &self,
+        &mut self,
         login: &DevLogin,
         id: CharacterId,
     ) -> Result<Option<PersistentCharacter>, PersistError> {
-        if !self.owns_character(login, id) {
-            return Ok(None);
+        match &mut self.backend {
+            Backend::Files { identity, repo } => {
+                if !identity.owns_character(login, id) {
+                    return Ok(None);
+                }
+                repo.load_or_default(id).map(Some)
+            }
+            Backend::Postgres(store) => {
+                if !store.owns(login, id)? {
+                    return Ok(None);
+                }
+                store.load_character(id).map(Some)
+            }
         }
-        self.repo.load_or_default(id).map(Some)
     }
 
     pub fn save_snapshot(
         &mut self,
         snapshot: PersistentCharacterSnapshot,
     ) -> Result<(), PersistError> {
-        self.repo.save(&snapshot.into_character())
+        match &mut self.backend {
+            Backend::Files { repo, .. } => repo.save(&snapshot.into_character()),
+            Backend::Postgres(store) => store.save_restore(snapshot),
+        }
     }
 
-    #[must_use]
-    pub fn lookup(&self, login: &DevLogin) -> Option<CharacterId> {
-        self.identity.lookup(login)
+    pub fn commit_durable(
+        &mut self,
+        command: &DurableCommand,
+    ) -> Result<DurableCommandResult, PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "durable commands require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.commit(command),
+        }
     }
 
-    #[must_use]
-    pub fn roster(&self, login: &DevLogin) -> Vec<CharacterRosterEntry> {
-        self.identity.roster(login)
+    #[cfg(test)]
+    pub fn hide_next_commit_reply_for_test(&mut self) {
+        if let Backend::Postgres(store) = &mut self.backend {
+            store.hide_next_commit_reply();
+        }
+    }
+
+    /// After the server acknowledges the next commit, drop that connection
+    /// before the reply can be read back.
+    #[cfg(test)]
+    pub fn discard_connection_after_next_commit_for_test(&mut self) {
+        if let Backend::Postgres(store) = &mut self.backend {
+            store.discard_connection_after_next_commit();
+        }
+    }
+
+    pub fn item(&mut self, id: ItemInstanceId) -> Result<Option<ItemRecord>, PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "item records require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.item(id),
+        }
+    }
+
+    pub fn narrative(&mut self, id: CharacterId) -> Result<CharacterNarrativeState, PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "narrative records require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.narrative(id),
+        }
+    }
+
+    pub fn lookup(&mut self, login: &DevLogin) -> Result<Option<CharacterId>, PersistError> {
+        match &mut self.backend {
+            Backend::Files { identity, .. } => Ok(identity.lookup(login)),
+            Backend::Postgres(store) => store.lookup(login),
+        }
+    }
+
+    pub fn roster(&mut self, login: &DevLogin) -> Result<Vec<CharacterRosterEntry>, PersistError> {
+        match &mut self.backend {
+            Backend::Files { identity, .. } => Ok(identity.roster(login)),
+            Backend::Postgres(store) => store.roster(login),
+        }
     }
 
     pub fn create_character(
@@ -67,12 +177,21 @@ impl PersistenceService {
         login: &DevLogin,
         name: &str,
     ) -> Result<CharacterRosterEntry, PersistError> {
-        self.identity.create_character(login, name)
+        match &mut self.backend {
+            Backend::Files { identity, .. } => identity.create_character(login, name),
+            Backend::Postgres(store) => store.create_character(login, name),
+        }
     }
 
-    #[must_use]
-    pub fn owns_character(&self, login: &DevLogin, id: CharacterId) -> bool {
-        self.identity.owns_character(login, id)
+    pub fn owns_character(
+        &mut self,
+        login: &DevLogin,
+        id: CharacterId,
+    ) -> Result<bool, PersistError> {
+        match &mut self.backend {
+            Backend::Files { identity, .. } => Ok(identity.owns_character(login, id)),
+            Backend::Postgres(store) => store.owns(login, id),
+        }
     }
 }
 
@@ -107,7 +226,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(service.roster(&bob).is_empty());
+        assert!(service.roster(&bob).unwrap().is_empty());
         assert!(!dir.join(character_file_name(second.character_id)).exists());
         let loaded = service
             .load_owned_character(&alice, second.character_id)
@@ -121,7 +240,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(service.roster(&alice), vec![first, second]);
+        assert_eq!(service.roster(&alice).unwrap(), vec![first, second]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -143,8 +262,11 @@ mod tests {
         let mut svc = PersistenceService::open(&dir).unwrap();
         let alice = DevLogin::parse("alice").unwrap();
         let bob = DevLogin::parse("bob").unwrap();
-        assert!(svc.roster(&alice).is_empty());
-        assert!(!svc.owns_character(&alice, CharacterId::from_raw(1)));
+        assert!(svc.roster(&alice).unwrap().is_empty());
+        assert!(
+            !svc.owns_character(&alice, CharacterId::from_raw(1))
+                .unwrap()
+        );
         assert!(matches!(
             svc.create_character(&alice, "ab"),
             Err(PersistError::CreateRejected(
@@ -177,25 +299,25 @@ mod tests {
         let other = svc.create_character(&bob, "Other").unwrap();
         assert_eq!(other.character_id.raw(), third.character_id.raw() + 1);
         let expected = vec![first.clone(), second, third];
-        assert_eq!(svc.roster(&alice), expected);
-        let mut owned = svc.roster(&alice);
+        assert_eq!(svc.roster(&alice).unwrap(), expected);
+        let mut owned = svc.roster(&alice).unwrap();
         owned.clear();
-        assert_eq!(svc.roster(&alice), expected);
-        assert!(svc.owns_character(&alice, first.character_id));
-        assert!(!svc.owns_character(&bob, first.character_id));
-        assert!(!svc.owns_character(&alice, other.character_id));
+        assert_eq!(svc.roster(&alice).unwrap(), expected);
+        assert!(svc.owns_character(&alice, first.character_id).unwrap());
+        assert!(!svc.owns_character(&bob, first.character_id).unwrap());
+        assert!(!svc.owns_character(&alice, other.character_id).unwrap());
         for entry in expected.iter().chain(std::iter::once(&other)) {
             assert!(!dir.join(character_file_name(entry.character_id)).exists());
         }
         drop(svc);
         let mut svc = PersistenceService::open(&dir).unwrap();
-        assert_eq!(svc.roster(&alice), expected);
-        assert_eq!(svc.roster(&bob), vec![other]);
+        assert_eq!(svc.roster(&alice).unwrap(), expected);
+        assert_eq!(svc.roster(&bob).unwrap(), vec![other]);
         assert_eq!(
             svc.resolve_or_create(&alice).unwrap().character_id,
             first.character_id
         );
-        assert_eq!(svc.roster(&alice), expected);
+        assert_eq!(svc.roster(&alice).unwrap(), expected);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -210,16 +332,16 @@ mod tests {
         let alice = DevLogin::parse("alice").unwrap();
         let bob = DevLogin::parse("bob").unwrap();
         let mut svc = PersistenceService::open(&dir).unwrap();
-        assert!(svc.roster(&alice).is_empty());
+        assert!(svc.roster(&alice).unwrap().is_empty());
         svc.create_character(&bob, "000").unwrap();
         let id = svc.resolve_or_create(&alice).unwrap().character_id;
-        let roster = svc.roster(&alice);
+        let roster = svc.roster(&alice).unwrap();
         assert_eq!(roster.len(), 1);
         assert_eq!(roster[0].display_name.as_str(), "001");
         drop(svc);
         let mut svc = PersistenceService::open(&dir).unwrap();
         assert_eq!(svc.resolve_or_create(&alice).unwrap().character_id, id);
-        assert_eq!(svc.roster(&alice), roster);
+        assert_eq!(svc.roster(&alice).unwrap(), roster);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -240,10 +362,11 @@ mod tests {
                 svc.create_character(owner, "Retry"),
                 Err(PersistError::Io { .. })
             ));
-            assert_eq!(svc.roster(&alice), vec![first.clone()]);
-            assert!(svc.roster(&bob).is_empty());
+            assert_eq!(svc.roster(&alice).unwrap(), vec![first.clone()]);
+            assert!(svc.roster(&bob).unwrap().is_empty());
             assert!(
                 !svc.owns_character(owner, CharacterId::from_raw(first.character_id.raw() + 1))
+                    .unwrap()
             );
             assert_eq!(std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(), before);
         }
@@ -251,9 +374,59 @@ mod tests {
         let retried = svc.create_character(&bob, "Retry").unwrap();
         assert_eq!(retried.character_id.raw(), first.character_id.raw() + 1);
         drop(svc);
-        let svc = PersistenceService::open(&dir).unwrap();
-        assert_eq!(svc.roster(&alice), vec![first]);
-        assert_eq!(svc.roster(&bob), vec![retried]);
+        let mut svc = PersistenceService::open(&dir).unwrap();
+        assert_eq!(svc.roster(&alice).unwrap(), vec![first]);
+        assert_eq!(svc.roster(&bob).unwrap(), vec![retried]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn already_open_file_service_does_not_write_after_the_cutover_marker() {
+        let dir = unique_dir();
+        let mut files = PersistenceService::open(&dir).unwrap();
+        let alice = DevLogin::parse("alice").unwrap();
+        let entry = files.create_character(&alice, "Alice").unwrap();
+        files
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 1,
+                restore: purgatory_common::RestoreIntent {
+                    map_authored: "map.map1".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+            })
+            .unwrap();
+        let identity = std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap();
+        let character_path = dir.join(character_file_name(entry.character_id));
+        let character = std::fs::read(&character_path).unwrap();
+        crate::postgres::fence_file_writer(&dir).unwrap();
+        let save = files.save_snapshot(PersistentCharacterSnapshot {
+            character_id: entry.character_id,
+            persistence_revision: 2,
+            restore: purgatory_common::RestoreIntent {
+                map_authored: "map.map2".into(),
+                point_id: "after-cutover".into(),
+                checkpoint_id: None,
+            },
+            instance_exit: None,
+        });
+        assert!(
+            matches!(save, Err(PersistError::Migration { .. })),
+            "{save:?}"
+        );
+        let created = files.create_character(&DevLogin::parse("bob").unwrap(), "Bob");
+        assert!(
+            matches!(created, Err(PersistError::Migration { .. })),
+            "{created:?}"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(),
+            identity
+        );
+        assert_eq!(std::fs::read(&character_path).unwrap(), character);
+        assert_eq!(files.roster(&alice).unwrap(), vec![entry]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use purgatory_common::DevLogin;
 use purgatory_persistence::{
-    CreateCharacterRejection, PersistError, PersistenceService, PersistentCharacterSnapshot,
+    CreateCharacterRejection, DurableCommand, DurableCommandResult, PersistError,
+    PersistenceService, PersistentCharacterSnapshot,
 };
 
 enum PersistCmd {
@@ -35,12 +36,19 @@ enum PersistCmd {
     },
     Roster {
         login: DevLogin,
-        reply: tokio::sync::oneshot::Sender<Vec<purgatory_protocol::CharacterSummary>>,
+        reply: tokio::sync::oneshot::Sender<
+            Result<Vec<purgatory_protocol::CharacterSummary>, PersistError>,
+        >,
     },
     CreateCharacter {
         login: DevLogin,
         name: String,
         reply: tokio::sync::oneshot::Sender<purgatory_protocol::CreateCharacterResult>,
+    },
+    #[cfg_attr(not(test), allow(dead_code))]
+    CommitDurable {
+        command: DurableCommand,
+        reply: tokio::sync::oneshot::Sender<Result<DurableCommandResult, PersistError>>,
     },
     Save(PersistentCharacterSnapshot),
     Shutdown {
@@ -106,9 +114,25 @@ pub struct PersistenceHandle {
 }
 
 impl PersistenceHandle {
+    /// Pre-cutover file writer. Tests use this so an ambient database URL cannot
+    /// redirect them onto a developer database. The server binary uses
+    /// [`Self::spawn_from_env`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn spawn(dir: &Path) -> Result<Self, String> {
-        let mut service =
+        let service =
             PersistenceService::open(dir).map_err(|err| format!("persistence open: {err}"))?;
+        Self::spawn_opened(service)
+    }
+
+    /// Server startup. PostgreSQL is the only writer when `PURGATORY_DATABASE_URL`
+    /// is set. The URL is not assumed to be localhost.
+    pub fn spawn_from_env(dir: &Path) -> Result<Self, String> {
+        let service = PersistenceService::open_from_env(dir)
+            .map_err(|err| format!("persistence open: {err}"))?;
+        Self::spawn_opened(service)
+    }
+
+    fn spawn_opened(mut service: PersistenceService) -> Result<Self, String> {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let shared = Arc::new(SharedSaveState::default());
         let worker_shared = shared.clone();
@@ -132,15 +156,19 @@ impl PersistenceHandle {
                         let _ = reply.send(service.resolve_or_create(&login));
                     }
                     PersistCmd::Roster { login, reply } => {
-                        let _ = reply.send(roster(&service, &login));
+                        let _ = reply.send(roster(&mut service, &login));
                     }
                     PersistCmd::CreateCharacter { login, name, reply } => {
                         use purgatory_protocol::{
                             CharacterCreateRejection as Rejection, CreateCharacterResult as Result,
                         };
                         let result = match service.create_character(&login, &name) {
-                            Ok(_) => Result::Created {
-                                roster: roster(&service, &login),
+                            Ok(_) => match roster(&mut service, &login) {
+                                Ok(roster) => Result::Created { roster },
+                                Err(err) => {
+                                    eprintln!("PURGATORY character roster read failed: {err}");
+                                    Result::Rejected(Rejection::StorageFailure)
+                                }
                             },
                             Err(PersistError::CreateRejected(reason)) => {
                                 Result::Rejected(match reason {
@@ -157,6 +185,9 @@ impl PersistenceHandle {
                             }
                         };
                         let _ = reply.send(result);
+                    }
+                    PersistCmd::CommitDurable { command, reply } => {
+                        let _ = reply.send(service.commit_durable(&command));
                     }
                     PersistCmd::Save(snapshot) => {
                         save_snapshot_observed(&mut service, &worker_shared, snapshot);
@@ -222,7 +253,7 @@ impl PersistenceHandle {
             .send(PersistCmd::Roster { login, reply })
             .await
             .map_err(|_| worker_closed())?;
-        rx.await.map_err(|_| worker_closed())
+        rx.await.map_err(|_| worker_closed())?
     }
 
     pub async fn create_character(
@@ -243,6 +274,22 @@ impl PersistenceHandle {
             return failure;
         }
         rx.await.unwrap_or(failure)
+    }
+
+    /// Ask the persistence worker to commit one durable command and wait for
+    /// the stored result. A queue send is not success. Callers are connection
+    /// tasks; the 30 Hz simulation tick must not call this or block on it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn commit_durable(
+        &self,
+        command: DurableCommand,
+    ) -> Result<DurableCommandResult, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::CommitDurable { command, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
     }
 
     pub fn try_save(&self, snapshot: PersistentCharacterSnapshot) -> SaveHandoff {
@@ -442,6 +489,19 @@ mod tests {
     }
 
     #[test]
+    fn durable_slots_match_the_simulation_contracts() {
+        assert_eq!(
+            usize::from(purgatory_persistence::DURABLE_INVENTORY_CAPACITY),
+            purgatory_simulation::INVENTORY_CAPACITY
+        );
+        for slot in purgatory_simulation::EquipmentSlot::ALL {
+            let durable = purgatory_persistence::DurableEquipmentSlot::parse(slot.as_str())
+                .expect("durable equipment slot name");
+            assert_eq!(durable.as_str(), slot.as_str());
+        }
+    }
+
+    #[test]
     fn override_wins_over_platform_default() {
         let dir = resolve_data_dir(env_map(&[
             ("PURGATORY_DATA_DIR", r"D:\forced\persist"),
@@ -620,17 +680,17 @@ fn worker_closed() -> PersistError {
 }
 
 fn roster(
-    service: &PersistenceService,
+    service: &mut PersistenceService,
     login: &DevLogin,
-) -> Vec<purgatory_protocol::CharacterSummary> {
-    service
-        .roster(login)
+) -> Result<Vec<purgatory_protocol::CharacterSummary>, PersistError> {
+    Ok(service
+        .roster(login)?
         .into_iter()
         .map(|entry| purgatory_protocol::CharacterSummary {
             character_id: entry.character_id,
             display_name: entry.display_name.as_str().to_owned(),
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -718,5 +778,37 @@ mod frontend_worker_tests {
         assert_eq!(worker.roster(login).await.unwrap(), second);
         worker.shutdown(Duration::from_secs(2)).await;
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn durable_command_waits_for_the_worker_result() {
+        let dir = std::env::temp_dir().join(format!(
+            "purgatory-12a-worker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let err = worker
+            .commit_durable(DurableCommand {
+                key: "not-wired".into(),
+                expected_revisions: Vec::new(),
+                place_new: Vec::new(),
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .await
+            .expect_err("file mode has no durable command result");
+        let text = err.to_string();
+        assert!(
+            text.contains("postgresql"),
+            "the worker must return the service result, not a handoff: {text}"
+        );
+        worker.shutdown(Duration::from_secs(2)).await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

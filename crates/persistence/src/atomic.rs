@@ -27,6 +27,27 @@ pub fn bak_path(dest: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// Read the last committed bytes without renaming, deleting, or replacing.
+///
+/// `dest` wins when it exists. A missing `dest` with `.bak` present yields the
+/// backup bytes and leaves both names in place. `.tmp` alone is not a record.
+pub fn read_committed_bytes(dest: &Path) -> io::Result<Option<Vec<u8>>> {
+    if dest.exists() {
+        return Ok(Some(fs::read(dest)?));
+    }
+    let bak = bak_path(dest);
+    if bak.exists() {
+        return Ok(Some(fs::read(bak)?));
+    }
+    if tmp_path(dest).exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "incomplete temporary file without a committed record",
+        ));
+    }
+    Ok(None)
+}
+
 /// Recover `dest` from `.bak` when `dest` is missing. Stray `.tmp` is deleted.
 pub fn recover_if_needed(dest: &Path) -> io::Result<()> {
     let tmp = tmp_path(dest);

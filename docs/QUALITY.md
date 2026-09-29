@@ -6,7 +6,7 @@ This document is the concise repository-level policy for quality, ownership, tes
 
 - Windows canonical gate: `./scripts/check.ps1`.
 - Linux / macOS canonical gate: `./scripts/check.sh`.
-- CI runs the canonical gate and is a safety net, not a replacement for proportional local validation.
+- CI runs the canonical gate and is a safety net, not a replacement for proportional local validation. A separate Quality Gate job runs the ignored PostgreSQL 12A tests against a disposable `postgres:18` service. That job does not replace `./scripts/check.sh`.
 - Every meaningful code change should pass the smallest relevant test first, then the affected crate/package tests.
 - Run the full repository quality gate when justified by scope and before important integration/push.
 - Warnings, formatting failures, test failures, content-validation failures, and compilation failures are not GREEN.
