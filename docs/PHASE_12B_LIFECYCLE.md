@@ -40,7 +40,7 @@ The simulation thread stores those same deadlines. `apply_input` and `simulate_t
 
 ## Restore
 
-A granted or superseded lease restores the owned character, live owned items, facts, NPC-met, dialogue heard, and learned grants. Derived equipment and grants are rebuilt from those rows. Runtime entity and connection ids are not restored. Unknown content, an empty restore, or a bad item fails closed and the new entity is removed. Welcome facts are seeded only for a file-mode session, which has no lease.
+A granted or superseded lease restores the owned character, live owned items, facts, NPC-met, dialogue heard, and learned grants. Derived equipment and grants are rebuilt from those rows. An equipped row is restored only when `authorize_equip` accepts that item's authored equipment facet for that slot. A non-equippable item in weapon, or an equippable item in the wrong slot, fails closed: the attempted `World` entry is removed and the connection task asks the persistence worker to release the unused lease. A valid weapon in the weapon slot still restores. Runtime entity and connection ids are not restored. Unknown content, an empty restore, or a bad item fails closed the same way. Welcome facts are seeded only for a file-mode session, which has no lease.
 
 After `finish_durable`, the live session adopts the committed revision before the next snapshot. A snapshot is still not itself a durable command.
 
@@ -50,7 +50,7 @@ Migration `0002_lifecycle.sql` adds `character_leases`, `channel_generations`, a
 
 Startup claims channel `0` before accepting connections. A busy claim refuses to start and does not retire that channel's drops. A claimed generation retires live ground rows whose stamp is not the new generation. It also retires null-scoped legacy ground, including when another channel generation is live. Ground stamped for a live channel stays on the ground. The sweep is idempotent and does not refund or reuse item ids.
 
-Clean shutdown expires the channel row in place after queued snapshots are attempted. The next claim uses the following generation, so a drop stamped with the released generation is retired and that generation cannot renew or release. Deleting the row would insert generation 1 again. A crash, or any exit that does not release, leaves the row until expiry. An explicit expiry update then claims the next generation. The crash test does not sleep for 60 seconds.
+Clean shutdown expires the channel row in place after queued snapshots are attempted. The shutdown deadline includes time spent waiting to enqueue `Shutdown` on the bounded worker queue. If that deadline passes, the result is `TimedOut`, not `Drained`. The worker may finish the database call it is already inside, then it stops and does not take further commands, including the rest of the queue and deferred latest state. The worker is a dedicated thread, so dropping the Tokio runtime does not wait for that thread. A crash, or any exit that does not release, leaves the channel row until expiry. An explicit expiry update then claims the next generation. The crash test does not sleep for 60 seconds. The next claim uses the following generation, so a drop stamped with the released generation is retired and that generation cannot renew or release. Deleting the row would insert generation 1 again.
 
 ## What the crash test proves
 
@@ -69,6 +69,8 @@ That proves a committed lease row is still there after process death. It does no
 `expired_character_deadline_rejects_input_before_the_stop_message` and `expired_channel_deadline_rejects_input_before_the_stop_message` accept movement, leave the stop message queued, then advance a paused clock past the deadline. Further input is stale and the next tick does not move the player. `expired_character_deadline_does_not_spawn_before_entry` and `expired_channel_deadline_does_not_spawn_before_entry` call world entry after the deadline and observe no entity and no replication. `file_mode_without_a_deadline_still_simulates_input` still moves after the same clock advance.
 
 `authority_stops_held_movement_after_character_renewal_rejected` and `authority_stops_held_movement_after_channel_renewal_rejected` lose authority while the local deadline is still in the future. New input is stale and the held move does not change position. `authority_stops_dash_on_expired_character_deadline` and `authority_stops_dash_on_expired_channel_deadline` leave the stop queued, advance past the deadline, and the next tick does not continue Dash. The same stop before the deadline is `authority_stops_dash_after_character_renewal_rejected` and `authority_stops_dash_after_channel_renewal_rejected`. `authority_stops_due_windup_on_expired_character_deadline` and `authority_stops_due_windup_on_expired_channel_deadline` have Basic Strike's damage due on that first expired tick; the target stays at full health. `authority_stops_committed_strike_after_character_deadline` keeps damage that already landed. `authority_stops_file_mode_dash_still_moves` still continues Dash after the same clock advance.
+
+`shutdown_times_out_within_the_total_deadline_while_the_worker_is_stalled` fills the worker queue while its thread is blocked, then requires `TimedOut` inside the configured deadline. The child process drops its runtime while that block is still held, then releases the block and checks that queued saves were not written and the writer stopped. The block is a test stall, not a live PostgreSQL query. `durable_restore_rejects_a_non_equippable_item_in_weapon` and `durable_restore_rejects_an_equippable_item_in_the_wrong_slot` enter through the real admission handoff. Both remove the entity and ask the worker to release the lease. File mode answers that release with the migration error because it has no lease row. `durable_restore_keeps_valid_equipment` restores `equipment.debug.practice_sword` into the weapon slot and does not release the lease.
 
 `unusable_connection_at_the_commit_reply_stays_unknown_until_retry` still disconnects only after `COMMIT` succeeds. Injecting a fault during `COMMIT` itself remains an evidence limit from 12A.
 
@@ -112,6 +114,10 @@ Gameplay tests, without a database:
 - `authority_stops_due_windup_on_expired_channel_deadline`
 - `authority_stops_file_mode_dash_still_moves`
 - `authority_stops_committed_strike_after_character_deadline`
+- `shutdown_times_out_within_the_total_deadline_while_the_worker_is_stalled`
+- `durable_restore_rejects_a_non_equippable_item_in_weapon`
+- `durable_restore_rejects_an_equippable_item_in_the_wrong_slot`
+- `durable_restore_keeps_valid_equipment`
 - `character_occupancy_rejects_second_session_and_reconnect_gets_new_entity` — file mode still rejects a second local session
 
 `network::lease_clock` tests, without a database: `queued_reply_time_counts_against_the_deadline`, `stalled_renewal_expires_while_the_worker_reply_is_still_blocked`, `renewal_reply_extends_from_the_send_instant_not_past_it`.

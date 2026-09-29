@@ -6,9 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -174,6 +172,19 @@ struct SharedSaveState {
         >,
     >,
     diagnostics: PersistenceDiagnostics,
+    /// Set when shutdown exceeds its deadline. The worker finishes the command
+    /// already inside the database call, then stops without taking more work.
+    stop_writer: AtomicBool,
+    /// Blocks the worker thread inside one command, the way a stalled database
+    /// call does. The queue can fill while this receiver is held.
+    #[cfg(test)]
+    worker_stall: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    #[cfg(test)]
+    stall_entered: AtomicBool,
+    #[cfg(test)]
+    release_calls: AtomicU64,
+    #[cfg(test)]
+    writer_finished: AtomicBool,
     /// Async barrier after the worker admit reply, so `admit().await` stays
     /// pending without blocking the persistence thread.
     #[cfg(test)]
@@ -205,6 +216,23 @@ struct CommandHoldState {
 pub struct CommandHold {
     entered: Arc<AtomicBool>,
     release_tx: tokio::sync::oneshot::Sender<()>,
+}
+
+#[cfg(test)]
+pub struct WorkerStall {
+    shared: Arc<SharedSaveState>,
+    release_tx: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+impl WorkerStall {
+    pub fn entered(&self) -> bool {
+        self.shared.stall_entered.load(Ordering::SeqCst)
+    }
+
+    pub fn release(self) {
+        let _ = self.release_tx.send(());
+    }
 }
 
 #[cfg(test)]
@@ -276,8 +304,28 @@ impl PersistenceHandle {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let shared = Arc::new(SharedSaveState::default());
         let worker_shared = shared.clone();
-        tokio::task::spawn_blocking(move || {
+        std::thread::Builder::new()
+            .name("purgatory-persist".into())
+            .spawn(move || {
             while let Some(cmd) = rx.blocking_recv() {
+                if worker_shared.stop_writer.load(Ordering::SeqCst) {
+                    break;
+                }
+                #[cfg(test)]
+                {
+                    let stall = worker_shared
+                        .worker_stall
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .take();
+                    if let Some(stall) = stall {
+                        worker_shared.stall_entered.store(true, Ordering::SeqCst);
+                        let _ = stall.recv();
+                    }
+                }
+                if worker_shared.stop_writer.load(Ordering::SeqCst) {
+                    break;
+                }
                 match cmd {
                     PersistCmd::LoadOwned {
                         login,
@@ -369,6 +417,10 @@ impl PersistenceHandle {
                         let _ = reply.send(service.renew_lease(&authority));
                     }
                     PersistCmd::ReleaseLease { authority, reply } => {
+                        #[cfg(test)]
+                        {
+                            worker_shared.release_calls.fetch_add(1, Ordering::SeqCst);
+                        }
                         let _ = reply.send(service.release_lease(&authority));
                     }
                     PersistCmd::ClaimChannel { channel_id, reply } => {
@@ -418,8 +470,13 @@ impl PersistenceHandle {
                 }
                 flush_deferred_latest(&mut service, &worker_shared);
             }
-            flush_deferred_latest(&mut service, &worker_shared);
-        });
+            if !worker_shared.stop_writer.load(Ordering::SeqCst) {
+                flush_deferred_latest(&mut service, &worker_shared);
+            }
+            #[cfg(test)]
+            worker_shared.writer_finished.store(true, Ordering::SeqCst);
+        })
+            .map_err(|err| format!("persistence worker: {err}"))?;
         Ok(Self { tx, shared })
     }
 
@@ -664,6 +721,31 @@ impl PersistenceHandle {
         hold
     }
 
+    /// Block the worker thread on its next command until [`WorkerStall::release`].
+    #[cfg(test)]
+    pub fn stall_next_command(&self) -> WorkerStall {
+        let (release_tx, release) = std::sync::mpsc::channel();
+        *self
+            .shared
+            .worker_stall
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(release);
+        WorkerStall {
+            shared: Arc::clone(&self.shared),
+            release_tx,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn release_calls_for_test(&self) -> u64 {
+        self.shared.release_calls.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub fn writer_finished_for_test(&self) -> bool {
+        self.shared.writer_finished.load(Ordering::SeqCst)
+    }
+
     /// Replace the next admit result. File mode has no lease; tests that need
     /// a character deadline install one here. The handoff after the reply is
     /// still `activate_owned_character`.
@@ -795,23 +877,23 @@ impl PersistenceHandle {
         channel: Option<(i64, u64)>,
     ) -> PersistenceShutdown {
         let (reply, rx) = tokio::sync::oneshot::channel();
-        if self
-            .tx
-            .send(PersistCmd::Shutdown { channel, reply })
-            .await
-            .is_err()
-        {
-            return PersistenceShutdown::WorkerClosed;
-        }
-        match tokio::time::timeout(timeout, rx).await {
+        let tx = self.tx.clone();
+        let shared = Arc::clone(&self.shared);
+        let send_and_wait = async move {
+            tx.send(PersistCmd::Shutdown { channel, reply })
+                .await
+                .map_err(|_| ())?;
+            rx.await.map_err(|_| ())
+        };
+        match tokio::time::timeout(timeout, send_and_wait).await {
             Ok(Ok(status)) => status,
-            _ => PersistenceShutdown::TimedOut {
-                save_failures: self
-                    .shared
-                    .diagnostics
-                    .save_failures
-                    .load(Ordering::Relaxed),
-            },
+            Ok(Err(())) => PersistenceShutdown::WorkerClosed,
+            Err(_) => {
+                shared.stop_writer.store(true, Ordering::SeqCst);
+                PersistenceShutdown::TimedOut {
+                    save_failures: shared.diagnostics.save_failures.load(Ordering::Relaxed),
+                }
+            }
         }
     }
 }
@@ -1101,6 +1183,134 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn shutdown_times_out_within_the_total_deadline_while_the_worker_is_stalled() {
+        if std::env::var_os("PURGATORY_SHUTDOWN_STALL_CHILD").is_some() {
+            stalled_shutdown_child();
+            return;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("network::persist::tests::shutdown_times_out_within_the_total_deadline_while_the_worker_is_stalled")
+            .arg("--exact")
+            .env("PURGATORY_SHUTDOWN_STALL_CHILD", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let limit = std::time::Duration::from_secs(3);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                let mut stdout = String::new();
+                let mut stderr = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    use std::io::Read;
+                    out.read_to_string(&mut stdout).unwrap();
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    use std::io::Read;
+                    err.read_to_string(&mut stderr).unwrap();
+                }
+                assert!(
+                    status.success(),
+                    "stalled shutdown child failed: {status:?}\n{stdout}\n{stderr}"
+                );
+                return;
+            }
+            if started.elapsed() > limit {
+                let _ = child.kill();
+                panic!("shutdown did not finish within {limit:?} while the worker stayed stalled");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+#[cfg(test)]
+fn stalled_shutdown_child() {
+    let dir = std::env::temp_dir().join(format!(
+        "purgatory-shutdown-stall-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (stall, observe) = runtime.block_on(async {
+        let handle = PersistenceHandle::spawn(&dir).unwrap();
+        let stall = handle.stall_next_command();
+        let stalled_id = purgatory_common::CharacterId::from_raw(41);
+        let stalled = purgatory_persistence::PersistentCharacterSnapshot::from_character(
+            &purgatory_persistence::PersistentCharacter::new_default(stalled_id),
+        );
+        assert_eq!(handle.try_save(stalled), SaveHandoff::Accepted);
+        for _ in 0..50 {
+            if stall.entered() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(stall.entered(), "worker did not enter the stall");
+        let mut accepted = 0u32;
+        for n in 0..80u64 {
+            let id = purgatory_common::CharacterId::from_raw(1_000 + n);
+            let snapshot = purgatory_persistence::PersistentCharacterSnapshot::from_character(
+                &purgatory_persistence::PersistentCharacter::new_default(id),
+            );
+            match handle.try_save(snapshot) {
+                SaveHandoff::Accepted => accepted += 1,
+                SaveHandoff::DeferredLatest => break,
+                SaveHandoff::Closed => panic!("worker closed while filling the queue"),
+            }
+        }
+        assert_eq!(accepted, 64, "the bounded queue was not full");
+        let timeout = std::time::Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let status = handle.clone().shutdown(timeout, None).await;
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(status, PersistenceShutdown::TimedOut { .. }),
+            "shutdown status while the queue was full: {status:?}"
+        );
+        assert!(
+            elapsed <= timeout + std::time::Duration::from_millis(250),
+            "shutdown waited {elapsed:?}, past the {timeout:?} deadline"
+        );
+        let queued = dir.join(purgatory_persistence::character_file_name(
+            purgatory_common::CharacterId::from_raw(1_000),
+        ));
+        assert!(
+            !queued.exists(),
+            "a queued save was written during the stall"
+        );
+        (stall, handle)
+    });
+    drop(runtime);
+    stall.release();
+    let observe_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !observe.writer_finished_for_test() && std::time::Instant::now() < observe_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        observe.writer_finished_for_test(),
+        "the writer kept running after shutdown timed out"
+    );
+    let queued = dir.join(purgatory_persistence::character_file_name(
+        purgatory_common::CharacterId::from_raw(1_000),
+    ));
+    assert!(
+        !queued.exists(),
+        "the writer committed a queued save after shutdown timed out"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    std::process::exit(0);
 }
 
 fn worker_closed() -> PersistError {

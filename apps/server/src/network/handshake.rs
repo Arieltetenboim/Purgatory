@@ -1942,4 +1942,206 @@ mod admission_race {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn equipped_restore(
+        character_id: CharacterId,
+        content: purgatory_common::ContentId,
+        slot: purgatory_persistence::DurableEquipmentSlot,
+    ) -> SessionAdmission {
+        use purgatory_common::ItemInstanceId;
+        use purgatory_persistence::{CharacterItemLocation, ItemOwner, ItemRecord};
+        SessionAdmission::Granted {
+            authority: Some(LeaseAuthority {
+                login: DevLogin::parse("dev.local").unwrap(),
+                character_id,
+                generation: 1,
+            }),
+            restore: Box::new(OwnedRestore {
+                character: PersistentCharacter::new_default(character_id),
+                items: vec![ItemRecord {
+                    item_instance_id: ItemInstanceId::from_raw(7),
+                    definition_content_id: content,
+                    quantity: 1,
+                    owner: ItemOwner::Character {
+                        character_id,
+                        location: CharacterItemLocation::Equipped { slot },
+                    },
+                }],
+                narrative: CharacterNarrativeState::default(),
+            }),
+        }
+    }
+
+    async fn drive_scripted_admission(
+        worker: &PersistenceHandle,
+        owner: &mut GameplayOwner,
+        queues: (
+            &mut tokio::sync::mpsc::Receiver<crate::network::gameplay::LifecycleCmd>,
+            &mut tokio::sync::mpsc::Receiver<InputUpdate>,
+        ),
+        tx: &crate::network::gameplay::GameplayTx,
+        login: &DevLogin,
+        connection_id: ConnectionId,
+        character_id: CharacterId,
+    ) -> Result<
+        (
+            crate::network::replication::ReplicationPipe,
+            tokio::sync::watch::Receiver<u64>,
+            tokio::sync::mpsc::Receiver<purgatory_protocol::ServerControl>,
+            Option<(LeaseAuthority, LocalLeaseDeadline)>,
+        ),
+        CharacterEnterRejection,
+    > {
+        let channel_live = Arc::new(AtomicBool::new(true));
+        let mut admission = std::pin::pin!(activate_owned_character(
+            worker,
+            tx,
+            login,
+            connection_id,
+            character_id,
+            &channel_live,
+        ));
+        let (life_rx, input_rx) = queues;
+        let mut outcome = None;
+        for _ in 0..200 {
+            owner.drain(life_rx, input_rx);
+            std::future::poll_fn(|cx| {
+                if outcome.is_none()
+                    && let std::task::Poll::Ready(value) = admission.as_mut().poll(cx)
+                {
+                    outcome = Some(value);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            if outcome.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+            tokio::task::yield_now().await;
+        }
+        outcome.expect("scripted admission did not finish")
+    }
+
+    #[tokio::test]
+    async fn durable_restore_rejects_a_non_equippable_item_in_weapon() {
+        let dir = temp_dir("potion-weapon");
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("dev.local").unwrap();
+        let created = worker.create_character(login.clone(), "Alpha".into()).await;
+        let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
+            panic!("create character: {created:?}");
+        };
+        let character_id = roster[0].character_id;
+        worker.script_next_admit(equipped_restore(
+            character_id,
+            purgatory_common::ContentId::from_raw(30011),
+            purgatory_persistence::DurableEquipmentSlot::Weapon,
+        ));
+        let (tx, mut life_rx, mut input_rx) = gameplay_channels(8, 8);
+        let mut owner = GameplayOwner::new();
+        let connection_id = ConnectionId::from_raw(31);
+        let result = drive_scripted_admission(
+            &worker,
+            &mut owner,
+            (&mut life_rx, &mut input_rx),
+            &tx,
+            &login,
+            connection_id,
+            character_id,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(CharacterEnterRejection::GameplayEnterFailure)),
+            "non-equippable weapon restore entered: ok={} entity={:?}",
+            result.is_ok(),
+            owner.entity_of(connection_id)
+        );
+        assert!(owner.entity_of(connection_id).is_none());
+        assert_eq!(worker.release_calls_for_test(), 1);
+        worker.shutdown(Duration::from_secs(2), None).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn durable_restore_rejects_an_equippable_item_in_the_wrong_slot() {
+        let dir = temp_dir("cap-weapon");
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("dev.local").unwrap();
+        let created = worker.create_character(login.clone(), "Alpha".into()).await;
+        let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
+            panic!("create character: {created:?}");
+        };
+        let character_id = roster[0].character_id;
+        worker.script_next_admit(equipped_restore(
+            character_id,
+            purgatory_common::ContentId::from_raw(30001),
+            purgatory_persistence::DurableEquipmentSlot::Weapon,
+        ));
+        let (tx, mut life_rx, mut input_rx) = gameplay_channels(8, 8);
+        let mut owner = GameplayOwner::new();
+        let connection_id = ConnectionId::from_raw(32);
+        let result = drive_scripted_admission(
+            &worker,
+            &mut owner,
+            (&mut life_rx, &mut input_rx),
+            &tx,
+            &login,
+            connection_id,
+            character_id,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(CharacterEnterRejection::GameplayEnterFailure)),
+            "wrong-slot restore entered: ok={} entity={:?}",
+            result.is_ok(),
+            owner.entity_of(connection_id)
+        );
+        assert!(owner.entity_of(connection_id).is_none());
+        assert_eq!(worker.release_calls_for_test(), 1);
+        worker.shutdown(Duration::from_secs(2), None).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn durable_restore_keeps_valid_equipment() {
+        let dir = temp_dir("sword-weapon");
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("dev.local").unwrap();
+        let created = worker.create_character(login.clone(), "Alpha".into()).await;
+        let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
+            panic!("create character: {created:?}");
+        };
+        let character_id = roster[0].character_id;
+        let sword = purgatory_common::ContentId::from_raw(30006);
+        worker.script_next_admit(equipped_restore(
+            character_id,
+            sword,
+            purgatory_persistence::DurableEquipmentSlot::Weapon,
+        ));
+        let (tx, mut life_rx, mut input_rx) = gameplay_channels(8, 8);
+        let mut owner = GameplayOwner::new();
+        let connection_id = ConnectionId::from_raw(33);
+        let result = drive_scripted_admission(
+            &worker,
+            &mut owner,
+            (&mut life_rx, &mut input_rx),
+            &tx,
+            &login,
+            connection_id,
+            character_id,
+        )
+        .await;
+        assert!(result.is_ok(), "valid equipment was rejected");
+        let actor = owner.entity_of(connection_id).expect("player");
+        assert_eq!(
+            owner
+                .world()
+                .equipment_slot(actor, purgatory_simulation::EquipmentSlot::Weapon),
+            Some(sword)
+        );
+        assert_eq!(worker.release_calls_for_test(), 0);
+        worker.shutdown(Duration::from_secs(2), None).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

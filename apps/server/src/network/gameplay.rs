@@ -2053,14 +2053,22 @@ impl GameplayOwner {
                     definition.stack_limit,
                     slot,
                 ),
-                CharacterItemLocation::Equipped { slot } => self.world.restore_equipped_item(
-                    entity,
-                    item.item_instance_id,
-                    item.definition_content_id,
-                    item.quantity,
-                    definition.stack_limit,
-                    durable_equipment_slot(slot),
-                ),
+                CharacterItemLocation::Equipped { slot } => {
+                    let equipment_slot = durable_equipment_slot(slot);
+                    if authorize_equip(&self.registry, equipment_slot, item.definition_content_id)
+                        .is_err()
+                    {
+                        return Err(EnterError::RestoreFailed);
+                    }
+                    self.world.restore_equipped_item(
+                        entity,
+                        item.item_instance_id,
+                        item.definition_content_id,
+                        item.quantity,
+                        definition.stack_limit,
+                        equipment_slot,
+                    )
+                }
             };
             if restored.is_err() {
                 return Err(EnterError::RestoreFailed);
