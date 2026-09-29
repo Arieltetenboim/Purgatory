@@ -118,7 +118,9 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     let channel_live = Arc::new(AtomicBool::new(true));
     let held_channel = claim_startup_channel(&persist, &channel_live).await?;
     let (stop_channel_tx, stop_channel_rx) = tokio::sync::watch::channel(false);
+    let mut owner = gameplay::GameplayOwner::new();
     if let Some((channel_id, generation, deadline)) = held_channel {
+        owner.set_channel_deadline(Some(deadline));
         spawn_channel_renewal(
             persist.clone(),
             gameplay_tx.clone(),
@@ -129,7 +131,6 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
             generation,
         );
     }
-    let mut owner = gameplay::GameplayOwner::new();
     owner.set_persist(persist.clone());
     let pressure = Arc::new(network_pressure::NetworkPressureBook::new());
     let lifecycle = Arc::new(connection_lifecycle::ConnectionLifecycleBook::new());
@@ -366,6 +367,12 @@ pub(crate) fn spawn_channel_renewal(
             deadline,
             purgatory_persistence::CHANNEL_GENERATION_RENEWAL,
             stop,
+            {
+                let gameplay = gameplay.clone();
+                move |extended| {
+                    let _ = gameplay.try_note_channel_deadline(extended);
+                }
+            },
         )
         .await;
         if lease_clock::authority_ends(stop) {

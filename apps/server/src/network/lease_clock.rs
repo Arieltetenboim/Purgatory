@@ -51,15 +51,17 @@ pub fn authority_ends(stop: RenewalStop) -> bool {
     matches!(stop, RenewalStop::Expired | RenewalStop::Rejected)
 }
 
-pub async fn supervise_renewal<F, Fut>(
+pub async fn supervise_renewal<F, Fut, E>(
     mut renew: F,
     mut deadline: LocalLeaseDeadline,
     renewal_every: Duration,
     mut stop: tokio::sync::watch::Receiver<bool>,
+    mut on_extended: E,
 ) -> RenewalStop
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<(), ()>>,
+    E: FnMut(LocalLeaseDeadline),
 {
     let mut interval = tokio::time::interval(renewal_every);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -101,6 +103,7 @@ where
                                     return RenewalStop::Expired;
                                 }
                                 deadline = next;
+                                on_extended(deadline);
                             }
                         }
                     }
@@ -156,6 +159,7 @@ mod tests {
             deadline,
             renewal,
             stop_rx,
+            |_| {},
         ));
 
         tokio::task::yield_now().await;
@@ -211,6 +215,7 @@ mod tests {
             LocalLeaseDeadline::from_request(started, expiry),
             renewal,
             stop_rx,
+            |_| {},
         ));
 
         tokio::task::yield_now().await;

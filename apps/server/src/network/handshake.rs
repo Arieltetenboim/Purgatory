@@ -528,6 +528,7 @@ async fn activate_owned_character(
             connection_id,
             owned,
             authority.clone(),
+            deadline,
             Some(pipe.clone()),
             Some(interact_tx),
         )
@@ -602,6 +603,7 @@ fn spawn_lease_renewal(
     deadline: super::lease_clock::LocalLeaseDeadline,
 ) -> tokio::sync::watch::Sender<bool> {
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let extend = gameplay.clone();
     tokio::spawn(async move {
         let stop = super::lease_clock::supervise_renewal(
             move || {
@@ -612,6 +614,9 @@ fn spawn_lease_renewal(
             deadline,
             purgatory_persistence::CHARACTER_LEASE_RENEWAL,
             stop_rx,
+            move |extended| {
+                let _ = extend.try_note_lease_deadline(connection_id, extended);
+            },
         )
         .await;
         if super::lease_clock::authority_ends(stop) {

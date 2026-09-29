@@ -333,6 +333,11 @@ impl SessionInput {
         self.unmatched_continuation_ticks = 0;
     }
 
+    /// Drop held movement without counting a client held-cancel.
+    fn neutralize_held(&mut self) {
+        self.ack_queued_as_idle();
+    }
+
     /// One player simulation step's input. Does not run physics.
     #[must_use]
     pub fn take_for_tick(&mut self) -> PlayerInput {
@@ -429,6 +434,8 @@ pub struct PlayerBinding {
     last_drop_result: Option<ServerItem>,
     dialogue_reopen_after_tick: u64,
     authority: Option<purgatory_persistence::LeaseAuthority>,
+    /// Local character-lease deadline. `None` is file mode, which has no lease.
+    lease_deadline: Option<super::lease_clock::LocalLeaseDeadline>,
     authority_lost: bool,
     pending_durable: u32,
     detach_when_idle: bool,
@@ -445,6 +452,9 @@ pub struct GameplayOwner {
     /// Set by a channel-generation stop. A binding created afterward must not
     /// enter `World`; the stop may already have been drained.
     admission_stopped: bool,
+    /// Local channel-generation deadline. `None` means this process has no
+    /// claimed channel, including file mode.
+    channel_deadline: Option<super::lease_clock::LocalLeaseDeadline>,
     persist: Option<PersistenceHandle>,
     ticks: u64,
     pub input_received: u64,
@@ -601,9 +611,17 @@ pub enum LifecycleCmd {
         connection_id: ConnectionId,
         owned: purgatory_persistence::OwnedRestore,
         authority: Option<purgatory_persistence::LeaseAuthority>,
+        lease_deadline: Option<super::lease_clock::LocalLeaseDeadline>,
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
         reply: tokio::sync::oneshot::Sender<Result<(), EnterError>>,
+    },
+    NoteLeaseDeadline {
+        connection_id: ConnectionId,
+        deadline: super::lease_clock::LocalLeaseDeadline,
+    },
+    NoteChannelDeadline {
+        deadline: super::lease_clock::LocalLeaseDeadline,
     },
     #[allow(dead_code)]
     BeginDurable {
@@ -801,6 +819,7 @@ impl GameplayTx {
         connection_id: ConnectionId,
         owned: purgatory_persistence::OwnedRestore,
         authority: Option<purgatory_persistence::LeaseAuthority>,
+        lease_deadline: Option<super::lease_clock::LocalLeaseDeadline>,
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
     ) -> Result<Result<(), EnterError>, ()> {
@@ -810,6 +829,7 @@ impl GameplayTx {
                 connection_id,
                 owned,
                 authority,
+                lease_deadline,
                 replication,
                 interact,
                 reply,
@@ -817,6 +837,28 @@ impl GameplayTx {
             .await
             .map_err(|_| ())?;
         rx.await.map_err(|_| ())
+    }
+
+    pub fn try_note_lease_deadline(
+        &self,
+        connection_id: ConnectionId,
+        deadline: super::lease_clock::LocalLeaseDeadline,
+    ) -> bool {
+        self.lifecycle
+            .try_send(LifecycleCmd::NoteLeaseDeadline {
+                connection_id,
+                deadline,
+            })
+            .is_ok()
+    }
+
+    pub fn try_note_channel_deadline(
+        &self,
+        deadline: super::lease_clock::LocalLeaseDeadline,
+    ) -> bool {
+        self.lifecycle
+            .try_send(LifecycleCmd::NoteChannelDeadline { deadline })
+            .is_ok()
     }
 
     /// Remove a character that entered after its authority had already ended.
@@ -1286,6 +1328,7 @@ impl GameplayOwner {
             bindings: HashMap::new(),
             occupancy: HashMap::new(),
             admission_stopped: false,
+            channel_deadline: None,
             persist: None,
             ticks: 0,
             input_received: 0,
@@ -1626,6 +1669,7 @@ impl GameplayOwner {
                 last_drop_result: None,
                 dialogue_reopen_after_tick: 0,
                 authority: None,
+                lease_deadline: None,
                 authority_lost: false,
                 pending_durable: 0,
                 detach_when_idle: false,
@@ -1726,6 +1770,47 @@ impl GameplayOwner {
         true
     }
 
+    pub fn set_channel_deadline(
+        &mut self,
+        deadline: Option<super::lease_clock::LocalLeaseDeadline>,
+    ) {
+        self.channel_deadline = deadline;
+    }
+
+    fn deadline_expired(deadline: Option<super::lease_clock::LocalLeaseDeadline>) -> bool {
+        deadline.is_some_and(|bound| !bound.reply_still_authorizes(tokio::time::Instant::now()))
+    }
+
+    fn deadlines_block_entry(
+        &self,
+        lease_deadline: Option<super::lease_clock::LocalLeaseDeadline>,
+    ) -> bool {
+        Self::deadline_expired(self.channel_deadline) || Self::deadline_expired(lease_deadline)
+    }
+
+    fn player_actions_blocked(&self, connection_id: ConnectionId) -> bool {
+        if Self::deadline_expired(self.channel_deadline) {
+            return true;
+        }
+        self.bindings.get(&connection_id).is_some_and(|binding| {
+            binding.authority_lost || Self::deadline_expired(binding.lease_deadline)
+        })
+    }
+
+    fn note_channel_deadline(&mut self, deadline: super::lease_clock::LocalLeaseDeadline) {
+        self.channel_deadline = Some(deadline);
+    }
+
+    fn note_lease_deadline(
+        &mut self,
+        connection_id: ConnectionId,
+        deadline: super::lease_clock::LocalLeaseDeadline,
+    ) {
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.lease_deadline = Some(deadline);
+        }
+    }
+
     pub fn set_authority(
         &mut self,
         connection_id: ConnectionId,
@@ -1744,10 +1829,16 @@ impl GameplayOwner {
     }
 
     pub fn begin_durable(&mut self, connection_id: ConnectionId) -> bool {
+        if Self::deadline_expired(self.channel_deadline) {
+            return false;
+        }
         let Some(binding) = self.bindings.get_mut(&connection_id) else {
             return false;
         };
-        if binding.authority_lost || binding.pending_durable > 0 {
+        if binding.authority_lost
+            || binding.pending_durable > 0
+            || Self::deadline_expired(binding.lease_deadline)
+        {
             return false;
         }
         binding.pending_durable = 1;
@@ -1875,8 +1966,9 @@ impl GameplayOwner {
         authority: Option<purgatory_persistence::LeaseAuthority>,
         replication: Option<ReplicationPipe>,
         interact: Option<tokio::sync::mpsc::Sender<ServerControl>>,
+        lease_deadline: Option<super::lease_clock::LocalLeaseDeadline>,
     ) -> Result<(), EnterError> {
-        if self.admission_stopped {
+        if self.admission_stopped || self.deadlines_block_entry(lease_deadline) {
             return Err(EnterError::AuthorityLost);
         }
         let character = owned.character.clone();
@@ -1887,6 +1979,9 @@ impl GameplayOwner {
             interact,
             authority.is_none(),
         )?;
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.lease_deadline = lease_deadline;
+        }
         if let Some(authority) = authority {
             self.set_authority(connection_id, authority);
             if self.apply_durable_restore(connection_id, &owned).is_err() {
@@ -2174,10 +2269,7 @@ impl GameplayOwner {
 
     pub fn apply_input(&mut self, update: InputUpdate) -> SeqDecision {
         if let Some(connection_id) = Self::input_connection(&update)
-            && self
-                .bindings
-                .get(&connection_id)
-                .is_some_and(|binding| binding.authority_lost)
+            && self.player_actions_blocked(connection_id)
         {
             return SeqDecision::Stale;
         }
@@ -2444,13 +2536,27 @@ impl GameplayOwner {
                     connection_id,
                     owned,
                     authority,
+                    lease_deadline,
                     replication,
                     interact,
                     reply,
                 } => {
-                    let result =
-                        self.enter_restored(connection_id, owned, authority, replication, interact);
+                    let result = self.enter_restored(
+                        connection_id,
+                        owned,
+                        authority,
+                        replication,
+                        interact,
+                        lease_deadline,
+                    );
                     let _ = reply.send(result);
+                }
+                LifecycleCmd::NoteLeaseDeadline {
+                    connection_id,
+                    deadline,
+                } => self.note_lease_deadline(connection_id, deadline),
+                LifecycleCmd::NoteChannelDeadline { deadline } => {
+                    self.note_channel_deadline(deadline);
                 }
                 LifecycleCmd::LoseAllAuthority => self.lose_all_authority(),
                 LifecycleCmd::AbandonAdmission {
@@ -2528,6 +2634,7 @@ impl GameplayOwner {
         }
 
         let input_t0 = std::time::Instant::now();
+        let channel_expired = Self::deadline_expired(self.channel_deadline);
         let ids: Vec<(
             ConnectionId,
             EntityId,
@@ -2538,27 +2645,37 @@ impl GameplayOwner {
             .bindings
             .iter_mut()
             .map(|(cid, binding)| {
+                let expired = channel_expired || Self::deadline_expired(binding.lease_deadline);
+                if expired {
+                    binding.input.neutralize_held();
+                }
                 let gated = binding.input.input_gated();
                 let reason = binding.input.input_gate_reason();
                 let entity = binding.entity;
-                let player_input = binding.input.take_for_tick();
+                let player_input = if expired {
+                    PlayerInput::idle()
+                } else {
+                    binding.input.take_for_tick()
+                };
                 let ack = binding.input.last_acknowledged();
                 let mut due_abilities = Vec::new();
-                while binding.pending_abilities.front().is_some_and(|request| {
-                    request.input_epoch == binding.input.input_epoch
-                        && request.input_sequence <= ack
-                }) {
-                    due_abilities.push(
-                        binding
-                            .pending_abilities
-                            .pop_front()
-                            .expect("front checked"),
-                    );
+                if !expired {
+                    while binding.pending_abilities.front().is_some_and(|request| {
+                        request.input_epoch == binding.input.input_epoch
+                            && request.input_sequence <= ack
+                    }) {
+                        due_abilities.push(
+                            binding
+                                .pending_abilities
+                                .pop_front()
+                                .expect("front checked"),
+                        );
+                    }
                 }
                 if gated && !binding.input.input_gated() {
                     println!("6D_INPUT unlock actor={entity} reason={reason:?}");
                 }
-                (*cid, entity, player_input, gated, due_abilities)
+                (*cid, entity, player_input, gated || expired, due_abilities)
             })
             .collect();
         sample.commands_input += input_t0.elapsed();
@@ -5687,6 +5804,196 @@ mod tests {
         assert_eq!(owner.ticks(), 0);
     }
 
+    fn owned_restore(character: PersistentCharacter) -> purgatory_persistence::OwnedRestore {
+        purgatory_persistence::OwnedRestore {
+            character,
+            items: Vec::new(),
+            narrative: purgatory_persistence::CharacterNarrativeState::default(),
+        }
+    }
+
+    fn lease_deadline_from_now() -> crate::network::lease_clock::LocalLeaseDeadline {
+        crate::network::lease_clock::LocalLeaseDeadline::from_request(
+            tokio::time::Instant::now(),
+            purgatory_persistence::CHARACTER_LEASE_EXPIRY,
+        )
+    }
+
+    async fn advance_past_expiry() {
+        tokio::time::advance(
+            purgatory_persistence::CHARACTER_LEASE_EXPIRY + std::time::Duration::from_millis(50),
+        )
+        .await;
+        tokio::task::yield_now().await;
+    }
+
+    fn horizontal(owner: &GameplayOwner, connection: ConnectionId) -> f32 {
+        owner
+            .world()
+            .player_body_of(owner.entity_of(connection).unwrap())
+            .unwrap()
+            .position[0]
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn expired_character_deadline_rejects_input_before_the_stop_message() {
+        let mut owner = GameplayOwner::new();
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(11));
+        let connection = ConnectionId::from_raw(4);
+        let (tx, life_rx, _input_rx) = gameplay_channels(8, 8);
+        owner
+            .enter_restored(
+                connection,
+                owned_restore(character.clone()),
+                Some(test_lease(character.character_id, 1)),
+                None,
+                None,
+                Some(lease_deadline_from_now()),
+            )
+            .unwrap();
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(1, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept
+        );
+        let before = horizontal(&owner, connection);
+        tx.lifecycle
+            .try_send(LifecycleCmd::LoseAuthority {
+                connection_id: connection,
+            })
+            .unwrap();
+        assert_eq!(life_rx.len(), 1, "the stop message must still be queued");
+        advance_past_expiry().await;
+        let accepted = owner.input_accepted;
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(2, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale
+        );
+        assert_eq!(owner.input_accepted, accepted);
+        let dt = purgatory_simulation::TICK_DURATION.as_secs_f32();
+        owner.simulate_tick(dt);
+        assert_eq!(
+            horizontal(&owner, connection),
+            before,
+            "held input must not move the player after the local deadline"
+        );
+        assert_eq!(life_rx.len(), 1, "the stop message was drained");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn expired_channel_deadline_rejects_input_before_the_stop_message() {
+        let mut owner = GameplayOwner::new();
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(12));
+        let connection = ConnectionId::from_raw(5);
+        let (tx, life_rx, _input_rx) = gameplay_channels(8, 8);
+        owner.set_channel_deadline(Some(lease_deadline_from_now()));
+        owner
+            .enter_restored(connection, owned_restore(character), None, None, None, None)
+            .unwrap();
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(1, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept
+        );
+        let before = horizontal(&owner, connection);
+        tx.lifecycle
+            .try_send(LifecycleCmd::LoseAllAuthority)
+            .unwrap();
+        assert_eq!(life_rx.len(), 1);
+        advance_past_expiry().await;
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(2, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale
+        );
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        assert_eq!(horizontal(&owner, connection), before);
+        assert_eq!(life_rx.len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn file_mode_without_a_deadline_still_simulates_input() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(6);
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(13));
+        owner.enter(connection, character, None, None).unwrap();
+        advance_past_expiry().await;
+        assert_eq!(
+            owner.apply_input(command_update(
+                connection,
+                cmd(1, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept
+        );
+        let before = horizontal(&owner, connection);
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        assert!(horizontal(&owner, connection) > before);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn expired_character_deadline_does_not_spawn_before_entry() {
+        let mut owner = GameplayOwner::new();
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(14));
+        let connection = ConnectionId::from_raw(7);
+        let (pipe, _wake) = ReplicationPipe::new();
+        let deadline = lease_deadline_from_now();
+        advance_past_expiry().await;
+        let result = owner.enter_restored(
+            connection,
+            owned_restore(character),
+            Some(test_lease(CharacterId::from_raw(14), 1)),
+            Some(pipe.clone()),
+            None,
+            Some(deadline),
+        );
+        assert!(
+            matches!(result, Err(EnterError::AuthorityLost)),
+            "expired entry was accepted: ok={} entity={:?}",
+            result.is_ok(),
+            owner.entity_of(connection)
+        );
+        assert!(owner.entity_of(connection).is_none());
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        assert_eq!(pipe.len(), 0, "expired entry replicated a player");
+        assert_eq!(owner.player_entity_spawned, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn expired_channel_deadline_does_not_spawn_before_entry() {
+        let mut owner = GameplayOwner::new();
+        let character = PersistentCharacter::new_default(CharacterId::from_raw(15));
+        let connection = ConnectionId::from_raw(8);
+        let (pipe, _wake) = ReplicationPipe::new();
+        owner.set_channel_deadline(Some(lease_deadline_from_now()));
+        advance_past_expiry().await;
+        let result = owner.enter_restored(
+            connection,
+            owned_restore(character),
+            None,
+            Some(pipe.clone()),
+            None,
+            None,
+        );
+        assert!(
+            matches!(result, Err(EnterError::AuthorityLost)),
+            "expired channel still entered: ok={} entity={:?}",
+            result.is_ok(),
+            owner.entity_of(connection)
+        );
+        assert!(owner.entity_of(connection).is_none());
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        assert_eq!(pipe.len(), 0);
+    }
+
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn stalled_lease_renewal_stops_gameplay_before_another_world_takes_input() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -5731,6 +6038,7 @@ mod tests {
             ),
             renewal,
             stop_rx,
+            |_| {},
         ));
         tokio::task::yield_now().await;
         tokio::time::advance(renewal + std::time::Duration::from_millis(50)).await;

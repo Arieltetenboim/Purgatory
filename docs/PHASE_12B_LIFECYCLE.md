@@ -34,7 +34,9 @@ On renewal failure, or any other loss of lease authority, the session stops acce
 
 The holding process also keeps a local monotonic deadline. It is the instant the admit, supersede, claim, or renewal request was sent, plus the 60-second policy expiry. Time spent queued before the reply counts against that expiry. If the reply arrives at or after the deadline, gameplay is not entered and a late channel claim refuses to start. The renewal task stops gameplay, or channel admission, when that deadline passes even if the persistence worker has not answered. The database clock is still what another process sees. A renewal that the worker has already started can still commit after the local stop; this process has already stopped accepting input, and the other process can admit only once that database row expires.
 
-Channel authority is checked again after the admit reply, before world entry. Character and channel authority are checked again after `enter_restored` returns. If either has ended during that wait, the new binding is removed without a save, the unused lease is released through the persistence worker, and character renewal is not started. A channel stop also sticks on the gameplay owner: an entry command drained after that stop does not create a binding. The character renewal supervisor still starts only after a successful entry.
+Channel authority is checked again after the admit reply, before world entry. `enter_restored` checks the character deadline and the channel deadline before it creates a binding. An already-expired deadline returns `AuthorityLost` and does not spawn an entity, so there is no simulation tick or replication to clean up. That is entry prevented. If `enter_restored` has already returned success and authority then ends before the connection task finishes, that task removes the binding without a save and releases the unused lease through the persistence worker. That second path is cleanup after an entry that was still authorized when World created the binding. A channel stop also sticks on the gameplay owner: an entry command drained after that stop does not create a binding. The character renewal supervisor still starts only after a successful entry.
+
+The simulation thread stores those same deadlines. `apply_input` and `simulate_tick` refuse new input and do not apply held movement once a deadline has passed, even while `LoseAuthority` or `LoseAllAuthority` is still queued. They do not call the database. File mode stores no deadline and keeps its current input behavior. A successful renewal delivers the extended deadline on the lifecycle channel; until that message is drained, the previous deadline still bounds gameplay. The database clock remains what another process sees.
 
 ## Restore
 
@@ -62,7 +64,9 @@ That proves a committed lease row is still there after process death. It does no
 
 `stalled_renewal_expires_while_the_worker_reply_is_still_blocked` and `stalled_lease_renewal_stops_gameplay_before_another_world_takes_input` use a paused Tokio clock. They prove the local deadline stops a renewal that has not replied, the old session then rejects input, and a second `World` can accept input. They do not take a second database lease. `queued_reply_time_counts_against_the_deadline` checks the send-instant arithmetic without sleeping. `renewal_reply_extends_from_the_send_instant_not_past_it` proves a successful renewal moves the local deadline to that request's send instant plus 60 seconds.
 
-`channel_stop_during_admit_does_not_enter_world` holds the admit reply after the worker has produced it, then runs the real channel renewal supervisor on a paused clock until that supervisor clears channel authority and its stop has been drained. Releasing the reply does not enter `World`, and input for that connection is stale. `character_deadline_during_enter_does_not_enter_world` queues restored entry after the pre-entry deadline check, then advances the paused clock past the character expiry before the simulation thread drains the command. The entity is removed without a save. The character renewal supervisor is not running in that test; the deadline itself is what rejects the entry. Neither test calls `lose_authority` directly.
+`channel_stop_during_admit_does_not_enter_world` holds the admit reply after the worker has produced it, then runs the real channel renewal supervisor on a paused clock until that supervisor clears channel authority and its stop has been drained. Releasing the reply does not enter `World`, and input for that connection is stale. `character_deadline_during_enter_does_not_enter_world` queues restored entry after the pre-entry deadline check, then advances the paused clock past the character expiry before the simulation thread drains the command. World entry refuses that command before creating a binding. The character renewal supervisor is not running in that test; the deadline itself is what rejects the entry. Neither test calls `lose_authority` directly.
+
+`expired_character_deadline_rejects_input_before_the_stop_message` and `expired_channel_deadline_rejects_input_before_the_stop_message` accept movement, leave the stop message queued, then advance a paused clock past the deadline. Further input is stale and the next tick does not move the player. `expired_character_deadline_does_not_spawn_before_entry` and `expired_channel_deadline_does_not_spawn_before_entry` call world entry after the deadline and observe no entity and no replication. `file_mode_without_a_deadline_still_simulates_input` still moves after the same clock advance.
 
 `unusable_connection_at_the_commit_reply_stays_unknown_until_retry` still disconnects only after `COMMIT` succeeds. Injecting a fault during `COMMIT` itself remains an evidence limit from 12A.
 
@@ -91,6 +95,11 @@ Gameplay tests, without a database:
 - `stalled_lease_renewal_stops_gameplay_before_another_world_takes_input`
 - `channel_stop_during_admit_does_not_enter_world`
 - `character_deadline_during_enter_does_not_enter_world`
+- `expired_character_deadline_rejects_input_before_the_stop_message`
+- `expired_channel_deadline_rejects_input_before_the_stop_message`
+- `expired_character_deadline_does_not_spawn_before_entry`
+- `expired_channel_deadline_does_not_spawn_before_entry`
+- `file_mode_without_a_deadline_still_simulates_input`
 - `character_occupancy_rejects_second_session_and_reconnect_gets_new_entity` — file mode still rejects a second local session
 
 `network::lease_clock` tests, without a database: `queued_reply_time_counts_against_the_deadline`, `stalled_renewal_expires_while_the_worker_reply_is_still_blocked`, `renewal_reply_extends_from_the_send_instant_not_past_it`.
