@@ -1143,6 +1143,181 @@
         assert!(owner.take_durable_commits().is_empty());
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_durable_commits_reports_first_unknown_before_a_blocked_retry() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(191);
+        enter_leased(&mut owner, id, 191);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        owner
+            .world_mut()
+            .equip_item(actor, item, purgatory_simulation::EquipmentSlot::Weapon)
+            .unwrap();
+        let character = CharacterId::from_raw(191);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[item]);
+        owner.apply_input(InputUpdate::Unequip {
+            connection_id: id,
+            request: UnequipRequest {
+                seq: 1,
+                slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+            },
+        });
+        let (persist, mut calls) =
+            super::super::persist::PersistenceHandle::scripted_durable_for_test();
+        let (tx, mut life_rx, _input_rx) = gameplay_channels(8, 8);
+        super::super::spawn_durable_commits(&mut owner, &persist, &tx);
+        let (first_command, first_reply) = calls.recv().await;
+        let key = first_command.key.clone();
+
+        let before = horizontal(&owner, id);
+        assert_eq!(
+            owner.apply_input(command_update(id, cmd(1, MoveAxis::Right, false, false))),
+            SeqDecision::Accept,
+            "an ordinary in-flight command must not stop control"
+        );
+        owner.simulate_tick(tick_dt());
+        assert!(horizontal(&owner, id) > before);
+        assert!(owner.world_mut().grant_ability(actor, dash_id()));
+        assert_eq!(
+            owner.apply_input(InputUpdate::AbilityActivate {
+                connection_id: id,
+                request: AbilityActivateRequest {
+                    seq: 1,
+                    input_epoch: 0,
+                    input_sequence: 1,
+                    ability_id: dash_id(),
+                    selected: None,
+                },
+            }),
+            SeqDecision::Accept
+        );
+        owner.simulate_tick(tick_dt());
+        assert!(owner.world().player_dash_of(actor).is_some());
+
+        first_reply
+            .send(Err(PersistError::storage(
+                "commit outcome unknown: reply was not observed",
+            )))
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_millis(300), life_rx.recv())
+            .await
+            .expect("first unknown must reach GameplayOwner before the blocked retry")
+            .expect("lifecycle event");
+        let token = match event {
+            LifecycleCmd::SettleDurable { token, result } => {
+                assert!(result
+                    .as_ref()
+                    .err()
+                    .is_some_and(super::super::durable_play::commit_outcome_unknown));
+                owner.settle_durable(token, result);
+                token
+            }
+            _ => panic!("unexpected lifecycle event"),
+        };
+        super::super::spawn_durable_commits(&mut owner, &persist, &tx);
+        let (second_command, second_reply) = calls.recv().await;
+        assert_eq!(second_command.key, key, "the retry must use the stored key");
+        let held = horizontal(&owner, id);
+        assert_eq!(
+            owner.apply_input(command_update(id, cmd(2, MoveAxis::Right, false, false))),
+            SeqDecision::Stale
+        );
+        assert_eq!(
+            owner.apply_input(InputUpdate::AbilityActivate {
+                connection_id: id,
+                request: AbilityActivateRequest {
+                    seq: 2,
+                    input_epoch: 0,
+                    input_sequence: 2,
+                    ability_id: purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE,
+                    selected: None,
+                },
+            }),
+            SeqDecision::Stale
+        );
+        owner.simulate_tick(tick_dt());
+        assert_eq!(horizontal(&owner, id), held);
+        assert!(owner.world().player_dash_of(actor).is_none());
+        assert!(
+            owner
+                .world()
+                .ability_granted(actor, purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE),
+            "the old World grant still exists while the retry is blocked"
+        );
+        second_reply
+            .send(Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: Vec::new(),
+            }))
+            .unwrap();
+        match life_rx.recv().await.expect("stored result") {
+            LifecycleCmd::SettleDurable { token: settled, result } => {
+                assert_eq!(settled, token);
+                owner.settle_durable(settled, result);
+            }
+            _ => panic!("unexpected lifecycle event"),
+        }
+        assert!(owner.world().inventory_contains(actor, item));
+        assert!(
+            owner
+                .world()
+                .equipped_instance(actor, purgatory_simulation::EquipmentSlot::Weapon)
+                .is_none()
+        );
+        assert!(owner.take_durable_commits().is_empty());
+        assert_eq!(
+            owner.apply_input(command_update(id, cmd(2, MoveAxis::Right, false, false))),
+            SeqDecision::Accept,
+            "a definite stored result resumes control"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_durable_commits_stops_unlanded_strike_after_first_unknown() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(192);
+        enter_leased(&mut owner, id, 192);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        owner.lease_for_test(id, CharacterId::from_raw(192), 1, "dev.local", 1, &[item]);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        let dummy = arm_strike_for_next_tick(&mut owner, id);
+        let (persist, mut calls) =
+            super::super::persist::PersistenceHandle::scripted_durable_for_test();
+        let (tx, mut life_rx, _input_rx) = gameplay_channels(8, 8);
+        super::super::spawn_durable_commits(&mut owner, &persist, &tx);
+        let (first, reply) = calls.recv().await;
+        reply
+            .send(Err(PersistError::storage(
+                "commit outcome unknown: reply was not observed",
+            )))
+            .unwrap();
+        match tokio::time::timeout(std::time::Duration::from_millis(300), life_rx.recv())
+            .await
+            .expect("first unknown before blocked retry")
+            .expect("lifecycle event")
+        {
+            LifecycleCmd::SettleDurable { token, result } => owner.settle_durable(token, result),
+            _ => panic!("unexpected lifecycle event"),
+        }
+        super::super::spawn_durable_commits(&mut owner, &persist, &tx);
+        let (second, _blocked_reply) = calls.recv().await;
+        assert_eq!(second.key, first.key);
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            owner.world().health_of(dummy).unwrap().current,
+            10.0,
+            "a strike due on the first uncertain tick must not land"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn unknown_commit_blocks_control_until_the_stored_key_is_applied() {
         let mut owner = GameplayOwner::new();

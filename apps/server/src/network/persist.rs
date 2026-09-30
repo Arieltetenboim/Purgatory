@@ -361,7 +361,41 @@ pub struct PersistenceHandle {
     shared: Arc<SharedSaveState>,
 }
 
+/// Script replies at the persistence-worker queue boundary while exercising
+/// the real connection-side durable submission task.
+#[cfg(test)]
+pub struct ScriptedDurableCalls {
+    rx: tokio::sync::mpsc::Receiver<PersistCmd>,
+}
+
+#[cfg(test)]
+impl ScriptedDurableCalls {
+    pub async fn recv(
+        &mut self,
+    ) -> (
+        DurableCommand,
+        tokio::sync::oneshot::Sender<Result<DurableCommandResult, PersistError>>,
+    ) {
+        match self.rx.recv().await.expect("durable submission") {
+            PersistCmd::CommitDurable { command, reply, .. } => (command, reply),
+            _ => panic!("unexpected persistence command"),
+        }
+    }
+}
+
 impl PersistenceHandle {
+    #[cfg(test)]
+    pub fn scripted_durable_for_test() -> (Self, ScriptedDurableCalls) {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        (
+            Self {
+                tx,
+                shared: Arc::new(SharedSaveState::default()),
+            },
+            ScriptedDurableCalls { rx },
+        )
+    }
+
     /// Pre-cutover file writer. Tests use this so an ambient database URL cannot
     /// redirect them onto a developer database. The server binary uses
     /// [`Self::spawn_from_env`].
