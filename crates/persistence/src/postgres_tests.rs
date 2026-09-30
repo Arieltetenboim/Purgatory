@@ -16,9 +16,10 @@ use purgatory_common::{CharacterId, ContentId, DevLogin, ItemInstanceId, Restore
 
 use crate::postgres::{self, PostgresSettings};
 use crate::{
-    CharacterItemLocation, DurableCommand, DurableContentRules, DurableEquipmentSlot,
-    IDENTITY_FILE_NAME, ItemContentRule, ItemOwner, LearnedAbilityWrite, LiveDestination, MoveItem,
-    NarrativeWrite, PersistError, PersistenceService, PlaceNewItem,
+    ChannelClaim, CharacterItemLocation, DurableCommand, DurableContentRules, DurableEquipmentSlot,
+    IDENTITY_FILE_NAME, ItemContentRule, ItemOwner, LearnedAbilityWrite, LeaseAuthority,
+    LeaseBarrier, LiveDestination, MoveItem, NarrativeWrite, PersistError, PersistenceService,
+    PersistentCharacterSnapshot, PlaceNewItem, SessionAdmission,
 };
 
 static DB_LOCK: Mutex<()> = Mutex::new(());
@@ -215,6 +216,7 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
             })
             .unwrap();
         let item_id = minted.minted_item_ids[0];
+        service.claim_channel(0, None).unwrap();
         service
             .commit_durable(&DurableCommand {
                 key: "drop".into(),
@@ -242,6 +244,11 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
             .unwrap();
         drop(service);
         let mut service = open(dir, settings);
+        if let crate::ChannelClaim::Busy { generation, .. } =
+            service.claim_channel(0, None).unwrap()
+        {
+            service.remember_channel_for_test(0, generation);
+        }
         let retired = service.item(item_id).unwrap().unwrap();
         assert_eq!(retired.owner, ItemOwner::Retired);
         let again = service
@@ -519,6 +526,7 @@ fn representative_command_workload_is_measured_not_a_capacity_claim() {
         let started = Instant::now();
         let mut revision = 1u64;
         let mut seen = BTreeSet::new();
+        service.claim_channel(0, None).unwrap();
         for index in 0..cycles {
             let minted = service
                 .commit_durable(&DurableCommand {
@@ -1093,5 +1101,714 @@ fn unusable_connection_at_the_commit_reply_stays_unknown_until_retry() {
             postgres::count_table(settings, "item_instances").unwrap(),
             1
         );
+    });
+}
+
+fn granted(admission: SessionAdmission) -> (LeaseAuthority, crate::OwnedRestore) {
+    match admission {
+        SessionAdmission::Granted {
+            authority: Some(authority),
+            restore,
+        } => (authority, *restore),
+        other => panic!("expected a granted lease, got {other:?}"),
+    }
+}
+
+fn mint(id: CharacterId, revision: u64, key: &str) -> DurableCommand {
+    DurableCommand {
+        key: key.into(),
+        expected_revisions: vec![(id, revision)],
+        place_new: vec![place(id, 0)],
+        moves: Vec::new(),
+        retire: Vec::new(),
+        narrative: Vec::new(),
+        learned: Vec::new(),
+    }
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn one_user_has_one_live_character_across_connections() {
+    with_db(|dir, settings| {
+        let mut holder = open(dir, settings);
+        let mut other = open(dir, settings);
+        let alice = login("alice");
+        let bob = login("bob");
+        let alpha = holder.create_character(&alice, "Alpha").unwrap();
+        let beta = holder.create_character(&alice, "Beta").unwrap();
+        let outsider = holder.create_character(&bob, "Other").unwrap();
+        let started = Instant::now();
+        let (alpha_lease, _) = granted(holder.admit(&alice, alpha.character_id).unwrap());
+        eprintln!("12B_LIFECYCLE admit_us={}", started.elapsed().as_micros());
+        assert!(matches!(
+            other.admit(&alice, beta.character_id).unwrap(),
+            SessionAdmission::Held
+        ));
+        assert!(matches!(
+            other.admit(&alice, alpha.character_id).unwrap(),
+            SessionAdmission::Held
+        ));
+        let (bob_lease, _) = granted(other.admit(&bob, outsider.character_id).unwrap());
+        assert_ne!(alpha_lease.login, bob_lease.login);
+        holder.release_lease(&alpha_lease).unwrap();
+        let (beta_lease, _) = granted(other.admit(&alice, beta.character_id).unwrap());
+        assert_eq!(beta_lease.character_id, beta.character_id);
+        assert!(beta_lease.generation > alpha_lease.generation);
+        other.expire_lease_for_test(&alice).unwrap();
+        let (after_expiry, _) = granted(holder.admit(&alice, alpha.character_id).unwrap());
+        assert_eq!(after_expiry.character_id, alpha.character_id);
+        assert!(after_expiry.generation > beta_lease.generation);
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn stale_generation_cannot_renew_release_commit_or_save() {
+    with_db(|dir, settings| {
+        let mut holder = open(dir, settings);
+        let mut rival = open(dir, settings);
+        let alice = login("alice");
+        let entry = holder.create_character(&alice, "Alpha").unwrap();
+        let (lease, restore) = granted(holder.admit(&alice, entry.character_id).unwrap());
+        let (next, _) = holder.supersede(&lease).unwrap();
+        assert!(matches!(
+            rival.renew_lease(&lease),
+            Err(PersistError::LeaseLost)
+        ));
+        assert!(matches!(
+            rival.release_lease(&lease),
+            Err(PersistError::LeaseLost)
+        ));
+        let err = holder
+            .commit_durable_leased(&mint(entry.character_id, 1, "stale"), Some(&lease))
+            .unwrap_err();
+        assert!(matches!(err, PersistError::LeaseLost), "{err}");
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            0
+        );
+        let mut snapshot = PersistentCharacterSnapshot::from_character(&restore.character);
+        snapshot.persistence_revision = restore.character.persistence_revision + 1;
+        snapshot.restore.point_id = "moved".into();
+        assert!(matches!(
+            holder.save_snapshot_leased(snapshot, Some(&lease)),
+            Err(PersistError::LeaseLost)
+        ));
+        let committed = holder
+            .commit_durable_leased(&mint(entry.character_id, 1, "fresh"), Some(&next))
+            .unwrap();
+        assert_eq!(committed.revisions, vec![(entry.character_id, 2)]);
+        let retry = rival
+            .commit_durable_leased(&mint(entry.character_id, 1, "fresh"), Some(&lease))
+            .unwrap();
+        assert_eq!(retry, committed);
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn superseded_generation_rejects_a_command_that_was_waiting_on_the_lock() {
+    with_db(|dir, settings| {
+        let mut holder = open(dir, settings);
+        let alice = login("alice");
+        let entry = holder.create_character(&alice, "Alpha").unwrap();
+        let (lease, _) = granted(holder.admit(&alice, entry.character_id).unwrap());
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        holder.set_lease_barrier(LeaseBarrier {
+            entered: entered_tx,
+            release: release_rx,
+        });
+        let old = lease.clone();
+        let character_id = entry.character_id;
+        let current = lease;
+        let locking =
+            std::thread::spawn(move || holder.supersede(&current).map(|(next, _)| (holder, next)));
+        entered_rx.recv().expect("supersede reached the lease lock");
+        let waiter_dir = dir.to_path_buf();
+        let waiter_settings = settings.clone();
+        let waiting = std::thread::spawn(move || {
+            let mut service = open(&waiter_dir, &waiter_settings);
+            service.commit_durable_leased(&mint(character_id, 1, "queued"), Some(&old))
+        });
+        let mut observer = open(dir, settings);
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while observer.sessions_waiting_on_a_lock().unwrap() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "queued command did not wait on the lease"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        release_tx.send(()).unwrap();
+        let (mut holder, next) = locking.join().unwrap().unwrap();
+        let err = waiting.join().unwrap().unwrap_err();
+        assert!(matches!(err, PersistError::LeaseLost), "{err}");
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            0
+        );
+        holder
+            .commit_durable_leased(&mint(character_id, 1, "after"), Some(&next))
+            .unwrap();
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn admit_restores_owned_items_facts_and_grants_without_runtime_ids() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let missing = CharacterId::from_raw(99);
+        assert!(matches!(
+            service.admit(&alice, missing).unwrap(),
+            SessionAdmission::NotOwned
+        ));
+        let entry = service.create_character(&alice, "Alpha").unwrap();
+        let id = entry.character_id;
+        service
+            .commit_durable(&DurableCommand {
+                key: "bundle".into(),
+                expected_revisions: vec![(id, 1)],
+                place_new: vec![place(id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: vec![
+                    NarrativeWrite::SetFact {
+                        character_id: id,
+                        fact_key: "met.inn".into(),
+                        value: true,
+                    },
+                    NarrativeWrite::MarkNpcMet {
+                        character_id: id,
+                        npc_authored: "npc.inn".into(),
+                    },
+                    NarrativeWrite::MarkDialogueHeard {
+                        character_id: id,
+                        npc_content_id: ContentId::from_raw(20_001),
+                        beat_id: "intro".into(),
+                    },
+                ],
+                learned: vec![LearnedAbilityWrite {
+                    character_id: id,
+                    ability_content_id: ContentId::from_raw(40_001),
+                }],
+            })
+            .unwrap();
+        let (lease, restore) = granted(service.admit(&alice, id).unwrap());
+        assert_eq!(restore.character.character_id, id);
+        assert_eq!(restore.character.persistence_revision, 2);
+        assert_eq!(restore.items.len(), 1);
+        assert!(restore.items[0].item_instance_id.raw() != 0);
+        assert!(
+            restore
+                .narrative
+                .facts
+                .get("met.inn")
+                .copied()
+                .unwrap_or(false)
+        );
+        assert!(restore.narrative.npcs_met.contains("npc.inn"));
+        assert!(
+            restore
+                .narrative
+                .dialogue_heard
+                .contains(&(20_001, "intro".into()))
+        );
+        assert!(restore.narrative.learned_abilities.contains(&40_001));
+        let mut snapshot = PersistentCharacterSnapshot::from_character(&restore.character);
+        snapshot.restore.point_id = "after-command".into();
+        service
+            .save_snapshot_leased(snapshot.clone(), Some(&lease))
+            .unwrap();
+        stale_snapshot(&mut service, &lease, &restore, 2, "older");
+        let loaded = service.load_owned_character(&alice, id).unwrap().unwrap();
+        assert_eq!(loaded.restore.point_id, "after-command");
+        assert!(matches!(
+            service.admit(&login("bob"), id).unwrap(),
+            SessionAdmission::NotOwned
+        ));
+        service.release_lease(&lease).unwrap();
+        let (_, again) = granted(service.admit(&alice, id).unwrap());
+        assert_eq!(again.character.restore.point_id, "after-command");
+        assert_eq!(again.items.len(), 1);
+        let _ = snapshot;
+    });
+}
+
+fn stale_snapshot(
+    service: &mut PersistenceService,
+    lease: &LeaseAuthority,
+    restore: &crate::OwnedRestore,
+    revision: u64,
+    point: &str,
+) {
+    let mut stale = PersistentCharacterSnapshot::from_character(&restore.character);
+    stale.persistence_revision = revision;
+    stale.restore.point_id = point.into();
+    service.save_snapshot_leased(stale, Some(lease)).unwrap();
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn clock_timestamp_moves_while_now_stays_at_transaction_start() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let (now_fixed, clock_moved) = service.clock_moved_inside_one_statement().unwrap();
+        assert!(now_fixed, "now() must stay at transaction start");
+        assert!(
+            clock_moved,
+            "clock_timestamp() must move during the statement"
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn renewal_extends_a_live_lease_and_a_stale_one_cannot() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alpha").unwrap();
+        let (lease, _) = granted(service.admit(&alice, entry.character_id).unwrap());
+        service.renew_lease(&lease).unwrap();
+        assert!(matches!(
+            open(dir, settings)
+                .admit(&alice, entry.character_id)
+                .unwrap(),
+            SessionAdmission::Held
+        ));
+        service.expire_lease_for_test(&alice).unwrap();
+        assert!(matches!(
+            service.renew_lease(&lease),
+            Err(PersistError::LeaseLost)
+        ));
+    });
+}
+
+fn drop_item(
+    service: &mut PersistenceService,
+    id: CharacterId,
+    item: ItemInstanceId,
+    revision: u64,
+) {
+    service
+        .commit_durable(&DurableCommand {
+            key: format!("ground-{revision}"),
+            expected_revisions: vec![(id, revision)],
+            place_new: Vec::new(),
+            moves: vec![MoveItem {
+                item_instance_id: item,
+                to: LiveDestination::Ground,
+            }],
+            retire: Vec::new(),
+            narrative: Vec::new(),
+            learned: Vec::new(),
+        })
+        .unwrap();
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn ground_retirement_is_scoped_idempotent_and_does_not_reuse_ids() {
+    with_db(|dir, settings| {
+        let mut channel_a = open(dir, settings);
+        let mut channel_b = open(dir, settings);
+        let alice = login("alice");
+        let entry = channel_a.create_character(&alice, "Alpha").unwrap();
+        let id = entry.character_id;
+        let ChannelClaim::Claimed {
+            generation: gen_a, ..
+        } = channel_a.claim_channel(1, None).unwrap()
+        else {
+            panic!("channel 1 should be claimed");
+        };
+        let ChannelClaim::Claimed {
+            generation: gen_b, ..
+        } = channel_b.claim_channel(2, None).unwrap()
+        else {
+            panic!("channel 2 should be claimed");
+        };
+        let first = channel_a
+            .commit_durable(&mint(id, 1, "a1"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut channel_a, id, first, 2);
+        let second = channel_a
+            .commit_durable(&mint(id, 3, "a2"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut channel_a, id, second, 4);
+        let kept = channel_b
+            .commit_durable(&mint(id, 5, "b1"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut channel_b, id, kept, 6);
+        assert_eq!(
+            channel_a.item(first).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+        channel_a.expire_channel_for_test(1).unwrap();
+        let ChannelClaim::Claimed {
+            generation: gen_next,
+            retired_ground,
+            ..
+        } = channel_a.claim_channel(1, Some(1)).unwrap()
+        else {
+            panic!("expired channel should be claimable");
+        };
+        assert!(gen_next > gen_a);
+        assert_eq!(retired_ground, 1);
+        let rest = channel_a.sweep_channel(1, gen_next, None).unwrap();
+        assert_eq!(rest, 1);
+        assert_eq!(channel_a.sweep_channel(1, gen_next, None).unwrap(), 0);
+        assert_eq!(
+            channel_a.item(first).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        assert_eq!(
+            channel_a.item(second).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        assert_eq!(
+            channel_b.item(kept).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+        assert!(matches!(
+            channel_a.sweep_channel(1, gen_a, None),
+            Err(PersistError::Conflict { .. })
+        ));
+        channel_a.remember_channel_for_test(1, gen_a);
+        let stale = channel_a.commit_durable(&DurableCommand {
+            key: "stale-write".into(),
+            expected_revisions: vec![(id, 7)],
+            place_new: Vec::new(),
+            moves: vec![MoveItem {
+                item_instance_id: kept,
+                to: LiveDestination::Ground,
+            }],
+            retire: Vec::new(),
+            narrative: Vec::new(),
+            learned: Vec::new(),
+        });
+        assert!(
+            matches!(stale, Err(PersistError::Conflict { .. })),
+            "{stale:?}"
+        );
+        assert_eq!(
+            channel_b.item(kept).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+        let _ = gen_b;
+        let fresh = channel_b
+            .commit_durable(&mint(id, 7, "fresh-id"))
+            .unwrap()
+            .minted_item_ids[0];
+        assert_ne!(fresh, first);
+        assert_ne!(fresh, second);
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn clean_channel_release_keeps_generation_monotonic_and_retires_stamped_ground() {
+    with_db(|dir, settings| {
+        let mut holder = open(dir, settings);
+        let alice = login("alice");
+        let id = holder
+            .create_character(&alice, "Alpha")
+            .unwrap()
+            .character_id;
+        let ChannelClaim::Claimed {
+            generation: first, ..
+        } = holder.claim_channel(0, None).unwrap()
+        else {
+            panic!("channel 0 should be claimed");
+        };
+        let item = holder
+            .commit_durable(&mint(id, 1, "stamped"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut holder, id, item, 2);
+        holder.release_channel(0, first).unwrap();
+        assert!(matches!(
+            holder.renew_channel(0, first),
+            Err(PersistError::LeaseLost)
+        ));
+        assert!(matches!(
+            holder.release_channel(0, first),
+            Err(PersistError::LeaseLost)
+        ));
+        drop(holder);
+
+        let mut restarted = open(dir, settings);
+        let ChannelClaim::Claimed {
+            generation: second,
+            retired_ground,
+            ..
+        } = restarted.claim_channel(0, None).unwrap()
+        else {
+            panic!("restart after clean release should claim");
+        };
+        assert!(
+            second > first,
+            "generation reused after clean release: {first} then {second}"
+        );
+        assert!(retired_ground >= 1);
+        assert_eq!(
+            restarted.item(item).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        let mut stale = open(dir, settings);
+        assert!(matches!(
+            stale.renew_channel(0, first),
+            Err(PersistError::LeaseLost)
+        ));
+        assert!(matches!(
+            stale.release_channel(0, first),
+            Err(PersistError::LeaseLost)
+        ));
+
+        drop(restarted);
+        let mut crashed = open(dir, settings);
+        assert!(matches!(
+            crashed.claim_channel(0, None).unwrap(),
+            ChannelClaim::Busy { generation, .. } if generation == second
+        ));
+        crashed.expire_channel_for_test(0).unwrap();
+        let ChannelClaim::Claimed {
+            generation: third, ..
+        } = crashed.claim_channel(0, None).unwrap()
+        else {
+            panic!("expired channel should be claimable");
+        };
+        assert!(third > second);
+        assert!(matches!(
+            crashed.renew_channel(0, second),
+            Err(PersistError::LeaseLost)
+        ));
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn unscoped_ground_is_retired_before_admission_while_another_channel_is_live() {
+    with_db(|dir, settings| {
+        let mut live_a = open(dir, settings);
+        let mut live_b = open(dir, settings);
+        let mut starter = open(dir, settings);
+        let alice = login("alice");
+        let id = live_a
+            .create_character(&alice, "Alpha")
+            .unwrap()
+            .character_id;
+        let ChannelClaim::Claimed {
+            generation: gen_a, ..
+        } = live_a.claim_channel(1, None).unwrap()
+        else {
+            panic!("channel 1 should be claimed");
+        };
+        let ChannelClaim::Claimed {
+            generation: gen_b, ..
+        } = live_b.claim_channel(2, None).unwrap()
+        else {
+            panic!("channel 2 should be claimed");
+        };
+        let kept_b = live_b
+            .commit_durable(&mint(id, 1, "kept-b"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut live_b, id, kept_b, 2);
+        let kept_a = live_a
+            .commit_durable(&mint(id, 3, "kept-a"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut live_a, id, kept_a, 4);
+        let old = live_a
+            .commit_durable(&mint(id, 5, "unscoped"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut live_a, id, old, 6);
+        live_a.unstamp_ground_for_test(old).unwrap();
+        assert_eq!(live_a.item(old).unwrap().unwrap().owner, ItemOwner::Ground);
+
+        let ChannelClaim::Claimed { retired_ground, .. } = starter.claim_channel(0, None).unwrap()
+        else {
+            panic!("startup claim should proceed while other channels are live");
+        };
+        assert!(
+            retired_ground >= 1,
+            "unscoped ground was not retired before admission"
+        );
+        assert_eq!(
+            starter.item(old).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        assert_eq!(
+            live_a.item(kept_a).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+        assert_eq!(
+            live_b.item(kept_b).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+        assert!(matches!(
+            starter.admit(&alice, id).unwrap(),
+            SessionAdmission::Granted { .. }
+        ));
+        assert_eq!(
+            starter.item(old).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        assert_eq!(
+            live_b.item(kept_b).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+        live_a.renew_channel(1, gen_a).unwrap();
+        live_b.renew_channel(2, gen_b).unwrap();
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn process_exit_leaves_a_committed_lease_until_expiry() {
+    if std::env::var("P12B_CRASH_CHILD").ok().as_deref() == Some("1") {
+        crash_child_admits_and_aborts();
+        return;
+    }
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alpha").unwrap();
+        drop(service);
+        let ready = dir.join("crash-ready");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "postgres_tests::process_exit_leaves_a_committed_lease_until_expiry",
+                "--exact",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("P12B_CRASH_CHILD", "1")
+            .env(
+                "PURGATORY_TEST_DATABASE_URL",
+                std::env::var("PURGATORY_TEST_DATABASE_URL").unwrap(),
+            )
+            .env("P12B_SCHEMA", &settings.schema)
+            .env("P12B_DIR", dir)
+            .env("P12B_CHARACTER", entry.character_id.raw().to_string())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        while !ready.exists() {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("child exited before admit: {status}");
+            }
+            assert!(Instant::now() < deadline, "child did not admit");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let status = child.wait().unwrap();
+        assert!(
+            !status.success(),
+            "child must abort after the commit; status {status}. This proves a committed lease survives process death. It does not prove durability across hardware power loss."
+        );
+        let mut survivor = open(dir, settings);
+        assert!(matches!(
+            survivor.admit(&alice, entry.character_id).unwrap(),
+            SessionAdmission::Held
+        ));
+        survivor.expire_lease_for_test(&alice).unwrap();
+        let (lease, _) = granted(survivor.admit(&alice, entry.character_id).unwrap());
+        assert!(lease.generation > 1);
+    });
+}
+
+fn crash_child_admits_and_aborts() {
+    let settings = PostgresSettings::for_tests(
+        std::env::var("PURGATORY_TEST_DATABASE_URL").unwrap(),
+        std::env::var("P12B_SCHEMA").unwrap(),
+    )
+    .unwrap();
+    let dir = PathBuf::from(std::env::var("P12B_DIR").unwrap());
+    let character =
+        CharacterId::from_raw(std::env::var("P12B_CHARACTER").unwrap().parse().unwrap());
+    let mut service = open(&dir, &settings);
+    let _ = granted(
+        service
+            .admit(&login("alice"), character)
+            .expect("child admit"),
+    );
+    std::fs::write(dir.join("crash-ready"), b"ready").unwrap();
+    std::process::abort();
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn randomized_lease_steps_keep_one_authority() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let alpha = service.create_character(&alice, "Alpha").unwrap();
+        let beta = service.create_character(&alice, "Beta").unwrap();
+        let mut state = 0x12B_u64;
+        let mut authority: Option<LeaseAuthority> = None;
+        for _ in 0..24 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            match state % 5 {
+                0 | 1 => {
+                    let id = if state.is_multiple_of(2) {
+                        alpha.character_id
+                    } else {
+                        beta.character_id
+                    };
+                    match service.admit(&alice, id).unwrap() {
+                        SessionAdmission::Granted {
+                            authority: Some(next),
+                            ..
+                        } => {
+                            if let Some(previous) = &authority {
+                                assert!(next.generation > previous.generation);
+                            }
+                            authority = Some(next);
+                        }
+                        SessionAdmission::Held => {
+                            assert!(authority.is_some());
+                        }
+                        SessionAdmission::NotOwned => panic!("owned character was refused"),
+                        SessionAdmission::Granted {
+                            authority: None, ..
+                        } => {
+                            panic!("postgres admit omitted the lease")
+                        }
+                    }
+                }
+                2 => {
+                    if let Some(current) = authority.clone()
+                        && service.renew_lease(&current).is_err()
+                    {
+                        authority = None;
+                    }
+                }
+                3 => {
+                    if let Some(current) = authority.take() {
+                        service.release_lease(&current).unwrap();
+                    }
+                }
+                _ => {
+                    if authority.is_some() {
+                        service.expire_lease_for_test(&alice).unwrap();
+                    }
+                }
+            }
+        }
     });
 }

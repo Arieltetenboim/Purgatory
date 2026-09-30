@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,6 +17,7 @@ use purgatory_persistence::{
 };
 
 enum PersistCmd {
+    #[allow(dead_code)]
     LoadOwned {
         login: DevLogin,
         character_id: purgatory_common::CharacterId,
@@ -50,10 +51,77 @@ enum PersistCmd {
         command: DurableCommand,
         reply: tokio::sync::oneshot::Sender<Result<DurableCommandResult, PersistError>>,
     },
-    Save(PersistentCharacterSnapshot),
-    Shutdown {
-        reply: tokio::sync::oneshot::Sender<()>,
+    Save {
+        snapshot: PersistentCharacterSnapshot,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
     },
+    SaveAwaited {
+        snapshot: PersistentCharacterSnapshot,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    Admit {
+        login: DevLogin,
+        character_id: purgatory_common::CharacterId,
+        reply: tokio::sync::oneshot::Sender<
+            Result<purgatory_persistence::SessionAdmission, PersistError>,
+        >,
+    },
+    Supersede {
+        authority: purgatory_persistence::LeaseAuthority,
+        reply: tokio::sync::oneshot::Sender<
+            Result<
+                (
+                    purgatory_persistence::LeaseAuthority,
+                    purgatory_persistence::OwnedRestore,
+                ),
+                PersistError,
+            >,
+        >,
+    },
+    RenewLease {
+        authority: purgatory_persistence::LeaseAuthority,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    ReleaseLease {
+        authority: purgatory_persistence::LeaseAuthority,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    ClaimChannel {
+        channel_id: i64,
+        reply:
+            tokio::sync::oneshot::Sender<Result<purgatory_persistence::ChannelClaim, PersistError>>,
+    },
+    RenewChannel {
+        channel_id: i64,
+        generation: u64,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    #[allow(dead_code)]
+    ReleaseChannel {
+        channel_id: i64,
+        generation: u64,
+        reply: tokio::sync::oneshot::Sender<Result<(), PersistError>>,
+    },
+    Shutdown {
+        channel: Option<(i64, u64)>,
+        reply: tokio::sync::oneshot::Sender<PersistenceShutdown>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PersistenceShutdown {
+    /// The worker finished the queued snapshots. `save_failures` counts writes
+    /// that did not commit. Zero failures is still not a client-visible "saved"
+    /// acknowledgement by itself.
+    Drained {
+        save_failures: u64,
+    },
+    /// The drain exceeded its bound. Snapshots still queued were not confirmed.
+    TimedOut {
+        save_failures: u64,
+    },
+    WorkerClosed,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -94,8 +162,178 @@ impl PersistenceDiagnostics {
 
 #[derive(Default)]
 struct SharedSaveState {
-    latest: Mutex<HashMap<purgatory_common::CharacterId, PersistentCharacterSnapshot>>,
+    latest: Mutex<
+        HashMap<
+            purgatory_common::CharacterId,
+            (
+                PersistentCharacterSnapshot,
+                Option<purgatory_persistence::LeaseAuthority>,
+            ),
+        >,
+    >,
     diagnostics: PersistenceDiagnostics,
+    /// Set when shutdown exceeds its deadline. After a check observes this
+    /// flag, the worker does not start another queued save, another deferred
+    /// write, or channel release. `flush_deferred_latest` checks before each
+    /// deferred write, and `Shutdown` checks again after that flush before
+    /// channel release. A write that already passed its check may finish.
+    /// `TimedOut` does not confirm it. The flag can become true between
+    /// checks, so that already-admitted write may also finish.
+    stop_writer: AtomicBool,
+    /// Blocks the worker thread inside one command, the way a stalled database
+    /// call does. The queue can fill while this receiver is held.
+    #[cfg(test)]
+    worker_stall: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    #[cfg(test)]
+    stall_entered: AtomicBool,
+    /// Pauses the first save drained inside `Shutdown`, after that save has
+    /// been taken from the queue and before its write returns.
+    #[cfg(test)]
+    shutdown_save_stall: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    #[cfg(test)]
+    shutdown_save_stall_entered: AtomicBool,
+    /// Pauses the next deferred write inside `flush_deferred_latest`.
+    #[cfg(test)]
+    deferred_save_stall: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    #[cfg(test)]
+    deferred_save_stall_entered: AtomicBool,
+    /// Pauses the next ordinary `Save` after that command was admitted.
+    #[cfg(test)]
+    command_save_stall: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    #[cfg(test)]
+    command_save_stall_entered: AtomicBool,
+    #[cfg(test)]
+    shutdown_enqueued: AtomicBool,
+    #[cfg(test)]
+    channel_release_calls: AtomicU64,
+    #[cfg(test)]
+    release_calls: AtomicU64,
+    #[cfg(test)]
+    writer_finished: AtomicBool,
+    /// Async barrier after the worker admit reply, so `admit().await` stays
+    /// pending without blocking the persistence thread.
+    #[cfg(test)]
+    admit_hold: Mutex<Option<CommandHoldState>>,
+    #[cfg(test)]
+    renew_channel_hold: Mutex<Option<CommandHoldState>>,
+    #[cfg(test)]
+    scripted_admit: Mutex<Option<purgatory_persistence::SessionAdmission>>,
+}
+
+#[cfg(test)]
+fn take_scripted_admit(
+    shared: &SharedSaveState,
+) -> Option<purgatory_persistence::SessionAdmission> {
+    shared
+        .scripted_admit
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .take()
+}
+
+#[cfg(test)]
+struct CommandHoldState {
+    entered: Arc<AtomicBool>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+pub struct CommandHold {
+    entered: Arc<AtomicBool>,
+    release_tx: tokio::sync::oneshot::Sender<()>,
+}
+
+#[cfg(test)]
+pub struct WorkerStall {
+    shared: Arc<SharedSaveState>,
+    release_tx: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+impl WorkerStall {
+    pub fn entered(&self) -> bool {
+        self.shared.stall_entered.load(Ordering::SeqCst)
+    }
+
+    pub fn release(self) {
+        let _ = self.release_tx.send(());
+    }
+}
+
+#[cfg(test)]
+enum PauseKind {
+    Shutdown,
+    Deferred,
+    Command,
+}
+
+#[cfg(test)]
+pub struct ShutdownSaveStall {
+    shared: Arc<SharedSaveState>,
+    kind: PauseKind,
+    release_tx: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+fn arm_pause(
+    shared: &Arc<SharedSaveState>,
+    slot: &Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    kind: PauseKind,
+) -> ShutdownSaveStall {
+    let (release_tx, release) = std::sync::mpsc::channel();
+    *slot.lock().unwrap_or_else(|err| err.into_inner()) = Some(release);
+    ShutdownSaveStall {
+        shared: Arc::clone(shared),
+        kind,
+        release_tx,
+    }
+}
+
+#[cfg(test)]
+impl ShutdownSaveStall {
+    pub fn entered(&self) -> bool {
+        let flag = match self.kind {
+            PauseKind::Shutdown => &self.shared.shutdown_save_stall_entered,
+            PauseKind::Deferred => &self.shared.deferred_save_stall_entered,
+            PauseKind::Command => &self.shared.command_save_stall_entered,
+        };
+        flag.load(Ordering::SeqCst)
+    }
+
+    pub fn release(self) {
+        let _ = self.release_tx.send(());
+    }
+}
+
+#[cfg(test)]
+impl CommandHold {
+    fn pair() -> (Self, CommandHoldState) {
+        let (release_tx, release) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                entered: entered.clone(),
+                release_tx,
+            },
+            CommandHoldState { entered, release },
+        )
+    }
+
+    pub fn entered(&self) -> bool {
+        self.entered.load(Ordering::SeqCst)
+    }
+
+    pub fn release(self) {
+        let _ = self.release_tx.send(());
+    }
+}
+
+#[cfg(test)]
+async fn wait_hold(hold: Option<CommandHoldState>) {
+    if let Some(hold) = hold {
+        hold.entered.store(true, Ordering::SeqCst);
+        let _ = hold.release.await;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,8 +374,28 @@ impl PersistenceHandle {
         let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let shared = Arc::new(SharedSaveState::default());
         let worker_shared = shared.clone();
-        tokio::task::spawn_blocking(move || {
+        std::thread::Builder::new()
+            .name("purgatory-persist".into())
+            .spawn(move || {
             while let Some(cmd) = rx.blocking_recv() {
+                if worker_shared.stop_writer.load(Ordering::SeqCst) {
+                    break;
+                }
+                #[cfg(test)]
+                {
+                    let stall = worker_shared
+                        .worker_stall
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .take();
+                    if let Some(stall) = stall {
+                        worker_shared.stall_entered.store(true, Ordering::SeqCst);
+                        let _ = stall.recv();
+                    }
+                }
+                if worker_shared.stop_writer.load(Ordering::SeqCst) {
+                    break;
+                }
                 match cmd {
                     PersistCmd::LoadOwned {
                         login,
@@ -189,24 +447,129 @@ impl PersistenceHandle {
                     PersistCmd::CommitDurable { command, reply } => {
                         let _ = reply.send(service.commit_durable(&command));
                     }
-                    PersistCmd::Save(snapshot) => {
-                        save_snapshot_observed(&mut service, &worker_shared, snapshot);
+                    PersistCmd::Save { snapshot, lease } => {
+                        #[cfg(test)]
+                        pause_receiver(
+                            &worker_shared.command_save_stall,
+                            &worker_shared.command_save_stall_entered,
+                        );
+                        save_snapshot_observed(&mut service, &worker_shared, snapshot, lease);
                     }
-                    PersistCmd::Shutdown { reply } => {
+                    PersistCmd::SaveAwaited {
+                        snapshot,
+                        lease,
+                        reply,
+                    } => {
+                        let result = service.save_snapshot_leased(snapshot, lease.as_ref());
+                        if result.is_err() {
+                            worker_shared
+                                .diagnostics
+                                .save_failures
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        let _ = reply.send(result);
+                    }
+                    PersistCmd::Admit {
+                        login,
+                        character_id,
+                        reply,
+                    } => {
+                        #[cfg(test)]
+                        let scripted = take_scripted_admit(&worker_shared);
+                        #[cfg(test)]
+                        let result = match scripted {
+                            Some(admission) => Ok(admission),
+                            None => service.admit(&login, character_id),
+                        };
+                        #[cfg(not(test))]
+                        let result = service.admit(&login, character_id);
+                        let _ = reply.send(result);
+                    }
+                    PersistCmd::Supersede { authority, reply } => {
+                        let _ = reply.send(service.supersede(&authority));
+                    }
+                    PersistCmd::RenewLease { authority, reply } => {
+                        let _ = reply.send(service.renew_lease(&authority));
+                    }
+                    PersistCmd::ReleaseLease { authority, reply } => {
+                        #[cfg(test)]
+                        {
+                            worker_shared.release_calls.fetch_add(1, Ordering::SeqCst);
+                        }
+                        let _ = reply.send(service.release_lease(&authority));
+                    }
+                    PersistCmd::ClaimChannel { channel_id, reply } => {
+                        let _ = reply.send(service.claim_channel(channel_id, None));
+                    }
+                    PersistCmd::RenewChannel {
+                        channel_id,
+                        generation,
+                        reply,
+                    } => {
+                        let _ = reply.send(service.renew_channel(channel_id, generation));
+                    }
+                    PersistCmd::ReleaseChannel {
+                        channel_id,
+                        generation,
+                        reply,
+                    } => {
+                        let _ = reply.send(service.release_channel(channel_id, generation));
+                    }
+                    PersistCmd::Shutdown { channel, reply } => {
                         while let Ok(extra) = rx.try_recv() {
-                            if let PersistCmd::Save(snapshot) = extra {
-                                save_snapshot_observed(&mut service, &worker_shared, snapshot);
+                            if worker_shared.stop_writer.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            if let PersistCmd::Save { snapshot, lease } = extra {
+                                // The check above admitted this save. A timeout
+                                // that lands during the write still lets this
+                                // call finish; it does not admit the next one.
+                                #[cfg(test)]
+                                pause_shutdown_save(&worker_shared);
+                                save_snapshot_observed(
+                                    &mut service,
+                                    &worker_shared,
+                                    snapshot,
+                                    lease,
+                                );
                             }
                         }
-                        flush_deferred_latest(&mut service, &worker_shared);
-                        let _ = reply.send(());
+                        if !worker_shared.stop_writer.load(Ordering::SeqCst) {
+                            flush_deferred_latest(&mut service, &worker_shared);
+                        }
+                        if !worker_shared.stop_writer.load(Ordering::SeqCst) {
+                            if let Some((channel_id, generation)) = channel {
+                                #[cfg(test)]
+                                {
+                                    worker_shared
+                                        .channel_release_calls
+                                        .fetch_add(1, Ordering::SeqCst);
+                                }
+                                if let Err(err) = service.release_channel(channel_id, generation) {
+                                    eprintln!(
+                                        "PURGATORY channel release failed id={channel_id} generation={generation}: {err}"
+                                    );
+                                }
+                            }
+                            let _ = reply.send(PersistenceShutdown::Drained {
+                                save_failures: worker_shared
+                                    .diagnostics
+                                    .save_failures
+                                    .load(Ordering::Relaxed),
+                            });
+                        }
                         break;
                     }
                 }
                 flush_deferred_latest(&mut service, &worker_shared);
             }
-            flush_deferred_latest(&mut service, &worker_shared);
-        });
+            if !worker_shared.stop_writer.load(Ordering::SeqCst) {
+                flush_deferred_latest(&mut service, &worker_shared);
+            }
+            #[cfg(test)]
+            worker_shared.writer_finished.store(true, Ordering::SeqCst);
+        })
+            .map_err(|err| format!("persistence worker: {err}"))?;
         Ok(Self { tx, shared })
     }
 
@@ -223,6 +586,7 @@ impl PersistenceHandle {
         rx.await.map_err(|_| worker_closed())?
     }
 
+    #[allow(dead_code)]
     pub async fn load_owned_character(
         &self,
         login: DevLogin,
@@ -292,8 +656,18 @@ impl PersistenceHandle {
         rx.await.map_err(|_| worker_closed())?
     }
 
+    #[allow(dead_code)]
     pub fn try_save(&self, snapshot: PersistentCharacterSnapshot) -> SaveHandoff {
-        match self.tx.try_send(PersistCmd::Save(snapshot)) {
+        self.try_save_leased(snapshot, None)
+    }
+
+    /// Queue acceptance is not a durable save.
+    pub fn try_save_leased(
+        &self,
+        snapshot: PersistentCharacterSnapshot,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
+    ) -> SaveHandoff {
+        match self.tx.try_send(PersistCmd::Save { snapshot, lease }) {
             Ok(()) => {
                 self.shared
                     .diagnostics
@@ -301,7 +675,10 @@ impl PersistenceHandle {
                     .fetch_add(1, Ordering::Relaxed);
                 SaveHandoff::Accepted
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Full(PersistCmd::Save(snapshot))) => {
+            Err(tokio::sync::mpsc::error::TrySendError::Full(PersistCmd::Save {
+                snapshot,
+                lease,
+            })) => {
                 self.shared
                     .diagnostics
                     .queue_full
@@ -313,15 +690,15 @@ impl PersistenceHandle {
                     .unwrap_or_else(|err| err.into_inner());
                 match latest.entry(snapshot.character_id) {
                     std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(snapshot);
+                        entry.insert((snapshot, lease));
                         self.shared
                             .diagnostics
                             .deferred_latest
                             .fetch_add(1, Ordering::Relaxed);
                     }
                     std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        if snapshot.persistence_revision > entry.get().persistence_revision {
-                            entry.insert(snapshot);
+                        if snapshot.persistence_revision > entry.get().0.persistence_revision {
+                            entry.insert((snapshot, lease));
                             self.shared
                                 .diagnostics
                                 .coalesced_replaced
@@ -336,7 +713,7 @@ impl PersistenceHandle {
                 }
                 SaveHandoff::DeferredLatest
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(PersistCmd::Save(_))) => {
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(PersistCmd::Save { .. })) => {
                 self.shared
                     .diagnostics
                     .worker_closed
@@ -377,24 +754,317 @@ impl PersistenceHandle {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .get(&id)
-            .cloned()
+            .map(|(snapshot, _)| snapshot.clone())
     }
 
-    pub async fn shutdown(self, timeout: Duration) {
+    pub async fn save_leased(
+        &self,
+        snapshot: PersistentCharacterSnapshot,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
+    ) -> Result<(), PersistError> {
         let (reply, rx) = tokio::sync::oneshot::channel();
-        if self.tx.send(PersistCmd::Shutdown { reply }).await.is_err() {
-            return;
-        }
-        let _ = tokio::time::timeout(timeout, rx).await;
+        self.tx
+            .send(PersistCmd::SaveAwaited {
+                snapshot,
+                lease,
+                reply,
+            })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
     }
+
+    pub async fn admit(
+        &self,
+        login: DevLogin,
+        character_id: purgatory_common::CharacterId,
+    ) -> Result<purgatory_persistence::SessionAdmission, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::Admit {
+                login,
+                character_id,
+                reply,
+            })
+            .await
+            .map_err(|_| worker_closed())?;
+        let result = rx.await.map_err(|_| worker_closed())?;
+        #[cfg(test)]
+        {
+            let hold = self
+                .shared
+                .admit_hold
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            wait_hold(hold).await;
+        }
+        result
+    }
+
+    /// Hold the next `admit().await` after the worker has produced its reply.
+    #[cfg(test)]
+    pub fn hold_next_admit(&self) -> CommandHold {
+        let (hold, state) = CommandHold::pair();
+        *self
+            .shared
+            .admit_hold
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(state);
+        hold
+    }
+
+    /// Block the worker thread on its next command until [`WorkerStall::release`].
+    #[cfg(test)]
+    pub fn stall_next_deferred_save(&self) -> ShutdownSaveStall {
+        arm_pause(
+            &self.shared,
+            &self.shared.deferred_save_stall,
+            PauseKind::Deferred,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn stall_next_command_save(&self) -> ShutdownSaveStall {
+        arm_pause(
+            &self.shared,
+            &self.shared.command_save_stall,
+            PauseKind::Command,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn stall_next_shutdown_save(&self) -> ShutdownSaveStall {
+        arm_pause(
+            &self.shared,
+            &self.shared.shutdown_save_stall,
+            PauseKind::Shutdown,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn shutdown_enqueued_for_test(&self) -> bool {
+        self.shared.shutdown_enqueued.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub fn channel_release_calls_for_test(&self) -> u64 {
+        self.shared.channel_release_calls.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub fn defer_latest_for_test(&self, snapshot: PersistentCharacterSnapshot) {
+        self.shared
+            .latest
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(snapshot.character_id, (snapshot, None));
+    }
+
+    #[cfg(test)]
+    pub fn stall_next_command(&self) -> WorkerStall {
+        let (release_tx, release) = std::sync::mpsc::channel();
+        *self
+            .shared
+            .worker_stall
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(release);
+        WorkerStall {
+            shared: Arc::clone(&self.shared),
+            release_tx,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn release_calls_for_test(&self) -> u64 {
+        self.shared.release_calls.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub fn writer_finished_for_test(&self) -> bool {
+        self.shared.writer_finished.load(Ordering::SeqCst)
+    }
+
+    /// Replace the next admit result. File mode has no lease; tests that need
+    /// a character deadline install one here. The handoff after the reply is
+    /// still `activate_owned_character`.
+    #[cfg(test)]
+    pub fn script_next_admit(&self, admission: purgatory_persistence::SessionAdmission) {
+        *self
+            .shared
+            .scripted_admit
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(admission);
+    }
+
+    /// Hold the next channel renewal reply so the supervisor stays inside the
+    /// renewal future until the local deadline wins.
+    #[cfg(test)]
+    pub fn hold_next_channel_renewal(&self) -> CommandHold {
+        let (hold, state) = CommandHold::pair();
+        *self
+            .shared
+            .renew_channel_hold
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(state);
+        hold
+    }
+
+    pub async fn supersede(
+        &self,
+        authority: purgatory_persistence::LeaseAuthority,
+    ) -> Result<
+        (
+            purgatory_persistence::LeaseAuthority,
+            purgatory_persistence::OwnedRestore,
+        ),
+        PersistError,
+    > {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::Supersede { authority, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn renew_lease(
+        &self,
+        authority: purgatory_persistence::LeaseAuthority,
+    ) -> Result<(), PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::RenewLease { authority, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn release_lease(
+        &self,
+        authority: purgatory_persistence::LeaseAuthority,
+    ) -> Result<(), PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::ReleaseLease { authority, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn claim_channel(
+        &self,
+        channel_id: i64,
+    ) -> Result<purgatory_persistence::ChannelClaim, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::ClaimChannel { channel_id, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn renew_channel(
+        &self,
+        channel_id: i64,
+        generation: u64,
+    ) -> Result<(), PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::RenewChannel {
+                channel_id,
+                generation,
+                reply,
+            })
+            .await
+            .map_err(|_| worker_closed())?;
+        let result = rx.await.map_err(|_| worker_closed())?;
+        #[cfg(test)]
+        {
+            let hold = self
+                .shared
+                .renew_channel_hold
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            wait_hold(hold).await;
+        }
+        result
+    }
+
+    #[allow(dead_code)]
+    pub async fn release_channel(
+        &self,
+        channel_id: i64,
+        generation: u64,
+    ) -> Result<(), PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::ReleaseChannel {
+                channel_id,
+                generation,
+                reply,
+            })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    pub async fn shutdown(
+        self,
+        timeout: Duration,
+        channel: Option<(i64, u64)>,
+    ) -> PersistenceShutdown {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        let tx = self.tx.clone();
+        let shared = Arc::clone(&self.shared);
+        #[cfg(test)]
+        let enqueued = Arc::clone(&shared);
+        let send_and_wait = async move {
+            tx.send(PersistCmd::Shutdown { channel, reply })
+                .await
+                .map_err(|_| ())?;
+            #[cfg(test)]
+            enqueued.shutdown_enqueued.store(true, Ordering::SeqCst);
+            rx.await.map_err(|_| ())
+        };
+        match tokio::time::timeout(timeout, send_and_wait).await {
+            Ok(Ok(status)) => status,
+            Ok(Err(())) => PersistenceShutdown::WorkerClosed,
+            Err(_) => {
+                shared.stop_writer.store(true, Ordering::SeqCst);
+                PersistenceShutdown::TimedOut {
+                    save_failures: shared.diagnostics.save_failures.load(Ordering::Relaxed),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn pause_receiver(slot: &Mutex<Option<std::sync::mpsc::Receiver<()>>>, entered: &AtomicBool) {
+    let stall = slot.lock().unwrap_or_else(|err| err.into_inner()).take();
+    if let Some(stall) = stall {
+        entered.store(true, Ordering::SeqCst);
+        let _ = stall.recv();
+    }
+}
+
+#[cfg(test)]
+fn pause_shutdown_save(shared: &SharedSaveState) {
+    pause_receiver(
+        &shared.shutdown_save_stall,
+        &shared.shutdown_save_stall_entered,
+    );
 }
 
 fn save_snapshot_observed(
     service: &mut PersistenceService,
     shared: &SharedSaveState,
     snapshot: PersistentCharacterSnapshot,
+    lease: Option<purgatory_persistence::LeaseAuthority>,
 ) {
-    if let Err(err) = service.save_snapshot(snapshot) {
+    if let Err(err) = service.save_snapshot_leased(snapshot, lease.as_ref()) {
         shared
             .diagnostics
             .save_failures
@@ -406,13 +1076,20 @@ fn save_snapshot_observed(
 fn flush_deferred_latest(service: &mut PersistenceService, shared: &SharedSaveState) {
     let pending = {
         let mut latest = shared.latest.lock().unwrap_or_else(|err| err.into_inner());
-        latest
-            .drain()
-            .map(|(_, snapshot)| snapshot)
-            .collect::<Vec<_>>()
+        latest.drain().map(|(_, saved)| saved).collect::<Vec<_>>()
     };
-    for snapshot in pending {
-        save_snapshot_observed(service, shared, snapshot);
+    for (snapshot, lease) in pending {
+        if shared.stop_writer.load(Ordering::SeqCst) {
+            break;
+        }
+        // This write already passed the check. A timeout during it still
+        // finishes this call and does not admit the next deferred write.
+        #[cfg(test)]
+        pause_receiver(
+            &shared.deferred_save_stall,
+            &shared.deferred_save_stall_entered,
+        );
+        save_snapshot_observed(service, shared, snapshot, lease);
     }
 }
 
@@ -576,7 +1253,10 @@ mod tests {
         assert_eq!(handle.try_save(stale), SaveHandoff::DeferredLatest);
 
         let queued = match rx.try_recv().unwrap() {
-            PersistCmd::Save(snapshot) => snapshot,
+            PersistCmd::Save {
+                snapshot,
+                lease: None,
+            } => snapshot,
             _ => panic!("expected save"),
         };
         assert_eq!(queued.persistence_revision, 1);
@@ -634,9 +1314,9 @@ mod tests {
             .latest
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .insert(id, snapshot);
+            .insert(id, (snapshot, None));
 
-        handle.shutdown(Duration::from_secs(2)).await;
+        handle.shutdown(Duration::from_secs(2), None).await;
 
         let repo = purgatory_persistence::FileCharacterRepository::open(&dir).unwrap();
         let loaded = repo.load(id).unwrap().unwrap();
@@ -665,7 +1345,7 @@ mod tests {
         let snapshot =
             purgatory_persistence::PersistentCharacterSnapshot::from_character(&character);
         assert_eq!(handle.try_save(snapshot), SaveHandoff::Accepted);
-        handle.shutdown(Duration::from_secs(2)).await;
+        handle.shutdown(Duration::from_secs(2), None).await;
         let path = dir.join(purgatory_persistence::character_file_name(id));
         assert!(
             path.exists(),
@@ -673,6 +1353,385 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn shutdown_times_out_within_the_total_deadline_while_the_worker_is_stalled() {
+        if std::env::var_os("PURGATORY_SHUTDOWN_STALL_CHILD").is_some() {
+            stalled_shutdown_child();
+            return;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("network::persist::tests::shutdown_times_out_within_the_total_deadline_while_the_worker_is_stalled")
+            .arg("--exact")
+            .env("PURGATORY_SHUTDOWN_STALL_CHILD", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let limit = std::time::Duration::from_secs(3);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                let mut stdout = String::new();
+                let mut stderr = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    use std::io::Read;
+                    out.read_to_string(&mut stdout).unwrap();
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    use std::io::Read;
+                    err.read_to_string(&mut stderr).unwrap();
+                }
+                assert!(
+                    status.success(),
+                    "stalled shutdown child failed: {status:?}\n{stdout}\n{stderr}"
+                );
+                return;
+            }
+            if started.elapsed() > limit {
+                let _ = child.kill();
+                panic!("shutdown did not finish within {limit:?} while the worker stayed stalled");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_timeout_during_drain_does_not_start_later_writes() {
+        let dir = std::env::temp_dir().join(format!(
+            "purgatory-shutdown-drain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let handle = PersistenceHandle::spawn(&dir).unwrap();
+        let outer = handle.stall_next_command();
+        let placeholder = snapshot_for(41);
+        assert_eq!(handle.try_save(placeholder), SaveHandoff::Accepted);
+        for _ in 0..50 {
+            if outer.entered() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(outer.entered(), "worker did not stall before Shutdown");
+
+        let shutdown_handle = handle.clone();
+        let shutdown = tokio::spawn(async move {
+            shutdown_handle
+                .shutdown(std::time::Duration::from_millis(200), Some((7, 1)))
+                .await
+        });
+        for _ in 0..50 {
+            if handle.shutdown_enqueued_for_test() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            handle.shutdown_enqueued_for_test(),
+            "Shutdown was not queued while the worker was stalled"
+        );
+        assert_eq!(handle.try_save(snapshot_for(100)), SaveHandoff::Accepted);
+        assert_eq!(handle.try_save(snapshot_for(101)), SaveHandoff::Accepted);
+        let inner = handle.stall_next_shutdown_save();
+        outer.release();
+        for _ in 0..50 {
+            if inner.entered() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(
+            inner.entered(),
+            "the first save inside Shutdown was not paused"
+        );
+        handle.defer_latest_for_test(snapshot_for(102));
+
+        let status = shutdown.await.unwrap();
+        assert!(
+            matches!(status, PersistenceShutdown::TimedOut { .. }),
+            "shutdown confirmed work that was still inside Shutdown: {status:?}"
+        );
+        let later = dir.join(purgatory_persistence::character_file_name(
+            purgatory_common::CharacterId::from_raw(101),
+        ));
+        let deferred = dir.join(purgatory_persistence::character_file_name(
+            purgatory_common::CharacterId::from_raw(102),
+        ));
+        assert!(
+            !later.exists(),
+            "a later queued save was written after timeout"
+        );
+        assert!(
+            !deferred.exists(),
+            "deferred state was flushed after timeout"
+        );
+        assert_eq!(handle.channel_release_calls_for_test(), 0);
+
+        inner.release();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !handle.writer_finished_for_test() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(handle.writer_finished_for_test(), "writer did not stop");
+        let started = dir.join(purgatory_persistence::character_file_name(
+            purgatory_common::CharacterId::from_raw(100),
+        ));
+        assert!(
+            started.exists(),
+            "the save already inside Shutdown did not finish"
+        );
+        assert!(
+            !later.exists(),
+            "a later queued save started after Shutdown timed out"
+        );
+        assert!(
+            !deferred.exists(),
+            "deferred state was written after Shutdown timed out"
+        );
+        assert_eq!(
+            handle.channel_release_calls_for_test(),
+            0,
+            "channel release started after Shutdown timed out"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_timeout_during_deferred_flush_does_not_start_later_writes() {
+        let dir = temp_persist_dir("purgatory-shutdown-deferred");
+        let handle = PersistenceHandle::spawn(&dir).unwrap();
+        let outer = handle.stall_next_command();
+        let shutdown_handle = handle.clone();
+        let shutdown = tokio::spawn(async move {
+            shutdown_handle
+                .shutdown(std::time::Duration::from_millis(300), Some((7, 1)))
+                .await
+        });
+        wait_flag(
+            || outer.entered() && handle.shutdown_enqueued_for_test(),
+            "worker did not stall on Shutdown before the deferred flush",
+        )
+        .await;
+        handle.defer_latest_for_test(snapshot_for(200));
+        handle.defer_latest_for_test(snapshot_for(201));
+        let deferred = handle.stall_next_deferred_save();
+        outer.release();
+        wait_flag(
+            || deferred.entered(),
+            "the first deferred write inside Shutdown was not paused",
+        )
+        .await;
+
+        let status = shutdown.await.unwrap();
+        assert!(
+            matches!(status, PersistenceShutdown::TimedOut { .. }),
+            "shutdown confirmed a deferred flush still in progress: {status:?}"
+        );
+        deferred.release();
+        wait_writer(&handle);
+        let written = [200u64, 201]
+            .into_iter()
+            .filter(|id| character_path(&dir, *id).exists())
+            .count();
+        assert_eq!(
+            written,
+            1,
+            "deferred files after timeout: 200={} 201={}",
+            character_path(&dir, 200).exists(),
+            character_path(&dir, 201).exists()
+        );
+        assert_eq!(
+            handle.channel_release_calls_for_test(),
+            0,
+            "channel release started after a deferred flush timed out"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_timeout_during_command_skips_post_command_deferred_flush() {
+        let dir = temp_persist_dir("purgatory-shutdown-post-flush");
+        let handle = PersistenceHandle::spawn(&dir).unwrap();
+        let command = handle.stall_next_command_save();
+        assert_eq!(handle.try_save(snapshot_for(300)), SaveHandoff::Accepted);
+        wait_flag(
+            || command.entered(),
+            "the ordinary save was not paused before its deferred flush",
+        )
+        .await;
+        handle.defer_latest_for_test(snapshot_for(301));
+        handle.defer_latest_for_test(snapshot_for(302));
+        let shutdown_handle = handle.clone();
+        let status = tokio::spawn(async move {
+            shutdown_handle
+                .shutdown(std::time::Duration::from_millis(200), Some((8, 1)))
+                .await
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(status, PersistenceShutdown::TimedOut { .. }),
+            "shutdown confirmed the ordinary command: {status:?}"
+        );
+        command.release();
+        wait_writer(&handle);
+        assert!(
+            character_path(&dir, 300).exists(),
+            "the save already inside the ordinary command did not finish"
+        );
+        assert!(
+            !character_path(&dir, 301).exists() && !character_path(&dir, 302).exists(),
+            "post-command deferred flush wrote after timeout: 301={} 302={}",
+            character_path(&dir, 301).exists(),
+            character_path(&dir, 302).exists()
+        );
+        assert_eq!(handle.channel_release_calls_for_test(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+fn temp_persist_dir(prefix: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(test)]
+fn character_path(dir: &std::path::Path, id: u64) -> std::path::PathBuf {
+    dir.join(purgatory_persistence::character_file_name(
+        purgatory_common::CharacterId::from_raw(id),
+    ))
+}
+
+#[cfg(test)]
+async fn wait_flag(mut ready: impl FnMut() -> bool, message: &str) {
+    for _ in 0..50 {
+        if ready() {
+            return;
+        }
+        tokio::task::yield_now().await;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    panic!("{message}");
+}
+
+#[cfg(test)]
+fn wait_writer(handle: &PersistenceHandle) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !handle.writer_finished_for_test() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(handle.writer_finished_for_test(), "writer did not stop");
+}
+
+#[cfg(test)]
+fn snapshot_for(id: u64) -> PersistentCharacterSnapshot {
+    PersistentCharacterSnapshot::from_character(
+        &purgatory_persistence::PersistentCharacter::new_default(
+            purgatory_common::CharacterId::from_raw(id),
+        ),
+    )
+}
+
+#[cfg(test)]
+fn stalled_shutdown_child() {
+    let dir = std::env::temp_dir().join(format!(
+        "purgatory-shutdown-stall-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (stall, observe) = runtime.block_on(async {
+        let handle = PersistenceHandle::spawn(&dir).unwrap();
+        let stall = handle.stall_next_command();
+        let stalled_id = purgatory_common::CharacterId::from_raw(41);
+        let stalled = purgatory_persistence::PersistentCharacterSnapshot::from_character(
+            &purgatory_persistence::PersistentCharacter::new_default(stalled_id),
+        );
+        assert_eq!(handle.try_save(stalled), SaveHandoff::Accepted);
+        for _ in 0..50 {
+            if stall.entered() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(stall.entered(), "worker did not enter the stall");
+        let mut accepted = 0u32;
+        for n in 0..80u64 {
+            let id = purgatory_common::CharacterId::from_raw(1_000 + n);
+            let snapshot = purgatory_persistence::PersistentCharacterSnapshot::from_character(
+                &purgatory_persistence::PersistentCharacter::new_default(id),
+            );
+            match handle.try_save(snapshot) {
+                SaveHandoff::Accepted => accepted += 1,
+                SaveHandoff::DeferredLatest => break,
+                SaveHandoff::Closed => panic!("worker closed while filling the queue"),
+            }
+        }
+        assert_eq!(accepted, 64, "the bounded queue was not full");
+        let timeout = std::time::Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let status = handle.clone().shutdown(timeout, None).await;
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(status, PersistenceShutdown::TimedOut { .. }),
+            "shutdown status while the queue was full: {status:?}"
+        );
+        assert!(
+            elapsed <= timeout + std::time::Duration::from_millis(250),
+            "shutdown waited {elapsed:?}, past the {timeout:?} deadline"
+        );
+        let queued = dir.join(purgatory_persistence::character_file_name(
+            purgatory_common::CharacterId::from_raw(1_000),
+        ));
+        assert!(
+            !queued.exists(),
+            "a queued save was written during the stall"
+        );
+        (stall, handle)
+    });
+    drop(runtime);
+    stall.release();
+    let observe_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !observe.writer_finished_for_test() && std::time::Instant::now() < observe_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        observe.writer_finished_for_test(),
+        "the writer kept running after shutdown timed out"
+    );
+    let queued = dir.join(purgatory_persistence::character_file_name(
+        purgatory_common::CharacterId::from_raw(1_000),
+    ));
+    assert!(
+        !queued.exists(),
+        "the writer committed a queued save after shutdown timed out"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    std::process::exit(0);
 }
 
 fn worker_closed() -> PersistError {
@@ -729,7 +1788,7 @@ mod frontend_worker_tests {
         );
         assert_eq!(std::fs::read(&path).unwrap(), original);
 
-        worker.shutdown(Duration::from_secs(2)).await;
+        worker.shutdown(Duration::from_secs(2), None).await;
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -773,10 +1832,10 @@ mod frontend_worker_tests {
             second[1].character_id.raw(),
             first[0].character_id.raw() + 1
         );
-        worker.shutdown(Duration::from_secs(2)).await;
+        worker.shutdown(Duration::from_secs(2), None).await;
         let worker = PersistenceHandle::spawn(&dir).unwrap();
         assert_eq!(worker.roster(login).await.unwrap(), second);
-        worker.shutdown(Duration::from_secs(2)).await;
+        worker.shutdown(Duration::from_secs(2), None).await;
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -808,7 +1867,7 @@ mod frontend_worker_tests {
             text.contains("postgresql"),
             "the worker must return the service result, not a handoff: {text}"
         );
-        worker.shutdown(Duration::from_secs(2)).await;
+        worker.shutdown(Duration::from_secs(2), None).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

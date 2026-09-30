@@ -1,9 +1,10 @@
 # Phase 12 entry — Character Continuity
 
-Status: **revised design accepted; 12A pending review** (2026-09-29).
-Root `PHASE` = `12.entry`. Phase 11 is closed. 12A is implemented and pending
-review in [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). 12B and 12C
-are not started. This entry does not accept Phase 12.
+Status: **revised design accepted; 12A and 12B accepted** (2026-09-30).
+Root `PHASE` = `12.12B`. Phase 11 is closed. 12A is accepted in
+[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). 12B is accepted in
+[`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md). 12C is not started. This
+entry does not accept Phase 12.
 
 ## Entry evidence and first gate
 
@@ -18,8 +19,8 @@ are not started. This entry does not accept Phase 12.
   Later product decisions supersede its file-backed log and map-drop recovery.
   The revised implementation contract is now
   [`PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md).
-  Draft PR #116 cannot be merged unchanged. The 12A writer is pending review
-  and is not accepted by this entry.
+  Draft PR #116 cannot be merged unchanged. The 12A writer and the 12B
+  lifecycle are accepted. This entry does not accept Phase 12.
 
 ## Acceptance boundary carried into the revised design
 
@@ -44,8 +45,8 @@ steps and focused tests.
 
 | Stage | Intended capability | Entry condition |
 |---|---|---|
-| 12A | PostgreSQL durable foundation | Pending review; not an entry condition for 12B until verified |
-| 12B | Save / Load and lifecycle | 12A transaction and failure semantics verified |
+| 12A | PostgreSQL durable foundation | accepted 2026-09-29; not a Phase 12 exit |
+| 12B | Save / Load and lifecycle | accepted 2026-09-30; not a Phase 12 exit |
 | 12C | Existing item and NPC-earned state integration | Atomic commit/recovery contract and lifecycle verified |
 
 The stage names are roadmap intent, not a promise that the design must implement

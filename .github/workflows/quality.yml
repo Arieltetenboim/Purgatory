@@ -38,7 +38,7 @@ jobs:
         run: ./scripts/check.sh
 
   postgres_12a:
-    name: PostgreSQL 12A tests
+    name: PostgreSQL 12A and 12B tests
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -78,5 +78,5 @@ jobs:
       - name: Install Rust toolchain and components
         run: rustup show
 
-      - name: Run PostgreSQL 12A integration tests
+      - name: Run PostgreSQL 12A and 12B integration tests
         run: cargo test -p purgatory-persistence --lib postgres_tests -- --ignored --nocapture --test-threads=1

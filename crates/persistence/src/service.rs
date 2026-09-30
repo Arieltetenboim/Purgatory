@@ -8,9 +8,24 @@ use crate::domain::{
 };
 use crate::error::PersistError;
 use crate::identity::{CharacterRosterEntry, DevIdentityStore};
+#[cfg(test)]
+use crate::lifecycle::LeaseBarrier;
+use crate::lifecycle::{Admission, ChannelClaim, LeaseAuthority, OwnedRestore};
 use crate::postgres::{self, PostgresSettings, PostgresStore};
 use crate::repository::FileCharacterRepository;
 use purgatory_common::ItemInstanceId;
+
+/// File mode grants without a lease. PostgreSQL grants a generation or refuses
+/// while another session's lease is still live.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SessionAdmission {
+    Granted {
+        authority: Option<LeaseAuthority>,
+        restore: Box<OwnedRestore>,
+    },
+    Held,
+    NotOwned,
+}
 
 /// Single-threaded owner of identity allocation and character state.
 ///
@@ -103,9 +118,17 @@ impl PersistenceService {
         &mut self,
         snapshot: PersistentCharacterSnapshot,
     ) -> Result<(), PersistError> {
+        self.save_snapshot_leased(snapshot, None)
+    }
+
+    pub fn save_snapshot_leased(
+        &mut self,
+        snapshot: PersistentCharacterSnapshot,
+        lease: Option<&LeaseAuthority>,
+    ) -> Result<(), PersistError> {
         match &mut self.backend {
             Backend::Files { repo, .. } => repo.save(&snapshot.into_character()),
-            Backend::Postgres(store) => store.save_restore(snapshot),
+            Backend::Postgres(store) => store.save_restore(snapshot, lease),
         }
     }
 
@@ -113,12 +136,191 @@ impl PersistenceService {
         &mut self,
         command: &DurableCommand,
     ) -> Result<DurableCommandResult, PersistError> {
+        self.commit_durable_leased(command, None)
+    }
+
+    pub fn commit_durable_leased(
+        &mut self,
+        command: &DurableCommand,
+        lease: Option<&LeaseAuthority>,
+    ) -> Result<DurableCommandResult, PersistError> {
         match &mut self.backend {
             Backend::Files { .. } => Err(PersistError::migration(
                 "<postgresql>",
                 "durable commands require the postgresql writer",
             )),
-            Backend::Postgres(store) => store.commit(command),
+            Backend::Postgres(store) => store.commit(command, lease),
+        }
+    }
+
+    pub fn admit(
+        &mut self,
+        login: &DevLogin,
+        character_id: CharacterId,
+    ) -> Result<SessionAdmission, PersistError> {
+        match &mut self.backend {
+            Backend::Files { identity, repo } => {
+                if !identity.owns_character(login, character_id) {
+                    return Ok(SessionAdmission::NotOwned);
+                }
+                let character = repo.load_or_default(character_id)?;
+                Ok(SessionAdmission::Granted {
+                    authority: None,
+                    restore: Box::new(OwnedRestore {
+                        character,
+                        items: Vec::new(),
+                        narrative: crate::domain::CharacterNarrativeState::default(),
+                    }),
+                })
+            }
+            Backend::Postgres(store) => Ok(match store.admit(login, character_id)? {
+                Admission::Granted { authority, restore } => SessionAdmission::Granted {
+                    authority: Some(authority),
+                    restore,
+                },
+                Admission::Held => SessionAdmission::Held,
+                Admission::NotOwned => SessionAdmission::NotOwned,
+            }),
+        }
+    }
+
+    pub fn supersede(
+        &mut self,
+        authority: &LeaseAuthority,
+    ) -> Result<(LeaseAuthority, OwnedRestore), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "character leases require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.supersede(authority),
+        }
+    }
+
+    pub fn renew_lease(&mut self, authority: &LeaseAuthority) -> Result<(), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "character leases require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.renew_lease(authority),
+        }
+    }
+
+    pub fn release_lease(&mut self, authority: &LeaseAuthority) -> Result<(), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "character leases require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.release_lease(authority),
+        }
+    }
+
+    pub fn claim_channel(
+        &mut self,
+        channel_id: i64,
+        retire_limit: Option<i64>,
+    ) -> Result<ChannelClaim, PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "channel generations require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.claim_channel(channel_id, retire_limit),
+        }
+    }
+
+    pub fn sweep_channel(
+        &mut self,
+        channel_id: i64,
+        generation: u64,
+        retire_limit: Option<i64>,
+    ) -> Result<u64, PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "channel generations require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.sweep_channel(channel_id, generation, retire_limit),
+        }
+    }
+
+    pub fn renew_channel(&mut self, channel_id: i64, generation: u64) -> Result<(), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "channel generations require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.renew_channel(channel_id, generation),
+        }
+    }
+
+    pub fn release_channel(
+        &mut self,
+        channel_id: i64,
+        generation: u64,
+    ) -> Result<(), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "channel generations require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.release_channel(channel_id, generation),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn set_lease_barrier(&mut self, barrier: LeaseBarrier) {
+        if let Backend::Postgres(store) = &mut self.backend {
+            store.set_lease_barrier(barrier);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn clock_moved_inside_one_statement(&mut self) -> Result<(bool, bool), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Ok((false, false)),
+            Backend::Postgres(store) => store.clock_moved_inside_one_statement(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn sessions_waiting_on_a_lock(&mut self) -> Result<i64, PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Ok(0),
+            Backend::Postgres(store) => store.sessions_waiting_on_a_lock(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn remember_channel_for_test(&mut self, channel_id: i64, generation: u64) {
+        if let Backend::Postgres(store) = &mut self.backend {
+            store.remember_channel_for_test(channel_id, generation);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn expire_lease_for_test(&mut self, login: &DevLogin) -> Result<(), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Ok(()),
+            Backend::Postgres(store) => store.expire_lease_for_test(login),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn expire_channel_for_test(&mut self, channel_id: i64) -> Result<(), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Ok(()),
+            Backend::Postgres(store) => store.expire_channel_for_test(channel_id),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn unstamp_ground_for_test(&mut self, id: ItemInstanceId) -> Result<(), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Ok(()),
+            Backend::Postgres(store) => store.unstamp_ground_for_test(id),
         }
     }
 

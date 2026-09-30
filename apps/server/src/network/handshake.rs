@@ -46,6 +46,7 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         persist,
         lifecycle,
         pressure,
+        channel_live,
         ..
     } = ctx;
     stats.enter_handshake();
@@ -332,6 +333,7 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         persist,
         lifecycle,
         pressure,
+        channel_live,
     })
     .await;
 }
@@ -388,6 +390,7 @@ struct LiveSession {
     persist: Option<super::persist::PersistenceHandle>,
     lifecycle: Arc<ConnectionLifecycleBook>,
     pressure: Arc<NetworkPressureBook>,
+    channel_live: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn handshake_streams(
@@ -422,6 +425,242 @@ async fn handshake_streams(
     Ok((send, recv, hello))
 }
 
+async fn activate_owned_character(
+    worker: &super::persist::PersistenceHandle,
+    tx: &GameplayTx,
+    login: &DevLogin,
+    connection_id: purgatory_protocol::ConnectionId,
+    character_id: purgatory_common::CharacterId,
+    channel_live: &std::sync::atomic::AtomicBool,
+) -> Result<
+    (
+        ReplicationPipe,
+        tokio::sync::watch::Receiver<u64>,
+        tokio::sync::mpsc::Receiver<ServerControl>,
+        Option<(
+            purgatory_persistence::LeaseAuthority,
+            super::lease_clock::LocalLeaseDeadline,
+        )>,
+    ),
+    purgatory_protocol::CharacterEnterRejection,
+> {
+    use purgatory_persistence::SessionAdmission;
+    use purgatory_protocol::CharacterEnterRejection as R;
+    use std::sync::atomic::Ordering;
+    if !channel_live.load(Ordering::Relaxed) {
+        return Err(R::StorageFailure);
+    }
+    let admit_sent = tokio::time::Instant::now();
+    let admission = worker
+        .admit(login.clone(), character_id)
+        .await
+        .map_err(|_| R::StorageFailure)?;
+    let (owned, authority, deadline) = match admission {
+        SessionAdmission::NotOwned => return Err(R::NotOwned),
+        SessionAdmission::Held => {
+            let stopped = tx
+                .stop_for_reconnect(character_id)
+                .await
+                .map_err(|_| R::GameplayEnterFailure)?;
+            let (old, snapshot) = match stopped {
+                Ok(pair) => pair,
+                Err(EnterError::Pending | EnterError::Occupied) => return Err(R::Occupied),
+                Err(_) => return Err(R::GameplayEnterFailure),
+            };
+            if let Err(err) = worker.save_leased(snapshot, Some(old.clone())).await {
+                eprintln!(
+                    "PURGATORY persist reconnect save failed; new generation was not taken: {err}"
+                );
+                return Err(R::StorageFailure);
+            }
+            let supersede_sent = tokio::time::Instant::now();
+            match worker.supersede(old).await {
+                Ok((authority, owned)) => {
+                    let deadline = super::lease_clock::LocalLeaseDeadline::from_request(
+                        supersede_sent,
+                        purgatory_persistence::CHARACTER_LEASE_EXPIRY,
+                    );
+                    if !deadline.reply_still_authorizes(tokio::time::Instant::now()) {
+                        release_unused_lease(worker, Some(authority)).await;
+                        eprintln!(
+                            "PURGATORY persist supersede reply crossed the local lease deadline; gameplay was not entered"
+                        );
+                        return Err(R::StorageFailure);
+                    }
+                    (owned, Some(authority), Some(deadline))
+                }
+                Err(err) => {
+                    eprintln!("PURGATORY persist supersede failed: {err}");
+                    return Err(R::StorageFailure);
+                }
+            }
+        }
+        SessionAdmission::Granted { authority, restore } => {
+            let deadline = authority.as_ref().map(|_| {
+                super::lease_clock::LocalLeaseDeadline::from_request(
+                    admit_sent,
+                    purgatory_persistence::CHARACTER_LEASE_EXPIRY,
+                )
+            });
+            if deadline
+                .is_some_and(|bound| !bound.reply_still_authorizes(tokio::time::Instant::now()))
+            {
+                release_unused_lease(worker, authority).await;
+                eprintln!(
+                    "PURGATORY persist admit reply crossed the local lease deadline; gameplay was not entered"
+                );
+                return Err(R::StorageFailure);
+            }
+            (*restore, authority, deadline)
+        }
+    };
+    if !channel_live.load(Ordering::Relaxed) {
+        release_unused_lease(worker, authority).await;
+        eprintln!(
+            "PURGATORY persist channel authority ended during admission; gameplay was not entered"
+        );
+        return Err(R::StorageFailure);
+    }
+    let (pipe, wake) = ReplicationPipe::new();
+    let (interact_tx, rx) = tokio::sync::mpsc::channel(16);
+    match tx
+        .enter_restored(
+            connection_id,
+            owned,
+            authority.clone(),
+            deadline,
+            Some(pipe.clone()),
+            Some(interact_tx),
+        )
+        .await
+    {
+        Ok(Ok(())) => {
+            let channel_stopped = !channel_live.load(Ordering::Relaxed);
+            let lease_stopped = deadline
+                .is_some_and(|bound| !bound.reply_still_authorizes(tokio::time::Instant::now()));
+            if channel_stopped || lease_stopped {
+                if tx.abandon_admission(connection_id).await.is_err() {
+                    eprintln!(
+                        "PURGATORY persist could not remove a character admitted after authority ended"
+                    );
+                }
+                release_unused_lease(worker, authority).await;
+                eprintln!(
+                    "PURGATORY persist authority ended during world entry; the character was removed and gameplay was not entered"
+                );
+                return Err(R::StorageFailure);
+            }
+            let leased = match authority {
+                Some(authority) => {
+                    let Some(deadline) = deadline else {
+                        release_unused_lease(worker, Some(authority)).await;
+                        return Err(R::StorageFailure);
+                    };
+                    Some((authority, deadline))
+                }
+                None => None,
+            };
+            Ok((pipe, wake, rx, leased))
+        }
+        Ok(Err(EnterError::Occupied | EnterError::Pending)) => {
+            release_unused_lease(worker, authority).await;
+            Err(R::Occupied)
+        }
+        Ok(Err(EnterError::AuthorityLost)) => {
+            release_unused_lease(worker, authority).await;
+            eprintln!(
+                "PURGATORY persist world entry was refused because admission had already stopped"
+            );
+            Err(R::StorageFailure)
+        }
+        Ok(Err(_)) => {
+            release_unused_lease(worker, authority).await;
+            Err(R::GameplayEnterFailure)
+        }
+        Err(()) => {
+            release_unused_lease(worker, authority).await;
+            Err(R::GameplayEnterFailure)
+        }
+    }
+}
+
+async fn release_unused_lease(
+    worker: &super::persist::PersistenceHandle,
+    authority: Option<purgatory_persistence::LeaseAuthority>,
+) {
+    if let Some(authority) = authority
+        && let Err(err) = worker.release_lease(authority).await
+    {
+        eprintln!("PURGATORY persist unused lease release failed: {err}");
+    }
+}
+
+fn spawn_lease_renewal(
+    worker: super::persist::PersistenceHandle,
+    gameplay: GameplayTx,
+    connection_id: purgatory_protocol::ConnectionId,
+    authority: purgatory_persistence::LeaseAuthority,
+    deadline: super::lease_clock::LocalLeaseDeadline,
+) -> tokio::sync::watch::Sender<bool> {
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let extend = gameplay.clone();
+    tokio::spawn(async move {
+        let stop = super::lease_clock::supervise_renewal(
+            move || {
+                let worker = worker.clone();
+                let authority = authority.clone();
+                async move { worker.renew_lease(authority).await.map_err(|_| ()) }
+            },
+            deadline,
+            purgatory_persistence::CHARACTER_LEASE_RENEWAL,
+            stop_rx,
+            move |extended| {
+                let _ = extend.try_note_lease_deadline(connection_id, extended);
+            },
+        )
+        .await;
+        if super::lease_clock::authority_ends(stop) {
+            eprintln!(
+                "PURGATORY persist lease renewal stopped; gameplay stopped connection={connection_id}"
+            );
+            let _ = gameplay.lose_authority(connection_id).await;
+        }
+    });
+    stop_tx
+}
+
+async fn finish_logout(
+    worker: &super::persist::PersistenceHandle,
+    tx: &GameplayTx,
+    connection_id: purgatory_protocol::ConnectionId,
+) -> bool {
+    match tx.prepare_logout(connection_id).await {
+        Ok(Ok(Some((authority, snapshot)))) => {
+            match worker.save_leased(snapshot, Some(authority.clone())).await {
+                Ok(()) => {
+                    if let Err(err) = worker.release_lease(authority).await {
+                        eprintln!("PURGATORY persist lease release failed: {err}");
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "PURGATORY persist logout save failed; lease was not released and the save was not confirmed: {err}"
+                    );
+                }
+            }
+            true
+        }
+        Ok(Ok(None)) => true,
+        Ok(Err(EnterError::Pending)) => {
+            eprintln!(
+                "PURGATORY persist logout blocked: durable command still pending connection={connection_id}"
+            );
+            false
+        }
+        _ => tx.send_detach(connection_id).await,
+    }
+}
+
 async fn serve_connection(live: LiveSession) {
     let LiveSession {
         connection,
@@ -439,9 +678,11 @@ async fn serve_connection(live: LiveSession) {
         persist,
         lifecycle,
         pressure,
+        channel_live,
     } = live;
     let mut active = occupancy.is_some();
     let id = session.connection_id;
+    let mut lease_renewal: Option<tokio::sync::watch::Sender<bool>> = None;
     let remote = session.remote;
     let mut transport_loss = false;
     let mut abuse = ConnectionAbuse::default();
@@ -523,24 +764,34 @@ async fn serve_connection(live: LiveSession) {
                         let result = if active { Err(R::InvalidSelection) } else {
                             match (&persist, &gameplay) {
                                 (Some(worker), Some(tx)) => {
-                                    match worker.load_owned_character(login.clone(), character_id).await {
-                                        Err(reason) => Err(reason),
-                                        Ok(character) => {
-                                            let (pipe, wake) = ReplicationPipe::new();
-                                            let (interact_tx, rx) = tokio::sync::mpsc::channel(16);
-                                            match tx.enter(id, character, Some(pipe.clone()), Some(interact_tx)).await {
-                                                Ok(Ok(())) => {
-                                                    occupancy = Some(OccupancyLease::new(tx.clone(), id));
-                                                    replication = Some((pipe, wake));
-                                                    interact_rx = Some(rx);
-                                                    active = true;
-                                                    uni_opened = false;
-                                                    Ok(())
-                                                }
-                                                Ok(Err(EnterError::Occupied)) => Err(R::Occupied),
-                                                _ => Err(R::GameplayEnterFailure),
+                                    match activate_owned_character(
+                                        worker,
+                                        tx,
+                                        &login,
+                                        id,
+                                        character_id,
+                                        &channel_live,
+                                    )
+                                    .await
+                                    {
+                                        Ok((pipe, wake, rx, leased)) => {
+                                            occupancy = Some(OccupancyLease::new(tx.clone(), id));
+                                            replication = Some((pipe, wake));
+                                            interact_rx = Some(rx);
+                                            active = true;
+                                            uni_opened = false;
+                                            if let Some((authority, deadline)) = leased {
+                                                lease_renewal = Some(spawn_lease_renewal(
+                                                    worker.clone(),
+                                                    tx.clone(),
+                                                    id,
+                                                    authority,
+                                                    deadline,
+                                                ));
                                             }
+                                            Ok(())
                                         }
+                                        Err(reason) => Err(reason),
                                     }
                                 }
                                 (None, _) => Err(R::StorageFailure),
@@ -1294,9 +1545,16 @@ async fn serve_connection(live: LiveSession) {
         }
     }
 
+    if let Some(tx) = lease_renewal.take() {
+        let _ = tx.send(true);
+    }
     if let Some(mut lease) = occupancy.take() {
-        // Disarm RAII only after the normal detach has completed.
-        if lease.tx.send_detach(id).await {
+        let logged_out = if let (Some(worker), Some(tx)) = (&persist, &gameplay) {
+            finish_logout(worker, tx, id).await
+        } else {
+            lease.tx.send_detach(id).await
+        };
+        if logged_out {
             lease.armed = false;
         } else {
             stats
@@ -1412,5 +1670,478 @@ async fn send_disconnect_best_effort(connection: &Connection, reason: &Disconnec
             .is_ok()
     {
         let _ = send.finish();
+    }
+}
+
+#[cfg(test)]
+mod admission_race {
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use purgatory_common::{CharacterId, DevLogin};
+    use purgatory_persistence::{
+        CharacterNarrativeState, LeaseAuthority, OwnedRestore, PersistentCharacter,
+        SessionAdmission,
+    };
+    use purgatory_protocol::{CharacterEnterRejection, ConnectionId, InputCommand, MoveAxis};
+
+    use crate::network::gameplay::{GameplayOwner, InputUpdate, SeqDecision, gameplay_channels};
+    use crate::network::lease_clock::LocalLeaseDeadline;
+    use crate::network::persist::PersistenceHandle;
+    use crate::network::spawn_channel_renewal;
+
+    use super::activate_owned_character;
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "purgatory-admit-race-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    async fn advance_for(duration: Duration) {
+        tokio::time::advance(duration + Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+    }
+
+    async fn until(label: &str, mut ready: impl FnMut() -> bool) {
+        for _ in 0..100 {
+            if ready() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("timed out waiting for {label}");
+    }
+
+    fn leased_admission(character_id: CharacterId) -> SessionAdmission {
+        SessionAdmission::Granted {
+            authority: Some(LeaseAuthority {
+                login: DevLogin::parse("dev.local").unwrap(),
+                character_id,
+                generation: 1,
+            }),
+            restore: Box::new(OwnedRestore {
+                character: PersistentCharacter::new_default(character_id),
+                items: Vec::new(),
+                narrative: CharacterNarrativeState::default(),
+            }),
+        }
+    }
+
+    fn move_command(connection_id: ConnectionId) -> InputUpdate {
+        InputUpdate::Command {
+            connection_id,
+            command: InputCommand {
+                input_epoch: 0,
+                sequence: 1,
+                move_axis: MoveAxis::Right,
+                jump_pressed: false,
+                down_held: false,
+                portal_held: false,
+            },
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn channel_stop_during_admit_does_not_enter_world() {
+        let dir = temp_dir("channel");
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("dev.local").unwrap();
+        let created = worker.create_character(login.clone(), "Alpha".into()).await;
+        let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
+            panic!("create character: {created:?}");
+        };
+        let character_id = roster[0].character_id;
+        let admit_hold = worker.hold_next_admit();
+        let renew_hold = worker.hold_next_channel_renewal();
+        let (tx, mut life_rx, mut input_rx) = gameplay_channels(8, 8);
+        let mut owner = GameplayOwner::new();
+        let channel_live = Arc::new(AtomicBool::new(true));
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let connection_id = ConnectionId::from_raw(4);
+        let mut admission = std::pin::pin!(activate_owned_character(
+            &worker,
+            &tx,
+            &login,
+            connection_id,
+            character_id,
+            &channel_live,
+        ));
+        let mut outcome = None;
+        for _ in 0..100 {
+            if admit_hold.entered() {
+                break;
+            }
+            std::future::poll_fn(|cx| {
+                if outcome.is_none()
+                    && let std::task::Poll::Ready(value) = admission.as_mut().poll(cx)
+                {
+                    outcome = Some(value);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            std::thread::sleep(Duration::from_millis(2));
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            admit_hold.entered() && outcome.is_none(),
+            "admit reply was not held; finished={}",
+            outcome.is_some()
+        );
+        spawn_channel_renewal(
+            worker.clone(),
+            tx.clone(),
+            channel_live.clone(),
+            stop_rx,
+            LocalLeaseDeadline::from_request(
+                tokio::time::Instant::now(),
+                purgatory_persistence::CHANNEL_GENERATION_EXPIRY,
+            ),
+            0,
+            1,
+        );
+        tokio::task::yield_now().await;
+        advance_for(purgatory_persistence::CHANNEL_GENERATION_RENEWAL).await;
+        until("channel renewal held", || renew_hold.entered()).await;
+        advance_for(
+            purgatory_persistence::CHANNEL_GENERATION_EXPIRY
+                .saturating_sub(purgatory_persistence::CHANNEL_GENERATION_RENEWAL),
+        )
+        .await;
+        until("channel renewal stop", || {
+            !channel_live.load(Ordering::SeqCst)
+        })
+        .await;
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        owner.drain(&mut life_rx, &mut input_rx);
+        admit_hold.release();
+        for _ in 0..100 {
+            owner.drain(&mut life_rx, &mut input_rx);
+            if outcome.is_some() {
+                break;
+            }
+            std::future::poll_fn(|cx| {
+                if outcome.is_none()
+                    && let std::task::Poll::Ready(value) = admission.as_mut().poll(cx)
+                {
+                    outcome = Some(value);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            tokio::task::yield_now().await;
+        }
+        renew_hold.release();
+        let result = outcome.expect("admission did not finish after the channel stop");
+        let accepted_before = owner.input_accepted;
+        tx.input.try_send(move_command(connection_id)).unwrap();
+        owner.drain(&mut life_rx, &mut input_rx);
+        assert!(
+            matches!(result, Err(CharacterEnterRejection::StorageFailure)),
+            "channel stop during admit still entered World: ok={} entity={:?}",
+            result.is_ok(),
+            owner.entity_of(connection_id)
+        );
+        assert!(owner.entity_of(connection_id).is_none());
+        assert_eq!(owner.input_accepted, accepted_before);
+        assert_eq!(
+            owner.apply_input(move_command(connection_id)),
+            SeqDecision::Stale
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn character_deadline_during_enter_does_not_enter_world() {
+        let dir = temp_dir("character");
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("dev.local").unwrap();
+        let character_id = CharacterId::from_raw(9);
+        worker.script_next_admit(leased_admission(character_id));
+        let (tx, mut life_rx, mut input_rx) = gameplay_channels(8, 8);
+        let mut owner = GameplayOwner::new();
+        let channel_live = Arc::new(AtomicBool::new(true));
+        let connection_id = ConnectionId::from_raw(5);
+        let mut admission = std::pin::pin!(activate_owned_character(
+            &worker,
+            &tx,
+            &login,
+            connection_id,
+            character_id,
+            &channel_live,
+        ));
+        let mut outcome = None;
+        for _ in 0..100 {
+            if !life_rx.is_empty() {
+                break;
+            }
+            std::future::poll_fn(|cx| {
+                if outcome.is_none()
+                    && let std::task::Poll::Ready(value) = admission.as_mut().poll(cx)
+                {
+                    outcome = Some(value);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            // Real sleep, not paused Tokio time: the worker thread has to
+            // answer before the deadline is advanced.
+            std::thread::sleep(Duration::from_millis(2));
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            outcome.is_none() && !life_rx.is_empty(),
+            "enter was not queued after the pre-enter deadline check; finished={}",
+            outcome.is_some()
+        );
+        advance_for(purgatory_persistence::CHARACTER_LEASE_EXPIRY).await;
+        for _ in 0..100 {
+            owner.drain(&mut life_rx, &mut input_rx);
+            if outcome.is_some() {
+                break;
+            }
+            std::future::poll_fn(|cx| {
+                if outcome.is_none()
+                    && let std::task::Poll::Ready(value) = admission.as_mut().poll(cx)
+                {
+                    outcome = Some(value);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            std::thread::sleep(Duration::from_millis(2));
+            tokio::task::yield_now().await;
+        }
+        let result = outcome.expect("admission did not finish after the character deadline");
+        let accepted_before = owner.input_accepted;
+        tx.input.try_send(move_command(connection_id)).unwrap();
+        owner.drain(&mut life_rx, &mut input_rx);
+        assert!(
+            matches!(result, Err(CharacterEnterRejection::StorageFailure)),
+            "expired character deadline still entered World: ok={} entity={:?}",
+            result.is_ok(),
+            owner.entity_of(connection_id)
+        );
+        assert!(owner.entity_of(connection_id).is_none());
+        assert_eq!(owner.input_accepted, accepted_before);
+        assert_eq!(
+            owner.apply_input(move_command(connection_id)),
+            SeqDecision::Stale
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn equipped_restore(
+        character_id: CharacterId,
+        content: purgatory_common::ContentId,
+        slot: purgatory_persistence::DurableEquipmentSlot,
+    ) -> SessionAdmission {
+        use purgatory_common::ItemInstanceId;
+        use purgatory_persistence::{CharacterItemLocation, ItemOwner, ItemRecord};
+        SessionAdmission::Granted {
+            authority: Some(LeaseAuthority {
+                login: DevLogin::parse("dev.local").unwrap(),
+                character_id,
+                generation: 1,
+            }),
+            restore: Box::new(OwnedRestore {
+                character: PersistentCharacter::new_default(character_id),
+                items: vec![ItemRecord {
+                    item_instance_id: ItemInstanceId::from_raw(7),
+                    definition_content_id: content,
+                    quantity: 1,
+                    owner: ItemOwner::Character {
+                        character_id,
+                        location: CharacterItemLocation::Equipped { slot },
+                    },
+                }],
+                narrative: CharacterNarrativeState::default(),
+            }),
+        }
+    }
+
+    async fn drive_scripted_admission(
+        worker: &PersistenceHandle,
+        owner: &mut GameplayOwner,
+        queues: (
+            &mut tokio::sync::mpsc::Receiver<crate::network::gameplay::LifecycleCmd>,
+            &mut tokio::sync::mpsc::Receiver<InputUpdate>,
+        ),
+        tx: &crate::network::gameplay::GameplayTx,
+        login: &DevLogin,
+        connection_id: ConnectionId,
+        character_id: CharacterId,
+    ) -> Result<
+        (
+            crate::network::replication::ReplicationPipe,
+            tokio::sync::watch::Receiver<u64>,
+            tokio::sync::mpsc::Receiver<purgatory_protocol::ServerControl>,
+            Option<(LeaseAuthority, LocalLeaseDeadline)>,
+        ),
+        CharacterEnterRejection,
+    > {
+        let channel_live = Arc::new(AtomicBool::new(true));
+        let mut admission = std::pin::pin!(activate_owned_character(
+            worker,
+            tx,
+            login,
+            connection_id,
+            character_id,
+            &channel_live,
+        ));
+        let (life_rx, input_rx) = queues;
+        let mut outcome = None;
+        for _ in 0..200 {
+            owner.drain(life_rx, input_rx);
+            std::future::poll_fn(|cx| {
+                if outcome.is_none()
+                    && let std::task::Poll::Ready(value) = admission.as_mut().poll(cx)
+                {
+                    outcome = Some(value);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            if outcome.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+            tokio::task::yield_now().await;
+        }
+        outcome.expect("scripted admission did not finish")
+    }
+
+    #[tokio::test]
+    async fn durable_restore_rejects_a_non_equippable_item_in_weapon() {
+        let dir = temp_dir("potion-weapon");
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("dev.local").unwrap();
+        let created = worker.create_character(login.clone(), "Alpha".into()).await;
+        let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
+            panic!("create character: {created:?}");
+        };
+        let character_id = roster[0].character_id;
+        worker.script_next_admit(equipped_restore(
+            character_id,
+            purgatory_common::ContentId::from_raw(30011),
+            purgatory_persistence::DurableEquipmentSlot::Weapon,
+        ));
+        let (tx, mut life_rx, mut input_rx) = gameplay_channels(8, 8);
+        let mut owner = GameplayOwner::new();
+        let connection_id = ConnectionId::from_raw(31);
+        let result = drive_scripted_admission(
+            &worker,
+            &mut owner,
+            (&mut life_rx, &mut input_rx),
+            &tx,
+            &login,
+            connection_id,
+            character_id,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(CharacterEnterRejection::GameplayEnterFailure)),
+            "non-equippable weapon restore entered: ok={} entity={:?}",
+            result.is_ok(),
+            owner.entity_of(connection_id)
+        );
+        assert!(owner.entity_of(connection_id).is_none());
+        assert_eq!(worker.release_calls_for_test(), 1);
+        worker.shutdown(Duration::from_secs(2), None).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn durable_restore_rejects_an_equippable_item_in_the_wrong_slot() {
+        let dir = temp_dir("cap-weapon");
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("dev.local").unwrap();
+        let created = worker.create_character(login.clone(), "Alpha".into()).await;
+        let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
+            panic!("create character: {created:?}");
+        };
+        let character_id = roster[0].character_id;
+        worker.script_next_admit(equipped_restore(
+            character_id,
+            purgatory_common::ContentId::from_raw(30001),
+            purgatory_persistence::DurableEquipmentSlot::Weapon,
+        ));
+        let (tx, mut life_rx, mut input_rx) = gameplay_channels(8, 8);
+        let mut owner = GameplayOwner::new();
+        let connection_id = ConnectionId::from_raw(32);
+        let result = drive_scripted_admission(
+            &worker,
+            &mut owner,
+            (&mut life_rx, &mut input_rx),
+            &tx,
+            &login,
+            connection_id,
+            character_id,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(CharacterEnterRejection::GameplayEnterFailure)),
+            "wrong-slot restore entered: ok={} entity={:?}",
+            result.is_ok(),
+            owner.entity_of(connection_id)
+        );
+        assert!(owner.entity_of(connection_id).is_none());
+        assert_eq!(worker.release_calls_for_test(), 1);
+        worker.shutdown(Duration::from_secs(2), None).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn durable_restore_keeps_valid_equipment() {
+        let dir = temp_dir("sword-weapon");
+        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let login = DevLogin::parse("dev.local").unwrap();
+        let created = worker.create_character(login.clone(), "Alpha".into()).await;
+        let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
+            panic!("create character: {created:?}");
+        };
+        let character_id = roster[0].character_id;
+        let sword = purgatory_common::ContentId::from_raw(30006);
+        worker.script_next_admit(equipped_restore(
+            character_id,
+            sword,
+            purgatory_persistence::DurableEquipmentSlot::Weapon,
+        ));
+        let (tx, mut life_rx, mut input_rx) = gameplay_channels(8, 8);
+        let mut owner = GameplayOwner::new();
+        let connection_id = ConnectionId::from_raw(33);
+        let result = drive_scripted_admission(
+            &worker,
+            &mut owner,
+            (&mut life_rx, &mut input_rx),
+            &tx,
+            &login,
+            connection_id,
+            character_id,
+        )
+        .await;
+        assert!(result.is_ok(), "valid equipment was rejected");
+        let actor = owner.entity_of(connection_id).expect("player");
+        assert_eq!(
+            owner
+                .world()
+                .equipment_slot(actor, purgatory_simulation::EquipmentSlot::Weapon),
+            Some(sword)
+        );
+        assert_eq!(worker.release_calls_for_test(), 0);
+        worker.shutdown(Duration::from_secs(2), None).await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

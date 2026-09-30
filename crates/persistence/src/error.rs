@@ -58,6 +58,9 @@ pub enum PersistError {
     },
     /// The durable item-id high water cannot advance.
     ItemIdsExhausted,
+    /// The caller's character-lease generation is not the live authority.
+    /// This is a definite rejection, not an unknown commit.
+    LeaseLost,
 }
 
 impl PersistError {
@@ -161,6 +164,7 @@ impl fmt::Display for PersistError {
             }
             Self::Storage { reason } => write!(f, "postgresql: {reason}"),
             Self::ItemIdsExhausted => f.write_str("item instance id namespace exhausted"),
+            Self::LeaseLost => f.write_str("postgresql: lease authority lost"),
         }
     }
 }
