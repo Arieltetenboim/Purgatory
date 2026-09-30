@@ -1179,13 +1179,21 @@
         owner.simulate_tick(tick_dt());
         assert!(horizontal(&owner, id) > before);
         assert!(owner.world_mut().grant_ability(actor, dash_id()));
+        let move_seq = owner.last_received(id).unwrap();
+        assert_eq!(
+            owner.apply_input(command_update(
+                id,
+                cmd(move_seq.saturating_add(1), MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept
+        );
         assert_eq!(
             owner.apply_input(InputUpdate::AbilityActivate {
                 connection_id: id,
                 request: AbilityActivateRequest {
                     seq: 1,
                     input_epoch: 0,
-                    input_sequence: 1,
+                    input_sequence: move_seq.saturating_add(1),
                     ability_id: dash_id(),
                     selected: None,
                 },
@@ -1220,7 +1228,10 @@
         assert_eq!(second_command.key, key, "the retry must use the stored key");
         let held = horizontal(&owner, id);
         assert_eq!(
-            owner.apply_input(command_update(id, cmd(2, MoveAxis::Right, false, false))),
+            owner.apply_input(command_update(
+                id,
+                cmd(move_seq.saturating_add(2), MoveAxis::Right, false, false),
+            )),
             SeqDecision::Stale
         );
         assert_eq!(
@@ -1229,7 +1240,7 @@
                 request: AbilityActivateRequest {
                     seq: 2,
                     input_epoch: 0,
-                    input_sequence: 2,
+                    input_sequence: move_seq.saturating_add(2),
                     ability_id: purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE,
                     selected: None,
                 },
@@ -1267,7 +1278,10 @@
         );
         assert!(owner.take_durable_commits().is_empty());
         assert_eq!(
-            owner.apply_input(command_update(id, cmd(2, MoveAxis::Right, false, false))),
+            owner.apply_input(command_update(
+                id,
+                cmd(move_seq.saturating_add(2), MoveAxis::Right, false, false),
+            )),
             SeqDecision::Accept,
             "a definite stored result resumes control"
         );

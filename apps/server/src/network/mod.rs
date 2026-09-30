@@ -108,17 +108,7 @@ fn spawn_durable_commits(
         let persist = persist.clone();
         let tx = gameplay_tx.clone();
         tokio::spawn(async move {
-            let lease = submit.lease.clone();
-            let mut result = persist
-                .commit_durable(submit.command.clone(), lease.clone())
-                .await;
-            if result
-                .as_ref()
-                .err()
-                .is_some_and(durable_play::commit_outcome_unknown)
-            {
-                result = persist.commit_durable(submit.command, lease).await;
-            }
+            let result = persist.commit_durable(submit.command, submit.lease).await;
             let _ = tx
                 .lifecycle
                 .send(gameplay::LifecycleCmd::SettleDurable {

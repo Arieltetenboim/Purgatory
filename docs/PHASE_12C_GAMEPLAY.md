@@ -27,21 +27,29 @@ and learned ability together. No shipped beat contains an item change, a fact, a
 a learned ability in the same choice; the PostgreSQL test composes those three
 actions on an authored beat id and says so.
 
-Player drops move an existing item to temporary ground ownership. Another eligible
-player may pick it up while the channel is live. Ordinary unclaimed ground is
+Player drops move an existing item to temporary ground ownership. That item belongs
+to the map and is open to every player immediately. Ordinary unclaimed ground is
 retired on the next channel claim after shutdown or crash, without refund and
 without reusing the item id. Monster bodies are not stored. A new process builds
 them again from authored content.
 
-## Unresolved
+## Ground lifetime
 
-There is no authored duration for a live ground-item expiry timer. This slice does
-not invent one and does not restore a timer after restart. That product decision
-stays open and is required before 12C acceptance. A test can retire one live
+Ordinary live ground disappears after 200 seconds. Monster loot is exclusive to
+the player who killed the monster for the first 40 seconds, then eligible for
+other players. A player-dropped item has no exclusive window. Ordinary unclaimed
+ground disappears on shutdown or crash, and its timer is not restored.
+
+That rule is recorded and is not implemented yet. Nothing starts the 200 second
+timer or the 40 second killer window. Pickup still accepts any player in range
+with a free slot. `postgres_12c_expiry_retires_a_live_drop` retires one live
 ground item explicitly. That retire command has no character owner, because a
 ground row has none, so the database does not fence it with a character-lease
 generation. The simulation thread still requires a leased session and reserves the
-item before submitting it.
+item before submitting it. These timers and the killer window are still required
+before 12C acceptance.
+
+## Unresolved
 
 A dialogue remove that would split a stack is rejected before commit. The durable
 command can place, move, or retire a whole item. It cannot reduce a quantity in place.
@@ -77,8 +85,9 @@ After that restore, the original Drop, pickup, or equipment request is answered
 with the committed result. A retry of the same sequence repeats that result.
 The commit is not described as rolled back, and the retry is not left unanswered.
 
-An unknown commit outcome keeps the original command key reserved. The next
-resolution submits that same key. The same persistence worker opens a new
+An unknown commit outcome keeps the original command key reserved. The first
+unknown result reaches GameplayOwner before any retry. The next resolution
+submits that same key through the persistence worker. The same persistence worker opens a new
 database connection when the previous one died after `COMMIT`, reads the stored
 key, and returns that result once. If the database cannot be reached, the retry
 stays unknown instead of rejecting the committed command. Two unknown results
@@ -149,3 +158,22 @@ ignored server `postgres_12c` tests in 4.31s. The new server case commits a
 dialogue reward, fails the `World` apply, restores it, and proves a resend does
 not mint a second item, fact, or learned ability. No live ground-item expiry
 duration is chosen. Phase 12C remains in review.
+
+The first-unknown run of `./scripts/check.ps1` exited 0 in about 246s.
+Persistence lib tests were 38 passed and 30 ignored. Server bin tests were
+347 passed and 21 ignored in 2.76s. Simulation lib tests were 431 passed.
+Commit `8261f49` is test-only. GitHub Actions run
+[36769949858](https://github.com/Arieltetenboim/Purgatory/actions/runs/36769949858)
+failed the quality gate and passed the PostgreSQL job. Locally, before this
+fix, both new tests timed out at 300ms: `first unknown must reach GameplayOwner
+before the blocked retry` and `first unknown before blocked retry`. The Dash
+case first failed because its ability used an already acknowledged input
+sequence; that anchor now follows the movement sequence, and Dash starts before
+the unknown reply. After the submit task reports the first unknown before
+retrying, both tests pass. A disposable `postgres:18` container
+`purgatory-12c-unknown`, database `purgatory_12a_test` on `127.0.0.1:5433`,
+not `Purgatory_dev`, then passed 30 ignored persistence tests in 26.90s
+(`admit_us=16080`; workload `total_ms=2876`, `mean_us=31960`, debug profile,
+not a capacity claim) and 12 ignored server `postgres_12c` tests in 6.46s.
+The 200 second ground lifetime and 40 second killer window are recorded and
+are not implemented. Phase 12C remains in review.

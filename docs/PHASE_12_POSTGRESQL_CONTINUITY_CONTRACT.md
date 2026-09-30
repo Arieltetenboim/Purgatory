@@ -40,10 +40,10 @@ draft and must not be merged as the Phase 12 foundation.
 
 | Event | Item and world result |
 |---|---|
-| Player drops an item | Commit the removal from the character and a temporary ground owner **atomically** before reporting success. It can be picked up by A/B/C according to server eligibility rules while the server is running. |
-| Monster drops loot | The ordinary ground entity is temporary; killer/party exclusivity and disappearance timers are server-enforced during that run. A pickup must create/transfer durable ownership exactly once before reporting success. |
+| Player drops an item | Commit the removal from the character and a temporary ground owner **atomically** before reporting success. The item belongs to the map and is open to every player immediately. It disappears after 200 seconds while the server is running. |
+| Monster drops loot | The ordinary ground entity is temporary and disappears after 200 seconds. It is exclusive to the player who killed the monster for the first 40 seconds, then eligible for other players. A pickup must create/transfer durable ownership exactly once before reporting success. |
 | Eligible pickup | Commit removal from ground and assignment to one character in one transaction; if expiry or another pickup wins first, reject. |
-| Runtime expiry | Retire the unclaimed item; never return a player-dropped item to its previous character. |
+| Runtime expiry | Retire the unclaimed item after 200 seconds; never return a player-dropped item to its previous character. |
 | Clean shutdown **or crash** | All ordinary unclaimed ground drops disappear. On recovery, retire any persisted temporary ground owners **before** admitting gameplay; do not refund them or reconstruct their timers. No item ID may be reissued. |
 | Map population after restart | Spawn the authored number of ordinary monsters afresh. Do not restore their death count or exact temporary map state. Persist character-owned credited progress separately if a future Quest requires it. |
 
