@@ -364,6 +364,14 @@ impl PersistenceService {
         }
     }
 
+    /// The next attempts to replace a dead connection fail and stay unknown.
+    #[cfg(test)]
+    pub fn fail_next_reconnects_for_test(&mut self, count: u32) {
+        if let Backend::Postgres(store) = &mut self.backend {
+            store.fail_next_reconnects(count);
+        }
+    }
+
     pub fn item(&mut self, id: ItemInstanceId) -> Result<Option<ItemRecord>, PersistError> {
         match &mut self.backend {
             Backend::Files { .. } => Err(PersistError::migration(

@@ -1072,17 +1072,10 @@ fn unusable_connection_at_the_commit_reply_stays_unknown_until_retry() {
         let text = err.to_string();
         assert!(text.contains("commit outcome unknown"), "{text}");
         assert!(!text.contains("not committed"), "{text}");
-        let again = service.commit_durable(&command).unwrap_err();
-        let again_text = again.to_string();
-        assert!(
-            again_text.contains("commit outcome unknown"),
-            "{again_text}"
-        );
-        let mut recovered = open(dir, settings);
-        let result = recovered.commit_durable(&command).unwrap();
+        let result = service.commit_durable(&command).unwrap();
         assert_eq!(result.revisions, vec![(entry.character_id, 2)]);
         assert_eq!(result.minted_item_ids.len(), 1);
-        let loaded = recovered
+        let loaded = service
             .load_owned_character(&alice, entry.character_id)
             .unwrap()
             .unwrap();
@@ -1095,8 +1088,80 @@ fn unusable_connection_at_the_commit_reply_stays_unknown_until_retry() {
             postgres::count_table(settings, "durable_commands").unwrap(),
             1
         );
-        let repeated = recovered.commit_durable(&command).unwrap();
+        let repeated = service.commit_durable(&command).unwrap();
         assert_eq!(repeated, result);
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn same_worker_reconnects_after_a_lost_commit_reply() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let command = DurableCommand {
+            key: "same-worker".into(),
+            expected_revisions: vec![(entry.character_id, 1)],
+            place_new: vec![place(entry.character_id, 0)],
+            moves: Vec::new(),
+            retire: Vec::new(),
+            narrative: Vec::new(),
+            learned: Vec::new(),
+        };
+        service.discard_connection_after_next_commit_for_test();
+        let lost = service.commit_durable(&command).unwrap_err();
+        let lost_text = lost.to_string();
+        assert!(lost_text.contains("commit outcome unknown"), "{lost_text}");
+        assert!(!lost_text.contains("not committed"), "{lost_text}");
+        service.fail_next_reconnects_for_test(1);
+        let blocked = service.commit_durable(&command).unwrap_err();
+        let blocked_text = blocked.to_string();
+        assert!(
+            blocked_text.contains("commit outcome unknown"),
+            "a committed command was rejected as a definite failure: {blocked_text}"
+        );
+        assert!(
+            !matches!(blocked, PersistError::Conflict { .. }),
+            "{blocked_text}"
+        );
+        let result = service
+            .commit_durable(&command)
+            .expect("the same worker must reconnect and return the committed result");
+        assert_eq!(result.revisions, vec![(entry.character_id, 2)]);
+        assert_eq!(result.minted_item_ids.len(), 1);
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+        assert_eq!(
+            postgres::count_table(settings, "durable_commands").unwrap(),
+            1
+        );
+        let repeated = service.commit_durable(&command).unwrap();
+        assert_eq!(repeated, result);
+        let bogus = LeaseAuthority {
+            login: login("alice"),
+            character_id: entry.character_id,
+            generation: 99,
+        };
+        let leased = service
+            .commit_durable_leased(&command, Some(&bogus))
+            .expect("a stored command is not re-rejected by a later lease");
+        assert_eq!(leased, result);
+        let mut changed = command.clone();
+        changed.place_new[0].location = CharacterItemLocation::Inventory { slot: 4 };
+        let mismatch = service.commit_durable(&changed).unwrap_err();
+        assert!(
+            mismatch
+                .to_string()
+                .contains("reused for a different command"),
+            "{mismatch}"
+        );
         assert_eq!(
             postgres::count_table(settings, "item_instances").unwrap(),
             1

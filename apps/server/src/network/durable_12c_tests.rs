@@ -958,12 +958,21 @@
             owner.complete_reconcile(id, 2, committed),
             "reconcile applies the committed character"
         );
+        let mut accepted = false;
         while let Ok(message) = rx.try_recv() {
-            assert!(
-                !matches!(message, ServerControl::Item(ServerItem::DropAccepted { .. })),
-                "reconciliation must not report the original request as success"
-            );
+            match message {
+                ServerControl::Item(ServerItem::DropAccepted { seq: 1 }) => accepted = true,
+                ServerControl::Item(ServerItem::DropRejected { .. }) => {
+                    panic!("a committed drop was described as rolled back: {message:?}")
+                }
+                ServerControl::Inventory(_) | ServerControl::AbilityGrants(_) => {}
+                other => panic!("unexpected reconcile reply: {other:?}"),
+            }
         }
+        assert!(
+            accepted,
+            "reconciliation must resolve the committed drop for the client"
+        );
         assert!(owner.world().item_record(item).is_none());
         assert!(
             owner.world().item_record(other).is_none(),
@@ -974,7 +983,7 @@
         owner.apply_input(InputUpdate::Drop {
             connection_id: id,
             request: DropRequest {
-                seq: 3,
+                seq: 2,
                 item_instance_id: fresh,
             },
         });
@@ -1355,12 +1364,18 @@
             assert!(pg
                 .owner
                 .complete_reconcile(a.connection, revision, restore));
+            let mut accepted = false;
             while let Ok(message) = rx.try_recv() {
-                assert!(!matches!(
-                    message,
-                    ServerControl::Item(ServerItem::DropAccepted { .. })
-                ));
+                match message {
+                    ServerControl::Item(ServerItem::DropAccepted { seq: 1 }) => accepted = true,
+                    ServerControl::Item(ServerItem::DropRejected { .. }) => {
+                        panic!("a committed drop was described as rolled back: {message:?}")
+                    }
+                    ServerControl::Inventory(_) | ServerControl::AbilityGrants(_) => {}
+                    other => panic!("unexpected reconcile reply: {other:?}"),
+                }
             }
+            assert!(accepted, "reconcile must resolve the committed drop");
             assert!(pg.owner.world().item_record(dropped).is_none());
             assert!(pg.owner.world().inventory_contains(a.actor, kept));
             assert_eq!(
@@ -1377,7 +1392,7 @@
             pg.owner.apply_input(InputUpdate::Drop {
                 connection_id: a.connection,
                 request: DropRequest {
-                    seq: 3,
+                    seq: 2,
                     item_instance_id: kept,
                 },
             });
@@ -1438,4 +1453,439 @@
             assert_eq!(next.len(), 1);
             assert_ne!(next[0].command.key, key);
         });
+    }
+
+    fn fail_committed_drop(owner: &mut GameplayOwner, id: ConnectionId) -> CharacterId {
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(owner, actor);
+        let character = owner.bindings.get(&id).unwrap().character_id.unwrap();
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[item]);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        let staged = owner.take_durable_commits();
+        assert!(owner.world_mut().retire_inventory_instance(actor, item));
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+        character
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn inconsistent_character_blocks_new_effects_until_restore_or_stop() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(80);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        enter_leased(&mut owner, id, 80);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let pos = owner.world().transform_of(actor).unwrap().position;
+        let address = owner.world().address_of(actor).unwrap();
+        let landed = owner
+            .world_mut()
+            .spawn(
+                RuntimeSpawnRequest::transient_at(address)
+                    .with_transform(Transform::from_position([pos[0] + 1.0, pos[1]]))
+                    .with_health(Health::full(10.0))
+                    .visible(),
+            )
+            .unwrap();
+        activate_strike(&mut owner, id, 1, None);
+        tick_ability(&mut owner, 8);
+        let landed_health = owner.world().health_of(landed).unwrap().current;
+        assert!(
+            (landed_health - 5.0).abs() < 1e-4,
+            "strike did not land before the failed apply: {landed_health}"
+        );
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.world_mut().grant_ability(actor, dash_id()));
+        let move_seq = owner.last_received(id).unwrap().saturating_add(1);
+        owner.apply_input(command_update(
+            id,
+            cmd(move_seq, MoveAxis::Right, false, false),
+        ));
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: AbilityActivateRequest {
+                seq: 2,
+                input_epoch: 0,
+                input_sequence: move_seq,
+                ability_id: dash_id(),
+                selected: None,
+            },
+        });
+        owner.simulate_tick(tick_dt());
+        assert!(owner.world().player_dash_of(actor).is_some());
+        let held = horizontal(&owner, id);
+        let character = fail_committed_drop(&mut owner, id);
+        assert_eq!(
+            owner.apply_input(command_update(
+                id,
+                cmd(move_seq.saturating_add(1), MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale,
+            "movement input was accepted while the character was inconsistent"
+        );
+        assert_eq!(
+            owner.apply_input(InputUpdate::AbilityActivate {
+                connection_id: id,
+                request: AbilityActivateRequest {
+                    seq: 4,
+                    input_epoch: 0,
+                    input_sequence: move_seq.saturating_add(1),
+                    ability_id: dash_id(),
+                    selected: None,
+                },
+            }),
+            SeqDecision::Stale,
+            "ability activation was accepted while the character was inconsistent"
+        );
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            horizontal(&owner, id),
+            held,
+            "held movement or Dash continued while reconciliation was outstanding"
+        );
+        assert_eq!(owner.world().health_of(landed).unwrap().current, landed_health);
+
+        let mut wind = GameplayOwner::new();
+        let wind_id = ConnectionId::from_raw(81);
+        enter_leased(&mut wind, wind_id, 81);
+        let pending = arm_strike_for_next_tick(&mut wind, wind_id);
+        fail_committed_drop(&mut wind, wind_id);
+        wind.simulate_tick(tick_dt());
+        assert_eq!(
+            wind.world().health_of(pending).unwrap().current,
+            10.0,
+            "a scheduled strike landed while reconciliation was outstanding"
+        );
+        wind.lose_authority(wind_id);
+        wind.simulate_tick(tick_dt());
+        assert_eq!(wind.world().health_of(pending).unwrap().current, 10.0);
+        assert_eq!(
+            wind.apply_input(command_update(
+                wind_id,
+                cmd(2, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale
+        );
+
+        let bad = character_restore(
+            character,
+            vec![owned_record(
+                character,
+                ItemInstanceId::from_raw(9_991),
+                ContentId::from_raw(9_999_991),
+                CharacterItemLocation::Inventory { slot: 0 },
+            )],
+        );
+        assert!(!owner.complete_reconcile(id, 2, bad));
+        assert_eq!(
+            owner.apply_input(command_update(
+                id,
+                cmd(move_seq.saturating_add(1), MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale,
+            "a failed reconciliation read restored control"
+        );
+        while let Ok(message) = rx.try_recv() {
+            assert!(
+                !matches!(
+                    message,
+                    ServerControl::Item(ServerItem::DropRejected {
+                        reason: DropRejectReason::StateBlocked,
+                        ..
+                    })
+                ),
+                "a committed drop was described as rolled back: {message:?}"
+            );
+        }
+        assert!(owner.complete_reconcile(id, 2, character_restore(character, Vec::new())));
+        assert_eq!(
+            owner.apply_input(command_update(
+                id,
+                cmd(move_seq.saturating_add(1), MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept
+        );
+        owner.lose_authority(id);
+        let stopped = horizontal(&owner, id);
+        owner.simulate_tick(tick_dt());
+        assert_eq!(horizontal(&owner, id), stopped);
+        assert_eq!(owner.world().health_of(landed).unwrap().current, landed_health);
+    }
+
+    fn next_item(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerItem {
+        loop {
+            match rx.try_recv().expect("duplicate request disappeared") {
+                ServerControl::Item(event) => {
+                    assert!(
+                        !matches!(
+                            event,
+                            ServerItem::DropRejected {
+                                reason: DropRejectReason::StateBlocked,
+                                ..
+                            } | ServerItem::PickupRejected {
+                                reason: PickupRejectReason::StateBlocked,
+                                ..
+                            }
+                        ),
+                        "a committed operation was described as rolled back: {event:?}"
+                    );
+                    return event;
+                }
+                ServerControl::Inventory(_) | ServerControl::AbilityGrants(_) => continue,
+                other => panic!("expected an item resolution, got {other:?}"),
+            }
+        }
+    }
+
+    fn next_equipment(rx: &mut tokio::sync::mpsc::Receiver<ServerControl>) -> ServerEquipment {
+        loop {
+            match rx.try_recv().expect("duplicate request disappeared") {
+                ServerControl::Equipment(event) => {
+                    assert!(
+                        !matches!(
+                            event,
+                            ServerEquipment::Rejected {
+                                reason: EquipmentRejectReason::StateBlocked,
+                                ..
+                            }
+                        ),
+                        "a committed operation was described as rolled back: {event:?}"
+                    );
+                    return event;
+                }
+                ServerControl::Inventory(_) | ServerControl::AbilityGrants(_) => continue,
+                other => panic!("expected an equipment resolution, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn reconciled_client_retry_resolves_the_committed_operation() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        let character = CharacterId::from_raw(90);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[item]);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        let staged = owner.take_durable_commits();
+        assert!(owner.world_mut().retire_inventory_instance(actor, item));
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+        assert!(owner.complete_reconcile(id, 2, character_restore(character, Vec::new())));
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        assert_eq!(next_item(&mut rx), ServerItem::DropAccepted { seq: 1 });
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        assert_eq!(next_item(&mut rx), ServerItem::DropAccepted { seq: 1 });
+        while rx.try_recv().is_ok() {}
+
+        let address = owner.world().address_of(actor).unwrap();
+        let position = owner.world().transform_of(actor).unwrap().position;
+        let (ground, entity) = owner
+            .world_mut()
+            .spawn_world_drop_item(address, position, sword(), 1, 1)
+            .unwrap();
+        owner.durable_items.insert(ground);
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: id,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(entity),
+            },
+        });
+        let staged = owner.take_durable_commits();
+        assert!(owner.world_mut().destroy_world_drop_item(ground));
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 3)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+        assert!(owner.complete_reconcile(
+            id,
+            3,
+            character_restore(
+                character,
+                vec![owned_record(
+                    character,
+                    ground,
+                    sword(),
+                    CharacterItemLocation::Inventory { slot: 0 },
+                )],
+            ),
+        ));
+        match next_item(&mut rx) {
+            ServerItem::PickupAccepted {
+                seq: 1,
+                item_instance_id,
+                ..
+            } => assert_eq!(item_instance_id, ground),
+            other => panic!("reconcile did not resolve the committed pickup: {other:?}"),
+        }
+        while rx.try_recv().is_ok() {}
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: id,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(entity),
+            },
+        });
+        match next_item(&mut rx) {
+            ServerItem::PickupAccepted {
+                seq: 1,
+                item_instance_id,
+                ..
+            } => assert_eq!(item_instance_id, ground),
+            other => panic!("pickup retry was not the committed result: {other:?}"),
+        }
+        while rx.try_recv().is_ok() {}
+
+        let weapon = owned_debug_sword(&mut owner, actor);
+        owner.durable_items.insert(weapon);
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 1,
+                slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+                item_instance_id: weapon,
+            },
+        });
+        let staged = owner.take_durable_commits();
+        assert!(owner.world_mut().retire_inventory_instance(actor, weapon));
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 4)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+        assert!(owner.complete_reconcile(
+            id,
+            4,
+            character_restore(
+                character,
+                vec![owned_record(
+                    character,
+                    weapon,
+                    sword(),
+                    CharacterItemLocation::Equipped {
+                        slot: purgatory_persistence::DurableEquipmentSlot::Weapon,
+                    },
+                )],
+            ),
+        ));
+        assert_eq!(
+            next_equipment(&mut rx),
+            ServerEquipment::Accepted { seq: 1 }
+        );
+        while rx.try_recv().is_ok() {}
+        owner.apply_input(InputUpdate::Equip {
+            connection_id: id,
+            request: EquipRequest {
+                seq: 1,
+                slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+                item_instance_id: weapon,
+            },
+        });
+        assert_eq!(
+            next_equipment(&mut rx),
+            ServerEquipment::Accepted { seq: 1 }
+        );
+    }
+
+    #[test]
+    fn logout_drops_departed_character_ids_and_keeps_live_ground() {
+        let mut owner = GameplayOwner::new();
+        let mut departed = Vec::new();
+        for index in 0..24u64 {
+            let connection = ConnectionId::from_raw(300 + index);
+            let character = CharacterId::from_raw(800 + index);
+            let item = ItemInstanceId::from_raw(40_000 + index);
+            let lease = purgatory_persistence::LeaseAuthority {
+                login: DevLogin::parse("dev.local").unwrap(),
+                character_id: character,
+                generation: 1,
+            };
+            owner
+                .enter_restored(
+                    connection,
+                    character_restore(
+                        character,
+                        vec![owned_record(
+                            character,
+                            item,
+                            sword(),
+                            CharacterItemLocation::Inventory { slot: 0 },
+                        )],
+                    ),
+                    Some(lease),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert!(
+                owner.durable_items.contains(&item),
+                "leased entry did not register the character item"
+            );
+            departed.push((connection, item));
+        }
+        let actor = owner.entity_of(ConnectionId::from_raw(300)).unwrap();
+        let address = owner.world().address_of(actor).unwrap();
+        let position = owner.world().transform_of(actor).unwrap().position;
+        let (ground, _) = owner
+            .world_mut()
+            .spawn_world_drop_item(address, position, sword(), 1, 1)
+            .unwrap();
+        owner.durable_items.insert(ground);
+        for (connection, item) in &departed {
+            owner.prepare_logout(*connection).unwrap();
+            assert!(owner.world().item_record(*item).is_none());
+            assert!(
+                !owner.durable_items.contains(item),
+                "character item {} remained registered after logout",
+                item.raw()
+            );
+        }
+        assert!(owner.durable_items.contains(&ground));
+        assert!(owner.world().item_record(ground).is_some());
+        assert_eq!(owner.durable_items.len(), 1);
     }

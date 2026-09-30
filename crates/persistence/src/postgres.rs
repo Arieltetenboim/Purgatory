@@ -111,15 +111,18 @@ impl PostgresSettings {
 
 pub(crate) struct PostgresStore {
     client: Client,
+    /// Runtime URL used to replace a connection that died after COMMIT.
+    runtime_url: String,
+    schema: String,
     rules: DurableContentRules,
     #[cfg(test)]
     hide_commit_reply: bool,
     #[cfg(test)]
     discard_connection_after_commit: bool,
-    /// Set when a commit reply cannot be read. Later calls on this connection
-    /// stay unknown until the caller opens a new one.
-    #[cfg(test)]
+    /// The current client cannot be used. The next call opens another one.
     connection_closed: bool,
+    #[cfg(test)]
+    reconnect_failures_remaining: u32,
     /// Channel generations this process claimed. Ground writes stamp one of them.
     channels: std::collections::BTreeMap<i64, u64>,
     #[cfg(test)]
@@ -163,13 +166,16 @@ impl PostgresStore {
         }
         Ok(Self {
             client,
+            runtime_url: settings.url.clone(),
+            schema: settings.schema.clone(),
             rules: DurableContentRules::new(),
             #[cfg(test)]
             hide_commit_reply: false,
             #[cfg(test)]
             discard_connection_after_commit: false,
-            #[cfg(test)]
             connection_closed: false,
+            #[cfg(test)]
+            reconnect_failures_remaining: 0,
             channels: std::collections::BTreeMap::new(),
             #[cfg(test)]
             lease_barrier: None,
@@ -191,10 +197,17 @@ impl PostgresStore {
         &mut self,
         id: CharacterId,
     ) -> Result<OwnedRestore, PersistError> {
-        let mut tx = self.client.transaction().map_err(map_sql)?;
-        let restore = crate::lifecycle::load_restore(&mut tx, id)?;
-        tx.rollback().map_err(map_sql)?;
-        Ok(restore)
+        self.ensure_connection()?;
+        let err = match self.client.transaction() {
+            Ok(mut tx) => {
+                let restore = crate::lifecycle::load_restore(&mut tx, id)?;
+                tx.rollback().map_err(map_sql)?;
+                return Ok(restore);
+            }
+            Err(err) => err,
+        };
+        self.note_closed_client();
+        Err(map_sql(err))
     }
 
     pub(crate) fn commit(
@@ -202,15 +215,21 @@ impl PostgresStore {
         command: &DurableCommand,
         lease: Option<&LeaseAuthority>,
     ) -> Result<DurableCommandResult, PersistError> {
-        if self.connection_is_closed() {
-            return Err(PersistError::storage(
-                "commit outcome unknown: the database connection is closed",
-            ));
-        }
+        self.ensure_connection()?;
         let request = canonical_request(command)?;
         // A stored result is returned before content rules are applied again.
         // Retry after a catalog change must still answer the original commit.
-        if let Some(result) = stored_result_if_same(&mut self.client, &command.key, &request)? {
+        let stored = match stored_result_if_same(&mut self.client, &command.key, &request) {
+            Ok(value) => value,
+            Err(err) if self.client.is_closed() => {
+                self.connection_closed = true;
+                return Err(PersistError::storage(format!(
+                    "commit outcome unknown: {err}"
+                )));
+            }
+            Err(err) => return Err(err),
+        };
+        if let Some(result) = stored {
             return Ok(result);
         }
         domain::validate_command(command, &self.rules)?;
@@ -250,19 +269,51 @@ impl PostgresStore {
                     ))),
                 }
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                if self.client.is_closed() {
+                    self.connection_closed = true;
+                    if self.ensure_connection().is_ok()
+                        && let Ok(Some(result)) =
+                            stored_result_if_same(&mut self.client, &command.key, &request)
+                    {
+                        return Ok(result);
+                    }
+                    return Err(PersistError::storage(format!(
+                        "commit outcome unknown: {err}"
+                    )));
+                }
+                Err(err)
+            }
         }
     }
 
-    fn connection_is_closed(&self) -> bool {
+    fn note_closed_client(&mut self) {
+        if self.client.is_closed() {
+            self.connection_closed = true;
+        }
+    }
+
+    /// Replace a dead client. A failed replacement stays unknown so a committed
+    /// command is not reported as a definite rejection.
+    fn ensure_connection(&mut self) -> Result<(), PersistError> {
+        if !self.connection_closed && !self.client.is_closed() {
+            return Ok(());
+        }
+        self.connection_closed = true;
         #[cfg(test)]
-        {
-            self.connection_closed
+        if self.reconnect_failures_remaining > 0 {
+            self.reconnect_failures_remaining -= 1;
+            return Err(PersistError::storage(
+                "commit outcome unknown: the database connection is closed",
+            ));
         }
-        #[cfg(not(test))]
-        {
-            false
-        }
+        let mut client = connect_url(&self.runtime_url)
+            .map_err(|err| PersistError::storage(format!("commit outcome unknown: {err}")))?;
+        prepare_schema(&mut client, &self.schema, false)
+            .map_err(|err| PersistError::storage(format!("commit outcome unknown: {err}")))?;
+        self.client = client;
+        self.connection_closed = false;
+        Ok(())
     }
 
     fn consume_hidden_reply(&mut self) -> bool {
@@ -293,6 +344,11 @@ impl PostgresStore {
     #[cfg(test)]
     pub(crate) fn discard_connection_after_next_commit(&mut self) {
         self.discard_connection_after_commit = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_reconnects(&mut self, count: u32) {
+        self.reconnect_failures_remaining = count;
     }
 
     pub(crate) fn save_restore(

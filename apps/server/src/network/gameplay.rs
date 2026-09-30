@@ -440,6 +440,9 @@ pub struct PlayerBinding {
     /// Local character-lease deadline. `None` is file mode, which has no lease.
     lease_deadline: Option<super::lease_clock::LocalLeaseDeadline>,
     authority_lost: bool,
+    /// A committed command could not be applied. Player control stays stopped
+    /// until that character is restored or the session is stopped.
+    reconcile_required: bool,
     pending_durable: u32,
     detach_when_idle: bool,
 }
@@ -556,6 +559,7 @@ pub struct GameplayOwner {
     durable_retry_at: HashMap<u64, std::time::Instant>,
     reconcile_outbound: Vec<ReconcileJob>,
     reconcile_reserved: HashMap<ConnectionId, Vec<purgatory_common::ItemInstanceId>>,
+    reconcile_effects: HashMap<ConnectionId, super::durable_play::DurableEffect>,
     reserved_items: HashSet<purgatory_common::ItemInstanceId>,
     durable_items: HashSet<purgatory_common::ItemInstanceId>,
 }
@@ -1446,6 +1450,7 @@ impl GameplayOwner {
             durable_retry_at: HashMap::new(),
             reconcile_outbound: Vec::new(),
             reconcile_reserved: HashMap::new(),
+            reconcile_effects: HashMap::new(),
             reserved_items: HashSet::new(),
             durable_items: HashSet::new(),
         }
@@ -1749,6 +1754,7 @@ impl GameplayOwner {
                 authority: None,
                 lease_deadline: None,
                 authority_lost: false,
+                reconcile_required: false,
                 pending_durable: 0,
                 detach_when_idle: false,
             },
@@ -1871,12 +1877,17 @@ impl GameplayOwner {
             return true;
         }
         self.bindings.get(&connection_id).is_some_and(|binding| {
-            binding.authority_lost || Self::deadline_expired(binding.lease_deadline)
+            binding.authority_lost
+                || binding.reconcile_required
+                || Self::deadline_expired(binding.lease_deadline)
         })
     }
 
     fn control_ended(channel_expired: bool, binding: &PlayerBinding) -> bool {
-        channel_expired || binding.authority_lost || Self::deadline_expired(binding.lease_deadline)
+        channel_expired
+            || binding.authority_lost
+            || binding.reconcile_required
+            || Self::deadline_expired(binding.lease_deadline)
     }
 
     /// Drop player-controlled work that has not landed yet. Damage and movement
@@ -2253,8 +2264,16 @@ impl GameplayOwner {
             self.interest_fanout.clear_observer(binding.entity);
             self.interest_fanout.clear_subject(binding.entity);
             self.world.despawn(binding.entity);
+            self.forget_departed_durable_items();
             self.player_entity_despawned = self.player_entity_despawned.saturating_add(1);
         }
+    }
+
+    /// Drop registrations whose records left `World` with a character.
+    /// A ground item that is still manifested stays registered.
+    fn forget_departed_durable_items(&mut self) {
+        self.durable_items
+            .retain(|id| self.world.item_record(*id).is_some());
     }
 
     fn request_save(&mut self, connection_id: ConnectionId) {

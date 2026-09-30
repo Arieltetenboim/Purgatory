@@ -67,12 +67,26 @@ derived equipment grant follows the equipped item.
 A confirmed commit whose `World` application fails does not send success and
 does not open the character for another mutation. Recovery reads the committed
 character and replaces the live items, narrative, and derived grants from that
-snapshot. The original request is still not acknowledged as success.
+snapshot. While that read is outstanding or has failed, new player input, held
+movement, Dash, ability activation, and a scheduled ability effect are stopped.
+Effects that already landed stay. Restoring the committed character resumes
+control. Stopping the session also leaves those new effects unapplied. The
+simulation tick still does not call the database.
+
+After that restore, the original Drop, pickup, or equipment request is answered
+with the committed result. A retry of the same sequence repeats that result.
+The commit is not described as rolled back, and the retry is not left unanswered.
 
 An unknown commit outcome keeps the original command key reserved. The next
-resolution submits that same key. Two unknown results do not invent a new key,
-do not report failure, and do not leave the character without a later resolution
-once the database answers. The simulation tick still does not call the database.
+resolution submits that same key. The same persistence worker opens a new
+database connection when the previous one died after `COMMIT`, reads the stored
+key, and returns that result once. If the database cannot be reached, the retry
+stays unknown instead of rejecting the committed command. Two unknown results
+do not invent a new key. The simulation tick still does not call the database.
+
+Logout removes a character's item ids from the server's durable-item set when
+those records are no longer in `World`. A ground item that is still manifested
+stays in the set.
 
 ## Verification recorded for this review
 
@@ -97,3 +111,16 @@ Simulation lib tests were 431 passed. The same disposable database then passed
 the 29 ignored persistence tests in 18.25s (`admit_us=61546`; workload
 `total_ms=1510`, `mean_us=16787`, debug profile, not a capacity claim) and 11
 ignored server `postgres_12c` tests in 4.33s.
+
+The recovery run of `./scripts/check.ps1` exited 0 in about 159s. Persistence
+lib tests were 38 passed and 30 ignored. Server bin tests were 343 passed and
+20 ignored. Simulation lib tests were 431 passed. Before those fixes, the same
+worker returned `commit outcome unknown: the database connection is closed`,
+movement input stayed accepted while the character was inconsistent, a Drop
+retry after reconcile produced no reply, and leased logout left item 40000
+registered. The same disposable database then passed 30 ignored persistence
+tests in 18.45s (`admit_us=16957`; workload `total_ms=1737`, `mean_us=19302`,
+debug profile, not a capacity claim) and 11 ignored server `postgres_12c` tests
+in 4.21s. Server tests still do not kill an in-flight SQL statement. The
+connection-loss cases live in the persistence suite, after `COMMIT`. No live
+ground-item expiry duration is chosen.

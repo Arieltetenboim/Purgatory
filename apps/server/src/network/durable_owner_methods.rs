@@ -271,7 +271,7 @@ impl GameplayOwner {
             });
         let applied = self.apply_effect(&pending.effect, committed);
         if !applied {
-            self.queue_reconcile(connection_id, adopted, pending.reserved);
+            self.queue_reconcile(connection_id, adopted, pending.reserved, pending.effect);
             return;
         }
         self.release_reserved(&pending.reserved);
@@ -286,6 +286,7 @@ impl GameplayOwner {
         connection_id: ConnectionId,
         revision: u64,
         reserved: Vec<purgatory_common::ItemInstanceId>,
+        effect: super::durable_play::DurableEffect,
     ) {
         let Some(character_id) = self
             .bindings
@@ -296,6 +297,10 @@ impl GameplayOwner {
             self.abandon_staged(connection_id);
             return;
         };
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.reconcile_required = true;
+        }
+        self.reconcile_effects.insert(connection_id, effect);
         self.reconcile_reserved.insert(connection_id, reserved);
         self.reconcile_outbound.push(ReconcileJob {
             connection_id,
@@ -312,8 +317,9 @@ impl GameplayOwner {
     }
 
     /// Replace the live character with the committed database snapshot.
-    /// Success does not acknowledge the original request. Failure leaves the
-    /// character reserved and sends no success.
+    /// Success tells the client the committed drop, pickup, or equipment
+    /// outcome. It does not describe that outcome as a rollback. Failure leaves
+    /// player control stopped and sends no rejection.
     pub fn complete_reconcile(
         &mut self,
         connection_id: ConnectionId,
@@ -340,8 +346,35 @@ impl GameplayOwner {
         if let Some(reserved) = self.reconcile_reserved.remove(&connection_id) {
             self.release_reserved(&reserved);
         }
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.reconcile_required = false;
+        }
+        self.acknowledge_reconciled(connection_id);
         self.finish_durable(connection_id, revision);
         true
+    }
+
+    fn acknowledge_reconciled(&mut self, connection_id: ConnectionId) {
+        let Some(effect) = self.reconcile_effects.remove(&connection_id) else {
+            return;
+        };
+        match &effect {
+            super::durable_play::DurableEffect::Drop { .. }
+            | super::durable_play::DurableEffect::Pickup { .. }
+            | super::durable_play::DurableEffect::Equip { .. }
+            | super::durable_play::DurableEffect::Unequip { .. } => {
+                self.publish_effect(
+                    &effect,
+                    &purgatory_persistence::DurableCommandResult {
+                        revisions: Vec::new(),
+                        minted_item_ids: Vec::new(),
+                    },
+                );
+            }
+            super::durable_play::DurableEffect::Dialogue { .. }
+            | super::durable_play::DurableEffect::Heard { .. }
+            | super::durable_play::DurableEffect::RetireGround { .. } => {}
+        }
     }
 
     fn clear_live_character(&mut self, actor: EntityId) {
