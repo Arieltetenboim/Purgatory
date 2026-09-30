@@ -149,6 +149,20 @@ impl PersistenceService {
         }
     }
 
+    /// Read the committed character, items, and narrative. Does not take a lease.
+    pub fn read_owned_restore(
+        &mut self,
+        id: purgatory_common::CharacterId,
+    ) -> Result<OwnedRestore, PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "committed character restore requires the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.read_owned_restore(id),
+        }
+    }
+
     pub fn commit_durable_leased(
         &mut self,
         command: &DurableCommand,

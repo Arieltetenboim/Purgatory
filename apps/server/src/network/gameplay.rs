@@ -478,6 +478,12 @@ struct DurablePending {
     reserved: Vec<purgatory_common::ItemInstanceId>,
 }
 
+struct ReconcileJob {
+    connection_id: ConnectionId,
+    character_id: CharacterId,
+    revision: u64,
+}
+
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
 pub struct GameplayOwner {
     world: World,
@@ -545,6 +551,11 @@ pub struct GameplayOwner {
     durable_tokens: u64,
     durable_outbound: Vec<u64>,
     durable_pending: HashMap<u64, DurablePending>,
+    /// Same-key retry is not due before this instant. An unknown commit stays
+    /// reserved until that retry returns a definite result.
+    durable_retry_at: HashMap<u64, std::time::Instant>,
+    reconcile_outbound: Vec<ReconcileJob>,
+    reconcile_reserved: HashMap<ConnectionId, Vec<purgatory_common::ItemInstanceId>>,
     reserved_items: HashSet<purgatory_common::ItemInstanceId>,
     durable_items: HashSet<purgatory_common::ItemInstanceId>,
 }
@@ -689,6 +700,11 @@ pub enum LifecycleCmd {
             purgatory_persistence::DurableCommandResult,
             purgatory_persistence::PersistError,
         >,
+    },
+    ReconcileDurable {
+        connection_id: ConnectionId,
+        revision: u64,
+        restore: Result<purgatory_persistence::OwnedRestore, purgatory_persistence::PersistError>,
     },
 }
 
@@ -1427,6 +1443,9 @@ impl GameplayOwner {
             durable_tokens: 1,
             durable_outbound: Vec::new(),
             durable_pending: HashMap::new(),
+            durable_retry_at: HashMap::new(),
+            reconcile_outbound: Vec::new(),
+            reconcile_reserved: HashMap::new(),
             reserved_items: HashSet::new(),
             durable_items: HashSet::new(),
         }
@@ -2675,6 +2694,22 @@ impl GameplayOwner {
                 LifecycleCmd::SettleDurable { token, result } => {
                     self.settle_durable(token, result);
                 }
+                LifecycleCmd::ReconcileDurable {
+                    connection_id,
+                    revision,
+                    restore,
+                } => match restore {
+                    Ok(restore) => {
+                        if !self.complete_reconcile(connection_id, revision, restore) {
+                            eprintln!(
+                                "PURGATORY durable reconcile could not apply the committed character"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("PURGATORY durable reconcile read failed: {err}");
+                    }
+                },
             }
         }
         while let Ok(update) = input.try_recv() {

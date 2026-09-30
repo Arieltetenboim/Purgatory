@@ -36,8 +36,9 @@ them again from authored content.
 ## Unresolved
 
 There is no authored duration for a live ground-item expiry timer. This slice does
-not invent one and does not restore a timer after restart. A test can retire one
-live ground item explicitly. That retire command has no character owner, because a
+not invent one and does not restore a timer after restart. That product decision
+stays open and is required before 12C acceptance. A test can retire one live
+ground item explicitly. That retire command has no character owner, because a
 ground row has none, so the database does not fence it with a character-lease
 generation. The simulation thread still requires a leased session and reserves the
 item before submitting it.
@@ -50,6 +51,28 @@ command can place, move, or retire a whole item. It cannot reduce a quantity in 
 Quests, Trade, currency, and new gameplay features are not implemented here.
 Phase 12 is not complete. A normal client still has to prove reconnect, restart,
 and recovery before that exit.
+
+## Review fixes still in review
+
+Logout and same-process reconnect remove the actor's inventory and equipment
+records from `World` with the actor. A partially failed restore clears those
+records before the connection is released. Committed database ownership is left
+as it was. A live ground manifestation is not removed with the player.
+
+Equipment replacement puts the displaced item in the incoming item's inventory
+slot, including when that is the only free slot. After acknowledgement, the
+database row and `World` use that same item id, location, and slot, and the
+derived equipment grant follows the equipped item.
+
+A confirmed commit whose `World` application fails does not send success and
+does not open the character for another mutation. Recovery reads the committed
+character and replaces the live items, narrative, and derived grants from that
+snapshot. The original request is still not acknowledged as success.
+
+An unknown commit outcome keeps the original command key reserved. The next
+resolution submits that same key. Two unknown results do not invent a new key,
+do not report failure, and do not leave the character without a later resolution
+once the database answers. The simulation tick still does not call the database.
 
 ## Verification recorded for this review
 
@@ -67,3 +90,10 @@ Server failure injection rejects a stale lease generation and a retired content
 rule before the item moves. It does not kill an in-flight SQL statement. The
 persistence suite still owns the unknown-commit connection cases. A lost gameplay
 reply is a second commit of the same key, applied once.
+
+The review-fix run of `./scripts/check.ps1` also exited 0. Persistence lib tests
+were 38 passed and 29 ignored. Server bin tests were 340 passed and 20 ignored.
+Simulation lib tests were 431 passed. The same disposable database then passed
+the 29 ignored persistence tests in 18.25s (`admit_us=61546`; workload
+`total_ms=1510`, `mean_us=16787`, debug profile, not a capacity claim) and 11
+ignored server `postgres_12c` tests in 4.33s.

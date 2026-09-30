@@ -563,7 +563,10 @@ fn insert_lease(
     Ok(())
 }
 
-fn load_restore(tx: &mut Transaction<'_>, id: CharacterId) -> Result<OwnedRestore, PersistError> {
+pub(crate) fn load_restore(
+    tx: &mut Transaction<'_>,
+    id: CharacterId,
+) -> Result<OwnedRestore, PersistError> {
     let raw = id_bytes(id.raw());
     let row = tx
         .query_opt(

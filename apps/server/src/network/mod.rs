@@ -128,6 +128,36 @@ fn spawn_durable_commits(
                 .await;
         });
     }
+    for (connection_id, character_id, revision) in owner.take_reconcile_jobs() {
+        let persist = persist.clone();
+        let tx = gameplay_tx.clone();
+        tokio::spawn(async move {
+            let mut attempts = 0u32;
+            let restore = loop {
+                match persist.read_owned_restore(character_id).await {
+                    Ok(restore) => break Ok(restore),
+                    Err(purgatory_persistence::PersistError::Storage { .. }) => {
+                        attempts = attempts.saturating_add(1);
+                        if tx.lifecycle.is_closed() {
+                            return;
+                        }
+                        if attempts >= 2 {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+                    }
+                    Err(err) => break Err(err),
+                }
+            };
+            let _ = tx
+                .lifecycle
+                .send(gameplay::LifecycleCmd::ReconcileDurable {
+                    connection_id,
+                    revision,
+                    restore,
+                })
+                .await;
+        });
+    }
 }
 
 async fn run(config: ServerEndpointConfig) -> Result<(), String> {

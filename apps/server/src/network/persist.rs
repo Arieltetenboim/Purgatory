@@ -52,6 +52,11 @@ enum PersistCmd {
         lease: Option<purgatory_persistence::LeaseAuthority>,
         reply: tokio::sync::oneshot::Sender<Result<DurableCommandResult, PersistError>>,
     },
+    ReadOwnedRestore {
+        character_id: purgatory_common::CharacterId,
+        reply:
+            tokio::sync::oneshot::Sender<Result<purgatory_persistence::OwnedRestore, PersistError>>,
+    },
     InstallRules {
         rules: purgatory_persistence::DurableContentRules,
         reply: tokio::sync::oneshot::Sender<()>,
@@ -456,6 +461,12 @@ impl PersistenceHandle {
                     } => {
                         let _ = reply.send(service.commit_durable_leased(&command, lease.as_ref()));
                     }
+                    PersistCmd::ReadOwnedRestore {
+                        character_id,
+                        reply,
+                    } => {
+                        let _ = reply.send(service.read_owned_restore(character_id));
+                    }
                     PersistCmd::InstallRules { rules, reply } => {
                         service.set_durable_content_rules(rules);
                         let _ = reply.send(());
@@ -667,6 +678,23 @@ impl PersistenceHandle {
             .send(PersistCmd::CommitDurable {
                 command,
                 lease,
+                reply,
+            })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    /// Read committed character state. Callers are connection tasks. The
+    /// simulation tick must not call this or block on it.
+    pub async fn read_owned_restore(
+        &self,
+        character_id: purgatory_common::CharacterId,
+    ) -> Result<purgatory_persistence::OwnedRestore, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::ReadOwnedRestore {
+                character_id,
                 reply,
             })
             .await

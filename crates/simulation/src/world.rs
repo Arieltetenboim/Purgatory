@@ -1041,6 +1041,20 @@ impl World {
 
     pub(crate) fn cleanup_item_runtime_for_entity(&mut self, entity: EntityId) {
         let _ = self.item_runtime.remove_by_world_drop(entity);
+        let _ = self.item_runtime.take_owner_items(entity);
+    }
+
+    /// Remove this actor's inventory, equipment, and derived grants so a
+    /// committed restore can bind the same item ids again.
+    pub fn clear_character_durable_runtime(&mut self, owner: EntityId) -> Vec<ItemInstanceId> {
+        for slot in EquipmentSlot::ALL {
+            if let Some(item) = self.equipped_instance(owner, slot) {
+                self.revoke_equipment_ability_grant(owner, item);
+            }
+            let _ = self.clear_equipment_slot(owner, slot);
+        }
+        self.ability_grants.retain_intrinsic(owner);
+        self.item_runtime.take_owner_items(owner)
     }
 
     #[must_use]

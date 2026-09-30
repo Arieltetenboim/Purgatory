@@ -774,3 +774,668 @@
                 .is_none());
         });
     }
+
+    fn character_restore(
+        character: CharacterId,
+        items: Vec<purgatory_persistence::ItemRecord>,
+    ) -> purgatory_persistence::OwnedRestore {
+        purgatory_persistence::OwnedRestore {
+            character: purgatory_persistence::PersistentCharacter::new_default(character),
+            items,
+            narrative: purgatory_persistence::CharacterNarrativeState::default(),
+        }
+    }
+
+    fn owned_record(
+        character: CharacterId,
+        item: ItemInstanceId,
+        definition: ContentId,
+        location: CharacterItemLocation,
+    ) -> purgatory_persistence::ItemRecord {
+        purgatory_persistence::ItemRecord {
+            item_instance_id: item,
+            definition_content_id: definition,
+            quantity: 1,
+            owner: ItemOwner::Character {
+                character_id: character,
+                location,
+            },
+        }
+    }
+
+    #[test]
+    fn reconnect_clears_world_items_before_the_same_ids_return() {
+        let mut owner = GameplayOwner::new();
+        let character = CharacterId::from_raw(41);
+        let inventory_item = ItemInstanceId::from_raw(9_001);
+        let equipped_item = ItemInstanceId::from_raw(9_002);
+        let restore = character_restore(
+            character,
+            vec![
+                owned_record(
+                    character,
+                    inventory_item,
+                    headwear(),
+                    CharacterItemLocation::Inventory { slot: 0 },
+                ),
+                owned_record(
+                    character,
+                    equipped_item,
+                    sword(),
+                    CharacterItemLocation::Equipped {
+                        slot: purgatory_persistence::DurableEquipmentSlot::Weapon,
+                    },
+                ),
+            ],
+        );
+        let lease = purgatory_persistence::LeaseAuthority {
+            login: DevLogin::parse("dev.local").unwrap(),
+            character_id: character,
+            generation: 1,
+        };
+        owner
+            .enter_restored(
+                ConnectionId::from_raw(1),
+                restore.clone(),
+                Some(lease.clone()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let first_actor = owner.entity_of(ConnectionId::from_raw(1)).unwrap();
+        assert!(owner.world().inventory_contains(first_actor, inventory_item));
+        assert_eq!(
+            owner
+                .world()
+                .equipped_instance(first_actor, purgatory_simulation::EquipmentSlot::Weapon),
+            Some(equipped_item)
+        );
+        let address = owner.world().address_of(first_actor).unwrap();
+        let position = owner.world().transform_of(first_actor).unwrap().position;
+        let (ground, _) = owner
+            .world_mut()
+            .spawn_world_drop_item(address, position, sword(), 1, 1)
+            .unwrap();
+        owner
+            .prepare_logout(ConnectionId::from_raw(1))
+            .expect("logout");
+        assert!(
+            owner.world().item_record(ground).is_some(),
+            "a live ground item stays in World when its owner leaves"
+        );
+        assert!(
+            owner.world().item_record(inventory_item).is_none(),
+            "logout must drop the inventory record with the actor"
+        );
+        assert!(owner.world().item_record(equipped_item).is_none());
+
+        let mut partial = restore.clone();
+        partial.items[1].quantity = 0;
+        let failed = owner.enter_restored(
+            ConnectionId::from_raw(2),
+            partial,
+            Some(lease.clone()),
+            None,
+            None,
+            None,
+        );
+        assert!(failed.is_err(), "a partial restore must fail closed");
+        assert!(
+            owner.world().item_record(inventory_item).is_none(),
+            "a failed restore must not leave the first item in World"
+        );
+        assert!(owner.entity_of(ConnectionId::from_raw(2)).is_none());
+
+        owner
+            .enter_restored(
+                ConnectionId::from_raw(3),
+                restore,
+                Some(lease),
+                None,
+                None,
+                None,
+            )
+            .expect("the same item ids can enter after cleanup");
+        let actor = owner.entity_of(ConnectionId::from_raw(3)).unwrap();
+        assert!(owner.world().inventory_contains(actor, inventory_item));
+        assert_eq!(
+            owner
+                .world()
+                .equipped_instance(actor, purgatory_simulation::EquipmentSlot::Weapon),
+            Some(equipped_item)
+        );
+        assert!(owner.world().ability_granted(
+            actor,
+            purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE
+        ));
+    }
+
+    #[test]
+    fn confirmed_commit_does_not_release_gameplay_when_world_apply_fails() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        let character = CharacterId::from_raw(42);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[item]);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        let staged = owner.take_durable_commits();
+        assert!(owner.world_mut().retire_inventory_instance(actor, item));
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+        assert!(rx.try_recv().is_err(), "a failed apply must not report success");
+        let other = owned_debug_sword(&mut owner, actor);
+        owner.durable_items.insert(other);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 2,
+                item_instance_id: other,
+            },
+        });
+        assert!(
+            owner.take_durable_commits().is_empty(),
+            "an inconsistent character must not start another mutation"
+        );
+        assert!(owner.world().inventory_contains(actor, other));
+        let committed = character_restore(character, Vec::new());
+        assert!(
+            owner.complete_reconcile(id, 2, committed),
+            "reconcile applies the committed character"
+        );
+        while let Ok(message) = rx.try_recv() {
+            assert!(
+                !matches!(message, ServerControl::Item(ServerItem::DropAccepted { .. })),
+                "reconciliation must not report the original request as success"
+            );
+        }
+        assert!(owner.world().item_record(item).is_none());
+        assert!(
+            owner.world().item_record(other).is_none(),
+            "an uncommitted runtime item does not survive reconciliation"
+        );
+        let fresh = owned_debug_sword(&mut owner, actor);
+        owner.durable_items.insert(fresh);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 3,
+                item_instance_id: fresh,
+            },
+        });
+        assert_eq!(owner.take_durable_commits().len(), 1);
+    }
+
+    #[test]
+    fn two_unknown_commits_stay_on_the_same_key() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        let character = CharacterId::from_raw(43);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[item]);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        let staged = owner.take_durable_commits();
+        let key = staged[0].command.key.clone();
+        let token = staged[0].token;
+        owner.settle_durable(
+            token,
+            Err(PersistError::storage(
+                "commit outcome unknown: reply was not observed",
+            )),
+        );
+        owner.settle_durable(
+            token,
+            Err(PersistError::storage(
+                "commit outcome unknown: reply was not observed",
+            )),
+        );
+        let again = owner.take_durable_commits();
+        assert_eq!(again.len(), 1, "the same command must be resolved again");
+        assert_eq!(again[0].token, token);
+        assert_eq!(again[0].command.key, key);
+        assert!(rx.try_recv().is_err(), "unknown is not success or failure");
+        assert!(owner.world().inventory_contains(actor, item));
+        owner.settle_durable(
+            token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+        assert_eq!(recv_item(&mut rx), ServerItem::DropAccepted { seq: 1 });
+        assert!(owner.world().world_drop_entity_for_item(item).is_some());
+        assert!(owner.take_durable_commits().is_empty());
+    }
+
+    impl Pg {
+        fn place_item(
+            &mut self,
+            entered: &Entered,
+            definition: ContentId,
+            slot: u16,
+            nonce: u64,
+        ) -> ItemInstanceId {
+            let (revision, lease) = {
+                let binding = self.owner.bindings.get(&entered.connection).unwrap();
+                (
+                    binding.committed_revision,
+                    binding.authority.clone().unwrap(),
+                )
+            };
+            let command = DurableCommand {
+                key: format!("place-{}-{nonce}", entered.character.raw()),
+                expected_revisions: vec![(entered.character, revision)],
+                place_new: vec![PlaceNewItem {
+                    owner: entered.character,
+                    definition_content_id: definition,
+                    quantity: 1,
+                    location: CharacterItemLocation::Inventory { slot },
+                }],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            };
+            let result = self
+                .service
+                .commit_durable_leased(&command, Some(&lease))
+                .unwrap();
+            let minted = result.minted_item_ids[0];
+            let next = result
+                .revisions
+                .iter()
+                .find(|(id, _)| *id == entered.character)
+                .unwrap()
+                .1;
+            let stack_limit = self
+                .owner
+                .registry
+                .item_by_id(definition)
+                .unwrap()
+                .stack_limit;
+            self.owner
+                .world_mut()
+                .restore_inventory_item(
+                    entered.actor,
+                    minted,
+                    definition,
+                    1,
+                    stack_limit,
+                    slot,
+                )
+                .unwrap();
+            self.owner.lease_for_test(
+                entered.connection,
+                entered.character,
+                next,
+                lease.login.as_str(),
+                lease.generation,
+                &[minted],
+            );
+            minted
+        }
+    }
+
+    fn db_location(pg: &mut Pg, item: ItemInstanceId) -> CharacterItemLocation {
+        match pg.service.read_item(item).unwrap().unwrap().owner {
+            ItemOwner::Character { location, .. } => location,
+            other => panic!("expected character ownership, got {other:?}"),
+        }
+    }
+
+    fn world_location(
+        owner: &GameplayOwner,
+        item: ItemInstanceId,
+    ) -> purgatory_simulation::ItemLocation {
+        owner.world().item_record(item).unwrap().location
+    }
+
+    #[test]
+    #[ignore]
+    fn postgres_12c_reconnect_keeps_committed_items() {
+        with_db(|pg| {
+            let a = pg.enter("Mira");
+            let bag = pg.place_item(&a, headwear(), 0, 1);
+            let weapon = pg.place_item(&a, sword(), 1, 2);
+            pg.owner.apply_input(InputUpdate::Equip {
+                connection_id: a.connection,
+                request: EquipRequest {
+                    seq: 1,
+                    slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+                    item_instance_id: weapon,
+                },
+            });
+            pg.settle_next();
+            let bag_owner = pg.service.read_item(bag).unwrap().unwrap().owner;
+            let weapon_owner = pg.service.read_item(weapon).unwrap().unwrap().owner;
+
+            pg.owner.prepare_logout(a.connection).unwrap();
+            assert!(pg.owner.world().item_record(bag).is_none());
+            assert!(pg.owner.world().item_record(weapon).is_none());
+            pg.service.release_lease(&a.lease).unwrap();
+
+            let admission = pg.service.admit(&pg.login, a.character).unwrap();
+            let SessionAdmission::Granted {
+                authority: Some(lease),
+                restore,
+            } = admission
+            else {
+                panic!("expected the released character to admit");
+            };
+            let mut partial = restore.clone();
+            partial.items[1].quantity = 0;
+            let failed = pg.owner.enter_restored(
+                ConnectionId::from_raw(pg.next_connection),
+                *partial,
+                Some(lease.clone()),
+                None,
+                None,
+                None,
+            );
+            pg.next_connection += 1;
+            assert!(failed.is_err());
+            assert!(pg.owner.world().item_record(bag).is_none());
+            assert_eq!(pg.service.read_item(bag).unwrap().unwrap().owner, bag_owner);
+            assert_eq!(
+                pg.service.read_item(weapon).unwrap().unwrap().owner,
+                weapon_owner
+            );
+
+            let connection = ConnectionId::from_raw(pg.next_connection);
+            pg.next_connection += 1;
+            pg.owner
+                .enter_restored(connection, *restore, Some(lease.clone()), None, None, None)
+                .unwrap();
+            let actor = pg.owner.entity_of(connection).unwrap();
+            assert!(pg.owner.world().inventory_contains(actor, bag));
+            assert_eq!(
+                pg.owner
+                    .world()
+                    .equipped_instance(actor, purgatory_simulation::EquipmentSlot::Weapon),
+                Some(weapon)
+            );
+            assert!(pg.owner.world().ability_granted(
+                actor,
+                purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE
+            ));
+
+            let (authority, _) = pg.owner.stop_for_reconnect(a.character).unwrap();
+            let (next, again) = pg.service.supersede(&authority).unwrap();
+            let reconnected = ConnectionId::from_raw(pg.next_connection);
+            pg.owner
+                .enter_restored(reconnected, again, Some(next), None, None, None)
+                .unwrap();
+            let actor = pg.owner.entity_of(reconnected).unwrap();
+            assert!(pg.owner.world().inventory_contains(actor, bag));
+            assert_eq!(
+                pg.owner
+                    .world()
+                    .equipped_instance(actor, purgatory_simulation::EquipmentSlot::Weapon),
+                Some(weapon)
+            );
+            assert_eq!(pg.service.read_item(bag).unwrap().unwrap().owner, bag_owner);
+            assert_eq!(
+                pg.service.read_item(weapon).unwrap().unwrap().owner,
+                weapon_owner
+            );
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn postgres_12c_equipment_replacement_matches_world_and_database() {
+        with_db(|pg| {
+            let a = pg.enter("Mira");
+            let first = pg.place_item(&a, sword(), 0, 1);
+            let second = pg.place_item(&a, sword(), 1, 2);
+            pg.owner.apply_input(InputUpdate::Equip {
+                connection_id: a.connection,
+                request: EquipRequest {
+                    seq: 1,
+                    slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+                    item_instance_id: first,
+                },
+            });
+            pg.settle_next();
+            pg.owner.apply_input(InputUpdate::Equip {
+                connection_id: a.connection,
+                request: EquipRequest {
+                    seq: 2,
+                    slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+                    item_instance_id: second,
+                },
+            });
+            pg.settle_next();
+            assert_eq!(
+                db_location(pg, first),
+                CharacterItemLocation::Inventory { slot: 1 }
+            );
+            assert_eq!(
+                world_location(&pg.owner, first),
+                purgatory_simulation::ItemLocation::Inventory {
+                    owner: a.actor,
+                    slot: 1
+                }
+            );
+            assert_eq!(
+                db_location(pg, second),
+                CharacterItemLocation::Equipped {
+                    slot: purgatory_persistence::DurableEquipmentSlot::Weapon,
+                }
+            );
+            assert!(pg.owner.world().ability_granted(
+                a.actor,
+                purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE
+            ));
+
+            let mut incoming = None;
+            let mut nonce = 10u64;
+            for slot in 0..purgatory_simulation::INVENTORY_CAPACITY as u16 {
+                if slot == 1 {
+                    continue;
+                }
+                let definition = if slot == 4 { sword() } else { headwear() };
+                let item = pg.place_item(&a, definition, slot, nonce);
+                nonce += 1;
+                if slot == 4 {
+                    incoming = Some(item);
+                }
+            }
+            let incoming = incoming.unwrap();
+            assert_eq!(
+                pg.owner.world().inventory_count(a.actor),
+                purgatory_simulation::INVENTORY_CAPACITY
+            );
+            pg.owner.apply_input(InputUpdate::Equip {
+                connection_id: a.connection,
+                request: EquipRequest {
+                    seq: 3,
+                    slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+                    item_instance_id: incoming,
+                },
+            });
+            pg.settle_next();
+            assert_eq!(
+                db_location(pg, second),
+                CharacterItemLocation::Inventory { slot: 4 }
+            );
+            assert_eq!(
+                world_location(&pg.owner, second),
+                purgatory_simulation::ItemLocation::Inventory {
+                    owner: a.actor,
+                    slot: 4
+                }
+            );
+            assert_eq!(
+                db_location(pg, incoming),
+                CharacterItemLocation::Equipped {
+                    slot: purgatory_persistence::DurableEquipmentSlot::Weapon,
+                }
+            );
+            assert_eq!(
+                world_location(&pg.owner, incoming),
+                purgatory_simulation::ItemLocation::Equipped {
+                    owner: a.actor,
+                    slot: purgatory_simulation::EquipmentSlot::Weapon,
+                }
+            );
+            assert_eq!(
+                pg.owner.world().inventory_count(a.actor),
+                purgatory_simulation::INVENTORY_CAPACITY
+            );
+            assert!(pg.owner.world().ability_granted(
+                a.actor,
+                purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE
+            ));
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn postgres_12c_failed_apply_reconciles_without_a_success_reply() {
+        with_db(|pg| {
+            let a = pg.enter("Mira");
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            pg.owner.bindings.get_mut(&a.connection).unwrap().interact = Some(tx);
+            let dropped = pg.place_item(&a, sword(), 0, 1);
+            let kept = pg.place_item(&a, headwear(), 1, 2);
+            pg.owner.apply_input(InputUpdate::Drop {
+                connection_id: a.connection,
+                request: DropRequest {
+                    seq: 1,
+                    item_instance_id: dropped,
+                },
+            });
+            let staged = pg.owner.take_durable_commits();
+            let committed = pg
+                .service
+                .commit_durable_leased(&staged[0].command, staged[0].lease.as_ref())
+                .unwrap();
+            assert!(pg
+                .owner
+                .world_mut()
+                .retire_inventory_instance(a.actor, dropped));
+            pg.owner.settle_durable(staged[0].token, Ok(committed));
+            assert!(rx.try_recv().is_err());
+            pg.owner.apply_input(InputUpdate::Drop {
+                connection_id: a.connection,
+                request: DropRequest {
+                    seq: 2,
+                    item_instance_id: kept,
+                },
+            });
+            assert!(pg.owner.take_durable_commits().is_empty());
+            let restore = pg.service.read_owned_restore(a.character).unwrap();
+            let revision = restore.character.persistence_revision;
+            assert!(pg
+                .owner
+                .complete_reconcile(a.connection, revision, restore));
+            while let Ok(message) = rx.try_recv() {
+                assert!(!matches!(
+                    message,
+                    ServerControl::Item(ServerItem::DropAccepted { .. })
+                ));
+            }
+            assert!(pg.owner.world().item_record(dropped).is_none());
+            assert!(pg.owner.world().inventory_contains(a.actor, kept));
+            assert_eq!(
+                pg.service.read_item(dropped).unwrap().unwrap().owner,
+                ItemOwner::Ground
+            );
+            assert!(matches!(
+                pg.service.read_item(kept).unwrap().unwrap().owner,
+                ItemOwner::Character {
+                    location: CharacterItemLocation::Inventory { slot: 1 },
+                    ..
+                }
+            ));
+            pg.owner.apply_input(InputUpdate::Drop {
+                connection_id: a.connection,
+                request: DropRequest {
+                    seq: 3,
+                    item_instance_id: kept,
+                },
+            });
+            assert_eq!(pg.owner.take_durable_commits().len(), 1);
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn postgres_12c_unknown_outcome_resolves_the_stored_key() {
+        with_db(|pg| {
+            let a = pg.enter("Mira");
+            let item = pg.place_item(&a, sword(), 0, 1);
+            pg.owner.apply_input(InputUpdate::Drop {
+                connection_id: a.connection,
+                request: DropRequest {
+                    seq: 1,
+                    item_instance_id: item,
+                },
+            });
+            let staged = pg.owner.take_durable_commits();
+            let key = staged[0].command.key.clone();
+            let stored = pg
+                .service
+                .commit_durable_leased(&staged[0].command, staged[0].lease.as_ref())
+                .unwrap();
+            let unknown = || {
+                Err(PersistError::storage(
+                    "commit outcome unknown: reply was not observed",
+                ))
+            };
+            pg.owner.settle_durable(staged[0].token, unknown());
+            pg.owner.settle_durable(staged[0].token, unknown());
+            let again = pg.owner.take_durable_commits();
+            assert_eq!(again.len(), 1);
+            assert_eq!(again[0].command.key, key);
+            let resolved = pg
+                .service
+                .commit_durable_leased(&again[0].command, again[0].lease.as_ref())
+                .unwrap();
+            assert_eq!(resolved, stored);
+            pg.owner.settle_durable(again[0].token, Ok(resolved));
+            assert!(pg.owner.world().world_drop_entity_for_item(item).is_some());
+            assert!(!pg.owner.world().inventory_contains(a.actor, item));
+            assert_eq!(
+                pg.service.read_item(item).unwrap().unwrap().owner,
+                ItemOwner::Ground
+            );
+            let other = pg.place_item(&a, headwear(), 0, 2);
+            pg.owner.apply_input(InputUpdate::Drop {
+                connection_id: a.connection,
+                request: DropRequest {
+                    seq: 2,
+                    item_instance_id: other,
+                },
+            });
+            let next = pg.owner.take_durable_commits();
+            assert_eq!(next.len(), 1);
+            assert_ne!(next[0].command.key, key);
+        });
+    }

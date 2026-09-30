@@ -143,6 +143,7 @@ impl GameplayOwner {
     }
 
     pub fn take_durable_commits(&mut self) -> Vec<super::durable_play::DurableSubmit> {
+        self.promote_due_retries(std::time::Instant::now());
         let tokens = std::mem::take(&mut self.durable_outbound);
         tokens
             .into_iter()
@@ -168,6 +169,30 @@ impl GameplayOwner {
         })
     }
 
+    fn unknown_backoff() -> std::time::Duration {
+        if cfg!(test) {
+            std::time::Duration::ZERO
+        } else {
+            std::time::Duration::from_millis(200)
+        }
+    }
+
+    fn promote_due_retries(&mut self, now: std::time::Instant) {
+        let due: Vec<u64> = self
+            .durable_retry_at
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(token, _)| *token)
+            .collect();
+        for token in due {
+            self.durable_retry_at.remove(&token);
+            if self.durable_pending.contains_key(&token) && !self.durable_outbound.contains(&token)
+            {
+                self.durable_outbound.push(token);
+            }
+        }
+    }
+
     pub fn settle_durable(
         &mut self,
         token: u64,
@@ -184,16 +209,23 @@ impl GameplayOwner {
             .err()
             .is_some_and(super::durable_play::commit_outcome_unknown)
         {
+            self.durable_retry_at.insert(
+                token,
+                std::time::Instant::now() + Self::unknown_backoff(),
+            );
             return;
         }
         let Some(pending) = self.durable_pending.remove(&token) else {
             return;
         };
         self.durable_outbound.retain(|queued| *queued != token);
-        self.release_reserved(&pending.reserved);
+        self.durable_retry_at.remove(&token);
         match result {
             Ok(committed) => self.apply_committed(pending, &committed),
-            Err(_) => self.fail_committed(pending),
+            Err(_) => {
+                self.release_reserved(&pending.reserved);
+                self.fail_committed(pending);
+            }
         }
     }
 
@@ -238,10 +270,85 @@ impl GameplayOwner {
                     .unwrap_or(0)
             });
         let applied = self.apply_effect(&pending.effect, committed);
-        if applied && self.client_open(connection_id) {
+        if !applied {
+            self.queue_reconcile(connection_id, adopted, pending.reserved);
+            return;
+        }
+        self.release_reserved(&pending.reserved);
+        if self.client_open(connection_id) {
             self.publish_effect(&pending.effect, committed);
         }
         self.finish_durable(connection_id, adopted);
+    }
+
+    fn queue_reconcile(
+        &mut self,
+        connection_id: ConnectionId,
+        revision: u64,
+        reserved: Vec<purgatory_common::ItemInstanceId>,
+    ) {
+        let Some(character_id) = self
+            .bindings
+            .get(&connection_id)
+            .and_then(|binding| binding.character_id)
+        else {
+            self.release_reserved(&reserved);
+            self.abandon_staged(connection_id);
+            return;
+        };
+        self.reconcile_reserved.insert(connection_id, reserved);
+        self.reconcile_outbound.push(ReconcileJob {
+            connection_id,
+            character_id,
+            revision,
+        });
+    }
+
+    pub fn take_reconcile_jobs(&mut self) -> Vec<(ConnectionId, CharacterId, u64)> {
+        std::mem::take(&mut self.reconcile_outbound)
+            .into_iter()
+            .map(|job| (job.connection_id, job.character_id, job.revision))
+            .collect()
+    }
+
+    /// Replace the live character with the committed database snapshot.
+    /// Success does not acknowledge the original request. Failure leaves the
+    /// character reserved and sends no success.
+    pub fn complete_reconcile(
+        &mut self,
+        connection_id: ConnectionId,
+        revision: u64,
+        restore: purgatory_persistence::OwnedRestore,
+    ) -> bool {
+        let matches = self.bindings.get(&connection_id).is_some_and(|binding| {
+            binding.character_id == Some(restore.character.character_id)
+        });
+        if !matches {
+            return false;
+        }
+        let actor = self.bindings.get(&connection_id).map(|binding| binding.entity);
+        let Some(actor) = actor else {
+            return false;
+        };
+        self.clear_live_character(actor);
+        if self.apply_durable_restore(connection_id, &restore).is_err() {
+            self.clear_live_character(actor);
+            return false;
+        }
+        self.reconcile_outbound
+            .retain(|job| job.connection_id != connection_id);
+        if let Some(reserved) = self.reconcile_reserved.remove(&connection_id) {
+            self.release_reserved(&reserved);
+        }
+        self.finish_durable(connection_id, revision);
+        true
+    }
+
+    fn clear_live_character(&mut self, actor: EntityId) {
+        for id in self.world.clear_character_durable_runtime(actor) {
+            self.durable_items.remove(&id);
+        }
+        self.narrative.reset_actor(actor);
     }
 
     fn apply_effect(

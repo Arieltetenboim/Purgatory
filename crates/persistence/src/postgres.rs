@@ -187,6 +187,16 @@ impl PostgresStore {
         load_item(&mut self.client, id)
     }
 
+    pub(crate) fn read_owned_restore(
+        &mut self,
+        id: CharacterId,
+    ) -> Result<OwnedRestore, PersistError> {
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        let restore = crate::lifecycle::load_restore(&mut tx, id)?;
+        tx.rollback().map_err(map_sql)?;
+        Ok(restore)
+    }
+
     pub(crate) fn commit(
         &mut self,
         command: &DurableCommand,

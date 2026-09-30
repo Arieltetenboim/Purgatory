@@ -311,6 +311,33 @@ impl ItemRuntimeState {
         Ok(())
     }
 
+    /// Drop inventory and equipment records owned by a despawned or reconciled actor.
+    /// World-drop rows stay with their manifestation entity.
+    pub(crate) fn take_owner_items(&mut self, owner: EntityId) -> Vec<ItemInstanceId> {
+        let mut removed = Vec::new();
+        if let Some(slots) = self.inventories.remove(&owner) {
+            for id in slots.into_iter().flatten() {
+                self.records.remove(&id);
+                removed.push(id);
+            }
+        }
+        let equipped: Vec<ItemInstanceId> = self
+            .records
+            .iter()
+            .filter_map(|(id, record)| match record.location {
+                ItemLocation::Equipped {
+                    owner: item_owner, ..
+                } if item_owner == owner => Some(*id),
+                _ => None,
+            })
+            .collect();
+        for id in equipped {
+            self.records.remove(&id);
+            removed.push(id);
+        }
+        removed
+    }
+
     pub(crate) fn remove_by_world_drop(
         &mut self,
         entity: EntityId,
@@ -397,39 +424,23 @@ impl ItemRuntimeState {
             .position(|candidate| *candidate == Some(item))
             .ok_or(ItemRuntimeError::ItemNotInInventory { owner, item })?;
         let replaced = self.equipped_item(owner, slot);
-        let replacement_destination = replaced.and_then(|_| {
-            slots
-                .iter()
-                .enumerate()
-                .find_map(|(index, candidate)| {
-                    (candidate.is_none() && index != source).then_some(index)
-                })
-                .or_else(|| (slots.len() < INVENTORY_CAPACITY).then_some(slots.len()))
-        });
-        if replaced.is_some() && replacement_destination.is_none() {
-            return Err(ItemRuntimeError::InventoryFull(owner));
-        }
-
+        let source_slot = u16::try_from(source).expect("inventory capacity fits u16");
+        // The incoming item vacates this slot. The displaced item takes that
+        // same slot, which is also the only free slot when the inventory is full.
         let slots = self
             .inventories
             .get_mut(&owner)
             .expect("inventory presence checked above");
         slots[source] = None;
         if let Some(old_item) = replaced {
-            let destination =
-                replacement_destination.expect("replacement destination checked above");
-            if destination == slots.len() {
-                slots.push(Some(old_item));
-            } else {
-                slots[destination] = Some(old_item);
-            }
+            slots[source] = Some(old_item);
             let record = self
                 .records
                 .get_mut(&old_item)
                 .expect("equipped item has a canonical record");
             record.location = ItemLocation::Inventory {
                 owner,
-                slot: u16::try_from(destination).expect("inventory capacity fits u16"),
+                slot: source_slot,
             };
         }
         let record = self

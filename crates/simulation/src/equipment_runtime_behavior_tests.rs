@@ -410,7 +410,7 @@ fn occupied_slot_replaces_and_returns_previous_instance_to_inventory() {
         world.item_record(first).map(|record| record.location),
         Some(ItemLocation::Inventory {
             owner: actor,
-            slot: 0
+            slot: 1
         })
     );
     assert_eq!(
@@ -424,6 +424,53 @@ fn occupied_slot_replaces_and_returns_previous_instance_to_inventory() {
         world.equipment_slot(actor, EquipmentSlot::Weapon),
         Some(token(703))
     );
+}
+
+#[test]
+fn full_inventory_swap_puts_the_replaced_item_in_the_source_slot() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let equipped = pickup_item(&mut world, actor, token(706));
+    world
+        .equip_item(actor, equipped, EquipmentSlot::Weapon)
+        .expect("equip");
+    let mut incoming = None;
+    for n in 0..crate::INVENTORY_CAPACITY {
+        let item = pickup_item(&mut world, actor, token(810 + n as u64));
+        if n == 4 {
+            incoming = Some(item);
+        }
+    }
+    let incoming = incoming.expect("incoming item");
+    let ItemLocation::Inventory {
+        slot: source_slot, ..
+    } = world
+        .item_record(incoming)
+        .expect("incoming record")
+        .location
+    else {
+        panic!("incoming item must start in inventory");
+    };
+    assert_eq!(world.inventory_count(actor), crate::INVENTORY_CAPACITY);
+    assert_eq!(
+        world.equip_item(actor, incoming, EquipmentSlot::Weapon),
+        Ok(Some(equipped))
+    );
+    assert_eq!(
+        world.item_record(equipped).map(|record| record.location),
+        Some(ItemLocation::Inventory {
+            owner: actor,
+            slot: source_slot
+        })
+    );
+    assert_eq!(
+        world.item_record(incoming).map(|record| record.location),
+        Some(ItemLocation::Equipped {
+            owner: actor,
+            slot: EquipmentSlot::Weapon
+        })
+    );
+    assert_eq!(world.inventory_count(actor), crate::INVENTORY_CAPACITY);
 }
 
 #[test]
