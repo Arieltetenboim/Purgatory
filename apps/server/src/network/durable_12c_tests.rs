@@ -699,6 +699,108 @@
 
     #[test]
     #[ignore]
+    fn postgres_12c_reconciled_dialogue_resend_does_not_mint_again() {
+        with_db(|pg| {
+            let a = pg.enter("Mira");
+            let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+            pg.owner.bindings.get_mut(&a.connection).unwrap().interact = Some(tx);
+            move_player_to_content(&mut pg.owner, a.connection, "npc.welcome.traveler_stayed");
+            let traveler = find_content(&pg.owner, "npc.welcome.traveler_stayed");
+            pg.owner.apply_input(InputUpdate::InteractOpen {
+                connection_id: a.connection,
+                target: wire_id(traveler),
+            });
+            while rx.try_recv().is_ok() {}
+            let active = pg.owner.dialogues.active(a.actor).expect("dialogue opened");
+            let beat_id = pg
+                .owner
+                .registry
+                .npc_dialogue_by_id(active.npc_content_id)
+                .and_then(|dialogue| dialogue.beat(active.beat_index))
+                .expect("authored beat")
+                .id
+                .clone();
+            let plan = reward_choice(active);
+            pg.owner
+                .stage_dialogue(a.connection, plan.clone(), Some(beat_id.clone()));
+            let staged = pg.owner.take_durable_commits();
+            assert_eq!(staged.len(), 1);
+            assert!(matches!(
+                staged[0].command.place_new[0].location,
+                CharacterItemLocation::Inventory { slot: 0 }
+            ));
+            let committed = pg
+                .service
+                .commit_durable_leased(&staged[0].command, staged[0].lease.as_ref())
+                .unwrap();
+            let minted = committed.minted_item_ids[0];
+            let stack_limit = pg
+                .owner
+                .registry
+                .item_by_id(headwear())
+                .unwrap()
+                .stack_limit;
+            let (_, slot) = pg
+                .owner
+                .world_mut()
+                .grant_inventory_item(a.actor, headwear(), 1, stack_limit)
+                .unwrap();
+            assert_eq!(slot, 0, "the reward slot must be occupied so World apply fails");
+            pg.owner.settle_durable(staged[0].token, Ok(committed));
+            assert!(
+                !pg.owner.world().inventory_contains(a.actor, minted),
+                "World apply was supposed to fail after the database commit"
+            );
+            let restore = pg.service.read_owned_restore(a.character).unwrap();
+            let revision = restore.character.persistence_revision;
+            assert_eq!(restore.items.len(), 1);
+            assert_eq!(
+                restore.narrative.facts.get("welcome.workshop.package_at_inn"),
+                Some(&true)
+            );
+            assert!(
+                restore
+                    .narrative
+                    .learned_abilities
+                    .contains(&purgatory_common::ABILITY_MOVEMENT_DASH.raw().unwrap())
+            );
+            assert!(pg.owner.complete_reconcile(a.connection, revision, restore));
+            let keys = resend_committed_dialogue_choice(
+                &mut pg.owner,
+                a.connection,
+                a.actor,
+                active.session_id,
+                active.beat_index.raw(),
+                plan,
+                beat_id,
+            );
+            assert!(
+                keys.is_empty(),
+                "resending the committed choice minted a second reward under revision {revision}: {keys:?}"
+            );
+            assert!(
+                dialogue_outcome_was_truthful(&mut rx, active.session_id),
+                "reconcile restored the reward without telling the client the choice was resolved"
+            );
+            assert_reward_state(&pg.owner, a.actor, minted);
+            let stored = pg.service.read_owned_restore(a.character).unwrap();
+            assert_eq!(stored.items.len(), 1);
+            assert_eq!(stored.items[0].item_instance_id, minted);
+            assert_eq!(
+                stored.narrative.facts.get("welcome.workshop.package_at_inn"),
+                Some(&true)
+            );
+            assert!(
+                stored
+                    .narrative
+                    .learned_abilities
+                    .contains(&purgatory_common::ABILITY_MOVEMENT_DASH.raw().unwrap())
+            );
+        });
+    }
+
+    #[test]
+    #[ignore]
     fn postgres_12c_expiry_retires_a_live_drop() {
         with_db(|pg| {
             let a = pg.enter("Mira");
@@ -1039,6 +1141,213 @@
         assert_eq!(recv_item(&mut rx), ServerItem::DropAccepted { seq: 1 });
         assert!(owner.world().world_drop_entity_for_item(item).is_some());
         assert!(owner.take_durable_commits().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn unknown_commit_blocks_control_until_the_stored_key_is_applied() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(91);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        enter_leased(&mut owner, id, 91);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        owner
+            .world_mut()
+            .equip_item(actor, item, purgatory_simulation::EquipmentSlot::Weapon)
+            .unwrap();
+        let character = CharacterId::from_raw(91);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[item]);
+        assert!(
+            owner
+                .world()
+                .ability_granted(actor, purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE),
+            "the equipped sword grants its strike before the unequip"
+        );
+        owner.apply_input(InputUpdate::Unequip {
+            connection_id: id,
+            request: UnequipRequest {
+                seq: 1,
+                slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+            },
+        });
+        let staged = owner.take_durable_commits();
+        let key = staged[0].command.key.clone();
+        let token = staged[0].token;
+        let before = horizontal(&owner, id);
+        assert_eq!(
+            owner.apply_input(command_update(
+                id,
+                cmd(1, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept,
+            "a command that is still waiting for its reply must not pause movement"
+        );
+        owner.simulate_tick(tick_dt());
+        assert!(
+            horizontal(&owner, id) > before,
+            "pending unequip paused ordinary movement"
+        );
+        assert!(owner.world_mut().grant_ability(actor, dash_id()));
+        let move_seq = owner.last_received(id).unwrap();
+        assert_eq!(
+            owner.apply_input(command_update(
+                id,
+                cmd(move_seq.saturating_add(1), MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept
+        );
+        assert_eq!(
+            owner.apply_input(InputUpdate::AbilityActivate {
+                connection_id: id,
+                request: AbilityActivateRequest {
+                    seq: 1,
+                    input_epoch: 0,
+                    input_sequence: move_seq.saturating_add(1),
+                    ability_id: dash_id(),
+                    selected: None,
+                },
+            }),
+            SeqDecision::Accept,
+            "Dash was rejected while the unequip reply was still in flight"
+        );
+        owner.simulate_tick(tick_dt());
+        assert!(owner.world().player_dash_of(actor).is_some());
+        let held = horizontal(&owner, id);
+
+        let unknown = || {
+            Err(PersistError::storage(
+                "commit outcome unknown: the database connection is closed",
+            ))
+        };
+        owner.settle_durable(token, unknown());
+        owner.settle_durable(token, unknown());
+        let again = owner.take_durable_commits();
+        assert_eq!(again.len(), 1, "a prolonged outage must retry the same command");
+        assert_eq!(again[0].token, token);
+        assert_eq!(again[0].command.key, key);
+        assert_eq!(
+            owner.apply_input(command_update(
+                id,
+                cmd(move_seq.saturating_add(2), MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Stale,
+            "movement used World state while the unequip commit was unknown"
+        );
+        assert_eq!(
+            owner.apply_input(InputUpdate::AbilityActivate {
+                connection_id: id,
+                request: AbilityActivateRequest {
+                    seq: 2,
+                    input_epoch: 0,
+                    input_sequence: move_seq.saturating_add(2),
+                    ability_id: purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE,
+                    selected: None,
+                },
+            }),
+            SeqDecision::Stale,
+            "the equipped sword's strike was used after its unequip may have committed"
+        );
+        owner.settle_durable(token, unknown());
+        owner.simulate_tick(tick_dt());
+        assert_eq!(
+            horizontal(&owner, id),
+            held,
+            "held movement or Dash continued while the commit reply was unknown"
+        );
+        assert!(owner.world().player_dash_of(actor).is_none());
+        assert!(
+            owner
+                .world()
+                .ability_granted(actor, purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE),
+            "World still shows the old grant; control must not use it until the key resolves"
+        );
+        let resolved = owner.take_durable_commits();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].command.key, key);
+
+        let mut wind = GameplayOwner::new();
+        let wind_id = ConnectionId::from_raw(92);
+        enter_leased(&mut wind, wind_id, 92);
+        let wind_actor = wind.entity_of(wind_id).unwrap();
+        let wind_item = owned_debug_sword(&mut wind, wind_actor);
+        wind.lease_for_test(wind_id, CharacterId::from_raw(92), 1, "dev.local", 1, &[wind_item]);
+        wind.apply_input(InputUpdate::Drop {
+            connection_id: wind_id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: wind_item,
+            },
+        });
+        let wind_staged = wind.take_durable_commits();
+        let wind_key = wind_staged[0].command.key.clone();
+        let dummy = arm_strike_for_next_tick(&mut wind, wind_id);
+        wind.settle_durable(wind_staged[0].token, unknown());
+        wind.settle_durable(wind_staged[0].token, unknown());
+        wind.simulate_tick(tick_dt());
+        assert_eq!(
+            wind.world().health_of(dummy).unwrap().current,
+            10.0,
+            "a scheduled strike landed while the commit reply was unknown"
+        );
+        let wind_again = wind.take_durable_commits();
+        assert_eq!(wind_again[0].command.key, wind_key);
+
+        owner.settle_durable(
+            token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+        owner.settle_durable(
+            token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+        assert!(owner.world().inventory_contains(actor, item));
+        assert!(
+            owner
+                .world()
+                .equipped_instance(actor, purgatory_simulation::EquipmentSlot::Weapon)
+                .is_none()
+        );
+        assert!(
+            !owner
+                .world()
+                .ability_granted(actor, purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE),
+            "the committed unequip was applied more than once or not at all"
+        );
+        assert!(owner.take_durable_commits().is_empty());
+        let resumed = owner.last_received(id).unwrap().saturating_add(1);
+        assert_eq!(
+            owner.apply_input(command_update(
+                id,
+                cmd(resumed, MoveAxis::Right, false, false),
+            )),
+            SeqDecision::Accept,
+            "control did not resume after the stored unequip was applied"
+        );
+        while rx.try_recv().is_ok() {}
+        owner.apply_input(InputUpdate::AbilityActivate {
+            connection_id: id,
+            request: AbilityActivateRequest {
+                seq: 2,
+                input_epoch: 0,
+                input_sequence: resumed,
+                ability_id: purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE,
+                selected: None,
+            },
+        });
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 2,
+                reason: AbilityCommandReject::NotGranted,
+            }
+        );
     }
 
     impl Pg {
@@ -1829,6 +2138,196 @@
             next_equipment(&mut rx),
             ServerEquipment::Accepted { seq: 1 }
         );
+    }
+
+    fn reward_choice(active: super::super::dialogue::ActiveDialogue) -> super::super::dialogue::ChoicePlan {
+        super::super::dialogue::ChoicePlan {
+            accepted: active,
+            choice_index: 0,
+            next: None,
+            actions: vec![
+                purgatory_content::DialogueAction::GiveItem {
+                    item_authored: "item.package".into(),
+                    quantity: 1,
+                },
+                purgatory_content::DialogueAction::SetFact {
+                    fact: "welcome.workshop.package_at_inn".into(),
+                    value: true,
+                },
+                purgatory_content::DialogueAction::GrantAbility {
+                    ability_authored: "skill.movement.dash".into(),
+                },
+            ],
+        }
+    }
+
+    fn resend_committed_dialogue_choice(
+        owner: &mut GameplayOwner,
+        id: ConnectionId,
+        actor: purgatory_simulation::EntityId,
+        session_id: u32,
+        beat_index: u32,
+        plan: super::super::dialogue::ChoicePlan,
+        beat_id: String,
+    ) -> Vec<String> {
+        let still_on_choice = owner.dialogues.active(actor).is_some_and(|active| {
+            active.session_id == session_id && active == plan.accepted
+        });
+        if still_on_choice {
+            owner.stage_dialogue(id, plan, Some(beat_id));
+        }
+        owner.apply_input(InputUpdate::DialogueChoose {
+            connection_id: id,
+            request: DialogueChoose {
+                session_id,
+                beat_index,
+                choice_index: 0,
+            },
+        });
+        owner
+            .take_durable_commits()
+            .into_iter()
+            .filter(|submit| !submit.command.place_new.is_empty() || !submit.command.learned.is_empty())
+            .map(|submit| submit.command.key)
+            .collect()
+    }
+
+    fn dialogue_outcome_was_truthful(
+        rx: &mut tokio::sync::mpsc::Receiver<ServerControl>,
+        session_id: u32,
+    ) -> bool {
+        let mut truthful = false;
+        while let Ok(message) = rx.try_recv() {
+            match message {
+                ServerControl::DialogueChoiceAccepted(accepted)
+                    if accepted.session_id == session_id && accepted.choice_index == 0 =>
+                {
+                    truthful = true;
+                }
+                ServerControl::Interact(ServerInteract::Closed {
+                    session_id: closed, ..
+                }) if closed == session_id => {
+                    truthful = true;
+                }
+                ServerControl::Inventory(_)
+                | ServerControl::AbilityGrants(_)
+                | ServerControl::DialogueLine(_)
+                | ServerControl::Interact(ServerInteract::Opened { .. }) => {}
+                other => panic!("unexpected dialogue reconcile reply: {other:?}"),
+            }
+        }
+        truthful
+    }
+
+    fn assert_reward_state(
+        owner: &GameplayOwner,
+        actor: purgatory_simulation::EntityId,
+        minted: ItemInstanceId,
+    ) {
+        assert_eq!(owner.world().inventory_count(actor), 1);
+        assert!(owner.world().inventory_contains(actor, minted));
+        assert!(owner.narrative.fact(actor, "welcome.workshop.package_at_inn"));
+        assert!(owner.world().ability_granted(actor, dash_id()));
+    }
+
+    fn reward_restore(
+        character: CharacterId,
+        minted: ItemInstanceId,
+        beat_id: &str,
+    ) -> purgatory_persistence::OwnedRestore {
+        let mut narrative = purgatory_persistence::CharacterNarrativeState::default();
+        narrative
+            .facts
+            .insert("welcome.workshop.package_at_inn".into(), true);
+        narrative
+            .learned_abilities
+            .insert(purgatory_common::ABILITY_MOVEMENT_DASH.raw().unwrap());
+        narrative
+            .dialogue_heard
+            .insert((20_001, beat_id.to_string()));
+        let mut restore = character_restore(
+            character,
+            vec![owned_record(
+                character,
+                minted,
+                purgatory_common::ITEM_PACKAGE,
+                CharacterItemLocation::Inventory { slot: 0 },
+            )],
+        );
+        restore.narrative = narrative;
+        restore
+    }
+
+    #[test]
+    fn reconciled_dialogue_resend_does_not_mint_a_second_reward() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(93);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let character = CharacterId::from_raw(93);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[]);
+        move_player_to_content(&mut owner, id, "npc.welcome.traveler_stayed");
+        let traveler = find_content(&owner, "npc.welcome.traveler_stayed");
+        owner.apply_input(InputUpdate::InteractOpen {
+            connection_id: id,
+            target: wire_id(traveler),
+        });
+        while rx.try_recv().is_ok() {}
+        let actor = owner.entity_of(id).unwrap();
+        let active = owner.dialogues.active(actor).expect("dialogue opened");
+        let beat_id = owner
+            .registry
+            .npc_dialogue_by_id(active.npc_content_id)
+            .and_then(|dialogue| dialogue.beat(active.beat_index))
+            .expect("authored beat")
+            .id
+            .clone();
+        let plan = reward_choice(active);
+        owner.stage_dialogue(id, plan.clone(), Some(beat_id.clone()));
+        let staged = owner.take_durable_commits();
+        assert_eq!(staged.len(), 1);
+        assert!(staged[0].command.key.contains("-r1-"));
+        let stack_limit = owner.registry.item_by_id(headwear()).unwrap().stack_limit;
+        let (_, slot) = owner
+            .world_mut()
+            .grant_inventory_item(actor, headwear(), 1, stack_limit)
+            .unwrap();
+        assert_eq!(slot, 0);
+        let minted = ItemInstanceId::from_raw(77_001);
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: vec![minted],
+            }),
+        );
+        assert!(!owner.world().inventory_contains(actor, minted));
+        assert!(owner.complete_reconcile(id, 2, reward_restore(character, minted, &beat_id)));
+        let revision = owner.bindings.get(&id).unwrap().committed_revision;
+        assert_eq!(revision, 2);
+        let keys = resend_committed_dialogue_choice(
+            &mut owner,
+            id,
+            actor,
+            active.session_id,
+            active.beat_index.raw(),
+            plan,
+            beat_id,
+        );
+        assert!(
+            keys.iter().all(|key| !key.contains(&format!("-r{revision}-"))),
+            "resending the committed choice minted a second reward under revision {revision}: {keys:?}"
+        );
+        assert!(
+            keys.is_empty(),
+            "resending the committed choice minted a second reward under revision {revision}: {keys:?}"
+        );
+        assert!(
+            dialogue_outcome_was_truthful(&mut rx, active.session_id),
+            "reconcile restored the reward without a truthful client outcome"
+        );
+        assert_reward_state(&owner, actor, minted);
     }
 
     #[test]

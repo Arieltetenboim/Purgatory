@@ -209,6 +209,15 @@ impl GameplayOwner {
             .err()
             .is_some_and(super::durable_play::commit_outcome_unknown)
         {
+            let connection_id = self
+                .durable_pending
+                .get(&token)
+                .map(|pending| effect_connection(&pending.effect));
+            if let Some(connection_id) = connection_id
+                && let Some(binding) = self.bindings.get_mut(&connection_id)
+            {
+                binding.commit_uncertain = true;
+            }
             self.durable_retry_at.insert(
                 token,
                 std::time::Instant::now() + Self::unknown_backoff(),
@@ -362,7 +371,8 @@ impl GameplayOwner {
             super::durable_play::DurableEffect::Drop { .. }
             | super::durable_play::DurableEffect::Pickup { .. }
             | super::durable_play::DurableEffect::Equip { .. }
-            | super::durable_play::DurableEffect::Unequip { .. } => {
+            | super::durable_play::DurableEffect::Unequip { .. }
+            | super::durable_play::DurableEffect::Dialogue { .. } => {
                 self.publish_effect(
                     &effect,
                     &purgatory_persistence::DurableCommandResult {
@@ -371,8 +381,7 @@ impl GameplayOwner {
                     },
                 );
             }
-            super::durable_play::DurableEffect::Dialogue { .. }
-            | super::durable_play::DurableEffect::Heard { .. }
+            super::durable_play::DurableEffect::Heard { .. }
             | super::durable_play::DurableEffect::RetireGround { .. } => {}
         }
     }
@@ -704,7 +713,7 @@ impl GameplayOwner {
                         accepted,
                         choice_index,
                     } => {
-                        if let Some(tx) = tx {
+                        if let Some(tx) = &tx {
                             let _ = tx.try_send(ServerControl::DialogueChoiceAccepted(
                                 ServerDialogueChoiceAccepted {
                                     session_id: accepted.session_id,
@@ -712,18 +721,35 @@ impl GameplayOwner {
                                     choice_index,
                                 },
                             ));
-                            let _ = self.world.close_interaction(
-                                actor,
-                                purgatory_simulation::InteractionSessionId(accepted.session_id),
-                            );
-                            self.finish_dialogue(actor);
+                        }
+                        let _ = self.world.close_interaction(
+                            actor,
+                            purgatory_simulation::InteractionSessionId(accepted.session_id),
+                        );
+                        self.finish_dialogue(actor);
+                        if let Some(tx) = &tx {
                             let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
                                 session_id: accepted.session_id,
                                 reason: InteractCloseReason::Requested,
                             }));
                         }
                     }
-                    ChoiceResult::Invalid => {}
+                    ChoiceResult::Invalid => {
+                        if self.dialogues.active(actor) == Some(plan.accepted) {
+                            let session_id = plan.accepted.session_id;
+                            let _ = self.world.close_interaction(
+                                actor,
+                                purgatory_simulation::InteractionSessionId(session_id),
+                            );
+                            self.finish_dialogue(actor);
+                            if let Some(tx) = &tx {
+                                let _ = tx.try_send(ServerControl::Interact(ServerInteract::Closed {
+                                    session_id,
+                                    reason: InteractCloseReason::Requested,
+                                }));
+                            }
+                        }
+                    }
                 }
                 self.send_inventory_snapshot(*connection_id);
                 self.send_ability_grants(*connection_id);

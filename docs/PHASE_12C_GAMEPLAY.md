@@ -82,7 +82,19 @@ resolution submits that same key. The same persistence worker opens a new
 database connection when the previous one died after `COMMIT`, reads the stored
 key, and returns that result once. If the database cannot be reached, the retry
 stays unknown instead of rejecting the committed command. Two unknown results
-do not invent a new key. The simulation tick still does not call the database.
+do not invent a new key. While the reply is unknown, new input, held movement,
+Dash, ability activation, and a scheduled ability effect do not use the old
+`World`. An equipped grant cannot be used after its unequip may have committed.
+The original key is applied once when a definite result returns, and control
+resumes from that result. A command that is still in flight, and has not lost
+its reply, does not pause gameplay. The simulation tick still does not call
+the database.
+
+A confirmed dialogue choice whose `World` application fails is restored with
+the committed item, fact, and learned ability. Reconciliation then resolves
+that choice in the dialogue session. The client receives the accepted choice,
+or the session is closed and the restored state is sent. Resending the choice
+in that session does not mint a second reward under the new character revision.
 
 Logout removes a character's item ids from the server's durable-item set when
 those records are no longer in `World`. A ground item that is still manifested
@@ -124,3 +136,16 @@ debug profile, not a capacity claim) and 11 ignored server `postgres_12c` tests
 in 4.21s. Server tests still do not kill an in-flight SQL statement. The
 connection-loss cases live in the persistence suite, after `COMMIT`. No live
 ground-item expiry duration is chosen.
+
+The unknown-reply and dialogue-resync run of `./scripts/check.ps1` exited 0
+in about 129s. Persistence lib tests were 38 passed and 30 ignored. Server bin
+tests were 345 passed and 21 ignored. Simulation lib tests were 431 passed.
+Before those fixes, movement input stayed `Accept` while an unequip reply was
+unknown, and resending the restored dialogue choice staged
+`c93-r2-talk-20001-intro-0`. The same disposable database then passed 30
+ignored persistence tests in 18.03s (`admit_us=17280`; workload
+`total_ms=1546`, `mean_us=17179`, debug profile, not a capacity claim) and 12
+ignored server `postgres_12c` tests in 4.31s. The new server case commits a
+dialogue reward, fails the `World` apply, restores it, and proves a resend does
+not mint a second item, fact, or learned ability. No live ground-item expiry
+duration is chosen. Phase 12C remains in review.

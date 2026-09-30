@@ -443,6 +443,11 @@ pub struct PlayerBinding {
     /// A committed command could not be applied. Player control stays stopped
     /// until that character is restored or the session is stopped.
     reconcile_required: bool,
+    /// The latest durable reply was lost, so the database may already differ
+    /// from `World`. Player control stays stopped until that same command key
+    /// returns a definite result. A command that is still in flight does not
+    /// set this.
+    commit_uncertain: bool,
     pending_durable: u32,
     detach_when_idle: bool,
 }
@@ -1755,6 +1760,7 @@ impl GameplayOwner {
                 lease_deadline: None,
                 authority_lost: false,
                 reconcile_required: false,
+                commit_uncertain: false,
                 pending_durable: 0,
                 detach_when_idle: false,
             },
@@ -1879,6 +1885,7 @@ impl GameplayOwner {
         self.bindings.get(&connection_id).is_some_and(|binding| {
             binding.authority_lost
                 || binding.reconcile_required
+                || binding.commit_uncertain
                 || Self::deadline_expired(binding.lease_deadline)
         })
     }
@@ -1887,6 +1894,7 @@ impl GameplayOwner {
         channel_expired
             || binding.authority_lost
             || binding.reconcile_required
+            || binding.commit_uncertain
             || Self::deadline_expired(binding.lease_deadline)
     }
 
@@ -1966,6 +1974,7 @@ impl GameplayOwner {
             if revision > binding.committed_revision {
                 binding.committed_revision = revision;
             }
+            binding.commit_uncertain = false;
             binding.pending_durable = binding.pending_durable.saturating_sub(1);
             binding.pending_durable == 0 && binding.detach_when_idle
         } else {
