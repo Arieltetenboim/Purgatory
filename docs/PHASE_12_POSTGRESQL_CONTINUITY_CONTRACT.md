@@ -161,8 +161,8 @@ settle its version/retirement policy before storing it as truth.
    reported saved. That does not change the PostgreSQL commit path.
    Test same-user concurrent A/B entry and commit-before-reply crashes.
    The lease, channel-generation, and shutdown policy chosen for this gate is
-   recorded in [`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md) and ADR-0071.
-   That record is not a Phase 12 exit.
+   recorded in [`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md) and ADR-0071
+   and is accepted. That acceptance is not a Phase 12 exit.
 3. **12C — existing gameplay:** atomic Drop/pickup/equip/inventory and NPC
    item grants/removals, character-owned facts/met/heard and learned grants
    in the same commit as a dialogue choice. Test A→ground→B, crash after
