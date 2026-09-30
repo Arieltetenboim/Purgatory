@@ -834,6 +834,87 @@
 
     #[test]
     #[ignore]
+    fn postgres_12c_restart_does_not_restore_ground_time() {
+        with_db(|pg| {
+            let a = pg.enter("Mira");
+            let item = pg.seed_item(&a, sword(), 0);
+            pg.owner.apply_input(InputUpdate::Drop {
+                connection_id: a.connection,
+                request: DropRequest {
+                    seq: 1,
+                    item_instance_id: item,
+                },
+            });
+            pg.settle_next();
+            pg.owner.advance_ground_clock(Duration::from_secs(100));
+            pg.service.release_lease(&a.lease).unwrap();
+            pg.service.release_channel(1, pg.generation).unwrap();
+            let mut restarted =
+                PersistenceService::open_postgresql(&pg.dir, &pg.settings).unwrap();
+            let claim = restarted.claim_channel(1, None).unwrap();
+            assert!(matches!(
+                claim,
+                ChannelClaim::Claimed {
+                    retired_ground, ..
+                } if retired_ground >= 1
+            ));
+            assert_eq!(
+                restarted.read_item(item).unwrap().unwrap().owner,
+                ItemOwner::Retired
+            );
+            let SessionAdmission::Granted { restore, .. } =
+                restarted.admit(&pg.login, a.character).unwrap()
+            else {
+                panic!("expected the character after restart");
+            };
+            assert!(restore.items.iter().all(|row| row.item_instance_id != item));
+            assert!(
+                GameplayOwner::new()
+                    .world()
+                    .world_drop_entity_for_item(item)
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn postgres_12c_expiry_cannot_retire_a_character_item() {
+        with_db(|pg| {
+            let a = pg.enter("Mira");
+            let item = pg.seed_item(&a, sword(), 0);
+            pg.owner.apply_input(InputUpdate::Drop {
+                connection_id: a.connection,
+                request: DropRequest {
+                    seq: 1,
+                    item_instance_id: item,
+                },
+            });
+            pg.settle_next();
+            let drop = pg.owner.world().world_drop_entity_for_item(item).unwrap();
+            pg.owner.apply_input(InputUpdate::Pickup {
+                connection_id: a.connection,
+                request: PickupRequest {
+                    seq: 1,
+                    target: wire_id(drop),
+                },
+            });
+            pg.settle_next();
+            let err = pg
+                .service
+                .commit_durable_leased(&super::super::durable_play::retire_command(item), None)
+                .unwrap_err();
+            assert!(matches!(err, PersistError::Conflict { .. }));
+            assert!(pg.owner.world().inventory_contains(a.actor, item));
+            assert!(matches!(
+                pg.service.read_item(item).unwrap().unwrap().owner,
+                ItemOwner::Character { .. }
+            ));
+        });
+    }
+
+    #[test]
+    #[ignore]
     fn postgres_12c_equip_and_unequip_round_trip() {
         with_db(|pg| {
             let a = pg.enter("Mira");
@@ -1330,6 +1411,269 @@
             10.0,
             "a strike due on the first uncertain tick must not land"
         );
+    }
+
+    fn settle_stored(owner: &mut GameplayOwner, token: u64, character: CharacterId) {
+        owner.settle_durable(
+            token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+    }
+
+    #[test]
+    fn player_drop_timer_starts_when_the_ground_item_appears() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(201);
+        enter_leased(&mut owner, id, 201);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        let character = CharacterId::from_raw(201);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[item]);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        let staged = owner.take_durable_commits();
+        owner.advance_ground_clock(Duration::from_secs(200));
+        assert!(
+            owner.take_durable_commits().is_empty(),
+            "the timer must not run before the committed drop is in World"
+        );
+        settle_stored(&mut owner, staged[0].token, character);
+        assert!(owner.world().world_drop_entity_for_item(item).is_some());
+        owner.advance_ground_clock(Duration::from_secs(200) - Duration::from_nanos(1));
+        assert!(owner.take_durable_commits().is_empty());
+        assert!(owner.world().world_drop_entity_for_item(item).is_some());
+        owner.detach(id);
+        assert!(owner.bindings.is_empty());
+        owner.advance_ground_clock(Duration::from_nanos(1));
+        let due = owner.take_durable_commits();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].command.key, format!("retire-{}", item.raw()));
+        assert!(due[0].lease.is_none());
+        settle_stored(&mut owner, due[0].token, character);
+        assert!(owner.world().world_drop_entity_for_item(item).is_none());
+    }
+
+    #[test]
+    fn player_drop_is_collectible_by_anyone_immediately() {
+        let mut owner = GameplayOwner::new();
+        let dropper = ConnectionId::from_raw(202);
+        let other = ConnectionId::from_raw(203);
+        enter_leased(&mut owner, dropper, 202);
+        enter_leased(&mut owner, other, 203);
+        let dropper_actor = owner.entity_of(dropper).unwrap();
+        let first = owned_debug_sword(&mut owner, dropper_actor);
+        let second = owned_debug_sword(&mut owner, dropper_actor);
+        owner.lease_for_test(dropper, CharacterId::from_raw(202), 1, "dev.local", 1, &[first, second]);
+        owner.lease_for_test(other, CharacterId::from_raw(203), 1, "dev.other", 1, &[]);
+        for (seq, item) in [(1u32, first), (2, second)] {
+            owner.apply_input(InputUpdate::Drop {
+                connection_id: dropper,
+                request: DropRequest {
+                    seq,
+                    item_instance_id: item,
+                },
+            });
+            let staged = owner.take_durable_commits();
+            settle_stored(&mut owner, staged[0].token, CharacterId::from_raw(202));
+        }
+        move_player_to_entity(&mut owner, other, dropper_actor);
+        let other_target = owner.world().world_drop_entity_for_item(first).unwrap();
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: other,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(other_target),
+            },
+        });
+        assert_eq!(owner.take_durable_commits().len(), 1, "another character");
+        let own_target = owner.world().world_drop_entity_for_item(second).unwrap();
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: dropper,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(own_target),
+            },
+        });
+        assert_eq!(owner.take_durable_commits().len(), 1, "the former owner");
+    }
+
+    #[test]
+    fn monster_loot_opens_to_other_characters_at_40_seconds() {
+        let mut owner = GameplayOwner::new();
+        let killer = ConnectionId::from_raw(204);
+        let other = ConnectionId::from_raw(205);
+        enter_leased(&mut owner, killer, 204);
+        enter_leased(&mut owner, other, 205);
+        let killer_id = CharacterId::from_raw(204);
+        let actor = owner.entity_of(killer).unwrap();
+        owner.lease_for_test(killer, killer_id, 1, "dev.local", 1, &[]);
+        owner.lease_for_test(other, CharacterId::from_raw(205), 1, "dev.other", 1, &[]);
+        let position = owner.world().transform_of(actor).unwrap().position;
+        let address = owner.world().address_of(actor).unwrap();
+        move_player_to_entity(&mut owner, other, actor);
+        let early = owner
+            .manifest_monster_loot(killer_id, address, position, sword(), 1)
+            .unwrap();
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: killer,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(owner.world().world_drop_entity_for_item(early).unwrap()),
+            },
+        });
+        assert_eq!(owner.take_durable_commits().len(), 1, "the killer");
+        let late = owner
+            .manifest_monster_loot(killer_id, address, position, sword(), 1)
+            .unwrap();
+        let late_entity = owner.world().world_drop_entity_for_item(late).unwrap();
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: other,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(late_entity),
+            },
+        });
+        assert!(matches!(
+            owner.bindings.get(&other).unwrap().last_pickup_result,
+            Some(ServerItem::PickupRejected {
+                reason: PickupRejectReason::StateBlocked,
+                ..
+            })
+        ));
+        assert!(owner.take_durable_commits().is_empty());
+        owner.advance_ground_clock(Duration::from_secs(40) - Duration::from_nanos(1));
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: other,
+            request: PickupRequest {
+                seq: 2,
+                target: wire_id(late_entity),
+            },
+        });
+        assert!(owner.take_durable_commits().is_empty());
+        owner.advance_ground_clock(Duration::from_nanos(1));
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: other,
+            request: PickupRequest {
+                seq: 3,
+                target: wire_id(late_entity),
+            },
+        });
+        assert_eq!(owner.take_durable_commits().len(), 1, "public at 40 seconds");
+    }
+
+    #[test]
+    fn ground_expiry_is_bounded_and_stops_when_channel_authority_is_stale() {
+        let mut owner = GameplayOwner::new();
+        let killer = CharacterId::from_raw(206);
+        let address = purgatory_common::WorldAddress::DEV;
+        let mut items = Vec::new();
+        for _ in 0..20 {
+            items.push(
+                owner
+                    .manifest_monster_loot(killer, address, [0.0, 1.0], sword(), 1)
+                    .unwrap(),
+            );
+        }
+        owner.advance_ground_clock(Duration::from_secs(200));
+        let _ = owner.take_durable_commits();
+        let left = items
+            .iter()
+            .filter(|item| owner.world().world_drop_entity_for_item(**item).is_some())
+            .count();
+        assert_eq!(left, 12, "one wake retires at most eight ground items");
+        let _ = owner.take_durable_commits();
+        let left = items
+            .iter()
+            .filter(|item| owner.world().world_drop_entity_for_item(**item).is_some())
+            .count();
+        assert_eq!(left, 4);
+
+        let mut stalled = GameplayOwner::new();
+        let item = stalled
+            .manifest_monster_loot(killer, address, [0.0, 1.0], sword(), 1)
+            .unwrap();
+        stalled.advance_ground_clock(Duration::from_secs(200));
+        stalled.set_channel_deadline(Some(
+            super::super::lease_clock::LocalLeaseDeadline::from_request(
+                tokio::time::Instant::now(),
+                Duration::ZERO,
+            ),
+        ));
+        let _ = stalled.take_durable_commits();
+        assert!(stalled.world().world_drop_entity_for_item(item).is_some());
+    }
+
+    #[test]
+    fn pending_pickup_blocks_expiry_and_a_committed_item_stays() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(207);
+        enter_leased(&mut owner, id, 207);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        let character = CharacterId::from_raw(207);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[item]);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        let staged = owner.take_durable_commits();
+        settle_stored(&mut owner, staged[0].token, character);
+        owner.advance_ground_clock(Duration::from_secs(200) - Duration::from_nanos(1));
+        let drop = owner.world().world_drop_entity_for_item(item).unwrap();
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: id,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(drop),
+            },
+        });
+        let pickup = owner.take_durable_commits();
+        assert_eq!(pickup.len(), 1);
+        owner.advance_ground_clock(Duration::from_nanos(1));
+        assert!(
+            owner.take_durable_commits().is_empty(),
+            "expiry must wait while the pickup result is unknown"
+        );
+        settle_stored(&mut owner, pickup[0].token, character);
+        assert!(owner.world().inventory_contains(actor, item));
+        owner.advance_ground_clock(Duration::from_secs(200));
+        assert!(owner.take_durable_commits().is_empty());
+        assert!(owner.world().inventory_contains(actor, item));
+    }
+
+    #[test]
+    fn file_mode_ground_expires_with_nobody_connected() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(208);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq: 1,
+                item_instance_id: item,
+            },
+        });
+        assert!(owner.world().world_drop_entity_for_item(item).is_some());
+        owner.detach(id);
+        owner.advance_ground_clock(Duration::from_secs(200) - Duration::from_nanos(1));
+        let _ = owner.take_durable_commits();
+        assert!(owner.world().world_drop_entity_for_item(item).is_some());
+        owner.advance_ground_clock(Duration::from_nanos(1));
+        assert!(owner.take_durable_commits().is_empty());
+        assert!(owner.world().world_drop_entity_for_item(item).is_none());
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

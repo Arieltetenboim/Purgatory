@@ -54,13 +54,9 @@ pub(crate) enum DurableEffect {
         seq: u32,
         slot: EquipmentSlot,
     },
-    // No authored expiry duration exists yet, so production does not start
-    // this effect. Tests retire a live drop explicitly.
-    #[cfg_attr(not(test), allow(dead_code))]
-    RetireGround {
-        connection_id: purgatory_protocol::ConnectionId,
-        item: ItemInstanceId,
-    },
+    /// Channel-owned. The item is retired without a character lease, and only
+    /// while it is still unclaimed ground.
+    RetireGround { item: ItemInstanceId },
     Dialogue {
         connection_id: purgatory_protocol::ConnectionId,
         plan: ChoicePlan,

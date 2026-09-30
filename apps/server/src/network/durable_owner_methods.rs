@@ -143,6 +143,7 @@ impl GameplayOwner {
     }
 
     pub fn take_durable_commits(&mut self) -> Vec<super::durable_play::DurableSubmit> {
+        self.promote_due_ground();
         self.promote_due_retries(std::time::Instant::now());
         let tokens = std::mem::take(&mut self.durable_outbound);
         tokens
@@ -212,7 +213,7 @@ impl GameplayOwner {
             let connection_id = self
                 .durable_pending
                 .get(&token)
-                .map(|pending| effect_connection(&pending.effect));
+                .and_then(|pending| effect_connection(&pending.effect));
             if let Some(connection_id) = connection_id
                 && let Some(binding) = self.bindings.get_mut(&connection_id)
             {
@@ -239,23 +240,29 @@ impl GameplayOwner {
     }
 
     fn fail_committed(&mut self, pending: DurablePending) {
-        let connection_id = effect_connection(&pending.effect);
-        match &pending.effect {
-            super::durable_play::DurableEffect::Drop { seq, .. } => {
-                self.reject_drop(connection_id, *seq, DropRejectReason::StateBlocked);
+        let super::durable_play::DurableEffect::RetireGround { item } = &pending.effect else {
+            let Some(connection_id) = effect_connection(&pending.effect) else {
+                return;
+            };
+            match &pending.effect {
+                super::durable_play::DurableEffect::Drop { seq, .. } => {
+                    self.reject_drop(connection_id, *seq, DropRejectReason::StateBlocked);
+                }
+                super::durable_play::DurableEffect::Pickup { seq, .. } => {
+                    self.reject_pickup(connection_id, *seq, PickupRejectReason::StateBlocked);
+                }
+                super::durable_play::DurableEffect::Equip { seq, .. }
+                | super::durable_play::DurableEffect::Unequip { seq, .. } => {
+                    self.reject_equipment(connection_id, *seq, EquipmentRejectReason::StateBlocked);
+                }
+                super::durable_play::DurableEffect::Dialogue { .. }
+                | super::durable_play::DurableEffect::Heard { .. }
+                | super::durable_play::DurableEffect::RetireGround { .. } => {}
             }
-            super::durable_play::DurableEffect::Pickup { seq, .. } => {
-                self.reject_pickup(connection_id, *seq, PickupRejectReason::StateBlocked);
-            }
-            super::durable_play::DurableEffect::Equip { seq, .. }
-            | super::durable_play::DurableEffect::Unequip { seq, .. } => {
-                self.reject_equipment(connection_id, *seq, EquipmentRejectReason::StateBlocked);
-            }
-            super::durable_play::DurableEffect::Dialogue { .. }
-            | super::durable_play::DurableEffect::Heard { .. }
-            | super::durable_play::DurableEffect::RetireGround { .. } => {}
-        }
-        self.abandon_staged(connection_id);
+            self.abandon_staged(connection_id);
+            return;
+        };
+        self.restore_unretired_ground(*item);
     }
 
     fn apply_committed(
@@ -263,7 +270,20 @@ impl GameplayOwner {
         pending: DurablePending,
         committed: &purgatory_persistence::DurableCommandResult,
     ) {
-        let connection_id = effect_connection(&pending.effect);
+        if matches!(
+            pending.effect,
+            super::durable_play::DurableEffect::RetireGround { .. }
+        ) {
+            let applied = self.apply_effect(&pending.effect, committed);
+            self.release_reserved(&pending.reserved);
+            if !applied && let super::durable_play::DurableEffect::RetireGround { item } = pending.effect {
+                self.restore_unretired_ground(item);
+            }
+            return;
+        }
+        let Some(connection_id) = effect_connection(&pending.effect) else {
+            return;
+        };
         let adopted = self
             .bindings
             .get(&connection_id)
@@ -399,17 +419,17 @@ impl GameplayOwner {
         committed: &purgatory_persistence::DurableCommandResult,
     ) -> bool {
         match effect {
-            super::durable_play::DurableEffect::Drop {
-                connection_id, item, ..
-            } => {
-                let Some(actor) = self.bindings.get(connection_id).map(|binding| binding.entity)
-                else {
-                    return false;
-                };
-                self.apply_drop(*connection_id, *item).is_ok() && {
-                    let _ = actor;
-                    true
+            super::durable_play::DurableEffect::Drop { connection_id, item, .. } => {
+                let applied = self
+                    .bindings
+                    .get(connection_id)
+                    .map(|binding| binding.entity)
+                    .is_some()
+                    && self.apply_drop(*connection_id, *item).is_ok();
+                if applied {
+                    self.note_player_ground(*item);
                 }
+                applied
             }
             super::durable_play::DurableEffect::Pickup {
                 connection_id,
@@ -449,7 +469,8 @@ impl GameplayOwner {
                 .get(connection_id)
                 .map(|binding| binding.entity)
                 .is_some_and(|actor| self.world.unequip_item(actor, *slot).is_ok()),
-            super::durable_play::DurableEffect::RetireGround { item, .. } => {
+            super::durable_play::DurableEffect::RetireGround { item } => {
+                self.forget_ground_item(*item);
                 self.durable_items.remove(item);
                 let _ = self.world.destroy_world_drop_item(*item);
                 true
@@ -508,15 +529,23 @@ impl GameplayOwner {
                 return false;
             };
             if self.first_free_inventory_slot(actor) == Some(slot) {
-                return self.world.pickup_world_drop(actor, entity).is_ok();
+                let picked = self.world.pickup_world_drop(actor, entity).is_ok();
+                if picked {
+                    self.forget_ground_item(item);
+                }
+                return picked;
             }
             if !self.world.destroy_world_drop_item(item) {
                 return false;
             }
-            return self
+            let restored = self
                 .world
                 .restore_inventory_item(actor, item, definition, quantity, stack_limit, slot)
                 .is_ok();
+            if restored {
+                self.forget_ground_item(item);
+            }
+            return restored;
         }
         let Some(minted) = committed.minted_item_ids.first().copied() else {
             return false;
@@ -530,6 +559,7 @@ impl GameplayOwner {
             .is_ok();
         if restored {
             self.durable_items.insert(minted);
+            self.forget_ground_item(item);
         }
         restored
     }
@@ -844,6 +874,10 @@ impl GameplayOwner {
             self.reject_pickup(connection_id, request.seq, PickupRejectReason::TargetMissing);
             return;
         };
+        if !self.ground_collectible(connection_id, item) {
+            self.reject_pickup(connection_id, request.seq, PickupRejectReason::StateBlocked);
+            return;
+        }
         if self.reserved_items.contains(&item) {
             self.reject_pickup(connection_id, request.seq, PickupRejectReason::StateBlocked);
             return;
@@ -1203,31 +1237,27 @@ impl GameplayOwner {
         });
     }
 
-    /// Retire one live ground item. Ordinary unclaimed ground is not restored.
+    /// Retire one live ground item without borrowing a character's command slot.
+    /// Ordinary unclaimed ground is not restored.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn stage_ground_expiry(
         &mut self,
-        connection_id: ConnectionId,
+        _connection_id: ConnectionId,
         item: purgatory_common::ItemInstanceId,
     ) -> bool {
-        if !self.stages_durable(connection_id) || self.reserved_items.contains(&item) {
+        if Self::deadline_expired(self.channel_deadline) || self.reserved_items.contains(&item) {
             return false;
         }
         if self.world.world_drop_entity_for_item(item).is_none() {
             return false;
         }
-        if !self.begin_durable(connection_id) {
-            return false;
+        self.unschedule_ground(item);
+        if !self.durable_items.contains(&item) {
+            let _ = self.world.destroy_world_drop_item(item);
+            self.live_ground.remove(&item);
+            return true;
         }
-        self.enqueue_durable(DurablePending {
-            command: super::durable_play::retire_command(item),
-            lease: None,
-            effect: super::durable_play::DurableEffect::RetireGround {
-                connection_id,
-                item,
-            },
-            reserved: vec![item],
-        });
+        self.enqueue_ground_retire(item);
         true
     }
 
@@ -1261,4 +1291,178 @@ impl GameplayOwner {
         }
     }
 
+    /// Advance the channel's ground clock. This does not read the database.
+    pub fn advance_ground_clock(&mut self, elapsed: Duration) {
+        self.ground_elapsed = self.ground_elapsed.saturating_add(elapsed);
+    }
+
+    /// Spawn one world drop whose pickup is limited to `killer` for 40 seconds.
+    /// Monster death does not call this. No loot table is authored yet.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn manifest_monster_loot(
+        &mut self,
+        killer: CharacterId,
+        address: purgatory_common::WorldAddress,
+        position: [f32; 2],
+        definition: ContentId,
+        quantity: u32,
+    ) -> Result<purgatory_common::ItemInstanceId, ItemRuntimeError> {
+        let stack_limit = self
+            .registry
+            .item_by_id(definition)
+            .map(|item| item.stack_limit)
+            .unwrap_or(quantity.max(1));
+        let (item, _) =
+            self.world
+                .spawn_world_drop_item(address, position, definition, quantity, stack_limit)?;
+        self.track_ground(item, GroundOrigin::MonsterLoot { killer });
+        Ok(item)
+    }
+
+    fn note_player_ground(&mut self, item: purgatory_common::ItemInstanceId) {
+        if self.world.world_drop_entity_for_item(item).is_some() {
+            self.track_ground(item, GroundOrigin::PlayerDrop);
+        }
+    }
+
+    fn track_ground(&mut self, item: purgatory_common::ItemInstanceId, origin: GroundOrigin) {
+        let visible_at = self.ground_elapsed;
+        let expires_at = visible_at.saturating_add(GROUND_LIFETIME);
+        if let Some(previous) = self.live_ground.insert(
+            item,
+            LiveGround {
+                visible_at,
+                expires_at,
+                origin,
+            },
+        ) {
+            self.remove_expiry_entry(item, previous.expires_at);
+        }
+        self.ground_expiry.entry(expires_at).or_default().push(item);
+    }
+
+    fn ground_collectible(
+        &self,
+        connection_id: ConnectionId,
+        item: purgatory_common::ItemInstanceId,
+    ) -> bool {
+        let Some(live) = self.live_ground.get(&item) else {
+            return true;
+        };
+        match live.origin {
+            GroundOrigin::PlayerDrop => true,
+            GroundOrigin::MonsterLoot { killer } => {
+                self.ground_elapsed.saturating_sub(live.visible_at) >= GROUND_EXCLUSIVE_WINDOW
+                    || self
+                        .bindings
+                        .get(&connection_id)
+                        .and_then(|binding| binding.character_id)
+                        == Some(killer)
+            }
+        }
+    }
+
+    fn promote_due_ground(&mut self) {
+        if Self::deadline_expired(self.channel_deadline) {
+            return;
+        }
+        let mut budget = GROUND_RETIRE_BATCH;
+        let waiting = std::mem::take(&mut self.ground_deferred);
+        for item in waiting {
+            if budget == 0 || self.reserved_items.contains(&item) {
+                self.ground_deferred.push_back(item);
+                continue;
+            }
+            if self.expire_one(item) {
+                budget -= 1;
+            }
+        }
+        let mut popped = 0usize;
+        while budget > 0 && popped < GROUND_RETIRE_BATCH {
+            let Some(item) = self.pop_due_ground() else {
+                break;
+            };
+            popped = popped.saturating_add(1);
+            if self.reserved_items.contains(&item) {
+                self.ground_deferred.push_back(item);
+                continue;
+            }
+            if self.expire_one(item) {
+                budget -= 1;
+            }
+        }
+    }
+
+    fn pop_due_ground(&mut self) -> Option<purgatory_common::ItemInstanceId> {
+        let (&when, _) = self.ground_expiry.iter().next()?;
+        if when > self.ground_elapsed {
+            return None;
+        }
+        let bucket = self.ground_expiry.get_mut(&when)?;
+        let item = bucket.pop()?;
+        if bucket.is_empty() {
+            self.ground_expiry.remove(&when);
+        }
+        Some(item)
+    }
+
+    fn expire_one(&mut self, item: purgatory_common::ItemInstanceId) -> bool {
+        if self.world.world_drop_entity_for_item(item).is_none() {
+            self.live_ground.remove(&item);
+            return false;
+        }
+        if self.durable_items.contains(&item) {
+            self.enqueue_ground_retire(item);
+            return true;
+        }
+        let _ = self.world.destroy_world_drop_item(item);
+        self.live_ground.remove(&item);
+        true
+    }
+
+    fn enqueue_ground_retire(&mut self, item: purgatory_common::ItemInstanceId) {
+        self.enqueue_durable(DurablePending {
+            command: super::durable_play::retire_command(item),
+            lease: None,
+            effect: super::durable_play::DurableEffect::RetireGround { item },
+            reserved: vec![item],
+        });
+    }
+
+    fn restore_unretired_ground(&mut self, item: purgatory_common::ItemInstanceId) {
+        if self.world.world_drop_entity_for_item(item).is_none() {
+            self.live_ground.remove(&item);
+            return;
+        }
+        let Some(live) = self.live_ground.get_mut(&item) else {
+            return;
+        };
+        let when = self.ground_elapsed.saturating_add(Duration::from_secs(1));
+        live.expires_at = when;
+        self.ground_expiry.entry(when).or_default().push(item);
+    }
+
+    fn unschedule_ground(&mut self, item: purgatory_common::ItemInstanceId) {
+        if let Some(live) = self.live_ground.get(&item).copied() {
+            self.remove_expiry_entry(item, live.expires_at);
+        }
+        self.ground_deferred.retain(|id| *id != item);
+    }
+
+    fn forget_ground_item(&mut self, item: purgatory_common::ItemInstanceId) {
+        if let Some(live) = self.live_ground.remove(&item) {
+            self.remove_expiry_entry(item, live.expires_at);
+        }
+        self.ground_deferred.retain(|id| *id != item);
+    }
+
+    fn remove_expiry_entry(&mut self, item: purgatory_common::ItemInstanceId, expires_at: Duration) {
+        let empty = self.ground_expiry.get_mut(&expires_at).is_some_and(|bucket| {
+            bucket.retain(|id| *id != item);
+            bucket.is_empty()
+        });
+        if empty {
+            self.ground_expiry.remove(&expires_at);
+        }
+    }
 }

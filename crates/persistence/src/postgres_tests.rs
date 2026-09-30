@@ -1877,3 +1877,39 @@ fn randomized_lease_steps_keep_one_authority() {
         }
     });
 }
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn expired_channel_cannot_retire_live_ground() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alpha").unwrap();
+        let id = entry.character_id;
+        let ChannelClaim::Claimed { .. } = service.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let item = service
+            .commit_durable(&mint(id, 1, "ground"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut service, id, item, 2);
+        service.expire_channel_for_test(1).unwrap();
+        let err = service
+            .commit_durable(&DurableCommand {
+                key: format!("retire-{}", item.raw()),
+                expected_revisions: Vec::new(),
+                place_new: Vec::new(),
+                moves: Vec::new(),
+                retire: vec![item],
+                narrative: Vec::new(),
+                learned: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, PersistError::Conflict { .. }));
+        assert_eq!(
+            service.item(item).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+    });
+}

@@ -35,19 +35,32 @@ them again from authored content.
 
 ## Ground lifetime
 
-Ordinary live ground disappears after 200 seconds. Monster loot is exclusive to
-the player who killed the monster for the first 40 seconds, then eligible for
-other players. A player-dropped item has no exclusive window. Ordinary unclaimed
-ground disappears on shutdown or crash, and its timer is not restored.
+Ordinary live ground disappears 200 seconds after it becomes visible in the running
+channel. Monster loot is collectible only by the killing character while elapsed
+time is less than 40 seconds. At 40 seconds it becomes collectible by other
+eligible characters. A player-dropped item belongs to the map and is collectible
+immediately, including by its former owner. Ordinary unclaimed ground disappears
+on shutdown or crash. Its timer is not restored, the item is not refunded, and a
+retired item-instance id is not reused.
 
-That rule is recorded and is not implemented yet. Nothing starts the 200 second
-timer or the 40 second killer window. Pickup still accepts any player in range
-with a free slot. `postgres_12c_expiry_retires_a_live_drop` retires one live
-ground item explicitly. That retire command has no character owner, because a
-ground row has none, so the database does not fence it with a character-lease
-generation. The simulation thread still requires a leased session and reserves the
-item before submitting it. These timers and the killer window are still required
-before 12C acceptance.
+The channel clock advances from the network loop's elapsed time. Tests advance
+that clock directly. A durable player drop starts its timer when the committed
+ground manifestation appears in `World`. Expiry is ordered by due time. One wake
+submits at most eight retires, through the persistence worker. The simulation
+tick does not call the database. A stale channel deadline does not retire ground.
+A pickup that is still waiting on the database keeps the item reserved, so expiry
+does not retire it. A retire of an item already committed to a character conflicts.
+
+`manifest_monster_loot` is the authoritative spawn and eligibility path for a
+future loot drop. No loot table is authored, and monster death does not call it.
+Runtime loot is removed locally at 200 seconds. A durable player drop submits
+`retire-{item}`.
+
+A test can also retire one live ground item explicitly. That retire command has
+no character owner, because a ground row has none, so the database does not fence
+it with a character-lease generation. It does require the claimed channel
+generation. The simulation thread still requires a leased session only when a
+player action reserves the item. Channel expiry does not.
 
 ## Unresolved
 
@@ -177,3 +190,23 @@ not `Purgatory_dev`, then passed 30 ignored persistence tests in 26.90s
 not a capacity claim) and 12 ignored server `postgres_12c` tests in 6.46s.
 The 200 second ground lifetime and 40 second killer window are recorded and
 are not implemented. Phase 12C remains in review.
+
+The ground-lifetime run of `./scripts/check.ps1` exited 0 in about 146s.
+Persistence lib tests were 38 passed and 31 ignored. Server bin tests were
+353 passed and 23 ignored in 2.61s. Simulation lib tests were 431 passed.
+A durable drop does not expire before its committed manifestation appears.
+At 200 seconds minus one nanosecond the drop remains; at 200 seconds, with no
+connected player, the channel queues `retire-{item}`. Another character and the
+former owner can both stage a pickup immediately. Monster loot rejects another
+character until exactly 40 seconds. One wake removes eight of twenty due runtime
+drops. An expired channel deadline leaves the drop in place. A pickup that is
+still waiting blocks expiry, and the committed item stays in inventory. A
+disposable `postgres:18` container `purgatory-12c-ground`, database
+`purgatory_12a_test` on `127.0.0.1:5433`, not `Purgatory_dev`, then passed 31
+ignored persistence tests in 19.24s (`admit_us=16847`; workload `total_ms=1664`,
+`mean_us=18490`, debug profile, not a capacity claim) and 14 ignored server
+`postgres_12c` tests in 5.20s. The new cases are
+`expired_channel_cannot_retire_live_ground`,
+`postgres_12c_restart_does_not_restore_ground_time`, and
+`postgres_12c_expiry_cannot_retire_a_character_item`. Monster death does not
+spawn loot. Phase 12C remains in review.

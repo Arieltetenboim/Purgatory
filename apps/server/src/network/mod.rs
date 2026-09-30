@@ -249,6 +249,7 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                 let lateness = elapsed.saturating_sub(outer_period);
 
                 let drain_start = Instant::now();
+                owner.advance_ground_clock(elapsed);
                 owner.drain(&mut life_rx, &mut input_rx);
                 spawn_durable_commits(&mut owner, &persist, &gameplay_tx);
                 let input_depth = input_cap.saturating_sub(input_rx.capacity()) as u64;

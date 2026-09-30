@@ -5,7 +5,7 @@
 //! one `tick_player` (latest held + `jump_pressed` OR). Intermediate historical
 //! held commands may be acknowledged without individual physics steps.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use purgatory_common::{
@@ -467,15 +467,15 @@ enum InFlight {
     Equipment,
 }
 
-fn effect_connection(effect: &super::durable_play::DurableEffect) -> ConnectionId {
+fn effect_connection(effect: &super::durable_play::DurableEffect) -> Option<ConnectionId> {
     match effect {
+        super::durable_play::DurableEffect::RetireGround { .. } => None,
         super::durable_play::DurableEffect::Drop { connection_id, .. }
         | super::durable_play::DurableEffect::Pickup { connection_id, .. }
         | super::durable_play::DurableEffect::Equip { connection_id, .. }
         | super::durable_play::DurableEffect::Unequip { connection_id, .. }
-        | super::durable_play::DurableEffect::RetireGround { connection_id, .. }
         | super::durable_play::DurableEffect::Dialogue { connection_id, .. }
-        | super::durable_play::DurableEffect::Heard { connection_id, .. } => *connection_id,
+        | super::durable_play::DurableEffect::Heard { connection_id, .. } => Some(*connection_id),
     }
 }
 
@@ -567,6 +567,33 @@ pub struct GameplayOwner {
     reconcile_effects: HashMap<ConnectionId, super::durable_play::DurableEffect>,
     reserved_items: HashSet<purgatory_common::ItemInstanceId>,
     durable_items: HashSet<purgatory_common::ItemInstanceId>,
+    /// Time the claimed channel has been running. Tests advance it directly.
+    ground_elapsed: Duration,
+    live_ground: HashMap<purgatory_common::ItemInstanceId, LiveGround>,
+    /// Due time → items. Only the front of this map is visited each wake.
+    ground_expiry: BTreeMap<Duration, Vec<purgatory_common::ItemInstanceId>>,
+    /// Due items whose pickup is still waiting on the persistence worker.
+    ground_deferred: VecDeque<purgatory_common::ItemInstanceId>,
+}
+
+/// Ordinary ground stays visible for 200 seconds. Monster loot is exclusive to
+/// the killer until 40 seconds have elapsed.
+const GROUND_EXCLUSIVE_WINDOW: Duration = Duration::from_secs(40);
+const GROUND_LIFETIME: Duration = Duration::from_secs(200);
+/// Database retires and local despawns started from one wake.
+const GROUND_RETIRE_BATCH: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GroundOrigin {
+    PlayerDrop,
+    MonsterLoot { killer: CharacterId },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LiveGround {
+    visible_at: Duration,
+    expires_at: Duration,
+    origin: GroundOrigin,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1458,6 +1485,10 @@ impl GameplayOwner {
             reconcile_effects: HashMap::new(),
             reserved_items: HashSet::new(),
             durable_items: HashSet::new(),
+            ground_elapsed: Duration::ZERO,
+            live_ground: HashMap::new(),
+            ground_expiry: BTreeMap::new(),
+            ground_deferred: VecDeque::new(),
         }
     }
 
@@ -3587,7 +3618,10 @@ impl GameplayOwner {
         }
 
         let event = match self.apply_drop(connection_id, request.item_instance_id) {
-            Ok(()) => ServerItem::DropAccepted { seq: request.seq },
+            Ok(()) => {
+                self.note_player_ground(request.item_instance_id);
+                ServerItem::DropAccepted { seq: request.seq }
+            }
             Err(reason) => ServerItem::DropRejected {
                 seq: request.seq,
                 reason,
@@ -3611,8 +3645,16 @@ impl GameplayOwner {
         let actor = self
             .command_actor(connection_id, CommandClass::Pickup)
             .map_err(|_| PickupRejectReason::StateBlocked)?;
-        self.world
-            .pickup_world_drop(actor, super::snapshot::from_wire_id(target))
+        let target_entity = super::snapshot::from_wire_id(target);
+        let Some(item) = self.world.item_instance_at_world_drop(target_entity) else {
+            return Err(PickupRejectReason::TargetMissing);
+        };
+        if !self.ground_collectible(connection_id, item) {
+            return Err(PickupRejectReason::StateBlocked);
+        }
+        let picked = self
+            .world
+            .pickup_world_drop(actor, target_entity)
             .map_err(|reason| match reason {
                 ItemRuntimeError::PickupTargetMissing(_)
                 | ItemRuntimeError::MissingItem(_)
@@ -3621,7 +3663,9 @@ impl GameplayOwner {
                 ItemRuntimeError::PickupOutOfRange => PickupRejectReason::OutOfRange,
                 ItemRuntimeError::InventoryFull(_) => PickupRejectReason::InventoryFull,
                 _ => PickupRejectReason::InvalidRequest,
-            })
+            })?;
+        self.forget_ground_item(item);
+        Ok(picked)
     }
 
     fn apply_drop(

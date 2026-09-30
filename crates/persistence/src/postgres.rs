@@ -1326,7 +1326,7 @@ fn apply_command(
     // command frees, and two live items can exchange slots, while uniqueness
     // still rejects two final occupants.
     for id in &command.retire {
-        retire_item(tx, *id)?;
+        retire_item(tx, *id, channels)?;
     }
     for item in &command.moves {
         if matches!(item.to, LiveDestination::Character { .. }) {
@@ -1712,15 +1712,86 @@ fn committed_item_content(
     Ok((ContentId::from_raw(definition), quantity))
 }
 
-fn retire_item(tx: &mut postgres::Transaction<'_>, id: ItemInstanceId) -> Result<(), PersistError> {
+fn retire_item(
+    tx: &mut postgres::Transaction<'_>,
+    id: ItemInstanceId,
+    channels: &std::collections::BTreeMap<i64, u64>,
+) -> Result<(), PersistError> {
     let raw = id_bytes(id.raw());
+    let row = tx
+        .query_opt(
+            "SELECT state, location_kind, ground_channel_id, ground_generation
+             FROM item_instances WHERE item_instance_id = $1 FOR UPDATE",
+            &[&raw.as_slice()],
+        )
+        .map_err(map_sql)?;
+    let Some(row) = row else {
+        return Err(PersistError::conflict(
+            db_path(),
+            format!("item {} does not exist", id.raw()),
+        ));
+    };
+    let state: String = row.get(0);
+    if state != "live" {
+        return Err(PersistError::conflict(
+            db_path(),
+            format!("item {} is retired and cannot be reused", id.raw()),
+        ));
+    }
+    let kind: Option<String> = row.get(1);
+    if kind.as_deref() == Some("ground") {
+        let (channel_id, generation) = match channels.len() {
+            1 => {
+                let (channel_id, generation) = channels.iter().next().expect("one channel");
+                (*channel_id, *generation)
+            }
+            0 => {
+                return Err(PersistError::conflict(
+                    db_path(),
+                    "ground retire has no live channel generation",
+                ));
+            }
+            _ => {
+                return Err(PersistError::conflict(
+                    db_path(),
+                    "ground channel is ambiguous",
+                ));
+            }
+        };
+        lifecycle::lock_live_channel(tx, channel_id, generation)?;
+        let generation = revision_i64(generation)?;
+        let updated = tx
+            .execute(
+                "UPDATE item_instances
+                 SET state = 'retired', owner_character_id = NULL, location_kind = NULL,
+                     inventory_slot = NULL, equipment_slot = NULL,
+                     ground_channel_id = NULL, ground_generation = NULL
+                 WHERE item_instance_id = $1 AND state = 'live' AND location_kind = 'ground'
+                   AND ground_channel_id = $2 AND ground_generation = $3",
+                &[
+                    &raw.as_slice() as &(dyn ToSql + Sync),
+                    &channel_id,
+                    &generation,
+                ],
+            )
+            .map_err(map_sql)?;
+        if updated != 1 {
+            return Err(PersistError::conflict(
+                db_path(),
+                format!("ground item {} could not be retired", id.raw()),
+            ));
+        }
+        return Ok(());
+    }
     let updated = tx
         .execute(
             "UPDATE item_instances
              SET state = 'retired', owner_character_id = NULL, location_kind = NULL,
                  inventory_slot = NULL, equipment_slot = NULL,
                  ground_channel_id = NULL, ground_generation = NULL
-             WHERE item_instance_id = $1 AND state = 'live'",
+             WHERE item_instance_id = $1 AND state = 'live'
+               AND location_kind IS DISTINCT FROM 'ground'
+               AND owner_character_id IS NOT NULL",
             &[&raw.as_slice()],
         )
         .map_err(map_sql)?;
