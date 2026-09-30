@@ -9,12 +9,12 @@ This README is intentionally small. It is the project entry point, not the proje
 ## Current
 
 - **Master version:** `0.12.A`
-- **Phase:** `12.12B` — 12A is accepted; 12B lifecycle is accepted; 12C is not started
+- **Phase:** `12.12C` — 12A is accepted; 12B lifecycle is accepted; 12C is in review and is not accepted
 - **FORGE M:** M4 implementation is merged to `master`; GitHub Issue #75 remains open for the recorded manual two-Monster visual smoke and final M4/M5 closeout evidence
 - **FORGE N:** NPC authoring/runtime N10a-N10f complete and merged
 - **Character Lab:** integrated on `master`; Hub launch, Humanoid v0 contract export, Template V1 (2048×2048) import/validation/conversion, and the current visual-pack/atlas path are present
 - **Production client UI:** Inventory foundation, player-facing Settings, and the Glyphon production-text foundation are merged
-- **Main gameplay:** Phase 12 — Character Continuity; 12B lifecycle is accepted ([lifecycle](docs/PHASE_12B_LIFECYCLE.md), [revised contract](docs/PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md)); draft PR #116 stays unmerged
+- **Main gameplay:** Phase 12 — Character Continuity; 12B lifecycle is accepted ([lifecycle](docs/PHASE_12B_LIFECYCLE.md), [revised contract](docs/PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md)); 12C is in review ([gameplay commands](docs/PHASE_12C_GAMEPLAY.md)) and is not accepted; draft PR #116 stays unmerged
 - **Dash / learned ability:** authoritative Dash + NPC `GrantAbility` integration restored on `master`; Shift activates Dash after it has been granted
 - **Protocol:** v31
 - **Simulation:** server authoritative

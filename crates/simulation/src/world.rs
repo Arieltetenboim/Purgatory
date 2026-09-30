@@ -27,7 +27,7 @@ use crate::interaction::{
     InteractionSessionState,
 };
 use crate::interest_locality::InterestLocalityAccounting;
-use crate::item_runtime::{ItemRecord, ItemRuntimeError, ItemRuntimeState};
+use crate::item_runtime::{ItemLocation, ItemRecord, ItemRuntimeError, ItemRuntimeState};
 use crate::lifecycle::EntityLifecycle;
 use crate::map_runtime::InstantiatedMap;
 use crate::motion_debug::PlayerMotionDebug;
@@ -689,6 +689,35 @@ impl World {
         }
         self.revoke_equipment_ability_grant(owner, item);
         Ok(moved)
+    }
+
+    #[must_use]
+    pub fn equipped_instance(
+        &self,
+        owner: EntityId,
+        slot: EquipmentSlot,
+    ) -> Option<ItemInstanceId> {
+        self.item_runtime.equipped_item(owner, slot)
+    }
+
+    /// Remove one inventory instance. Used when a durable retire names that id.
+    pub fn retire_inventory_instance(&mut self, owner: EntityId, item: ItemInstanceId) -> bool {
+        let Some(record) = self.item_record(item) else {
+            return false;
+        };
+        let ItemLocation::Inventory {
+            owner: record_owner,
+            slot,
+        } = record.location
+        else {
+            return false;
+        };
+        if record_owner != owner {
+            return false;
+        }
+        self.item_runtime
+            .remove_inventory_item(owner, slot)
+            .is_some()
     }
 
     fn equipment_ability(definition: ContentId) -> Option<crate::ability::AbilityId> {

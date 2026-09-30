@@ -180,6 +180,13 @@ impl PostgresStore {
         self.rules = rules;
     }
 
+    pub(crate) fn read_item(
+        &mut self,
+        id: ItemInstanceId,
+    ) -> Result<Option<ItemRecord>, PersistError> {
+        load_item(&mut self.client, id)
+    }
+
     pub(crate) fn commit(
         &mut self,
         command: &DurableCommand,
@@ -638,8 +645,7 @@ pub(crate) fn count_table(settings: &PostgresSettings, table: &str) -> Result<i6
     Ok(row.get(0))
 }
 
-#[cfg(test)]
-pub(crate) fn drop_test_schema(settings: &PostgresSettings) -> Result<(), PersistError> {
+pub fn drop_test_schema(settings: &PostgresSettings) -> Result<(), PersistError> {
     if !settings.schema.starts_with("p12a_") {
         return Err(PersistError::storage(
             "refusing to drop a schema that is not a disposable p12a_ test schema",

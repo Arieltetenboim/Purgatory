@@ -1,9 +1,10 @@
 # Phase 12 entry — Character Continuity
 
 Status: **revised design accepted; 12A and 12B accepted** (2026-09-30).
-Root `PHASE` = `12.12B`. Phase 11 is closed. 12A is accepted in
+Root `PHASE` = `12.12C`. Phase 11 is closed. 12A is accepted in
 [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). 12B is accepted in
-[`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md). 12C is not started. This
+[`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md). 12C is in review in
+[`PHASE_12C_GAMEPLAY.md`](PHASE_12C_GAMEPLAY.md) and is not accepted. This
 entry does not accept Phase 12.
 
 ## Entry evidence and first gate

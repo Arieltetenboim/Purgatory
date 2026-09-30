@@ -49,7 +49,12 @@ enum PersistCmd {
     #[cfg_attr(not(test), allow(dead_code))]
     CommitDurable {
         command: DurableCommand,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
         reply: tokio::sync::oneshot::Sender<Result<DurableCommandResult, PersistError>>,
+    },
+    InstallRules {
+        rules: purgatory_persistence::DurableContentRules,
+        reply: tokio::sync::oneshot::Sender<()>,
     },
     Save {
         snapshot: PersistentCharacterSnapshot,
@@ -444,8 +449,16 @@ impl PersistenceHandle {
                         };
                         let _ = reply.send(result);
                     }
-                    PersistCmd::CommitDurable { command, reply } => {
-                        let _ = reply.send(service.commit_durable(&command));
+                    PersistCmd::CommitDurable {
+                        command,
+                        lease,
+                        reply,
+                    } => {
+                        let _ = reply.send(service.commit_durable_leased(&command, lease.as_ref()));
+                    }
+                    PersistCmd::InstallRules { rules, reply } => {
+                        service.set_durable_content_rules(rules);
+                        let _ = reply.send(());
                     }
                     PersistCmd::Save { snapshot, lease } => {
                         #[cfg(test)]
@@ -647,13 +660,32 @@ impl PersistenceHandle {
     pub async fn commit_durable(
         &self,
         command: DurableCommand,
+        lease: Option<purgatory_persistence::LeaseAuthority>,
     ) -> Result<DurableCommandResult, PersistError> {
         let (reply, rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(PersistCmd::CommitDurable { command, reply })
+            .send(PersistCmd::CommitDurable {
+                command,
+                lease,
+                reply,
+            })
             .await
             .map_err(|_| worker_closed())?;
         rx.await.map_err(|_| worker_closed())?
+    }
+
+    /// Install catalog rules before gameplay commands. File mode ignores them.
+    pub async fn install_content_rules(
+        &self,
+        rules: purgatory_persistence::DurableContentRules,
+    ) -> Result<(), PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::InstallRules { rules, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?;
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -1851,15 +1883,18 @@ mod frontend_worker_tests {
         ));
         let worker = PersistenceHandle::spawn(&dir).unwrap();
         let err = worker
-            .commit_durable(DurableCommand {
-                key: "not-wired".into(),
-                expected_revisions: Vec::new(),
-                place_new: Vec::new(),
-                moves: Vec::new(),
-                retire: Vec::new(),
-                narrative: Vec::new(),
-                learned: Vec::new(),
-            })
+            .commit_durable(
+                DurableCommand {
+                    key: "not-wired".into(),
+                    expected_revisions: Vec::new(),
+                    place_new: Vec::new(),
+                    moves: Vec::new(),
+                    retire: Vec::new(),
+                    narrative: Vec::new(),
+                    learned: Vec::new(),
+                },
+                None,
+            )
             .await
             .expect_err("file mode has no durable command result");
         let text = err.to_string();

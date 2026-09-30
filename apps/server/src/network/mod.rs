@@ -16,6 +16,7 @@ mod connection_lifecycle;
 mod dev_admin;
 mod dialogue;
 mod dialogue_actions;
+mod durable_play;
 mod endpoint;
 mod gameplay;
 mod handshake;
@@ -98,6 +99,37 @@ pub(crate) fn install_crypto_provider() -> Result<(), String> {
     Ok(())
 }
 
+fn spawn_durable_commits(
+    owner: &mut gameplay::GameplayOwner,
+    persist: &persist::PersistenceHandle,
+    gameplay_tx: &gameplay::GameplayTx,
+) {
+    for submit in owner.take_durable_commits() {
+        let persist = persist.clone();
+        let tx = gameplay_tx.clone();
+        tokio::spawn(async move {
+            let lease = submit.lease.clone();
+            let mut result = persist
+                .commit_durable(submit.command.clone(), lease.clone())
+                .await;
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(durable_play::commit_outcome_unknown)
+            {
+                result = persist.commit_durable(submit.command, lease).await;
+            }
+            let _ = tx
+                .lifecycle
+                .send(gameplay::LifecycleCmd::SettleDurable {
+                    token: submit.token,
+                    result,
+                })
+                .await;
+        });
+    }
+}
+
 async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     let bound = endpoint::bind(&config)?;
     println!("network listening on {}", bound.local_addr());
@@ -132,6 +164,10 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
         );
     }
     owner.set_persist(persist.clone());
+    let rules = owner.durable_content_rules();
+    if let Err(err) = persist.install_content_rules(rules).await {
+        eprintln!("PURGATORY durable content rules were not installed: {err}");
+    }
     let pressure = Arc::new(network_pressure::NetworkPressureBook::new());
     let lifecycle = Arc::new(connection_lifecycle::ConnectionLifecycleBook::new());
     owner.set_pressure(pressure.clone());
@@ -194,6 +230,7 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
 
                 let drain_start = Instant::now();
                 owner.drain(&mut life_rx, &mut input_rx);
+                spawn_durable_commits(&mut owner, &persist, &gameplay_tx);
                 let input_depth = input_cap.saturating_sub(input_rx.capacity()) as u64;
                 bound.stats.input_queue_current.store(input_depth, Ordering::Relaxed);
                 bound.stats.input_queue_max.fetch_max(input_depth, Ordering::Relaxed);
@@ -233,6 +270,7 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                     // Drain between ticks so long snapshot work does not starve
                     // awaiting producers on the input handoff.
                     owner.drain(&mut life_rx, &mut input_rx);
+                    spawn_durable_commits(&mut owner, &persist, &gameplay_tx);
                     let depth = input_cap.saturating_sub(input_rx.capacity()) as u64;
                     bound.stats.input_queue_current.store(depth, Ordering::Relaxed);
                     bound.stats.input_queue_max.fetch_max(depth, Ordering::Relaxed);

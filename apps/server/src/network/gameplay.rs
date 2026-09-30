@@ -5,7 +5,7 @@
 //! one `tick_player` (latest held + `jump_pressed` OR). Intermediate historical
 //! held commands may be acknowledged without individual physics steps.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use purgatory_common::{
@@ -38,7 +38,7 @@ use purgatory_simulation::{
 use super::dialogue::{
     ActiveDialogue, AdvanceResult, ChoiceResult, DialogueRuntime, RuntimeConditions,
 };
-use super::dialogue_actions::execute_dialogue_actions;
+use super::dialogue_actions::{execute_dialogue_actions, preview_dialogue_actions};
 use super::narrative::NarrativeRuntime;
 use super::persist::{PersistenceHandle, SaveHandoff};
 use super::replication::{
@@ -418,6 +418,9 @@ pub struct PlayerBinding {
     pub entity: EntityId,
     pub character_id: Option<CharacterId>,
     persistence_revision: u64,
+    /// Revision last adopted from a durable commit or from entry. Snapshot
+    /// saves must not use this counter as a command expectation.
+    committed_revision: u64,
     restore: RestoreIntent,
     pub input: SessionInput,
     replication: Option<ReplicationPipe>,
@@ -439,6 +442,40 @@ pub struct PlayerBinding {
     authority_lost: bool,
     pending_durable: u32,
     detach_when_idle: bool,
+}
+
+struct PickupCommit {
+    item: purgatory_common::ItemInstanceId,
+    slot: u16,
+    durable: bool,
+    definition: ContentId,
+    quantity: u32,
+    stack_limit: u32,
+}
+
+enum InFlight {
+    Drop,
+    Pickup,
+    Equipment,
+}
+
+fn effect_connection(effect: &super::durable_play::DurableEffect) -> ConnectionId {
+    match effect {
+        super::durable_play::DurableEffect::Drop { connection_id, .. }
+        | super::durable_play::DurableEffect::Pickup { connection_id, .. }
+        | super::durable_play::DurableEffect::Equip { connection_id, .. }
+        | super::durable_play::DurableEffect::Unequip { connection_id, .. }
+        | super::durable_play::DurableEffect::RetireGround { connection_id, .. }
+        | super::durable_play::DurableEffect::Dialogue { connection_id, .. }
+        | super::durable_play::DurableEffect::Heard { connection_id, .. } => *connection_id,
+    }
+}
+
+struct DurablePending {
+    command: purgatory_persistence::DurableCommand,
+    lease: Option<purgatory_persistence::LeaseAuthority>,
+    effect: super::durable_play::DurableEffect,
+    reserved: Vec<purgatory_common::ItemInstanceId>,
 }
 
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
@@ -505,6 +542,11 @@ pub struct GameplayOwner {
     last_observer_bytes: HashMap<ConnectionId, u32>,
     tick_overrun_hint: bool,
     pressure: Option<std::sync::Arc<super::network_pressure::NetworkPressureBook>>,
+    durable_tokens: u64,
+    durable_outbound: Vec<u64>,
+    durable_pending: HashMap<u64, DurablePending>,
+    reserved_items: HashSet<purgatory_common::ItemInstanceId>,
+    durable_items: HashSet<purgatory_common::ItemInstanceId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -640,6 +682,13 @@ pub enum LifecycleCmd {
     },
     Detach {
         connection_id: ConnectionId,
+    },
+    SettleDurable {
+        token: u64,
+        result: Result<
+            purgatory_persistence::DurableCommandResult,
+            purgatory_persistence::PersistError,
+        >,
     },
 }
 
@@ -1375,7 +1424,16 @@ impl GameplayOwner {
             last_observer_bytes: HashMap::new(),
             tick_overrun_hint: false,
             pressure: None,
+            durable_tokens: 1,
+            durable_outbound: Vec::new(),
+            durable_pending: HashMap::new(),
+            reserved_items: HashSet::new(),
+            durable_items: HashSet::new(),
         }
+    }
+
+    pub fn durable_content_rules(&self) -> purgatory_persistence::DurableContentRules {
+        super::durable_play::rules_from_registry(&self.registry)
     }
 
     pub fn set_persist(&mut self, persist: PersistenceHandle) {
@@ -1653,6 +1711,7 @@ impl GameplayOwner {
                 entity,
                 character_id,
                 persistence_revision,
+                committed_revision: persistence_revision,
                 restore,
                 input: SessionInput::new(),
                 replication,
@@ -1874,6 +1933,9 @@ impl GameplayOwner {
             if revision > binding.persistence_revision {
                 binding.persistence_revision = revision;
             }
+            if revision > binding.committed_revision {
+                binding.committed_revision = revision;
+            }
             binding.pending_durable = binding.pending_durable.saturating_sub(1);
             binding.pending_durable == 0 && binding.detach_when_idle
         } else {
@@ -2073,6 +2135,7 @@ impl GameplayOwner {
             if restored.is_err() {
                 return Err(EnterError::RestoreFailed);
             }
+            self.durable_items.insert(item.item_instance_id);
         }
         for (fact, value) in &owned.narrative.facts {
             self.narrative.set_fact(entity, fact, *value);
@@ -2609,6 +2672,9 @@ impl GameplayOwner {
                     revision,
                 } => self.finish_durable(connection_id, revision),
                 LifecycleCmd::Detach { connection_id } => self.detach(connection_id),
+                LifecycleCmd::SettleDurable { token, result } => {
+                    self.settle_durable(token, result);
+                }
             }
         }
         while let Ok(update) = input.try_recv() {
@@ -3137,6 +3203,11 @@ impl GameplayOwner {
             SeqDecision::Accept => {}
         }
 
+        if self.stages_durable(connection_id) {
+            self.stage_equipment(connection_id, seq, slot, item_instance_id);
+            return;
+        }
+
         let grants_before = self
             .bindings
             .get(&connection_id)
@@ -3382,6 +3453,11 @@ impl GameplayOwner {
             SeqDecision::Accept => {}
         }
 
+        if self.stages_durable(connection_id) {
+            self.stage_pickup(connection_id, request);
+            return;
+        }
+
         let result = self.apply_pickup(connection_id, request.target);
         let event = match result {
             Ok((item_instance_id, slot)) => ServerItem::PickupAccepted {
@@ -3440,6 +3516,11 @@ impl GameplayOwner {
                 return;
             }
             SeqDecision::Accept => {}
+        }
+
+        if self.stages_durable(connection_id) {
+            self.stage_drop(connection_id, request);
+            return;
         }
 
         let event = match self.apply_drop(connection_id, request.item_instance_id) {
@@ -3798,6 +3879,13 @@ impl GameplayOwner {
                 }
             }
             AdvanceResult::Complete(active) => {
+                if self.stages_durable(connection_id) {
+                    let beat_id = definition
+                        .beat(active.beat_index)
+                        .map(|beat| beat.id.clone());
+                    self.stage_heard(connection_id, active, beat_id);
+                    return;
+                }
                 self.narrative
                     .mark_dialogue_heard(actor, active.npc_content_id, active.beat_index);
                 let _ = self.world.close_interaction(
@@ -3847,6 +3935,13 @@ impl GameplayOwner {
         ) else {
             return;
         };
+        if self.stages_durable(connection_id) {
+            let beat_id = definition
+                .beat(plan.accepted.beat_index)
+                .map(|beat| beat.id.clone());
+            self.stage_dialogue(connection_id, plan, beat_id);
+            return;
+        }
         let action_outcome = match execute_dialogue_actions(
             &plan.actions,
             actor,
@@ -5023,6 +5118,8 @@ impl Default for GameplayOwner {
         Self::new()
     }
 }
+
+include!("durable_owner_methods.rs");
 
 #[cfg(test)]
 mod tests {
@@ -10393,4 +10490,6 @@ mod tests {
         assert_eq!(owner.world().transform_of(actor).unwrap().position, before);
         assert_eq!(owner.entity_of(id), Some(actor));
     }
+
+    include!("durable_12c_tests.rs");
 }

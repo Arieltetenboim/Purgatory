@@ -30,7 +30,7 @@ pub use lifecycle::{
     Admission, CHANNEL_GENERATION_EXPIRY, CHANNEL_GENERATION_RENEWAL, CHARACTER_LEASE_EXPIRY,
     CHARACTER_LEASE_RENEWAL, ChannelClaim, LeaseAuthority, LeaseBarrier, OwnedRestore,
 };
-pub use postgres::PostgresSettings;
+pub use postgres::{PostgresSettings, drop_test_schema};
 pub use repository::{FileCharacterRepository, character_file_name};
 pub use service::{PersistenceService, SessionAdmission};
 

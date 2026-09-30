@@ -97,6 +97,55 @@ pub(crate) fn execute_dialogue_actions(
     Ok(outcome)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DialogueCommitPreview {
+    pub facts: Vec<(String, bool)>,
+    pub npcs_met: Vec<String>,
+    pub gives: Vec<(ContentId, u32, u32)>,
+    pub removes: Vec<(ContentId, u32)>,
+    pub abilities: Vec<ContentId>,
+}
+
+/// Resolve and preflight a choice without mutating `World` or narrative.
+pub(crate) fn preview_dialogue_actions(
+    actions: &[DialogueAction],
+    actor: EntityId,
+    registry: &ContentRegistry,
+    world: &World,
+) -> Result<DialogueCommitPreview, DialogueActionError> {
+    let resolved = resolve(actions, registry)?;
+    preflight_inventory(&resolved, actor, world)?;
+    preflight_ability_grants(&resolved, actor, world)?;
+    let mut preview = DialogueCommitPreview {
+        facts: Vec::new(),
+        npcs_met: Vec::new(),
+        gives: Vec::new(),
+        removes: Vec::new(),
+        abilities: Vec::new(),
+    };
+    for action in resolved {
+        match action {
+            ResolvedAction::SetFact { fact, value } => preview.facts.push((fact, value)),
+            ResolvedAction::MarkNpcMet { npc_authored } => preview.npcs_met.push(npc_authored),
+            ResolvedAction::GiveItem {
+                definition,
+                quantity,
+                stack_limit,
+            } => preview.gives.push((definition, quantity, stack_limit)),
+            ResolvedAction::RemoveItem {
+                definition,
+                quantity,
+            } => preview.removes.push((definition, quantity)),
+            ResolvedAction::GrantAbility { ability } => {
+                if !preview.abilities.contains(&ability) {
+                    preview.abilities.push(ability);
+                }
+            }
+        }
+    }
+    Ok(preview)
+}
+
 fn resolve(
     actions: &[DialogueAction],
     registry: &ContentRegistry,

@@ -139,6 +139,16 @@ impl PersistenceService {
         self.commit_durable_leased(command, None)
     }
 
+    pub fn read_item(
+        &mut self,
+        id: ItemInstanceId,
+    ) -> Result<Option<crate::ItemRecord>, PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Ok(None),
+            Backend::Postgres(store) => store.read_item(id),
+        }
+    }
+
     pub fn commit_durable_leased(
         &mut self,
         command: &DurableCommand,
