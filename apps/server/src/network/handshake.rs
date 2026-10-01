@@ -1717,9 +1717,26 @@ mod admission_race {
             if ready() {
                 return;
             }
+            // Real sleep, not paused Tokio time: the persistence worker is an
+            // OS thread, and a yield can finish before that thread enters.
+            std::thread::sleep(Duration::from_millis(2));
             tokio::task::yield_now().await;
         }
         panic!("timed out waiting for {label}");
+    }
+
+    /// The channel-renewal hold is set by the persistence worker thread.
+    /// Paused Tokio time does not run that thread, so the wait has to observe
+    /// real time. Yielding alone times out while the worker is still entering.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn channel_renewal_wait_observes_the_worker_thread() {
+        let entered = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&entered);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            flag.store(true, Ordering::SeqCst);
+        });
+        until("channel renewal held", || entered.load(Ordering::SeqCst)).await;
     }
 
     fn leased_admission(character_id: CharacterId) -> SessionAdmission {

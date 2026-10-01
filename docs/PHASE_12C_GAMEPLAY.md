@@ -67,6 +67,20 @@ future loot drop. No loot table is authored, and monster death does not call it.
 Runtime loot is removed locally at 200 seconds. A durable player drop submits
 `retire-{item}`.
 
+A player drop keeps one item-instance id from inventory, through ground, through
+pickup, and back to character ownership. `postgres_12c_drop_pickup_reclaim_and_competition`
+reads that same id as `ItemOwner::Ground` and then as that character's item.
+Monster-loot pickup does not. The loot id is minted by `World` from a time and
+process epoch. It is not in the durable item set, so pickup submits
+`pickup-new` and `place_items` mints the next PostgreSQL id. The world record
+is destroyed and replaced. Keeping the appearance id would require choosing how
+that id is allocated. The durability contract says the persistence service is
+the sole durable allocator and gameplay receives a reserved monotonic range;
+that range is not implemented, and `place_items` cannot insert a caller-supplied
+id. Adopting the epoch id would contradict that contract. Neither alternative
+is chosen here. Issue #122 remains the ownership-history ledger, not this
+allocator. Issue #123 remains the later ground-capacity policy.
+
 A test can also retire one live ground item explicitly. That retire command has
 no character owner, because a ground row has none, so the database does not fence
 it with a character-lease generation. It does require the claimed channel
@@ -240,3 +254,24 @@ ignored persistence tests in 18.24s (`admit_us=17202`; workload `total_ms=1676`,
 `mean_us=18627`, debug profile, not a capacity claim) and 14 ignored server
 `postgres_12c` tests in 5.35s. Monster death does not spawn loot. Phase 12C
 remains in review.
+
+GitHub Actions run [36833503044](https://github.com/Arieltetenboim/Purgatory/actions/runs/36833503044)
+on `e0e090a` passed the PostgreSQL job and failed the quality gate in
+`channel_stop_during_admit_does_not_enter_world` with
+`timed out waiting for channel renewal held`. That wait only yielded. The
+renewal hold is set by the persistence worker thread, and paused Tokio time
+does not run that thread. The same panic is reproduced by
+`channel_renewal_wait_observes_the_worker_thread` in 0.01s, before the wait
+sleeps. It is not an admission race and not a product regression. After the
+wait sleeps 2ms per attempt, the same way the character-deadline test already
+waits for the worker, both tests pass. The admission test still requires
+`StorageFailure` and no world entity. The follow-up run of `./scripts/check.ps1`
+exited 0 in about 132s. Persistence lib tests were 38 passed and 31 ignored.
+Server bin tests were 357 passed and 23 ignored in 2.63s. Simulation lib tests
+were 431 passed. A disposable `postgres:18` container `purgatory-12c-admit`,
+database `purgatory_12a_test` on `127.0.0.1:5433`, not `Purgatory_dev`, then
+passed 31 ignored persistence tests in 18.75s (`admit_us=18526`; workload
+`total_ms=1718`, `mean_us=19094`, debug profile, not a capacity claim) and 14
+ignored server `postgres_12c` tests in 5.40s. Monster-loot pickup still mints
+a new durable id. That allocator choice is not made here. Phase 12C remains
+in review.
