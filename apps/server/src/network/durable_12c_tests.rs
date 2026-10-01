@@ -3546,3 +3546,341 @@
             assert!((live_hp(&pg.owner, healed.actor) - 16.0).abs() < 1e-3);
         });
     }
+
+    fn attach_snapshot_worker(pg: &mut Pg) -> super::super::persist::PersistenceHandle {
+        let handle =
+            super::super::persist::PersistenceHandle::spawn_postgresql_for_test(&pg.settings)
+                .expect("snapshot worker");
+        pg.owner.set_persist(handle.clone());
+        handle
+    }
+
+    fn wait_adopted_snapshot(
+        pg: &mut Pg,
+        connection: ConnectionId,
+        character: CharacterId,
+        revision: u64,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            pg.owner.adopt_snapshot_reports();
+            let session = pg.owner.bindings[&connection].committed_revision;
+            let stored = pg
+                .service
+                .load_owned_character(&pg.login, character)
+                .unwrap()
+                .unwrap()
+                .persistence_revision;
+            if session == revision && stored == revision {
+                return;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "snapshot {revision} was not both committed and adopted; database={stored} session={session}"
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// Damage, then a portal save, each followed by a durable command in the
+    /// same session. Reconnecting is not part of this test.
+    #[test]
+    #[ignore]
+    fn postgres_12c_same_session_snapshot_then_equip_and_drop() {
+        with_db(|pg| {
+            let hero = pg.enter("Mira");
+            let weapon = pg.seed_item(&hero, sword(), 0);
+            let spare = pg.seed_item(&hero, sword(), 1);
+            let _worker = attach_snapshot_worker(pg);
+            assert!(pg.owner.world_mut().apply_damage(hero.actor, 5.0));
+            let damaged = live_hp(&pg.owner, hero.actor);
+            pg.owner.simulate_tick(1.0 / 30.0);
+            let hp_revision = pg.owner.bindings[&hero.connection].persistence_revision;
+            wait_adopted_snapshot(pg, hero.connection, hero.character, hp_revision);
+
+            pg.owner.apply_input(InputUpdate::Equip {
+                connection_id: hero.connection,
+                request: EquipRequest {
+                    seq: 1,
+                    slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+                    item_instance_id: weapon,
+                },
+            });
+            let staged = pg.owner.take_durable_commits();
+            assert_eq!(staged.len(), 1, "equip must be staged in the same session");
+            assert_eq!(
+                staged[0].command.expected_revisions,
+                vec![(hero.character, hp_revision)],
+                "equip must expect the committed HP snapshot revision"
+            );
+            let equipped = pg
+                .service
+                .commit_durable_leased(&staged[0].command, staged[0].lease.as_ref())
+                .expect("equip after a committed HP snapshot");
+            pg.owner
+                .settle_durable(staged[0].token, Ok(equipped));
+            assert_eq!(
+                pg.owner.world().equipped_instance(
+                    hero.actor,
+                    purgatory_simulation::EquipmentSlot::Weapon,
+                ),
+                Some(weapon),
+                "equip must land in World"
+            );
+
+            pg.owner.note_persistent_restore(
+                hero.connection,
+                purgatory_common::RestoreIntent {
+                    map_authored: "map.map2".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+            );
+            let portal_revision = pg.owner.bindings[&hero.connection].persistence_revision;
+            wait_adopted_snapshot(pg, hero.connection, hero.character, portal_revision);
+            let row = pg
+                .service
+                .load_owned_character(&pg.login, hero.character)
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.restore.map_authored, "map.map2");
+            let max = pg.owner.world().health_of(hero.actor).unwrap().max;
+            assert_eq!(
+                row.current_health_milli,
+                Some(purgatory_persistence::health_milli(damaged, max))
+            );
+
+            pg.owner.apply_input(InputUpdate::Drop {
+                connection_id: hero.connection,
+                request: DropRequest {
+                    seq: 1,
+                    item_instance_id: spare,
+                },
+            });
+            let staged = pg.owner.take_durable_commits();
+            assert_eq!(staged.len(), 1, "drop must be staged in the same session");
+            assert_eq!(
+                staged[0].command.expected_revisions,
+                vec![(hero.character, portal_revision)],
+                "drop must expect the committed portal snapshot revision"
+            );
+            let dropped = pg
+                .service
+                .commit_durable_leased(&staged[0].command, staged[0].lease.as_ref())
+                .expect("drop after a committed portal snapshot");
+            pg.owner.settle_durable(staged[0].token, Ok(dropped));
+            assert!(
+                pg.owner.world().world_drop_entity_for_item(spare).is_some(),
+                "drop must land in World"
+            );
+            assert!(!pg.owner.world().inventory_contains(hero.actor, spare));
+            assert!((live_hp(&pg.owner, hero.actor) - damaged).abs() < 1e-3);
+            assert_eq!(
+                pg.owner.bindings[&hero.connection].restore.map_authored,
+                "map.map2"
+            );
+        });
+    }
+
+    fn revision_owner() -> (
+        GameplayOwner,
+        ConnectionId,
+        CharacterId,
+        purgatory_common::ItemInstanceId,
+    ) {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let item = owned_debug_sword(&mut owner, actor);
+        let character = CharacterId::from_raw(4);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[item]);
+        (owner, id, character, item)
+    }
+
+    fn queue_health_snapshot(owner: &mut GameplayOwner, id: ConnectionId) {
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.world_mut().apply_damage(actor, 5.0));
+        owner.simulate_tick(1.0 / 30.0);
+    }
+
+    fn stage_one_drop(
+        owner: &mut GameplayOwner,
+        id: ConnectionId,
+        seq: u32,
+        item: purgatory_common::ItemInstanceId,
+    ) {
+        owner.apply_input(InputUpdate::Drop {
+            connection_id: id,
+            request: DropRequest {
+                seq,
+                item_instance_id: item,
+            },
+        });
+    }
+
+    fn report(character: CharacterId, revision: u64, committed: bool) -> super::super::persist::SaveReport {
+        super::super::persist::SaveReport {
+            character_id: character,
+            revision,
+            committed,
+        }
+    }
+
+    #[test]
+    fn queued_snapshot_is_not_a_commit_and_the_next_command_uses_the_report() {
+        let (mut owner, id, character, item) = revision_owner();
+        let persist = super::super::persist::PersistenceHandle::queue_only_for_test(8);
+        owner.set_persist(persist.clone());
+        queue_health_snapshot(&mut owner, id);
+        assert_eq!(owner.bindings[&id].committed_revision, 1);
+        assert_eq!(
+            owner.bindings[&id]
+                .snapshots
+                .queued
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+        stage_one_drop(&mut owner, id, 1, item);
+        assert!(
+            owner.take_durable_commits().is_empty(),
+            "a queued snapshot must hold the command"
+        );
+        persist.push_save_report_for_test(report(character, 2, true));
+        let staged = owner.take_durable_commits();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].command.expected_revisions, vec![(character, 2)]);
+        assert!(staged[0].command.key.contains("-r2-"));
+        assert_eq!(owner.bindings[&id].committed_revision, 2);
+        assert!(owner.bindings[&id].snapshots.queued.is_empty());
+    }
+
+    #[test]
+    fn deferred_snapshot_is_not_a_commit_until_the_parked_revision_is_reported() {
+        let (mut owner, id, character, item) = revision_owner();
+        let persist = super::super::persist::PersistenceHandle::queue_only_for_test(1);
+        let filler = PersistentCharacterSnapshot::from_character(
+            &PersistentCharacter::new_default(CharacterId::from_raw(99)),
+        );
+        assert_eq!(persist.try_save(filler), SaveHandoff::Accepted);
+        owner.set_persist(persist.clone());
+        queue_health_snapshot(&mut owner, id);
+        assert_eq!(owner.bindings[&id].committed_revision, 1);
+        assert_eq!(owner.bindings[&id].snapshots.deferred, Some(2));
+        assert!(owner.bindings[&id].snapshots.queued.is_empty());
+        owner.note_persistent_restore(
+            id,
+            purgatory_common::RestoreIntent {
+                map_authored: "map.map2".into(),
+                point_id: "default".into(),
+                checkpoint_id: None,
+            },
+        );
+        assert_eq!(
+            owner.bindings[&id].snapshots.deferred,
+            Some(3),
+            "a newer deferred snapshot replaces the parked one"
+        );
+        assert_eq!(owner.bindings[&id].committed_revision, 1);
+        stage_one_drop(&mut owner, id, 1, item);
+        assert!(owner.take_durable_commits().is_empty());
+        persist.push_save_report_for_test(report(character, 3, true));
+        let staged = owner.take_durable_commits();
+        assert_eq!(staged[0].command.expected_revisions, vec![(character, 3)]);
+        assert_eq!(owner.bindings[&id].committed_revision, 3);
+        assert_eq!(owner.bindings[&id].snapshots.deferred, None);
+    }
+
+    #[test]
+    fn failed_snapshot_does_not_advance_committed_revision() {
+        let (mut owner, id, character, item) = revision_owner();
+        let persist = super::super::persist::PersistenceHandle::queue_only_for_test(8);
+        owner.set_persist(persist.clone());
+        queue_health_snapshot(&mut owner, id);
+        stage_one_drop(&mut owner, id, 1, item);
+        persist.push_save_report_for_test(report(character, 2, false));
+        let staged = owner.take_durable_commits();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].command.expected_revisions, vec![(character, 1)]);
+        assert!(staged[0].command.key.contains("-r1-"));
+        assert_eq!(owner.bindings[&id].committed_revision, 1);
+        assert!(owner.bindings[&id].snapshots.queued.is_empty());
+    }
+
+    #[test]
+    fn closed_snapshot_handoff_does_not_block_or_advance() {
+        let (mut owner, id, _, item) = revision_owner();
+        owner.set_persist(super::super::persist::PersistenceHandle::closed_for_test());
+        queue_health_snapshot(&mut owner, id);
+        assert_eq!(owner.bindings[&id].committed_revision, 1);
+        assert_eq!(owner.bindings[&id].persistence_revision, 2);
+        assert!(owner.bindings[&id].snapshots.queued.is_empty());
+        assert_eq!(owner.bindings[&id].snapshots.deferred, None);
+        stage_one_drop(&mut owner, id, 1, item);
+        let staged = owner.take_durable_commits();
+        assert_eq!(staged[0].command.expected_revisions, vec![(CharacterId::from_raw(4), 1)]);
+    }
+
+    #[test]
+    fn command_submitted_before_the_snapshot_is_not_rewritten_when_the_snapshot_is_overtaken() {
+        let (mut owner, id, character, first) = revision_owner();
+        let actor = owner.entity_of(id).unwrap();
+        let second = owned_debug_sword(&mut owner, actor);
+        owner.durable_items.insert(second);
+        let persist = super::super::persist::PersistenceHandle::queue_only_for_test(8);
+        owner.set_persist(persist.clone());
+        stage_one_drop(&mut owner, id, 1, first);
+        let staged = owner.take_durable_commits();
+        assert_eq!(staged[0].command.expected_revisions, vec![(character, 1)]);
+        queue_health_snapshot(&mut owner, id);
+        owner.note_persistent_restore(
+            id,
+            purgatory_common::RestoreIntent {
+                map_authored: "map.map2".into(),
+                point_id: "default".into(),
+                checkpoint_id: None,
+            },
+        );
+        assert_eq!(
+            owner.bindings[&id]
+                .snapshots
+                .queued
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: Vec::new(),
+            }),
+        );
+        assert_eq!(staged[0].command.expected_revisions, vec![(character, 1)]);
+        assert_eq!(owner.bindings[&id].committed_revision, 2);
+        persist.push_save_report_for_test(report(character, 2, true));
+        owner.adopt_snapshot_reports();
+        assert_eq!(
+            owner.bindings[&id].committed_revision, 2,
+            "an overtaken snapshot does not move the committed revision"
+        );
+        assert_eq!(
+            owner.bindings[&id]
+                .snapshots
+                .queued
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+        stage_one_drop(&mut owner, id, 2, second);
+        assert!(owner.take_durable_commits().is_empty());
+        persist.push_save_report_for_test(report(character, 3, true));
+        let next = owner.take_durable_commits();
+        assert_eq!(next[0].command.expected_revisions, vec![(character, 3)]);
+        assert_eq!(owner.bindings[&id].committed_revision, 3);
+    }

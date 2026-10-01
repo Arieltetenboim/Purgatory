@@ -418,9 +418,13 @@ pub struct PlayerBinding {
     pub entity: EntityId,
     pub character_id: Option<CharacterId>,
     persistence_revision: u64,
-    /// Revision last adopted from a durable commit or from entry. Snapshot
-    /// saves must not use this counter as a command expectation.
+    /// Revision last loaded at entry, returned by a durable command, or
+    /// reported committed by the persistence worker. Queue acceptance does
+    /// not change it.
     committed_revision: u64,
+    /// Snapshots admitted to the worker and not yet reported. A revision here
+    /// is not a database commit.
+    snapshots: SnapshotAdmission,
     restore: RestoreIntent,
     /// Last health value written, or the value loaded at entry. Thousandths of a point.
     stored_health_milli: Option<u32>,
@@ -453,6 +457,22 @@ pub struct PlayerBinding {
     commit_uncertain: bool,
     pending_durable: u32,
     detach_when_idle: bool,
+}
+
+/// One character's snapshot handoffs that the worker has not reported yet.
+///
+/// Ordering rule: `committed_revision` advances when a snapshot report says
+/// that revision committed, or when a durable command result is adopted.
+/// Accepted and deferred handoffs do not advance it. A failed report does
+/// not advance it. A drop, pickup, equip, or dialogue command is held while
+/// a queued or deferred revision is still above `committed_revision`, then
+/// rewritten to the adopted revision before it is submitted. A command that
+/// was already submitted keeps the revision it carried. A later snapshot at
+/// or below that command result is overtaken and does not move
+/// `committed_revision` again.
+struct SnapshotAdmission {
+    queued: VecDeque<u64>,
+    deferred: Option<u64>,
 }
 
 struct PickupCommit {
@@ -1849,6 +1869,10 @@ impl GameplayOwner {
                 character_id,
                 persistence_revision,
                 committed_revision: persistence_revision,
+                snapshots: SnapshotAdmission {
+                    queued: VecDeque::new(),
+                    deferred: None,
+                },
                 restore,
                 input: SessionInput::new(),
                 replication,
@@ -2486,35 +2510,103 @@ impl GameplayOwner {
         snapshot: &PersistentCharacterSnapshot,
         lease: Option<purgatory_persistence::LeaseAuthority>,
     ) {
-        if let Some(persist) = &self.persist {
-            let t0 = std::time::Instant::now();
-            match persist.try_save_leased(snapshot.clone(), lease) {
-                SaveHandoff::Accepted => {}
-                SaveHandoff::DeferredLatest => {
-                    let diagnostics = persist.diagnostics();
-                    if diagnostics.queue_full.is_power_of_two() {
-                        eprintln!(
-                            "PURGATORY persist queue pressure full={} deferred={} replaced={} stale_ignored={}",
-                            diagnostics.queue_full,
-                            diagnostics.deferred_latest,
-                            diagnostics.coalesced_replaced,
-                            diagnostics.coalesced_stale_ignored
-                        );
-                    }
-                }
-                SaveHandoff::Closed => {
-                    let diagnostics = persist.diagnostics();
+        let Some(persist) = self.persist.clone() else {
+            return;
+        };
+        let t0 = std::time::Instant::now();
+        let handoff = persist.try_save_leased(snapshot.clone(), lease);
+        match handoff {
+            SaveHandoff::Accepted => {}
+            SaveHandoff::DeferredLatest => {
+                let diagnostics = persist.diagnostics();
+                if diagnostics.queue_full.is_power_of_two() {
                     eprintln!(
-                        "PURGATORY persist handoff closed character={} revision={} closed_total={} save_failures={}",
-                        snapshot.character_id,
-                        snapshot.persistence_revision,
-                        diagnostics.worker_closed,
-                        diagnostics.save_failures
+                        "PURGATORY persist queue pressure full={} deferred={} replaced={} stale_ignored={}",
+                        diagnostics.queue_full,
+                        diagnostics.deferred_latest,
+                        diagnostics.coalesced_replaced,
+                        diagnostics.coalesced_stale_ignored
                     );
                 }
             }
-            let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
-            self.persist_enqueue_us = self.persist_enqueue_us.saturating_add(us);
+            SaveHandoff::Closed => {
+                let diagnostics = persist.diagnostics();
+                eprintln!(
+                    "PURGATORY persist handoff closed character={} revision={} closed_total={} save_failures={}",
+                    snapshot.character_id,
+                    snapshot.persistence_revision,
+                    diagnostics.worker_closed,
+                    diagnostics.save_failures
+                );
+            }
+        }
+        let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.persist_enqueue_us = self.persist_enqueue_us.saturating_add(us);
+        self.note_snapshot_admission(
+            snapshot.character_id,
+            snapshot.persistence_revision,
+            handoff,
+            persist.parked_snapshot_revision(snapshot.character_id),
+        );
+    }
+
+    /// Record a handoff. This does not change `committed_revision`.
+    fn note_snapshot_admission(
+        &mut self,
+        character_id: CharacterId,
+        revision: u64,
+        handoff: SaveHandoff,
+        parked_revision: Option<u64>,
+    ) {
+        let Some(connection_id) = self.occupancy.get(&character_id).copied() else {
+            return;
+        };
+        let Some(binding) = self.bindings.get_mut(&connection_id) else {
+            return;
+        };
+        match handoff {
+            SaveHandoff::Accepted => binding.snapshots.queued.push_back(revision),
+            SaveHandoff::DeferredLatest => {
+                binding.snapshots.deferred = Some(parked_revision.unwrap_or(revision));
+            }
+            SaveHandoff::Closed => {}
+        }
+    }
+
+    /// Apply worker save reports. A successful report raises `committed_revision`
+    /// only when its revision is newer. A failed report clears the handoff and
+    /// leaves the committed revision unchanged.
+    pub(crate) fn adopt_snapshot_reports(&mut self) {
+        let Some(persist) = self.persist.clone() else {
+            return;
+        };
+        for report in persist.take_save_reports() {
+            let Some(connection_id) = self.occupancy.get(&report.character_id).copied() else {
+                continue;
+            };
+            let Some(binding) = self.bindings.get_mut(&connection_id) else {
+                continue;
+            };
+            if binding.snapshots.deferred == Some(report.revision) {
+                binding.snapshots.deferred = None;
+            }
+            if let Some(index) = binding
+                .snapshots
+                .queued
+                .iter()
+                .position(|queued| *queued == report.revision)
+            {
+                binding.snapshots.queued.remove(index);
+            }
+            if !report.committed {
+                continue;
+            }
+            if report.revision > binding.committed_revision {
+                binding.committed_revision = report.revision;
+            }
+            if report.revision > binding.persistence_revision {
+                binding.persistence_revision = report.revision;
+            }
         }
     }
 

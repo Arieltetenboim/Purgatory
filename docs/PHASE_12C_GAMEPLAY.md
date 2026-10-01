@@ -403,3 +403,39 @@ ignored server `postgres_12c` tests in 1.65s. The container was removed.
 `Purgatory_dev` was not created, reset, or connected to. The running local
 server held the game port, so the process-level startup test was not repeated.
 Phase 12C remains in review.
+
+## Same-session snapshot revision
+
+An HP or portal snapshot may commit a newer `persistence_revision` while the
+player is still in the session. `committed_revision` stays at the revision
+loaded at entry or returned by the last durable command until the persistence
+worker reports that the snapshot write finished. Queue acceptance and a
+deferred latest snapshot are not commits, and neither one changes
+`committed_revision`. A failed write does not change it either.
+
+A drop, pickup, equip, or dialogue command is not submitted while a queued or
+deferred snapshot revision is still newer than `committed_revision`. After a
+successful report, that command's expected revision is rewritten to the adopted
+value before submission. A command already given to the worker keeps the
+revision it carried. A later snapshot at or below that command result is
+overtaken and does not move `committed_revision` again.
+
+`postgres_12c_same_session_snapshot_then_equip_and_drop` stays in one session.
+It takes damage, waits until that HP snapshot is both committed and adopted,
+then equips. It repeats the wait for a portal save, then drops another item.
+Both durable commands and their live `World` results succeed. The test does
+not reconnect between the snapshot and the command.
+
+Before the fix, that test failed with equip expecting revision 3 after the HP
+snapshot had committed revision 4. `./scripts/check.ps1` exited 0 in about
+131s. Persistence lib tests were 24 passed and 40 ignored. Server bin tests
+were 364 passed and 28 ignored in 2.70s. Simulation lib tests were 431 passed.
+A disposable `postgres:18` container `purgatory-12c-revision`, database
+`purgatory_12a_test` on `127.0.0.1:5433`, not `Purgatory_dev`, then passed 39
+ignored persistence `postgres_tests` in 48.70s and 19 ignored server
+`postgres_12c` tests in 17.01s, and
+`disposable_database_create_reset_and_failed_recreate` in 2.77s. The container was removed. `Purgatory_dev` was
+not created, reset, or connected to. UDP port 5001 was held by the already
+running local server, so the process-level startup test was not repeated.
+Phase 12C remains in review.
+

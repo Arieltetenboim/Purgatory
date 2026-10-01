@@ -143,12 +143,28 @@ impl GameplayOwner {
     }
 
     pub fn take_durable_commits(&mut self) -> Vec<super::durable_play::DurableSubmit> {
+        self.adopt_snapshot_reports();
         self.promote_due_ground();
         self.promote_due_retries(std::time::Instant::now());
         let tokens = std::mem::take(&mut self.durable_outbound);
-        tokens
+        let mut held = Vec::new();
+        let mut ready = Vec::new();
+        for token in tokens {
+            let blocked = self
+                .durable_pending
+                .get(&token)
+                .is_some_and(|pending| self.snapshot_blocks_command(&pending.command));
+            if blocked {
+                held.push(token);
+            } else {
+                ready.push(token);
+            }
+        }
+        self.durable_outbound.append(&mut held);
+        ready
             .into_iter()
             .filter_map(|token| {
+                self.align_stored_command(token);
                 let pending = self.durable_pending.get(&token)?;
                 Some(super::durable_play::DurableSubmit {
                     token,
@@ -157,6 +173,70 @@ impl GameplayOwner {
                 })
             })
             .collect()
+    }
+
+    /// A snapshot handoff whose revision is still above the committed revision
+    /// has not been confirmed. The command waits so it is not queued behind a
+    /// write that will change the revision it expects.
+    fn snapshot_blocks_command(&self, command: &purgatory_persistence::DurableCommand) -> bool {
+        command
+            .expected_revisions
+            .iter()
+            .any(|(character_id, _)| self.snapshot_ahead(*character_id))
+    }
+
+    fn snapshot_ahead(&self, character_id: CharacterId) -> bool {
+        let Some(connection_id) = self.occupancy.get(&character_id) else {
+            return false;
+        };
+        let Some(binding) = self.bindings.get(connection_id) else {
+            return false;
+        };
+        let committed = binding.committed_revision;
+        binding
+            .snapshots
+            .deferred
+            .is_some_and(|revision| revision > committed)
+            || binding
+                .snapshots
+                .queued
+                .iter()
+                .any(|revision| *revision > committed)
+    }
+
+    /// Raise a command that is still local to the revision adopted since it
+    /// was built. A command already given to the worker is not rewritten.
+    fn align_stored_command(&mut self, token: u64) {
+        let Some(pending) = self.durable_pending.get(&token) else {
+            return;
+        };
+        let updates: Vec<(CharacterId, u64, u64)> = pending
+            .command
+            .expected_revisions
+            .iter()
+            .filter_map(|(character_id, old)| {
+                let connection_id = self.occupancy.get(character_id)?;
+                let committed = self.bindings.get(connection_id)?.committed_revision;
+                (committed > *old).then_some((*character_id, *old, committed))
+            })
+            .collect();
+        let Some(pending) = self.durable_pending.get_mut(&token) else {
+            return;
+        };
+        for (character_id, old, committed) in updates {
+            if let Some(slot) = pending
+                .command
+                .expected_revisions
+                .iter_mut()
+                .find(|(id, _)| *id == character_id)
+            {
+                slot.1 = committed;
+            }
+            let prefix = format!("c{}-r{old}-", character_id.raw());
+            if let Some(rest) = pending.command.key.strip_prefix(&prefix) {
+                pending.command.key = format!("c{}-r{}-{rest}", character_id.raw(), committed);
+            }
+        }
     }
 
     /// Submit the same command again after an unknown commit outcome.
@@ -873,6 +953,7 @@ impl GameplayOwner {
     }
 
     fn stage_drop(&mut self, connection_id: ConnectionId, request: DropRequest) {
+        self.adopt_snapshot_reports();
         let Some(actor) = self.command_actor(connection_id, CommandClass::Drop).ok() else {
             self.reject_drop(connection_id, request.seq, DropRejectReason::StateBlocked);
             return;
@@ -935,6 +1016,7 @@ impl GameplayOwner {
     }
 
     fn stage_pickup(&mut self, connection_id: ConnectionId, request: PickupRequest) {
+        self.adopt_snapshot_reports();
         let Some(actor) = self
             .command_actor(connection_id, CommandClass::Pickup)
             .ok()
@@ -1048,6 +1130,7 @@ impl GameplayOwner {
         slot_raw: u8,
         item_instance_id: Option<purgatory_common::ItemInstanceId>,
     ) {
+        self.adopt_snapshot_reports();
         let Some(actor) = self
             .command_actor(connection_id, CommandClass::Equipment)
             .ok()
@@ -1190,6 +1273,7 @@ impl GameplayOwner {
         plan: super::dialogue::ChoicePlan,
         beat_id: Option<String>,
     ) {
+        self.adopt_snapshot_reports();
         let Some(beat_id) = beat_id.filter(|id| !id.is_empty()) else {
             return;
         };
@@ -1292,6 +1376,7 @@ impl GameplayOwner {
         active: ActiveDialogue,
         beat_id: Option<String>,
     ) {
+        self.adopt_snapshot_reports();
         let Some(beat_id) = beat_id.filter(|id| !id.is_empty()) else {
             return;
         };
@@ -1367,6 +1452,8 @@ impl GameplayOwner {
             binding.character_id = Some(character_id);
             binding.committed_revision = revision;
             binding.persistence_revision = revision;
+            binding.snapshots.queued.clear();
+            binding.snapshots.deferred = None;
         }
         self.occupancy.insert(character_id, connection_id);
         for item in items {

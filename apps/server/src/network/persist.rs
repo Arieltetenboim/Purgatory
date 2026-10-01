@@ -198,6 +198,10 @@ struct SharedSaveState {
         >,
     >,
     diagnostics: PersistenceDiagnostics,
+    /// Worker-thread save results. The simulation thread drains them. A push
+    /// happens only after `save_snapshot_leased` returns, so queue acceptance
+    /// is not in this list.
+    save_reports: Mutex<Vec<SaveReport>>,
     /// Set when shutdown exceeds its deadline. After a check observes this
     /// flag, the worker does not start another queued save, another deferred
     /// write, or channel release. `flush_deferred_latest` checks before each
@@ -364,6 +368,17 @@ async fn wait_hold(hold: Option<CommandHoldState>) {
     }
 }
 
+/// Result of one snapshot write on the persistence worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SaveReport {
+    pub character_id: purgatory_common::CharacterId,
+    pub revision: u64,
+    /// `true` only after the worker's save call returned success. That call
+    /// can still leave an older snapshot unchanged when a newer revision is
+    /// already stored.
+    pub committed: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SaveHandoff {
     Accepted,
@@ -429,6 +444,17 @@ impl PersistenceHandle {
     /// result and do not open PostgreSQL themselves.
     pub async fn spawn_from_env() -> Result<Self, String> {
         Self::spawn_on_worker(PersistenceService::open_from_env).await
+    }
+
+    /// Second connection for a disposable PostgreSQL test. The worker owns this
+    /// client. Callers keep their own connection for admission and commands.
+    #[cfg(test)]
+    pub(crate) fn spawn_postgresql_for_test(
+        settings: &purgatory_persistence::PostgresSettings,
+    ) -> Result<Self, String> {
+        let service = PersistenceService::open_postgresql(settings)
+            .map_err(|err| format!("persistence open: {err}"))?;
+        Self::spawn_opened(service)
     }
 
     #[cfg(test)]
@@ -933,6 +959,60 @@ impl PersistenceHandle {
         self.shared.diagnostics.snapshot()
     }
 
+    /// Revision parked because the worker queue was full. This is not a commit.
+    pub(crate) fn parked_snapshot_revision(
+        &self,
+        character_id: purgatory_common::CharacterId,
+    ) -> Option<u64> {
+        self.shared
+            .latest
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(&character_id)
+            .map(|(snapshot, _)| snapshot.persistence_revision)
+    }
+
+    pub(crate) fn take_save_reports(&self) -> Vec<SaveReport> {
+        std::mem::take(
+            &mut *self
+                .shared
+                .save_reports
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_save_report_for_test(&self, report: SaveReport) {
+        self.shared
+            .save_reports
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push(report);
+    }
+
+    /// Accepts saves into a queue with no worker. Nothing commits until a test
+    /// pushes a [`SaveReport`].
+    #[cfg(test)]
+    pub(crate) fn queue_only_for_test(capacity: usize) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        std::mem::forget(rx);
+        Self {
+            tx,
+            shared: Arc::new(SharedSaveState::default()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn closed_for_test() -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        Self {
+            tx,
+            shared: Arc::new(SharedSaveState::default()),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn saturated_for_test() -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -1272,20 +1352,36 @@ fn save_snapshot_observed(
     let saved_id = snapshot.character_id;
     #[cfg(test)]
     let saved_revision = snapshot.persistence_revision;
-    if let Err(err) = service.save_snapshot_leased(snapshot, lease.as_ref()) {
-        shared
-            .diagnostics
-            .save_failures
-            .fetch_add(1, Ordering::Relaxed);
-        eprintln!("PURGATORY persist save failed: {err}");
-    } else {
-        #[cfg(test)]
+    let character_id = snapshot.character_id;
+    let revision = snapshot.persistence_revision;
+    let committed = match service.save_snapshot_leased(snapshot, lease.as_ref()) {
+        Ok(()) => true,
+        Err(err) => {
+            shared
+                .diagnostics
+                .save_failures
+                .fetch_add(1, Ordering::Relaxed);
+            eprintln!("PURGATORY persist save failed: {err}");
+            false
+        }
+    };
+    #[cfg(test)]
+    if committed {
         shared
             .saved_ids
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .push((saved_id, saved_revision));
     }
+    shared
+        .save_reports
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .push(SaveReport {
+            character_id,
+            revision,
+            committed,
+        });
 }
 
 fn flush_deferred_latest(service: &mut PersistenceService, shared: &SharedSaveState) {
