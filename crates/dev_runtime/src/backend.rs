@@ -433,9 +433,18 @@ fn discover_under_target(stem: &str, target_prefix: &Path) -> Vec<DiscoveredProc
         if !exe.starts_with(target_prefix) {
             continue;
         }
+        let args = proc
+            .cmd()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        if crate::process::is_database_admin_command(&args) {
+            continue;
+        }
         out.push(DiscoveredProcess {
             pid: pid.as_u32(),
             exe_path: exe.to_path_buf(),
+            args,
         });
     }
     out

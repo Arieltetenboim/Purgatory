@@ -722,9 +722,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             }
             return CommandOutcome::Accepted;
         }
-        let discovered = self
-            .backend
-            .discover_workspace(SERVER_STEM, &self.paths.target_prefix());
+        let discovered = self.workspace_game_servers();
         let killed = discovered.len();
         for d in discovered {
             self.backend.kill_tree(d.pid);
@@ -1723,11 +1721,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             return CommandOutcome::Ignored;
         };
         let mut packages: Vec<&str> = Vec::new();
-        let server_running = !self
-            .backend
-            .discover_workspace(SERVER_STEM, &self.paths.target_prefix())
-            .is_empty()
-            || self.server_alive();
+        let server_running = !self.workspace_game_servers().is_empty() || self.server_alive();
         if server_running {
             self.log_hub("Rebuild skips server (purgatory-server.exe is running; Stop first)");
         } else {
@@ -1785,9 +1779,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             self.backend.kill_tree(build.pid);
         }
         let _cargo_n = self.backend.kill_workspace_cargo(&self.paths.root);
-        let servers = self
-            .backend
-            .discover_workspace(SERVER_STEM, &self.paths.target_prefix());
+        let servers = self.workspace_game_servers();
         let server_n = servers.len();
         for d in servers {
             self.backend.kill_tree(d.pid);
@@ -2001,6 +1993,17 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         self.paths.dev_log_dir().join("database.log")
     }
 
+    /// Game servers under `target\`. Database administration uses the same executable.
+    fn workspace_game_servers(&mut self) -> Vec<crate::process::DiscoveredProcess> {
+        let admin = self.database_pid;
+        self.backend
+            .discover_workspace(SERVER_STEM, &self.paths.target_prefix())
+            .into_iter()
+            .filter(|found| Some(found.pid) != admin)
+            .filter(|found| !crate::process::is_database_admin_command(&found.args))
+            .collect()
+    }
+
     fn request_database_status(&mut self) -> CommandOutcome {
         self.spawn_database_admin(&["--database-status".to_string()], false)
     }
@@ -2042,9 +2045,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             self.log_hub(&detail);
             return CommandOutcome::Ignored;
         }
-        let servers = self
-            .backend
-            .discover_workspace(SERVER_STEM, &self.paths.target_prefix());
+        let servers = self.workspace_game_servers();
         let tracked = self.tracked.as_ref().map(|process| process.pid);
         if servers.iter().any(|found| Some(found.pid) != tracked) {
             self.database_detail =
@@ -2111,7 +2112,12 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 self.database_pid = Some(pid);
                 self.database_follow_status = follow_status;
                 self.database_detail = "Database operation running".to_string();
-                self.log_hub("Database operation started");
+                let kind = if follow_status {
+                    "Database operation"
+                } else {
+                    "Database check"
+                };
+                self.log_hub(&format!("{kind} pid {pid} started"));
                 CommandOutcome::Accepted
             }
             Err(err) => {
@@ -2161,24 +2167,53 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         let Some(pid) = self.database_pid else {
             return;
         };
-        let Some(exit) = self.backend.try_wait(pid) else {
+        if let Some(exit) = self.backend.try_wait(pid) {
+            self.finish_database_process(pid, Some(exit));
+        } else if !self.backend.is_alive(pid) {
+            self.finish_database_process(pid, None);
+        }
+    }
+
+    fn finish_database_process(&mut self, pid: u32, exit: Option<i32>) {
+        let follow = self.database_follow_status;
+        self.database_pid = None;
+        self.database_follow_status = false;
+        let Some(exit) = exit else {
+            let kind = if follow {
+                "Database operation"
+            } else {
+                "Database check"
+            };
+            self.database_status = "error".to_string();
+            self.database_detail = format!("{kind} pid {pid} ended without a result");
+            let detail = self.database_detail.clone();
+            self.log_hub(&detail);
             return;
         };
-        self.database_pid = None;
         let log = std::fs::read_to_string(self.database_log_path()).unwrap_or_default();
-        self.apply_database_log(&log, exit);
-        if self.database_follow_status && exit == 0 {
-            self.database_follow_status = false;
+        let chain = self.apply_database_log(pid, &log, exit, follow);
+        if follow && chain {
             self.spawn_database_admin(&["--database-status".to_string()], false);
         }
     }
 
-    fn apply_database_log(&mut self, log: &str, exit: i32) {
+    /// Returns whether a Create, Reset, or Add User result is known and may be followed by status.
+    fn apply_database_log(&mut self, pid: u32, log: &str, exit: i32, follow: bool) -> bool {
         let mut status = None;
         let mut detail = None;
+        let mut outcome = None;
         for line in log.lines() {
             if let Some(rest) = line.split("status=").nth(1) {
                 status = rest.split_whitespace().next().map(str::to_string);
+            }
+            if let Some(rest) = line.split("create=").nth(1) {
+                outcome = rest.split_whitespace().next().map(str::to_string);
+            }
+            if let Some(rest) = line.split("reset=").nth(1) {
+                outcome = rest.split_whitespace().next().map(str::to_string);
+            }
+            if line.contains("user=added") {
+                outcome = Some("added".to_string());
             }
             if line.contains("PURGATORY database detail:")
                 || line.contains("PURGATORY database error:")
@@ -2193,22 +2228,43 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 self.database_status = "missing".to_string();
             }
         }
-        if let Some(status) = status {
-            self.database_status = status;
-        } else if exit != 0 {
+        let known_status = status
+            .as_deref()
+            .is_some_and(|value| matches!(value, "ready" | "missing" | "error"));
+        let known_outcome = outcome.as_deref().is_some_and(|value| {
+            matches!(value, "created" | "already_initialized" | "reset" | "added")
+        });
+        if known_status {
+            self.database_status = status.clone().expect("status");
+        } else if exit != 0 || !known_outcome {
             self.database_status = "error".to_string();
+        } else {
+            self.database_status = "unknown".to_string();
         }
+        let kind = if follow {
+            "Database operation"
+        } else {
+            "Database check"
+        };
         if let Some(detail) = detail {
             self.database_detail = detail;
-        } else if exit == 0 {
-            self.database_detail.clear();
-        } else {
+        } else if !known_status && !known_outcome {
+            self.database_detail = format!("{kind} pid {pid} ended without a result");
+        } else if exit != 0 {
             self.database_detail = "Database operation failed".to_string();
+        } else if known_outcome {
+            self.database_detail = format!(
+                "Database operation pid {pid} reported {}",
+                outcome.unwrap_or_default()
+            );
+        } else {
+            self.database_detail.clear();
         }
         self.log_hub(&format!(
-            "Database status {} {}",
+            "{kind} pid {pid} finished status={} {}",
             self.database_status, self.database_detail
         ));
+        exit == 0 && known_outcome && self.database_status != "error"
     }
 
     fn fail_server_or_validation(&mut self, reason: &str) {
@@ -2849,9 +2905,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         if self.phase78_gate_owns_ladder() {
             return;
         }
-        let mut servers = self
-            .backend
-            .discover_workspace(SERVER_STEM, &self.paths.target_prefix());
+        let mut servers = self.workspace_game_servers();
         if servers.len() > 1 {
             let keep = servers.remove(0);
             for extra in servers {
@@ -2884,9 +2938,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
         if self.server_alive() {
             return;
         }
-        let servers = self
-            .backend
-            .discover_workspace(SERVER_STEM, &self.paths.target_prefix());
+        let servers = self.workspace_game_servers();
         if servers.len() == 1 {
             self.adopt_server(servers[0].clone(), now);
         }
@@ -3246,6 +3298,7 @@ mod tests {
         backend.discovered = vec![DiscoveredProcess {
             pid: 50,
             exe_path: PathBuf::from("target/debug/purgatory-server.exe"),
+            args: Vec::new(),
         }];
         let (session, _) = harness("adopt", backend, FakeHealthSource::none());
         let t = session.tracked.clone().expect("adopted");
@@ -3264,6 +3317,7 @@ mod tests {
         session.backend.discovered = vec![DiscoveredProcess {
             pid: 77,
             exe_path: PathBuf::from("x"),
+            args: Vec::new(),
         }];
         assert!(session.tracked.is_none());
         assert_eq!(session.state, ServerState::Stopped);
@@ -3406,6 +3460,7 @@ mod tests {
         backend.discovered = vec![DiscoveredProcess {
             pid: 50,
             exe_path: PathBuf::from("target/debug/purgatory-server.exe"),
+            args: Vec::new(),
         }];
         let (mut session, now) = harness("adopt-not-ready", backend, FakeHealthSource::none());
         assert_eq!(session.state, ServerState::Starting);
@@ -3485,6 +3540,7 @@ mod tests {
         backend.discovered = vec![DiscoveredProcess {
             pid: 50,
             exe_path: PathBuf::from("target/debug/purgatory-server.exe"),
+            args: Vec::new(),
         }];
         let (mut session, now) = harness("vanished-adopt", backend, FakeHealthSource::none());
         assert_eq!(session.state, ServerState::Starting);
@@ -3505,6 +3561,7 @@ mod tests {
         backend.discovered = vec![DiscoveredProcess {
             pid: 50,
             exe_path: PathBuf::from("target/debug/purgatory-server.exe"),
+            args: Vec::new(),
         }];
         let (mut session, now) = harness("pid-reuse", backend, FakeHealthSource::none());
         session.tick(now + LIFECYCLE_FAST);
@@ -3513,6 +3570,7 @@ mod tests {
         session.backend.discovered = vec![DiscoveredProcess {
             pid: 50,
             exe_path: PathBuf::from("C:/Windows/System32/notepad.exe"),
+            args: Vec::new(),
         }];
         session.run_lifecycle(now + LIFECYCLE_IDLE);
         assert_eq!(session.state, ServerState::Failed);
@@ -3531,6 +3589,7 @@ mod tests {
         backend.discovered = vec![DiscoveredProcess {
             pid: 50,
             exe_path: PathBuf::from("target/debug/purgatory-server.exe"),
+            args: Vec::new(),
         }];
         let (mut session, now) = harness("adopt-verify", backend, FakeHealthSource::none());
         assert_eq!(session.state, ServerState::Starting);
@@ -3775,6 +3834,7 @@ mod tests {
         session.backend.discovered = vec![DiscoveredProcess {
             pid: 9,
             exe_path: PathBuf::from("target/debug/purgatory-load.exe"),
+            args: Vec::new(),
         }];
         assert_eq!(
             session.command(
@@ -4191,6 +4251,7 @@ mod tests {
         session.backend.discovered = vec![DiscoveredProcess {
             pid: session.tracked.as_ref().unwrap().pid,
             exe_path: session.paths.server_exe(),
+            args: Vec::new(),
         }];
         session.backend.hold_cargo = true;
         assert_eq!(
@@ -4258,6 +4319,7 @@ mod tests {
         session.backend.discovered = vec![DiscoveredProcess {
             pid: 8801,
             exe_path: lab_exe,
+            args: Vec::new(),
         }];
         assert_eq!(
             session.command(HubCommand::Rebuild, now),
@@ -4404,6 +4466,7 @@ mod tests {
         session.backend.discovered = vec![DiscoveredProcess {
             pid: 4242,
             exe_path: PathBuf::from("target/release/purgatory-server.exe"),
+            args: Vec::new(),
         }];
         session.backend.alive.insert(
             4242,
@@ -4452,6 +4515,7 @@ mod tests {
         backend.discovered = vec![DiscoveredProcess {
             pid: 50,
             exe_path: PathBuf::from("target/release/purgatory-server.exe"),
+            args: Vec::new(),
         }];
         let (mut session, now) = harness("p78-release", backend, FakeHealthSource::none());
         write_phase78_gate_script(&session);
@@ -4489,6 +4553,7 @@ mod tests {
         session.backend.discovered = vec![DiscoveredProcess {
             pid: 99,
             exe_path: PathBuf::from("target/release/purgatory-server.exe"),
+            args: Vec::new(),
         }];
         session.command(HubCommand::Stop, now);
         assert!(!session.backend.kill_log.contains(&99));
@@ -4552,6 +4617,7 @@ mod tests {
         backend.discovered = vec![DiscoveredProcess {
             pid: 88,
             exe_path: server_exe.clone(),
+            args: Vec::new(),
         }];
         let now = Instant::now();
         let mut session = HubSession::new(
@@ -4601,6 +4667,7 @@ mod tests {
         backend.discovered = vec![DiscoveredProcess {
             pid: 70,
             exe_path: server.clone(),
+            args: Vec::new(),
         }];
         let now = Instant::now();
         let mut session = HubSession::new(
@@ -4652,5 +4719,290 @@ mod tests {
         session.drain_client_queue(now + CLIENT_STAGGER);
         assert_eq!(session.pending_clients, 0);
         assert!(session.clients.is_empty());
+    }
+
+    fn expose_database_process(
+        session: &mut HubSession<FakeProcessBackend, FakeHealthSource>,
+        pid: u32,
+        args: &[&str],
+    ) {
+        session.backend.discovered.push(DiscoveredProcess {
+            pid,
+            exe_path: session.paths.server_exe(),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+        });
+    }
+
+    #[test]
+    fn database_check_is_not_adopted_as_the_game_server() {
+        let (mut session, now) = harness(
+            "db-check-adopt",
+            FakeProcessBackend::new(),
+            FakeHealthSource::none(),
+        );
+        assert_eq!(
+            session.command(HubCommand::DatabaseStatus, now),
+            CommandOutcome::Accepted
+        );
+        let pid = session.database_pid.expect("check process");
+        assert_eq!(session.state, ServerState::Stopped);
+        assert!(session.tracked.is_none());
+        assert!(session.probe_pid.is_none());
+
+        expose_database_process(&mut session, pid, &["--database-status"]);
+        let scanned = now + RECOVERY_INTERVAL + Duration::from_millis(1);
+        session.run_lifecycle(scanned);
+        session.run_lifecycle(scanned + LIFECYCLE_FAST);
+        assert_eq!(session.state, ServerState::Stopped);
+        assert!(session.tracked.is_none());
+        assert!(session.probe_pid.is_none());
+        assert!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .all(|line| !line.contains("--probe")),
+            "{:?}",
+            session.backend.spawn_log
+        );
+
+        session.command(HubCommand::Stop, scanned + LIFECYCLE_FAST);
+        assert!(
+            !session.backend.kill_log.contains(&pid),
+            "Stop Server killed the database check: {:?}",
+            session.backend.kill_log
+        );
+        assert!(session.snapshot(scanned).database_busy);
+
+        session.backend.kill_tree(pid);
+        session.tick(scanned + RECOVERY_INTERVAL + LIFECYCLE_FAST);
+        let snap = session.snapshot(scanned);
+        assert!(!snap.database_busy, "database buttons stayed blocked");
+        assert_eq!(snap.database_status, "error");
+        assert!(
+            snap.database_detail.contains(&pid.to_string())
+                && snap.database_detail.contains("without a result"),
+            "{}",
+            snap.database_detail
+        );
+        let finished = session.activity.view_lines().join("\n");
+        assert!(
+            finished.contains(&format!("Database check pid {pid} started"))
+                && finished.contains(&format!("pid {pid}"))
+                && finished.contains("without a result"),
+            "{finished}"
+        );
+        assert_eq!(
+            session.command(HubCommand::DatabaseStatus, scanned),
+            CommandOutcome::Accepted
+        );
+    }
+
+    #[test]
+    fn reopened_hub_does_not_adopt_a_database_admin_process() {
+        let mut backend = FakeProcessBackend::new();
+        backend.discovered = vec![DiscoveredProcess {
+            pid: 64,
+            exe_path: PathBuf::from("target/debug/purgatory-server.exe"),
+            args: vec!["--database-status".to_string()],
+        }];
+        backend.alive.insert(
+            64,
+            crate::backend::FakeProc {
+                kind: crate::backend::FakeKind::Server,
+                pending_exit: None,
+            },
+        );
+        let (mut session, now) = harness("db-reopen", backend, FakeHealthSource::none());
+        assert!(session.tracked.is_none());
+        assert_eq!(session.state, ServerState::Stopped);
+        assert!(session.probe_pid.is_none());
+        session.run_lifecycle(now + RECOVERY_INTERVAL + Duration::from_millis(1));
+        session.run_lifecycle(now + RECOVERY_INTERVAL + LIFECYCLE_FAST);
+        assert_eq!(session.state, ServerState::Stopped);
+        assert!(session.tracked.is_none());
+        assert!(session.probe_pid.is_none());
+        session.command(HubCommand::Stop, now);
+        assert!(
+            !session.backend.kill_log.contains(&64),
+            "{:?}",
+            session.backend.kill_log
+        );
+    }
+
+    #[test]
+    fn closed_database_check_is_not_success_and_unknown_admin_is_not_rerun() {
+        let (mut session, now) = harness(
+            "db-unknown",
+            FakeProcessBackend::new(),
+            FakeHealthSource::none(),
+        );
+        assert_eq!(
+            session.command(HubCommand::DatabaseStatus, now),
+            CommandOutcome::Accepted
+        );
+        let pid = session.database_pid.expect("check");
+        session
+            .backend
+            .alive
+            .get_mut(&pid)
+            .expect("alive")
+            .pending_exit = Some(0);
+        session.tick(now + LIFECYCLE_FAST);
+        assert!(!session.snapshot(now).database_busy);
+        assert_eq!(session.database_status, "error");
+        assert_ne!(session.database_status, "ready");
+        let log = session.activity.view_lines().join("\n");
+        assert!(
+            log.contains(&format!("Database check pid {pid} finished status=error")),
+            "{log}"
+        );
+
+        assert_eq!(
+            session.command(
+                HubCommand::DatabaseCreate {
+                    user: "alice".into(),
+                },
+                now,
+            ),
+            CommandOutcome::Accepted
+        );
+        let create_pid = session.database_pid.expect("create");
+        session
+            .backend
+            .alive
+            .get_mut(&create_pid)
+            .expect("alive")
+            .pending_exit = Some(0);
+        session.tick(now + LIFECYCLE_FAST + LIFECYCLE_FAST);
+        assert_eq!(session.database_status, "error");
+        assert!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .filter(|line| line.contains("--database-create"))
+                .count()
+                == 1,
+            "{:?}",
+            session.backend.spawn_log
+        );
+        assert_eq!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .filter(|line| line.contains("--database-status"))
+                .count(),
+            1,
+            "unknown Create must not start another database command: {:?}",
+            session.backend.spawn_log
+        );
+
+        assert_eq!(
+            session.command(
+                HubCommand::DatabaseReset {
+                    confirm: "Purgatory_dev".into(),
+                },
+                now,
+            ),
+            CommandOutcome::Accepted
+        );
+        let reset_pid = session.database_pid.expect("reset");
+        session
+            .backend
+            .alive
+            .get_mut(&reset_pid)
+            .expect("alive")
+            .pending_exit = Some(0);
+        session.tick(now + LIFECYCLE_FAST * 3);
+        assert_eq!(session.database_status, "error");
+        assert_eq!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .filter(|line| line.contains("--database-reset"))
+                .count(),
+            1,
+            "{:?}",
+            session.backend.spawn_log
+        );
+        assert!(!session.snapshot(now).database_busy);
+    }
+
+    #[test]
+    fn known_create_still_checks_status_once() {
+        let (mut session, now) = harness(
+            "db-create-known",
+            FakeProcessBackend::new(),
+            FakeHealthSource::none(),
+        );
+        assert_eq!(
+            session.command(
+                HubCommand::DatabaseCreate {
+                    user: "alice".into(),
+                },
+                now,
+            ),
+            CommandOutcome::Accepted
+        );
+        let pid = session.database_pid.expect("create");
+        std::fs::write(
+            session.database_log_path(),
+            "PURGATORY database create=created name=Purgatory_dev\n",
+        )
+        .unwrap();
+        session
+            .backend
+            .alive
+            .get_mut(&pid)
+            .expect("alive")
+            .pending_exit = Some(0);
+        session.tick(now + LIFECYCLE_FAST);
+        assert_eq!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .filter(|line| line.contains("--database-status"))
+                .count(),
+            1,
+            "{:?}",
+            session.backend.spawn_log
+        );
+        assert_eq!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .filter(|line| line.contains("--database-create"))
+                .count(),
+            1,
+            "{:?}",
+            session.backend.spawn_log
+        );
+        let status_pid = session.database_pid.expect("follow-up check");
+        std::fs::write(
+            session.database_log_path(),
+            "PURGATORY database status=ready name=Purgatory_dev present=true\n",
+        )
+        .unwrap();
+        session
+            .backend
+            .alive
+            .get_mut(&status_pid)
+            .expect("alive")
+            .pending_exit = Some(0);
+        session.tick(now + LIFECYCLE_FAST + LIFECYCLE_FAST);
+        assert_eq!(session.database_status, "ready");
+        assert!(!session.snapshot(now).database_busy);
+        let log = session.activity.view_lines().join("\n");
+        assert!(
+            log.contains(&format!(
+                "Database check pid {status_pid} finished status=ready"
+            )),
+            "{log}"
+        );
     }
 }
