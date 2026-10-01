@@ -2771,6 +2771,13 @@ fn ready_log_only_follows_successful_bind() {
         1,
         "exactly one network readiness log"
     );
+    let open_at = src
+        .find("PersistenceHandle::spawn_from_env()")
+        .expect("startup opens persistence");
+    assert!(
+        open_at < log_at,
+        "listening is reported only after persistence initialization is awaited"
+    );
 }
 
 // --- Extended soaks: run with `./scripts/network_soak.ps1` -----------------

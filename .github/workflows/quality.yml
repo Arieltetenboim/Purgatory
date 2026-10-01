@@ -83,3 +83,6 @@ jobs:
 
       - name: Run PostgreSQL 12C gameplay command tests
         run: cargo test -p purgatory-server --bin purgatory-server postgres_12c -- --ignored --nocapture --test-threads=1
+
+      - name: Run PostgreSQL server process startup tests
+        run: cargo test -p purgatory-server --test postgres_startup -- --ignored --nocapture --test-threads=1

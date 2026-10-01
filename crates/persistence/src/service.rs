@@ -26,10 +26,10 @@ pub enum SessionAdmission {
 
 /// Single-threaded owner of development users and character state.
 ///
-/// Server startup uses [`Self::open_from_env`] and only reopens an initialized
-/// database. Creating or resetting that database is a separate administration
-/// operation. [`Self::unit_fixture`] is an in-memory test double and does not
-/// write files.
+/// Server startup uses [`Self::open_from_env`] on the persistence worker and
+/// only reopens an initialized database. Creating or resetting that database
+/// is a separate administration operation. [`Self::unit_fixture`] is an
+/// in-memory test double and does not write files.
 pub struct PersistenceService {
     backend: Backend,
 }
@@ -72,8 +72,9 @@ impl PersistenceService {
         PostgresStore::bootstrap(settings)
     }
 
-    /// Server startup. PostgreSQL is required. A missing URL does not open a
-    /// file writer.
+    /// Server startup. PostgreSQL is required. The dedicated server calls this
+    /// on the persistence worker, outside the Tokio runtime. A missing URL
+    /// does not open a file writer.
     pub fn open_from_env() -> Result<Self, PersistError> {
         Self::open_configured(PostgresSettings::from_env()?)
     }

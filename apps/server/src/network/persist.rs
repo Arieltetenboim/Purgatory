@@ -1,8 +1,9 @@
-//! Persistence worker. Owns identity allocation and character files.
+//! Persistence worker. Owns the synchronous PostgreSQL client.
 //!
 //! The simulation thread hands off owned [`PersistentCharacterSnapshot`] values
-//! through a bounded queue with latest-per-character pressure coalescing. JSON
-//! and filesystem work happen only on the persistence worker.
+//! through a bounded queue with latest-per-character pressure coalescing.
+//! Database calls, including the initial connection, happen only on this
+//! worker. Startup waits for that result before it reports listening.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -422,242 +423,282 @@ impl PersistenceHandle {
 
     /// Server startup. Connects only to an already initialized PostgreSQL
     /// database. It does not create, reset, or migrate that database.
-    pub fn spawn_from_env() -> Result<Self, String> {
-        let service = PersistenceService::open_from_env()
-            .map_err(|err| format!("persistence open: {err}"))?;
-        Self::spawn_opened(service)
+    ///
+    /// The synchronous client is opened on the persistence worker. Callers,
+    /// including the Tokio runtime that accepts connections, wait for that
+    /// result and do not open PostgreSQL themselves.
+    pub async fn spawn_from_env() -> Result<Self, String> {
+        Self::spawn_on_worker(PersistenceService::open_from_env).await
     }
 
-    fn spawn_opened(mut service: PersistenceService) -> Result<Self, String> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    #[cfg(test)]
+    fn spawn_opened(service: PersistenceService) -> Result<Self, String> {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let shared = Arc::new(SharedSaveState::default());
+        let worker_shared = shared.clone();
+        std::thread::Builder::new()
+            .name("purgatory-persist".into())
+            .spawn(move || run_worker(service, rx, worker_shared))
+            .map_err(|err| format!("persistence worker: {err}"))?;
+        Ok(Self { tx, shared })
+    }
+
+    /// Open on the worker thread, then report success or failure before any
+    /// later database command is accepted.
+    async fn spawn_on_worker(
+        open: impl FnOnce() -> Result<PersistenceService, purgatory_persistence::PersistError>
+        + Send
+        + 'static,
+    ) -> Result<Self, String> {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let (init_tx, init_rx) = tokio::sync::oneshot::channel();
         let shared = Arc::new(SharedSaveState::default());
         let worker_shared = shared.clone();
         std::thread::Builder::new()
             .name("purgatory-persist".into())
             .spawn(move || {
-            while let Some(cmd) = rx.blocking_recv() {
-                if worker_shared.stop_writer.load(Ordering::SeqCst) {
-                    break;
+                let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(open));
+                let service = match opened {
+                    Ok(Ok(service)) => service,
+                    Ok(Err(err)) => {
+                        let _ = init_tx.send(Err(format!("persistence open: {err}")));
+                        return;
+                    }
+                    Err(_) => {
+                        let _ =
+                            init_tx.send(Err("persistence worker panicked during startup".into()));
+                        return;
+                    }
+                };
+                if init_tx.send(Ok(())).is_err() {
+                    return;
                 }
-                #[cfg(test)]
-                {
-                    let stall = worker_shared
-                        .worker_stall
-                        .lock()
-                        .unwrap_or_else(|err| err.into_inner())
-                        .take();
-                    if let Some(stall) = stall {
-                        worker_shared.stall_entered.store(true, Ordering::SeqCst);
-                        let _ = stall.recv();
-                    }
-                }
-                if worker_shared.stop_writer.load(Ordering::SeqCst) {
-                    break;
-                }
-                match cmd {
-                    PersistCmd::LoadOwned {
-                        login,
-                        character_id,
-                        reply,
-                    } => {
-                        use purgatory_protocol::CharacterEnterRejection as R;
-                        let result = service
-                            .load_owned_character(&login, character_id)
-                            .map_err(|_| R::StorageFailure)
-                            .and_then(|v| v.ok_or(R::NotOwned));
-                        let _ = reply.send(result);
-                    }
-                    #[cfg(test)]
-                    PersistCmd::Resolve { login, reply } => {
-                        let _ = reply.send(service.resolve_existing(&login));
-                    }
-                    PersistCmd::Roster { login, reply } => {
-                        let _ = reply.send(roster(&mut service, &login));
-                    }
-                    PersistCmd::CreateCharacter { login, name, reply } => {
-                        use purgatory_protocol::{
-                            CharacterCreateRejection as Rejection, CreateCharacterResult as Result,
-                        };
-                        let result = match service.create_character(&login, &name) {
-                            Ok(_) => match roster(&mut service, &login) {
-                                Ok(roster) => Result::Created { roster },
-                                Err(err) => {
-                                    eprintln!("PURGATORY character roster read failed: {err}");
-                                    Result::Rejected(Rejection::StorageFailure)
-                                }
-                            },
-                            Err(PersistError::CreateRejected(reason)) => {
-                                Result::Rejected(match reason {
-                                    CreateCharacterRejection::InvalidName(_) => {
-                                        Rejection::InvalidName
-                                    }
-                                    CreateCharacterRejection::NameTaken => Rejection::NameTaken,
-                                    CreateCharacterRejection::RosterFull => Rejection::RosterFull,
-                                    CreateCharacterRejection::Unregistered => {
-                                        Rejection::Unregistered
-                                    }
-                                })
-                            }
-                            Err(err) => {
-                                eprintln!("PURGATORY character creation failed: {err}");
-                                Result::Rejected(Rejection::StorageFailure)
-                            }
-                        };
-                        let _ = reply.send(result);
-                    }
-                    PersistCmd::UserRegistered { login, reply } => {
-                        let _ = reply.send(service.user_registered(&login));
-                    }
-                    #[cfg(test)]
-                    PersistCmd::ProvisionDevUser { login, reply } => {
-                        let _ = reply.send(service.provision_dev_user(&login));
-                    }
-                    PersistCmd::CommitDurable {
-                        command,
-                        lease,
-                        reply,
-                    } => {
-                        let _ = reply.send(service.commit_durable_leased(&command, lease.as_ref()));
-                    }
-                    PersistCmd::ReserveItemIds { count, reply } => {
-                        let _ = reply.send(service.reserve_item_ids(count));
-                    }
-                    PersistCmd::ReadOwnedRestore {
-                        character_id,
-                        reply,
-                    } => {
-                        let _ = reply.send(service.read_owned_restore(character_id));
-                    }
-                    PersistCmd::InstallRules { rules, reply } => {
-                        service.set_durable_content_rules(rules);
-                        let _ = reply.send(());
-                    }
-                    PersistCmd::Save { snapshot, lease } => {
-                        #[cfg(test)]
-                        pause_receiver(
-                            &worker_shared.command_save_stall,
-                            &worker_shared.command_save_stall_entered,
-                        );
-                        save_snapshot_observed(&mut service, &worker_shared, snapshot, lease);
-                    }
-                    PersistCmd::SaveAwaited {
-                        snapshot,
-                        lease,
-                        reply,
-                    } => {
-                        let result = service.save_snapshot_leased(snapshot, lease.as_ref());
-                        if result.is_err() {
-                            worker_shared
-                                .diagnostics
-                                .save_failures
-                                .fetch_add(1, Ordering::Relaxed);
-                        }
-                        let _ = reply.send(result);
-                    }
-                    PersistCmd::Admit {
-                        login,
-                        character_id,
-                        reply,
-                    } => {
-                        #[cfg(test)]
-                        let scripted = take_scripted_admit(&worker_shared);
-                        #[cfg(test)]
-                        let result = match scripted {
-                            Some(admission) => Ok(admission),
-                            None => service.admit(&login, character_id),
-                        };
-                        #[cfg(not(test))]
-                        let result = service.admit(&login, character_id);
-                        let _ = reply.send(result);
-                    }
-                    PersistCmd::Supersede { authority, reply } => {
-                        let _ = reply.send(service.supersede(&authority));
-                    }
-                    PersistCmd::RenewLease { authority, reply } => {
-                        let _ = reply.send(service.renew_lease(&authority));
-                    }
-                    PersistCmd::ReleaseLease { authority, reply } => {
-                        #[cfg(test)]
-                        {
-                            worker_shared.release_calls.fetch_add(1, Ordering::SeqCst);
-                        }
-                        let _ = reply.send(service.release_lease(&authority));
-                    }
-                    PersistCmd::ClaimChannel { channel_id, reply } => {
-                        let _ = reply.send(service.claim_channel(channel_id, None));
-                    }
-                    PersistCmd::RenewChannel {
-                        channel_id,
-                        generation,
-                        reply,
-                    } => {
-                        let _ = reply.send(service.renew_channel(channel_id, generation));
-                    }
-                    PersistCmd::ReleaseChannel {
-                        channel_id,
-                        generation,
-                        reply,
-                    } => {
-                        let _ = reply.send(service.release_channel(channel_id, generation));
-                    }
-                    PersistCmd::Shutdown { channel, reply } => {
-                        while let Ok(extra) = rx.try_recv() {
-                            if worker_shared.stop_writer.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            if let PersistCmd::Save { snapshot, lease } = extra {
-                                // The check above admitted this save. A timeout
-                                // that lands during the write still lets this
-                                // call finish; it does not admit the next one.
-                                #[cfg(test)]
-                                pause_shutdown_save(&worker_shared);
-                                save_snapshot_observed(
-                                    &mut service,
-                                    &worker_shared,
-                                    snapshot,
-                                    lease,
-                                );
-                            }
-                        }
-                        if !worker_shared.stop_writer.load(Ordering::SeqCst) {
-                            flush_deferred_latest(&mut service, &worker_shared);
-                        }
-                        if !worker_shared.stop_writer.load(Ordering::SeqCst) {
-                            if let Some((channel_id, generation)) = channel {
-                                #[cfg(test)]
-                                {
-                                    worker_shared
-                                        .channel_release_calls
-                                        .fetch_add(1, Ordering::SeqCst);
-                                }
-                                if let Err(err) = service.release_channel(channel_id, generation) {
-                                    eprintln!(
-                                        "PURGATORY channel release failed id={channel_id} generation={generation}: {err}"
-                                    );
-                                }
-                            }
-                            let _ = reply.send(PersistenceShutdown::Drained {
-                                save_failures: worker_shared
-                                    .diagnostics
-                                    .save_failures
-                                    .load(Ordering::Relaxed),
-                            });
-                        }
-                        break;
-                    }
-                }
-                flush_deferred_latest(&mut service, &worker_shared);
+                run_worker(service, rx, worker_shared);
+            })
+            .map_err(|err| format!("persistence worker: {err}"))?;
+        match init_rx.await {
+            Ok(Ok(())) => Ok(Self { tx, shared }),
+            Ok(Err(err)) => Err(err),
+            Err(_) => Err("persistence worker panicked during startup".into()),
+        }
+    }
+}
+
+fn run_worker(
+    mut service: PersistenceService,
+    mut rx: tokio::sync::mpsc::Receiver<PersistCmd>,
+    worker_shared: Arc<SharedSaveState>,
+) {
+    while let Some(cmd) = rx.blocking_recv() {
+        if worker_shared.stop_writer.load(Ordering::SeqCst) {
+            break;
+        }
+        #[cfg(test)]
+        {
+            let stall = worker_shared
+                .worker_stall
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            if let Some(stall) = stall {
+                worker_shared.stall_entered.store(true, Ordering::SeqCst);
+                let _ = stall.recv();
             }
-            if !worker_shared.stop_writer.load(Ordering::SeqCst) {
-                flush_deferred_latest(&mut service, &worker_shared);
+        }
+        if worker_shared.stop_writer.load(Ordering::SeqCst) {
+            break;
+        }
+        match cmd {
+            PersistCmd::LoadOwned {
+                login,
+                character_id,
+                reply,
+            } => {
+                use purgatory_protocol::CharacterEnterRejection as R;
+                let result = service
+                    .load_owned_character(&login, character_id)
+                    .map_err(|_| R::StorageFailure)
+                    .and_then(|v| v.ok_or(R::NotOwned));
+                let _ = reply.send(result);
             }
             #[cfg(test)]
-            worker_shared.writer_finished.store(true, Ordering::SeqCst);
-        })
-            .map_err(|err| format!("persistence worker: {err}"))?;
-        Ok(Self { tx, shared })
+            PersistCmd::Resolve { login, reply } => {
+                let _ = reply.send(service.resolve_existing(&login));
+            }
+            PersistCmd::Roster { login, reply } => {
+                let _ = reply.send(roster(&mut service, &login));
+            }
+            PersistCmd::CreateCharacter { login, name, reply } => {
+                use purgatory_protocol::{
+                    CharacterCreateRejection as Rejection, CreateCharacterResult as Result,
+                };
+                let result = match service.create_character(&login, &name) {
+                    Ok(_) => match roster(&mut service, &login) {
+                        Ok(roster) => Result::Created { roster },
+                        Err(err) => {
+                            eprintln!("PURGATORY character roster read failed: {err}");
+                            Result::Rejected(Rejection::StorageFailure)
+                        }
+                    },
+                    Err(PersistError::CreateRejected(reason)) => Result::Rejected(match reason {
+                        CreateCharacterRejection::InvalidName(_) => Rejection::InvalidName,
+                        CreateCharacterRejection::NameTaken => Rejection::NameTaken,
+                        CreateCharacterRejection::RosterFull => Rejection::RosterFull,
+                        CreateCharacterRejection::Unregistered => Rejection::Unregistered,
+                    }),
+                    Err(err) => {
+                        eprintln!("PURGATORY character creation failed: {err}");
+                        Result::Rejected(Rejection::StorageFailure)
+                    }
+                };
+                let _ = reply.send(result);
+            }
+            PersistCmd::UserRegistered { login, reply } => {
+                let _ = reply.send(service.user_registered(&login));
+            }
+            #[cfg(test)]
+            PersistCmd::ProvisionDevUser { login, reply } => {
+                let _ = reply.send(service.provision_dev_user(&login));
+            }
+            PersistCmd::CommitDurable {
+                command,
+                lease,
+                reply,
+            } => {
+                let _ = reply.send(service.commit_durable_leased(&command, lease.as_ref()));
+            }
+            PersistCmd::ReserveItemIds { count, reply } => {
+                let _ = reply.send(service.reserve_item_ids(count));
+            }
+            PersistCmd::ReadOwnedRestore {
+                character_id,
+                reply,
+            } => {
+                let _ = reply.send(service.read_owned_restore(character_id));
+            }
+            PersistCmd::InstallRules { rules, reply } => {
+                service.set_durable_content_rules(rules);
+                let _ = reply.send(());
+            }
+            PersistCmd::Save { snapshot, lease } => {
+                #[cfg(test)]
+                pause_receiver(
+                    &worker_shared.command_save_stall,
+                    &worker_shared.command_save_stall_entered,
+                );
+                save_snapshot_observed(&mut service, &worker_shared, snapshot, lease);
+            }
+            PersistCmd::SaveAwaited {
+                snapshot,
+                lease,
+                reply,
+            } => {
+                let result = service.save_snapshot_leased(snapshot, lease.as_ref());
+                if result.is_err() {
+                    worker_shared
+                        .diagnostics
+                        .save_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                let _ = reply.send(result);
+            }
+            PersistCmd::Admit {
+                login,
+                character_id,
+                reply,
+            } => {
+                #[cfg(test)]
+                let scripted = take_scripted_admit(&worker_shared);
+                #[cfg(test)]
+                let result = match scripted {
+                    Some(admission) => Ok(admission),
+                    None => service.admit(&login, character_id),
+                };
+                #[cfg(not(test))]
+                let result = service.admit(&login, character_id);
+                let _ = reply.send(result);
+            }
+            PersistCmd::Supersede { authority, reply } => {
+                let _ = reply.send(service.supersede(&authority));
+            }
+            PersistCmd::RenewLease { authority, reply } => {
+                let _ = reply.send(service.renew_lease(&authority));
+            }
+            PersistCmd::ReleaseLease { authority, reply } => {
+                #[cfg(test)]
+                {
+                    worker_shared.release_calls.fetch_add(1, Ordering::SeqCst);
+                }
+                let _ = reply.send(service.release_lease(&authority));
+            }
+            PersistCmd::ClaimChannel { channel_id, reply } => {
+                let _ = reply.send(service.claim_channel(channel_id, None));
+            }
+            PersistCmd::RenewChannel {
+                channel_id,
+                generation,
+                reply,
+            } => {
+                let _ = reply.send(service.renew_channel(channel_id, generation));
+            }
+            PersistCmd::ReleaseChannel {
+                channel_id,
+                generation,
+                reply,
+            } => {
+                let _ = reply.send(service.release_channel(channel_id, generation));
+            }
+            PersistCmd::Shutdown { channel, reply } => {
+                while let Ok(extra) = rx.try_recv() {
+                    if worker_shared.stop_writer.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let PersistCmd::Save { snapshot, lease } = extra {
+                        // The check above admitted this save. A timeout
+                        // that lands during the write still lets this
+                        // call finish; it does not admit the next one.
+                        #[cfg(test)]
+                        pause_shutdown_save(&worker_shared);
+                        save_snapshot_observed(&mut service, &worker_shared, snapshot, lease);
+                    }
+                }
+                if !worker_shared.stop_writer.load(Ordering::SeqCst) {
+                    flush_deferred_latest(&mut service, &worker_shared);
+                }
+                if !worker_shared.stop_writer.load(Ordering::SeqCst) {
+                    if let Some((channel_id, generation)) = channel {
+                        #[cfg(test)]
+                        {
+                            worker_shared
+                                .channel_release_calls
+                                .fetch_add(1, Ordering::SeqCst);
+                        }
+                        if let Err(err) = service.release_channel(channel_id, generation) {
+                            eprintln!(
+                                "PURGATORY channel release failed id={channel_id} generation={generation}: {err}"
+                            );
+                        }
+                    }
+                    let _ = reply.send(PersistenceShutdown::Drained {
+                        save_failures: worker_shared
+                            .diagnostics
+                            .save_failures
+                            .load(Ordering::Relaxed),
+                    });
+                }
+                break;
+            }
+        }
+        flush_deferred_latest(&mut service, &worker_shared);
     }
+    if !worker_shared.stop_writer.load(Ordering::SeqCst) {
+        flush_deferred_latest(&mut service, &worker_shared);
+    }
+    #[cfg(test)]
+    worker_shared.writer_finished.store(true, Ordering::SeqCst);
+}
 
+impl PersistenceHandle {
     #[cfg(test)]
     pub async fn resolve(
         &self,
@@ -1270,6 +1311,18 @@ fn flush_deferred_latest(service: &mut PersistenceService, shared: &SharedSaveSt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn persistence_worker_panic_during_startup_is_an_error() {
+        match PersistenceHandle::spawn_on_worker(|| -> Result<PersistenceService, PersistError> {
+            panic!("startup exploded")
+        })
+        .await
+        {
+            Err(err) => assert!(err.contains("panicked during startup"), "{err}"),
+            Ok(_) => panic!("a worker panic must fail startup"),
+        }
+    }
 
     #[test]
     fn durable_slots_match_the_simulation_contracts() {

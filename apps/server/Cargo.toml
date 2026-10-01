@@ -30,6 +30,7 @@ tracing-subscriber = { workspace = true }
 windows-sys = { workspace = true }
 
 [dev-dependencies]
+purgatory-persistence = { path = "../../crates/persistence" }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

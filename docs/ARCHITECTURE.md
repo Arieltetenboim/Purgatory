@@ -659,7 +659,7 @@ animation_lab   (eframe; Hub-launched; ADR-0058)
 
 `simulation` must not depend on `winit`, `wgpu`, renderer code, UI, or OS window APIs.
 
-`purgatory-persistence` depends on `purgatory-common`, serde, and the synchronous `postgres` client (ADR-0070, ADR-0073). Simulation does not depend on it. Database sessions run on the persistence worker, not the 30 Hz simulation thread. Server startup connects only to an existing initialized database. It does not create, reset, migrate, or fall back to files. Developer Hub administers the pinned local database `Purgatory_dev` through a separate maintenance connection. A development username must already exist in `dev_users` before Hello is admitted. Channels share one database. JSON game content, art, and maps are not character persistence.
+`purgatory-persistence` depends on `purgatory-common`, serde, and the synchronous `postgres` client (ADR-0070, ADR-0073). Simulation does not depend on it. Database sessions, including the initial connection, run on the persistence worker, not the 30 Hz simulation thread and not the Tokio accept runtime. Server startup waits for that worker's initialization result before it reports that it is listening. It connects only to an existing initialized database. It does not create, reset, migrate, or fall back to files. Developer Hub administers the pinned local database `Purgatory_dev` through a separate maintenance connection. A development username must already exist in `dev_users` before Hello is admitted. Channels share one database. JSON game content, art, and maps are not character persistence.
 
 `server` must not depend on `winit`, `wgpu`, `egui`, or the client crate.
 

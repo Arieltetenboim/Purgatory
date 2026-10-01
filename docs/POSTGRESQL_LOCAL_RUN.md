@@ -190,6 +190,32 @@ It does not itself make the server use the database.
 | Another channel generation still active | Stop the other server cleanly; after a crash, wait for the lease expiry as described in [`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md). Do not force a second active process. |
 | Range empty; collectible spawn absent | Verify PostgreSQL mode, live channel claim, and persistence-worker health. The simulation tick does not allocate IDs or fall back to epoch IDs. |
 
+## Windows client smoke with the existing `ariel` user
+
+This checks the normal client against the already initialized `Purgatory_dev`.
+Do not press **Create** or **Reset**, and do not run `--database-create` or
+`--database-reset`. The `ariel` row is already in `dev_users`.
+
+1. In a PowerShell window at the repository root, set the section 3
+   environment, including `PURGATORY_DATABASE_URL`,
+   `PURGATORY_DATABASE_SCHEMA`, and `PURGATORY_DEPLOYMENT_ID`. Launch
+   `./DEV_HUB.BAT` from that same window.
+2. Press **Check**. The status should be `ready`. The server state stays
+   Stopped until you start it.
+3. Press **Start Server**. The Hub may report Ready only after startup has
+   opened PostgreSQL. `logs/dev-tools/server.log` contains
+   `network listening on 127.0.0.1:5001` and
+   `PURGATORY persist backend=postgresql`. A refused connection is
+   `PURGATORY server error: persistence open: ...` and does not contain
+   `Cannot start a runtime from within a runtime`.
+4. After the server is Ready, press **+1 Client**, or run
+   `cargo run -p purgatory-client` from that same environment. On the login
+   screen enter `ariel`. The roster opens for that existing user. Do not
+   type `dev.probe`.
+
+This smoke does not by itself finish Phase 12. Client recovery and
+backup/restore remain separate exit checks.
+
 This guide does not certify a live client recovery session or production
 backup/restore. Those are separate Phase 12 exit checks. For moving the
 database to another host, see [`POSTGRESQL_HOST_MOVE.md`](POSTGRESQL_HOST_MOVE.md).

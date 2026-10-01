@@ -171,9 +171,10 @@ fn spawn_durable_commits(
 
 async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     let bound = endpoint::bind(&config)?;
-    let persist = persist::PersistenceHandle::spawn_from_env()?;
+    let persist = persist::PersistenceHandle::spawn_from_env().await?;
     println!("network listening on {}", bound.local_addr());
     println!("PURGATORY persist backend=postgresql");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 
     bound.stats.admission_cap.store(
         config.abuse.max_inflight_connection_tasks as u64,
