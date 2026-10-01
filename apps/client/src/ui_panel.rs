@@ -96,7 +96,6 @@ const INVENTORY_SLOT_HOVER_TINT: [f32; 4] = [0.9, 0.96, 1.0, 1.0];
 const INVENTORY_SLOT_SELECTED_TINT: [f32; 4] = [1.0, 0.9, 0.68, 1.0];
 const ITEM_DRAG_THRESHOLD_PX: f32 = 4.0;
 const INVENTORY_TOOLTIP_WIDTH_UNITS: f32 = 218.0;
-const INVENTORY_TOOLTIP_HEIGHT_UNITS: f32 = 54.0;
 const INVENTORY_TOOLTIP_OFFSET_UNITS: f32 = 10.0;
 const INVENTORY_TOOLTIP_PADDING_UNITS: f32 = 7.0;
 const INVENTORY_TOOLTIP_FONT_SIZE_UNITS: f32 = 11.0;
@@ -1512,6 +1511,9 @@ impl UiItemIconAssets {
         };
         assets.register_visual(ITEM_PLACEHOLDER_VISUAL_KEY, resolved)?;
         let fallback = ui_item_icon_visual(resolved);
+        for presentation in registry.iter_item_presentations() {
+            register_item_icon_file(assets, &presentation.icon);
+        }
         let mut by_definition = HashMap::new();
         for presentation in registry.iter_item_presentations() {
             match assets.visual(&presentation.icon).copied() {
@@ -1536,6 +1538,50 @@ impl UiItemIconAssets {
             .copied()
             .unwrap_or(self.fallback)
     }
+
+    pub(crate) fn world_sprite(
+        &self,
+        definition: ContentId,
+    ) -> Option<(crate::renderer::SpriteTextureId, [[f32; 2]; 4])> {
+        let icon = self.by_definition.get(&definition).copied()?;
+        let u0 = icon.uv_min[0];
+        let v0 = icon.uv_min[1];
+        let u1 = icon.uv_max[0];
+        let v1 = icon.uv_max[1];
+        Some((icon.texture, [[u0, v1], [u1, v1], [u1, v0], [u0, v0]]))
+    }
+}
+
+fn register_item_icon_file(assets: &mut AssetRuntime, key: &str) {
+    if key.is_empty() || key == ITEM_PLACEHOLDER_VISUAL_KEY || assets.visual(key).is_some() {
+        return;
+    }
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../Graphic/items")
+        .join(format!("{key}.png"));
+    let Ok(bytes) = std::fs::read(&path) else {
+        return;
+    };
+    let Ok(image) = image::load_from_memory(&bytes).map(|image| image.to_rgba8()) else {
+        return;
+    };
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return;
+    }
+    let Ok(texture) = assets.register_image(key, image) else {
+        return;
+    };
+    let resolved = ResolvedVisual {
+        texture,
+        rect_px: [0, 0, width, height],
+        uv: [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+        pivot_px: [0.0, 0.0],
+        dimensions_px: [width, height],
+        pixels_per_unit: 1.0,
+    };
+    let _ = assets.register_visual(key, resolved);
 }
 
 fn ui_item_icon_visual(visual: ResolvedVisual) -> UiItemIconVisual {
@@ -2594,7 +2640,39 @@ fn inventory_tooltip_frame(
 ) -> Result<UiInventoryTooltipFrame, String> {
     validate_pixels_per_unit(pixels_per_unit)?;
     let width = INVENTORY_TOOLTIP_WIDTH_UNITS * pixels_per_unit;
-    let height = INVENTORY_TOOLTIP_HEIGHT_UNITS * pixels_per_unit;
+    let (title, detail, description) =
+        if let Some(definition) = registry.item_by_id(entry.definition) {
+            let presentation = registry.item_presentation_by_id(entry.definition);
+            let title = presentation
+                .map(|item| item.display_name.trim())
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| definition.authored_id.clone());
+            let description = presentation
+                .map(|item| item.description.trim().to_string())
+                .unwrap_or_default();
+            (
+                title,
+                format!(
+                    "{} | Qty {} | Stack {}",
+                    definition.category.as_str(),
+                    entry.quantity,
+                    definition.stack_limit
+                ),
+                description,
+            )
+        } else {
+            (
+                "Unknown item".to_string(),
+                format!("misc | Qty {} | definition unavailable", entry.quantity),
+                String::new(),
+            )
+        };
+    let line_count = if description.is_empty() { 2.0 } else { 3.0 };
+    let height = (INVENTORY_TOOLTIP_FONT_SIZE_UNITS * line_count
+        + INVENTORY_TOOLTIP_LINE_GAP_UNITS * (line_count - 1.0)
+        + INVENTORY_TOOLTIP_PADDING_UNITS * 2.0)
+        * pixels_per_unit;
     let offset = INVENTORY_TOOLTIP_OFFSET_UNITS * pixels_per_unit;
     let viewport_min = [viewport.x as f32, viewport.y as f32];
     let viewport_max = [
@@ -2624,52 +2702,49 @@ fn inventory_tooltip_frame(
     let font_size = INVENTORY_TOOLTIP_FONT_SIZE_UNITS * pixels_per_unit;
     let line_gap = INVENTORY_TOOLTIP_LINE_GAP_UNITS * pixels_per_unit;
     let text_width = (width - padding * 2.0).max(1.0);
-    let (title, detail) = if let Some(definition) = registry.item_by_id(entry.definition) {
-        (
-            definition.authored_id.clone(),
-            format!(
-                "{} | Qty {} | Stack {}",
-                definition.category.as_str(),
-                entry.quantity,
-                definition.stack_limit
-            ),
-        )
-    } else {
-        (
-            "Unknown item".to_string(),
-            format!("misc | Qty {} | definition unavailable", entry.quantity),
-        )
-    };
     let title_anchor = [bounds.min[0] + padding, bounds.min[1] + padding];
     let detail_anchor = [title_anchor[0], title_anchor[1] + font_size + line_gap];
+    let mut texts = vec![
+        TextBlock {
+            content: TextContent(title),
+            style: TextStyle::at_size(
+                INVENTORY_TOOLTIP_FONT_SIZE_UNITS,
+                INVENTORY_TOOLTIP_TITLE_COLOR,
+                TextAlignment::Left,
+            ),
+            anchor: title_anchor,
+            max_width: Some(text_width),
+        },
+        TextBlock {
+            content: TextContent(detail),
+            style: TextStyle::at_size(
+                INVENTORY_TOOLTIP_FONT_SIZE_UNITS,
+                INVENTORY_TOOLTIP_DETAIL_COLOR,
+                TextAlignment::Left,
+            ),
+            anchor: detail_anchor,
+            max_width: Some(text_width),
+        },
+    ];
+    if !description.is_empty() {
+        texts.push(TextBlock {
+            content: TextContent(description),
+            style: TextStyle::at_size(
+                INVENTORY_TOOLTIP_FONT_SIZE_UNITS,
+                INVENTORY_TOOLTIP_DETAIL_COLOR,
+                TextAlignment::Left,
+            ),
+            anchor: [detail_anchor[0], detail_anchor[1] + font_size + line_gap],
+            max_width: Some(text_width),
+        });
+    }
     Ok(UiInventoryTooltipFrame {
         background: panel_center_fill(
             window_assets.panel(),
             bounds,
             INVENTORY_TOOLTIP_BACKGROUND_TINT,
         ),
-        texts: vec![
-            TextBlock {
-                content: TextContent(title),
-                style: TextStyle::at_size(
-                    INVENTORY_TOOLTIP_FONT_SIZE_UNITS,
-                    INVENTORY_TOOLTIP_TITLE_COLOR,
-                    TextAlignment::Left,
-                ),
-                anchor: title_anchor,
-                max_width: Some(text_width),
-            },
-            TextBlock {
-                content: TextContent(detail),
-                style: TextStyle::at_size(
-                    INVENTORY_TOOLTIP_FONT_SIZE_UNITS,
-                    INVENTORY_TOOLTIP_DETAIL_COLOR,
-                    TextAlignment::Left,
-                ),
-                anchor: detail_anchor,
-                max_width: Some(text_width),
-            },
-        ],
+        texts,
     })
 }
 

@@ -3146,7 +3146,7 @@ impl ClientApp {
             let interactable_n = replica_interactable_quads.len() + replica_portal_quads.len();
             quads.extend(replica_interactable_quads);
             quads.extend(replica_portal_quads);
-            quads.extend(item_drop_quads(&self.replica));
+            quads.extend(item_drop_quads(&self.replica, &self.ui_item_icon_assets));
             quads.extend(replica_npc_quads);
             #[cfg(feature = "dev-diagnostics")]
             if replica_live
@@ -4659,16 +4659,25 @@ fn portal_quads(replica: &ReplicatedWorld) -> Vec<DrawQuad> {
         .collect()
 }
 
-fn item_drop_quads(replica: &ReplicatedWorld) -> Vec<DrawQuad> {
+fn item_drop_quads(replica: &ReplicatedWorld, icons: &UiItemIconAssets) -> Vec<DrawQuad> {
     replica
         .iter()
         .filter(|entity| entity.kind == ReplicatedKind::Item)
         .map(|entity| {
-            DrawQuad::rect(
-                [entity.position[0], entity.position[1] + 0.22],
-                [0.42, 0.42],
-                [0.95, 0.78, 0.18, 1.0],
-            )
+            let center = [entity.position[0], entity.position[1] + 0.22];
+            if let Some(content_id) = entity.content_id
+                && let Some((texture, uvs)) = icons.world_sprite(content_id)
+            {
+                let half = 0.21;
+                return DrawQuad::textured_sprite(
+                    texture,
+                    center,
+                    [[-half, -half], [half, -half], [half, half], [-half, half]],
+                    uvs,
+                    0.0,
+                );
+            }
+            DrawQuad::rect(center, [0.42, 0.42], [0.95, 0.78, 0.18, 1.0])
         })
         .collect()
 }

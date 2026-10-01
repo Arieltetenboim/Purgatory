@@ -1,0 +1,27 @@
+{
+  "schema_version": 4,
+  "id": "monster.dev.guaranteed_drop",
+  "debug_name": "Guaranteed Drop",
+  "sprite": "creature.moss_crab",
+  "health_max": 5,
+  "collision_bounds": {
+    "left": 0.4,
+    "right": 0.4,
+    "bottom": 0.45,
+    "top": 0.3
+  },
+  "movement_speed": 2,
+  "behavior": {
+    "kind": "chase_contact",
+    "aggro": "when_attacked",
+    "home_leash_radius": 3
+  },
+  "drops": [
+    {
+      "item": 30015,
+      "chance_bps": 10000,
+      "quantity_min": 2,
+      "quantity_max": 2
+    }
+  ]
+}

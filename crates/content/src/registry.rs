@@ -914,6 +914,14 @@ impl ContentRegistry {
                 ));
             }
         }
+        for monster in self.monsters.values() {
+            if let Err(error) = crate::monster::validate_monster_drop_items(monster, |item| {
+                self.item_by_id(item)
+                    .map(|definition| definition.stack_limit)
+            }) {
+                issues.extend(error.issues);
+            }
+        }
         for dialogue in self.npc_dialogues.values() {
             for (beat_index, beat) in dialogue.beats.iter().enumerate() {
                 for (condition_index, condition) in beat.conditions.iter().enumerate() {

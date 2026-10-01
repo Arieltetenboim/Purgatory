@@ -1553,9 +1553,7 @@ impl GameplayOwner {
     }
 
     /// Spawn one world drop whose pickup is limited to `killer` for 40 seconds.
-    /// Monster death does not call this. No loot table is authored yet.
     /// Without a reserved id, nothing is spawned.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn manifest_monster_loot(
         &mut self,
         killer: CharacterId,
@@ -1577,6 +1575,186 @@ impl GameplayOwner {
             stack_limit,
             GroundOrigin::MonsterLoot { killer },
         )
+    }
+
+    fn next_loot_unit(&mut self) -> u32 {
+        self.loot_rng = self
+            .loot_rng
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
+        if self.loot_rng == 0 {
+            self.loot_rng = 0xA5A5_1234;
+        }
+        self.loot_rng
+    }
+
+    fn loot_address_open(&self, address: WorldAddress) -> bool {
+        if self.admission_stopped || Self::deadline_expired(self.channel_deadline) {
+            return false;
+        }
+        if self.closed_loot_addresses.contains(&address) {
+            return false;
+        }
+        self.registry.map_by_map_id(address.map).is_some()
+    }
+
+    /// Stop manifesting unclaimed drops for one map membership.
+    /// Items already on the ground keep the existing lifetime.
+    ///
+    /// Production channel shutdown abandons every address through
+    /// [`Self::lose_all_authority`]. This method is the single-address hook;
+    /// tests are the current caller.
+    #[allow(dead_code)]
+    pub fn close_world_address(&mut self, address: WorldAddress) {
+        self.closed_loot_addresses.insert(address);
+        self.flush_pending_monster_loot();
+    }
+
+    fn character_of_entity(&self, entity: EntityId) -> Option<CharacterId> {
+        self.bindings
+            .values()
+            .find(|binding| binding.entity == entity)
+            .and_then(|binding| binding.character_id)
+    }
+
+    fn plan_monster_loot(&mut self, entity: EntityId, killer: Option<EntityId>) {
+        let Some(killer) = killer else {
+            println!("MONSTER_LOOT none entity={entity} reason=no_lethal_player");
+            return;
+        };
+        let Some(character_id) = self.character_of_entity(killer) else {
+            println!("MONSTER_LOOT none entity={entity} reason=no_character");
+            return;
+        };
+        let Some(content_id) = self.world.content_id_of(entity) else {
+            return;
+        };
+        let Some(drops) = self
+            .registry
+            .monster_by_id(content_id)
+            .map(|monster| monster.drops.clone())
+        else {
+            return;
+        };
+        if drops.is_empty() {
+            return;
+        }
+        let Some(address) = self.world.address_of(entity) else {
+            return;
+        };
+        let Some(transform) = self.world.transform_of(entity) else {
+            return;
+        };
+        let position = [transform.position[0] + 0.35, transform.position[1]];
+        let rolled = purgatory_content::roll_monster_drops(&drops, || self.next_loot_unit());
+        if rolled.is_empty() {
+            return;
+        }
+        self.enqueue_monster_loot(PendingMonsterLoot {
+            killer: character_id,
+            address,
+            position,
+            remaining: rolled,
+        });
+    }
+
+    fn enqueue_monster_loot(&mut self, plan: PendingMonsterLoot) {
+        if !self.loot_address_open(plan.address) {
+            self.abandon_plan(plan, "address_closed");
+            return;
+        }
+        if self.pending_loot.len() >= MAX_PENDING_MONSTER_LOOT {
+            self.abandon_plan(plan, "queue_full");
+            return;
+        }
+        self.pending_loot.push_back(plan);
+        self.flush_pending_monster_loot();
+    }
+
+    fn abandon_plan(&mut self, plan: PendingMonsterLoot, reason: &str) {
+        let remaining = plan.remaining.len() as u64;
+        self.loot_abandoned = self.loot_abandoned.saturating_add(remaining);
+        println!(
+            "MONSTER_LOOT abandoned killer={} remaining={remaining} reason={reason}",
+            plan.killer
+        );
+    }
+
+    fn flush_pending_monster_loot(&mut self) {
+        let mut index = 0;
+        while index < self.pending_loot.len() {
+            if !self.loot_address_open(self.pending_loot[index].address) {
+                let plan = self.pending_loot.remove(index).expect("index checked");
+                self.abandon_plan(plan, "address_closed");
+                continue;
+            }
+            let mut blocked = false;
+            while !self.pending_loot[index].remaining.is_empty() {
+                let drop = self.pending_loot[index].remaining[0];
+                let killer = self.pending_loot[index].killer;
+                let address = self.pending_loot[index].address;
+                let position = self.pending_loot[index].position;
+                match self.manifest_monster_loot(killer, address, position, drop.item, drop.quantity)
+                {
+                    Ok(item) => {
+                        self.pending_loot[index].remaining.remove(0);
+                        self.loot_manifested = self.loot_manifested.saturating_add(1);
+                        println!(
+                            "MONSTER_LOOT manifested item={item} definition={} quantity={} killer={killer}",
+                            drop.item, drop.quantity
+                        );
+                    }
+                    Err(ItemRuntimeError::SpawnFailed) => {
+                        self.loot_allocation_deferred =
+                            self.loot_allocation_deferred.saturating_add(1);
+                        println!(
+                            "MONSTER_LOOT deferred killer={killer} remaining={} reason=no_reserved_id",
+                            self.pending_loot[index].remaining.len()
+                        );
+                        blocked = true;
+                        break;
+                    }
+                    Err(error) => {
+                        self.loot_allocation_deferred =
+                            self.loot_allocation_deferred.saturating_add(1);
+                        println!(
+                            "MONSTER_LOOT deferred killer={killer} remaining={} reason={error:?}",
+                            self.pending_loot[index].remaining.len()
+                        );
+                        blocked = true;
+                        break;
+                    }
+                }
+            }
+            if self.pending_loot[index].remaining.is_empty() {
+                self.pending_loot.remove(index);
+            } else if blocked {
+                return;
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn pending_loot_len(&self) -> usize {
+        self.pending_loot.iter().map(|plan| plan.remaining.len()).sum()
+    }
+
+    #[cfg(test)]
+    pub fn loot_abandoned_count(&self) -> u64 {
+        self.loot_abandoned
+    }
+
+    #[cfg(test)]
+    pub fn monster_loot_killer(
+        &self,
+        item: purgatory_common::ItemInstanceId,
+    ) -> Option<CharacterId> {
+        match self.live_ground.get(&item).map(|live| live.origin) {
+            Some(GroundOrigin::MonsterLoot { killer }) => Some(killer),
+            _ => None,
+        }
     }
 
     fn note_player_ground(&mut self, item: purgatory_common::ItemInstanceId) {

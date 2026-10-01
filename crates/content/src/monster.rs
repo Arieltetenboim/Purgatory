@@ -76,6 +76,25 @@ pub fn validate_monster_presentation(
     }
 }
 
+/// 10_000 basis points is 100%. The UI edits percent; storage is this integer.
+pub const DROP_CHANCE_BPS_MAX: u32 = 10_000;
+
+/// One independent drop row. Chance is not a weight against the other rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MonsterDropEntry {
+    pub item: ContentId,
+    pub chance_bps: u32,
+    pub quantity_min: u32,
+    pub quantity_max: u32,
+}
+
+/// One successful row after a single death roll. Quantity is already chosen.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RolledMonsterDrop {
+    pub item: ContentId,
+    pub quantity: u32,
+}
+
 /// Server-only gameplay definition. Placement and presentation are separate concerns.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonsterDefinition {
@@ -87,6 +106,34 @@ pub struct MonsterDefinition {
     pub movement_speed: f32,
     pub behavior: MonsterBehavior,
     pub home_leash_radius: f32,
+    /// Empty means this monster authors no drops.
+    pub drops: Vec<MonsterDropEntry>,
+}
+
+/// Roll each entry once. `next_unit` supplies raw entropy; this function reduces it.
+/// A failed chance does not consume a second value. 0 never succeeds and 10_000 always does.
+pub fn roll_monster_drops(
+    entries: &[MonsterDropEntry],
+    mut next_unit: impl FnMut() -> u32,
+) -> Vec<RolledMonsterDrop> {
+    let mut rolled = Vec::new();
+    for entry in entries {
+        let chance = next_unit() % DROP_CHANCE_BPS_MAX;
+        if chance >= entry.chance_bps {
+            continue;
+        }
+        let span = entry.quantity_max - entry.quantity_min;
+        let quantity = if span == 0 {
+            entry.quantity_min
+        } else {
+            entry.quantity_min + (next_unit() % (span + 1))
+        };
+        rolled.push(RolledMonsterDrop {
+            item: entry.item,
+            quantity,
+        });
+    }
+    rolled
 }
 
 pub fn validate_monster_definition(def: &MonsterDefinition) -> Result<(), ContentError> {
@@ -151,6 +198,7 @@ pub fn validate_monster_definition(def: &MonsterDefinition) -> Result<(), Conten
         "behavior.home_leash_radius",
         def.home_leash_radius,
     );
+    validate_drop_shape(&mut issues, def);
     if issues.is_empty() {
         Ok(())
     } else {
@@ -188,6 +236,80 @@ fn non_negative_finite(
     }
 }
 
+fn validate_drop_shape(issues: &mut Vec<ValidationIssue>, def: &MonsterDefinition) {
+    let mut seen = Vec::new();
+    for (index, entry) in def.drops.iter().enumerate() {
+        let field = format!("drops[{index}]");
+        if entry.item.kind() != Some(purgatory_common::ContentKind::Item) {
+            issues.push(monster_issue(
+                &def.authored_id,
+                &field,
+                "item must be an allocated Item ContentId",
+            ));
+        }
+        if seen.contains(&entry.item) {
+            issues.push(monster_issue(
+                &def.authored_id,
+                &field,
+                "duplicate item in this drop list",
+            ));
+        }
+        seen.push(entry.item);
+        if entry.chance_bps > DROP_CHANCE_BPS_MAX {
+            issues.push(monster_issue(
+                &def.authored_id,
+                &field,
+                "chance_bps must be from 0 through 10000",
+            ));
+        }
+        if entry.quantity_min == 0 || entry.quantity_max < entry.quantity_min {
+            issues.push(monster_issue(
+                &def.authored_id,
+                &field,
+                "quantity must be a positive inclusive range",
+            ));
+        }
+    }
+}
+
+/// Item identity and stack limits are known only after the item registry is loaded.
+pub fn validate_monster_drop_items(
+    def: &MonsterDefinition,
+    stack_limit: impl Fn(ContentId) -> Option<u32>,
+) -> Result<(), ContentError> {
+    let mut issues = Vec::new();
+    for (index, entry) in def.drops.iter().enumerate() {
+        let field = format!("drops[{index}]");
+        let Some(limit) = stack_limit(entry.item) else {
+            issues.push(monster_issue(
+                &def.authored_id,
+                &field,
+                format!("unknown item {}", entry.item),
+            ));
+            continue;
+        };
+        if entry.quantity_max > limit {
+            issues.push(monster_issue(
+                &def.authored_id,
+                &field,
+                format!("quantity_max exceeds item stack_limit {limit}"),
+            ));
+        }
+        if limit == 1 && (entry.quantity_min != 1 || entry.quantity_max != 1) {
+            issues.push(monster_issue(
+                &def.authored_id,
+                &field,
+                "nonstackable items drop quantity 1",
+            ));
+        }
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(ContentError { issues })
+    }
+}
+
 fn monster_issue(definition: &str, field: &str, detail: impl std::fmt::Display) -> ValidationIssue {
     ValidationIssue::new("monster", definition, field, detail.to_string())
 }
@@ -220,6 +342,7 @@ mod tests {
             movement_speed: 2.0,
             behavior: MonsterBehavior::ChaseContactWhenAttacked,
             home_leash_radius: 3.0,
+            drops: Vec::new(),
         }
     }
 
@@ -246,5 +369,52 @@ mod tests {
         assert!(error.contains("movement_speed"));
         assert!(error.contains("collision_bounds"));
         assert!(error.contains("home_leash_radius"));
+    }
+
+    #[test]
+    fn independent_rows_keep_their_own_chance_and_quantity() {
+        let potion = purgatory_common::ITEM_SMALL_POTION;
+        let scrap = purgatory_common::ITEM_IRON_SCRAP;
+        let entries = [
+            MonsterDropEntry {
+                item: potion,
+                chance_bps: 10_000,
+                quantity_min: 1,
+                quantity_max: 1,
+            },
+            MonsterDropEntry {
+                item: scrap,
+                chance_bps: 0,
+                quantity_min: 1,
+                quantity_max: 3,
+            },
+        ];
+        let rolled = roll_monster_drops(&entries, || 0);
+        assert_eq!(
+            rolled,
+            vec![RolledMonsterDrop {
+                item: potion,
+                quantity: 1
+            }]
+        );
+    }
+
+    #[test]
+    fn variable_quantity_is_inclusive_and_one_hundred_percent_always_drops() {
+        let scrap = purgatory_common::ITEM_IRON_SCRAP;
+        let entries = [MonsterDropEntry {
+            item: scrap,
+            chance_bps: 10_000,
+            quantity_min: 1,
+            quantity_max: 3,
+        }];
+        let values = [0u32, 2];
+        let mut index = 0;
+        let rolled = roll_monster_drops(&entries, || {
+            let value = values[index];
+            index += 1;
+            value
+        });
+        assert_eq!(rolled[0].quantity, 3);
     }
 }

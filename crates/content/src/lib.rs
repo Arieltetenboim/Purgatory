@@ -76,7 +76,9 @@ pub use map_presentation::{
     PresentationLayerKind, PresentationSprite, TileTransform,
 };
 pub use monster::{
-    MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition, validate_monster_definition,
+    DROP_CHANCE_BPS_MAX, MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition,
+    MonsterDropEntry, RolledMonsterDrop, roll_monster_drops, validate_monster_definition,
+    validate_monster_drop_items,
 };
 pub use registry::ContentRegistry;
 pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement};

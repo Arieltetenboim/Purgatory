@@ -25,7 +25,8 @@ use crate::map_gameplay_authoring::{
 };
 use crate::monster::{
     MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterCollisionBounds, MonsterDefinition,
-    MonsterPresentationDefinition, validate_monster_definition, validate_monster_presentation,
+    MonsterDropEntry, MonsterPresentationDefinition, validate_monster_definition,
+    validate_monster_presentation,
 };
 use crate::registry::ContentRegistry;
 use crate::schema::{
@@ -1249,6 +1250,10 @@ struct RawItemPresentation {
     id: u32,
     label: String,
     icon: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    description: String,
 }
 
 #[derive(Deserialize)]
@@ -1305,6 +1310,17 @@ struct RawMonster {
     collision_bounds: RawMonsterCollisionBounds,
     movement_speed: f32,
     behavior: RawMonsterBehavior,
+    #[serde(default)]
+    drops: Vec<RawMonsterDrop>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMonsterDrop {
+    item: u32,
+    chance_bps: u32,
+    quantity_min: u32,
+    quantity_max: u32,
 }
 
 #[derive(Clone, Deserialize)]
@@ -1395,6 +1411,16 @@ impl RawMonster {
             movement_speed: self.movement_speed,
             behavior,
             home_leash_radius: self.behavior.home_leash_radius,
+            drops: self
+                .drops
+                .into_iter()
+                .map(|entry| MonsterDropEntry {
+                    item: ContentId::from_raw(entry.item),
+                    chance_bps: entry.chance_bps,
+                    quantity_min: entry.quantity_min,
+                    quantity_max: entry.quantity_max,
+                })
+                .collect(),
         };
         validate_monster_definition(&def)?;
         Ok(def)
@@ -1659,6 +1685,8 @@ impl RawItemPresentation {
             content_id: ContentId::from_raw(self.id),
             authored_id: self.label,
             icon: self.icon,
+            display_name: self.display_name,
+            description: self.description,
         };
         validate_item_presentation(&def)?;
         Ok(def)

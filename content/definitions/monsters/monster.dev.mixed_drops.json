@@ -1,0 +1,39 @@
+{
+  "schema_version": 4,
+  "id": "monster.dev.mixed_drops",
+  "debug_name": "Mixed Drops",
+  "sprite": "creature.shroom",
+  "health_max": 5,
+  "collision_bounds": {
+    "left": 0.4,
+    "right": 0.4,
+    "bottom": 0.45,
+    "top": 0.4
+  },
+  "movement_speed": 2,
+  "behavior": {
+    "kind": "chase_contact",
+    "aggro": "when_attacked",
+    "home_leash_radius": 3
+  },
+  "drops": [
+    {
+      "item": 30011,
+      "chance_bps": 10000,
+      "quantity_min": 1,
+      "quantity_max": 1
+    },
+    {
+      "item": 30015,
+      "chance_bps": 10000,
+      "quantity_min": 1,
+      "quantity_max": 3
+    },
+    {
+      "item": 30009,
+      "chance_bps": 0,
+      "quantity_min": 1,
+      "quantity_max": 1
+    }
+  ]
+}

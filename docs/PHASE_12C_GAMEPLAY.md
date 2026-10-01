@@ -62,8 +62,10 @@ A developer-spawned world item is ordinary visible ground. It uses the same
 200 second timer and is collectible immediately. Its id comes from the reserved
 durable range. Expiry inserts that id as a retired row. It is not an epoch mint.
 
-`manifest_monster_loot` is the authoritative spawn and eligibility path for a
-future loot drop. No loot table is authored, and monster death does not call it.
+`manifest_monster_loot` is the authoritative spawn and eligibility path for
+monster loot. An authored monster drop list is resolved once on the lethal
+death, then each remaining row is manifested through that path. The contract
+is `docs/MONSTER_DROP_CONTRACT.md`.
 Both that path and a developer-spawned collectible item take an id that
 PostgreSQL has already reserved. Collectible developer spawns require
 PostgreSQL. File mode cannot reserve an id, so those spawns do not appear.
