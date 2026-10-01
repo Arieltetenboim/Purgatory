@@ -1,6 +1,6 @@
 # Phase 12C — Gameplay durable commands
 
-Status: **in review** (2026-09-30). This is not acceptance, and it is not a Phase 12 exit.
+Status: **accepted 2026-10-01** after PR #121 merged at `19f19c2`. This is not a Phase 12 exit.
 Root `PHASE` = `12.12C`.
 
 PostgreSQL remains the durable authority. `World` remains the live gameplay authority.
@@ -149,8 +149,9 @@ command can place, move, or retire a whole item. It cannot reduce a quantity in 
 ## Not in this slice
 
 Quests, Trade, currency, and new gameplay features are not implemented here.
-Phase 12 is not complete. A normal client still has to prove reconnect, restart,
-and recovery before that exit.
+Phase 12 is not complete. The normal-client reconnect, clean restart, and
+committed-state process-crash checks below are now observed. The separate
+Phase 12 exit gates remain open.
 
 ## Review fixes still in review
 
@@ -439,3 +440,32 @@ not created, reset, or connected to. UDP port 5001 was held by the already
 running local server, so the process-level startup test was not repeated.
 Phase 12C remains in review.
 
+
+## Acceptance and Phase 12 exit boundary — 2026-10-01
+
+PR #121 merged into `master` at `19f19c2` with 12C head `0b45929`.
+The final GitHub Quality Gate on that head passed. The recorded local quality
+gate and disposable PostgreSQL suites above passed after the same-session
+revision fix. The owner tested the normal client against the initialized
+`Purgatory_dev`: authorized entry and unauthorized rejection; map, equipped
+sword, and current HP across logout/login; the same state after clean server
+restart; and committed HP, map, and sword after forcibly terminating and
+restarting the server. After damage and after a portal transition, item actions
+also succeeded in the *same session*, without reconnecting. These are manual
+observations, not automated proof of every timing or failure interleaving.
+
+12C accepts the durable integration of existing gameplay on that evidence.
+The process-crash check began only after the HP row was visible in PostgreSQL;
+it does not claim survival of a queued, uncommitted snapshot. Acknowledged
+command recovery and failure injection remain covered by their separate tests.
+Historical sections above describing 12C as in review record the state at the
+time of those runs, not its current status.
+
+**Phase 12 remains open.** Its separate exit requires owner-private
+baseline/resync and failure-visibility proof, two-character isolation, a
+database recovery/backup rehearsal, and measured load under the intended
+workload (see the revised continuity contract). A policy for long cooldowns
+across logout/restart is still unresolved. Production authentication, quests,
+trade, currency, and persistent scheduled events are outside the current
+Phase 12 implementation scope. No hardware power-loss or disaster-recovery
+claim follows from the process-crash test.

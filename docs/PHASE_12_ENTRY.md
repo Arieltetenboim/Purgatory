@@ -1,11 +1,11 @@
 # Phase 12 entry — Character Continuity
 
-Status: **revised design accepted; 12A and 12B accepted** (2026-09-30).
+Status: **revised design and 12A–12C accepted** (2026-10-01); Phase 12 exit remains open.
 Root `PHASE` = `12.12C`. Phase 11 is closed. 12A is accepted in
 [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). 12B is accepted in
-[`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md). 12C is in review in
-[`PHASE_12C_GAMEPLAY.md`](PHASE_12C_GAMEPLAY.md) and is not accepted. This
-entry does not accept Phase 12.
+[`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md). 12C is accepted in
+[`PHASE_12C_GAMEPLAY.md`](PHASE_12C_GAMEPLAY.md). This entry does not accept
+Phase 12 as a whole.
 
 ## Entry evidence and first gate
 
@@ -20,8 +20,8 @@ entry does not accept Phase 12.
   Later product decisions supersede its file-backed log and map-drop recovery.
   The revised implementation contract is now
   [`PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md).
-  Draft PR #116 cannot be merged unchanged. The 12A writer and the 12B
-  lifecycle are accepted. This entry does not accept Phase 12.
+  Draft PR #116 cannot be merged unchanged. The 12A writer, 12B lifecycle, and 12C gameplay integration are accepted.
+  The separate Phase 12 exit remains open.
 
 ## Acceptance boundary carried into the revised design
 
@@ -48,9 +48,18 @@ steps and focused tests.
 |---|---|---|
 | 12A | PostgreSQL durable foundation | accepted 2026-09-29; not a Phase 12 exit |
 | 12B | Save / Load and lifecycle | accepted 2026-09-30; not a Phase 12 exit |
-| 12C | Existing item and NPC-earned state integration | Atomic commit/recovery contract and lifecycle verified |
+| 12C | Existing item and NPC-earned state integration | accepted 2026-10-01; not a Phase 12 exit |
 
 The stage names are roadmap intent, not a promise that the design must implement
 them in this exact technical split. Update the roadmap and gates as each bounded
 step is accepted. The FORGE W map pipeline remains a parallel track; no map
 runtime acceptance is implied by this phase entry.
+
+## Phase 12 exit still open
+
+The manual normal-client continuity checks recorded in
+[`PHASE_12C_GAMEPLAY.md`](PHASE_12C_GAMEPLAY.md) establish a usable 12C base.
+They do not close the remaining exit proof: owner-private baseline/resync and
+failure visibility, two-character isolation, database recovery/backup rehearsal,
+measured load, and a decision for long cooldowns across logout/restart. Keep
+`PHASE=12.12C` until an explicit Phase 12 exit review changes the marker.
