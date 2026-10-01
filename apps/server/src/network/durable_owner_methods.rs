@@ -530,6 +530,7 @@ impl GameplayOwner {
             super::durable_play::DurableEffect::RetireGround { item } => {
                 self.forget_ground_item(*item);
                 self.durable_items.remove(item);
+                self.reserved_visible.remove(item);
                 let _ = self.world.destroy_world_drop_item(*item);
                 true
             }
@@ -589,7 +590,7 @@ impl GameplayOwner {
             if self.first_free_inventory_slot(actor) == Some(slot) {
                 let picked = self.world.pickup_world_drop(actor, entity).is_ok();
                 if picked {
-                    self.forget_ground_item(item);
+                    self.note_picked_reserved(item);
                 }
                 return picked;
             }
@@ -601,7 +602,7 @@ impl GameplayOwner {
                 .restore_inventory_item(actor, item, definition, quantity, stack_limit, slot)
                 .is_ok();
             if restored {
-                self.forget_ground_item(item);
+                self.note_picked_reserved(item);
             }
             return restored;
         }
@@ -990,7 +991,8 @@ impl GameplayOwner {
             self.reject_pickup(connection_id, request.seq, PickupRejectReason::StateBlocked);
             return;
         };
-        let durable = self.durable_items.contains(&item);
+        let keeps_visible_id =
+            self.reserved_visible.contains(&item) || self.durable_items.contains(&item);
         let stack_limit = self
             .registry
             .item_by_id(record.definition)
@@ -1000,7 +1002,16 @@ impl GameplayOwner {
             self.reject_pickup(connection_id, request.seq, PickupRejectReason::StateBlocked);
             return;
         }
-        let command = if durable {
+        let command = if self.reserved_visible.contains(&item) {
+            super::durable_play::pickup_reserved_command(
+                character_id,
+                revision,
+                item,
+                record.definition,
+                record.quantity,
+                slot,
+            )
+        } else if self.durable_items.contains(&item) {
             super::durable_play::pickup_command(character_id, revision, item, slot)
         } else {
             super::durable_play::pickup_place_command(
@@ -1021,7 +1032,7 @@ impl GameplayOwner {
                 seq: request.seq,
                 item,
                 slot,
-                durable,
+                durable: keeps_visible_id,
                 definition: record.definition,
                 quantity: record.quantity,
                 stack_limit,
@@ -1324,12 +1335,12 @@ impl GameplayOwner {
             return false;
         }
         self.unschedule_ground(item);
-        if !self.durable_items.contains(&item) {
-            let _ = self.world.destroy_world_drop_item(item);
-            self.live_ground.remove(&item);
+        if self.reserved_visible.contains(&item) || self.durable_items.contains(&item) {
+            self.enqueue_ground_retire(item);
             return true;
         }
-        self.enqueue_ground_retire(item);
+        let _ = self.world.destroy_world_drop_item(item);
+        self.live_ground.remove(&item);
         true
     }
 
@@ -1368,8 +1379,95 @@ impl GameplayOwner {
         self.ground_elapsed = self.ground_elapsed.saturating_add(elapsed);
     }
 
+    /// Ask the network loop for another PostgreSQL id range. This does not
+    /// touch the database. `simulate_tick` must not call it.
+    pub fn begin_id_replenish(&mut self) -> Option<u32> {
+        if self.id_reserve_unavailable
+            || self.id_replenish_inflight
+            || self.id_pool.len() >= ID_RESERVE_LOW_WATER
+        {
+            return None;
+        }
+        self.id_replenish_inflight = true;
+        #[cfg(test)]
+        {
+            self.id_reserve_requests = self.id_reserve_requests.saturating_add(1);
+        }
+        Some(ID_RESERVE_BATCH)
+    }
+
+    fn install_reserved_ids(&mut self, ids: Vec<purgatory_common::ItemInstanceId>) {
+        self.id_replenish_inflight = false;
+        for id in ids {
+            if id.raw() == 0
+                || self.reserved_visible.contains(&id)
+                || self.durable_items.contains(&id)
+                || self.id_pool.contains(&id)
+            {
+                continue;
+            }
+            self.id_pool.push_back(id);
+        }
+    }
+
+    fn fail_id_replenish(&mut self, err: &purgatory_persistence::PersistError) {
+        self.id_replenish_inflight = false;
+        if matches!(err, purgatory_persistence::PersistError::Migration { .. }) {
+            self.id_reserve_unavailable = true;
+        }
+    }
+
+    #[cfg(test)]
+    pub fn install_reserved_ids_for_test(&mut self, ids: Vec<purgatory_common::ItemInstanceId>) {
+        self.install_reserved_ids(ids);
+    }
+
+    fn take_reserved_id(&mut self) -> Option<purgatory_common::ItemInstanceId> {
+        self.id_pool.pop_front()
+    }
+
+    fn note_picked_reserved(&mut self, item: purgatory_common::ItemInstanceId) {
+        self.forget_ground_item(item);
+        self.reserved_visible.remove(&item);
+        self.durable_items.insert(item);
+    }
+
+    fn manifest_reserved_drop(
+        &mut self,
+        address: purgatory_common::WorldAddress,
+        position: [f32; 2],
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+        origin: GroundOrigin,
+    ) -> Result<purgatory_common::ItemInstanceId, ItemRuntimeError> {
+        let Some(item) = self.take_reserved_id() else {
+            return Err(ItemRuntimeError::SpawnFailed);
+        };
+        match self.world.manifest_committed_world_drop(
+            item,
+            address,
+            position,
+            definition,
+            quantity,
+            stack_limit,
+        ) {
+            Ok(_) => {
+                self.reserved_visible.insert(item);
+                self.track_ground(item, origin);
+                Ok(item)
+            }
+            Err(ItemRuntimeError::SpawnFailed) => {
+                self.id_pool.push_front(item);
+                Err(ItemRuntimeError::SpawnFailed)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     /// Spawn one world drop whose pickup is limited to `killer` for 40 seconds.
     /// Monster death does not call this. No loot table is authored yet.
+    /// Without a reserved id, nothing is spawned.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn manifest_monster_loot(
         &mut self,
@@ -1384,11 +1482,14 @@ impl GameplayOwner {
             .item_by_id(definition)
             .map(|item| item.stack_limit)
             .unwrap_or(quantity.max(1));
-        let (item, _) =
-            self.world
-                .spawn_world_drop_item(address, position, definition, quantity, stack_limit)?;
-        self.track_ground(item, GroundOrigin::MonsterLoot { killer });
-        Ok(item)
+        self.manifest_reserved_drop(
+            address,
+            position,
+            definition,
+            quantity,
+            stack_limit,
+            GroundOrigin::MonsterLoot { killer },
+        )
     }
 
     fn note_player_ground(&mut self, item: purgatory_common::ItemInstanceId) {
@@ -1478,9 +1579,10 @@ impl GameplayOwner {
     fn expire_one(&mut self, item: purgatory_common::ItemInstanceId) -> bool {
         if self.world.world_drop_entity_for_item(item).is_none() {
             self.live_ground.remove(&item);
+            self.reserved_visible.remove(&item);
             return false;
         }
-        if self.durable_items.contains(&item) {
+        if self.reserved_visible.contains(&item) || self.durable_items.contains(&item) {
             self.enqueue_ground_retire(item);
             return true;
         }
@@ -1490,8 +1592,19 @@ impl GameplayOwner {
     }
 
     fn enqueue_ground_retire(&mut self, item: purgatory_common::ItemInstanceId) {
+        let command = if self.reserved_visible.contains(&item) {
+            let Some(record) = self.world.item_record(item) else {
+                let _ = self.world.destroy_world_drop_item(item);
+                self.live_ground.remove(&item);
+                self.reserved_visible.remove(&item);
+                return;
+            };
+            super::durable_play::reserved_retire_command(item, record.definition, record.quantity)
+        } else {
+            super::durable_play::retire_command(item)
+        };
         self.enqueue_durable(DurablePending {
-            command: super::durable_play::retire_command(item),
+            command,
             lease: None,
             effect: super::durable_play::DurableEffect::RetireGround { item },
             reserved: vec![item],

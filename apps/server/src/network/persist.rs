@@ -52,6 +52,12 @@ enum PersistCmd {
         lease: Option<purgatory_persistence::LeaseAuthority>,
         reply: tokio::sync::oneshot::Sender<Result<DurableCommandResult, PersistError>>,
     },
+    ReserveItemIds {
+        count: u32,
+        reply: tokio::sync::oneshot::Sender<
+            Result<Vec<purgatory_common::ItemInstanceId>, PersistError>,
+        >,
+    },
     ReadOwnedRestore {
         character_id: purgatory_common::CharacterId,
         reply:
@@ -495,6 +501,9 @@ impl PersistenceHandle {
                     } => {
                         let _ = reply.send(service.commit_durable_leased(&command, lease.as_ref()));
                     }
+                    PersistCmd::ReserveItemIds { count, reply } => {
+                        let _ = reply.send(service.reserve_item_ids(count));
+                    }
                     PersistCmd::ReadOwnedRestore {
                         character_id,
                         reply,
@@ -714,6 +723,20 @@ impl PersistenceHandle {
                 lease,
                 reply,
             })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    /// Reserve item ids on the persistence worker. The simulation tick must
+    /// not call this or block on it.
+    pub async fn reserve_item_ids(
+        &self,
+        count: u32,
+    ) -> Result<Vec<purgatory_common::ItemInstanceId>, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::ReserveItemIds { count, reply })
             .await
             .map_err(|_| worker_closed())?;
         rx.await.map_err(|_| worker_closed())?
@@ -1954,6 +1977,8 @@ mod frontend_worker_tests {
                     retire: Vec::new(),
                     narrative: Vec::new(),
                     learned: Vec::new(),
+
+                    reserved_uses: Vec::new(),
                 },
                 None,
             )

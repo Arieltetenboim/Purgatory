@@ -59,27 +59,33 @@ keeps the item reserved, so expiry does not retire it. A retire of an item
 already committed to a character conflicts.
 
 A developer-spawned world item is ordinary visible ground. It uses the same
-200 second timer and is collectible immediately. It is not a durable row, so
-expiry removes it locally and does not write PostgreSQL.
+200 second timer and is collectible immediately. Its id comes from the reserved
+durable range. Expiry inserts that id as a retired row. It is not an epoch mint.
 
 `manifest_monster_loot` is the authoritative spawn and eligibility path for a
 future loot drop. No loot table is authored, and monster death does not call it.
-Runtime loot is removed locally at 200 seconds. A durable player drop submits
-`retire-{item}`.
+Both that path and a developer-spawned collectible item take an id that
+PostgreSQL has already reserved. If the local range is empty, nothing is
+spawned. The network loop replenishes the range through the persistence worker.
+The simulation tick does not. A crash may waste ids that were reserved and never
+shown. A visible id and a retired id are not issued again.
+
+Pickup of that visible id inserts the same id. It does not call `place_new`.
+The command rejects an id that was not reserved, an id that already exists, a
+retired id, a stale channel generation, and a second pickup of the same id.
+The same command key still returns the stored result. An unknown outcome stays
+unknown until that key is retried. Expiry of an unpicked reserved id writes a
+retired stub under the claimed channel generation. A later pickup of that id
+conflicts. A retire aimed at an id already committed to a character still
+conflicts, because that command has no character revision.
 
 A player drop keeps one item-instance id from inventory, through ground, through
 pickup, and back to character ownership. `postgres_12c_drop_pickup_reclaim_and_competition`
 reads that same id as `ItemOwner::Ground` and then as that character's item.
-Monster-loot pickup does not. The loot id is minted by `World` from a time and
-process epoch. It is not in the durable item set, so pickup submits
-`pickup-new` and `place_items` mints the next PostgreSQL id. The world record
-is destroyed and replaced. Keeping the appearance id would require choosing how
-that id is allocated. The durability contract says the persistence service is
-the sole durable allocator and gameplay receives a reserved monotonic range;
-that range is not implemented, and `place_items` cannot insert a caller-supplied
-id. Adopting the epoch id would contradict that contract. Neither alternative
-is chosen here. Issue #122 remains the ownership-history ledger, not this
-allocator. Issue #123 remains the later ground-capacity policy.
+Dialogue rewards still use `place_new` and the same counter, so those mints stay
+outside every reserved range. File mode has no durable allocator and does not
+substitute an epoch id. Issue #122 remains the ownership-history ledger, not
+this allocator. Issue #123 remains the later ground-capacity policy.
 
 A test can also retire one live ground item explicitly. That retire command has
 no character owner, because a ground row has none, so the database does not fence
@@ -275,3 +281,24 @@ passed 31 ignored persistence tests in 18.75s (`admit_us=18526`; workload
 ignored server `postgres_12c` tests in 5.40s. Monster-loot pickup still mints
 a new durable id. That allocator choice is not made here. Phase 12C remains
 in review.
+
+Before the reserved-id change, `monster_loot_pickup_replaces_the_visible_id`
+replaced visible id `3620915472163143681` with minted id `900001`, and
+`dev_spawned_pickup_replaces_the_visible_id` replaced `933935450194706433`
+with `900002`. After it, both tests keep the reserved visible id. PostgreSQL
+reserves a monotonic range before those ids can appear. The network loop
+replenishes that range. `simulate_tick_does_not_request_item_ids` shows the
+simulation tick does not. An empty pool spawns nothing.
+`reserved_ids_stay_disjoint_across_connections_and_restarts` and
+`reserved_pickup_keeps_its_id_against_retry_expiry_and_reuse` cover disjoint
+ranges, restart, retry, a competing pickup, expiry, and an unreserved id.
+`postgres_12c_reserved_loot_pickup_keeps_the_visible_id` keeps that id through
+pickup and retires the unpicked id. `./scripts/check.ps1` exited 0 in about
+264s. Persistence lib tests were 39 passed and 33 ignored. Server bin tests
+were 362 passed and 24 ignored in 2.44s. Simulation lib tests were 431 passed.
+A disposable `postgres:18` container `purgatory-12c-ids`, database
+`purgatory_12a_test` on `127.0.0.1:5433`, not `Purgatory_dev`, then passed 33
+ignored persistence tests in 32.49s (`admit_us=26091`; workload `total_ms=3275`,
+`mean_us=36393`, debug profile, not a capacity claim) and 15 ignored server
+`postgres_12c` tests in 10.99s. The container was removed. File mode cannot
+reserve ids. Monster death does not spawn loot. Phase 12C remains in review.

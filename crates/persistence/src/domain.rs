@@ -137,6 +137,25 @@ pub struct LearnedAbilityWrite {
     pub ability_content_id: ContentId,
 }
 
+/// What a previously reserved item id becomes in one durable command.
+///
+/// The id was allocated before it was visible. This command inserts that exact
+/// id. It does not draw a new id from `next_item_instance_id`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReservedItemOutcome {
+    Inventory { owner: CharacterId, slot: u16 },
+    Retired,
+}
+
+/// One already-reserved item id to insert as inventory or a retired stub.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReservedItemUse {
+    pub item_instance_id: ItemInstanceId,
+    pub definition_content_id: ContentId,
+    pub quantity: u32,
+    pub outcome: ReservedItemOutcome,
+}
+
 /// One accepted economic or earned-state command.
 ///
 /// `expected_revisions` lists every character the command affects, including
@@ -154,6 +173,8 @@ pub struct DurableCommand {
     pub retire: Vec<ItemInstanceId>,
     pub narrative: Vec<NarrativeWrite>,
     pub learned: Vec<LearnedAbilityWrite>,
+    /// Explicit ids reserved by the durable allocator before they were visible.
+    pub reserved_uses: Vec<ReservedItemUse>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -256,6 +277,7 @@ pub(crate) fn validate_command(
         && command.retire.is_empty()
         && command.narrative.is_empty()
         && command.learned.is_empty()
+        && command.reserved_uses.is_empty()
     {
         return Err(PersistError::corrupt(&path, "durable command is empty"));
     }
@@ -289,6 +311,12 @@ pub(crate) fn validate_command(
         .iter()
         .map(|item| item.item_instance_id)
         .chain(command.retire.iter().copied())
+        .chain(
+            command
+                .reserved_uses
+                .iter()
+                .map(|use_| use_.item_instance_id),
+        )
     {
         if id.raw() == 0 {
             return Err(PersistError::corrupt(
@@ -311,6 +339,34 @@ pub(crate) fn validate_command(
             place.location,
             rules,
         )?;
+    }
+    for reserved in &command.reserved_uses {
+        match reserved.outcome {
+            ReservedItemOutcome::Inventory { slot, .. } => {
+                let location = CharacterItemLocation::Inventory { slot };
+                validate_quantity_location(reserved.quantity, location, &path)?;
+                validate_item_content(
+                    reserved.definition_content_id,
+                    reserved.quantity,
+                    location,
+                    rules,
+                )?;
+            }
+            ReservedItemOutcome::Retired => {
+                validate_item_content(
+                    reserved.definition_content_id,
+                    reserved.quantity,
+                    CharacterItemLocation::Inventory { slot: 0 },
+                    rules,
+                )?;
+                if reserved.quantity == 0 {
+                    return Err(PersistError::corrupt(
+                        &path,
+                        "item quantity must be positive",
+                    ));
+                }
+            }
+        }
     }
     for write in &command.narrative {
         validate_narrative(write)?;
@@ -353,6 +409,11 @@ pub(crate) fn affected_characters(command: &DurableCommand) -> BTreeSet<Characte
     }
     for grant in &command.learned {
         affected.insert(grant.character_id);
+    }
+    for reserved in &command.reserved_uses {
+        if let ReservedItemOutcome::Inventory { owner, .. } = reserved.outcome {
+            affected.insert(owner);
+        }
     }
     affected
 }
@@ -581,6 +642,8 @@ mod tests {
                 beat_id: "3".into(),
             }],
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         };
         let err = validate_command(&command, &rules()).unwrap_err();
         assert!(matches!(err, PersistError::Corrupt { .. }), "{err}");
@@ -600,6 +663,8 @@ mod tests {
                 beat_id: "intro".into(),
             }],
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         };
         validate_command(&command, &rules()).unwrap();
     }
@@ -614,6 +679,8 @@ mod tests {
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         };
         let err = validate_command(&command, &DurableContentRules::new()).unwrap_err();
         assert!(matches!(err, PersistError::ContentRejected { .. }), "{err}");
@@ -632,6 +699,8 @@ mod tests {
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         };
         let err = validate_command(&command, &rules()).unwrap_err();
         assert!(matches!(err, PersistError::Corrupt { .. }), "{err}");

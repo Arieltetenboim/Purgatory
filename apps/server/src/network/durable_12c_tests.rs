@@ -273,7 +273,8 @@
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
-            };
+            
+                reserved_uses: Vec::new(),};
             let result = self
                 .service
                 .commit_durable_leased(&command, Some(&entered.lease))
@@ -1509,9 +1510,30 @@
         assert_eq!(owner.take_durable_commits().len(), 1, "the former owner");
     }
 
+    fn fund_ids(owner: &mut GameplayOwner, start: u64, count: u64) {
+        let ids = (start..start + count)
+            .map(purgatory_common::ItemInstanceId::from_raw)
+            .collect();
+        owner.install_reserved_ids_for_test(ids);
+    }
+
+    fn settle_ground_retires(owner: &mut GameplayOwner) {
+        let staged = owner.take_durable_commits();
+        for submit in staged {
+            owner.settle_durable(
+                submit.token,
+                Ok(purgatory_persistence::DurableCommandResult {
+                    revisions: Vec::new(),
+                    minted_item_ids: Vec::new(),
+                }),
+            );
+        }
+    }
+
     #[test]
     fn monster_loot_opens_to_other_characters_at_40_seconds() {
         let mut owner = GameplayOwner::new();
+        fund_ids(&mut owner, 80_000, 2);
         let killer = ConnectionId::from_raw(204);
         let other = ConnectionId::from_raw(205);
         enter_leased(&mut owner, killer, 204);
@@ -1576,6 +1598,7 @@
     #[test]
     fn ground_expiry_is_bounded_and_stops_when_channel_authority_is_stale() {
         let mut owner = GameplayOwner::new();
+        fund_ids(&mut owner, 81_000, 20);
         let killer = CharacterId::from_raw(206);
         let address = purgatory_common::WorldAddress::DEV;
         let mut items = Vec::new();
@@ -1587,13 +1610,13 @@
             );
         }
         owner.advance_ground_clock(Duration::from_secs(200));
-        let _ = owner.take_durable_commits();
+        settle_ground_retires(&mut owner);
         let left = items
             .iter()
             .filter(|item| owner.world().world_drop_entity_for_item(**item).is_some())
             .count();
         assert_eq!(left, 12, "one wake retires at most eight ground items");
-        let _ = owner.take_durable_commits();
+        settle_ground_retires(&mut owner);
         let left = items
             .iter()
             .filter(|item| owner.world().world_drop_entity_for_item(**item).is_some())
@@ -1601,6 +1624,7 @@
         assert_eq!(left, 4);
 
         let mut stalled = GameplayOwner::new();
+        fund_ids(&mut stalled, 81_100, 1);
         let item = stalled
             .manifest_monster_loot(killer, address, [0.0, 1.0], sword(), 1)
             .unwrap();
@@ -1619,6 +1643,7 @@
     fn deferred_ground_wake_stays_bounded_until_pickups_resolve() {
         const PENDING: usize = 64;
         let mut owner = GameplayOwner::new();
+        fund_ids(&mut owner, 82_000, PENDING as u64);
         let killer = CharacterId::from_raw(208);
         let address = purgatory_common::WorldAddress::DEV;
         let mut items = Vec::new();
@@ -1661,7 +1686,7 @@
         owner.reserved_items.clear();
         let mut remaining = PENDING;
         for _ in 0..PENDING {
-            let _ = owner.take_durable_commits();
+            settle_ground_retires(&mut owner);
             assert!(
                 owner.ground_wake_ops as usize <= GROUND_RETIRE_BATCH,
                 "one wake inspected {} ground items after reservations cleared",
@@ -1683,6 +1708,7 @@
     #[test]
     fn removing_one_ground_item_does_not_scan_its_deadline_bucket() {
         let mut owner = GameplayOwner::new();
+        fund_ids(&mut owner, 83_000, 64);
         let killer = CharacterId::from_raw(209);
         let address = purgatory_common::WorldAddress::DEV;
         let mut items = Vec::new();
@@ -1702,7 +1728,7 @@
         );
         assert!(owner.world().world_drop_entity_for_item(items[1]).is_some());
         owner.advance_ground_clock(Duration::from_secs(200));
-        let _ = owner.take_durable_commits();
+        settle_ground_retires(&mut owner);
         assert!(
             owner.world().world_drop_entity_for_item(items[0]).is_some(),
             "forgetting the timer leaves that drop unscheduled"
@@ -1717,6 +1743,7 @@
     #[test]
     fn dev_spawned_world_item_expires_with_ordinary_ground() {
         let mut owner = GameplayOwner::new();
+        fund_ids(&mut owner, 84_000, 1);
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
         let before: Vec<_> = owner.world().iter().collect();
@@ -1739,14 +1766,200 @@
         assert!(owner.world().world_drop_entity_for_item(item).is_some());
         owner.advance_ground_clock(Duration::from_nanos(1));
         let staged = owner.take_durable_commits();
-        assert!(
-            staged.is_empty(),
-            "a developer spawn is not a durable row"
+        assert_eq!(staged.len(), 1, "expiry retires the reserved visible id");
+        assert_eq!(
+            staged[0].command.reserved_uses[0].item_instance_id,
+            item
+        );
+        assert!(owner.world().world_drop_entity_for_item(item).is_some());
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: Vec::new(),
+                minted_item_ids: vec![item],
+            }),
         );
         assert!(
             owner.world().world_drop_entity_for_item(item).is_none(),
             "a developer-spawned world item expires after 200 seconds"
         );
+    }
+
+    #[test]
+    fn monster_loot_pickup_replaces_the_visible_id() {
+        let mut owner = GameplayOwner::new();
+        let visible_id = purgatory_common::ItemInstanceId::from_raw(86_001);
+        owner.install_reserved_ids_for_test(vec![visible_id]);
+        let id = ConnectionId::from_raw(210);
+        enter_leased(&mut owner, id, 210);
+        let actor = owner.entity_of(id).unwrap();
+        let character = CharacterId::from_raw(210);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[]);
+        let position = owner.world().transform_of(actor).unwrap().position;
+        let address = owner.world().address_of(actor).unwrap();
+        let visible = owner
+            .manifest_monster_loot(character, address, position, sword(), 1)
+            .unwrap();
+        assert_eq!(visible, visible_id);
+        let drop = owner.world().world_drop_entity_for_item(visible).unwrap();
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: id,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(drop),
+            },
+        });
+        let staged = owner.take_durable_commits();
+        assert_eq!(staged.len(), 1);
+        assert!(staged[0].command.place_new.is_empty());
+        assert_eq!(
+            staged[0].command.reserved_uses[0].item_instance_id,
+            visible
+        );
+        let minted = purgatory_common::ItemInstanceId::from_raw(900_001);
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: vec![minted],
+            }),
+        );
+        assert!(
+            owner.world().inventory_contains(actor, visible),
+            "pickup replaced visible {} with {}",
+            visible.raw(),
+            minted.raw()
+        );
+        assert!(owner.world().item_record(minted).is_none());
+    }
+
+    #[test]
+    fn dev_spawned_pickup_replaces_the_visible_id() {
+        let mut owner = GameplayOwner::new();
+        let visible_id = purgatory_common::ItemInstanceId::from_raw(86_002);
+        owner.install_reserved_ids_for_test(vec![visible_id]);
+        let id = ConnectionId::from_raw(211);
+        enter_leased(&mut owner, id, 211);
+        let actor = owner.entity_of(id).unwrap();
+        let character = CharacterId::from_raw(211);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[]);
+        owner
+            .handle_dev_spawn_item(id, purgatory_common::ITEM_SMALL_POTION, 1)
+            .expect("dev spawn");
+        let visible = owner
+            .world()
+            .iter()
+            .find_map(|entity| owner.world().item_instance_at_world_drop(entity))
+            .expect("dev spawn creates a world drop");
+        assert_eq!(visible, visible_id);
+        let drop = owner.world().world_drop_entity_for_item(visible).unwrap();
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: id,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(drop),
+            },
+        });
+        let staged = owner.take_durable_commits();
+        assert_eq!(staged.len(), 1);
+        assert!(staged[0].command.place_new.is_empty());
+        assert_eq!(
+            staged[0].command.reserved_uses[0].item_instance_id,
+            visible
+        );
+        let minted = purgatory_common::ItemInstanceId::from_raw(900_002);
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: vec![minted],
+            }),
+        );
+        assert!(
+            owner.world().inventory_contains(actor, visible),
+            "dev-spawn pickup replaced visible {} with {}",
+            visible.raw(),
+            minted.raw()
+        );
+        assert!(owner.world().item_record(minted).is_none());
+    }
+
+    #[test]
+    fn allocator_failure_does_not_manifest_an_unreserved_item() {
+        let mut owner = GameplayOwner::new();
+        let before = owner.world().iter().count();
+        let killer = CharacterId::from_raw(212);
+        let err = owner
+            .manifest_monster_loot(
+                killer,
+                purgatory_common::WorldAddress::DEV,
+                [0.0, 1.0],
+                sword(),
+                1,
+            )
+            .expect_err("an empty pool must not epoch-mint");
+        assert!(matches!(err, ItemRuntimeError::SpawnFailed));
+        assert_eq!(owner.world().iter().count(), before);
+        let connection = ConnectionId::from_raw(212);
+        owner.attach(connection);
+        let spawn = owner.handle_dev_spawn_item(connection, purgatory_common::ITEM_SMALL_POTION, 1);
+        assert!(
+            spawn.expect_err("dev spawn").contains("no reserved item id"),
+            "dev spawn must not epoch-mint"
+        );
+        assert_eq!(owner.world().iter().count(), before + 1);
+    }
+
+    #[test]
+    fn simulate_tick_does_not_request_item_ids() {
+        let mut owner = GameplayOwner::new();
+        assert!(owner.begin_id_replenish().is_some());
+        let requests = owner.id_reserve_requests;
+        owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+        assert_eq!(owner.id_reserve_requests, requests);
+        assert!(owner.id_pool.is_empty());
+        assert!(owner.begin_id_replenish().is_none(), "a request is already in flight");
+    }
+
+    #[test]
+    fn pending_reserved_pickup_blocks_expiry_and_keeps_the_visible_id() {
+        let mut owner = GameplayOwner::new();
+        let visible_id = purgatory_common::ItemInstanceId::from_raw(86_010);
+        owner.install_reserved_ids_for_test(vec![visible_id]);
+        let id = ConnectionId::from_raw(213);
+        enter_leased(&mut owner, id, 213);
+        let actor = owner.entity_of(id).unwrap();
+        let character = CharacterId::from_raw(213);
+        owner.lease_for_test(id, character, 1, "dev.local", 1, &[]);
+        let position = owner.world().transform_of(actor).unwrap().position;
+        let address = owner.world().address_of(actor).unwrap();
+        let visible = owner
+            .manifest_monster_loot(character, address, position, sword(), 1)
+            .unwrap();
+        let drop = owner.world().world_drop_entity_for_item(visible).unwrap();
+        owner.apply_input(InputUpdate::Pickup {
+            connection_id: id,
+            request: PickupRequest {
+                seq: 1,
+                target: wire_id(drop),
+            },
+        });
+        owner.advance_ground_clock(Duration::from_secs(200));
+        let staged = owner.take_durable_commits();
+        assert_eq!(staged.len(), 1, "expiry waits while pickup is pending");
+        assert!(staged[0].command.retire.is_empty());
+        assert_eq!(staged[0].command.reserved_uses[0].item_instance_id, visible);
+        owner.settle_durable(
+            staged[0].token,
+            Ok(purgatory_persistence::DurableCommandResult {
+                revisions: vec![(character, 2)],
+                minted_item_ids: vec![visible],
+            }),
+        );
+        assert!(owner.world().inventory_contains(actor, visible));
+        assert!(owner.world().item_record(visible_id).is_some());
+        owner.advance_ground_clock(Duration::from_secs(200));
+        assert!(owner.take_durable_commits().is_empty());
     }
 
     #[test]
@@ -2049,7 +2262,8 @@
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
-            };
+            
+                reserved_uses: Vec::new(),};
             let result = self
                 .service
                 .commit_durable_leased(&command, Some(&lease))
@@ -3091,4 +3305,83 @@
         assert!(owner.durable_items.contains(&ground));
         assert!(owner.world().item_record(ground).is_some());
         assert_eq!(owner.durable_items.len(), 1);
+    }
+
+    #[test]
+    #[ignore]
+    fn postgres_12c_reserved_loot_pickup_keeps_the_visible_id() {
+        with_db(|pg| {
+            let ids = pg.service.reserve_item_ids(2).unwrap();
+            pg.owner.install_reserved_ids_for_test(ids.clone());
+            let hero = pg.enter("Mira");
+            let actor = hero.actor;
+            let position = pg.owner.world().transform_of(actor).unwrap().position;
+            let address = pg.owner.world().address_of(actor).unwrap();
+            let visible = pg
+                .owner
+                .manifest_monster_loot(hero.character, address, position, sword(), 1)
+                .unwrap();
+            assert_eq!(visible, ids[0]);
+            let drop = pg.owner.world().world_drop_entity_for_item(visible).unwrap();
+            pg.owner.apply_input(InputUpdate::Pickup {
+                connection_id: hero.connection,
+                request: PickupRequest {
+                    seq: 1,
+                    target: wire_id(drop),
+                },
+            });
+            let committed = pg.settle_next();
+            assert_eq!(committed.minted_item_ids, vec![visible]);
+            assert!(pg.owner.world().inventory_contains(actor, visible));
+            assert_eq!(
+                pg.service.read_item(visible).unwrap().unwrap().owner,
+                ItemOwner::Character {
+                    character_id: hero.character,
+                    location: CharacterItemLocation::Inventory { slot: 0 },
+                }
+            );
+
+            let other = pg
+                .owner
+                .manifest_monster_loot(hero.character, address, position, sword(), 1)
+                .unwrap();
+            assert_eq!(other, ids[1]);
+            pg.owner.advance_ground_clock(Duration::from_secs(200));
+            let staged = pg.owner.take_durable_commits();
+            assert_eq!(staged.len(), 1);
+            assert_eq!(staged[0].command.reserved_uses[0].item_instance_id, other);
+            let retired = pg
+                .service
+                .commit_durable(&staged[0].command)
+                .expect("reserved expiry");
+            pg.owner.settle_durable(staged[0].token, Ok(retired));
+            assert_eq!(
+                pg.service.read_item(other).unwrap().unwrap().owner,
+                ItemOwner::Retired
+            );
+            assert!(pg.owner.world().world_drop_entity_for_item(other).is_none());
+            let late = DurableCommand {
+                key: format!("late-pickup-{}", other.raw()),
+                expected_revisions: vec![(hero.character, committed.revisions[0].1)],
+                place_new: Vec::new(),
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: vec![purgatory_persistence::ReservedItemUse {
+                    item_instance_id: other,
+                    definition_content_id: sword(),
+                    quantity: 1,
+                    outcome: purgatory_persistence::ReservedItemOutcome::Inventory {
+                        owner: hero.character,
+                        slot: 1,
+                    },
+                }],
+            };
+            let err = pg
+                .service
+                .commit_durable_leased(&late, Some(&hero.lease))
+                .unwrap_err();
+            assert!(err.to_string().contains("retired"), "{err}");
+        });
     }

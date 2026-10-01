@@ -9,6 +9,7 @@ use purgatory_content::ContentRegistry;
 use purgatory_persistence::{
     CharacterItemLocation, DurableCommand, DurableContentRules, DurableEquipmentSlot,
     ItemContentRule, LearnedAbilityWrite, LiveDestination, MoveItem, NarrativeWrite, PlaceNewItem,
+    ReservedItemOutcome, ReservedItemUse,
 };
 use purgatory_simulation::EquipmentSlot;
 
@@ -126,6 +127,7 @@ pub(crate) fn drop_command(
         retire: Vec::new(),
         narrative: Vec::new(),
         learned: Vec::new(),
+        reserved_uses: Vec::new(),
     }
 }
 
@@ -154,6 +156,7 @@ pub(crate) fn pickup_place_command(
         retire: Vec::new(),
         narrative: Vec::new(),
         learned: Vec::new(),
+        reserved_uses: Vec::new(),
     }
 }
 
@@ -177,6 +180,59 @@ pub(crate) fn pickup_command(
         retire: Vec::new(),
         narrative: Vec::new(),
         learned: Vec::new(),
+        reserved_uses: Vec::new(),
+    }
+}
+
+/// Persist the id that was already visible. This does not mint a replacement.
+pub(crate) fn pickup_reserved_command(
+    character_id: CharacterId,
+    revision: u64,
+    item: ItemInstanceId,
+    definition: ContentId,
+    quantity: u32,
+    slot: u16,
+) -> DurableCommand {
+    DurableCommand {
+        key: key(character_id, revision, &format!("pickup-{}", item.raw())),
+        expected_revisions: vec![(character_id, revision)],
+        place_new: Vec::new(),
+        moves: Vec::new(),
+        retire: Vec::new(),
+        narrative: Vec::new(),
+        learned: Vec::new(),
+        reserved_uses: vec![ReservedItemUse {
+            item_instance_id: item,
+            definition_content_id: definition,
+            quantity,
+            outcome: ReservedItemOutcome::Inventory {
+                owner: character_id,
+                slot,
+            },
+        }],
+    }
+}
+
+/// Retire a reserved id that was visible and never picked up.
+pub(crate) fn reserved_retire_command(
+    item: ItemInstanceId,
+    definition: ContentId,
+    quantity: u32,
+) -> DurableCommand {
+    DurableCommand {
+        key: format!("retire-{}", item.raw()),
+        expected_revisions: Vec::new(),
+        place_new: Vec::new(),
+        moves: Vec::new(),
+        retire: Vec::new(),
+        narrative: Vec::new(),
+        learned: Vec::new(),
+        reserved_uses: vec![ReservedItemUse {
+            item_instance_id: item,
+            definition_content_id: definition,
+            quantity,
+            outcome: ReservedItemOutcome::Retired,
+        }],
     }
 }
 
@@ -220,6 +276,7 @@ pub(crate) fn equip_command(
         retire: Vec::new(),
         narrative: Vec::new(),
         learned: Vec::new(),
+        reserved_uses: Vec::new(),
     }
 }
 
@@ -250,6 +307,7 @@ pub(crate) fn unequip_command(
         retire: Vec::new(),
         narrative: Vec::new(),
         learned: Vec::new(),
+        reserved_uses: Vec::new(),
     }
 }
 
@@ -265,6 +323,7 @@ pub(crate) fn retire_command(item: ItemInstanceId) -> DurableCommand {
         retire: vec![item],
         narrative: Vec::new(),
         learned: Vec::new(),
+        reserved_uses: Vec::new(),
     }
 }
 
@@ -325,6 +384,7 @@ pub(crate) fn dialogue_command(parts: DialogueCommandParts) -> DurableCommand {
                 ability_content_id,
             })
             .collect(),
+        reserved_uses: Vec::new(),
     }
 }
 
@@ -350,5 +410,6 @@ pub(crate) fn heard_command(
             beat_id: beat_id.to_string(),
         }],
         learned: Vec::new(),
+        reserved_uses: Vec::new(),
     }
 }

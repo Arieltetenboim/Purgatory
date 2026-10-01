@@ -567,6 +567,17 @@ pub struct GameplayOwner {
     reconcile_effects: HashMap<ConnectionId, super::durable_play::DurableEffect>,
     reserved_items: HashSet<purgatory_common::ItemInstanceId>,
     durable_items: HashSet<purgatory_common::ItemInstanceId>,
+    /// Ids reserved by PostgreSQL and not yet shown in `World`.
+    id_pool: VecDeque<purgatory_common::ItemInstanceId>,
+    id_replenish_inflight: bool,
+    /// File mode has no durable allocator. Stop asking after that refusal.
+    id_reserve_unavailable: bool,
+    /// Visible ids that are reserved but not yet a database row.
+    reserved_visible: HashSet<purgatory_common::ItemInstanceId>,
+    /// Times the network loop asked for a new id range. `simulate_tick` must
+    /// leave this at zero.
+    #[cfg(test)]
+    id_reserve_requests: u32,
     /// Time the claimed channel has been running. Tests advance it directly.
     ground_elapsed: Duration,
     live_ground: HashMap<purgatory_common::ItemInstanceId, LiveGround>,
@@ -591,6 +602,9 @@ const GROUND_EXCLUSIVE_WINDOW: Duration = Duration::from_secs(40);
 const GROUND_LIFETIME: Duration = Duration::from_secs(200);
 /// Database retires and local despawns started from one wake.
 const GROUND_RETIRE_BATCH: usize = 8;
+/// Ids requested from PostgreSQL when the local pool runs low.
+pub(crate) const ID_RESERVE_BATCH: u32 = 32;
+const ID_RESERVE_LOW_WATER: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GroundOrigin {
@@ -720,6 +734,9 @@ pub enum LifecycleCmd {
     },
     NoteChannelDeadline {
         deadline: super::lease_clock::LocalLeaseDeadline,
+    },
+    InstallReservedIds {
+        ids: Result<Vec<purgatory_common::ItemInstanceId>, purgatory_persistence::PersistError>,
     },
     #[allow(dead_code)]
     BeginDurable {
@@ -1494,6 +1511,12 @@ impl GameplayOwner {
             reconcile_effects: HashMap::new(),
             reserved_items: HashSet::new(),
             durable_items: HashSet::new(),
+            id_pool: VecDeque::new(),
+            id_replenish_inflight: false,
+            id_reserve_unavailable: false,
+            reserved_visible: HashSet::new(),
+            #[cfg(test)]
+            id_reserve_requests: 0,
             ground_elapsed: Duration::ZERO,
             live_ground: HashMap::new(),
             ground_expiry: BTreeMap::new(),
@@ -2743,6 +2766,10 @@ impl GameplayOwner {
                 LifecycleCmd::NoteChannelDeadline { deadline } => {
                     self.note_channel_deadline(deadline);
                 }
+                LifecycleCmd::InstallReservedIds { ids } => match ids {
+                    Ok(ids) => self.install_reserved_ids(ids),
+                    Err(err) => self.fail_id_replenish(&err),
+                },
                 LifecycleCmd::LoseAllAuthority => self.lose_all_authority(),
                 LifecycleCmd::AbandonAdmission {
                     connection_id,
@@ -4616,17 +4643,18 @@ impl GameplayOwner {
         }
         let stack_limit = item.stack_limit;
         let spawn_position = [position[0] + 0.75, position[1] + 0.25];
-        let (spawned, _) = self
-            .world
-            .spawn_world_drop_item(
-                address,
-                spawn_position,
-                item_content_id,
-                quantity,
-                stack_limit,
-            )
-            .map_err(|error| format!("world-drop spawn failed: {error:?}"))?;
-        self.note_player_ground(spawned);
+        if self.id_pool.is_empty() {
+            return Err("no reserved item id is available".to_string());
+        }
+        self.manifest_reserved_drop(
+            address,
+            spawn_position,
+            item_content_id,
+            quantity,
+            stack_limit,
+            GroundOrigin::PlayerDrop,
+        )
+        .map_err(|error| format!("world-drop spawn failed: {error:?}"))?;
 
         println!(
             "DEV_ITEM_SPAWN spawned connection={connection_id} actor={actor} item={item_content_id} quantity={quantity} address={address} position=({:.3},{:.3})",
@@ -5439,6 +5467,7 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
+        fund_ids(&mut owner, 85_000, 1);
         let item = purgatory_common::ITEM_SMALL_POTION;
         let before = owner.world().iter().count();
 

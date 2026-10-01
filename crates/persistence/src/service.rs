@@ -139,6 +139,18 @@ impl PersistenceService {
         self.commit_durable_leased(command, None)
     }
 
+    /// Reserve a monotonic id range. File mode has no durable allocator and
+    /// does not substitute an epoch id.
+    pub fn reserve_item_ids(&mut self, count: u32) -> Result<Vec<ItemInstanceId>, PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "durable item ids require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.reserve_item_ids(count),
+        }
+    }
+
     pub fn read_item(
         &mut self,
         id: ItemInstanceId,

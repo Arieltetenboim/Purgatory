@@ -99,6 +99,25 @@ pub(crate) fn install_crypto_provider() -> Result<(), String> {
     Ok(())
 }
 
+fn spawn_id_replenish(
+    owner: &mut gameplay::GameplayOwner,
+    persist: &persist::PersistenceHandle,
+    gameplay_tx: &gameplay::GameplayTx,
+) {
+    let Some(count) = owner.begin_id_replenish() else {
+        return;
+    };
+    let persist = persist.clone();
+    let tx = gameplay_tx.clone();
+    tokio::spawn(async move {
+        let ids = persist.reserve_item_ids(count).await;
+        let _ = tx
+            .lifecycle
+            .send(gameplay::LifecycleCmd::InstallReservedIds { ids })
+            .await;
+    });
+}
+
 fn spawn_durable_commits(
     owner: &mut gameplay::GameplayOwner,
     persist: &persist::PersistenceHandle,
@@ -251,6 +270,7 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                 let drain_start = Instant::now();
                 owner.advance_ground_clock(elapsed);
                 owner.drain(&mut life_rx, &mut input_rx);
+                spawn_id_replenish(&mut owner, &persist, &gameplay_tx);
                 spawn_durable_commits(&mut owner, &persist, &gameplay_tx);
                 let input_depth = input_cap.saturating_sub(input_rx.capacity()) as u64;
                 bound.stats.input_queue_current.store(input_depth, Ordering::Relaxed);
@@ -291,6 +311,7 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                     // Drain between ticks so long snapshot work does not starve
                     // awaiting producers on the input handoff.
                     owner.drain(&mut life_rx, &mut input_rx);
+                    spawn_id_replenish(&mut owner, &persist, &gameplay_tx);
                     spawn_durable_commits(&mut owner, &persist, &gameplay_tx);
                     let depth = input_cap.saturating_sub(input_rx.capacity()) as u64;
                     bound.stats.input_queue_current.store(depth, Ordering::Relaxed);

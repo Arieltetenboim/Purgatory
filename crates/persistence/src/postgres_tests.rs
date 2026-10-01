@@ -19,7 +19,8 @@ use crate::{
     ChannelClaim, CharacterItemLocation, DurableCommand, DurableContentRules, DurableEquipmentSlot,
     IDENTITY_FILE_NAME, ItemContentRule, ItemOwner, LearnedAbilityWrite, LeaseAuthority,
     LeaseBarrier, LiveDestination, MoveItem, NarrativeWrite, PersistError, PersistenceService,
-    PersistentCharacterSnapshot, PlaceNewItem, SessionAdmission,
+    PersistentCharacterSnapshot, PlaceNewItem, ReservedItemOutcome, ReservedItemUse,
+    SessionAdmission,
 };
 
 static DB_LOCK: Mutex<()> = Mutex::new(());
@@ -124,6 +125,8 @@ fn revision_conflict_rolls_the_loser_back() {
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         };
         let mut loser = winner.clone();
         loser.key = "loser".into();
@@ -171,6 +174,8 @@ fn same_slot_conflict_rolls_back_the_whole_command() {
                     value: true,
                 }],
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::Conflict { .. }), "{err}");
@@ -213,6 +218,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         let item_id = minted.minted_item_ids[0];
@@ -229,6 +236,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         service
@@ -240,6 +249,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: vec![item_id],
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         drop(service);
@@ -260,6 +271,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert_ne!(again.minted_item_ids[0], item_id);
@@ -279,6 +292,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::Conflict { .. }), "{err}");
@@ -307,6 +322,8 @@ fn lost_reply_retry_returns_the_committed_result() {
                 character_id: entry.character_id,
                 ability_content_id: ContentId::from_raw(40_001),
             }],
+
+            reserved_uses: Vec::new(),
         };
         let first = service.commit_durable(&command).unwrap();
         let second = service.commit_durable(&command).unwrap();
@@ -442,6 +459,8 @@ fn ownership_is_isolated_and_restore_does_not_erase_items() {
                     character_id: alice_entry.character_id,
                     ability_content_id: ContentId::from_raw(40_001),
                 }],
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert!(
@@ -465,6 +484,8 @@ fn ownership_is_isolated_and_restore_does_not_erase_items() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::Conflict { .. }), "{err}");
@@ -537,6 +558,8 @@ fn representative_command_workload_is_measured_not_a_capacity_claim() {
                     retire: Vec::new(),
                     narrative: Vec::new(),
                     learned: Vec::new(),
+
+                    reserved_uses: Vec::new(),
                 })
                 .unwrap();
             revision += 1;
@@ -554,6 +577,8 @@ fn representative_command_workload_is_measured_not_a_capacity_claim() {
                     retire: Vec::new(),
                     narrative: Vec::new(),
                     learned: Vec::new(),
+
+                    reserved_uses: Vec::new(),
                 })
                 .unwrap();
             revision += 1;
@@ -566,6 +591,8 @@ fn representative_command_workload_is_measured_not_a_capacity_claim() {
                     retire: vec![item_id],
                     narrative: Vec::new(),
                     learned: Vec::new(),
+
+                    reserved_uses: Vec::new(),
                 })
                 .unwrap();
             assert_eq!(
@@ -599,6 +626,8 @@ fn moving_a_non_equippable_item_into_weapon_is_rejected() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         let item_id = placed.minted_item_ids[0];
@@ -619,6 +648,8 @@ fn moving_a_non_equippable_item_into_weapon_is_rejected() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::ContentRejected { .. }), "{err}");
@@ -706,6 +737,8 @@ fn gameplay_save_at_the_command_revision_keeps_its_restore() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         // Gameplay loads revision 1, then detach and request_save both emit
@@ -767,6 +800,8 @@ fn lost_commit_reply_and_later_rule_change_return_the_stored_result() {
                 character_id: entry.character_id,
                 ability_content_id: ContentId::from_raw(40_001),
             }],
+
+            reserved_uses: Vec::new(),
         };
         service.hide_next_commit_reply_for_test();
         let hidden = service.commit_durable(&command).unwrap();
@@ -796,6 +831,8 @@ fn lost_commit_reply_and_later_rule_change_return_the_stored_result() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::ContentRejected { .. }), "{err}");
@@ -818,6 +855,8 @@ fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         let left = first.minted_item_ids[0];
@@ -846,6 +885,8 @@ fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert_eq!(
@@ -871,6 +912,8 @@ fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
                 retire: vec![right],
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert_eq!(
@@ -913,6 +956,8 @@ fn distinct_runtime_role_can_commit_and_cannot_create_tables() {
                     value: true,
                 }],
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert_eq!(committed.minted_item_ids.len(), 1);
@@ -994,6 +1039,8 @@ fn later_equal_revision_restore_does_not_replace_the_recorded_one() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         service
@@ -1062,6 +1109,8 @@ fn unusable_connection_at_the_commit_reply_stays_unknown_until_retry() {
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         };
         // Scope: COMMIT has already succeeded. The hook then closes that
         // connection before the reply is read. This does not fail during COMMIT.
@@ -1112,6 +1161,8 @@ fn same_worker_reconnects_after_a_lost_commit_reply() {
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         };
         service.discard_connection_after_next_commit_for_test();
         let lost = service.commit_durable(&command).unwrap_err();
@@ -1188,6 +1239,7 @@ fn mint(id: CharacterId, revision: u64, key: &str) -> DurableCommand {
         retire: Vec::new(),
         narrative: Vec::new(),
         learned: Vec::new(),
+        reserved_uses: Vec::new(),
     }
 }
 
@@ -1367,6 +1419,8 @@ fn admit_restores_owned_items_facts_and_grants_without_runtime_ids() {
                     character_id: id,
                     ability_content_id: ContentId::from_raw(40_001),
                 }],
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         let (lease, restore) = granted(service.admit(&alice, id).unwrap());
@@ -1478,6 +1532,8 @@ fn drop_item(
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         })
         .unwrap();
 }
@@ -1564,6 +1620,8 @@ fn ground_retirement_is_scoped_idempotent_and_does_not_reuse_ids() {
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         });
         assert!(
             matches!(stale, Err(PersistError::Conflict { .. })),
@@ -1904,6 +1962,8 @@ fn expired_channel_cannot_retire_live_ground() {
                 retire: vec![item],
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::Conflict { .. }));
@@ -1911,5 +1971,169 @@ fn expired_channel_cannot_retire_live_ground() {
             service.item(item).unwrap().unwrap().owner,
             ItemOwner::Ground
         );
+    });
+}
+
+fn reserved_inventory(
+    item: ItemInstanceId,
+    owner: CharacterId,
+    revision: u64,
+    key: &str,
+    slot: u16,
+) -> DurableCommand {
+    DurableCommand {
+        key: key.into(),
+        expected_revisions: vec![(owner, revision)],
+        place_new: Vec::new(),
+        moves: Vec::new(),
+        retire: Vec::new(),
+        narrative: Vec::new(),
+        learned: Vec::new(),
+        reserved_uses: vec![ReservedItemUse {
+            item_instance_id: item,
+            definition_content_id: ContentId::from_raw(30_011),
+            quantity: 1,
+            outcome: ReservedItemOutcome::Inventory { owner, slot },
+        }],
+    }
+}
+
+fn reserved_retired(item: ItemInstanceId) -> DurableCommand {
+    DurableCommand {
+        key: format!("retire-{}", item.raw()),
+        expected_revisions: Vec::new(),
+        place_new: Vec::new(),
+        moves: Vec::new(),
+        retire: Vec::new(),
+        narrative: Vec::new(),
+        learned: Vec::new(),
+        reserved_uses: vec![ReservedItemUse {
+            item_instance_id: item,
+            definition_content_id: ContentId::from_raw(30_011),
+            quantity: 1,
+            outcome: ReservedItemOutcome::Retired,
+        }],
+    }
+}
+
+#[test]
+fn file_mode_does_not_substitute_an_epoch_item_id() {
+    let dir = unique_dir();
+    let mut service = PersistenceService::open(&dir).unwrap();
+    let err = service.reserve_item_ids(1).unwrap_err();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        err.to_string().contains("postgresql"),
+        "file mode must refuse to mint a substitute id: {err}"
+    );
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn reserved_ids_stay_disjoint_across_connections_and_restarts() {
+    with_db(|dir, settings| {
+        let mut first = open(dir, settings);
+        let mut second = open(dir, settings);
+        let left = first.reserve_item_ids(4).unwrap();
+        let right = second.reserve_item_ids(4).unwrap();
+        assert_eq!(left.len(), 4);
+        assert_eq!(right.len(), 4);
+        assert!(left.iter().all(|id| !right.contains(id)));
+        assert!(
+            left.windows(2)
+                .all(|pair| pair[0].raw() + 1 == pair[1].raw())
+        );
+        let alice = login("alice");
+        let entry = first.create_character(&alice, "Alice").unwrap();
+        let minted = first
+            .commit_durable(&mint(entry.character_id, 1, "after-reserve"))
+            .unwrap()
+            .minted_item_ids[0];
+        assert!(!left.contains(&minted) && !right.contains(&minted));
+        drop(first);
+        drop(second);
+        let mut restarted = open(dir, settings);
+        let again = restarted.reserve_item_ids(4).unwrap();
+        assert!(
+            again
+                .iter()
+                .all(|id| !left.contains(id) && !right.contains(id))
+        );
+        assert!(!again.contains(&minted));
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn reserved_pickup_keeps_its_id_against_retry_expiry_and_reuse() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = service.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let ids = service.reserve_item_ids(3).unwrap();
+        let pickup = reserved_inventory(ids[0], entry.character_id, 1, "pickup-visible", 0);
+        let first = service.commit_durable(&pickup).unwrap();
+        assert_eq!(first.minted_item_ids, vec![ids[0]]);
+        let retry = service.commit_durable(&pickup).unwrap();
+        assert_eq!(retry, first);
+        assert_eq!(
+            service.item(ids[0]).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+        let competing = reserved_inventory(ids[0], entry.character_id, 2, "pickup-competitor", 1);
+        let err = service.commit_durable(&competing).unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+        let err = service
+            .commit_durable(&DurableCommand {
+                key: format!("retire-{}", ids[0].raw()),
+                expected_revisions: Vec::new(),
+                place_new: Vec::new(),
+                moves: Vec::new(),
+                retire: vec![ids[0]],
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, PersistError::Conflict { .. }), "{err}");
+        assert!(matches!(
+            service.item(ids[0]).unwrap().unwrap().owner,
+            ItemOwner::Character { .. }
+        ));
+
+        let retired = service.commit_durable(&reserved_retired(ids[1])).unwrap();
+        assert_eq!(retired.minted_item_ids, vec![ids[1]]);
+        assert_eq!(
+            service.item(ids[1]).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        let late = reserved_inventory(ids[1], entry.character_id, 2, "pickup-retired", 1);
+        let err = service.commit_durable(&late).unwrap_err();
+        assert!(err.to_string().contains("retired"), "{err}");
+
+        let unreserved = ItemInstanceId::from_raw(9_000_000);
+        let err = service
+            .commit_durable(&reserved_inventory(
+                unreserved,
+                entry.character_id,
+                2,
+                "pickup-unreserved",
+                1,
+            ))
+            .unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(service.item(unreserved).unwrap().is_none());
+        assert!(service.item(ids[2]).unwrap().is_none());
+
+        drop(service);
+        let mut restarted = open(dir, settings);
+        let next = restarted.reserve_item_ids(3).unwrap();
+        assert!(next.iter().all(|id| !ids.contains(id)));
     });
 }

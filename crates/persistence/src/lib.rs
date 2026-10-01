@@ -20,6 +20,7 @@ pub use domain::{
     CharacterItemLocation, CharacterNarrativeState, DURABLE_INVENTORY_CAPACITY, DurableCommand,
     DurableCommandResult, DurableContentRules, DurableEquipmentSlot, ItemContentRule, ItemOwner,
     ItemRecord, LearnedAbilityWrite, LiveDestination, MoveItem, NarrativeWrite, PlaceNewItem,
+    ReservedItemOutcome, ReservedItemUse,
 };
 pub use error::{CreateCharacterRejection, PersistError};
 pub use identity::{

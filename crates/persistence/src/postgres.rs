@@ -22,7 +22,7 @@ use crate::character::{
 use crate::domain::{
     self, CharacterItemLocation, CharacterNarrativeState, DurableCommand, DurableCommandResult,
     DurableContentRules, DurableEquipmentSlot, ItemOwner, ItemRecord, LiveDestination,
-    NarrativeWrite, db_path,
+    NarrativeWrite, ReservedItemOutcome, db_path,
 };
 use crate::error::PersistError;
 use crate::identity::{self, CharacterRosterEntry, IDENTITY_FILE_NAME};
@@ -285,6 +285,47 @@ impl PostgresStore {
                 Err(err)
             }
         }
+    }
+
+    /// Advance `next_item_instance_id` and return that range. A crash after
+    /// this commit wastes unused ids. A crash before it issues none. The same
+    /// counter feeds `place_new`, so the ranges stay disjoint.
+    pub(crate) fn reserve_item_ids(
+        &mut self,
+        count: u32,
+    ) -> Result<Vec<ItemInstanceId>, PersistError> {
+        if count == 0 || count > 256 {
+            return Err(PersistError::corrupt(
+                db_path(),
+                "item id reservation count is invalid",
+            ));
+        }
+        self.ensure_connection()?;
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        tx.execute(
+            "SELECT value FROM durable_meta WHERE key = 'next_item_instance_id' FOR UPDATE",
+            &[],
+        )
+        .map_err(map_sql)?;
+        let start = read_next_item_id(&mut tx)?;
+        let end = start
+            .checked_add(u64::from(count))
+            .ok_or(PersistError::ItemIdsExhausted)?;
+        if start == 0 {
+            return Err(PersistError::ItemIdsExhausted);
+        }
+        tx.execute(
+            "UPDATE durable_meta SET value = $1 WHERE key = 'next_item_instance_id'",
+            &[&end.to_string()],
+        )
+        .map_err(map_sql)?;
+        tx.commit().map_err(|err| {
+            if self.client.is_closed() {
+                self.connection_closed = true;
+            }
+            map_sql(err)
+        })?;
+        Ok((start..end).map(ItemInstanceId::from_raw).collect())
     }
 
     fn note_closed_client(&mut self) {
@@ -1297,10 +1338,24 @@ fn apply_command(
         locked.insert(*id);
     }
     enforce_command_lease(tx, &locked, lease, barrier)?;
-    let ground = ground_stamp(command, channels)?;
-    if let Some((channel_id, generation)) = ground {
+    let needs_ground = command
+        .moves
+        .iter()
+        .any(|item| matches!(item.to, LiveDestination::Ground));
+    let channel = if needs_ground || !command.reserved_uses.is_empty() {
+        Some(require_live_channel(channels)?)
+    } else {
+        None
+    };
+    if let Some((channel_id, generation)) = channel {
         lifecycle::lock_live_channel(tx, channel_id, generation)?;
     }
+    let ground = if needs_ground { channel } else { None };
+    let reserved_ceiling = if command.reserved_uses.is_empty() {
+        None
+    } else {
+        Some(read_next_item_id(tx)?)
+    };
     let mut item_ids: Vec<_> = command
         .moves
         .iter()
@@ -1339,7 +1394,10 @@ fn apply_command(
             )?;
         }
     }
-    let minted = place_items(tx, command)?;
+    let mut minted = place_items(tx, command)?;
+    if let Some(ceiling) = reserved_ceiling {
+        minted.extend(apply_reserved_uses(tx, command, ceiling)?);
+    }
     for item in &command.moves {
         let stamp = match item.to {
             LiveDestination::Ground => ground,
@@ -1536,6 +1594,99 @@ fn place_items(
     Ok(minted)
 }
 
+fn read_next_item_id(tx: &mut postgres::Transaction<'_>) -> Result<u64, PersistError> {
+    let row = tx
+        .query_one(
+            "SELECT value FROM durable_meta WHERE key = 'next_item_instance_id'",
+            &[],
+        )
+        .map_err(map_sql)?;
+    let text: String = row.get(0);
+    text.parse::<u64>()
+        .map_err(|_| PersistError::integrity(db_path(), "next_item_instance_id is corrupt"))
+}
+
+/// Insert ids that were reserved before they became visible. The counter is
+/// not advanced here. An id at or past the counter was never reserved.
+fn apply_reserved_uses(
+    tx: &mut postgres::Transaction<'_>,
+    command: &DurableCommand,
+    ceiling: u64,
+) -> Result<Vec<ItemInstanceId>, PersistError> {
+    let mut written = Vec::new();
+    for reserved in &command.reserved_uses {
+        let raw_id = reserved.item_instance_id.raw();
+        if raw_id == 0 || raw_id >= ceiling {
+            return Err(PersistError::conflict(
+                db_path(),
+                format!("item {raw_id} was not reserved"),
+            ));
+        }
+        let raw = id_bytes(raw_id);
+        let existing = tx
+            .query_opt(
+                "SELECT state FROM item_instances WHERE item_instance_id = $1 FOR UPDATE",
+                &[&raw.as_slice()],
+            )
+            .map_err(map_sql)?;
+        if let Some(row) = existing {
+            let state: String = row.get(0);
+            if state == "retired" {
+                return Err(PersistError::conflict(
+                    db_path(),
+                    format!("item {raw_id} is retired and cannot be reused"),
+                ));
+            }
+            return Err(PersistError::conflict(
+                db_path(),
+                format!("item {raw_id} already exists"),
+            ));
+        }
+        let definition = content_i32(reserved.definition_content_id)?;
+        let quantity = i32::try_from(reserved.quantity).map_err(|_| {
+            PersistError::content(db_path(), "item quantity exceeds signed 32-bit storage")
+        })?;
+        match reserved.outcome {
+            ReservedItemOutcome::Inventory { owner, slot } => {
+                let owner_raw = id_bytes(owner.raw());
+                let inventory = i16::try_from(slot).map_err(|_| {
+                    PersistError::corrupt(db_path(), "inventory slot does not fit storage")
+                })?;
+                tx.execute(
+                    "INSERT INTO item_instances (
+                        item_instance_id, definition_content_id, quantity, state,
+                        owner_character_id, location_kind, inventory_slot, equipment_slot
+                    ) VALUES ($1, $2, $3, 'live', $4, 'inventory', $5, NULL)",
+                    &[
+                        &raw.as_slice() as &(dyn ToSql + Sync),
+                        &definition,
+                        &quantity,
+                        &owner_raw.as_slice(),
+                        &inventory,
+                    ],
+                )
+                .map_err(map_sql)?;
+            }
+            ReservedItemOutcome::Retired => {
+                tx.execute(
+                    "INSERT INTO item_instances (
+                        item_instance_id, definition_content_id, quantity, state,
+                        owner_character_id, location_kind, inventory_slot, equipment_slot
+                    ) VALUES ($1, $2, $3, 'retired', NULL, NULL, NULL, NULL)",
+                    &[
+                        &raw.as_slice() as &(dyn ToSql + Sync),
+                        &definition,
+                        &quantity,
+                    ],
+                )
+                .map_err(map_sql)?;
+            }
+        }
+        written.push(reserved.item_instance_id);
+    }
+    Ok(written)
+}
+
 struct LocationSql {
     kind: &'static str,
     inventory: Option<i16>,
@@ -1557,21 +1708,13 @@ fn location_sql(location: CharacterItemLocation) -> LocationSql {
     }
 }
 
-fn ground_stamp(
-    command: &DurableCommand,
+fn require_live_channel(
     channels: &std::collections::BTreeMap<i64, u64>,
-) -> Result<Option<(i64, u64)>, PersistError> {
-    let needs_ground = command
-        .moves
-        .iter()
-        .any(|item| matches!(item.to, LiveDestination::Ground));
-    if !needs_ground {
-        return Ok(None);
-    }
+) -> Result<(i64, u64), PersistError> {
     match channels.len() {
         1 => {
             let (channel_id, generation) = channels.iter().next().expect("one channel");
-            Ok(Some((*channel_id, *generation)))
+            Ok((*channel_id, *generation))
         }
         0 => Err(PersistError::conflict(
             db_path(),
@@ -2586,6 +2729,24 @@ fn canonical_request(command: &DurableCommand) -> Result<String, PersistError> {
             .iter()
             .map(|grant| (grant.character_id.raw(), grant.ability_content_id.token()))
             .collect(),
+        reserved_uses: command
+            .reserved_uses
+            .iter()
+            .map(|reserved| CanonReserved {
+                item_instance_id: reserved.item_instance_id.raw(),
+                definition: reserved.definition_content_id.token(),
+                quantity: reserved.quantity,
+                outcome: match reserved.outcome {
+                    ReservedItemOutcome::Inventory { owner, slot } => {
+                        CanonReservedOutcome::Inventory {
+                            owner: owner.raw(),
+                            slot,
+                        }
+                    }
+                    ReservedItemOutcome::Retired => CanonReservedOutcome::Retired,
+                },
+            })
+            .collect(),
     };
     serde_json::to_string(&canon)
         .map_err(|err| PersistError::storage(format!("command encoding failed: {err}")))
@@ -2646,6 +2807,23 @@ struct CanonCommand {
     retire: Vec<u64>,
     narrative: Vec<CanonNarrative>,
     learned: Vec<(u64, u64)>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reserved_uses: Vec<CanonReserved>,
+}
+
+#[derive(Serialize)]
+struct CanonReserved {
+    item_instance_id: u64,
+    definition: u64,
+    quantity: u32,
+    outcome: CanonReservedOutcome,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CanonReservedOutcome {
+    Inventory { owner: u64, slot: u16 },
+    Retired,
 }
 
 #[derive(Serialize)]
