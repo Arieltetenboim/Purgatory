@@ -56,9 +56,9 @@ The server listens on `127.0.0.1:5001` by default.
 
 To run the current Phase 12 gameplay with the local PostgreSQL database,
 follow [the Windows database runbook](docs/POSTGRESQL_LOCAL_RUN.md). It covers
-the one-time import, role permissions, connection settings, Developer Hub,
-and pgAdmin verification. [Moving the database to a dedicated host](docs/POSTGRESQL_HOST_MOVE.md)
-has a separate procedure.
+the chosen fresh development start, role permissions, connection settings,
+Developer Hub, and pgAdmin verification. [Moving the database to a dedicated
+host](docs/POSTGRESQL_HOST_MOVE.md) has a separate procedure.
 
 FORGE W1.3A Map Lab can be launched directly with:
 
@@ -98,11 +98,12 @@ does not parse TMX/TSX at runtime.
 - **Backquote / `~`** toggles the debug overlay.
 - The client starts on the Connection Frontend and does not auto-connect in normal development builds.
 - Default local server address: `127.0.0.1:5001`.
-- The data directory lives outside the repository. On Windows the direct
-  server defaults to `%LOCALAPPDATA%\Purgatory\` unless overridden;
-  Developer Hub uses its own default. After PostgreSQL cutover, the files
-  are historical import input and the directory holds the writer marker.
-  Choose one directory explicitly before the first database start.
+- The current server still uses a data directory for its legacy file mode
+  and PostgreSQL cutover marker. On Windows the direct server defaults to
+  `%LOCALAPPDATA%\Purgatory\` unless overridden; Developer Hub uses its own
+  default. For the planned development reset, use a new empty directory to
+  avoid importing old files. After cutover, player state lives in PostgreSQL;
+  the directory is a compatibility dependency of this build.
 - `Graphic/` is not a general runtime asset scan. Visual assets are integrated deliberately through the relevant runtime paths.
 
 ### Core controls

@@ -10,9 +10,12 @@ it. Adding a host or replica does not create another world or another writer.
 
 This is a **planned move procedure**, not a claim that production failover,
 backup recovery, or Internet exposure has been tested. The first local
-connection and development import are described in
+connection and the chosen **fresh development reset** are described in
 [`POSTGRESQL_LOCAL_RUN.md`](POSTGRESQL_LOCAL_RUN.md). The continuity rules are
 in [`PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md).
+This initial reset applies only to the first development cutover. **A later
+move from local PostgreSQL to another database host preserves all committed
+characters and items; it does not start a new world or reset player data.**
 
 ## Before selecting the destination
 
@@ -76,11 +79,13 @@ in [`PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md`](PHASE_12_POSTGRESQL_CONTINUITY
   transactions.
    A count alone cannot prove ownership or the recovery point. Rehearse
    restoration of a selected character and a retry of a stored command key.
-5. Configure the **same game server** with new runtime and migration URLs,
-   the matching schema name, and its existing `PURGATORY_DATA_DIR` containing
-   `durable_writer.json`. If the game server also moves to a new machine,
-   preserve the matching marker through a controlled data-root move; do not
-   create an unrelated marker or silently start a fresh roster. Start one
+5. Configure the **same game server** with new runtime and migration URLs and
+   the matching schema name. In the current build only, startup also requires
+   its existing `PURGATORY_DATA_DIR` containing `durable_writer.json`; this
+   is a legacy cutover fence, not the player-data store. If the game server
+   also moves to a new machine before database-only bootstrap is implemented,
+   preserve the matching marker through a controlled move. Do not create an
+   unrelated marker or silently start a fresh roster. Start one
    server, verify the migration check, channel claim, ground retirement,
    normal-client login/reconnect, item ownership, and logs, and only then
    reopen admission.

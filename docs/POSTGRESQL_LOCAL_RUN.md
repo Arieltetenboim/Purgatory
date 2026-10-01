@@ -14,37 +14,51 @@ Use the actual role and database names shown in pgAdmin: PostgreSQL preserves
 the case of a name created with quotes. **Do not** run the ignored integration
 tests against `Purgatory_dev`; they require a disposable test database.
 
-## 1. Choose the source data before the first database start
+**Why does this guide mention a directory?** The current server still has a
+legacy file-to-PostgreSQL import path. It scans `PURGATORY_DATA_DIR` on first
+open and writes `durable_writer.json` there to fence its old file writer.
+Characters, items, commands, and leases are stored in PostgreSQL after the
+cutover. The directory is a compatibility dependency of this build, not a
+second game database or part of the desired fresh-start design. A database-only
+bootstrap that removes this dependency requires a separate code change.
 
-Stop every running game server. Decide which existing development characters
-to import. A direct server normally uses `%LOCALAPPDATA%\Purgatory`, while a
-server launched by Developer Hub normally uses
-`logs/dev-tools/hub_server_persist`. Inspect both locations before choosing.
-From the repository root you can compare file names and dates without
-printing character data:
+## 1. Start a new development roster, without importing old characters
 
-```powershell
-Get-ChildItem "$env:LOCALAPPDATA\Purgatory" -ErrorAction SilentlyContinue |
-    Select-Object Name, Length, LastWriteTime
-Get-ChildItem '.\logs\dev-tools\hub_server_persist' -ErrorAction SilentlyContinue |
-    Select-Object Name, Length, LastWriteTime
-```
+The chosen transition to PostgreSQL **resets development game data**. Stop
+every running game server. **For the current implementation**, use both an
+empty directory to avoid the legacy import and a new empty application
+schema. The existing `Purgatory_dev` database can stay if it contains no
+active PURGATORY schema at the chosen name. If
+`purgatory_game` already contains game tables, choose a different new,
+lowercase schema name and substitute it in the connection settings and
+verification queries below. Never point a new empty directory at an
+already-cut-over schema: the missing `durable_writer.json` marker is correctly
+rejected. Do not run two servers against old and new schemas at once.
 
-Set `PURGATORY_DATA_DIR` to the chosen directory explicitly, and keep that
-setting the same for both launch methods. Back up the chosen directory before
-the first database start; do not edit it during import. An empty directory
-starts an empty roster. There is no automatic merge of two different rosters.
+Set `PURGATORY_DATA_DIR` explicitly for both direct and Developer Hub starts
+while the legacy bootstrap is still present. For example, choose
+`%LOCALAPPDATA%\Purgatory-postgres-fresh` **only if it does not exist or is
+empty**. A direct file-mode server normally uses
+`%LOCALAPPDATA%\Purgatory`, while Developer Hub normally uses
+`logs/dev-tools/hub_server_persist`; neither old directory should be reused
+for this reset. The server sees no `identity.json` or `char_*.json` in the new
+directory and records a fresh, empty roster. There is no import or merge.
+After a confirmed fresh start, create new characters through the game.
 
-The first PostgreSQL open writes `durable_writer.json` **before** its import
-commits. A failed import may therefore leave this marker for a safe retry; it
-does not by itself prove import success. After cutover, the character JSON
-(JavaScript Object Notation) files are historical input, not a second writer.
-Later starts against a committed database require its corresponding
-marker; pointing the server at another, marker-free directory fails closed.
-Do not delete or invent a marker to bypass this check. If the database was
-already initialized, retain the same data directory and skip the one-time
-import preparation. The exact supported input and failure rules are in
-[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md#cutover).
+Preserve the old development data and any previous trial schema until the
+empty start and new-character flow have been verified. Then archive and
+remove the old development data as a **separate, deliberate cleanup**. No
+files, rows, or schemas are deleted by this guide. This reset is permitted
+because these are development records, not production player accounts.
+Once the new schema contains real game progress, do not repeat this reset
+or switch to another empty schema to work around a connection error.
+
+On first open the server writes `durable_writer.json` into the **new** data
+directory before its database transaction commits. A marker alone does not
+prove that initialization succeeded. Later starts require the matching
+marker and committed cutover row. Do not delete or invent the marker. The
+historical import behavior, if ever needed for a different environment, is
+documented in [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md#cutover).
 
 ## 2. Check the local service and roles in pgAdmin
 
@@ -70,6 +84,10 @@ import preparation. The exact supported input and failure rules are in
    connected as an administrator, run the following grants. They allow the
    migrator to create the dedicated `purgatory_game` schema; the server's
    migration code grants the runtime role access to its tables afterward.
+   In pgAdmin, expand **Purgatory_dev → Schemas** and confirm the chosen
+   schema name is not already an initialized game schema. If it is, select
+   another fresh name before proceeding; do not clear existing rows to make
+   this example work.
 
    ```sql
    GRANT CONNECT ON DATABASE "Purgatory_dev" TO purgatory_dev, purgatory_migrator;
@@ -110,11 +128,13 @@ $migratorPassword = Read-EncodedPassword 'purgatory_migrator password'
 $env:PURGATORY_DATABASE_URL = "postgresql://purgatory_dev:$runtimePassword@127.0.0.1:5432/Purgatory_dev?sslmode=disable"
 $env:PURGATORY_DATABASE_MIGRATION_URL = "postgresql://purgatory_migrator:$migratorPassword@127.0.0.1:5432/Purgatory_dev?sslmode=disable"
 $env:PURGATORY_DATABASE_SCHEMA = 'purgatory_game'
-$env:PURGATORY_DATA_DIR = 'C:\path\to\the\chosen\Purgatory-data-directory'
+$env:PURGATORY_DATA_DIR = Join-Path $env:LOCALAPPDATA 'Purgatory-postgres-fresh'
 Remove-Variable runtimePassword, migratorPassword, secure -ErrorAction SilentlyContinue
 ```
 
-Replace the **data directory** placeholder with the path chosen in step 1.
+Before starting, confirm the path in `PURGATORY_DATA_DIR` does not exist or
+is empty. If the schema name `purgatory_game` was already initialized, replace
+it consistently here and in the pgAdmin queries below with the new name.
 `sslmode=disable` is only for this loopback development connection. Never
 reuse these local connection URLs (Uniform Resource Locators) for a remote
 host. On later launches, keep the same database, schema, data directory, and
@@ -136,9 +156,10 @@ does not need database credentials.
 
 On the first open, the migration login applies versioned migrations
 `0001`–`0003` to `purgatory_game`, grants the runtime role its row privileges,
-and the worker imports the supported development roster once. On subsequent
-opens, it verifies migration history and uses the existing rows. A failed
-connection or import is an error, not permission to silently return to the
+and the worker commits a fresh empty roster, because the new directory has
+no identity files. On subsequent opens, it verifies migration history and
+uses the existing rows. A failed connection or initialization is an error,
+not permission to silently return to the
 file writer. The server claims its channel generation before admitting
 gameplay. Visible collectible developer spawns in 12C require this PostgreSQL
 allocator for item identifiers (IDs); they do not appear in file mode.
@@ -160,9 +181,9 @@ WHERE name IN ('fsync', 'synchronous_commit', 'full_page_writes');
 ```
 
 Expect migration versions `1`, `2`, and `3` on this branch. Compare character
-identities and counts with the **unchanged chosen source directory** after a
-first import, as required by the cutover guide. An empty new roster can
-legitimately report zero characters. Check the game-server log for a
+count immediately after initialization: it should be **zero** before a new
+character is created, and then increase only as new characters are created.
+The `cutover` value should say `fresh`. Check the game-server log for a
 persistence-open or channel-claim error before interpreting tables as a
 successful gameplay start. `pgAdmin` may show rows only after refreshing.
 It does not itself make the server use the database.
@@ -174,7 +195,7 @@ It does not itself make the server use the database.
 | Password authentication failed | Exact role spelling, the password of **that role**, database name/case, and the pgAdmin server host/port. Do not change `pg_hba.conf` to `trust`. |
 | Permission denied for schema/table | The two URLs must name different roles. Check database `CONNECT`, migrator `CREATE`, schema ownership, and whether the server applied the runtime grants. Do not make the runtime role a superuser. |
 | No `purgatory_game` schema | The Hub may have started before the environment was set, the server may still be in file mode, or migration may have failed. Check its log and the environment in the launching PowerShell; do not paste URLs into logs. |
-| Missing `durable_writer.json` / cutover mismatch | Use the same data directory that performed the first import. Do not copy a marker from an unrelated database or delete the database's cutover row. |
+| Missing `durable_writer.json` / cutover mismatch | The current build requires the same directory used at first PostgreSQL start, even for a fresh roster. Do not copy a marker from an unrelated database or delete the database's cutover row. |
 | Another channel generation still active | Stop the other server cleanly; after a crash, wait for the lease expiry as described in [`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md). Do not force a second active process. |
 | Range empty; collectible spawn absent | Verify PostgreSQL mode, live channel claim, and persistence-worker health. The simulation tick does not allocate IDs or fall back to epoch IDs. |
 
