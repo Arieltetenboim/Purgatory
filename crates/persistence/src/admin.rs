@@ -284,7 +284,7 @@ pub fn create(
         && login.as_str() == postgres::DEVELOPMENT_PROBE_LOGIN
     {
         return Err(fail_before_change(PersistError::storage(
-            "the reserved readiness login is created with the empty world",
+            "the readiness probe is not a player account",
         )));
     }
     let mut maintenance = connect(&request.maintenance_url).map_err(fail_before_change)?;
@@ -416,7 +416,7 @@ pub fn add_user(
     let _target = request.validate().map_err(fail_before_change)?;
     if login.as_str() == postgres::DEVELOPMENT_PROBE_LOGIN {
         return Err(fail_before_change(PersistError::storage(
-            "the reserved readiness login already belongs to the empty world",
+            "the readiness probe is not a player account",
         )));
     }
     runtime_ready(request)?;
@@ -653,7 +653,7 @@ mod tests {
             maintenance_url: maintenance.clone(),
             runtime_url: runtime_url.clone(),
             migration_url,
-            schema: "purgatory_game".into(),
+            schema: "p12a_admin".into(),
             deployment_id: "p12a-test".into(),
             audience: AdminAudience::DisposableTest,
         };
@@ -661,7 +661,7 @@ mod tests {
         assert_eq!(outcome, AdminOutcome::Created);
         let again = create(&request, Some(&login("dev.other"))).expect("second create");
         assert_eq!(again, AdminOutcome::AlreadyInitialized);
-        let settings = crate::PostgresSettings::for_tests(runtime_url, "purgatory_game".into())
+        let settings = crate::PostgresSettings::for_tests(runtime_url, "p12a_admin".into())
             .unwrap()
             .with_deployment_id("p12a-test".into())
             .unwrap();

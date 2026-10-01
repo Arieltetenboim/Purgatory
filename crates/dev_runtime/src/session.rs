@@ -93,6 +93,8 @@ pub struct HubSession<B: ProcessBackend, H: HealthSource> {
     database_follow_status: bool,
     database_shutdown_deadline: Option<Instant>,
     database_reset_confirm: Option<String>,
+    database_shutdown_log_offset: u64,
+    database_shutdown_pid: Option<u32>,
 }
 
 pub(crate) struct BuildSlot {
@@ -162,6 +164,62 @@ pub struct HubSnapshot {
     pub database_status: String,
     pub database_detail: String,
     pub database_busy: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShutdownVerdict {
+    Clean,
+    Failed,
+}
+
+/// A clean shutdown is a drained line for this process with zero save failures.
+/// Lines from an earlier run, a different pid, or a non-zero failure count do
+/// not authorize Reset.
+fn current_shutdown_verdict(tail: &str, pid: u32) -> Option<ShutdownVerdict> {
+    let pid_token = format!("pid={pid}");
+    let mut clean = false;
+    let mut failed = false;
+    for line in tail.lines() {
+        if !line.split_whitespace().any(|word| word == pid_token) {
+            continue;
+        }
+        if line.contains("PURGATORY persistence shutdown drained") {
+            let failures = line
+                .split("save_failures=")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next());
+            if failures == Some("0") {
+                clean = true;
+            } else {
+                failed = true;
+            }
+        } else if line.contains("PURGATORY persistence shutdown")
+            || line.contains("PURGATORY persistence worker closed")
+        {
+            failed = true;
+        }
+    }
+    if failed {
+        Some(ShutdownVerdict::Failed)
+    } else if clean {
+        Some(ShutdownVerdict::Clean)
+    } else {
+        None
+    }
+}
+
+fn read_log_tail(path: &std::path::Path, offset: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return String::new(),
+    };
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return String::new();
+    }
+    let mut tail = String::new();
+    let _ = file.read_to_string(&mut tail);
+    tail
 }
 
 impl LiveHubSession {
@@ -248,6 +306,8 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             database_follow_status: false,
             database_shutdown_deadline: None,
             database_reset_confirm: None,
+            database_shutdown_log_offset: 0,
+            database_shutdown_pid: None,
         };
         session.log_hub(&format!("---- {} ----", session.identity.display()));
         session.startup_recovery(now);
@@ -1999,6 +2059,11 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 self.log_database_detail();
                 return CommandOutcome::Ignored;
             }
+            let log_path = self.paths.dev_log_dir().join("server.log");
+            self.database_shutdown_log_offset = std::fs::metadata(&log_path)
+                .map(|meta| meta.len())
+                .unwrap_or(0);
+            self.database_shutdown_pid = self.tracked.as_ref().map(|process| process.pid);
             self.database_shutdown_deadline = Some(now + std::time::Duration::from_secs(8));
             self.database_reset_confirm = Some(confirm);
             self.database_detail = "Waiting for the game server to shut down".to_string();
@@ -2059,12 +2124,20 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
     }
 
     fn poll_database(&mut self, now: Instant) {
-        if let Some(deadline) = self.database_shutdown_deadline {
-            let drained = std::fs::read_to_string(self.paths.dev_log_dir().join("server.log"))
-                .unwrap_or_default()
-                .contains("PURGATORY persistence shutdown drained");
-            if !self.server_alive() && drained {
+        if self.database_shutdown_deadline.is_some() {
+            let pid = self.database_shutdown_pid;
+            let tail = read_log_tail(
+                &self.paths.dev_log_dir().join("server.log"),
+                self.database_shutdown_log_offset,
+            );
+            let verdict = pid.and_then(|pid| current_shutdown_verdict(&tail, pid));
+            let alive = self.server_alive();
+            let deadline = self.database_shutdown_deadline.expect("deadline");
+            let clean = verdict == Some(ShutdownVerdict::Clean) && !alive;
+            let failed = verdict == Some(ShutdownVerdict::Failed) || (!alive && verdict.is_none());
+            if clean {
                 self.database_shutdown_deadline = None;
+                self.database_shutdown_pid = None;
                 let confirm = self.database_reset_confirm.take().unwrap_or_default();
                 self.spawn_database_admin(
                     &[
@@ -2074,9 +2147,10 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                     ],
                     true,
                 );
-            } else if now >= deadline {
+            } else if failed || now >= deadline {
                 self.database_shutdown_deadline = None;
                 self.database_reset_confirm = None;
+                self.database_shutdown_pid = None;
                 self.database_status = "error".to_string();
                 self.database_detail =
                     "Reset refused: the game server did not shut down cleanly".to_string();
@@ -3476,6 +3550,72 @@ mod tests {
             ProcessOrigin::Adopted
         );
         assert_eq!(session.tracked.as_ref().unwrap().pid, 50);
+    }
+
+    #[test]
+    fn reset_ignores_an_old_drained_line_after_an_unclean_exit() {
+        let mut backend = FakeProcessBackend::new();
+        backend.probe_exit = Some(0);
+        let (mut session, now) = harness("reset-old-drain", backend, FakeHealthSource::none());
+        let now = drive_to_ready(&mut session, now);
+        let log = session.paths.dev_log_dir().join("server.log");
+        std::fs::write(
+            &log,
+            "PURGATORY persistence shutdown drained pid=1 save_failures=0\n",
+        )
+        .unwrap();
+        let pid = session.tracked.as_ref().expect("server").pid;
+        assert_ne!(pid, 1);
+        session.command(
+            HubCommand::DatabaseReset {
+                confirm: "Purgatory_dev".into(),
+            },
+            now,
+        );
+        session.backend.alive.remove(&pid);
+        session.tick(now + LIFECYCLE_FAST);
+        assert_eq!(session.database_status, "error");
+        assert!(
+            session
+                .database_detail
+                .contains("did not shut down cleanly"),
+            "{}",
+            session.database_detail
+        );
+        assert!(
+            session
+                .backend
+                .spawn_log
+                .iter()
+                .all(|line| !line.contains("--database-reset")),
+            "{:?}",
+            session.backend.spawn_log
+        );
+    }
+
+    #[test]
+    fn shutdown_verdict_requires_this_pid_and_zero_save_failures() {
+        let old = "PURGATORY persistence shutdown drained pid=1 save_failures=0\n";
+        assert_eq!(current_shutdown_verdict(old, 50), None);
+        assert_eq!(
+            current_shutdown_verdict(
+                "PURGATORY persistence shutdown drained pid=50 save_failures=2\n",
+                50
+            ),
+            Some(ShutdownVerdict::Failed)
+        );
+        assert_eq!(
+            current_shutdown_verdict(
+                "PURGATORY persistence shutdown timed out pid=50 save_failures=0\n",
+                50
+            ),
+            Some(ShutdownVerdict::Failed)
+        );
+        let tail = format!("{old}PURGATORY persistence shutdown drained pid=50 save_failures=0\n");
+        assert_eq!(
+            current_shutdown_verdict(&tail, 50),
+            Some(ShutdownVerdict::Clean)
+        );
     }
 
     #[test]

@@ -101,6 +101,11 @@ impl PersistenceService {
     /// Insert a development allowlist row. The restricted runtime role cannot
     /// do this; database administration uses the migration connection.
     pub fn provision_dev_user(&mut self, login: &DevLogin) -> Result<bool, PersistError> {
+        if login.as_str() == crate::postgres::DEVELOPMENT_PROBE_LOGIN {
+            return Err(PersistError::storage(
+                "the readiness probe is not a player account",
+            ));
+        }
         match &mut self.backend {
             Backend::Postgres(store) => store.provision_dev_user(login),
             Backend::Fixture(store) => store.provision_dev_user(login),
@@ -108,6 +113,9 @@ impl PersistenceService {
     }
 
     pub fn user_registered(&mut self, login: &DevLogin) -> Result<bool, PersistError> {
+        if login.as_str() == crate::postgres::DEVELOPMENT_PROBE_LOGIN {
+            return Ok(false);
+        }
         match &mut self.backend {
             Backend::Postgres(store) => store.user_registered(login),
             Backend::Fixture(store) => Ok(store.user_registered(login)),
@@ -409,6 +417,11 @@ impl PersistenceService {
         login: &DevLogin,
         name: &str,
     ) -> Result<CharacterRosterEntry, PersistError> {
+        if login.as_str() == crate::postgres::DEVELOPMENT_PROBE_LOGIN {
+            return Err(PersistError::CreateRejected(
+                crate::error::CreateCharacterRejection::Unregistered,
+            ));
+        }
         match &mut self.backend {
             Backend::Postgres(store) => store.create_character(login, name),
             Backend::Fixture(store) => store.create_character(login, name),

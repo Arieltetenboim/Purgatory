@@ -811,13 +811,28 @@ fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
 fn distinct_runtime_role_can_commit_and_cannot_create_tables() {
     with_db(|_dir, settings| {
         let roles = postgres::provision_ephemeral_roles(settings).expect("distinct test roles");
-        if let Err(err) = PersistenceService::bootstrap_postgresql(&roles.runtime) {
-            panic!("runtime role bootstrap failed: {err}");
+        PersistenceService::bootstrap_postgresql(&roles.runtime).expect("migration-role bootstrap");
+        let migration = PostgresSettings {
+            url: roles.runtime.migration_url.clone().expect("migration url"),
+            migration_url: None,
+            schema: roles.runtime.schema.clone(),
+            deployment_id: roles.runtime.deployment_id.clone(),
+        };
+        {
+            let mut admin = PersistenceService::open_postgresql(&migration).expect("migrator");
+            assert!(admin.provision_dev_user(&login("alice")).unwrap());
         }
         let mut service = PersistenceService::open_postgresql(&roles.runtime).unwrap();
         service.set_durable_content_rules(rules());
-        allow_players(&mut service);
         let alice = login("alice");
+        let denied = service.provision_dev_user(&login("bob")).unwrap_err();
+        assert!(
+            denied
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("permission denied"),
+            "{denied}"
+        );
         let entry = service.create_character(&alice, "Alice").unwrap();
         let committed = service
             .commit_durable(&DurableCommand {
@@ -838,6 +853,41 @@ fn distinct_runtime_role_can_commit_and_cannot_create_tables() {
             .unwrap();
         assert_eq!(committed.minted_item_ids.len(), 1);
         assert!(postgres::runtime_cannot_create_table(&roles.runtime).unwrap());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn fresh_database_admits_only_provisioned_users() {
+    with_db(|_dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        let probe = login("dev.probe");
+        assert!(!service.user_registered(&probe).unwrap());
+        let err = service.provision_dev_user(&probe).unwrap_err();
+        assert!(err.to_string().contains("not a player account"), "{err}");
+        let created = service.create_character(&probe, "Probe").unwrap_err();
+        assert!(
+            matches!(
+                created,
+                PersistError::CreateRejected(crate::error::CreateCharacterRejection::Unregistered)
+            ),
+            "{created}"
+        );
+        assert_eq!(postgres::count_table(settings, "dev_users").unwrap(), 0);
+        let player = login("dev.player");
+        assert!(!service.user_registered(&player).unwrap());
+        let rejected = service.create_character(&player, "Player").unwrap_err();
+        assert!(
+            matches!(
+                rejected,
+                PersistError::CreateRejected(crate::error::CreateCharacterRejection::Unregistered)
+            ),
+            "{rejected}"
+        );
+        assert!(service.provision_dev_user(&player).unwrap());
+        assert!(service.create_character(&player, "Player").is_ok());
+        assert_eq!(postgres::count_table(settings, "dev_users").unwrap(), 1);
     });
 }
 

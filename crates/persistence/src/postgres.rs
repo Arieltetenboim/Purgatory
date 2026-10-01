@@ -35,8 +35,8 @@ const MIGRATIONS: &[(i32, &str)] = &[
     ),
 ];
 const IMPORT_LOCK_KEY: i64 = 0x120A_0001;
-/// Reserved readiness login created with an empty world. It is not a player
-/// account and it is not created during Hello.
+/// Reserved readiness login. It is not inserted into `dev_users` and it is not
+/// a player account.
 pub(crate) const DEVELOPMENT_PROBE_LOGIN: &str = "dev.probe";
 const RESERVED_DATABASES: &[&str] = &["purgatory_dev", "postgres", "template0", "template1"];
 
@@ -209,7 +209,11 @@ impl PostgresStore {
     pub(crate) fn bootstrap(settings: &PostgresSettings) -> Result<(), PersistError> {
         validate_deployment_id(&settings.deployment_id)?;
         let mut client = connect_prepared(settings, true)?;
-        bootstrap_empty(&mut client, &settings.deployment_id)?;
+        // A distinct migration role already initialized the empty world on its
+        // own connection. The runtime role cannot insert development users.
+        if settings.migration_url.is_none() {
+            bootstrap_empty(&mut client, &settings.deployment_id)?;
+        }
         Ok(())
     }
 
@@ -1119,6 +1123,7 @@ fn connect_prepared(settings: &PostgresSettings, create: bool) -> Result<Client,
             }
             grant_runtime(&mut migrator, &settings.schema, &runtime_user)?;
             warn_durability(&mut migrator);
+            bootstrap_empty(&mut migrator, &settings.deployment_id)?;
         }
         let mut client = connect_url(&settings.url)?;
         prepare_schema(
@@ -1231,11 +1236,6 @@ pub(crate) fn bootstrap_empty(
                 ('deployment_id', $1),
                 ('cutover', 'fresh')",
             &[&deployment_id],
-        )
-        .map_err(map_sql)?;
-        tx.execute(
-            "INSERT INTO dev_users (login) VALUES ($1)",
-            &[&DEVELOPMENT_PROBE_LOGIN],
         )
         .map_err(map_sql)?;
         Ok(())

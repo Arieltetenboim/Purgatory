@@ -15,62 +15,59 @@ the case of a name created with quotes. **Do not** run the ignored integration
 tests against `Purgatory_dev`; they require a disposable test database.
 
 Game data is stored only in PostgreSQL. Server startup does not create the
-database, apply migrations, or read `identity.json`, `char_*.json`, or
-`durable_writer.json`. Those file instructions are superseded (ADR-0073).
-Importing an old development save is not a supported setup step.
+database, apply migrations, or read old development saves. Historical file
+import is superseded (ADR-0073) and is not a setup step.
 
-## 1. Create the local database from Developer Hub
+## 1. Create the database, add a user, start the server, open the client
 
-The pinned target is the physical database `Purgatory_dev` on `127.0.0.1`.
-Hub Create, when that database is absent, creates it, applies the versioned
-migrations, grants the runtime role, and inserts the reserved readiness login
-`dev.probe` plus the first development username you type. That user starts
-with zero characters. Create does not overwrite a database that is already
-initialized; add another username with Add Development User instead.
+Do these steps in order. The only database this guide creates or deletes is
+the pinned local database `Purgatory_dev` on `127.0.0.1`.
+
+1. Create the roles in section 2 if they do not exist, set the environment in
+   section 3, then launch `./DEV_HUB.BAT` from that same window so Hub
+   inherits the three database URLs.
+2. In the database section, type the first development username and press
+   **Create**. When `Purgatory_dev` is absent, Create creates that physical
+   database, applies the versioned migrations, grants the runtime role, and
+   inserts only the username you typed. That user starts with zero characters.
+   `dev.probe` is the readiness probe. It is not a row in `dev_users` and it
+   cannot create a character. Create does not overwrite a database that is
+   already initialized.
+3. Press **Start Server**. Startup opens the existing database. It does not
+   create, reset, or migrate it.
+4. Open the normal client and enter that same username. The roster is empty
+   until you create a character in the client. An unregistered username is
+   rejected on the login screen. Typing `dev.probe` is rejected the same way.
+
+Add another development user later with **Add Development User**. That does
+not reset the database.
 
 In pgAdmin the tables are under `Purgatory_dev` → Schemas → `purgatory_game`
-→ Tables. Expect `schema_migrations`, `durable_meta`, `dev_users`,
-`characters`, `item_instances`, `character_leases`, `channel_generations`,
-`item_id_reservations`, and the narrative tables from the migrations.
+→ Tables. After Create, expect `schema_migrations`, `durable_meta`,
+`dev_users`, `characters`, `item_instances`, `character_leases`,
+`channel_generations`, `item_id_reservations`, and the narrative tables.
+`dev_users` contains only usernames you provisioned. `characters` stays empty
+until the client creates one.
 
-Reset asks you to type `Purgatory_dev`. It stops the Hub-managed server,
-waits for a drained persistence shutdown, drops only that database, and
-creates a new empty world. Users, characters, items, leases, command results,
-and reservations are deleted. If recreation fails after the drop, Hub reports
-the database as absent and does not start the server.
+**Reset** asks you to type `Purgatory_dev`. It stops the Hub-managed server
+and continues only after that process reports a drained shutdown with zero
+save failures. It then deletes that database and creates a new empty one.
+Users, characters, items, leases, command results, and reservations are gone.
+An old "shutdown drained" line in `server.log` does not authorize the delete.
+If recreation fails after the drop, Hub reports the database as absent and
+does not start the server.
 
-The historical `import_legacy_postgresql` path and
-`--bootstrap-postgresql` are superseded. Do not use them as setup steps.
-
-Bootstrap does not read the old `%LOCALAPPDATA%\Purgatory` directory or the
-Developer Hub directory `logs/dev-tools/hub_server_persist`. Old
-`identity.json` and `char_*.json` records are not imported. After a confirmed
-fresh start, create new characters through the game.
-
-Preserve the old development files and any previous trial schema until the
-empty start and new-character flow have been verified. Then archive and
-remove the old development data as a **separate, deliberate cleanup**. No
-files, rows, or schemas are deleted by this guide. This reset is permitted
-because these are development records, not production player accounts.
-Once the new schema contains real game progress, do not run bootstrap again.
-A second bootstrap fails and does not erase characters or items. Do not switch
-to another empty schema to work around a connection error.
-
-Choose one deployment id, for example `purgatory-dev`, and keep it. It is 1
-to 64 characters: ASCII letters, digits, `.`, `_`, and `-`. Bootstrap stores
-it. A later start with a different id, URL, or schema fails closed. The
-historical import, if ever needed for a different environment, is
-`import_legacy_postgresql` and is not this startup path. Its older steps are
-in [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md#cutover).
+The deployment id in the example is `purgatory-dev`. Keep the same id, URL,
+and schema on later starts. A different id, URL, or schema fails closed.
 
 ## 2. Check the local service and roles in pgAdmin
 
 1. In Windows PowerShell, run `Get-Service postgresql-x64-18`. Its status
    should be `Running`. If this installation has a different service name,
    find it with `Get-Service 'postgresql*'`.
-2. Open pgAdmin. Expand **Servers → PostgreSQL 18 → Databases** and confirm
-   `Purgatory_dev` exists. If the server registration has a different label,
-   select the registration that connects to `127.0.0.1:5432`.
+2. Open pgAdmin and select the server registration that connects to
+   `127.0.0.1:5432`. `Purgatory_dev` appears under **Databases** after Create
+   in section 1. It is not required to exist before that.
 3. Expand **Login/Group Roles**. The existing `purgatory_dev` role is the
    suggested runtime login. It must have **Can login = Yes** and
    **Superuser / Create databases / Create roles = No**. Its password is the
@@ -83,28 +80,20 @@ in [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md#cutover).
    **Privileges**, enable **Can login**, leave **Superuser**, **Create roles**,
    and **Create databases** off; click **Save**. Keep both passwords out of
    the repository, scripts, and screenshots.
-5. Select **Databases → Purgatory_dev**, then **Tools → Query Tool**. While
-   connected as an administrator, run the following grants. They allow the
-   migrator to create the dedicated `purgatory_game` schema; the server's
-   migration code grants the runtime role access to its tables afterward.
-   In pgAdmin, expand **Purgatory_dev → Schemas** and confirm the chosen
-   schema name is not already an initialized game schema. If it is, select
-   another fresh name before proceeding; do not clear existing rows to make
-   this example work.
+5. Hub Create applies `CONNECT` for both roles and `CREATE` for the migrator.
+   After Create, you can confirm that in pgAdmin's Query Tool on
+   `Purgatory_dev`, connected as an administrator:
 
    ```sql
    GRANT CONNECT ON DATABASE "Purgatory_dev" TO purgatory_dev, purgatory_migrator;
    GRANT CREATE ON DATABASE "Purgatory_dev" TO purgatory_migrator;
    ```
 
-   Check the database owner under **Purgatory_dev → Properties → General**.
-   If it is `purgatory_dev`, first transfer ownership to an administrator
-   rather than assuming a `REVOKE` removes an owner's implicit privileges.
-   In that **General** tab, select the administrator (normally `postgres`)
-   in **Owner** and click **Save**, then reopen the properties to verify it.
-   The runtime role must not own the database or `purgatory_game` schema.
-   Do not grant it `CREATE` on the database or schema. If the roles or grants
-   already exist, inspect them; do not recreate the database or reset data.
+   The runtime role must not own the database or `purgatory_game` schema, and
+   it must not have `CREATE` on either. If **Properties → General → Owner** is
+   `purgatory_dev`, transfer ownership to the administrator (normally
+   `postgres`) and save. Do not use Reset to repair a grant. Reset deletes the
+   database.
 
 ## 3. Give the server its connection settings
 
@@ -145,18 +134,10 @@ host. On later launches, keep the same database, schema, deployment id, and
 role identities; supply passwords again through
 your chosen local secret mechanism. A missing
 `PURGATORY_DATABASE_URL` or `PURGATORY_DEPLOYMENT_ID` stops startup. Setting
-only the migration URL does not open the file writer.
+only the migration URL does not open a game database.
 
-Create the database from Developer Hub, not from ordinary server startup.
-Launch `./DEV_HUB.BAT` from this window so it inherits the three URLs. In the
-database section, type the first development username and press Create.
-Success leaves the database Ready. Start Server, then open the normal client
-and enter that same username. The roster is empty until you create a
-character in the client. An unregistered username is rejected on the login
-screen.
-
-The same operations exist headless, and they still refuse every database
-except `Purgatory_dev`:
+Section 1 is the Hub path. The same operations exist headless, and they still
+refuse every database except `Purgatory_dev`:
 
 ```powershell
 cargo run -p purgatory-server -- --database-create --user dev.player
@@ -171,8 +152,6 @@ world. A failed connection, missing database, wrong schema or deployment id,
 or unsupported migration history stops startup. The listening line is printed
 only after the database opens. The runtime role cannot create or drop the
 database and cannot insert into `dev_users`.
-
-`--bootstrap-postgresql` is superseded by `--database-create`.
 
 ## 4. Confirm the server is using the database
 

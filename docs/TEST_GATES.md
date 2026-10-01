@@ -816,5 +816,9 @@ PostgreSQL. Ignored persistence tests, including physical create/reset of a
 disposable `p12a_db_*` database, require `PURGATORY_TEST_DATABASE_URL` and
 must not use `Purgatory_dev`. Normal server startup does not migrate. An
 unknown development username is rejected before `FrontendSessionReady`.
+`dev.probe` is a readiness probe, not a `dev_users` row. Reset authorizes
+deletion only after the current server process reports a drained shutdown
+with zero save failures.
 
 - Quality gate actually run on 2026-10-01 after this cut: `./scripts/check.ps1` **PASS** (`PURGATORY quality gate OK`, exit 0, about 196s). Unrelated local map and art edits were set aside for that run and restored afterward. Disposable PostgreSQL suites were not run: `PURGATORY_TEST_DATABASE_URL` is unset. Those ignored tests must not target `Purgatory_dev`. Hub database-panel clicks and a normal-client login were not exercised in this run.
+- Quality gate and disposable PostgreSQL actually run on 2026-10-01 after the runtime-role, probe, and Reset fixes: `./scripts/check.ps1` **PASS** (`PURGATORY quality gate OK`, exit 0, about 221s). Disposable suites used a Docker PostgreSQL 18 on `127.0.0.1:5433`, database `purgatory_12a_test`, not `Purgatory_dev`. `cargo test -p purgatory-persistence --lib postgres_tests -- --ignored --test-threads=1`: **37 passed, 0 failed**. `cargo test -p purgatory-server --bin purgatory-server postgres_12c -- --ignored --test-threads=1`: **15 passed, 0 failed**. `disposable_database_create_reset_and_failed_recreate`: **1 passed**. The normal client UI remains the Phase 12 exit check.

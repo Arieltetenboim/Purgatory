@@ -402,15 +402,22 @@ async fn finish_shutdown(
     let status = persist.clone().shutdown(timeout, held_channel).await;
     match status {
         persist::PersistenceShutdown::Drained { save_failures } => {
-            println!("PURGATORY persistence shutdown drained save_failures={save_failures}");
+            println!(
+                "PURGATORY persistence shutdown drained pid={} save_failures={save_failures}",
+                std::process::id()
+            );
         }
         persist::PersistenceShutdown::TimedOut { save_failures } => {
             eprintln!(
-                "PURGATORY persistence shutdown timed out; snapshots were not confirmed save_failures={save_failures}"
+                "PURGATORY persistence shutdown timed out pid={} save_failures={save_failures}",
+                std::process::id()
             );
         }
         persist::PersistenceShutdown::WorkerClosed => {
-            eprintln!("PURGATORY persistence worker closed; snapshots were not confirmed");
+            eprintln!(
+                "PURGATORY persistence worker closed pid={}; snapshots were not confirmed",
+                std::process::id()
+            );
         }
     }
 }

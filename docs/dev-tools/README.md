@@ -55,7 +55,7 @@ These are not synonyms. See [RUNTIME_LIFECYCLE.md](RUNTIME_LIFECYCLE.md).
 
 ### Probe persistence (known debt)
 
-`--probe` uses the normal development login path with reserved login `dev.probe`. Database initialization inserts that login with zero characters. The probe waits for `FrontendSessionReady` and does not create a character or write game files. An unregistered login, including `dev.probe` on an uninitialized database, is rejected before that ready message. The probe must track the repository's current `PROTOCOL_VERSION`.
+`--probe` sends a readiness Hello for reserved login `dev.probe` with client build prefix `purgatory-probe`. That session can reach `FrontendSessionReady` with an empty roster. It is not a `dev_users` row, and it cannot create or enter a character. The normal client username `dev.probe` is rejected before `FrontendSessionReady`. The probe must track the repository's current `PROTOCOL_VERSION`.
 
 ## PLANNED
 

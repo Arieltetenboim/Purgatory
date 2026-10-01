@@ -452,6 +452,17 @@ async fn provision_legacy_player(server: &TestServer, login: &str) {
     );
 }
 
+async fn write_plain_hello(send: &mut SendStream, build: &str, login: &str) {
+    let payload = encode_client_control(&ClientControl::Hello(Hello {
+        protocol_version: PROTOCOL_VERSION,
+        client_build: build.into(),
+        dev_login: login.into(),
+    }))
+    .expect("encode hello");
+    let frame = encode_frame(&payload).expect("frame");
+    send.write_all(&frame).await.expect("write hello");
+}
+
 async fn write_hello_login(send: &mut SendStream, version: u32, build: &str, login: &str) {
     let payload = encode_client_control(&ClientControl::Hello(Hello {
         protocol_version: version,
@@ -593,6 +604,47 @@ async fn live_v10_hello_dev_local_receives_welcome() {
         other => panic!("expected welcome after Enter, got {other:?}"),
     };
     assert!(wait_attached(&sim, id).await);
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn readiness_probe_is_not_a_playable_account() {
+    let (server, _sim) = spawn_gameplay().await;
+    let probe = DevLogin::parse("dev.probe").expect("probe login");
+    let persist = server.persist.as_ref().expect("persist");
+    assert!(!persist.user_registered(probe.clone()).await.unwrap());
+
+    let client = connect(server.addr).await;
+    let (mut send, mut recv) = client.conn.open_bi().await.expect("bi");
+    write_plain_hello(&mut send, "purgatory-client-0.1.0", "dev.probe").await;
+    expect_disconnect(&mut recv, DisconnectReasonCode::UnknownUser).await;
+    assert!(!persist.user_registered(probe.clone()).await.unwrap());
+
+    let client = connect(server.addr).await;
+    let (mut send, mut recv) = client.conn.open_bi().await.expect("bi");
+    write_plain_hello(&mut send, "purgatory-probe-0.1.0", "dev.probe").await;
+    match timeout(Duration::from_secs(5), read_server_control(&mut recv)).await {
+        Ok(Ok(ServerControl::FrontendSessionReady(ready))) => {
+            assert!(ready.roster.is_empty(), "{:?}", ready.roster);
+        }
+        other => panic!("expected a non-playable probe session, got {other:?}"),
+    }
+    write_control(
+        &mut send,
+        ClientControl::CreateCharacter {
+            name: "Probe".into(),
+        },
+    )
+    .await;
+    match timeout(Duration::from_secs(5), read_server_control(&mut recv)).await {
+        Ok(Ok(ServerControl::CreateCharacterResult(
+            purgatory_protocol::CreateCharacterResult::Rejected(
+                purgatory_protocol::CharacterCreateRejection::Unregistered,
+            ),
+        ))) => {}
+        other => panic!("probe must not create a character, got {other:?}"),
+    }
+    assert!(!persist.user_registered(probe).await.unwrap());
     server.shutdown();
 }
 

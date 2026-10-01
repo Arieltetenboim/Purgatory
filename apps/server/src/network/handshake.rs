@@ -137,7 +137,26 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
             return;
         }
     };
-    if let Some(worker) = persist.as_ref() {
+    const READINESS_PROBE_LOGIN: &str = "dev.probe";
+    const READINESS_PROBE_BUILD_PREFIX: &str = "purgatory-probe";
+    let readiness_probe = login.as_str() == READINESS_PROBE_LOGIN
+        && hello.client_build.starts_with(READINESS_PROBE_BUILD_PREFIX);
+    if login.as_str() == READINESS_PROBE_LOGIN && !readiness_probe {
+        lifecycle.note_hello_fail();
+        stats.leave_handshake();
+        let reason = DisconnectReason::new(DisconnectReasonCode::UnknownUser, "dev_login");
+        stats.note_reject(reason.code);
+        println!(
+            "handshake rejected {} reason={} detail={}",
+            sanitize_log_text(&remote.to_string()),
+            reason.code.as_str(),
+            sanitize_log_text(&reason.detail)
+        );
+        let _ = write_server_control(&mut send, &ServerControl::Disconnect(reason.clone())).await;
+        connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+        return;
+    }
+    if let Some(worker) = persist.as_ref().filter(|_| !readiness_probe) {
         match worker.user_registered(login.clone()).await {
             Ok(true) => {}
             Ok(false) => {
@@ -271,20 +290,24 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         };
         (replication, interact_rx, occupancy)
     };
-    let roster = match &persist {
-        Some(worker) => match worker.roster(login.clone()).await {
-            Ok(roster) => roster,
-            Err(err) => {
-                eprintln!("PURGATORY roster failed: {err}");
-                stats.leave_handshake();
-                connection.close(
-                    DisconnectReasonCode::ServerShutdown.as_u8().into(),
-                    b"storage unavailable",
-                );
-                return;
-            }
-        },
-        None => Vec::new(),
+    let roster = if readiness_probe {
+        Vec::new()
+    } else {
+        match &persist {
+            Some(worker) => match worker.roster(login.clone()).await {
+                Ok(roster) => roster,
+                Err(err) => {
+                    eprintln!("PURGATORY roster failed: {err}");
+                    stats.leave_handshake();
+                    connection.close(
+                        DisconnectReasonCode::ServerShutdown.as_u8().into(),
+                        b"storage unavailable",
+                    );
+                    return;
+                }
+            },
+            None => Vec::new(),
+        }
     };
     let ready = FrontendSessionReady {
         connection_id,
@@ -361,6 +384,7 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         #[cfg(not(test))]
         occupancy: None,
         login,
+        readiness_probe,
         persist,
         lifecycle,
         pressure,
@@ -418,6 +442,7 @@ struct LiveSession {
     interact_rx: Option<tokio::sync::mpsc::Receiver<ServerControl>>,
     occupancy: Option<OccupancyLease>,
     login: DevLogin,
+    readiness_probe: bool,
     persist: Option<super::persist::PersistenceHandle>,
     lifecycle: Arc<ConnectionLifecycleBook>,
     pressure: Arc<NetworkPressureBook>,
@@ -706,6 +731,7 @@ async fn serve_connection(live: LiveSession) {
         mut interact_rx,
         mut occupancy,
         login,
+        readiness_probe,
         persist,
         lifecycle,
         pressure,
@@ -787,6 +813,13 @@ async fn serve_connection(live: LiveSession) {
                 match control {
                     Ok(ClientControl::EnterCharacter { character_id }) => {
                         use purgatory_protocol::CharacterEnterRejection as R;
+                        if readiness_probe {
+                            let response = ServerControl::EnterCharacterRejected(R::NotOwned);
+                            if write_server_control(&mut send, &response).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
                         if !matches!(rate.note(Instant::now(), abuse_cfg), RateDecision::Allow) {
                             connection.close(DisconnectReasonCode::Malformed.as_u8().into(), b"rate");
                             break;
@@ -841,6 +874,21 @@ async fn serve_connection(live: LiveSession) {
                         if write_server_control(&mut send, &response).await.is_err() { break; }
                     }
                     Ok(ClientControl::CreateCharacter { name }) => {
+                        if readiness_probe {
+                            let result = purgatory_protocol::CreateCharacterResult::Rejected(
+                                purgatory_protocol::CharacterCreateRejection::Unregistered,
+                            );
+                            if write_server_control(
+                                &mut send,
+                                &ServerControl::CreateCharacterResult(result),
+                            )
+                            .await
+                            .is_err()
+                            {
+                                break;
+                            }
+                            continue;
+                        }
                         if !matches!(rate.note(Instant::now(), abuse_cfg), RateDecision::Allow) {
                             connection.close(DisconnectReasonCode::Malformed.as_u8().into(), b"rate");
                             break;
