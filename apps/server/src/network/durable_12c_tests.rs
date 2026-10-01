@@ -4,7 +4,6 @@
         ItemOwner, PersistError, PersistenceService, PlaceNewItem, PostgresSettings,
         SessionAdmission, drop_test_schema,
     };
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn sword() -> ContentId {
@@ -154,32 +153,22 @@
         PostgresSettings::for_tests(url, schema).expect("dedicated test database")
     }
 
-    fn unique_dir() -> PathBuf {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "purgatory-12c-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     struct Pg {
         service: PersistenceService,
         owner: GameplayOwner,
         login: DevLogin,
         next_connection: u64,
         settings: PostgresSettings,
-        dir: PathBuf,
         generation: u64,
     }
 
     fn with_db(test: impl FnOnce(&mut Pg)) {
         let settings = test_settings();
-        let dir = unique_dir();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut service = PersistenceService::open_postgresql(&dir, &settings).unwrap();
+            if let Err(err) = PersistenceService::bootstrap_postgresql(&settings) {
+                panic!("postgresql bootstrap failed: {err}");
+            }
+            let mut service = PersistenceService::open_postgresql(&settings).unwrap();
             let owner = GameplayOwner::new();
             service.set_durable_content_rules(owner.durable_content_rules());
             let claim = service.claim_channel(1, None).unwrap();
@@ -192,13 +181,11 @@
                 login: DevLogin::parse("dev.local").unwrap(),
                 next_connection: 1,
                 settings: settings.clone(),
-                dir: dir.clone(),
                 generation,
             };
             test(&mut pg);
         }));
         let dropped = drop_test_schema(&settings);
-        let _ = std::fs::remove_dir_all(&dir);
         if let Err(err) = dropped {
             eprintln!("PURGATORY postgres test schema cleanup failed: {err}");
         }
@@ -453,7 +440,7 @@
             pg.service.release_lease(&b.lease).unwrap();
             pg.service.release_channel(1, pg.generation).unwrap();
             let mut restarted =
-                PersistenceService::open_postgresql(&pg.dir, &pg.settings).unwrap();
+                PersistenceService::open_postgresql(&pg.settings).unwrap();
             let claim = restarted.claim_channel(1, None).unwrap();
             assert!(matches!(claim, ChannelClaim::Claimed { .. }));
             match restarted.read_item(crashed).unwrap().unwrap().owner {
@@ -511,7 +498,7 @@
             pg.service.release_lease(&a.lease).unwrap();
             pg.service.release_channel(1, pg.generation).unwrap();
             let mut restarted =
-                PersistenceService::open_postgresql(&pg.dir, &pg.settings).unwrap();
+                PersistenceService::open_postgresql(&pg.settings).unwrap();
             let claim = restarted.claim_channel(1, None).unwrap();
             assert!(matches!(claim, ChannelClaim::Claimed { retired_ground, .. } if retired_ground >= 1));
             assert_eq!(
@@ -851,7 +838,7 @@
             pg.service.release_lease(&a.lease).unwrap();
             pg.service.release_channel(1, pg.generation).unwrap();
             let mut restarted =
-                PersistenceService::open_postgresql(&pg.dir, &pg.settings).unwrap();
+                PersistenceService::open_postgresql(&pg.settings).unwrap();
             let claim = restarted.claim_channel(1, None).unwrap();
             assert!(matches!(
                 claim,

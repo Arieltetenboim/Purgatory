@@ -2,7 +2,7 @@
 
 Status: **accepted** as the Phase 12B save/load lifecycle (2026-09-30). Not a Phase 12 exit. Root `PHASE` stays `12.12B`. 12C is not started.
 
-PostgreSQL remains the only durable authority. Database work stays on the persistence worker. File mode, used when `PURGATORY_DATABASE_URL` is unset, has no character lease and keeps the existing local occupancy rule.
+PostgreSQL remains the only durable authority. Database work stays on the persistence worker. File mode, selected by an explicit `PersistenceService::open`, has no character lease and keeps the existing local occupancy rule. Server startup requires `PURGATORY_DATABASE_URL`.
 
 ## Policy values
 

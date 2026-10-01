@@ -6,6 +6,18 @@ use purgatory_simulation::{SimulationClock, TICK_RATE_HZ, World};
 
 fn main() {
     init_tracing();
+    if std::env::args().any(|arg| arg == "--bootstrap-postgresql") {
+        match purgatory_persistence::PersistenceService::bootstrap_from_env() {
+            Ok(()) => {
+                println!("PURGATORY postgresql bootstrap OK");
+                return;
+            }
+            Err(err) => {
+                eprintln!("PURGATORY server error: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
     let _ = (
         purgatory_common::version(),
         purgatory_simulation::version(),

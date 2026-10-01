@@ -412,8 +412,8 @@ impl PersistenceHandle {
         Self::spawn_opened(service)
     }
 
-    /// Server startup. PostgreSQL is the only writer when `PURGATORY_DATABASE_URL`
-    /// is set. The URL is not assumed to be localhost.
+    /// Server startup. PostgreSQL is required. A missing URL does not open the
+    /// file writer. The directory is not read or written for that database.
     pub fn spawn_from_env(dir: &Path) -> Result<Self, String> {
         let service = PersistenceService::open_from_env(dir)
             .map_err(|err| format!("persistence open: {err}"))?;

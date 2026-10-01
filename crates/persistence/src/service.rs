@@ -29,8 +29,9 @@ pub enum SessionAdmission {
 
 /// Single-threaded owner of identity allocation and character state.
 ///
-/// `open` is the pre-cutover file writer. `open_postgresql` imports supported
-/// files once and then writes only to PostgreSQL.
+/// `open` is the explicit file writer. `bootstrap_postgresql` creates an empty
+/// roster once. `open_postgresql` reopens that database and does not import
+/// files. `import_legacy_postgresql` is the explicit old file import.
 pub struct PersistenceService {
     backend: Backend,
 }
@@ -41,6 +42,12 @@ enum Backend {
         repo: FileCharacterRepository,
     },
     Postgres(Box<PostgresStore>),
+}
+
+fn missing_database_url() -> PersistError {
+    PersistError::storage(
+        "PURGATORY_DATABASE_URL is required; refusing to fall back to the file writer",
+    )
 }
 
 impl PersistenceService {
@@ -54,18 +61,45 @@ impl PersistenceService {
         })
     }
 
-    pub fn open_postgresql(dir: &Path, settings: &PostgresSettings) -> Result<Self, PersistError> {
+    pub fn open_postgresql(settings: &PostgresSettings) -> Result<Self, PersistError> {
         Ok(Self {
-            backend: Backend::Postgres(Box::new(PostgresStore::open(dir, settings)?)),
+            backend: Backend::Postgres(Box::new(PostgresStore::open(settings)?)),
         })
     }
 
-    /// Server startup. Tests keep using [`Self::open`] so an ambient database
-    /// URL cannot redirect them onto a developer database.
-    pub fn open_from_env(dir: &Path) -> Result<Self, PersistError> {
+    /// Deliberate one-time empty roster. Does not read or write a data directory.
+    pub fn bootstrap_postgresql(settings: &PostgresSettings) -> Result<(), PersistError> {
+        PostgresStore::bootstrap(settings)
+    }
+
+    /// Explicit legacy `identity.json` / `char_*.json` import. Server startup
+    /// does not call this.
+    pub fn import_legacy_postgresql(
+        dir: &Path,
+        settings: &PostgresSettings,
+    ) -> Result<Self, PersistError> {
+        Ok(Self {
+            backend: Backend::Postgres(Box::new(PostgresStore::import_legacy(dir, settings)?)),
+        })
+    }
+
+    /// Server startup. PostgreSQL is required. A missing URL does not open the
+    /// file writer. Tests keep using [`Self::open`] for the file path.
+    pub fn open_from_env(_dir: &Path) -> Result<Self, PersistError> {
+        Self::open_configured(PostgresSettings::from_env()?)
+    }
+
+    pub fn bootstrap_from_env() -> Result<(), PersistError> {
         match PostgresSettings::from_env()? {
-            Some(settings) => Self::open_postgresql(dir, &settings),
-            None => Self::open(dir),
+            Some(settings) => Self::bootstrap_postgresql(&settings),
+            None => Err(missing_database_url()),
+        }
+    }
+
+    fn open_configured(settings: Option<PostgresSettings>) -> Result<Self, PersistError> {
+        match settings {
+            Some(settings) => Self::open_postgresql(&settings),
+            None => Err(missing_database_url()),
         }
     }
 
@@ -467,6 +501,31 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn missing_postgresql_configuration_does_not_open_the_file_writer() {
+        let err = match PersistenceService::open_configured(None) {
+            Ok(_) => panic!("missing database url opened a writer"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("PURGATORY_DATABASE_URL"), "{err}");
+        assert!(err.to_string().contains("file writer"), "{err}");
+        let absent = PostgresSettings::from_vars(|_| Err(std::env::VarError::NotPresent)).unwrap();
+        assert!(absent.is_none());
+        let err = match PostgresSettings::from_vars(|key| match key {
+            "PURGATORY_DATABASE_URL" => {
+                Ok("postgres://postgres@127.0.0.1/purgatory_12a_test".into())
+            }
+            _ => Err(std::env::VarError::NotPresent),
+        }) {
+            Ok(_) => panic!("missing deployment id was accepted"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("PURGATORY_DEPLOYMENT_ID"), "{err}");
+        let dir = unique_dir();
+        PersistenceService::open(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

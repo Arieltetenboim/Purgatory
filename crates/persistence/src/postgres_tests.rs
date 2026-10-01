@@ -102,8 +102,17 @@ fn place(owner: CharacterId, slot: u16) -> PlaceNewItem {
     }
 }
 
-fn open(dir: &Path, settings: &PostgresSettings) -> PersistenceService {
-    let mut service = PersistenceService::open_postgresql(dir, settings).unwrap();
+fn open(_dir: &Path, settings: &PostgresSettings) -> PersistenceService {
+    if let Err(err) = PersistenceService::bootstrap_postgresql(settings) {
+        assert!(err.to_string().contains("already bootstrapped"), "{err}");
+    }
+    let mut service = PersistenceService::open_postgresql(settings).unwrap();
+    service.set_durable_content_rules(rules());
+    service
+}
+
+fn import_legacy(dir: &Path, settings: &PostgresSettings) -> PersistenceService {
+    let mut service = PersistenceService::import_legacy_postgresql(dir, settings).unwrap();
     service.set_durable_content_rules(rules());
     service
 }
@@ -115,7 +124,7 @@ fn revision_conflict_rolls_the_loser_back() {
         let mut first = open(dir, settings);
         let alice = login("alice");
         let entry = first.create_character(&alice, "Alice").unwrap();
-        let mut second = PersistenceService::open_postgresql(dir, settings).unwrap();
+        let mut second = PersistenceService::open_postgresql(settings).unwrap();
         second.set_durable_content_rules(rules());
         let winner = DurableCommand {
             key: "winner".into(),
@@ -356,7 +365,7 @@ fn invalid_import_preserves_source_and_writes_no_rows() {
         let character = dir.join(crate::character_file_name(CharacterId::from_raw(1)));
         let original = br#"{"schema_version":1,"character_id":1,"persistence_revision":4,"restore":{"map_authored":"map.map1","point_id":"default"},"items":[]}"#;
         std::fs::write(&character, original).unwrap();
-        let err = match PersistenceService::open_postgresql(dir, settings) {
+        let err = match PersistenceService::import_legacy_postgresql(dir, settings) {
             Ok(_) => panic!("corrupt import must fail closed"),
             Err(err) => err,
         };
@@ -393,7 +402,7 @@ fn supported_v1_import_preserves_identity_and_invents_nothing() {
         let character = dir.join(crate::character_file_name(CharacterId::from_raw(7)));
         let body = br#"{"schema_version":1,"character_id":7,"persistence_revision":4,"restore":{"map_authored":"map.map2","point_id":"gate","checkpoint_id":"cp"}}"#;
         std::fs::write(&character, body).unwrap();
-        let mut service = open(dir, settings);
+        let mut service = import_legacy(dir, settings);
         assert_eq!(
             std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(),
             identity
@@ -686,14 +695,14 @@ fn file_writer_is_fenced_before_import_commits() {
             Err(err) => err,
         };
         assert!(matches!(err, PersistError::Migration { .. }), "{err}");
-        let mut service = open(dir, settings);
+        let mut service = import_legacy(dir, settings);
         let loaded = service
             .load_owned_character(&login("zed"), CharacterId::from_raw(7))
             .unwrap()
             .unwrap();
         assert_eq!(loaded.restore.point_id, "gate");
         std::fs::write(&character, b"{\"schema_version\":1}").unwrap();
-        let again = PersistenceService::open_postgresql(dir, settings).unwrap();
+        let again = PersistenceService::open_postgresql(settings).unwrap();
         drop(again);
         let loaded = service
             .load_owned_character(&login("zed"), CharacterId::from_raw(7))
@@ -709,7 +718,7 @@ fn file_writer_is_fenced_before_import_commits() {
 fn marker_write_failure_does_not_commit_import() {
     with_db(|dir, settings| {
         postgres::fail_next_marker_write();
-        let err = match PersistenceService::open_postgresql(dir, settings) {
+        let err = match PersistenceService::import_legacy_postgresql(dir, settings) {
             Ok(_) => panic!("marker failure must not open a writer"),
             Err(err) => err,
         };
@@ -937,9 +946,12 @@ fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
 #[test]
 #[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
 fn distinct_runtime_role_can_commit_and_cannot_create_tables() {
-    with_db(|dir, settings| {
+    with_db(|_dir, settings| {
         let roles = postgres::provision_ephemeral_roles(settings).expect("distinct test roles");
-        let mut service = PersistenceService::open_postgresql(dir, &roles.runtime).unwrap();
+        if let Err(err) = PersistenceService::bootstrap_postgresql(&roles.runtime) {
+            panic!("runtime role bootstrap failed: {err}");
+        }
+        let mut service = PersistenceService::open_postgresql(&roles.runtime).unwrap();
         service.set_durable_content_rules(rules());
         let alice = login("alice");
         let entry = service.create_character(&alice, "Alice").unwrap();
@@ -987,7 +999,7 @@ fn already_open_file_service_cannot_change_source_files_after_cutover() {
         let identity = std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap();
         let character_path = dir.join(crate::character_file_name(entry.character_id));
         let character = std::fs::read(&character_path).unwrap();
-        let mut durable = open(dir, settings);
+        let mut durable = import_legacy(dir, settings);
         let save = files.save_snapshot(crate::PersistentCharacterSnapshot {
             character_id: entry.character_id,
             persistence_revision: 2,
@@ -2283,5 +2295,204 @@ fn previous_channel_generation_cannot_spend_its_unused_ids() {
             ))
             .unwrap();
         assert!(service.item(fresh[0]).unwrap().is_some());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn fresh_bootstrap_with_legacy_files_does_not_import_or_write() {
+    with_db(|dir, settings| {
+        let identity =
+            br#"{"schema_version":2,"next_character_id":8,"logins":{"zed":[{"character_id":7,"display_name":"Zed"}]}}"#;
+        let character = dir.join(crate::character_file_name(CharacterId::from_raw(7)));
+        let body = br#"{"schema_version":1,"character_id":7,"persistence_revision":4,"restore":{"map_authored":"map.map2","point_id":"gate"}}"#;
+        std::fs::write(dir.join(IDENTITY_FILE_NAME), identity).unwrap();
+        std::fs::write(&character, body).unwrap();
+        let mut names_before = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names_before.sort();
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        assert_eq!(
+            std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(),
+            identity
+        );
+        assert_eq!(std::fs::read(&character).unwrap(), body);
+        let mut names_after = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names_after.sort();
+        assert_eq!(names_before, names_after);
+        assert!(
+            !dir.join(postgres::DURABLE_WRITER_FILE).exists(),
+            "fresh bootstrap wrote durable_writer.json"
+        );
+        assert!(
+            service.roster(&login("zed")).unwrap().is_empty(),
+            "fresh bootstrap imported a legacy character"
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn restart_preserves_ownership_without_a_local_marker() {
+    with_db(|dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let committed = service
+            .commit_durable(&DurableCommand {
+                key: "owned".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap();
+        let item = committed.minted_item_ids[0];
+        drop(service);
+        assert!(!dir.join(postgres::DURABLE_WRITER_FILE).exists());
+        let mut restarted = PersistenceService::open_postgresql(settings).unwrap();
+        restarted.set_durable_content_rules(rules());
+        assert!(!dir.join(postgres::DURABLE_WRITER_FILE).exists());
+        assert_eq!(
+            restarted.roster(&alice).unwrap()[0].character_id,
+            entry.character_id
+        );
+        assert_eq!(
+            restarted.item(item).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn duplicate_bootstrap_cannot_erase_progress() {
+    with_db(|_dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let committed = service
+            .commit_durable(&DurableCommand {
+                key: "keep".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap();
+        let item = committed.minted_item_ids[0];
+        drop(service);
+        let err = PersistenceService::bootstrap_postgresql(settings).unwrap_err();
+        assert!(err.to_string().contains("already bootstrapped"), "{err}");
+        let mut again = PersistenceService::open_postgresql(settings).unwrap();
+        again.set_durable_content_rules(rules());
+        assert_eq!(
+            again.roster(&alice).unwrap()[0].character_id,
+            entry.character_id
+        );
+        assert_eq!(
+            again.item(item).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn wrong_database_identity_fails_closed() {
+    with_db(|_dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        drop(service);
+        let wrong_id = settings
+            .clone()
+            .with_deployment_id("other-world".into())
+            .unwrap();
+        let err = match PersistenceService::open_postgresql(&wrong_id) {
+            Ok(_) => panic!("wrong deployment identity opened"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("does not match"), "{err}");
+        let mut wrong_schema = settings.clone();
+        wrong_schema.schema = format!("{}_missing", settings.schema);
+        let err = match PersistenceService::open_postgresql(&wrong_schema) {
+            Ok(_) => panic!("missing schema opened"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("not bootstrapped"), "{err}");
+        let mut again = PersistenceService::open_postgresql(settings).unwrap();
+        assert_eq!(
+            again.roster(&alice).unwrap()[0].character_id,
+            entry.character_id
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn restored_database_starts_on_another_host_without_a_local_marker() {
+    with_db(|_dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let committed = service
+            .commit_durable(&DurableCommand {
+                key: "moved".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap();
+        let item = committed.minted_item_ids[0];
+        drop(service);
+        let other_host = unique_dir();
+        assert!(!other_host.join(postgres::DURABLE_WRITER_FILE).exists());
+        let mut restored = PersistenceService::open_postgresql(settings).unwrap();
+        restored.set_durable_content_rules(rules());
+        assert!(!other_host.join(postgres::DURABLE_WRITER_FILE).exists());
+        assert_eq!(
+            restored.roster(&alice).unwrap()[0].character_id,
+            entry.character_id
+        );
+        assert_eq!(
+            restored.item(item).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+        let _ = std::fs::remove_dir_all(other_host);
     });
 }

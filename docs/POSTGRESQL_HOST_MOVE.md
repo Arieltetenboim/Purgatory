@@ -2,8 +2,8 @@
 
 The location of PostgreSQL is an operational choice. The game server uses
 `PURGATORY_DATABASE_URL` (runtime role), optional
-`PURGATORY_DATABASE_MIGRATION_URL` (migration role), and
-`PURGATORY_DATABASE_SCHEMA`. A local database, a dedicated database host,
+`PURGATORY_DATABASE_MIGRATION_URL` (migration role),
+`PURGATORY_DATABASE_SCHEMA`, and `PURGATORY_DEPLOYMENT_ID`. A local database, a dedicated database host,
 and a managed service all use this same persistence-worker boundary. There
 is currently **one logical game world and one game database**; channels share
 it. Adding a host or replica does not create another world or another writer.
@@ -72,20 +72,18 @@ characters and items; it does not start a new world or reset player data.**
    `identity.json` / `char_*.json` files: the game data now lives in
    PostgreSQL.
 4. Before allowing traffic, compare the source and destination schema
-   migration history, cutover marker value in `durable_meta`, character and
-   item counts, representative character identities, item owners and retired
-  item identifiers (IDs), durable command keys, and channel/character lease
-  rows. Verify that the destination contains the last acknowledged economic
-  transactions.
+   migration history, `deployment_id` and `cutover` in `durable_meta`, character
+   and item counts, representative character identities, item owners and
+   retired item identifiers (IDs), durable command keys, and channel/character
+   lease rows. Verify that the destination contains the last acknowledged
+   economic transactions.
    A count alone cannot prove ownership or the recovery point. Rehearse
    restoration of a selected character and a retry of a stored command key.
-5. Configure the **same game server** with new runtime and migration URLs and
-   the matching schema name. In the current build only, startup also requires
-   its existing `PURGATORY_DATA_DIR` containing `durable_writer.json`; this
-   is a legacy cutover fence, not the player-data store. If the game server
-   also moves to a new machine before database-only bootstrap is implemented,
-   preserve the matching marker through a controlled move. Do not create an
-   unrelated marker or silently start a fresh roster. Start one
+5. Configure the **same game server** with new runtime and migration URLs,
+   the matching schema name, and the same `PURGATORY_DEPLOYMENT_ID` stored in
+   `durable_meta`. Do not copy `durable_writer.json`. A missing or different
+   deployment id refuses to start and does not create an empty roster. Do not
+   run `--bootstrap-postgresql` against the restored database. Start one
    server, verify the migration check, channel claim, ground retirement,
    normal-client login/reconnect, item ownership, and logs, and only then
    reopen admission.
@@ -104,7 +102,7 @@ ordinary monster populations from map content, not from a death counter.
 
 | Failure or change | Required behavior |
 |---|---|
-| Database unreachable at startup | Do not admit gameplay using an empty or file fallback writer. Investigate the connection, role, certificate, migration, and marker. |
+| Database unreachable, wrong schema, or wrong deployment id at startup | Do not admit gameplay. The server does not open the file writer and does not create an empty roster. Investigate the connection, role, certificate, migration, and `PURGATORY_DEPLOYMENT_ID`. |
 | Database reply lost after an economic commit | Retry the **same** durable command key; an unknown result is not evidence that the transaction rolled back. |
 | Runtime connection loses lease/authority | Stop affected gameplay. Another process can claim only after release or expiry according to Architecture Decision Record (ADR) 0071 in [`DECISIONS.md`](DECISIONS.md); do not bypass fencing. |
 | Database host replaced | Keep one durable writer and validate the exact recovery point before admission. DNS or URL changes alone do not move committed rows. |

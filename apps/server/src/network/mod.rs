@@ -171,7 +171,10 @@ fn spawn_durable_commits(
 
 async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     let bound = endpoint::bind(&config)?;
+    let data_dir = persist::data_dir_from_env();
+    let persist = persist::PersistenceHandle::spawn_from_env(&data_dir)?;
     println!("network listening on {}", bound.local_addr());
+    println!("PURGATORY persist data_dir={}", data_dir.display());
 
     bound.stats.admission_cap.store(
         config.abuse.max_inflight_connection_tasks as u64,
@@ -183,9 +186,6 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     if let Err(err) = dev_admin::spawn(gameplay_tx.clone(), bound.sessions.clone()) {
         eprintln!("DEV_ADMIN unavailable: {err}");
     }
-    let data_dir = persist::data_dir_from_env();
-    println!("PURGATORY persist data_dir={}", data_dir.display());
-    let persist = persist::PersistenceHandle::spawn_from_env(&data_dir)?;
     let channel_live = Arc::new(AtomicBool::new(true));
     let held_channel = claim_startup_channel(&persist, &channel_live).await?;
     let (stop_channel_tx, stop_channel_rx) = tokio::sync::watch::channel(false);

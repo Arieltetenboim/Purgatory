@@ -104,6 +104,50 @@ it with a character-lease generation. It does require the claimed channel
 generation. The simulation thread still requires a leased session only when a
 player action reserves the item. Channel expiry does not.
 
+## Local PostgreSQL startup and host move
+
+The operator steps are [`POSTGRESQL_LOCAL_RUN.md`](POSTGRESQL_LOCAL_RUN.md)
+and [`POSTGRESQL_HOST_MOVE.md`](POSTGRESQL_HOST_MOVE.md).
+
+Server startup requires PostgreSQL. Set `PURGATORY_DATABASE_URL` and
+`PURGATORY_DEPLOYMENT_ID`. When the migration role is separate, also set
+`PURGATORY_DATABASE_MIGRATION_URL`. `PURGATORY_DATABASE_SCHEMA` defaults to
+`public`. A deployment id is 1 to 64 characters: ASCII letters, digits, `.`,
+`_`, and `-`.
+
+Bootstrap an empty application schema once:
+
+```text
+cargo run -p purgatory-server -- --bootstrap-postgresql
+```
+
+That command creates an empty roster (`next_character_id` 1,
+`next_item_instance_id` 1, `cutover` `fresh`, and the deployment id). It does
+not read or write `identity.json`, `char_*.json`, or `durable_writer.json`.
+Success prints `PURGATORY postgresql bootstrap OK` and exits before the game
+loop. Running it again against the same schema fails and does not erase
+characters or items.
+
+A later start is `cargo run -p purgatory-server` with the same URL, schema, and
+deployment id. It reopens the database and does not look for a local marker.
+It refuses a missing schema, a missing deployment row, or a different
+deployment id. It does not create an empty world to replace that database.
+
+A missing URL, a failed connection, the wrong schema or deployment id, or a
+failed migration stops startup. The server does not open the file writer in
+those cases. `PersistenceService::open` remains the explicit file writer for
+tests. `import_legacy_postgresql` remains the explicit legacy import and is not
+called by server startup. The historical import steps stay in
+[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md).
+
+Moving the database to another host keeps the committed rows. Point
+`PURGATORY_DATABASE_URL` at the restored database and use the same
+`PURGATORY_DEPLOYMENT_ID`. Do not copy `durable_writer.json`. A mistaken URL or
+schema fails closed because its stored deployment id does not match.
+
+Collectible developer spawns still require this PostgreSQL writer. File mode
+cannot reserve an item id, so those spawns do not appear.
+
 ## Unresolved
 
 A dialogue remove that would split a stack is rejected before commit. The durable

@@ -46,26 +46,71 @@ pub struct PostgresSettings {
     pub url: String,
     pub migration_url: Option<String>,
     pub schema: String,
+    /// Stable name of this world deployment. Stored in the database at
+    /// bootstrap and checked on every later open.
+    pub deployment_id: String,
 }
 
 impl PostgresSettings {
     pub fn from_env() -> Result<Option<Self>, PersistError> {
-        let Ok(url) = std::env::var("PURGATORY_DATABASE_URL") else {
-            return Ok(None);
+        Self::from_vars(|key| std::env::var(key))
+    }
+
+    pub(crate) fn from_vars(
+        mut getenv: impl FnMut(&str) -> Result<String, std::env::VarError>,
+    ) -> Result<Option<Self>, PersistError> {
+        let url = match getenv("PURGATORY_DATABASE_URL") {
+            Ok(url) => url,
+            Err(std::env::VarError::NotPresent) => return Ok(None),
+            Err(err) => {
+                return Err(PersistError::storage(format!(
+                    "PURGATORY_DATABASE_URL is not valid unicode: {err}"
+                )));
+            }
         };
         let url = url.trim();
         if url.is_empty() {
             return Ok(None);
         }
-        let migration_url = std::env::var("PURGATORY_DATABASE_MIGRATION_URL")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let schema = std::env::var("PURGATORY_DATABASE_SCHEMA").unwrap_or_else(|_| "public".into());
+        let deployment_id = match getenv("PURGATORY_DEPLOYMENT_ID") {
+            Ok(value) => value.trim().to_string(),
+            Err(std::env::VarError::NotPresent) => String::new(),
+            Err(err) => {
+                return Err(PersistError::storage(format!(
+                    "PURGATORY_DEPLOYMENT_ID is not valid unicode: {err}"
+                )));
+            }
+        };
+        if deployment_id.is_empty() {
+            return Err(PersistError::storage(
+                "PURGATORY_DEPLOYMENT_ID is required when PostgreSQL is configured",
+            ));
+        }
+        validate_deployment_id(&deployment_id)?;
+        let migration_url = match getenv("PURGATORY_DATABASE_MIGRATION_URL") {
+            Ok(value) => {
+                let value = value.trim().to_string();
+                if value.is_empty() { None } else { Some(value) }
+            }
+            Err(_) => None,
+        };
+        let schema = match getenv("PURGATORY_DATABASE_SCHEMA") {
+            Ok(value) => {
+                let value = value.trim().to_string();
+                if value.is_empty() {
+                    "public".into()
+                } else {
+                    value
+                }
+            }
+            Err(_) => "public".into(),
+        };
+        validated_schema(&schema)?;
         Ok(Some(Self {
             url: url.to_string(),
             migration_url,
-            schema: schema.trim().to_string(),
+            schema,
+            deployment_id,
         }))
     }
 
@@ -75,8 +120,10 @@ impl PostgresSettings {
         let settings = Self {
             url,
             migration_url: None,
+            deployment_id: schema.clone(),
             schema,
         };
+        validate_deployment_id(&settings.deployment_id)?;
         settings.refuse_reserved_database()?;
         if settings.schema == "public" || !settings.schema.starts_with("p12a_") {
             return Err(PersistError::storage(
@@ -93,9 +140,16 @@ impl PostgresSettings {
             url,
             migration_url: None,
             schema: self.schema.clone(),
+            deployment_id: self.deployment_id.clone(),
         };
         migration.refuse_reserved_database()?;
         self.migration_url = Some(migration.url);
+        Ok(self)
+    }
+
+    pub fn with_deployment_id(mut self, deployment_id: String) -> Result<Self, PersistError> {
+        validate_deployment_id(&deployment_id)?;
+        self.deployment_id = deployment_id;
         Ok(self)
     }
 
@@ -134,56 +188,41 @@ pub(crate) struct PostgresStore {
 }
 
 impl PostgresStore {
-    pub(crate) fn open(dir: &Path, settings: &PostgresSettings) -> Result<Self, PersistError> {
-        validated_schema(&settings.schema)?;
-        if let Some(migration_url) = &settings.migration_url {
-            let mut migrator = connect_url(migration_url)?;
-            prepare_schema(&mut migrator, &settings.schema, true)?;
-            migrate(&mut migrator)?;
-            let runtime_user = database_user(&settings.url)?;
-            let migration_user = database_user(migration_url)?;
-            if runtime_user.eq_ignore_ascii_case(&migration_user) {
-                return Err(PersistError::storage(
-                    "migration role and runtime role must be distinct",
-                ));
-            }
-            grant_runtime(&mut migrator, &settings.schema, &runtime_user)?;
-            warn_durability(&mut migrator);
-        }
-        let mut client = connect_url(&settings.url)?;
-        prepare_schema(
-            &mut client,
-            &settings.schema,
-            settings.migration_url.is_none(),
-        )?;
-        if settings.migration_url.is_none() {
-            migrate(&mut client)?;
-        }
+    /// Reopen a database that was already bootstrapped. Does not create a
+    /// schema, import files, or write a local marker.
+    pub(crate) fn open(settings: &PostgresSettings) -> Result<Self, PersistError> {
+        let mut client = connect_prepared(settings, false)?;
+        require_deployment(&mut client, &settings.deployment_id)?;
         warn_durability(&mut client);
+        Ok(store_from_client(client, settings))
+    }
+
+    /// One-time empty roster. Creates the schema and migrations, then records
+    /// the deployment identity. Does not read or write a data directory.
+    pub(crate) fn bootstrap(settings: &PostgresSettings) -> Result<(), PersistError> {
+        validate_deployment_id(&settings.deployment_id)?;
+        let mut client = connect_prepared(settings, true)?;
+        bootstrap_empty(&mut client, &settings.deployment_id)?;
+        Ok(())
+    }
+
+    /// Explicit legacy file import. Server startup does not call this.
+    pub(crate) fn import_legacy(
+        dir: &Path,
+        settings: &PostgresSettings,
+    ) -> Result<Self, PersistError> {
+        validate_deployment_id(&settings.deployment_id)?;
+        let mut client = connect_prepared(settings, true)?;
         // Fence the file writer before the import transaction commits. A crash
         // in that interval leaves the marker and no cutover row, so the next
-        // open imports the unchanged files instead of ignoring later file writes.
+        // import reads the unchanged files instead of ignoring later writes.
         fence_before_import(&mut client, dir)?;
-        initialize(&mut client, dir)?;
+        initialize(&mut client, dir, &settings.deployment_id)?;
         if !marker_is_postgresql(dir)? {
             write_marker(dir)?;
         }
-        Ok(Self {
-            client,
-            runtime_url: settings.url.clone(),
-            schema: settings.schema.clone(),
-            rules: DurableContentRules::new(),
-            #[cfg(test)]
-            hide_commit_reply: false,
-            #[cfg(test)]
-            discard_connection_after_commit: false,
-            connection_closed: false,
-            #[cfg(test)]
-            reconnect_failures_remaining: 0,
-            channels: std::collections::BTreeMap::new(),
-            #[cfg(test)]
-            lease_barrier: None,
-        })
+        warn_durability(&mut client);
+        Ok(store_from_client(client, settings))
     }
 
     pub(crate) fn set_rules(&mut self, rules: DurableContentRules) {
@@ -1050,7 +1089,203 @@ fn warn_durability(client: &mut Client) {
     }
 }
 
-fn initialize(client: &mut Client, dir: &Path) -> Result<(), PersistError> {
+fn store_from_client(client: Client, settings: &PostgresSettings) -> PostgresStore {
+    PostgresStore {
+        client,
+        runtime_url: settings.url.clone(),
+        schema: settings.schema.clone(),
+        rules: DurableContentRules::new(),
+        #[cfg(test)]
+        hide_commit_reply: false,
+        #[cfg(test)]
+        discard_connection_after_commit: false,
+        connection_closed: false,
+        #[cfg(test)]
+        reconnect_failures_remaining: 0,
+        channels: std::collections::BTreeMap::new(),
+        #[cfg(test)]
+        lease_barrier: None,
+    }
+}
+
+fn validate_deployment_id(id: &str) -> Result<(), PersistError> {
+    let ok = (1..=64).contains(&id.len())
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.');
+    if ok {
+        Ok(())
+    } else {
+        Err(PersistError::storage(
+            "PURGATORY_DEPLOYMENT_ID must be 1 to 64 ASCII letters, digits, dots, underscores, or hyphens",
+        ))
+    }
+}
+
+/// `create` is the deliberate bootstrap. Normal open refuses a missing schema
+/// instead of creating an empty world.
+fn connect_prepared(settings: &PostgresSettings, create: bool) -> Result<Client, PersistError> {
+    validated_schema(&settings.schema)?;
+    validate_deployment_id(&settings.deployment_id)?;
+    if let Some(migration_url) = &settings.migration_url {
+        let mut migrator = connect_url(migration_url)?;
+        if create {
+            prepare_schema(&mut migrator, &settings.schema, true)?;
+            migrate(&mut migrator)?;
+        } else {
+            if !schema_exists(&mut migrator, &settings.schema)? {
+                return Err(PersistError::migration(
+                    db_path(),
+                    "database schema is not bootstrapped",
+                ));
+            }
+            prepare_schema(&mut migrator, &settings.schema, false)?;
+            if !migrations_present(&mut migrator)? {
+                return Err(PersistError::migration(
+                    db_path(),
+                    "database schema is not bootstrapped",
+                ));
+            }
+            migrate(&mut migrator)?;
+        }
+        let runtime_user = database_user(&settings.url)?;
+        let migration_user = database_user(migration_url)?;
+        if runtime_user.eq_ignore_ascii_case(&migration_user) {
+            return Err(PersistError::storage(
+                "migration role and runtime role must be distinct",
+            ));
+        }
+        grant_runtime(&mut migrator, &settings.schema, &runtime_user)?;
+        warn_durability(&mut migrator);
+    }
+    let mut client = connect_url(&settings.url)?;
+    if create {
+        prepare_schema(
+            &mut client,
+            &settings.schema,
+            settings.migration_url.is_none(),
+        )?;
+        if settings.migration_url.is_none() {
+            migrate(&mut client)?;
+        }
+    } else if settings.migration_url.is_none() {
+        if !schema_exists(&mut client, &settings.schema)? {
+            return Err(PersistError::migration(
+                db_path(),
+                "database schema is not bootstrapped",
+            ));
+        }
+        prepare_schema(&mut client, &settings.schema, false)?;
+        if !migrations_present(&mut client)? {
+            return Err(PersistError::migration(
+                db_path(),
+                "database schema is not bootstrapped",
+            ));
+        }
+        migrate(&mut client)?;
+    } else {
+        prepare_schema(&mut client, &settings.schema, false)?;
+    }
+    Ok(client)
+}
+
+fn schema_exists(client: &mut Client, schema: &str) -> Result<bool, PersistError> {
+    let exists: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
+            &[&schema],
+        )
+        .map_err(map_sql)?
+        .get(0);
+    Ok(exists)
+}
+
+fn migrations_present(client: &mut Client) -> Result<bool, PersistError> {
+    let present: bool = client
+        .query_one("SELECT to_regclass('schema_migrations') IS NOT NULL", &[])
+        .map_err(map_sql)?
+        .get(0);
+    Ok(present)
+}
+
+fn require_deployment(client: &mut Client, deployment_id: &str) -> Result<(), PersistError> {
+    let row = client
+        .query_opt(
+            "SELECT value FROM durable_meta WHERE key = 'deployment_id'",
+            &[],
+        )
+        .map_err(map_sql)?;
+    let Some(row) = row else {
+        return Err(PersistError::migration(
+            db_path(),
+            "database is not bootstrapped",
+        ));
+    };
+    let stored: String = row.get(0);
+    if stored != deployment_id {
+        return Err(PersistError::migration(
+            db_path(),
+            "database deployment identity does not match",
+        ));
+    }
+    Ok(())
+}
+
+fn bootstrap_empty(client: &mut Client, deployment_id: &str) -> Result<(), PersistError> {
+    let mut tx = client.transaction().map_err(map_sql)?;
+    let result = (|| {
+        tx.execute("SELECT pg_advisory_xact_lock($1)", &[&IMPORT_LOCK_KEY])
+            .map_err(map_sql)?;
+        let existing = tx
+            .query_opt(
+                "SELECT value FROM durable_meta WHERE key = 'deployment_id'",
+                &[],
+            )
+            .map_err(map_sql)?;
+        if existing.is_some() {
+            return Err(PersistError::conflict(
+                db_path(),
+                "database is already bootstrapped",
+            ));
+        }
+        let characters: i64 = tx
+            .query_one("SELECT count(*)::bigint FROM characters", &[])
+            .map_err(map_sql)?
+            .get(0);
+        let items: i64 = tx
+            .query_one("SELECT count(*)::bigint FROM item_instances", &[])
+            .map_err(map_sql)?
+            .get(0);
+        let cutover = tx
+            .query_opt("SELECT value FROM durable_meta WHERE key = 'cutover'", &[])
+            .map_err(map_sql)?;
+        if characters != 0 || items != 0 || cutover.is_some() {
+            return Err(PersistError::conflict(
+                db_path(),
+                "database is not an empty application schema",
+            ));
+        }
+        tx.execute(
+            "INSERT INTO durable_meta (key, value) VALUES
+                ('next_character_id', '1'),
+                ('next_item_instance_id', '1'),
+                ('deployment_id', $1),
+                ('cutover', 'fresh')",
+            &[&deployment_id],
+        )
+        .map_err(map_sql)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => tx.commit().map_err(map_sql),
+        Err(err) => {
+            let _ = tx.rollback();
+            Err(err)
+        }
+    }
+}
+
+fn initialize(client: &mut Client, dir: &Path, deployment_id: &str) -> Result<(), PersistError> {
     let mut tx = client.transaction().map_err(map_sql)?;
     let result = (|| {
         tx.execute("SELECT pg_advisory_xact_lock($1)", &[&IMPORT_LOCK_KEY])
@@ -1068,7 +1303,7 @@ fn initialize(client: &mut Client, dir: &Path) -> Result<(), PersistError> {
             ));
         }
         let plan = inventory_source(dir)?;
-        insert_import(&mut tx, &plan)?;
+        insert_import(&mut tx, &plan, deployment_id)?;
         Ok(())
     })();
     match result {
@@ -1270,11 +1505,16 @@ fn read_source(path: &Path) -> Result<Option<Vec<u8>>, PersistError> {
 fn insert_import(
     tx: &mut postgres::Transaction<'_>,
     plan: &ImportPlan,
+    deployment_id: &str,
 ) -> Result<(), PersistError> {
     let next_character = plan.next_character_id.to_string();
     tx.execute(
-        "INSERT INTO durable_meta (key, value) VALUES ('next_character_id', $1), ('next_item_instance_id', '1'), ('cutover', $2)",
-        &[&next_character, &plan.cutover],
+        "INSERT INTO durable_meta (key, value) VALUES
+            ('next_character_id', $1),
+            ('next_item_instance_id', '1'),
+            ('cutover', $2),
+            ('deployment_id', $3)",
+        &[&next_character, &plan.cutover, &deployment_id],
     )
     .map_err(map_sql)?;
     for row in &plan.rows {

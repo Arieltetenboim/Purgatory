@@ -52,7 +52,7 @@ cargo run -p purgatory-client
 cargo run -p purgatory-server
 ```
 
-The server listens on `127.0.0.1:5001` by default.
+The server listens on `127.0.0.1:5001` by default. Bootstrap the empty database once before the first start.
 
 To run the current Phase 12 gameplay with the local PostgreSQL database,
 follow [the Windows database runbook](docs/POSTGRESQL_LOCAL_RUN.md). It covers
@@ -98,12 +98,11 @@ does not parse TMX/TSX at runtime.
 - **Backquote / `~`** toggles the debug overlay.
 - The client starts on the Connection Frontend and does not auto-connect in normal development builds.
 - Default local server address: `127.0.0.1:5001`.
-- The current server still uses a data directory for its legacy file mode
-  and PostgreSQL cutover marker. On Windows the direct server defaults to
-  `%LOCALAPPDATA%\Purgatory\` unless overridden; Developer Hub uses its own
-  default. For the planned development reset, use a new empty directory to
-  avoid importing old files. After cutover, player state lives in PostgreSQL;
-  the directory is a compatibility dependency of this build.
+- The server requires PostgreSQL. Set `PURGATORY_DATABASE_URL`, `PURGATORY_DEPLOYMENT_ID`, and, when the migration role is separate, `PURGATORY_DATABASE_MIGRATION_URL`. `PURGATORY_DATABASE_SCHEMA` defaults to `public`. The Windows procedure is [`docs/POSTGRESQL_LOCAL_RUN.md`](docs/POSTGRESQL_LOCAL_RUN.md).
+- Bootstrap an empty database once with `cargo run -p purgatory-server -- --bootstrap-postgresql`. That creates an empty roster and does not read or write `identity.json`, `char_*.json`, or `durable_writer.json`.
+- Later starts use `cargo run -p purgatory-server`. They reopen the same deployment identity. A missing URL, a failed connection, a wrong schema or deployment id, or a failed migration stops startup and does not open the file writer.
+- Moving the database to another host keeps the committed rows. Start there with the same deployment id and no copied local marker. See [`docs/POSTGRESQL_HOST_MOVE.md`](docs/POSTGRESQL_HOST_MOVE.md).
+- File mode remains only for an explicit file open, including tests. It is not the server's fallback.
 - `Graphic/` is not a general runtime asset scan. Visual assets are integrated deliberately through the relevant runtime paths.
 
 ### Core controls

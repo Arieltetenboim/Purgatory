@@ -119,20 +119,24 @@ content; its character attempt, progress and reward claim become durable
 when that gameplay is implemented. One turn-in transaction includes claim,
 consumption, items, facts, abilities and any later currency/experience.
 
-The cutover imports development v1 `identity.json` and `char_*.json` records,
-and any 12A-format test data that is to be retained. It does not import
-production player data. The supported deployment is one legacy file server,
-then one PostgreSQL server. Before inventory, that file server has exited and
-the source directory stays unchanged through import and identity/count
-verification. The ordered steps are in
-[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). Import reads completed
-files. A snapshot still only queued is not a durable record. Validate IDs,
-roster ownership, revisions, restore fields and catalog references. Migrate
-supported state once, prove counts and identities, and switch to one writer;
-no silent blank-character fallback or concurrent file/database dual write.
-After cutover, PostgreSQL is the only durable authority. A marker check
-inside an already-open file service stops a later file-mode open of this
-server. An unrelated process is outside this threat model.
+New development starts from an empty PostgreSQL roster. Server startup does
+not import `identity.json` or `char_*.json`, and it does not read or write
+`durable_writer.json`. Bootstrap is a deliberate one-time action against an
+empty application schema. Normal startup reopens that database only when the
+configured deployment identity matches the stored identity. A missing URL, a
+failed connection, the wrong schema or identity, an uninitialized database, or
+a failed migration fails closed and does not open the file writer. A database
+restored on another host starts with the same deployment id and no copied
+local marker. The explicit legacy import remains available for a deliberate
+file cutover; it is not the server path. The ordered historical import steps
+are in [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). Import, when
+explicitly selected, reads completed files. A snapshot still only queued is
+not a durable record. Validate IDs, roster ownership, revisions, restore
+fields and catalog references. No silent blank-character fallback or
+concurrent file/database dual write. After bootstrap, PostgreSQL is the only
+durable authority. A marker check inside an already-open file service still
+stops a later file-mode open after an explicit import. An unrelated process
+is outside this threat model.
 
 Already lost NPC facts or learned grants cannot be invented by migration.
 Unknown schema, invalid content, duplicate ownership or a missing migration

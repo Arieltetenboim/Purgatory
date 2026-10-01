@@ -34,6 +34,12 @@ and it does not wire live Drop, pickup, equip, dialogue, or client replies.
 
 ## Cutover
 
+This section records the accepted 12A import procedure. Current server startup
+does not run it. A fresh development database is bootstrapped once and does
+not read legacy files. A restored database starts on another host when
+`PURGATORY_DEPLOYMENT_ID` matches the stored identity, with no local
+`durable_writer.json`. See [Phase 12C local startup and host move](PHASE_12C_GAMEPLAY.md).
+
 Do these steps in order. Inventory and import come only after the file-writing
 server is gone and the source directory is stable.
 

@@ -1,9 +1,10 @@
 //! Character persistence. Simulation does not depend on this crate.
 //!
 //! JSON, filesystem IO, and PostgreSQL sessions belong on the persistence
-//! worker, not the 30 Hz simulation thread. When `PURGATORY_DATABASE_URL` is
-//! set, PostgreSQL is the only writer. The file roster is then an import
-//! source, not a second durable copy.
+//! worker, not the 30 Hz simulation thread. Server startup requires
+//! PostgreSQL. A missing URL does not fall back to the file writer. Fresh
+//! bootstrap creates an empty roster and does not read legacy files. Normal
+//! open checks the stored deployment identity and does not need a local marker.
 
 mod atomic;
 mod character;
