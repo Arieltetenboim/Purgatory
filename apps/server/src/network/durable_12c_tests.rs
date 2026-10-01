@@ -1156,7 +1156,11 @@
             accepted,
             "reconciliation must resolve the committed drop for the client"
         );
-        assert!(owner.world().item_record(item).is_none());
+        assert!(
+            owner.world().world_drop_entity_for_item(item).is_some(),
+            "the committed drop is visible before DropAccepted"
+        );
+        assert!(owner.live_ground.contains_key(&item));
         assert!(
             owner.world().item_record(other).is_none(),
             "an uncommitted runtime item does not survive reconciliation"
@@ -1609,6 +1613,140 @@
         ));
         let _ = stalled.take_durable_commits();
         assert!(stalled.world().world_drop_entity_for_item(item).is_some());
+    }
+
+    #[test]
+    fn deferred_ground_wake_stays_bounded_until_pickups_resolve() {
+        const PENDING: usize = 64;
+        let mut owner = GameplayOwner::new();
+        let killer = CharacterId::from_raw(208);
+        let address = purgatory_common::WorldAddress::DEV;
+        let mut items = Vec::new();
+        for _ in 0..PENDING {
+            items.push(
+                owner
+                    .manifest_monster_loot(killer, address, [0.0, 1.0], sword(), 1)
+                    .unwrap(),
+            );
+        }
+        for item in &items {
+            owner.reserved_items.insert(*item);
+        }
+        owner.advance_ground_clock(Duration::from_secs(200));
+        let due: Vec<_> = owner.ground_expiry.keys().copied().collect();
+        assert_eq!(due.len(), PENDING);
+        for (when, raw) in due {
+            let item = purgatory_common::ItemInstanceId::from_raw(raw);
+            owner.ground_expiry.remove(&(when, raw));
+            owner.ground_deferred.push_back(item);
+            owner.ground_deferred_member.insert(item);
+        }
+        assert_eq!(
+            owner.ground_deferred.len(),
+            PENDING,
+            "setup holds every reserved due item on the deferred queue"
+        );
+        for _ in 0..3 {
+            let _ = owner.take_durable_commits();
+            assert!(
+                owner.ground_wake_ops as usize <= GROUND_RETIRE_BATCH,
+                "one wake inspected {} ground items",
+                owner.ground_wake_ops
+            );
+            assert!(
+                items.iter().all(|item| owner.world().world_drop_entity_for_item(*item).is_some()),
+                "a pending pickup keeps its ground item"
+            );
+        }
+        owner.reserved_items.clear();
+        let mut remaining = PENDING;
+        for _ in 0..PENDING {
+            let _ = owner.take_durable_commits();
+            assert!(
+                owner.ground_wake_ops as usize <= GROUND_RETIRE_BATCH,
+                "one wake inspected {} ground items after reservations cleared",
+                owner.ground_wake_ops
+            );
+            let now = items
+                .iter()
+                .filter(|item| owner.world().world_drop_entity_for_item(**item).is_some())
+                .count();
+            assert!(now <= remaining);
+            remaining = now;
+            if remaining == 0 {
+                break;
+            }
+        }
+        assert_eq!(remaining, 0, "deferred items expire after their reservation ends");
+    }
+
+    #[test]
+    fn removing_one_ground_item_does_not_scan_its_deadline_bucket() {
+        let mut owner = GameplayOwner::new();
+        let killer = CharacterId::from_raw(209);
+        let address = purgatory_common::WorldAddress::DEV;
+        let mut items = Vec::new();
+        for _ in 0..64 {
+            items.push(
+                owner
+                    .manifest_monster_loot(killer, address, [0.0, 1.0], sword(), 1)
+                    .unwrap(),
+            );
+        }
+        owner.ground_remove_ops = 0;
+        owner.forget_ground_item(items[0]);
+        assert!(
+            owner.ground_remove_ops <= 1,
+            "removing one item visited {} same-deadline entries",
+            owner.ground_remove_ops
+        );
+        assert!(owner.world().world_drop_entity_for_item(items[1]).is_some());
+        owner.advance_ground_clock(Duration::from_secs(200));
+        let _ = owner.take_durable_commits();
+        assert!(
+            owner.world().world_drop_entity_for_item(items[0]).is_some(),
+            "forgetting the timer leaves that drop unscheduled"
+        );
+        let left = items
+            .iter()
+            .filter(|item| owner.world().world_drop_entity_for_item(**item).is_some())
+            .count();
+        assert_eq!(left, 64 - GROUND_RETIRE_BATCH);
+    }
+
+    #[test]
+    fn dev_spawned_world_item_expires_with_ordinary_ground() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let before: Vec<_> = owner.world().iter().collect();
+        owner
+            .handle_dev_spawn_item(connection, purgatory_common::ITEM_SMALL_POTION, 1)
+            .expect("dev spawn");
+        let item = owner
+            .world()
+            .iter()
+            .find_map(|id| {
+                if before.contains(&id) {
+                    None
+                } else {
+                    owner.world().item_instance_at_world_drop(id)
+                }
+            })
+            .expect("dev spawn creates a world drop");
+        owner.advance_ground_clock(Duration::from_secs(200) - Duration::from_nanos(1));
+        let _ = owner.take_durable_commits();
+        assert!(owner.world().world_drop_entity_for_item(item).is_some());
+        owner.advance_ground_clock(Duration::from_nanos(1));
+        let staged = owner.take_durable_commits();
+        assert!(
+            staged.is_empty(),
+            "a developer spawn is not a durable row"
+        );
+        assert!(
+            owner.world().world_drop_entity_for_item(item).is_none(),
+            "a developer-spawned world item expires after 200 seconds"
+        );
     }
 
     #[test]
@@ -2218,11 +2356,44 @@
                 }
             }
             assert!(accepted, "reconcile must resolve the committed drop");
-            assert!(pg.owner.world().item_record(dropped).is_none());
+            let manifested = pg.owner.world().world_drop_entity_for_item(dropped);
+            assert!(
+                manifested.is_some(),
+                "a committed drop must be visible before DropAccepted"
+            );
+            assert_eq!(
+                pg.owner
+                    .world()
+                    .item_instance_at_world_drop(manifested.unwrap()),
+                Some(dropped),
+                "the ground item keeps its original instance id"
+            );
             assert!(pg.owner.world().inventory_contains(a.actor, kept));
             assert_eq!(
                 pg.service.read_item(dropped).unwrap().unwrap().owner,
                 ItemOwner::Ground
+            );
+            pg.owner
+                .advance_ground_clock(Duration::from_secs(200) - Duration::from_nanos(1));
+            assert!(
+                pg.owner.take_durable_commits().is_empty(),
+                "the drop stays until 200 seconds"
+            );
+            assert!(pg.owner.world().world_drop_entity_for_item(dropped).is_some());
+            pg.owner.advance_ground_clock(Duration::from_nanos(1));
+            let retiring = pg.owner.take_durable_commits();
+            assert_eq!(retiring.len(), 1);
+            assert_eq!(retiring[0].command.key, format!("retire-{}", dropped.raw()));
+            assert!(retiring[0].lease.is_none());
+            let retired = pg
+                .service
+                .commit_durable_leased(&retiring[0].command, retiring[0].lease.as_ref())
+                .unwrap();
+            pg.owner.settle_durable(retiring[0].token, Ok(retired));
+            assert!(pg.owner.world().world_drop_entity_for_item(dropped).is_none());
+            assert_eq!(
+                pg.service.read_item(dropped).unwrap().unwrap().owner,
+                ItemOwner::Retired
             );
             assert!(matches!(
                 pg.service.read_item(kept).unwrap().unwrap().owner,

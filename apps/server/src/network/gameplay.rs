@@ -570,10 +570,19 @@ pub struct GameplayOwner {
     /// Time the claimed channel has been running. Tests advance it directly.
     ground_elapsed: Duration,
     live_ground: HashMap<purgatory_common::ItemInstanceId, LiveGround>,
-    /// Due time → items. Only the front of this map is visited each wake.
-    ground_expiry: BTreeMap<Duration, Vec<purgatory_common::ItemInstanceId>>,
+    /// One entry per item, ordered by due time. Removal is one map operation.
+    ground_expiry: BTreeMap<(Duration, u64), ()>,
     /// Due items whose pickup is still waiting on the persistence worker.
+    /// A wake inspects only a bounded prefix of this queue.
     ground_deferred: VecDeque<purgatory_common::ItemInstanceId>,
+    ground_deferred_member: HashSet<purgatory_common::ItemInstanceId>,
+    /// Items inspected by the latest ground wake. Tests use this as the
+    /// representative cost of `promote_due_ground`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    ground_wake_ops: u32,
+    /// Map entries removed by the latest `forget_ground_item`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    ground_remove_ops: u32,
 }
 
 /// Ordinary ground stays visible for 200 seconds. Monster loot is exclusive to
@@ -1489,6 +1498,9 @@ impl GameplayOwner {
             live_ground: HashMap::new(),
             ground_expiry: BTreeMap::new(),
             ground_deferred: VecDeque::new(),
+            ground_deferred_member: HashSet::new(),
+            ground_wake_ops: 0,
+            ground_remove_ops: 0,
         }
     }
 
@@ -4604,7 +4616,8 @@ impl GameplayOwner {
         }
         let stack_limit = item.stack_limit;
         let spawn_position = [position[0] + 0.75, position[1] + 0.25];
-        self.world
+        let (spawned, _) = self
+            .world
             .spawn_world_drop_item(
                 address,
                 spawn_position,
@@ -4613,6 +4626,7 @@ impl GameplayOwner {
                 stack_limit,
             )
             .map_err(|error| format!("world-drop spawn failed: {error:?}"))?;
+        self.note_player_ground(spawned);
 
         println!(
             "DEV_ITEM_SPAWN spawned connection={connection_id} actor={actor} item={item_content_id} quantity={quantity} address={address} position=({:.3},{:.3})",

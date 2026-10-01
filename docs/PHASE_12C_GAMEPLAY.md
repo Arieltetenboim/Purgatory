@@ -45,11 +45,22 @@ retired item-instance id is not reused.
 
 The channel clock advances from the network loop's elapsed time. Tests advance
 that clock directly. A durable player drop starts its timer when the committed
-ground manifestation appears in `World`. Expiry is ordered by due time. One wake
-submits at most eight retires, through the persistence worker. The simulation
-tick does not call the database. A stale channel deadline does not retire ground.
-A pickup that is still waiting on the database keeps the item reserved, so expiry
-does not retire it. A retire of an item already committed to a character conflicts.
+ground manifestation appears in `World`. If that apply fails, reconciliation
+places the same item-instance id on the ground and starts the timer before
+`DropAccepted`. When that placement cannot be done, the client is not told the
+drop succeeded and control stays blocked. The item is not refunded. Expiry is
+one map entry per item, ordered by due time. One wake inspects at most eight
+due or deferred items and submits at most that many retires, through the
+persistence worker. A deferred item expires on a later wake after its pickup
+reservation ends. Removing one item does not scan the other items that share
+its deadline. The simulation tick does not call the database. A stale channel
+deadline does not retire ground. A pickup that is still waiting on the database
+keeps the item reserved, so expiry does not retire it. A retire of an item
+already committed to a character conflicts.
+
+A developer-spawned world item is ordinary visible ground. It uses the same
+200 second timer and is collectible immediately. It is not a durable row, so
+expiry removes it locally and does not write PostgreSQL.
 
 `manifest_monster_loot` is the authoritative spawn and eligibility path for a
 future loot drop. No loot table is authored, and monster death does not call it.
@@ -210,3 +221,22 @@ ignored persistence tests in 19.24s (`admit_us=16847`; workload `total_ms=1664`,
 `postgres_12c_restart_does_not_restore_ground_time`, and
 `postgres_12c_expiry_cannot_retire_a_character_item`. Monster death does not
 spawn loot. Phase 12C remains in review.
+
+Before the manifestation fix, `postgres_12c_failed_apply_reconciles_without_a_success_reply`
+sent `DropAccepted` while the world drop was missing. Before the wake bound,
+one wake inspected 64 deferred items, and removing one item visited 64
+same-deadline entries. A developer-spawned world item was still present after
+200 seconds. After the fix, reconciliation places that committed item id on
+the ground and starts its timer before `DropAccepted`; at 200 seconds the same
+id is retired. One wake inspects at most eight deferred items, and those items
+expire after their pickup reservation ends. Removing one item visits one map
+entry. A developer-spawned world item expires locally at 200 seconds and does
+not submit a durable retire. The review run of `./scripts/check.ps1` exited 0
+in about 128s. Persistence lib tests were 38 passed and 31 ignored. Server bin
+tests were 356 passed and 23 ignored in 2.50s. Simulation lib tests were 431
+passed. A disposable `postgres:18` container `purgatory-12c-review`, database
+`purgatory_12a_test` on `127.0.0.1:5433`, not `Purgatory_dev`, then passed 31
+ignored persistence tests in 18.24s (`admit_us=17202`; workload `total_ms=1676`,
+`mean_us=18627`, debug profile, not a capacity claim) and 14 ignored server
+`postgres_12c` tests in 5.35s. Monster death does not spawn loot. Phase 12C
+remains in review.

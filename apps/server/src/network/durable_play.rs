@@ -31,6 +31,9 @@ pub(crate) enum DurableEffect {
         connection_id: purgatory_protocol::ConnectionId,
         seq: u32,
         item: ItemInstanceId,
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
     },
     Pickup {
         connection_id: purgatory_protocol::ConnectionId,

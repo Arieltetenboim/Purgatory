@@ -375,12 +375,70 @@ impl GameplayOwner {
         if let Some(reserved) = self.reconcile_reserved.remove(&connection_id) {
             self.release_reserved(&reserved);
         }
+        if !self.manifest_reconciled_drop(connection_id, actor) {
+            self.reconcile_outbound.push(ReconcileJob {
+                connection_id,
+                character_id: restore.character.character_id,
+                revision,
+            });
+            if let Some(binding) = self.bindings.get_mut(&connection_id) {
+                binding.reconcile_required = true;
+            }
+            return false;
+        }
         if let Some(binding) = self.bindings.get_mut(&connection_id) {
             binding.reconcile_required = false;
         }
         self.acknowledge_reconciled(connection_id);
         self.finish_durable(connection_id, revision);
         true
+    }
+
+    /// A committed drop is visible and timed before the client is told it succeeded.
+    /// The original instance id is kept. Failure leaves control blocked and sends nothing.
+    fn manifest_reconciled_drop(
+        &mut self,
+        connection_id: ConnectionId,
+        actor: EntityId,
+    ) -> bool {
+        let Some(effect) = self.reconcile_effects.get(&connection_id).cloned() else {
+            return true;
+        };
+        let super::durable_play::DurableEffect::Drop {
+            item,
+            definition,
+            quantity,
+            stack_limit,
+            ..
+        } = effect
+        else {
+            return true;
+        };
+        if self.world.world_drop_entity_for_item(item).is_none() {
+            let Some(address) = self.world.address_of(actor) else {
+                return false;
+            };
+            let Some(position) = self.world.transform_of(actor).map(|value| value.position) else {
+                return false;
+            };
+            if self
+                .world
+                .manifest_committed_world_drop(
+                    item,
+                    address,
+                    position,
+                    definition,
+                    quantity,
+                    stack_limit,
+                )
+                .is_err()
+            {
+                return false;
+            }
+        }
+        self.durable_items.insert(item);
+        self.note_player_ground(item);
+        self.world.world_drop_entity_for_item(item).is_some()
     }
 
     fn acknowledge_reconciled(&mut self, connection_id: ConnectionId) {
@@ -835,6 +893,17 @@ impl GameplayOwner {
             self.reject_drop(connection_id, request.seq, DropRejectReason::InvalidRequest);
             return;
         }
+        let Some(record) = self.world.item_record(request.item_instance_id) else {
+            self.reject_drop(connection_id, request.seq, DropRejectReason::InvalidRequest);
+            return;
+        };
+        let stack_limit = self
+            .registry
+            .item_by_id(record.definition)
+            .map(|item| item.stack_limit)
+            .unwrap_or(record.quantity.max(1));
+        let definition = record.definition;
+        let quantity = record.quantity;
         let Some((_, character_id, revision, lease)) = self.durable_context(connection_id) else {
             self.reject_drop(connection_id, request.seq, DropRejectReason::StateBlocked);
             return;
@@ -856,6 +925,9 @@ impl GameplayOwner {
                 connection_id,
                 seq: request.seq,
                 item: request.item_instance_id,
+                definition,
+                quantity,
+                stack_limit,
             },
             reserved: vec![request.item_instance_id],
         });
@@ -1338,7 +1410,7 @@ impl GameplayOwner {
         ) {
             self.remove_expiry_entry(item, previous.expires_at);
         }
-        self.ground_expiry.entry(expires_at).or_default().push(item);
+        self.ground_expiry.insert((expires_at, item.raw()), ());
     }
 
     fn ground_collectible(
@@ -1366,44 +1438,41 @@ impl GameplayOwner {
         if Self::deadline_expired(self.channel_deadline) {
             return;
         }
-        let mut budget = GROUND_RETIRE_BATCH;
-        let waiting = std::mem::take(&mut self.ground_deferred);
-        for item in waiting {
-            if budget == 0 || self.reserved_items.contains(&item) {
-                self.ground_deferred.push_back(item);
-                continue;
-            }
-            if self.expire_one(item) {
-                budget -= 1;
-            }
-        }
-        let mut popped = 0usize;
-        while budget > 0 && popped < GROUND_RETIRE_BATCH {
-            let Some(item) = self.pop_due_ground() else {
+        self.ground_wake_ops = 0;
+        while (self.ground_wake_ops as usize) < GROUND_RETIRE_BATCH {
+            let item = if let Some(item) = self.ground_deferred.pop_front() {
+                self.ground_wake_ops = self.ground_wake_ops.saturating_add(1);
+                if !self.ground_deferred_member.remove(&item) {
+                    continue;
+                }
+                item
+            } else if let Some(item) = self.pop_due_ground() {
+                self.ground_wake_ops = self.ground_wake_ops.saturating_add(1);
+                item
+            } else {
                 break;
             };
-            popped = popped.saturating_add(1);
             if self.reserved_items.contains(&item) {
-                self.ground_deferred.push_back(item);
+                self.defer_ground(item);
                 continue;
             }
-            if self.expire_one(item) {
-                budget -= 1;
-            }
+            let _ = self.expire_one(item);
+        }
+    }
+
+    fn defer_ground(&mut self, item: purgatory_common::ItemInstanceId) {
+        if self.ground_deferred_member.insert(item) {
+            self.ground_deferred.push_back(item);
         }
     }
 
     fn pop_due_ground(&mut self) -> Option<purgatory_common::ItemInstanceId> {
-        let (&when, _) = self.ground_expiry.iter().next()?;
+        let (&(when, raw), _) = self.ground_expiry.iter().next()?;
         if when > self.ground_elapsed {
             return None;
         }
-        let bucket = self.ground_expiry.get_mut(&when)?;
-        let item = bucket.pop()?;
-        if bucket.is_empty() {
-            self.ground_expiry.remove(&when);
-        }
-        Some(item)
+        self.ground_expiry.remove(&(when, raw));
+        Some(purgatory_common::ItemInstanceId::from_raw(raw))
     }
 
     fn expire_one(&mut self, item: purgatory_common::ItemInstanceId) -> bool {
@@ -1439,30 +1508,31 @@ impl GameplayOwner {
         };
         let when = self.ground_elapsed.saturating_add(Duration::from_secs(1));
         live.expires_at = when;
-        self.ground_expiry.entry(when).or_default().push(item);
+        self.ground_expiry.insert((when, item.raw()), ());
     }
 
     fn unschedule_ground(&mut self, item: purgatory_common::ItemInstanceId) {
         if let Some(live) = self.live_ground.get(&item).copied() {
             self.remove_expiry_entry(item, live.expires_at);
         }
-        self.ground_deferred.retain(|id| *id != item);
+        self.ground_deferred_member.remove(&item);
     }
 
     fn forget_ground_item(&mut self, item: purgatory_common::ItemInstanceId) {
+        self.ground_remove_ops = 0;
         if let Some(live) = self.live_ground.remove(&item) {
             self.remove_expiry_entry(item, live.expires_at);
         }
-        self.ground_deferred.retain(|id| *id != item);
+        self.ground_deferred_member.remove(&item);
     }
 
     fn remove_expiry_entry(&mut self, item: purgatory_common::ItemInstanceId, expires_at: Duration) {
-        let empty = self.ground_expiry.get_mut(&expires_at).is_some_and(|bucket| {
-            bucket.retain(|id| *id != item);
-            bucket.is_empty()
-        });
-        if empty {
-            self.ground_expiry.remove(&expires_at);
+        if self
+            .ground_expiry
+            .remove(&(expires_at, item.raw()))
+            .is_some()
+        {
+            self.ground_remove_ops = self.ground_remove_ops.saturating_add(1);
         }
     }
 }

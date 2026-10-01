@@ -971,6 +971,30 @@ impl World {
         )
     }
 
+    /// Place a committed drop into the live world under its existing instance id.
+    pub fn manifest_committed_world_drop(
+        &mut self,
+        id: ItemInstanceId,
+        address: WorldAddress,
+        position: [f32; 2],
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+    ) -> Result<EntityId, ItemRuntimeError> {
+        if let Some(entity) = self.world_drop_entity_for_item(id) {
+            return Ok(entity);
+        }
+        self.spawn_world_drop_item_with_instance(
+            id,
+            address,
+            position,
+            definition,
+            quantity,
+            stack_limit,
+        )
+        .map(|(_, entity)| entity)
+    }
+
     /// Authoritative restore/test insert with an explicit instance id.
     pub(crate) fn spawn_world_drop_item_with_instance(
         &mut self,
