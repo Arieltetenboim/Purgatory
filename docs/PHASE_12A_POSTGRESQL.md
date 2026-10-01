@@ -4,6 +4,11 @@ Status: **accepted** as the Phase 12A storage foundation (2026-09-29). This is
 not a Phase 12 exit. Root `PHASE` moved to `12.12B` when lifecycle review started. 12C is
 not started. Draft PR #116 stays unmerged.
 
+This is the historical 12A acceptance record. For the current local run
+procedure, including later lifecycle and item-ID-range migrations, use
+[`POSTGRESQL_LOCAL_RUN.md`](POSTGRESQL_LOCAL_RUN.md). The future host move is
+in [`POSTGRESQL_HOST_MOVE.md`](POSTGRESQL_HOST_MOVE.md).
+
 ## What 12A stores
 
 Migration `crates/persistence/migrations/0001_foundation.sql` is the only

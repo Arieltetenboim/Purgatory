@@ -54,6 +54,12 @@ cargo run -p purgatory-server
 
 The server listens on `127.0.0.1:5001` by default.
 
+To run the current Phase 12 gameplay with the local PostgreSQL database,
+follow [the Windows database runbook](docs/POSTGRESQL_LOCAL_RUN.md). It covers
+the one-time import, role permissions, connection settings, Developer Hub,
+and pgAdmin verification. [Moving the database to a dedicated host](docs/POSTGRESQL_HOST_MOVE.md)
+has a separate procedure.
+
 FORGE W1.3A Map Lab can be launched directly with:
 
 ```powershell
@@ -92,7 +98,11 @@ does not parse TMX/TSX at runtime.
 - **Backquote / `~`** toggles the debug overlay.
 - The client starts on the Connection Frontend and does not auto-connect in normal development builds.
 - Default local server address: `127.0.0.1:5001`.
-- File-backed character data lives outside the repository. On Windows the default is under `%LOCALAPPDATA%\Purgatory\` unless overridden.
+- The data directory lives outside the repository. On Windows the direct
+  server defaults to `%LOCALAPPDATA%\Purgatory\` unless overridden;
+  Developer Hub uses its own default. After PostgreSQL cutover, the files
+  are historical import input and the directory holds the writer marker.
+  Choose one directory explicitly before the first database start.
 - `Graphic/` is not a general runtime asset scan. Visual assets are integrated deliberately through the relevant runtime paths.
 
 ### Core controls
@@ -148,6 +158,8 @@ The detailed validation policy and extended network/load gates live in the docs 
 | [`docs/TEST_GATES.md`](docs/TEST_GATES.md) | Validation and test gates |
 | [`docs/PERFORMANCE_BUDGETS.md`](docs/PERFORMANCE_BUDGETS.md) | Performance budgets |
 | [`docs/CONTENT_PIPELINE.md`](docs/CONTENT_PIPELINE.md) | Content pipeline |
+| [`docs/POSTGRESQL_LOCAL_RUN.md`](docs/POSTGRESQL_LOCAL_RUN.md) | Local PostgreSQL setup, first run, and pgAdmin checks |
+| [`docs/POSTGRESQL_HOST_MOVE.md`](docs/POSTGRESQL_HOST_MOVE.md) | Planned move to a dedicated or managed database host |
 | [`docs/NPC_DIALOGUE_RUNTIME.md`](docs/NPC_DIALOGUE_RUNTIME.md) | Current NPC dialogue runtime, ownership and operation |
 | [`docs/CHARACTER_ANIMATION_ARCHITECTURE.md`](docs/CHARACTER_ANIMATION_ARCHITECTURE.md) | Character animation architecture |
 | [`docs/dev-tools/README.md`](docs/dev-tools/README.md) | Developer tooling details |
