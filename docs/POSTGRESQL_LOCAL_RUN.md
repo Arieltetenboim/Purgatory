@@ -23,9 +23,10 @@ import is superseded (ADR-0073) and is not a setup step.
 Do these steps in order. The only database this guide creates or deletes is
 the pinned local database `Purgatory_dev` on `127.0.0.1`.
 
-1. Create the roles in section 2 if they do not exist, set the environment in
-   section 3, then launch `./DEV_HUB.BAT` from that same window so Hub
-   inherits the three database URLs.
+1. Create the roles in section 2 if they do not exist, then create the local
+   file in section 3 once. Launch `./DEV_HUB.BAT` by double-click or from any
+   shell. Developer Hub reads `config/local/database.env` itself. A PowerShell
+   window is not required, and closing a shell does not drop the settings.
 2. In the database section, type the first development username and press
    **Create**. When `Purgatory_dev` is absent, Create creates that physical
    database, applies the versioned migrations, grants the runtime role, and
@@ -95,46 +96,45 @@ and schema on later starts. A different id, URL, or schema fails closed.
    `postgres`) and save. Do not use Reset to repair a grant. Reset deletes the
    database.
 
-## 3. Give the server its connection settings
+## 3. Create the local configuration file once
 
-Open a **new PowerShell window in the repository root**. The following
-example prompts for passwords without echoing them or putting literals in
-PowerShell history. The connection URLs remain plaintext environment
-variables in this process and its children, so this is a development setup,
-not a production secret-distribution system. `EscapeDataString` encodes URL
-characters such as `@` and `:` in the passwords.
+The file is `config/local/database.env` in the repository root. It is listed
+in `.gitignore`. Do not commit it, paste it into chat, or put it under
+`config/local/database.env.example`.
 
-```powershell
-function Read-EncodedPassword([string]$Prompt) {
-    $secure = Read-Host -Prompt $Prompt -AsSecureString
-    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try {
-        [uri]::EscapeDataString([Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr))
-    } finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
-    }
-}
+1. Copy `config/local/database.env.example` to `config/local/database.env`.
+2. Replace `REPLACE_RUNTIME_PASSWORD` with the `purgatory_dev` password and
+   `REPLACE_MIGRATION_PASSWORD` with the `purgatory_migrator` password. If a
+   password contains `@`, `:`, `/`, or `%`, percent-encode that character in
+   the URL (`@` is `%40`, `:` is `%3A`). Quote the whole value with `"` when
+   it contains spaces. `#` inside a value is part of the value.
+3. Leave the database name `Purgatory_dev`, the schema `purgatory_game`, the
+   deployment id `purgatory-dev`, the host `127.0.0.1`, and `sslmode=disable`
+   unless this machine was initialized with a different schema name. The file
+   accepts only a loopback host. Do not add `PURGATORY_DATABASE_ADMIN_URL`.
 
-$runtimePassword = Read-EncodedPassword 'purgatory_dev password'
-$migratorPassword = Read-EncodedPassword 'purgatory_migrator password'
-$adminPassword = Read-EncodedPassword 'postgres administrator password'
-$env:PURGATORY_DATABASE_URL = "postgresql://purgatory_dev:$runtimePassword@127.0.0.1:5432/Purgatory_dev?sslmode=disable"
-$env:PURGATORY_DATABASE_MIGRATION_URL = "postgresql://purgatory_migrator:$migratorPassword@127.0.0.1:5432/Purgatory_dev?sslmode=disable"
-$env:PURGATORY_DATABASE_ADMIN_URL = "postgresql://postgres:$adminPassword@127.0.0.1:5432/postgres?sslmode=disable"
-$env:PURGATORY_DATABASE_SCHEMA = 'purgatory_game'
-$env:PURGATORY_DEPLOYMENT_ID = 'purgatory-dev'
-Remove-Variable runtimePassword, migratorPassword, adminPassword, secure -ErrorAction SilentlyContinue
-```
+`DEV_HUB.BAT` and Developer Hub load that file on every launch, including a
+double-click. The game server and Check receive the runtime URL, schema, and
+deployment id. Add User also receives the migration URL. Create and Reset
+receive those settings plus the administrator password typed into the Hub
+database panel. That password is kept in memory for the Hub session and is
+not written to the file.
 
-If the schema name `purgatory_game` was already initialized, replace it
-consistently here and in the pgAdmin queries below with the new name.
-`sslmode=disable` is only for this loopback development connection. Never
-reuse these local connection URLs (Uniform Resource Locators) for a remote
-host. On later launches, keep the same database, schema, deployment id, and
-role identities; supply passwords again through
-your chosen local secret mechanism. A missing
-`PURGATORY_DATABASE_URL` or `PURGATORY_DEPLOYMENT_ID` stops startup. Setting
-only the migration URL does not open a game database.
+To change the settings, edit `config/local/database.env` and start Developer
+Hub again. Restart the game server after a change; a server that is already
+running keeps the environment it was given at launch.
+
+Check and Start Server do not need the `postgres` administrator password.
+Create and Reset do. If the password field is empty, Hub does not start those
+operations. Headless Create and Reset still read
+`PURGATORY_DATABASE_ADMIN_URL` from the environment of that command. The local
+file does not supply it. When `PURGATORY_DATABASE_URL` is already set, the
+process uses that environment and does not read the file.
+
+A missing `PURGATORY_DATABASE_URL` or `PURGATORY_DEPLOYMENT_ID` stops startup.
+Setting only the migration URL does not open a game database. `sslmode=disable`
+is only for this loopback development connection. Never reuse these local
+connection URLs (Uniform Resource Locators) for a remote host.
 
 Section 1 is the Hub path. The same operations exist headless, and they still
 refuse every database except `Purgatory_dev`:
@@ -196,10 +196,9 @@ This checks the normal client against the already initialized `Purgatory_dev`.
 Do not press **Create** or **Reset**, and do not run `--database-create` or
 `--database-reset`. The `ariel` row is already in `dev_users`.
 
-1. In a PowerShell window at the repository root, set the section 3
-   environment, including `PURGATORY_DATABASE_URL`,
-   `PURGATORY_DATABASE_SCHEMA`, and `PURGATORY_DEPLOYMENT_ID`. Launch
-   `./DEV_HUB.BAT` from that same window.
+1. Create `config/local/database.env` as in section 3 if it is not already
+   there. Launch `./DEV_HUB.BAT`. Do not set `PURGATORY_DATABASE_ADMIN_URL`
+   for this smoke. Check and Start Server use the runtime role from the file.
 2. Press **Check**. The status should be `ready`. The server state stays
    Stopped until you start it.
 3. Press **Start Server**. The Hub may report Ready only after startup has

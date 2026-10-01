@@ -129,10 +129,14 @@ pub enum HubCommand {
     /// Create `Purgatory_dev` when it is absent and optionally add the first user.
     DatabaseCreate {
         user: String,
+        /// PostgreSQL administrator password. Not written to the local file or logs.
+        admin_password: String,
     },
     /// Delete and recreate `Purgatory_dev` after the game server has stopped.
     DatabaseReset {
         confirm: String,
+        /// PostgreSQL administrator password. Not written to the local file or logs.
+        admin_password: String,
     },
     /// Insert one development allowlist username. Does not create a character.
     DatabaseAddUser {

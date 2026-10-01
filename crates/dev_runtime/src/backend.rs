@@ -15,6 +15,9 @@ pub struct SpawnSpec {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
+    /// Inherited environment keys removed from this child. Applied after `env`,
+    /// so a removed key is not kept from the parent process.
+    pub env_remove: Vec<String>,
     pub log_name: &'static str,
     /// Live UI pump (session jobs). Detached server uses file stdio instead.
     pub ui_pump: bool,
@@ -118,11 +121,10 @@ impl ProcessBackend for StdProcessBackend {
         cmd.args(&spec.args)
             .current_dir(&spec.cwd)
             .stdin(Stdio::null());
-        for (k, v) in &spec.env {
-            cmd.env(k, v);
-        }
+        configure_child_env(&mut cmd, &spec);
 
         let log_path = log_dir.join(format!("{}.log", spec.log_name));
+        let secrets = connection_secrets(&spec.env);
         let mut child = if spec.lifetime == ProcessLifetime::Detached {
             spawn_detached(&spec, &log_path)?
         } else {
@@ -136,19 +138,31 @@ impl ProcessBackend for StdProcessBackend {
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             if let Some(out) = stdout {
-                spawn_pump(spec.log_name, out, log_path.clone(), Some(incoming.clone()));
+                spawn_pump(
+                    spec.log_name,
+                    out,
+                    log_path.clone(),
+                    Some(incoming.clone()),
+                    secrets.clone(),
+                );
             }
             if let Some(err) = stderr {
-                spawn_pump(spec.log_name, err, log_path, Some(incoming.clone()));
+                spawn_pump(
+                    spec.log_name,
+                    err,
+                    log_path,
+                    Some(incoming.clone()),
+                    secrets.clone(),
+                );
             }
         } else if spec.lifetime != ProcessLifetime::Detached {
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             if let Some(out) = stdout {
-                spawn_pump(spec.log_name, out, log_path.clone(), None);
+                spawn_pump(spec.log_name, out, log_path.clone(), None, secrets.clone());
             }
             if let Some(err) = stderr {
-                spawn_pump(spec.log_name, err, log_path, None);
+                spawn_pump(spec.log_name, err, log_path, None, secrets);
             }
         }
         let owned = match spec.lifetime {
@@ -205,9 +219,7 @@ impl ProcessBackend for StdProcessBackend {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for (k, v) in &spec.env {
-            cmd.env(k, v);
-        }
+        configure_child_env(&mut cmd, &spec);
         apply_session_flags(&mut cmd);
         let output = cmd
             .output()
@@ -222,9 +234,7 @@ impl ProcessBackend for StdProcessBackend {
     fn spawn_visible(&mut self, spec: SpawnSpec) -> Result<u32, String> {
         let mut cmd = Command::new(&spec.program);
         cmd.args(&spec.args).current_dir(&spec.cwd);
-        for (k, v) in &spec.env {
-            cmd.env(k, v);
-        }
+        configure_child_env(&mut cmd, &spec);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -270,6 +280,7 @@ fn spawn_pump(
     stream: impl Read + Send + 'static,
     log_path: PathBuf,
     incoming: Option<IncomingLog>,
+    secrets: Vec<String>,
 ) {
     thread::Builder::new()
         .name(format!("purgatory-log-{name}"))
@@ -277,7 +288,7 @@ fn spawn_pump(
             let reader = BufReader::new(stream);
             for line in reader.lines() {
                 let Ok(line) = line else { break };
-                let line = line.replace('\u{0007}', "");
+                let line = redact_process_text(&line.replace('\u{0007}', ""), &secrets);
                 if line.is_empty() {
                     continue;
                 }
@@ -305,6 +316,74 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 #[cfg(windows)]
 const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+fn redact_process_text(text: &str, secrets: &[String]) -> String {
+    let mut text = purgatory_persistence::redact_connection_text(text);
+    for secret in secrets {
+        if secret.len() >= 4 {
+            text = text.replace(secret, "[redacted]");
+        }
+    }
+    text
+}
+
+/// Passwords embedded in connection URLs this child received. Used only to
+/// redact process output. The returned values must not be logged.
+fn connection_secrets(env: &[(String, String)]) -> Vec<String> {
+    let mut secrets = Vec::new();
+    for (_, value) in env {
+        let Some(secret) = password_in_connection_url(value) else {
+            continue;
+        };
+        if secret.len() >= 4 && !secrets.iter().any(|known| known == &secret) {
+            secrets.push(secret);
+        }
+    }
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    secrets
+}
+
+fn password_in_connection_url(value: &str) -> Option<String> {
+    let rest = value
+        .strip_prefix("postgresql://")
+        .or_else(|| value.strip_prefix("postgres://"))?;
+    let (userinfo, _) = rest.split_once('@')?;
+    let (_, password) = userinfo.split_once(':')?;
+    let password = percent_decode(password);
+    if password.is_empty() {
+        None
+    } else {
+        Some(password)
+    }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Ok(value) = u8::from_str_radix(&text[index + 1..index + 3], 16)
+        {
+            out.push(value);
+            index += 3;
+            continue;
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| text.to_string())
+}
+
+fn configure_child_env(cmd: &mut Command, spec: &SpawnSpec) {
+    for (key, value) in &spec.env {
+        cmd.env(key, value);
+    }
+    for key in &spec.env_remove {
+        cmd.env_remove(key);
+    }
+}
 
 fn apply_session_flags(cmd: &mut Command) {
     #[cfg(windows)]
@@ -338,9 +417,7 @@ fn spawn_detached(spec: &SpawnSpec, log_path: &Path) -> Result<Child, String> {
         cmd.args(&spec.args)
             .current_dir(&spec.cwd)
             .stdin(Stdio::null());
-        for (k, v) in &spec.env {
-            cmd.env(k, v);
-        }
+        configure_child_env(&mut cmd, spec);
         cmd.stdout(Stdio::from(file));
         cmd.stderr(Stdio::from(err_file));
         apply_detached_flags(&mut cmd, breakaway);
@@ -470,7 +547,10 @@ pub struct FakeProcessBackend {
     pub print_env_stdout: String,
     pub print_env_stderr: String,
     pub extra_env_log: Vec<(String, String)>,
+    pub captured_env: Vec<CapturedProcessEnv>,
 }
+
+pub type CapturedProcessEnv = (String, Vec<(String, String)>, Vec<String>);
 
 pub struct FakeProc {
     pub kind: FakeKind,
@@ -517,8 +597,10 @@ impl ProcessBackend for FakeProcessBackend {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
-        self.spawn_log
-            .push(format!("{} {}", name, spec.args.join(" ")));
+        let spawned = format!("{} {}", name, spec.args.join(" "));
+        self.spawn_log.push(spawned.clone());
+        self.captured_env
+            .push((spawned, spec.env.clone(), spec.env_remove.clone()));
         self.lifetimes.push(spec.lifetime);
         if name.contains("purgatory-server") {
             self.extra_env_log.extend(spec.env.iter().cloned());
@@ -630,5 +712,109 @@ impl ProcessBackend for FakeProcessBackend {
             self.kill_tree(pid);
         }
         n
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_process_receives_runtime_settings_and_drops_removed_keys() {
+        let mut cmd = env_dump_command();
+        cmd.env(
+            "PURGATORY_DATABASE_ADMIN_URL",
+            "postgresql://postgres:admin-secret-value@127.0.0.1:5432/postgres?sslmode=disable",
+        );
+        cmd.env(
+            "PURGATORY_DATABASE_MIGRATION_URL",
+            "postgresql://purgatory_migrator:migration-secret-value@127.0.0.1:5432/Purgatory_dev?sslmode=disable",
+        );
+        configure_child_env(
+            &mut cmd,
+            &SpawnSpec {
+                program: PathBuf::new(),
+                args: Vec::new(),
+                cwd: PathBuf::new(),
+                env: vec![
+                    (
+                        "PURGATORY_DATABASE_URL".into(),
+                        "postgresql://purgatory_dev:runtime-secret-value@127.0.0.1:5432/Purgatory_dev?sslmode=disable".into(),
+                    ),
+                    ("PURGATORY_DATABASE_SCHEMA".into(), "purgatory_game".into()),
+                    ("PURGATORY_DEPLOYMENT_ID".into(), "purgatory-dev".into()),
+                ],
+                env_remove: vec![
+                    "PURGATORY_DATABASE_ADMIN_URL".into(),
+                    "PURGATORY_DATABASE_MIGRATION_URL".into(),
+                ],
+                log_name: "test",
+                ui_pump: false,
+                lifetime: ProcessLifetime::Session,
+            },
+        );
+        let output = cmd.output().expect("environment dump");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            text.contains("PURGATORY_DATABASE_SCHEMA=purgatory_game"),
+            "child is missing the schema"
+        );
+        assert!(
+            text.contains("PURGATORY_DEPLOYMENT_ID=purgatory-dev"),
+            "child is missing the deployment id"
+        );
+        assert!(
+            text.contains("Purgatory_dev"),
+            "child is missing the database name"
+        );
+        assert!(
+            text.contains("runtime-secret-value"),
+            "child is missing the runtime credential"
+        );
+        assert!(
+            !text.contains("admin-secret-value"),
+            "child kept the administrator credential"
+        );
+        assert!(
+            !text.contains("migration-secret-value"),
+            "child kept the migration credential"
+        );
+    }
+
+    #[test]
+    fn process_output_redacts_connection_urls_and_embedded_passwords() {
+        let env = [(
+            "PURGATORY_DATABASE_ADMIN_URL".to_string(),
+            "postgresql://postgres:admin-secret-value@127.0.0.1:5432/postgres?sslmode=disable"
+                .to_string(),
+        )];
+        let secrets = connection_secrets(&env);
+        let line = redact_process_text(
+            "failed admin-secret-value postgresql://postgres:admin-secret-value@127.0.0.1:5432/postgres?sslmode=disable",
+            &secrets,
+        );
+        assert!(!line.contains("admin-secret-value"));
+        assert!(!line.contains("postgresql://"));
+        assert!(line.contains("[redacted]"));
+
+        let encoded = [(
+            "PURGATORY_DATABASE_URL".to_string(),
+            "postgresql://purgatory_dev:p%40ssword@127.0.0.1:5432/Purgatory_dev".to_string(),
+        )];
+        let secrets = connection_secrets(&encoded);
+        let line = redact_process_text("authentication failed for p@ssword", &secrets);
+        assert!(!line.contains("p@ssword"));
+    }
+
+    #[cfg(windows)]
+    fn env_dump_command() -> Command {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/d", "/c", "set"]);
+        cmd
+    }
+
+    #[cfg(not(windows))]
+    fn env_dump_command() -> Command {
+        Command::new("env")
     }
 }

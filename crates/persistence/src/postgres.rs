@@ -52,7 +52,38 @@ pub struct PostgresSettings {
 
 impl PostgresSettings {
     pub fn from_env() -> Result<Option<Self>, PersistError> {
-        Self::from_vars(|key| std::env::var(key))
+        if let Ok(url) = std::env::var("PURGATORY_DATABASE_URL")
+            && !url.trim().is_empty()
+        {
+            return Self::from_vars(|key| std::env::var(key));
+        }
+        match crate::local_config::discover_process_file() {
+            Ok(Some(config)) => Ok(Some(config.runtime_settings())),
+            Ok(None) => Self::from_vars(|key| std::env::var(key)),
+            Err(err) => Err(PersistError::storage(err.to_string())),
+        }
+    }
+
+    /// `start` is a workspace directory that may contain the local file.
+    /// An explicit `PURGATORY_DATABASE_URL` from `getenv` wins and the file is ignored.
+    #[cfg(test)]
+    pub(crate) fn from_env_in(
+        start: Option<&std::path::Path>,
+        mut getenv: impl FnMut(&str) -> Result<String, std::env::VarError>,
+    ) -> Result<Option<Self>, PersistError> {
+        if let Ok(url) = getenv("PURGATORY_DATABASE_URL")
+            && !url.trim().is_empty()
+        {
+            return Self::from_vars(getenv);
+        }
+        if let Some(start) = start {
+            match crate::local_config::discover(start) {
+                Ok(Some(config)) => return Ok(Some(config.runtime_settings())),
+                Ok(None) => {}
+                Err(err) => return Err(PersistError::storage(err.to_string())),
+            }
+        }
+        Self::from_vars(getenv)
     }
 
     pub(crate) fn from_vars(

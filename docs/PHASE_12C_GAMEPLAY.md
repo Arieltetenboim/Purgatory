@@ -109,11 +109,15 @@ player action reserves the item. Channel expiry does not.
 The operator steps are [`POSTGRESQL_LOCAL_RUN.md`](POSTGRESQL_LOCAL_RUN.md)
 and [`POSTGRESQL_HOST_MOVE.md`](POSTGRESQL_HOST_MOVE.md).
 
-Server startup requires PostgreSQL. Set `PURGATORY_DATABASE_URL` and
-`PURGATORY_DEPLOYMENT_ID`. When the migration role is separate, also set
-`PURGATORY_DATABASE_MIGRATION_URL`. `PURGATORY_DATABASE_SCHEMA` defaults to
-`public`. A deployment id is 1 to 64 characters: ASCII letters, digits, `.`,
-`_`, and `-`.
+Server startup requires PostgreSQL. Local development reads
+`config/local/database.env` when `PURGATORY_DATABASE_URL` is unset. That
+git-ignored file sets the runtime URL, migration URL, schema, and
+`PURGATORY_DEPLOYMENT_ID`. Developer Hub loads it on every launch. Check and
+Start Server use the runtime role and do not require the administrator
+password. `PURGATORY_DATABASE_SCHEMA` defaults to `public` only when the URL
+is supplied by the environment and the schema variable is absent. A deployment
+id is 1 to 64 characters: ASCII letters, digits, `.`, `_`, and `-`. The local
+file must use `purgatory-dev`.
 
 Database creation is a Developer Hub operation, or the headless
 `--database-create` command, against the pinned local database `Purgatory_dev`.
@@ -366,3 +370,18 @@ ignored persistence tests in 21.06s (`admit_us=17338`; workload `total_ms=1821`,
 `postgres_12c` tests in 5.87s. The container was removed. Collectible developer
 spawns require PostgreSQL; file mode does not show them. Phase 12C remains in
 review.
+
+Local development reads `config/local/database.env` from the repository root.
+The file is gitignored. `DEV_HUB.BAT` and Developer Hub load it on every launch,
+including double-click. Check and Start Server use the runtime role. Create and
+Reset ask for the administrator password in Hub and do not store it. Connection
+URLs and passwords are redacted from Hub logs and process output.
+`./scripts/check.ps1` exited 0 in about 180s. Persistence lib tests were 23
+passed and 38 ignored. Server bin tests were 359 passed and 24 ignored in
+2.49s. Simulation lib tests were 431 passed. A disposable `postgres:18`
+container `purgatory-12c-localcfg`, database `purgatory_12a_test` on
+`127.0.0.1:5433`, not `Purgatory_dev`, then passed 37 ignored persistence tests
+in 25.80s, the disposable create/reset test in 2.18s, 15 ignored server
+`postgres_12c` tests in 6.71s, and the startup test in 3.01s. The container was
+removed. `Purgatory_dev` was not created, reset, or connected to. Phase 12C
+remains in review.

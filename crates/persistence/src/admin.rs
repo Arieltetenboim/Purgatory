@@ -80,15 +80,54 @@ impl DatabaseAdminRequest {
     /// Settings for the pinned local development database. A URL that names
     /// any other database is refused before a connection is opened.
     pub fn from_env() -> Result<Self, PersistError> {
-        Self::from_vars(|key| std::env::var(key))
+        Self::from_env_with(true, |key| std::env::var(key), None)
+    }
+
+    /// Add-user uses the migration role. It does not read the administrator URL.
+    pub fn from_env_for_user_add() -> Result<Self, PersistError> {
+        Self::from_env_with(false, |key| std::env::var(key), None)
     }
 
     pub fn from_vars(
+        getenv: impl FnMut(&str) -> Result<String, std::env::VarError>,
+    ) -> Result<Self, PersistError> {
+        Self::from_vars_inner(true, getenv)
+    }
+
+    pub(crate) fn from_env_with(
+        require_admin: bool,
+        mut getenv: impl FnMut(&str) -> Result<String, std::env::VarError>,
+        file_root: Option<&std::path::Path>,
+    ) -> Result<Self, PersistError> {
+        let env_has_url = matches!(
+            getenv("PURGATORY_DATABASE_URL"),
+            Ok(value) if !value.trim().is_empty()
+        );
+        let file = if env_has_url {
+            None
+        } else if let Some(root) = file_root {
+            crate::local_config::discover(root)
+                .map_err(|err| PersistError::storage(err.to_string()))?
+        } else {
+            crate::local_config::discover_process_file()
+                .map_err(|err| PersistError::storage(err.to_string()))?
+        };
+        Self::from_vars_inner(require_admin, |key| {
+            lookup_setting(key, &mut getenv, file.as_ref())
+        })
+    }
+
+    fn from_vars_inner(
+        require_admin: bool,
         mut getenv: impl FnMut(&str) -> Result<String, std::env::VarError>,
     ) -> Result<Self, PersistError> {
         let runtime_url = required_var(&mut getenv, "PURGATORY_DATABASE_URL")?;
         let migration_url = required_var(&mut getenv, "PURGATORY_DATABASE_MIGRATION_URL")?;
-        let maintenance_url = required_var(&mut getenv, "PURGATORY_DATABASE_ADMIN_URL")?;
+        let maintenance_url = if require_admin {
+            required_var(&mut getenv, "PURGATORY_DATABASE_ADMIN_URL")?
+        } else {
+            String::new()
+        };
         let deployment_id = required_var(&mut getenv, "PURGATORY_DEPLOYMENT_ID")?;
         let schema = match getenv("PURGATORY_DATABASE_SCHEMA") {
             Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
@@ -102,36 +141,66 @@ impl DatabaseAdminRequest {
             deployment_id,
             audience: AdminAudience::ConfiguredLocalDevelopment,
         };
-        request.validate()?;
+        if require_admin {
+            request.validate()?;
+        } else {
+            request.validate_for_user_add()?;
+        }
         Ok(request)
     }
 
     pub(crate) fn validate(&self) -> Result<ValidatedTarget, PersistError> {
+        self.validate_inner(true)
+    }
+
+    pub(crate) fn validate_for_user_add(&self) -> Result<ValidatedTarget, PersistError> {
+        self.validate_inner(false)
+    }
+
+    fn validate_inner(&self, require_admin: bool) -> Result<ValidatedTarget, PersistError> {
         postgres::validated_schema(&self.schema)?;
         postgres::validate_deployment_id(&self.deployment_id)?;
         let runtime = describe_url(&self.runtime_url, "runtime")?;
         let migration = describe_url(&self.migration_url, "migration")?;
-        let maintenance = describe_url(&self.maintenance_url, "administrator")?;
-        for endpoint in [&runtime, &migration, &maintenance] {
+        let maintenance = if require_admin {
+            Some(describe_url(&self.maintenance_url, "administrator")?)
+        } else {
+            None
+        };
+        for endpoint in [&runtime, &migration] {
             if !endpoint.local {
                 return Err(PersistError::storage(
                     "database administration is limited to a local PostgreSQL server",
                 ));
             }
         }
+        if let Some(endpoint) = &maintenance
+            && !endpoint.local
+        {
+            return Err(PersistError::storage(
+                "database administration is limited to a local PostgreSQL server",
+            ));
+        }
         if runtime.database != migration.database {
             return Err(PersistError::storage(
                 "runtime and migration URLs must name the same database",
             ));
         }
-        if maintenance.database != "postgres" {
+        if let Some(maintenance) = &maintenance
+            && maintenance.database != "postgres"
+        {
             return Err(PersistError::storage(
                 "administrator URL must connect to the postgres maintenance database",
             ));
         }
-        if runtime.user.eq_ignore_ascii_case(&migration.user)
-            || runtime.user.eq_ignore_ascii_case(&maintenance.user)
-            || migration.user.eq_ignore_ascii_case(&maintenance.user)
+        if runtime.user.eq_ignore_ascii_case(&migration.user) {
+            return Err(PersistError::storage(
+                "administrator, migration, and runtime roles must be distinct",
+            ));
+        }
+        if let Some(maintenance) = &maintenance
+            && (runtime.user.eq_ignore_ascii_case(&maintenance.user)
+                || migration.user.eq_ignore_ascii_case(&maintenance.user))
         {
             return Err(PersistError::storage(
                 "administrator, migration, and runtime roles must be distinct",
@@ -413,7 +482,9 @@ pub fn add_user(
     request: &DatabaseAdminRequest,
     login: &DevLogin,
 ) -> Result<AdminOutcome, AdminFailure> {
-    let _target = request.validate().map_err(fail_before_change)?;
+    let _target = request
+        .validate_for_user_add()
+        .map_err(fail_before_change)?;
     if login.as_str() == postgres::DEVELOPMENT_PROBE_LOGIN {
         return Err(fail_before_change(PersistError::storage(
             "the readiness probe is not a player account",
@@ -545,6 +616,64 @@ fn fail_before_change(err: PersistError) -> AdminFailure {
     }
 }
 
+fn lookup_setting(
+    key: &str,
+    getenv: &mut impl FnMut(&str) -> Result<String, std::env::VarError>,
+    file: Option<&crate::local_config::LocalDatabaseConfig>,
+) -> Result<String, std::env::VarError> {
+    match getenv(key) {
+        Ok(value) if !value.trim().is_empty() => Ok(value),
+        _ => file
+            .and_then(|config| config.exported(key).map(str::to_string))
+            .ok_or(std::env::VarError::NotPresent),
+    }
+}
+
+/// Check the pinned local database with the runtime role. Does not connect as
+/// the administrator and does not read `PURGATORY_DATABASE_ADMIN_URL`.
+pub fn inspect_runtime(settings: &PostgresSettings) -> Result<DatabaseInspection, AdminFailure> {
+    let endpoint = describe_url(&settings.url, "runtime").map_err(fail_before_change)?;
+    if !endpoint.local {
+        return Err(fail_before_change(PersistError::storage(
+            "database administration is limited to a local PostgreSQL server",
+        )));
+    }
+    if endpoint.database != LOCAL_DEV_DATABASE {
+        return Err(fail_before_change(PersistError::storage(
+            "local development administration only allows the database Purgatory_dev",
+        )));
+    }
+    if settings.deployment_id != LOCAL_DEV_DEPLOYMENT_ID {
+        return Err(fail_before_change(PersistError::storage(
+            "local development deployment id must be purgatory-dev",
+        )));
+    }
+    postgres::validated_schema(&settings.schema).map_err(fail_before_change)?;
+    match PostgresSettings::open_check(settings) {
+        Ok(()) => Ok(DatabaseInspection {
+            status: DatabaseStatus::Ready,
+            database: endpoint.database,
+            detail: "initialized".into(),
+        }),
+        Err(err) => {
+            let detail = crate::local_config::redact_connection_text(&err.to_string());
+            if detail.to_ascii_lowercase().contains("does not exist") {
+                Ok(DatabaseInspection {
+                    status: DatabaseStatus::Missing,
+                    database: LOCAL_DEV_DATABASE.to_string(),
+                    detail: "database is absent".into(),
+                })
+            } else {
+                Ok(DatabaseInspection {
+                    status: DatabaseStatus::Error,
+                    database: LOCAL_DEV_DATABASE.to_string(),
+                    detail,
+                })
+            }
+        }
+    }
+}
+
 fn fail_with_presence(err: ::postgres::Error, present: Option<bool>) -> AdminFailure {
     AdminFailure {
         detail: crate::postgres::map_sql_pub(err).to_string(),
@@ -574,6 +703,78 @@ mod tests {
             deployment_id: deployment.into(),
             audience: AdminAudience::ConfiguredLocalDevelopment,
         }
+    }
+
+    #[test]
+    fn runtime_inspection_does_not_use_an_administrator_url() {
+        let settings = PostgresSettings {
+            url: "postgresql://purgatory_dev:runtime-secret-value@db.example.com:5432/Purgatory_dev?sslmode=disable".into(),
+            migration_url: None,
+            schema: "purgatory_game".into(),
+            deployment_id: LOCAL_DEV_DEPLOYMENT_ID.into(),
+        };
+        let err = inspect_runtime(&settings).unwrap_err().to_string();
+        assert!(err.contains("local"), "{err}");
+        assert!(!err.contains("runtime-secret-value"), "{err}");
+        assert!(!err.contains("postgresql://"), "{err}");
+
+        let wrong = PostgresSettings {
+            url: "postgresql://purgatory_dev:runtime-secret-value@127.0.0.1:5432/other_dev?sslmode=disable".into(),
+            migration_url: None,
+            schema: "purgatory_game".into(),
+            deployment_id: LOCAL_DEV_DEPLOYMENT_ID.into(),
+        };
+        let err = inspect_runtime(&wrong).unwrap_err().to_string();
+        assert!(err.contains("Purgatory_dev"), "{err}");
+        assert!(!err.contains("runtime-secret-value"), "{err}");
+    }
+
+    #[test]
+    fn user_add_can_use_the_local_file_without_the_administrator_password() {
+        let root = std::env::temp_dir().join(format!(
+            "purgatory-admin-file-{}-{}",
+            std::process::id(),
+            unique_seq()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config/local")).unwrap();
+        std::fs::write(root.join("PHASE"), "12.12C\n").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::write(
+            root.join("config/local/database.env"),
+            "PURGATORY_DATABASE_URL=postgresql://purgatory_dev:runtime-secret-value@127.0.0.1:5432/Purgatory_dev?sslmode=disable\nPURGATORY_DATABASE_MIGRATION_URL=postgresql://purgatory_migrator:migration-secret-value@127.0.0.1:5432/Purgatory_dev?sslmode=disable\nPURGATORY_DATABASE_SCHEMA=purgatory_game\nPURGATORY_DEPLOYMENT_ID=purgatory-dev\n",
+        )
+        .unwrap();
+        let added = DatabaseAdminRequest::from_env_with(
+            false,
+            |_| Err(std::env::VarError::NotPresent),
+            Some(&root),
+        )
+        .unwrap();
+        assert!(added.maintenance_url.is_empty());
+        assert!(added.runtime_url.contains("/Purgatory_dev"));
+        assert!(added.migration_url.contains("purgatory_migrator"));
+        let missing_admin = DatabaseAdminRequest::from_env_with(
+            true,
+            |_| Err(std::env::VarError::NotPresent),
+            Some(&root),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            missing_admin.contains("PURGATORY_DATABASE_ADMIN_URL"),
+            "{missing_admin}"
+        );
+        assert!(
+            !missing_admin.contains("runtime-secret-value"),
+            "{missing_admin}"
+        );
+        assert!(
+            !missing_admin.contains("migration-secret-value"),
+            "{missing_admin}"
+        );
+        assert!(!missing_admin.contains("postgresql://"), "{missing_admin}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

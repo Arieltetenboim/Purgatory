@@ -11,6 +11,7 @@ mod domain;
 mod error;
 mod identity;
 mod lifecycle;
+mod local_config;
 mod memory;
 mod postgres;
 mod service;
@@ -18,7 +19,8 @@ mod service;
 pub use admin::{
     AdminAudience, AdminFailure, AdminOutcome, DatabaseAdminRequest, DatabaseInspection,
     DatabaseStatus, LOCAL_DEV_DATABASE, LOCAL_DEV_DEPLOYMENT_ID, add_user as add_development_user,
-    create as create_database, inspect as inspect_database, reset as reset_database,
+    create as create_database, inspect as inspect_database,
+    inspect_runtime as inspect_runtime_database, reset as reset_database,
 };
 pub use character::{PERSISTENCE_SCHEMA_VERSION, PersistentCharacter, PersistentCharacterSnapshot};
 pub use domain::{
@@ -32,6 +34,10 @@ pub use identity::{CharacterRosterEntry, MAX_ROSTER_SIZE};
 pub use lifecycle::{
     Admission, CHANNEL_GENERATION_EXPIRY, CHANNEL_GENERATION_RENEWAL, CHARACTER_LEASE_EXPIRY,
     CHARACTER_LEASE_RENEWAL, ChannelClaim, LeaseAuthority, LeaseBarrier, OwnedRestore,
+};
+pub use local_config::{
+    LocalDatabaseConfig, LocalDatabaseConfigError, RELATIVE_PATH as LOCAL_DATABASE_FILE,
+    redact_connection_text,
 };
 pub use postgres::{PostgresSettings, drop_test_schema};
 pub use service::{PersistenceService, SessionAdmission};
