@@ -33,6 +33,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
         3,
         include_str!("../migrations/0003_item_id_reservations.sql"),
     ),
+    (4, include_str!("../migrations/0004_current_health.sql")),
 ];
 const IMPORT_LOCK_KEY: i64 = 0x120A_0001;
 /// Reserved readiness login. It is not inserted into `dev_users` and it is not
@@ -1047,6 +1048,28 @@ pub(crate) fn migrate(client: &mut Client) -> Result<(), PersistError> {
         .map_err(map_sql)?;
     }
     tx.commit().map_err(map_sql)
+}
+
+/// Install migrations 1–3 only, so a test can prove migration 4 adds columns
+/// without deleting rows. Does not connect to a reserved database name.
+#[cfg(test)]
+pub(crate) fn install_pre_health_schema(
+    settings: &PostgresSettings,
+) -> Result<Client, PersistError> {
+    settings.refuse_reserved_database()?;
+    let mut client = connect_url(&settings.url)?;
+    prepare_schema(&mut client, &settings.schema, true)?;
+    let mut tx = client.transaction().map_err(map_sql)?;
+    for (version, body) in MIGRATIONS.iter().take(3) {
+        tx.batch_execute(body).map_err(map_sql)?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, body) VALUES ($1, $2)",
+            &[version, body],
+        )
+        .map_err(map_sql)?;
+    }
+    tx.commit().map_err(map_sql)?;
+    Ok(client)
 }
 
 /// Normal server startup refuses a missing, extra, or rewritten migration.
@@ -2206,7 +2229,8 @@ fn save_restore(
         let row = tx
             .query_opt(
                 "SELECT persistence_revision, restore_revision, restore_map_authored,
-                        restore_point_id, restore_checkpoint_id, instance_exit_reason
+                        restore_point_id, restore_checkpoint_id, instance_exit_reason,
+                        current_health, health_revision
                  FROM characters WHERE character_id = $1 FOR UPDATE",
                 &[&raw.as_slice()],
             )
@@ -2231,6 +2255,15 @@ fn save_restore(
         let stored_point: String = row.get(3);
         let stored_checkpoint: Option<String> = row.get(4);
         let stored_exit: Option<String> = row.get(5);
+        let stored_health_revision: i64 = row.get(7);
+        let stored_health_revision = u64::try_from(stored_health_revision).map_err(|_| {
+            PersistError::integrity(db_path(), "stored health revision is negative")
+        })?;
+        if snapshot.health_revision > stored_health_revision
+            && let Some(milli) = snapshot.current_health_milli
+        {
+            write_health(&mut tx, &raw, milli, snapshot.health_revision)?;
+        }
         let owner: String = tx
             .query_one(
                 "SELECT owner_login FROM characters WHERE character_id = $1",
@@ -2293,6 +2326,25 @@ fn save_restore(
             Err(err)
         }
     }
+}
+
+fn write_health(
+    tx: &mut postgres::Transaction<'_>,
+    raw: &[u8; 8],
+    milli: u32,
+    health_revision: u64,
+) -> Result<(), PersistError> {
+    let current = f64::from(milli) / 1000.0;
+    let revision = i64::try_from(health_revision)
+        .map_err(|_| PersistError::integrity(db_path(), "health revision does not fit"))?;
+    tx.execute(
+        "UPDATE characters
+         SET current_health = $2, health_revision = $3
+         WHERE character_id = $1 AND health_revision < $3",
+        &[&raw.as_slice() as &(dyn ToSql + Sync), &current, &revision],
+    )
+    .map_err(map_sql)?;
+    Ok(())
 }
 
 fn write_restore(
@@ -2547,7 +2599,7 @@ fn load_character(
     let row = client
         .query_opt(
             "SELECT persistence_revision, restore_map_authored, restore_point_id,
-                    restore_checkpoint_id, instance_exit_reason
+                    restore_checkpoint_id, instance_exit_reason, current_health, health_revision
              FROM characters WHERE character_id = $1",
             &[&raw.as_slice()],
         )
@@ -2563,6 +2615,7 @@ fn load_character(
     let point_id: String = row.get(2);
     let checkpoint: Option<String> = row.get(3);
     let exit_reason: Option<String> = row.get(4);
+    let (current_health_milli, health_revision) = read_health(&row, 5, 6)?;
     Ok(PersistentCharacter {
         schema_version: PERSISTENCE_SCHEMA_VERSION,
         character_id: id,
@@ -2576,7 +2629,32 @@ fn load_character(
         instance_exit: exit_reason.map(|reason| purgatory_common::InstanceExitContext {
             reason: Some(reason),
         }),
+        current_health_milli,
+        health_revision,
     })
+}
+
+pub(crate) fn read_health(
+    row: &postgres::Row,
+    health_index: usize,
+    revision_index: usize,
+) -> Result<(Option<u32>, u64), PersistError> {
+    let current: Option<f64> = row.get(health_index);
+    let revision: i64 = row.get(revision_index);
+    let health_revision = u64::try_from(revision)
+        .map_err(|_| PersistError::integrity(db_path(), "stored health revision is negative"))?;
+    let current_health_milli = current.map(|value| {
+        if !value.is_finite() || value <= 0.0 {
+            return 0;
+        }
+        let milli = (value * 1000.0).round();
+        if milli >= f64::from(u32::MAX) {
+            u32::MAX
+        } else {
+            milli as u32
+        }
+    });
+    Ok((current_health_milli, health_revision))
 }
 
 fn load_item(client: &mut Client, id: ItemInstanceId) -> Result<Option<ItemRecord>, PersistError> {

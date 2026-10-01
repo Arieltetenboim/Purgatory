@@ -97,6 +97,12 @@ impl MemoryStore {
             row.character.persistence_revision = snapshot.persistence_revision;
             row.character.restore = snapshot.restore;
             row.character.instance_exit = snapshot.instance_exit;
+            if snapshot.health_revision > row.character.health_revision
+                && snapshot.current_health_milli.is_some()
+            {
+                row.character.current_health_milli = snapshot.current_health_milli;
+                row.character.health_revision = snapshot.health_revision;
+            }
             return Ok(());
         }
         let name = CharacterName::parse("Saved").expect("fixture name");
@@ -114,6 +120,8 @@ impl MemoryStore {
                     persistence_revision: snapshot.persistence_revision,
                     restore: snapshot.restore,
                     instance_exit: snapshot.instance_exit,
+                    current_health_milli: snapshot.current_health_milli,
+                    health_revision: snapshot.health_revision,
                 },
             },
         );

@@ -370,8 +370,7 @@ pub fn create(
                         .contains("unsupported postgresql migration history")
                 {
                     grant_database(&mut maintenance, &target).map_err(fail_before_change)?;
-                    finish_initialization(request, &target, first_user)?;
-                    Ok(AdminOutcome::Created)
+                    finish_initialization(request, &target, first_user)
                 } else {
                     Err(err)
                 }
@@ -386,14 +385,16 @@ pub fn create(
         detail: err.to_string(),
         database_present: Some(true),
     })?;
-    if let Err(err) = finish_initialization(request, &target, first_user) {
-        let present = database_exists(&mut maintenance, &target.database).ok();
-        return Err(AdminFailure {
-            detail: err.detail,
-            database_present: present,
-        });
+    match finish_initialization(request, &target, first_user) {
+        Ok(outcome) => Ok(outcome),
+        Err(err) => {
+            let present = database_exists(&mut maintenance, &target.database).ok();
+            Err(AdminFailure {
+                detail: err.detail,
+                database_present: present,
+            })
+        }
     }
-    Ok(AdminOutcome::Created)
 }
 
 pub fn reset(request: &DatabaseAdminRequest, confirm: &str) -> Result<AdminOutcome, AdminFailure> {
@@ -510,24 +511,35 @@ fn finish_initialization(
     request: &DatabaseAdminRequest,
     target: &ValidatedTarget,
     first_user: Option<&DevLogin>,
-) -> Result<(), AdminFailure> {
+) -> Result<AdminOutcome, AdminFailure> {
     let mut migration = connect(&request.migration_url).map_err(fail_before_change)?;
     postgres::prepare_schema(&mut migration, &request.schema, true).map_err(fail_before_change)?;
     postgres::migrate(&mut migration).map_err(fail_before_change)?;
     postgres::grant_runtime(&mut migration, &request.schema, &target.runtime_user)
         .map_err(fail_before_change)?;
-    postgres::bootstrap_empty(&mut migration, &request.deployment_id)
-        .map_err(fail_before_change)?;
-    if let Some(login) = first_user {
-        migration
-            .execute(
-                "INSERT INTO dev_users (login) VALUES ($1)",
-                &[&login.as_str()],
-            )
-            .map_err(|err| fail_before_change(crate::postgres::map_sql_pub(err)))?;
+    match postgres::bootstrap_empty(&mut migration, &request.deployment_id) {
+        Ok(()) => {
+            if let Some(login) = first_user {
+                migration
+                    .execute(
+                        "INSERT INTO dev_users (login) VALUES ($1)",
+                        &[&login.as_str()],
+                    )
+                    .map_err(|err| fail_before_change(crate::postgres::map_sql_pub(err)))?;
+            }
+            runtime_ready(request)?;
+            Ok(AdminOutcome::Created)
+        }
+        Err(err) if bootstrap_already_present(&err) => {
+            runtime_ready(request)?;
+            Ok(AdminOutcome::AlreadyInitialized)
+        }
+        Err(err) => Err(fail_before_change(err)),
     }
-    runtime_ready(request)?;
-    Ok(())
+}
+
+fn bootstrap_already_present(err: &PersistError) -> bool {
+    matches!(err, PersistError::Conflict { reason, .. } if reason.contains("already bootstrapped"))
 }
 
 fn runtime_ready(request: &DatabaseAdminRequest) -> Result<(), AdminFailure> {

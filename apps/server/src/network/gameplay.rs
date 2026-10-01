@@ -422,6 +422,9 @@ pub struct PlayerBinding {
     /// saves must not use this counter as a command expectation.
     committed_revision: u64,
     restore: RestoreIntent,
+    /// Last health value written, or the value loaded at entry. Thousandths of a point.
+    stored_health_milli: Option<u32>,
+    health_revision: u64,
     pub input: SessionInput,
     replication: Option<ReplicationPipe>,
     interest: ObserverReplicationState,
@@ -1752,11 +1755,46 @@ impl GameplayOwner {
             interact,
             seed_welcome,
         ) {
-            true => Ok(()),
+            true => {
+                self.apply_stored_health(connection_id, &character);
+                Ok(())
+            }
             false => {
                 self.occupancy.remove(&character_id);
                 Err(EnterError::SpawnFailed)
             }
+        }
+    }
+
+    fn apply_stored_health(
+        &mut self,
+        connection_id: ConnectionId,
+        character: &purgatory_persistence::PersistentCharacter,
+    ) {
+        let Some(milli) = character.current_health_milli else {
+            if let Some(binding) = self.bindings.get_mut(&connection_id) {
+                binding.health_revision = character.health_revision;
+            }
+            return;
+        };
+        let Some(entity) = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+        else {
+            return;
+        };
+        let Some(max) = self.world.health_of(entity).map(|health| health.max) else {
+            return;
+        };
+        let current = purgatory_persistence::current_from_milli(milli, max);
+        let _ = self.world.set_health(entity, Health { current, max });
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.health_revision = character.health_revision;
+            binding.stored_health_milli = self
+                .world
+                .health_of(entity)
+                .map(|health| purgatory_persistence::health_milli(health.current, health.max));
         }
     }
 
@@ -1793,6 +1831,10 @@ impl GameplayOwner {
         let _ = self
             .world
             .set_health(entity, Health::full(PLAYER_HEALTH_MAX));
+        let spawned_health_milli = self
+            .world
+            .health_of(entity)
+            .map(|health| purgatory_persistence::health_milli(health.current, health.max));
         let _ = self.world.grant_ability(entity, live_basic_strike_id());
         self.narrative.initialize_actor(entity);
         if seed_welcome {
@@ -1812,6 +1854,8 @@ impl GameplayOwner {
                 replication,
                 interest: ObserverReplicationState::new(),
                 interact,
+                stored_health_milli: spawned_health_milli,
+                health_revision: 0,
                 last_equipment_seq: None,
                 last_equipment_result: None,
                 last_ability_seq: None,
@@ -2113,6 +2157,7 @@ impl GameplayOwner {
                 PersistentCharacterSnapshot,
             ),
         }
+        self.sync_live_health(connection_id);
         let kind = {
             let Some(binding) = self.bindings.get(&connection_id) else {
                 return Ok(None);
@@ -2304,6 +2349,7 @@ impl GameplayOwner {
             }
             return;
         }
+        self.sync_live_health(connection_id);
         if let Some(binding) = self.bindings.remove(&connection_id) {
             self.dialogues.forget_actor(binding.entity);
             self.narrative.forget_actor(binding.entity);
@@ -2314,6 +2360,8 @@ impl GameplayOwner {
                     persistence_revision: binding.persistence_revision.saturating_add(1),
                     restore: binding.restore.clone(),
                     instance_exit: None,
+                    current_health_milli: binding.stored_health_milli,
+                    health_revision: binding.health_revision,
                 };
                 if !save || binding.authority_lost {
                     if binding.authority_lost {
@@ -2351,7 +2399,63 @@ impl GameplayOwner {
             .retain(|id| self.world.item_record(*id).is_some());
     }
 
+    fn sync_live_health(&mut self, connection_id: ConnectionId) {
+        let Some(entity) = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+        else {
+            return;
+        };
+        let Some(health) = self.world.health_of(entity) else {
+            return;
+        };
+        if !health.current.is_finite() || !health.max.is_finite() {
+            return;
+        }
+        let milli = purgatory_persistence::health_milli(health.current, health.max);
+        let Some(binding) = self.bindings.get_mut(&connection_id) else {
+            return;
+        };
+        if binding.stored_health_milli != Some(milli) {
+            binding.health_revision = binding.health_revision.saturating_add(1);
+            binding.stored_health_milli = Some(milli);
+        }
+    }
+
+    fn health_changed(&self, connection_id: ConnectionId) -> bool {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return false;
+        };
+        let Some(health) = self.world.health_of(binding.entity) else {
+            return false;
+        };
+        if !health.current.is_finite() || !health.max.is_finite() {
+            return false;
+        }
+        let milli = purgatory_persistence::health_milli(health.current, health.max);
+        binding.stored_health_milli != Some(milli)
+    }
+
+    /// Enqueue a snapshot when live HP differs from the last committed value.
+    /// The persistence worker performs the SQL; this stays off the simulation clock.
+    fn persist_changed_health(&mut self) {
+        if self.persist.is_none() {
+            return;
+        }
+        let changed: Vec<ConnectionId> = self
+            .bindings
+            .keys()
+            .copied()
+            .filter(|id| self.health_changed(*id))
+            .collect();
+        for connection_id in changed {
+            self.request_save(connection_id);
+        }
+    }
+
     fn request_save(&mut self, connection_id: ConnectionId) {
+        self.sync_live_health(connection_id);
         let Some(binding) = self.bindings.get_mut(&connection_id) else {
             return;
         };
@@ -2364,6 +2468,8 @@ impl GameplayOwner {
             persistence_revision: binding.persistence_revision,
             restore: binding.restore.clone(),
             instance_exit: None,
+            current_health_milli: binding.stored_health_milli,
+            health_revision: binding.health_revision,
         };
         let lease = binding.authority.clone();
         if binding.authority_lost {
@@ -2431,6 +2537,8 @@ fn logout_snapshot(binding: &PlayerBinding) -> Option<PersistentCharacterSnapsho
         persistence_revision: binding.persistence_revision.saturating_add(1),
         restore: binding.restore.clone(),
         instance_exit: None,
+        current_health_milli: binding.stored_health_milli,
+        health_revision: binding.health_revision,
     })
 }
 
@@ -2964,6 +3072,7 @@ impl GameplayOwner {
             sample.gameplay_services += services2_t0.elapsed();
         }
 
+        self.persist_changed_health();
         self.ticks = tick.get();
         let pub_t = self.publish_snapshots(detail);
         sample.spatial_aoi += Duration::from_micros(pub_t.aoi_us);

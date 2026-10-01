@@ -22,7 +22,10 @@ pub use admin::{
     create as create_database, inspect as inspect_database,
     inspect_runtime as inspect_runtime_database, reset as reset_database,
 };
-pub use character::{PERSISTENCE_SCHEMA_VERSION, PersistentCharacter, PersistentCharacterSnapshot};
+pub use character::{
+    PERSISTENCE_SCHEMA_VERSION, PersistentCharacter, PersistentCharacterSnapshot,
+    current_from_milli, health_milli,
+};
 pub use domain::{
     CharacterItemLocation, CharacterNarrativeState, DURABLE_INVENTORY_CAPACITY, DurableCommand,
     DurableCommandResult, DurableContentRules, DurableEquipmentSlot, ItemContentRule, ItemOwner,

@@ -429,6 +429,8 @@ fn ownership_is_isolated_and_restore_does_not_erase_items() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let restored = service
@@ -625,6 +627,8 @@ fn gameplay_save_at_the_command_revision_keeps_its_restore() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let loaded = service
@@ -643,6 +647,8 @@ fn gameplay_save_at_the_command_revision_keeps_its_restore() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let loaded = service
@@ -921,6 +927,8 @@ fn later_equal_revision_restore_does_not_replace_the_recorded_one() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         service
@@ -933,6 +941,8 @@ fn later_equal_revision_restore_does_not_replace_the_recorded_one() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let loaded = service
@@ -951,6 +961,8 @@ fn later_equal_revision_restore_does_not_replace_the_recorded_one() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let loaded = service
@@ -2339,5 +2351,200 @@ fn restored_database_starts_on_another_host_without_a_local_marker() {
             }
         );
         let _ = std::fs::remove_dir_all(other_host);
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn current_health_migration_keeps_existing_rows() {
+    with_db(|_dir, settings| {
+        let name = postgres::database_name(&settings.url).unwrap();
+        assert!(
+            !name.eq_ignore_ascii_case("purgatory_dev"),
+            "refusing Purgatory_dev"
+        );
+        let mut client = postgres::install_pre_health_schema(settings).unwrap();
+        postgres::bootstrap_empty(&mut client, &settings.deployment_id).unwrap();
+        let character_id = 1u64.to_be_bytes();
+        let item_id = 1u64.to_be_bytes();
+        client
+            .execute("INSERT INTO dev_users (login) VALUES ($1)", &[&"alice"])
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO characters (
+                    character_id, owner_login, display_name, name_key, roster_position,
+                    persistence_revision, restore_revision, restore_map_authored, restore_point_id,
+                    restore_checkpoint_id, instance_exit_reason
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, NULL, NULL)",
+                &[
+                    &character_id.as_slice() as &(dyn ::postgres::types::ToSql + Sync),
+                    &"alice",
+                    &"Mira",
+                    &"mira",
+                    &0i32,
+                    &1i64,
+                    &"map.map2",
+                    &"default",
+                ],
+            )
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO item_instances (
+                    item_instance_id, definition_content_id, quantity, state,
+                    owner_character_id, location_kind, inventory_slot, equipment_slot
+                 ) VALUES ($1, $2, $3, 'live', $4, 'equipped', NULL, 'weapon')",
+                &[
+                    &item_id.as_slice() as &(dyn ::postgres::types::ToSql + Sync),
+                    &30_001i32,
+                    &1i32,
+                    &character_id.as_slice(),
+                ],
+            )
+            .unwrap();
+        let users_before = postgres::count_table(settings, "dev_users").unwrap();
+        let characters_before = postgres::count_table(settings, "characters").unwrap();
+        let items_before = postgres::count_table(settings, "item_instances").unwrap();
+        assert_eq!((users_before, characters_before, items_before), (1, 1, 1));
+        let startup = postgres::require_exact_migrations(&mut client).unwrap_err();
+        assert!(
+            startup
+                .to_string()
+                .contains("unsupported postgresql migration history"),
+            "{startup}"
+        );
+
+        postgres::migrate(&mut client).unwrap();
+        postgres::require_exact_migrations(&mut client).unwrap();
+        assert_eq!(postgres::count_table(settings, "dev_users").unwrap(), 1);
+        assert_eq!(postgres::count_table(settings, "characters").unwrap(), 1);
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+        let unchanged: i64 = client
+            .query_one(
+                "SELECT count(*)::bigint FROM characters
+                 WHERE current_health IS NULL AND health_revision = 0
+                   AND restore_map_authored = 'map.map2' AND restore_point_id = 'default'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(unchanged, 1);
+        let equipped: i64 = client
+            .query_one(
+                "SELECT count(*)::bigint FROM item_instances
+                 WHERE state = 'live' AND location_kind = 'equipped' AND equipment_slot = 'weapon'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(equipped, 1);
+
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        let loaded = service
+            .load_owned_character(&login("alice"), CharacterId::from_raw(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.current_health_milli, None);
+        assert_eq!(loaded.health_revision, 0);
+        assert_eq!(loaded.restore.map_authored, "map.map2");
+        assert!(service.item(ItemInstanceId::from_raw(1)).unwrap().is_some());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn older_map_or_equipment_write_does_not_raise_stored_health() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        service
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 2,
+                restore: RestoreIntent {
+                    map_authored: "map.map1".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+                current_health_milli: Some(15_000),
+                health_revision: 2,
+            })
+            .unwrap();
+        service
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 3,
+                restore: RestoreIntent {
+                    map_authored: "map.map2".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+                current_health_milli: Some(20_000),
+                health_revision: 1,
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.map_authored, "map.map2");
+        assert_eq!(loaded.current_health_milli, Some(15_000));
+        assert_eq!(loaded.health_revision, 2);
+
+        service
+            .commit_durable(&DurableCommand {
+                key: "equip-after-health".into(),
+                expected_revisions: vec![(entry.character_id, 3)],
+                place_new: vec![PlaceNewItem {
+                    owner: entry.character_id,
+                    definition_content_id: ContentId::from_raw(30_001),
+                    quantity: 1,
+                    location: CharacterItemLocation::Equipped {
+                        slot: DurableEquipmentSlot::Weapon,
+                    },
+                }],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.persistence_revision, 4);
+        assert_eq!(loaded.current_health_milli, Some(15_000));
+        assert_eq!(loaded.health_revision, 2);
+
+        service
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 2,
+                restore: RestoreIntent {
+                    map_authored: "map.map1".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+                current_health_milli: Some(4_000),
+                health_revision: 3,
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.map_authored, "map.map2");
+        assert_eq!(loaded.current_health_milli, Some(4_000));
+        assert_eq!(loaded.health_revision, 3);
     });
 }

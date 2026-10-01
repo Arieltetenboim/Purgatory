@@ -186,9 +186,12 @@ the durable transaction foundation.
 - Define the concrete migration source and cutover for existing development
   records and the unmerged 12A test format. Treat the file branch as unmerged
   work, not deployed production data.
-- Confirm the policy for damaged/dead logout and long cooldowns; current
-  safe-point/full-health entry could permit a logout exploit. This does not
-  block the storage-domain design but blocks a full Phase 12 exit claim.
+- Current HP is stored on the character. Logout, disconnect, server stop, and
+  the next login restore the last committed value, clamped to the live maximum.
+  A row whose `current_health` is still NULL has never stored HP and loads at
+  full maximum. Death followed by respawn still restores full HP. Revival HP
+  stays whatever the revival ability applies. Long cooldowns are still an open
+  policy and still block a full Phase 12 exit claim.
 - Measure connection limits, transaction latency, restart cleanup and restore
   time on the intended development workload; do not infer international
   production capacity from a local PostgreSQL installation.

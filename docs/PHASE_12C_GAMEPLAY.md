@@ -385,3 +385,21 @@ in 25.80s, the disposable create/reset test in 2.18s, 15 ignored server
 `postgres_12c` tests in 6.71s, and the startup test in 3.01s. The container was
 removed. `Purgatory_dev` was not created, reset, or connected to. Phase 12C
 remains in review.
+
+Stored current HP is implemented and still pending real-client verification. Logout,
+disconnect, and server stop commit the live value. The next login restores
+that value in gameplay state. Map travel and equipment saves do not copy an
+older HP over a newer one. A character row with NULL `current_health` has no
+stored HP yet and loads at full maximum. Respawn still sets full HP. Revival
+is unchanged and is not derived from the login or respawn rule. Startup still
+does not apply a pending migration. Create on an already initialized database
+applies that tail without deleting users, characters, or items.
+`./scripts/check.ps1` exited 0 in about 387s. Persistence lib tests were 24
+passed and 40 ignored. Server bin tests were 359 passed and 27 ignored in
+2.62s. Simulation lib tests were 431 passed. A disposable `postgres:18`
+container, database `purgatory_12a_test` on `127.0.0.1:5433`, not
+`Purgatory_dev`, then passed 40 ignored persistence tests in 28.63s and 18
+ignored server `postgres_12c` tests in 1.65s. The container was removed.
+`Purgatory_dev` was not created, reset, or connected to. The running local
+server held the game port, so the process-level startup test was not repeated.
+Phase 12C remains in review.

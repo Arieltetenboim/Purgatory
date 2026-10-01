@@ -571,7 +571,7 @@ pub(crate) fn load_restore(
     let row = tx
         .query_opt(
             "SELECT persistence_revision, restore_map_authored, restore_point_id,
-                    restore_checkpoint_id, instance_exit_reason
+                    restore_checkpoint_id, instance_exit_reason, current_health, health_revision
              FROM characters WHERE character_id = $1",
             &[&raw.as_slice()],
         )
@@ -587,6 +587,7 @@ pub(crate) fn load_restore(
     let point_id: String = row.get(2);
     let checkpoint: Option<String> = row.get(3);
     let exit_reason: Option<String> = row.get(4);
+    let (current_health_milli, health_revision) = crate::postgres::read_health(&row, 5, 6)?;
     if map_authored.is_empty() || point_id.is_empty() {
         return Err(PersistError::corrupt(
             db_path(),
@@ -606,6 +607,8 @@ pub(crate) fn load_restore(
         instance_exit: exit_reason.map(|reason| purgatory_common::InstanceExitContext {
             reason: Some(reason),
         }),
+        current_health_milli,
+        health_revision,
     };
     let items = load_items(tx, &raw)?;
     let narrative = load_narrative(tx, &raw)?;

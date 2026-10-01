@@ -6,8 +6,8 @@ client, not the database server. Channels share this database. The game server
 connects through the persistence worker; the native client connects to the
 game server, never to PostgreSQL. These instructions describe the current
 `phase12/12c-gameplay-durable` branch, while Phase 12C is in review. A checkout
-that does not contain migration `0003_item_id_reservations.sql` will not show
-version 3 or this branch's collectible-ID behavior.
+that does not contain migration `0004_current_health.sql` will not show
+version 4 or stored current HP.
 
 The database in the examples is the existing `Purgatory_dev` on `127.0.0.1:5432`.
 Use the actual role and database names shown in pgAdmin: PostgreSQL preserves
@@ -32,8 +32,11 @@ the pinned local database `Purgatory_dev` on `127.0.0.1`.
    database, applies the versioned migrations, grants the runtime role, and
    inserts only the username you typed. That user starts with zero characters.
    `dev.probe` is the readiness probe. It is not a row in `dev_users` and it
-   cannot create a character. Create does not overwrite a database that is
-   already initialized.
+   cannot create a character. Create on a database that is already initialized
+   applies only a pending migration tail. It does not drop users, characters,
+   or items, and it does not insert another user. A database that is already
+   at the current migration stays as it is. Reset is the operation that
+   deletes the database.
 3. Press **Start Server**. Startup opens the existing database. It does not
    create, reset, or migrate it.
 4. Open the normal client and enter that same username. The roster is empty
@@ -170,9 +173,13 @@ SELECT name, setting FROM pg_settings
 WHERE name IN ('fsync', 'synchronous_commit', 'full_page_writes');
 ```
 
-Expect migration versions `1`, `2`, and `3` on this branch. Compare character
-count immediately after initialization: it should be **zero** before a new
-character is created, and then increase only as new characters are created.
+Expect migration versions `1`, `2`, `3`, and `4` on this branch. Version 4
+adds `characters.current_health` and `characters.health_revision`. Existing
+rows keep `current_health` NULL until a changed HP value is saved. NULL loads
+as that character's full maximum. Compare character count immediately after
+initialization: it should be **zero** before a new character is created, and
+then increase only as new characters are created. An upgrade must leave the
+existing user, character, map, and item rows in place.
 `cutover` should say `fresh` and `deployment_id` should say `purgatory-dev`,
 or the id you configured. Check the game-server log for a
 persistence-open or channel-claim error before interpreting tables as a

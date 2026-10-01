@@ -3373,3 +3373,176 @@
             assert!(err.to_string().contains("retired"), "{err}");
         });
     }
+
+    fn commit_logout(pg: &mut Pg, entered: &Entered) {
+        let Some((authority, snapshot)) = pg.owner.prepare_logout(entered.connection).unwrap()
+        else {
+            panic!("expected a leased logout snapshot");
+        };
+        pg.service
+            .save_snapshot_leased(snapshot, Some(&authority))
+            .unwrap();
+        pg.service.release_lease(&entered.lease).unwrap();
+    }
+
+    fn restart(pg: &mut Pg, character: CharacterId) -> Entered {
+        pg.owner = GameplayOwner::new();
+        let admission = pg.service.admit(&pg.login, character).unwrap();
+        let SessionAdmission::Granted {
+            authority: Some(lease),
+            restore,
+        } = admission
+        else {
+            panic!("expected the released character to admit");
+        };
+        let connection = ConnectionId::from_raw(pg.next_connection);
+        pg.next_connection += 1;
+        pg.owner
+            .enter_restored(
+                connection,
+                *restore,
+                Some(lease.clone()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let actor = pg.owner.entity_of(connection).unwrap();
+        Entered {
+            connection,
+            character,
+            lease,
+            actor,
+        }
+    }
+
+    fn live_hp(owner: &GameplayOwner, actor: purgatory_simulation::EntityId) -> f32 {
+        owner.world().health_of(actor).unwrap().current
+    }
+
+    #[test]
+    #[ignore]
+    fn postgres_12c_damaged_health_survives_logout_restart_map_and_equipment() {
+        with_db(|pg| {
+            let first = pg.enter("Mira");
+            assert!((live_hp(&pg.owner, first.actor) - PLAYER_HEALTH_MAX).abs() < 1e-3);
+            assert!(pg.owner.world_mut().apply_damage(first.actor, 5.0));
+            let damaged = live_hp(&pg.owner, first.actor);
+            assert!(
+                damaged < PLAYER_HEALTH_MAX - 1.0,
+                "damage did not stick: {damaged}"
+            );
+            let character = first.character;
+            commit_logout(pg, &first);
+
+            let returned = restart(pg, character);
+            assert!((live_hp(&pg.owner, returned.actor) - damaged).abs() < 1e-3);
+            pg.owner.note_persistent_restore(
+                returned.connection,
+                purgatory_common::RestoreIntent {
+                    map_authored: "map.map2".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+            );
+            commit_logout(pg, &returned);
+
+            let traveled = restart(pg, character);
+            assert!((live_hp(&pg.owner, traveled.actor) - damaged).abs() < 1e-3);
+            assert_eq!(
+                pg.owner.bindings[&traveled.connection].restore.map_authored,
+                "map.map2"
+            );
+            let weapon = pg.place_item(&traveled, sword(), 0, 1);
+            pg.owner.apply_input(InputUpdate::Equip {
+                connection_id: traveled.connection,
+                request: EquipRequest {
+                    seq: 1,
+                    slot: purgatory_simulation::EquipmentSlot::Weapon as u8,
+                    item_instance_id: weapon,
+                },
+            });
+            pg.settle_next();
+            commit_logout(pg, &traveled);
+
+            let equipped = restart(pg, character);
+            assert!((live_hp(&pg.owner, equipped.actor) - damaged).abs() < 1e-3);
+            assert_eq!(
+                pg.owner.world().equipped_instance(
+                    equipped.actor,
+                    purgatory_simulation::EquipmentSlot::Weapon,
+                ),
+                Some(weapon)
+            );
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn postgres_12c_respawn_commits_full_health_after_a_dead_login() {
+        with_db(|pg| {
+            let first = pg.enter("Mira");
+            let max = pg.owner.world().health_of(first.actor).unwrap().max;
+            assert!(pg.owner.world_mut().set_health(
+                first.actor,
+                Health {
+                    current: 0.0,
+                    max,
+                }
+            ));
+            let character = first.character;
+            commit_logout(pg, &first);
+
+            let dead = restart(pg, character);
+            assert_eq!(live_hp(&pg.owner, dead.actor), 0.0);
+            pg.owner.apply_input(InputUpdate::Respawn {
+                connection_id: dead.connection,
+            });
+            assert!((live_hp(&pg.owner, dead.actor) - max).abs() < 1e-3);
+            commit_logout(pg, &dead);
+
+            let revived = restart(pg, character);
+            assert!((live_hp(&pg.owner, revived.actor) - max).abs() < 1e-3);
+            let stored = pg
+                .service
+                .load_owned_character(&pg.login, character)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                stored.current_health_milli,
+                Some(purgatory_persistence::health_milli(max, max))
+            );
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn postgres_12c_raised_health_survives_the_same_snapshot_path() {
+        with_db(|pg| {
+            let first = pg.enter("Mira");
+            let max = pg.owner.world().health_of(first.actor).unwrap().max;
+            assert!(pg.owner.world_mut().set_health(
+                first.actor,
+                Health {
+                    current: 8.0,
+                    max,
+                }
+            ));
+            let character = first.character;
+            commit_logout(pg, &first);
+
+            let wounded = restart(pg, character);
+            assert!((live_hp(&pg.owner, wounded.actor) - 8.0).abs() < 1e-3);
+            assert!(pg.owner.world_mut().set_health(
+                wounded.actor,
+                Health {
+                    current: 16.0,
+                    max,
+                }
+            ));
+            commit_logout(pg, &wounded);
+
+            let healed = restart(pg, character);
+            assert!((live_hp(&pg.owner, healed.actor) - 16.0).abs() < 1e-3);
+        });
+    }
