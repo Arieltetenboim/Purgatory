@@ -8,6 +8,8 @@ pub enum CreateCharacterRejection {
     InvalidName(purgatory_common::CharacterNameError),
     RosterFull,
     NameTaken,
+    /// The development allowlist has no row for this username.
+    Unregistered,
 }
 
 /// Persistence failure. Never panic on corrupt files.

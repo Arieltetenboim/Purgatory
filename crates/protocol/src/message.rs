@@ -117,6 +117,8 @@ pub enum DisconnectReasonCode {
     UnexpectedMessage = 4,
     ServerShutdown = 5,
     AlreadyConnected = 6,
+    /// The development allowlist has no row for this username.
+    UnknownUser = 7,
 }
 
 impl DisconnectReasonCode {
@@ -134,6 +136,7 @@ impl DisconnectReasonCode {
             4 => Some(Self::UnexpectedMessage),
             5 => Some(Self::ServerShutdown),
             6 => Some(Self::AlreadyConnected),
+            7 => Some(Self::UnknownUser),
             _ => None,
         }
     }
@@ -147,6 +150,7 @@ impl DisconnectReasonCode {
             Self::UnexpectedMessage => "unexpected message",
             Self::ServerShutdown => "server shutdown",
             Self::AlreadyConnected => "already connected",
+            Self::UnknownUser => "unknown user",
         }
     }
 }

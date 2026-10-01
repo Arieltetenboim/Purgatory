@@ -137,7 +137,7 @@ impl ServerNetStats {
                 self.unexpected.fetch_add(1, Ordering::Relaxed);
             }
             DisconnectReasonCode::ServerShutdown => {}
-            DisconnectReasonCode::AlreadyConnected => {}
+            DisconnectReasonCode::AlreadyConnected | DisconnectReasonCode::UnknownUser => {}
         }
     }
 

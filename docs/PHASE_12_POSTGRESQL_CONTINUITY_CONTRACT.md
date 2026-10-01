@@ -121,22 +121,18 @@ consumption, items, facts, abilities and any later currency/experience.
 
 New development starts from an empty PostgreSQL roster. Server startup does
 not import `identity.json` or `char_*.json`, and it does not read or write
-`durable_writer.json`. Bootstrap is a deliberate one-time action against an
-empty application schema. Normal startup reopens that database only when the
-configured deployment identity matches the stored identity. A missing URL, a
-failed connection, the wrong schema or identity, an uninitialized database, or
-a failed migration fails closed and does not open the file writer. A database
-restored on another host starts with the same deployment id and no copied
-local marker. The explicit legacy import remains available for a deliberate
-file cutover; it is not the server path. The ordered historical import steps
-are in [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). Import, when
-explicitly selected, reads completed files. A snapshot still only queued is
-not a durable record. Validate IDs, roster ownership, revisions, restore
-fields and catalog references. No silent blank-character fallback or
-concurrent file/database dual write. After bootstrap, PostgreSQL is the only
-durable authority. A marker check inside an already-open file service still
-stops a later file-mode open after an explicit import. An unrelated process
-is outside this threat model.
+`durable_writer.json`. Creating the local development database is a deliberate
+Hub or `--database-create` action. It creates the physical database, applies
+the versioned migrations, and initializes empty durable metadata. Normal
+startup reopens that database only when the configured deployment identity
+and migration history already match. A missing URL, a failed connection, the
+wrong schema or identity, an uninitialized database, or a migration history
+the binary does not support fails closed. There is no file writer and no
+legacy import command. The ordered historical import steps in
+[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md) are superseded. A snapshot
+that was only queued in the old file writer is not a durable record. No silent
+blank-character fallback. After initialization, PostgreSQL is the only durable
+authority.
 
 Already lost NPC facts or learned grants cannot be invented by migration.
 Unknown schema, invalid content, duplicate ownership or a missing migration

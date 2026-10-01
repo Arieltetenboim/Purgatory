@@ -5,7 +5,6 @@
 //! databases and not schemas.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -15,7 +14,6 @@ use purgatory_common::{CharacterId, ContentId, DevLogin, ItemInstanceId};
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::atomic::{read_committed_bytes, replace_file_recoverable};
 use crate::character::{
     PERSISTENCE_SCHEMA_VERSION, PersistentCharacter, PersistentCharacterSnapshot,
 };
@@ -25,9 +23,8 @@ use crate::domain::{
     NarrativeWrite, ReservedItemOutcome, db_path,
 };
 use crate::error::PersistError;
-use crate::identity::{self, CharacterRosterEntry, IDENTITY_FILE_NAME};
+use crate::identity::{self, CharacterRosterEntry};
 use crate::lifecycle::{self, Admission, ChannelClaim, LeaseAuthority, LeaseBarrier, OwnedRestore};
-use crate::repository::character_file_name;
 
 const MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/0001_foundation.sql")),
@@ -38,7 +35,9 @@ const MIGRATIONS: &[(i32, &str)] = &[
     ),
 ];
 const IMPORT_LOCK_KEY: i64 = 0x120A_0001;
-pub(crate) const DURABLE_WRITER_FILE: &str = "durable_writer.json";
+/// Reserved readiness login created with an empty world. It is not a player
+/// account and it is not created during Hello.
+pub(crate) const DEVELOPMENT_PROBE_LOGIN: &str = "dev.probe";
 const RESERVED_DATABASES: &[&str] = &["purgatory_dev", "postgres", "template0", "template1"];
 
 #[derive(Clone)]
@@ -147,6 +146,13 @@ impl PostgresSettings {
         Ok(self)
     }
 
+    /// Connect with the runtime role and require an initialized deployment.
+    /// Does not migrate.
+    pub(crate) fn open_check(settings: &Self) -> Result<(), PersistError> {
+        let _store = PostgresStore::open(settings)?;
+        Ok(())
+    }
+
     pub fn with_deployment_id(mut self, deployment_id: String) -> Result<Self, PersistError> {
         validate_deployment_id(&deployment_id)?;
         self.deployment_id = deployment_id;
@@ -197,32 +203,14 @@ impl PostgresStore {
         Ok(store_from_client(client, settings))
     }
 
-    /// One-time empty roster. Creates the schema and migrations, then records
-    /// the deployment identity. Does not read or write a data directory.
+    /// One-time empty roster inside an existing database. Creates the schema
+    /// and migrations, then records the deployment identity. Does not create
+    /// the physical database and does not read legacy files.
     pub(crate) fn bootstrap(settings: &PostgresSettings) -> Result<(), PersistError> {
         validate_deployment_id(&settings.deployment_id)?;
         let mut client = connect_prepared(settings, true)?;
         bootstrap_empty(&mut client, &settings.deployment_id)?;
         Ok(())
-    }
-
-    /// Explicit legacy file import. Server startup does not call this.
-    pub(crate) fn import_legacy(
-        dir: &Path,
-        settings: &PostgresSettings,
-    ) -> Result<Self, PersistError> {
-        validate_deployment_id(&settings.deployment_id)?;
-        let mut client = connect_prepared(settings, true)?;
-        // Fence the file writer before the import transaction commits. A crash
-        // in that interval leaves the marker and no cutover row, so the next
-        // import reads the unchanged files instead of ignoring later writes.
-        fence_before_import(&mut client, dir)?;
-        initialize(&mut client, dir, &settings.deployment_id)?;
-        if !marker_is_postgresql(dir)? {
-            write_marker(dir)?;
-        }
-        warn_durability(&mut client);
-        Ok(store_from_client(client, settings))
     }
 
     pub(crate) fn set_rules(&mut self, rules: DurableContentRules) {
@@ -753,23 +741,29 @@ impl PostgresStore {
         create_character(&mut self.client, login, name)
     }
 
-    pub(crate) fn resolve_or_create(
+    pub(crate) fn provision_dev_user(&mut self, login: &DevLogin) -> Result<bool, PersistError> {
+        provision_dev_user(&mut self.client, login)
+    }
+
+    pub(crate) fn user_registered(&mut self, login: &DevLogin) -> Result<bool, PersistError> {
+        user_registered(&mut self.client, login)
+    }
+
+    pub(crate) fn resolve_existing(
         &mut self,
         login: &DevLogin,
     ) -> Result<PersistentCharacter, PersistError> {
-        if let Some(id) = lookup(&mut self.client, login)? {
-            return load_character(&mut self.client, id);
+        if !user_registered(&mut self.client, login)? {
+            return Err(PersistError::CreateRejected(
+                crate::error::CreateCharacterRejection::Unregistered,
+            ));
         }
-        let used = name_keys(&mut self.client)?;
-        for ordinal in 0..=used.len() as u64 {
-            let name = identity::compatibility_name(ordinal)
-                .ok_or(PersistError::CompatibilityNamesExhausted)?;
-            if !used.contains(&name.uniqueness_key()) {
-                let entry = create_character(&mut self.client, login, name.as_str())?;
-                return load_character(&mut self.client, entry.character_id);
-            }
+        match lookup(&mut self.client, login)? {
+            Some(id) => load_character(&mut self.client, id),
+            None => Err(PersistError::storage(
+                "development user has no character to resolve",
+            )),
         }
-        Err(PersistError::CompatibilityNamesExhausted)
     }
 
     pub(crate) fn lookup(&mut self, login: &DevLogin) -> Result<Option<CharacterId>, PersistError> {
@@ -804,25 +798,6 @@ impl PostgresStore {
     ) -> Result<CharacterNarrativeState, PersistError> {
         load_narrative(&mut self.client, id)
     }
-}
-
-pub(crate) fn reject_file_writer_if_cut_over(dir: &Path) -> Result<(), PersistError> {
-    let path = dir.join(DURABLE_WRITER_FILE);
-    let Some(bytes) = read_source(&path)? else {
-        return Ok(());
-    };
-    let marker: WriterMarker = serde_json::from_slice(&bytes)
-        .map_err(|err| PersistError::corrupt(&path, format!("durable writer marker: {err}")))?;
-    if marker.schema_version == 1 && marker.writer == "postgresql" {
-        return Err(PersistError::migration(
-            &path,
-            "postgresql is the durable writer; set PURGATORY_DATABASE_URL",
-        ));
-    }
-    Err(PersistError::corrupt(
-        &path,
-        "unrecognized durable writer marker",
-    ))
 }
 
 #[cfg(test)]
@@ -860,45 +835,7 @@ pub fn drop_test_schema(settings: &PostgresSettings) -> Result<(), PersistError>
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
-struct WriterMarker {
-    schema_version: u32,
-    writer: String,
-}
-
-fn write_marker(dir: &Path) -> Result<(), PersistError> {
-    let path = dir.join(DURABLE_WRITER_FILE);
-    #[cfg(test)]
-    if MARKER_WRITE_FAILS.swap(false, Ordering::Relaxed) {
-        return Err(PersistError::io(
-            &path,
-            std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "simulated durable writer marker failure",
-            ),
-        ));
-    }
-    let bytes = br#"{"schema_version":1,"writer":"postgresql"}"#;
-    replace_file_recoverable(&path, bytes).map_err(|err| PersistError::io(&path, err))
-}
-
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(test)]
-static MARKER_WRITE_FAILS: AtomicBool = AtomicBool::new(false);
-
-#[cfg(test)]
-pub(crate) fn fail_next_marker_write() {
-    MARKER_WRITE_FAILS.store(true, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-pub(crate) fn fence_file_writer(dir: &Path) -> Result<(), PersistError> {
-    write_marker(dir)
-}
-
-fn connect_url(url: &str) -> Result<Client, PersistError> {
+pub(crate) fn connect_url(url: &str) -> Result<Client, PersistError> {
     let mut config =
         Config::from_str(url).map_err(|_| PersistError::storage("invalid database url"))?;
     let name = config.get_dbname().unwrap_or("");
@@ -933,7 +870,7 @@ fn tls_required(url: &str) -> bool {
     .any(|mode| lower.contains(mode))
 }
 
-fn database_name(url: &str) -> Result<String, PersistError> {
+pub(crate) fn database_name(url: &str) -> Result<String, PersistError> {
     let config =
         Config::from_str(url).map_err(|_| PersistError::storage("invalid database url"))?;
     config
@@ -943,7 +880,7 @@ fn database_name(url: &str) -> Result<String, PersistError> {
         .ok_or_else(|| PersistError::storage("database url is missing a database name"))
 }
 
-fn database_user(url: &str) -> Result<String, PersistError> {
+pub(crate) fn database_user(url: &str) -> Result<String, PersistError> {
     let config =
         Config::from_str(url).map_err(|_| PersistError::storage("invalid database url"))?;
     config
@@ -953,7 +890,7 @@ fn database_user(url: &str) -> Result<String, PersistError> {
         .ok_or_else(|| PersistError::storage("database url is missing a user"))
 }
 
-fn grant_runtime(
+pub(crate) fn grant_runtime(
     client: &mut Client,
     schema: &str,
     runtime_user: &str,
@@ -967,14 +904,16 @@ fn grant_runtime(
         .map_err(map_sql)?
         .get(0);
     // Runtime can read the migration history and change character-owned rows.
-    // It cannot create or drop objects. Fact clears are the only deletes.
+    // It cannot create or drop objects, and it cannot insert development users.
+    // Fact clears are the only deletes.
     // Command retry locks the stored row with SELECT FOR UPDATE, which
     // requires UPDATE on durable_commands even though the row is not rewritten.
     let sql = format!(
         "GRANT USAGE ON SCHEMA {schema_sql} TO {user_sql};
          GRANT SELECT ON {schema_sql}.schema_migrations TO {user_sql};
          GRANT SELECT, INSERT, UPDATE ON {schema_sql}.durable_meta, {schema_sql}.characters, {schema_sql}.item_instances TO {user_sql};
-         GRANT SELECT, INSERT ON {schema_sql}.dev_users, {schema_sql}.character_npcs_met, {schema_sql}.character_dialogue_heard, {schema_sql}.character_learned_abilities TO {user_sql};
+         GRANT SELECT ON {schema_sql}.dev_users TO {user_sql};
+         GRANT SELECT, INSERT ON {schema_sql}.character_npcs_met, {schema_sql}.character_dialogue_heard, {schema_sql}.character_learned_abilities TO {user_sql};
          GRANT SELECT, INSERT, UPDATE ON {schema_sql}.durable_commands TO {user_sql};
          GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_facts TO {user_sql};
          GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_leases, {schema_sql}.channel_generations TO {user_sql};
@@ -983,7 +922,7 @@ fn grant_runtime(
     client.batch_execute(&sql).map_err(map_sql)
 }
 
-fn validated_schema(name: &str) -> Result<(), PersistError> {
+pub(crate) fn validated_schema(name: &str) -> Result<(), PersistError> {
     let ok = (1..=63).contains(&name.len())
         && name.starts_with(|ch: char| ch.is_ascii_lowercase())
         && name
@@ -998,7 +937,11 @@ fn validated_schema(name: &str) -> Result<(), PersistError> {
     }
 }
 
-fn prepare_schema(client: &mut Client, schema: &str, create: bool) -> Result<(), PersistError> {
+pub(crate) fn prepare_schema(
+    client: &mut Client,
+    schema: &str,
+    create: bool,
+) -> Result<(), PersistError> {
     validated_schema(schema)?;
     if create {
         client
@@ -1011,7 +954,7 @@ fn prepare_schema(client: &mut Client, schema: &str, create: bool) -> Result<(),
     Ok(())
 }
 
-fn migrate(client: &mut Client) -> Result<(), PersistError> {
+pub(crate) fn migrate(client: &mut Client) -> Result<(), PersistError> {
     let present: bool = client
         .query_one("SELECT to_regclass('schema_migrations') IS NOT NULL", &[])
         .map_err(map_sql)?
@@ -1071,6 +1014,41 @@ fn migrate(client: &mut Client) -> Result<(), PersistError> {
     tx.commit().map_err(map_sql)
 }
 
+/// Normal server startup refuses a missing, extra, or rewritten migration.
+/// It does not apply a pending tail.
+pub(crate) fn require_exact_migrations(client: &mut Client) -> Result<(), PersistError> {
+    if !migrations_present(client)? {
+        return Err(PersistError::migration(
+            db_path(),
+            "unsupported postgresql migration history",
+        ));
+    }
+    let rows = client
+        .query(
+            "SELECT version, body FROM schema_migrations ORDER BY version",
+            &[],
+        )
+        .map_err(map_sql)?;
+    if rows.len() != MIGRATIONS.len() {
+        return Err(PersistError::migration(
+            db_path(),
+            "unsupported postgresql migration history",
+        ));
+    }
+    for (index, row) in rows.iter().enumerate() {
+        let version: i32 = row.get(0);
+        let body: String = row.get(1);
+        let (expected_version, expected_body) = MIGRATIONS[index];
+        if version != expected_version || body != expected_body {
+            return Err(PersistError::migration(
+                db_path(),
+                "unsupported postgresql migration history",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn warn_durability(client: &mut Client) {
     for name in ["fsync", "synchronous_commit", "full_page_writes"] {
         let Ok(row) = client.query_one("SELECT current_setting($1)", &[&name]) else {
@@ -1108,7 +1086,7 @@ fn store_from_client(client: Client, settings: &PostgresSettings) -> PostgresSto
     }
 }
 
-fn validate_deployment_id(id: &str) -> Result<(), PersistError> {
+pub(crate) fn validate_deployment_id(id: &str) -> Result<(), PersistError> {
     let ok = (1..=64).contains(&id.len())
         && id
             .chars()
@@ -1127,39 +1105,22 @@ fn validate_deployment_id(id: &str) -> Result<(), PersistError> {
 fn connect_prepared(settings: &PostgresSettings, create: bool) -> Result<Client, PersistError> {
     validated_schema(&settings.schema)?;
     validate_deployment_id(&settings.deployment_id)?;
-    if let Some(migration_url) = &settings.migration_url {
-        let mut migrator = connect_url(migration_url)?;
-        if create {
+    if create {
+        if let Some(migration_url) = &settings.migration_url {
+            let mut migrator = connect_url(migration_url)?;
             prepare_schema(&mut migrator, &settings.schema, true)?;
             migrate(&mut migrator)?;
-        } else {
-            if !schema_exists(&mut migrator, &settings.schema)? {
-                return Err(PersistError::migration(
-                    db_path(),
-                    "database schema is not bootstrapped",
+            let runtime_user = database_user(&settings.url)?;
+            let migration_user = database_user(migration_url)?;
+            if runtime_user.eq_ignore_ascii_case(&migration_user) {
+                return Err(PersistError::storage(
+                    "migration role and runtime role must be distinct",
                 ));
             }
-            prepare_schema(&mut migrator, &settings.schema, false)?;
-            if !migrations_present(&mut migrator)? {
-                return Err(PersistError::migration(
-                    db_path(),
-                    "database schema is not bootstrapped",
-                ));
-            }
-            migrate(&mut migrator)?;
+            grant_runtime(&mut migrator, &settings.schema, &runtime_user)?;
+            warn_durability(&mut migrator);
         }
-        let runtime_user = database_user(&settings.url)?;
-        let migration_user = database_user(migration_url)?;
-        if runtime_user.eq_ignore_ascii_case(&migration_user) {
-            return Err(PersistError::storage(
-                "migration role and runtime role must be distinct",
-            ));
-        }
-        grant_runtime(&mut migrator, &settings.schema, &runtime_user)?;
-        warn_durability(&mut migrator);
-    }
-    let mut client = connect_url(&settings.url)?;
-    if create {
+        let mut client = connect_url(&settings.url)?;
         prepare_schema(
             &mut client,
             &settings.schema,
@@ -1168,24 +1129,19 @@ fn connect_prepared(settings: &PostgresSettings, create: bool) -> Result<Client,
         if settings.migration_url.is_none() {
             migrate(&mut client)?;
         }
-    } else if settings.migration_url.is_none() {
-        if !schema_exists(&mut client, &settings.schema)? {
-            return Err(PersistError::migration(
-                db_path(),
-                "database schema is not bootstrapped",
-            ));
-        }
-        prepare_schema(&mut client, &settings.schema, false)?;
-        if !migrations_present(&mut client)? {
-            return Err(PersistError::migration(
-                db_path(),
-                "database schema is not bootstrapped",
-            ));
-        }
-        migrate(&mut client)?;
-    } else {
-        prepare_schema(&mut client, &settings.schema, false)?;
+        return Ok(client);
     }
+    // Normal open verifies the stored history. It does not create a schema,
+    // apply a migration, or grant privileges.
+    let mut client = connect_url(&settings.url)?;
+    if !schema_exists(&mut client, &settings.schema)? {
+        return Err(PersistError::migration(
+            db_path(),
+            "database schema is not bootstrapped",
+        ));
+    }
+    prepare_schema(&mut client, &settings.schema, false)?;
+    require_exact_migrations(&mut client)?;
     Ok(client)
 }
 
@@ -1231,7 +1187,10 @@ fn require_deployment(client: &mut Client, deployment_id: &str) -> Result<(), Pe
     Ok(())
 }
 
-fn bootstrap_empty(client: &mut Client, deployment_id: &str) -> Result<(), PersistError> {
+pub(crate) fn bootstrap_empty(
+    client: &mut Client,
+    deployment_id: &str,
+) -> Result<(), PersistError> {
     let mut tx = client.transaction().map_err(map_sql)?;
     let result = (|| {
         tx.execute("SELECT pg_advisory_xact_lock($1)", &[&IMPORT_LOCK_KEY])
@@ -1274,6 +1233,11 @@ fn bootstrap_empty(client: &mut Client, deployment_id: &str) -> Result<(), Persi
             &[&deployment_id],
         )
         .map_err(map_sql)?;
+        tx.execute(
+            "INSERT INTO dev_users (login) VALUES ($1)",
+            &[&DEVELOPMENT_PROBE_LOGIN],
+        )
+        .map_err(map_sql)?;
         Ok(())
     })();
     match result {
@@ -1283,249 +1247,6 @@ fn bootstrap_empty(client: &mut Client, deployment_id: &str) -> Result<(), Persi
             Err(err)
         }
     }
-}
-
-fn initialize(client: &mut Client, dir: &Path, deployment_id: &str) -> Result<(), PersistError> {
-    let mut tx = client.transaction().map_err(map_sql)?;
-    let result = (|| {
-        tx.execute("SELECT pg_advisory_xact_lock($1)", &[&IMPORT_LOCK_KEY])
-            .map_err(map_sql)?;
-        let existing = tx
-            .query_opt("SELECT value FROM durable_meta WHERE key = 'cutover'", &[])
-            .map_err(map_sql)?;
-        if existing.is_some() {
-            return Ok(());
-        }
-        if !marker_is_postgresql(dir)? {
-            return Err(PersistError::migration(
-                dir,
-                "refusing to import before the file writer is fenced",
-            ));
-        }
-        let plan = inventory_source(dir)?;
-        insert_import(&mut tx, &plan, deployment_id)?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => tx.commit().map_err(|err| ambiguous_commit(map_sql(err))),
-        Err(err) => {
-            let _ = tx.rollback();
-            Err(err)
-        }
-    }
-}
-
-fn fence_before_import(client: &mut Client, dir: &Path) -> Result<(), PersistError> {
-    let cutover = cutover_present(client)?;
-    let marker = marker_is_postgresql(dir)?;
-    if cutover && !marker {
-        return Err(PersistError::migration(
-            dir,
-            "database cutover is committed but durable_writer.json is missing; refusing to open so file changes are not ignored",
-        ));
-    }
-    if !cutover {
-        write_marker(dir)?;
-    }
-    Ok(())
-}
-
-fn cutover_present(client: &mut Client) -> Result<bool, PersistError> {
-    let present: bool = client
-        .query_one("SELECT to_regclass('durable_meta') IS NOT NULL", &[])
-        .map_err(map_sql)?
-        .get(0);
-    if !present {
-        return Ok(false);
-    }
-    let row = client
-        .query_opt("SELECT value FROM durable_meta WHERE key = 'cutover'", &[])
-        .map_err(map_sql)?;
-    Ok(row.is_some())
-}
-
-fn marker_is_postgresql(dir: &Path) -> Result<bool, PersistError> {
-    let path = dir.join(DURABLE_WRITER_FILE);
-    let Some(bytes) = read_source(&path)? else {
-        return Ok(false);
-    };
-    let marker: WriterMarker = serde_json::from_slice(&bytes)
-        .map_err(|err| PersistError::corrupt(&path, format!("durable writer marker: {err}")))?;
-    Ok(marker.schema_version == 1 && marker.writer == "postgresql")
-}
-
-struct ImportPlan {
-    next_character_id: u64,
-    rows: Vec<ImportRow>,
-    cutover: &'static str,
-}
-
-struct ImportRow {
-    login: String,
-    entry: CharacterRosterEntry,
-    position: i32,
-    character: PersistentCharacter,
-}
-
-fn inventory_source(dir: &Path) -> Result<ImportPlan, PersistError> {
-    if !dir.exists() {
-        return Ok(empty_plan());
-    }
-    let identity = identity::read_identity_source(dir)?;
-    let mut file_ids = BTreeSet::new();
-    for entry in std::fs::read_dir(dir).map_err(|err| PersistError::io(dir, err))? {
-        let entry = entry.map_err(|err| PersistError::io(dir, err))?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            return Err(PersistError::corrupt(
-                dir,
-                "persistence directory has a non-utf8 file name",
-            ));
-        };
-        if is_allowed_sidecar(name) {
-            if let Some(id) = character_id_in_filename(name) {
-                file_ids.insert(id);
-            }
-            continue;
-        }
-        return Err(PersistError::corrupt(
-            dir,
-            format!("unexpected persistence file {name}"),
-        ));
-    }
-    let Some(identity) = identity else {
-        if !file_ids.is_empty() {
-            return Err(PersistError::corrupt(
-                dir,
-                "character files exist without an identity roster",
-            ));
-        }
-        return Ok(empty_plan());
-    };
-    let mut rows = Vec::new();
-    let mut roster_ids = BTreeSet::new();
-    for (login, roster) in &identity.logins {
-        for (position, entry) in roster.iter().enumerate() {
-            roster_ids.insert(entry.character_id);
-            let character = load_import_character(dir, entry.character_id)?;
-            rows.push(ImportRow {
-                login: login.clone(),
-                entry: entry.clone(),
-                position: i32::try_from(position)
-                    .map_err(|_| PersistError::corrupt(dir, "roster position does not fit"))?,
-                character,
-            });
-        }
-    }
-    for id in &file_ids {
-        if !roster_ids.contains(id) {
-            return Err(PersistError::corrupt(
-                dir,
-                format!("character file {} is not in the identity roster", id.raw()),
-            ));
-        }
-    }
-    Ok(ImportPlan {
-        next_character_id: identity.next_character_id,
-        rows,
-        cutover: "imported",
-    })
-}
-
-fn empty_plan() -> ImportPlan {
-    ImportPlan {
-        next_character_id: 1,
-        rows: Vec::new(),
-        cutover: "fresh",
-    }
-}
-
-fn is_allowed_sidecar(name: &str) -> bool {
-    name == IDENTITY_FILE_NAME
-        || name == DURABLE_WRITER_FILE
-        || name == "identity.json.bak"
-        || name == "identity.json.tmp"
-        || name == "durable_writer.json.bak"
-        || name == "durable_writer.json.tmp"
-        || character_id_in_filename(name).is_some()
-}
-
-fn character_id_in_filename(name: &str) -> Option<CharacterId> {
-    let base = name
-        .strip_suffix(".tmp")
-        .or_else(|| name.strip_suffix(".bak"))
-        .unwrap_or(name);
-    let hex = base.strip_prefix("char_")?.strip_suffix(".json")?;
-    if hex.len() != 16
-        || !hex
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        return None;
-    }
-    let raw = u64::from_str_radix(hex, 16).ok()?;
-    Some(CharacterId::from_raw(raw))
-}
-
-fn load_import_character(dir: &Path, id: CharacterId) -> Result<PersistentCharacter, PersistError> {
-    let path = dir.join(character_file_name(id));
-    let Some(bytes) = read_source(&path)? else {
-        let mut character = PersistentCharacter::new_default(id);
-        character.schema_version = PERSISTENCE_SCHEMA_VERSION;
-        return Ok(character);
-    };
-    let parsed: PersistentCharacter =
-        serde_json::from_slice(&bytes).map_err(|err| PersistError::json(&path, err))?;
-    if parsed.schema_version != PERSISTENCE_SCHEMA_VERSION {
-        return Err(PersistError::schema(&path, parsed.schema_version));
-    }
-    if parsed.character_id != id {
-        return Err(PersistError::corrupt(
-            &path,
-            format!(
-                "file character_id {} does not match {}",
-                parsed.character_id, id
-            ),
-        ));
-    }
-    parsed.validate(&path)?;
-    Ok(parsed)
-}
-
-fn read_source(path: &Path) -> Result<Option<Vec<u8>>, PersistError> {
-    read_committed_bytes(path).map_err(|err| {
-        if err.kind() == std::io::ErrorKind::InvalidData {
-            PersistError::corrupt(path, err.to_string())
-        } else {
-            PersistError::io(path, err)
-        }
-    })
-}
-
-fn insert_import(
-    tx: &mut postgres::Transaction<'_>,
-    plan: &ImportPlan,
-    deployment_id: &str,
-) -> Result<(), PersistError> {
-    let next_character = plan.next_character_id.to_string();
-    tx.execute(
-        "INSERT INTO durable_meta (key, value) VALUES
-            ('next_character_id', $1),
-            ('next_item_instance_id', '1'),
-            ('cutover', $2),
-            ('deployment_id', $3)",
-        &[&next_character, &plan.cutover, &deployment_id],
-    )
-    .map_err(map_sql)?;
-    for row in &plan.rows {
-        tx.execute(
-            "INSERT INTO dev_users (login) VALUES ($1) ON CONFLICT DO NOTHING",
-            &[&row.login.as_str()],
-        )
-        .map_err(map_sql)?;
-        insert_character_row(tx, &row.login, row.position, &row.character, &row.entry)?;
-    }
-    Ok(())
 }
 
 fn insert_character_row(
@@ -2664,16 +2385,23 @@ fn create_character(
                 return Err(PersistError::CharacterIdsExhausted);
             }
         }
+        let registered: bool = tx
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM dev_users WHERE login = $1)",
+                &[&login.as_str()],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        if !registered {
+            return Err(PersistError::CreateRejected(
+                crate::error::CreateCharacterRejection::Unregistered,
+            ));
+        }
         let entry = CharacterRosterEntry {
             character_id: CharacterId::from_raw(raw),
             display_name,
         };
         let character = PersistentCharacter::new_default(entry.character_id);
-        tx.execute(
-            "INSERT INTO dev_users (login) VALUES ($1) ON CONFLICT DO NOTHING",
-            &[&login.as_str()],
-        )
-        .map_err(map_sql)?;
         insert_character_row(
             &mut tx,
             login.as_str(),
@@ -2717,10 +2445,36 @@ fn lookup(client: &mut Client, login: &DevLogin) -> Result<Option<CharacterId>, 
     }
 }
 
+fn provision_dev_user(client: &mut Client, login: &DevLogin) -> Result<bool, PersistError> {
+    let inserted = client
+        .execute(
+            "INSERT INTO dev_users (login) VALUES ($1) ON CONFLICT DO NOTHING",
+            &[&login.as_str()],
+        )
+        .map_err(map_sql)?;
+    Ok(inserted == 1)
+}
+
+fn user_registered(client: &mut Client, login: &DevLogin) -> Result<bool, PersistError> {
+    let registered: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM dev_users WHERE login = $1)",
+            &[&login.as_str()],
+        )
+        .map_err(map_sql)?
+        .get(0);
+    Ok(registered)
+}
+
 fn roster(
     client: &mut Client,
     login: &DevLogin,
 ) -> Result<Vec<CharacterRosterEntry>, PersistError> {
+    if !user_registered(client, login)? {
+        return Err(PersistError::CreateRejected(
+            crate::error::CreateCharacterRejection::Unregistered,
+        ));
+    }
     let rows = client
         .query(
             "SELECT character_id, display_name FROM characters
@@ -2752,17 +2506,6 @@ fn owns(client: &mut Client, login: &DevLogin, id: CharacterId) -> Result<bool, 
         .map_err(map_sql)?
         .get(0);
     Ok(count == 1)
-}
-
-fn name_keys(client: &mut Client) -> Result<BTreeSet<String>, PersistError> {
-    let rows = client
-        .query("SELECT name_key FROM characters", &[])
-        .map_err(map_sql)?;
-    let mut keys = BTreeSet::new();
-    for row in rows {
-        keys.insert(row.get(0));
-    }
-    Ok(keys)
 }
 
 fn load_character(

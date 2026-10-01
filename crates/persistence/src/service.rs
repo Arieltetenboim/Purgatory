@@ -1,22 +1,19 @@
-use std::path::Path;
-
-use purgatory_common::{CharacterId, DevLogin};
+use purgatory_common::{CharacterId, DevLogin, ItemInstanceId};
 
 use crate::character::{PersistentCharacter, PersistentCharacterSnapshot};
 use crate::domain::{
     CharacterNarrativeState, DurableCommand, DurableCommandResult, DurableContentRules, ItemRecord,
 };
 use crate::error::PersistError;
-use crate::identity::{CharacterRosterEntry, DevIdentityStore};
+use crate::identity::CharacterRosterEntry;
 #[cfg(test)]
 use crate::lifecycle::LeaseBarrier;
 use crate::lifecycle::{Admission, ChannelClaim, LeaseAuthority, OwnedRestore};
-use crate::postgres::{self, PostgresSettings, PostgresStore};
-use crate::repository::FileCharacterRepository;
-use purgatory_common::ItemInstanceId;
+use crate::memory::MemoryStore;
+use crate::postgres::{PostgresSettings, PostgresStore};
 
-/// File mode grants without a lease. PostgreSQL grants a generation or refuses
-/// while another session's lease is still live.
+/// PostgreSQL grants a generation or refuses while another session's lease is
+/// still live. The unit fixture grants without a lease.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionAdmission {
     Granted {
@@ -27,38 +24,40 @@ pub enum SessionAdmission {
     NotOwned,
 }
 
-/// Single-threaded owner of identity allocation and character state.
+/// Single-threaded owner of development users and character state.
 ///
-/// `open` is the explicit file writer. `bootstrap_postgresql` creates an empty
-/// roster once. `open_postgresql` reopens that database and does not import
-/// files. `import_legacy_postgresql` is the explicit old file import.
+/// Server startup uses [`Self::open_from_env`] and only reopens an initialized
+/// database. Creating or resetting that database is a separate administration
+/// operation. [`Self::unit_fixture`] is an in-memory test double and does not
+/// write files.
 pub struct PersistenceService {
     backend: Backend,
 }
 
 enum Backend {
-    Files {
-        identity: DevIdentityStore,
-        repo: FileCharacterRepository,
-    },
     Postgres(Box<PostgresStore>),
+    Fixture(MemoryStore),
 }
 
 fn missing_database_url() -> PersistError {
     PersistError::storage(
-        "PURGATORY_DATABASE_URL is required; refusing to fall back to the file writer",
+        "PURGATORY_DATABASE_URL is required; there is no file-backed game database",
+    )
+}
+
+fn fixture_has_no_durable_store(what: &str) -> PersistError {
+    PersistError::migration(
+        "<postgresql>",
+        format!("{what} require the postgresql writer"),
     )
 }
 
 impl PersistenceService {
-    pub fn open(dir: &Path) -> Result<Self, PersistError> {
-        postgres::reject_file_writer_if_cut_over(dir)?;
-        Ok(Self {
-            backend: Backend::Files {
-                identity: DevIdentityStore::open(dir)?,
-                repo: FileCharacterRepository::open(dir)?,
-            },
-        })
+    /// In-memory roster for unit tests. Does not open a database or write files.
+    pub fn unit_fixture() -> Self {
+        Self {
+            backend: Backend::Fixture(MemoryStore::new()),
+        }
     }
 
     pub fn open_postgresql(settings: &PostgresSettings) -> Result<Self, PersistError> {
@@ -67,25 +66,15 @@ impl PersistenceService {
         })
     }
 
-    /// Deliberate one-time empty roster. Does not read or write a data directory.
+    /// Apply migrations and empty durable metadata inside an existing database.
+    /// Does not create the physical database and does not read legacy files.
     pub fn bootstrap_postgresql(settings: &PostgresSettings) -> Result<(), PersistError> {
         PostgresStore::bootstrap(settings)
     }
 
-    /// Explicit legacy `identity.json` / `char_*.json` import. Server startup
-    /// does not call this.
-    pub fn import_legacy_postgresql(
-        dir: &Path,
-        settings: &PostgresSettings,
-    ) -> Result<Self, PersistError> {
-        Ok(Self {
-            backend: Backend::Postgres(Box::new(PostgresStore::import_legacy(dir, settings)?)),
-        })
-    }
-
-    /// Server startup. PostgreSQL is required. A missing URL does not open the
-    /// file writer. Tests keep using [`Self::open`] for the file path.
-    pub fn open_from_env(_dir: &Path) -> Result<Self, PersistError> {
+    /// Server startup. PostgreSQL is required. A missing URL does not open a
+    /// file writer.
+    pub fn open_from_env() -> Result<Self, PersistError> {
         Self::open_configured(PostgresSettings::from_env()?)
     }
 
@@ -109,42 +98,52 @@ impl PersistenceService {
         }
     }
 
-    /// Temporary direct-play compatibility: resolve roster slot zero, creating
-    /// one compatibility entry only when empty. Production R5B uses roster/create;
-    /// this remains for historical direct-play callers.
-    pub fn resolve_or_create(
+    /// Insert a development allowlist row. The restricted runtime role cannot
+    /// do this; database administration uses the migration connection.
+    pub fn provision_dev_user(&mut self, login: &DevLogin) -> Result<bool, PersistError> {
+        match &mut self.backend {
+            Backend::Postgres(store) => store.provision_dev_user(login),
+            Backend::Fixture(store) => store.provision_dev_user(login),
+        }
+    }
+
+    pub fn user_registered(&mut self, login: &DevLogin) -> Result<bool, PersistError> {
+        match &mut self.backend {
+            Backend::Postgres(store) => store.user_registered(login),
+            Backend::Fixture(store) => Ok(store.user_registered(login)),
+        }
+    }
+
+    /// Load roster slot zero for a registered user. Does not create a user or
+    /// a character.
+    pub fn resolve_existing(
         &mut self,
         login: &DevLogin,
     ) -> Result<PersistentCharacter, PersistError> {
         match &mut self.backend {
-            Backend::Files { identity, repo } => {
-                let id = identity.lookup_or_allocate(login)?;
-                repo.load_or_default(id)
-            }
-            Backend::Postgres(store) => store.resolve_or_create(login),
+            Backend::Postgres(store) => store.resolve_existing(login),
+            Backend::Fixture(store) => store.resolve_existing(login),
         }
     }
 
-    /// Check the authoritative roster before touching the character record.
-    /// None means not owned; no identity is allocated by entry.
     pub fn load_owned_character(
         &mut self,
         login: &DevLogin,
         id: CharacterId,
     ) -> Result<Option<PersistentCharacter>, PersistError> {
         match &mut self.backend {
-            Backend::Files { identity, repo } => {
-                if !identity.owns_character(login, id) {
-                    return Ok(None);
-                }
-                repo.load_or_default(id).map(Some)
-            }
             Backend::Postgres(store) => {
+                if !store.user_registered(login)? {
+                    return Err(PersistError::CreateRejected(
+                        crate::error::CreateCharacterRejection::Unregistered,
+                    ));
+                }
                 if !store.owns(login, id)? {
                     return Ok(None);
                 }
                 store.load_character(id).map(Some)
             }
+            Backend::Fixture(store) => store.load_owned_character(login, id),
         }
     }
 
@@ -161,8 +160,8 @@ impl PersistenceService {
         lease: Option<&LeaseAuthority>,
     ) -> Result<(), PersistError> {
         match &mut self.backend {
-            Backend::Files { repo, .. } => repo.save(&snapshot.into_character()),
             Backend::Postgres(store) => store.save_restore(snapshot, lease),
+            Backend::Fixture(store) => store.save_snapshot(snapshot),
         }
     }
 
@@ -173,39 +172,24 @@ impl PersistenceService {
         self.commit_durable_leased(command, None)
     }
 
-    /// Reserve a monotonic id range. File mode has no durable allocator and
-    /// does not substitute an epoch id.
     pub fn reserve_item_ids(&mut self, count: u32) -> Result<Vec<ItemInstanceId>, PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "durable item ids require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.reserve_item_ids(count),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("durable item ids")),
         }
     }
 
-    pub fn read_item(
-        &mut self,
-        id: ItemInstanceId,
-    ) -> Result<Option<crate::ItemRecord>, PersistError> {
+    pub fn read_item(&mut self, id: ItemInstanceId) -> Result<Option<ItemRecord>, PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Ok(None),
             Backend::Postgres(store) => store.read_item(id),
+            Backend::Fixture(_) => Ok(None),
         }
     }
 
-    /// Read the committed character, items, and narrative. Does not take a lease.
-    pub fn read_owned_restore(
-        &mut self,
-        id: purgatory_common::CharacterId,
-    ) -> Result<OwnedRestore, PersistError> {
+    pub fn read_owned_restore(&mut self, id: CharacterId) -> Result<OwnedRestore, PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "committed character restore requires the postgresql writer",
-            )),
             Backend::Postgres(store) => store.read_owned_restore(id),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("committed character restore")),
         }
     }
 
@@ -215,11 +199,8 @@ impl PersistenceService {
         lease: Option<&LeaseAuthority>,
     ) -> Result<DurableCommandResult, PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "durable commands require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.commit(command, lease),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("durable commands")),
         }
     }
 
@@ -229,20 +210,6 @@ impl PersistenceService {
         character_id: CharacterId,
     ) -> Result<SessionAdmission, PersistError> {
         match &mut self.backend {
-            Backend::Files { identity, repo } => {
-                if !identity.owns_character(login, character_id) {
-                    return Ok(SessionAdmission::NotOwned);
-                }
-                let character = repo.load_or_default(character_id)?;
-                Ok(SessionAdmission::Granted {
-                    authority: None,
-                    restore: Box::new(OwnedRestore {
-                        character,
-                        items: Vec::new(),
-                        narrative: crate::domain::CharacterNarrativeState::default(),
-                    }),
-                })
-            }
             Backend::Postgres(store) => Ok(match store.admit(login, character_id)? {
                 Admission::Granted { authority, restore } => SessionAdmission::Granted {
                     authority: Some(authority),
@@ -251,6 +218,13 @@ impl PersistenceService {
                 Admission::Held => SessionAdmission::Held,
                 Admission::NotOwned => SessionAdmission::NotOwned,
             }),
+            Backend::Fixture(store) => match store.admit(login, character_id)? {
+                Some(restore) => Ok(SessionAdmission::Granted {
+                    authority: None,
+                    restore: Box::new(restore),
+                }),
+                None => Ok(SessionAdmission::NotOwned),
+            },
         }
     }
 
@@ -259,31 +233,22 @@ impl PersistenceService {
         authority: &LeaseAuthority,
     ) -> Result<(LeaseAuthority, OwnedRestore), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "character leases require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.supersede(authority),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("character leases")),
         }
     }
 
     pub fn renew_lease(&mut self, authority: &LeaseAuthority) -> Result<(), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "character leases require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.renew_lease(authority),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("character leases")),
         }
     }
 
     pub fn release_lease(&mut self, authority: &LeaseAuthority) -> Result<(), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "character leases require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.release_lease(authority),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("character leases")),
         }
     }
 
@@ -293,11 +258,8 @@ impl PersistenceService {
         retire_limit: Option<i64>,
     ) -> Result<ChannelClaim, PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "channel generations require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.claim_channel(channel_id, retire_limit),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("channel generations")),
         }
     }
 
@@ -308,21 +270,15 @@ impl PersistenceService {
         retire_limit: Option<i64>,
     ) -> Result<u64, PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "channel generations require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.sweep_channel(channel_id, generation, retire_limit),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("channel generations")),
         }
     }
 
     pub fn renew_channel(&mut self, channel_id: i64, generation: u64) -> Result<(), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "channel generations require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.renew_channel(channel_id, generation),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("channel generations")),
         }
     }
 
@@ -332,11 +288,8 @@ impl PersistenceService {
         generation: u64,
     ) -> Result<(), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "channel generations require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.release_channel(channel_id, generation),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("channel generations")),
         }
     }
 
@@ -350,27 +303,24 @@ impl PersistenceService {
     #[cfg(test)]
     pub fn clock_moved_inside_one_statement(&mut self) -> Result<(bool, bool), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Ok((false, false)),
             Backend::Postgres(store) => store.clock_moved_inside_one_statement(),
+            Backend::Fixture(_) => Ok((false, false)),
         }
     }
 
     #[cfg(test)]
     pub fn sessions_waiting_on_a_lock(&mut self) -> Result<i64, PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Ok(0),
             Backend::Postgres(store) => store.sessions_waiting_on_a_lock(),
+            Backend::Fixture(_) => Ok(0),
         }
     }
 
     #[cfg(test)]
     pub fn leave_unissued_item_gap_for_test(&mut self, next: u64) -> Result<(), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "durable item ids require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.leave_unissued_item_gap_for_test(next),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("durable item ids")),
         }
     }
 
@@ -384,24 +334,24 @@ impl PersistenceService {
     #[cfg(test)]
     pub fn expire_lease_for_test(&mut self, login: &DevLogin) -> Result<(), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Ok(()),
             Backend::Postgres(store) => store.expire_lease_for_test(login),
+            Backend::Fixture(_) => Ok(()),
         }
     }
 
     #[cfg(test)]
     pub fn expire_channel_for_test(&mut self, channel_id: i64) -> Result<(), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Ok(()),
             Backend::Postgres(store) => store.expire_channel_for_test(channel_id),
+            Backend::Fixture(_) => Ok(()),
         }
     }
 
     #[cfg(test)]
     pub fn unstamp_ground_for_test(&mut self, id: ItemInstanceId) -> Result<(), PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Ok(()),
             Backend::Postgres(store) => store.unstamp_ground_for_test(id),
+            Backend::Fixture(_) => Ok(()),
         }
     }
 
@@ -412,8 +362,6 @@ impl PersistenceService {
         }
     }
 
-    /// After the server acknowledges the next commit, drop that connection
-    /// before the reply can be read back.
     #[cfg(test)]
     pub fn discard_connection_after_next_commit_for_test(&mut self) {
         if let Backend::Postgres(store) = &mut self.backend {
@@ -421,7 +369,6 @@ impl PersistenceService {
         }
     }
 
-    /// The next attempts to replace a dead connection fail and stay unknown.
     #[cfg(test)]
     pub fn fail_next_reconnects_for_test(&mut self, count: u32) {
         if let Backend::Postgres(store) = &mut self.backend {
@@ -431,35 +378,29 @@ impl PersistenceService {
 
     pub fn item(&mut self, id: ItemInstanceId) -> Result<Option<ItemRecord>, PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "item records require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.item(id),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("item records")),
         }
     }
 
     pub fn narrative(&mut self, id: CharacterId) -> Result<CharacterNarrativeState, PersistError> {
         match &mut self.backend {
-            Backend::Files { .. } => Err(PersistError::migration(
-                "<postgresql>",
-                "narrative records require the postgresql writer",
-            )),
             Backend::Postgres(store) => store.narrative(id),
+            Backend::Fixture(_) => Err(fixture_has_no_durable_store("narrative records")),
         }
     }
 
     pub fn lookup(&mut self, login: &DevLogin) -> Result<Option<CharacterId>, PersistError> {
         match &mut self.backend {
-            Backend::Files { identity, .. } => Ok(identity.lookup(login)),
             Backend::Postgres(store) => store.lookup(login),
+            Backend::Fixture(store) => store.lookup(login),
         }
     }
 
     pub fn roster(&mut self, login: &DevLogin) -> Result<Vec<CharacterRosterEntry>, PersistError> {
         match &mut self.backend {
-            Backend::Files { identity, .. } => Ok(identity.roster(login)),
             Backend::Postgres(store) => store.roster(login),
+            Backend::Fixture(store) => store.roster(login),
         }
     }
 
@@ -469,8 +410,8 @@ impl PersistenceService {
         name: &str,
     ) -> Result<CharacterRosterEntry, PersistError> {
         match &mut self.backend {
-            Backend::Files { identity, .. } => identity.create_character(login, name),
             Backend::Postgres(store) => store.create_character(login, name),
+            Backend::Fixture(store) => store.create_character(login, name),
         }
     }
 
@@ -480,8 +421,15 @@ impl PersistenceService {
         id: CharacterId,
     ) -> Result<bool, PersistError> {
         match &mut self.backend {
-            Backend::Files { identity, .. } => Ok(identity.owns_character(login, id)),
             Backend::Postgres(store) => store.owns(login, id),
+            Backend::Fixture(store) => {
+                if !store.user_registered(login) {
+                    return Err(PersistError::CreateRejected(
+                        crate::error::CreateCharacterRejection::Unregistered,
+                    ));
+                }
+                Ok(store.owns(login, id))
+            }
         }
     }
 }
@@ -489,28 +437,20 @@ impl PersistenceService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CreateCharacterRejection, IDENTITY_FILE_NAME, character_file_name};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::CreateCharacterRejection;
 
-    fn unique_dir() -> std::path::PathBuf {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "purgatory-service-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn fixture() -> PersistenceService {
+        PersistenceService::unit_fixture()
     }
 
     #[test]
-    fn missing_postgresql_configuration_does_not_open_the_file_writer() {
+    fn missing_postgresql_configuration_does_not_open_a_writer() {
         let err = match PersistenceService::open_configured(None) {
             Ok(_) => panic!("missing database url opened a writer"),
             Err(err) => err,
         };
         assert!(err.to_string().contains("PURGATORY_DATABASE_URL"), "{err}");
-        assert!(err.to_string().contains("file writer"), "{err}");
+        assert!(err.to_string().contains("file-backed"), "{err}");
         let absent = PostgresSettings::from_vars(|_| Err(std::env::VarError::NotPresent)).unwrap();
         assert!(absent.is_none());
         let err = match PostgresSettings::from_vars(|key| match key {
@@ -523,226 +463,109 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("PURGATORY_DEPLOYMENT_ID"), "{err}");
-        let dir = unique_dir();
-        PersistenceService::open(&dir).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn load_owned_character_selects_exact_id_and_never_allocates() {
-        let dir = unique_dir();
-        let mut service = PersistenceService::open(&dir).unwrap();
+    fn unregistered_user_cannot_create_or_receive_a_roster() {
+        let mut service = fixture();
         let alice = DevLogin::parse("alice").unwrap();
-        let bob = DevLogin::parse("bob").unwrap();
-        let first = service.create_character(&alice, "First").unwrap();
-        let second = service.create_character(&alice, "Second").unwrap();
-        assert!(
-            service
-                .load_owned_character(&bob, second.character_id)
-                .unwrap()
-                .is_none()
-        );
-        assert!(service.roster(&bob).unwrap().is_empty());
-        assert!(!dir.join(character_file_name(second.character_id)).exists());
-        let loaded = service
-            .load_owned_character(&alice, second.character_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded.character_id, second.character_id);
-        assert_ne!(loaded.character_id, first.character_id);
-        assert!(
-            service
-                .load_owned_character(&alice, CharacterId::from_raw(99999))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(service.roster(&alice).unwrap(), vec![first, second]);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn first_login_creates_character() {
-        let dir = unique_dir();
-        let mut svc = PersistenceService::open(&dir).unwrap();
-        let login = DevLogin::parse("dev.local").unwrap();
-        let a = svc.resolve_or_create(&login).unwrap();
-        let b = svc.resolve_or_create(&login).unwrap();
-        assert_eq!(a.character_id, b.character_id);
-        assert_eq!(a.restore.map_authored, "map.map1");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn roster_creation_ownership_and_restart() {
-        let dir = unique_dir();
-        let mut svc = PersistenceService::open(&dir).unwrap();
-        let alice = DevLogin::parse("alice").unwrap();
-        let bob = DevLogin::parse("bob").unwrap();
-        assert!(svc.roster(&alice).unwrap().is_empty());
-        assert!(
-            !svc.owns_character(&alice, CharacterId::from_raw(1))
-                .unwrap()
-        );
+        assert!(!service.user_registered(&alice).unwrap());
         assert!(matches!(
-            svc.create_character(&alice, "ab"),
+            service.roster(&alice),
+            Err(PersistError::CreateRejected(
+                CreateCharacterRejection::Unregistered
+            ))
+        ));
+        assert!(matches!(
+            service.create_character(&alice, "Alice"),
+            Err(PersistError::CreateRejected(
+                CreateCharacterRejection::Unregistered
+            ))
+        ));
+        assert!(matches!(
+            service.resolve_existing(&alice),
+            Err(PersistError::CreateRejected(
+                CreateCharacterRejection::Unregistered
+            ))
+        ));
+    }
+
+    #[test]
+    fn provisioned_user_starts_empty_and_stays_isolated() {
+        let mut service = fixture();
+        let alice = DevLogin::parse("alice").unwrap();
+        let bob = DevLogin::parse("bob").unwrap();
+        assert!(service.provision_dev_user(&alice).unwrap());
+        assert!(!service.provision_dev_user(&alice).unwrap());
+        assert!(service.roster(&alice).unwrap().is_empty());
+        assert!(matches!(
+            service.create_character(&alice, "ab"),
             Err(PersistError::CreateRejected(
                 CreateCharacterRejection::InvalidName(_)
             ))
         ));
-        let first = svc.create_character(&alice, "Ariel").unwrap();
-        assert_ne!(first.character_id.raw(), 0);
-        assert_eq!(first.display_name.as_str(), "Ariel");
+        let first = service.create_character(&alice, "Ariel").unwrap();
+        assert!(service.provision_dev_user(&bob).unwrap());
         for owner in [&alice, &bob] {
-            for name in ["ARIEL", "Ariel"] {
-                assert!(matches!(
-                    svc.create_character(owner, name),
-                    Err(PersistError::CreateRejected(
-                        CreateCharacterRejection::NameTaken
-                    ))
-                ));
-            }
+            assert!(matches!(
+                service.create_character(owner, "ARIEL"),
+                Err(PersistError::CreateRejected(
+                    CreateCharacterRejection::NameTaken
+                ))
+            ));
         }
-        let second = svc.create_character(&alice, "Second").unwrap();
-        let third = svc.create_character(&alice, "Third").unwrap();
-        assert_ne!(first.character_id, second.character_id);
-        assert_ne!(second.character_id, third.character_id);
+        let second = service.create_character(&alice, "Second").unwrap();
+        let third = service.create_character(&alice, "Third").unwrap();
         assert!(matches!(
-            svc.create_character(&alice, "Fourth"),
+            service.create_character(&alice, "Fourth"),
             Err(PersistError::CreateRejected(
                 CreateCharacterRejection::RosterFull
             ))
         ));
-        let other = svc.create_character(&bob, "Other").unwrap();
-        assert_eq!(other.character_id.raw(), third.character_id.raw() + 1);
-        let expected = vec![first.clone(), second, third];
-        assert_eq!(svc.roster(&alice).unwrap(), expected);
-        let mut owned = svc.roster(&alice).unwrap();
-        owned.clear();
-        assert_eq!(svc.roster(&alice).unwrap(), expected);
-        assert!(svc.owns_character(&alice, first.character_id).unwrap());
-        assert!(!svc.owns_character(&bob, first.character_id).unwrap());
-        assert!(!svc.owns_character(&alice, other.character_id).unwrap());
-        for entry in expected.iter().chain(std::iter::once(&other)) {
-            assert!(!dir.join(character_file_name(entry.character_id)).exists());
-        }
-        drop(svc);
-        let mut svc = PersistenceService::open(&dir).unwrap();
-        assert_eq!(svc.roster(&alice).unwrap(), expected);
-        assert_eq!(svc.roster(&bob).unwrap(), vec![other]);
+        let other = service.create_character(&bob, "Other").unwrap();
         assert_eq!(
-            svc.resolve_or_create(&alice).unwrap().character_id,
+            service.roster(&alice).unwrap(),
+            vec![first.clone(), second, third]
+        );
+        assert_eq!(service.roster(&bob).unwrap(), vec![other.clone()]);
+        assert!(service.owns_character(&alice, first.character_id).unwrap());
+        assert!(!service.owns_character(&bob, first.character_id).unwrap());
+        let loaded = service
+            .load_owned_character(&alice, first.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.character_id, first.character_id);
+        assert!(
+            service
+                .load_owned_character(&bob, first.character_id)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            service.resolve_existing(&alice).unwrap().character_id,
             first.character_id
         );
-        assert_eq!(svc.roster(&alice).unwrap(), expected);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn explicit_empty_roster_compatibility_skips_taken_names_and_survives_restart() {
-        let dir = unique_dir();
-        std::fs::write(
-            dir.join(IDENTITY_FILE_NAME),
-            r#"{"schema_version":2,"next_character_id":1,"logins":{"alice":[]}}"#,
-        )
-        .unwrap();
+    fn unit_fixture_does_not_create_game_files() {
+        let dir = std::env::temp_dir().join(format!("purgatory-no-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut service = fixture();
         let alice = DevLogin::parse("alice").unwrap();
-        let bob = DevLogin::parse("bob").unwrap();
-        let mut svc = PersistenceService::open(&dir).unwrap();
-        assert!(svc.roster(&alice).unwrap().is_empty());
-        svc.create_character(&bob, "000").unwrap();
-        let id = svc.resolve_or_create(&alice).unwrap().character_id;
-        let roster = svc.roster(&alice).unwrap();
-        assert_eq!(roster.len(), 1);
-        assert_eq!(roster[0].display_name.as_str(), "001");
-        drop(svc);
-        let mut svc = PersistenceService::open(&dir).unwrap();
-        assert_eq!(svc.resolve_or_create(&alice).unwrap().character_id, id);
-        assert_eq!(svc.roster(&alice).unwrap(), roster);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn failed_create_preserves_rosters_allocator_and_name_availability() {
-        let dir = unique_dir();
-        let alice = DevLogin::parse("alice").unwrap();
-        let bob = DevLogin::parse("bob").unwrap();
-        let mut svc = PersistenceService::open(&dir).unwrap();
-        let first = svc.create_character(&alice, "First").unwrap();
-        let before = std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap();
-        // A directory at the staging path deterministically fails File::create
-        // on all supported platforms, without changing developer persistence.
-        let obstacle = crate::atomic::tmp_path(&dir.join(IDENTITY_FILE_NAME));
-        std::fs::create_dir(&obstacle).unwrap();
-        for owner in [&alice, &bob] {
-            assert!(matches!(
-                svc.create_character(owner, "Retry"),
-                Err(PersistError::Io { .. })
-            ));
-            assert_eq!(svc.roster(&alice).unwrap(), vec![first.clone()]);
-            assert!(svc.roster(&bob).unwrap().is_empty());
-            assert!(
-                !svc.owns_character(owner, CharacterId::from_raw(first.character_id.raw() + 1))
-                    .unwrap()
-            );
-            assert_eq!(std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(), before);
-        }
-        std::fs::remove_dir(&obstacle).unwrap();
-        let retried = svc.create_character(&bob, "Retry").unwrap();
-        assert_eq!(retried.character_id.raw(), first.character_id.raw() + 1);
-        drop(svc);
-        let mut svc = PersistenceService::open(&dir).unwrap();
-        assert_eq!(svc.roster(&alice).unwrap(), vec![first]);
-        assert_eq!(svc.roster(&bob).unwrap(), vec![retried]);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn already_open_file_service_does_not_write_after_the_cutover_marker() {
-        let dir = unique_dir();
-        let mut files = PersistenceService::open(&dir).unwrap();
-        let alice = DevLogin::parse("alice").unwrap();
-        let entry = files.create_character(&alice, "Alice").unwrap();
-        files
-            .save_snapshot(PersistentCharacterSnapshot {
-                character_id: entry.character_id,
-                persistence_revision: 1,
-                restore: purgatory_common::RestoreIntent {
-                    map_authored: "map.map1".into(),
-                    point_id: "default".into(),
-                    checkpoint_id: None,
-                },
-                instance_exit: None,
-            })
+        service.provision_dev_user(&alice).unwrap();
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        service
+            .save_snapshot(PersistentCharacterSnapshot::from_character(
+                &PersistentCharacter::new_default(entry.character_id),
+            ))
             .unwrap();
-        let identity = std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap();
-        let character_path = dir.join(character_file_name(entry.character_id));
-        let character = std::fs::read(&character_path).unwrap();
-        crate::postgres::fence_file_writer(&dir).unwrap();
-        let save = files.save_snapshot(PersistentCharacterSnapshot {
-            character_id: entry.character_id,
-            persistence_revision: 2,
-            restore: purgatory_common::RestoreIntent {
-                map_authored: "map.map2".into(),
-                point_id: "after-cutover".into(),
-                checkpoint_id: None,
-            },
-            instance_exit: None,
-        });
-        assert!(
-            matches!(save, Err(PersistError::Migration { .. })),
-            "{save:?}"
-        );
-        let created = files.create_character(&DevLogin::parse("bob").unwrap(), "Bob");
-        assert!(
-            matches!(created, Err(PersistError::Migration { .. })),
-            "{created:?}"
-        );
-        assert_eq!(
-            std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(),
-            identity
-        );
-        assert_eq!(std::fs::read(&character_path).unwrap(), character);
-        assert_eq!(files.roster(&alice).unwrap(), vec![entry]);
-        let _ = std::fs::remove_dir_all(dir);
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(names.is_empty(), "unit fixture wrote {names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

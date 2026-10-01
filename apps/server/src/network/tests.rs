@@ -1,5 +1,6 @@
 //! Handshake and session tests. Localhost only. Never panic on bad input.
 
+use purgatory_common::DevLogin;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -93,6 +94,7 @@ struct TestServer {
     endpoint: Endpoint,
     accept: tokio::task::JoinHandle<()>,
     abuse: NetworkAbuseConfig,
+    persist: Option<super::persist::PersistenceHandle>,
 }
 
 /// Active gauges only. Every field must return to baseline after a scenario.
@@ -150,6 +152,7 @@ impl TestServer {
             endpoint,
             accept,
             abuse,
+            persist: None,
         }
     }
 
@@ -352,10 +355,34 @@ async fn connect(server: SocketAddr) -> TestClient {
     }
 }
 
-async fn handshake_ok(server: SocketAddr) -> (TestClient, SendStream, RecvStream, ConnectionId) {
-    let client = connect(server).await;
+async fn handshake_ok(server: &TestServer) -> (TestClient, SendStream, RecvStream, ConnectionId) {
+    finish_handshake(server.addr, server.persist.as_ref()).await
+}
+
+async fn finish_handshake(
+    addr: SocketAddr,
+    persist: Option<&super::persist::PersistenceHandle>,
+) -> (TestClient, SendStream, RecvStream, ConnectionId) {
+    let login = next_test_login();
+    if let Some(persist) = persist {
+        let parsed = DevLogin::parse(&login).expect("test login");
+        persist
+            .provision_dev_user(parsed.clone())
+            .await
+            .expect("provision");
+        let name = format!("N{}", &login[2..]);
+        let created = persist.create_character(parsed, name).await;
+        assert!(
+            matches!(
+                created,
+                purgatory_protocol::CreateCharacterResult::Created { .. }
+            ),
+            "test character: {created:?}"
+        );
+    }
+    let client = connect(addr).await;
     let (mut send, mut recv) = client.conn.open_bi().await.expect("open_bi");
-    write_hello(&mut send, PROTOCOL_VERSION, "test").await;
+    write_hello_login(&mut send, PROTOCOL_VERSION, "test", &login).await;
     match read_server_control(&mut recv).await {
         Ok(ServerControl::Welcome(welcome)) => (client, send, recv, welcome.connection_id),
         other => panic!("expected welcome, got {other:?}"),
@@ -404,6 +431,25 @@ async fn write_hello_best_effort(send: &mut SendStream, version: u32, build: &st
 
 async fn write_hello(send: &mut SendStream, version: u32, build: &str) {
     write_hello_login(send, version, build, &next_test_login()).await;
+}
+
+/// Legacy gameplay tests enter on Hello. The allowlist still applies, so the
+/// fixture user and one character must exist before that Hello.
+async fn provision_legacy_player(server: &TestServer, login: &str) {
+    let persist = server.persist.as_ref().expect("gameplay persist");
+    let parsed = DevLogin::parse(login).expect("login");
+    persist
+        .provision_dev_user(parsed.clone())
+        .await
+        .expect("provision");
+    let created = persist.create_character(parsed, "Hero".into()).await;
+    assert!(
+        matches!(
+            created,
+            purgatory_protocol::CreateCharacterResult::Created { .. }
+        ),
+        "legacy test character: {created:?}"
+    );
 }
 
 async fn write_hello_login(send: &mut SendStream, version: u32, build: &str, login: &str) {
@@ -461,7 +507,7 @@ async fn expect_disconnect(recv: &mut RecvStream, code: DisconnectReasonCode) {
 #[tokio::test]
 async fn valid_hello_receives_welcome() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
-    let (_client, _send, _recv, id) = handshake_ok(server.addr).await;
+    let (_client, _send, _recv, id) = handshake_ok(&server).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(server.contains(id));
     assert_eq!(id.get(), 1);
@@ -472,6 +518,7 @@ async fn valid_hello_receives_welcome() {
 async fn duplicate_live_character_is_rejected() {
     let (server, sim) = spawn_gameplay().await;
     let login = "alice";
+    provision_legacy_player(&server, login).await;
     let client_a = connect(server.addr).await;
     let (mut send_a, mut recv_a) = client_a.conn.open_bi().await.expect("bi");
     write_hello_login(&mut send_a, PROTOCOL_VERSION, "a", login).await;
@@ -496,6 +543,7 @@ async fn abrupt_drop_releases_character_occupancy() {
     )
     .await;
     let login = "alice";
+    provision_legacy_player(&server, login).await;
     let client_a = connect(server.addr).await;
     let (mut send_a, mut recv_a) = client_a.conn.open_bi().await.expect("bi");
     write_hello_login(&mut send_a, PROTOCOL_VERSION, "a", login).await;
@@ -530,6 +578,7 @@ async fn abrupt_drop_releases_character_occupancy() {
 #[tokio::test]
 async fn live_v10_hello_dev_local_receives_welcome() {
     let (server, sim) = spawn_gameplay().await;
+    provision_legacy_player(&server, "dev.local").await;
     let client = connect(server.addr).await;
     let (mut send, mut recv) = client.conn.open_bi().await.expect("bi");
     write_hello_login(
@@ -618,8 +667,8 @@ async fn no_hello_times_out() {
 #[tokio::test]
 async fn two_clients_get_distinct_connection_ids() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
-    let (_a, _send_a, _recv_a, id_a) = handshake_ok(server.addr).await;
-    let (_b, _send_b, _recv_b, id_b) = handshake_ok(server.addr).await;
+    let (_a, _send_a, _recv_a, id_a) = handshake_ok(&server).await;
+    let (_b, _send_b, _recv_b, id_b) = handshake_ok(&server).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_ne!(id_a, id_b);
     assert!(server.contains(id_a));
@@ -631,7 +680,7 @@ async fn two_clients_get_distinct_connection_ids() {
 #[tokio::test]
 async fn disconnect_removes_session() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
-    let (client, _send, _recv, id) = handshake_ok(server.addr).await;
+    let (client, _send, _recv, id) = handshake_ok(&server).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(server.contains(id));
     client.conn.close(0u32.into(), b"bye");
@@ -644,7 +693,7 @@ async fn disconnect_removes_session() {
 #[tokio::test]
 async fn repeated_hello_after_welcome_disconnects() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
-    let (_client, mut send, mut recv, id) = handshake_ok(server.addr).await;
+    let (_client, mut send, mut recv, id) = handshake_ok(&server).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     write_hello(&mut send, PROTOCOL_VERSION, "again").await;
     expect_disconnect(&mut recv, DisconnectReasonCode::UnexpectedMessage).await;
@@ -656,7 +705,7 @@ async fn repeated_hello_after_welcome_disconnects() {
 #[tokio::test]
 async fn datagram_ping_echoes_nonce() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
-    let (client, _send, _recv, _id) = handshake_ok(server.addr).await;
+    let (client, _send, _recv, _id) = handshake_ok(&server).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let ping = encode_client_datagram(7).expect("ping");
     client
@@ -686,7 +735,7 @@ struct LivePeer {
 }
 
 async fn handshake_peer(addr: SocketAddr) -> LivePeer {
-    let (client, send, recv, id) = handshake_ok(addr).await;
+    let (client, send, recv, id) = finish_handshake(addr, None).await;
     LivePeer {
         client,
         send,
@@ -768,7 +817,7 @@ async fn handshake_many(
 ) -> Vec<(TestClient, SendStream, RecvStream, ConnectionId)> {
     let mut set = tokio::task::JoinSet::new();
     for _ in 0..n {
-        set.spawn(async move { handshake_ok(addr).await });
+        set.spawn(async move { finish_handshake(addr, None).await });
     }
     let mut out = Vec::new();
     while let Some(joined) = set.join_next().await {
@@ -829,7 +878,7 @@ async fn simultaneous_disconnects_clean_all_sessions() {
 #[tokio::test]
 async fn malformed_client_does_not_affect_healthy_peer() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
-    let (healthy, _send, _recv, id) = handshake_ok(server.addr).await;
+    let (healthy, _send, _recv, id) = handshake_ok(&server).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(server.contains(id));
 
@@ -851,7 +900,7 @@ async fn stalled_hello_does_not_block_fast_client() {
     let server = TestServer::spawn(Duration::from_millis(800)).await;
     let _stalled = connect(server.addr).await;
     let started = tokio::time::Instant::now();
-    let (_fast, _send, _recv, fast_id) = handshake_ok(server.addr).await;
+    let (_fast, _send, _recv, fast_id) = handshake_ok(&server).await;
     assert!(
         started.elapsed() < Duration::from_millis(400),
         "fast client waited on stalled handshake: {:?}",
@@ -870,7 +919,7 @@ async fn churn_20_connect_disconnect_returns_to_baseline() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
     let mut seen = HashSet::new();
     for _ in 0..20 {
-        let (client, send, recv, id) = handshake_ok(server.addr).await;
+        let (client, send, recv, id) = handshake_ok(&server).await;
         assert!(seen.insert(id));
         wait_session_count(&server, 1).await;
         client.conn.close(0u32.into(), b"bye");
@@ -886,7 +935,7 @@ async fn churn_20_connect_disconnect_returns_to_baseline() {
 async fn churn_100_connect_disconnect_optional() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
     for _ in 0..100 {
-        let (client, send, recv, _id) = handshake_ok(server.addr).await;
+        let (client, send, recv, _id) = handshake_ok(&server).await;
         wait_session_count(&server, 1).await;
         client.conn.close(0u32.into(), b"bye");
         drop((send, recv, client));
@@ -933,7 +982,7 @@ async fn ungraceful_drop_eventually_cleans_session() {
     // peer vanishes without a close frame. Drop of `Connection` still notifies
     // the server promptly in this harness.
     let server = TestServer::spawn(Duration::from_secs(2)).await;
-    let (client, send, recv, id) = handshake_ok(server.addr).await;
+    let (client, send, recv, id) = handshake_ok(&server).await;
     wait_session_count(&server, 1).await;
     drop((client, send, recv));
     wait_session_count(&server, 0).await;
@@ -944,7 +993,7 @@ async fn ungraceful_drop_eventually_cleans_session() {
 #[tokio::test]
 async fn unknown_datagram_does_not_panic_or_drop_session() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
-    let (client, _send, _recv, id) = handshake_ok(server.addr).await;
+    let (client, _send, _recv, id) = handshake_ok(&server).await;
     wait_session_count(&server, 1).await;
     client.conn.send_datagram(vec![0xff_u8, 0x00].into()).ok();
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -990,7 +1039,7 @@ async fn idle_timeout_cleans_forgotten_peer() {
 #[tokio::test]
 async fn graceful_shutdown_close_code_is_server_shutdown() {
     let server = TestServer::spawn(Duration::from_secs(2)).await;
-    let (client, _send, _recv, _id) = handshake_ok(server.addr).await;
+    let (client, _send, _recv, _id) = handshake_ok(&server).await;
     wait_session_count(&server, 1).await;
     server.endpoint.close(
         u32::from(DisconnectReasonCode::ServerShutdown.as_u8()).into(),
@@ -1011,7 +1060,7 @@ async fn graceful_shutdown_close_code_is_server_shutdown() {
 #[tokio::test]
 async fn healthy_client_unaffected_by_peer_handshake_timeout() {
     let server = TestServer::spawn(Duration::from_millis(400)).await;
-    let (healthy, _s, _r, id) = handshake_ok(server.addr).await;
+    let (healthy, _s, _r, id) = handshake_ok(&server).await;
     wait_session_count(&server, 1).await;
     let _stalled = connect(server.addr).await;
     tokio::time::sleep(Duration::from_millis(700)).await;
@@ -1063,7 +1112,7 @@ async fn malformed_churn_releases_capacity_then_healthy_connects() {
     }
     assert!(wait_until(|| server.session_count() == 0, Duration::from_secs(3)).await);
     assert!(wait_until(|| server.inflight_tasks() == 0, Duration::from_secs(3)).await);
-    let (_ok, _s, _r, id) = handshake_ok(server.addr).await;
+    let (_ok, _s, _r, id) = handshake_ok(&server).await;
     wait_session_count(&server, 1).await;
     assert!(server.contains(id));
     server.shutdown();
@@ -1072,7 +1121,7 @@ async fn malformed_churn_releases_capacity_then_healthy_connects() {
 #[tokio::test]
 async fn concurrent_malformed_peers_do_not_block_healthy() {
     let server = TestServer::spawn(Duration::from_secs(4)).await;
-    let (healthy, _s, _r, id) = handshake_ok(server.addr).await;
+    let (healthy, _s, _r, id) = handshake_ok(&server).await;
     wait_session_count(&server, 1).await;
     let mut bad = Vec::new();
     for _ in 0..4 {
@@ -1124,7 +1173,7 @@ async fn admission_cap_refuses_excess_then_releases() {
     );
     drop((_a, _b));
     assert!(wait_until(|| server.inflight_tasks() == 0, Duration::from_secs(3)).await);
-    let (_ok, _s, _r, id) = handshake_ok(server.addr).await;
+    let (_ok, _s, _r, id) = handshake_ok(&server).await;
     wait_session_count(&server, 1).await;
     assert!(server.contains(id));
     server.shutdown();
@@ -1140,8 +1189,8 @@ async fn invalid_datagram_budget_disconnects_only_offender() {
         abuse,
     )
     .await;
-    let (healthy, _hs, _hr, hid) = handshake_ok(server.addr).await;
-    let (bad, _bs, _br, bid) = handshake_ok(server.addr).await;
+    let (healthy, _hs, _hr, hid) = handshake_ok(&server).await;
+    let (bad, _bs, _br, bid) = handshake_ok(&server).await;
     wait_session_count(&server, 2).await;
     for _ in 0..3 {
         bad.conn.send_datagram(vec![0xff_u8, 0x00].into()).ok();
@@ -1164,8 +1213,8 @@ async fn control_rate_limit_disconnects_flood_not_healthy_peer() {
         abuse,
     )
     .await;
-    let (healthy, _hs, _hr, hid) = handshake_ok(server.addr).await;
-    let (bad, mut send, _br, bid) = handshake_ok(server.addr).await;
+    let (healthy, _hs, _hr, hid) = handshake_ok(&server).await;
+    let (bad, mut send, _br, bid) = handshake_ok(&server).await;
     wait_session_count(&server, 2).await;
     for _ in 0..24 {
         write_unknown_control(&mut send).await;
@@ -1195,14 +1244,14 @@ async fn malformed_control_budget_is_per_connection() {
         abuse,
     )
     .await;
-    let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (_c, mut send, _r, id) = handshake_ok(&server).await;
     wait_session_count(&server, 1).await;
     for _ in 0..3 {
         write_unknown_control(&mut send).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(wait_until(|| !server.contains(id), Duration::from_secs(2)).await);
-    let (_ok, _s, _r, id2) = handshake_ok(server.addr).await;
+    let (_ok, _s, _r, id2) = handshake_ok(&server).await;
     wait_session_count(&server, 1).await;
     assert_ne!(id, id2);
     server.shutdown();
@@ -2907,12 +2956,7 @@ async fn spawn_gameplay_abuse(
         life_rx,
         input_rx,
     }));
-    let persist_dir = std::env::temp_dir().join(format!(
-        "purgatory-test-persist-{}-{}",
-        std::process::id(),
-        addr.port()
-    ));
-    let persist = super::persist::PersistenceHandle::spawn(&persist_dir).expect("persist");
+    let persist = super::persist::PersistenceHandle::spawn_fixture().expect("persist");
     {
         let mut g = sim.lock().unwrap_or_else(|err| err.into_inner());
         g.owner.set_persist(persist.clone());
@@ -2939,6 +2983,7 @@ async fn spawn_gameplay_abuse(
             endpoint,
             accept,
             abuse,
+            persist: Some(persist),
         },
         sim,
     )
@@ -2963,7 +3008,7 @@ async fn wait_attached(sim: &Mutex<GameplaySim>, id: ConnectionId) -> bool {
 #[tokio::test]
 async fn authoritative_right_moves_player() {
     let (server, sim) = spawn_gameplay().await;
-    let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (_c, mut send, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     write_input(&mut send, 1, MoveAxis::Right, false, false).await;
     assert!(
@@ -2990,7 +3035,7 @@ async fn authoritative_right_moves_player() {
 #[tokio::test]
 async fn authoritative_left_moves_player() {
     let (server, sim) = spawn_gameplay().await;
-    let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (_c, mut send, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     let x0 = {
         let g = lock_sim(&sim);
@@ -3022,7 +3067,7 @@ async fn authoritative_left_moves_player() {
 #[tokio::test]
 async fn jump_from_solid_is_authoritative() {
     let (server, sim) = spawn_gameplay().await;
-    let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (_c, mut send, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     write_input(&mut send, 1, MoveAxis::Neutral, true, false).await;
     assert!(
@@ -3055,7 +3100,7 @@ async fn jump_from_solid_is_authoritative() {
 #[tokio::test]
 async fn down_jump_drop_through_oneway() {
     let (server, sim) = spawn_gameplay().await;
-    let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (_c, mut send, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     let platform = {
         let mut g = lock_sim(&sim);
@@ -3092,7 +3137,7 @@ async fn down_jump_drop_through_oneway() {
 #[tokio::test]
 async fn packet_burst_does_not_create_simulation_ticks() {
     let (server, sim) = spawn_gameplay().await;
-    let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (_c, mut send, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     let ticks_before = lock_sim(&sim).owner.ticks();
     for seq in 1..=40 {
@@ -3118,8 +3163,8 @@ async fn packet_burst_does_not_create_simulation_ticks() {
 #[tokio::test]
 async fn a_input_does_not_control_b() {
     let (server, sim) = spawn_gameplay().await;
-    let (_a, mut send_a, _ra, id_a) = handshake_ok(server.addr).await;
-    let (_b, mut send_b, _rb, id_b) = handshake_ok(server.addr).await;
+    let (_a, mut send_a, _ra, id_a) = handshake_ok(&server).await;
+    let (_b, mut send_b, _rb, id_b) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_a).await);
     assert!(wait_attached(&sim, id_b).await);
     let (ea, eb, bx0) = {
@@ -3159,7 +3204,7 @@ async fn a_input_does_not_control_b() {
 #[tokio::test]
 async fn graceful_disconnect_removes_player() {
     let (server, sim) = spawn_gameplay().await;
-    let (client, _s, _r, id) = handshake_ok(server.addr).await;
+    let (client, _s, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     client.conn.close(0u32.into(), b"bye");
     drop(client);
@@ -3185,7 +3230,7 @@ async fn abrupt_loss_removes_player() {
         NetworkAbuseConfig::DEV,
     )
     .await;
-    let (client, _s, _r, id) = handshake_ok(server.addr).await;
+    let (client, _s, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     drop(client);
     assert!(
@@ -3205,7 +3250,7 @@ async fn abrupt_loss_removes_player() {
 #[tokio::test]
 async fn reconnect_starts_with_clean_neutral() {
     let (server, sim) = spawn_gameplay().await;
-    let (client, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (client, mut send, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     write_input(&mut send, 1, MoveAxis::Right, true, true).await;
     assert!(
@@ -3233,7 +3278,7 @@ async fn reconnect_starts_with_clean_neutral() {
         )
         .await
     );
-    let (_c2, mut send2, _r2, id2) = handshake_ok(server.addr).await;
+    let (_c2, mut send2, _r2, id2) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id2).await);
     {
         let g = lock_sim(&sim);
@@ -3253,7 +3298,7 @@ async fn reconnect_starts_with_clean_neutral() {
 #[tokio::test]
 async fn malformed_input_cannot_mutate_world() {
     let (server, sim) = spawn_gameplay().await;
-    let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (_c, mut send, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     let x0 = {
         let g = lock_sim(&sim);
@@ -3300,8 +3345,8 @@ async fn input_rate_offender_is_isolated() {
         abuse,
     )
     .await;
-    let (_a, mut send_a, _ra, id_a) = handshake_ok(server.addr).await;
-    let (_b, mut send_b, _rb, id_b) = handshake_ok(server.addr).await;
+    let (_a, mut send_a, _ra, id_a) = handshake_ok(&server).await;
+    let (_b, mut send_b, _rb, id_b) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_a).await);
     assert!(wait_attached(&sim, id_b).await);
     for seq in 1..=80 {
@@ -3347,7 +3392,7 @@ async fn input_handoff_awaits_instead_of_dropping() {
         abuse,
     )
     .await;
-    let (_c, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (_c, mut send, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
 
     let sim_pump = Arc::clone(&sim);
@@ -3509,7 +3554,7 @@ async fn read_latest_view(recv: &mut RecvStream) -> ReplicaView {
 #[tokio::test]
 async fn client_receives_authoritative_snapshot() {
     let (server, sim) = spawn_gameplay().await;
-    let (client, mut send, _r, id) = handshake_ok(server.addr).await;
+    let (client, mut send, _r, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     write_input(&mut send, 1, MoveAxis::Right, false, false).await;
     assert!(
@@ -3578,8 +3623,8 @@ async fn client_receives_authoritative_snapshot() {
 #[tokio::test]
 async fn two_clients_see_both_entities_and_distinct_local_ids() {
     let (server, sim) = spawn_gameplay().await;
-    let (client_a, mut send_a, _ra, id_a) = handshake_ok(server.addr).await;
-    let (client_b, mut send_b, _rb, id_b) = handshake_ok(server.addr).await;
+    let (client_a, mut send_a, _ra, id_a) = handshake_ok(&server).await;
+    let (client_b, mut send_b, _rb, id_b) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_a).await);
     assert!(wait_attached(&sim, id_b).await);
     let (ax0, bx0) = {
@@ -3632,8 +3677,8 @@ async fn two_clients_see_both_entities_and_distinct_local_ids() {
 #[tokio::test]
 async fn disconnect_removes_entity_from_next_snapshot() {
     let (server, sim) = spawn_gameplay().await;
-    let (client_a, _sa, _ra, id_a) = handshake_ok(server.addr).await;
-    let (client_b, send_b, recv_b, id_b) = handshake_ok(server.addr).await;
+    let (client_a, _sa, _ra, id_a) = handshake_ok(&server).await;
+    let (client_b, send_b, recv_b, id_b) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_a).await);
     assert!(wait_attached(&sim, id_b).await);
     lock_sim(&sim).tick_n(1);
@@ -3675,8 +3720,8 @@ async fn disconnect_removes_entity_from_next_snapshot() {
 #[tokio::test]
 async fn reconnect_uses_fresh_generational_id() {
     let (server, sim) = spawn_gameplay().await;
-    let (client_a, _sa, _ra, id_a) = handshake_ok(server.addr).await;
-    let (client_b, send_b, recv_b, id_b) = handshake_ok(server.addr).await;
+    let (client_a, _sa, _ra, id_a) = handshake_ok(&server).await;
+    let (client_b, send_b, recv_b, id_b) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_a).await);
     assert!(wait_attached(&sim, id_b).await);
     lock_sim(&sim).tick_n(1);
@@ -3695,7 +3740,7 @@ async fn reconnect_uses_fresh_generational_id() {
         )
         .await
     );
-    let (client_c, _sc, _rc, id_c) = handshake_ok(server.addr).await;
+    let (client_c, _sc, _rc, id_c) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_c).await);
     let new = lock_sim(&sim).owner.entity_of(id_c).unwrap();
     assert_ne!(old, new);
@@ -3718,8 +3763,8 @@ async fn reconnect_uses_fresh_generational_id() {
 #[tokio::test]
 async fn slow_snapshot_client_does_not_block_simulation_or_peer() {
     let (server, sim) = spawn_gameplay().await;
-    let (client_a, mut send_a, _ra, id_a) = handshake_ok(server.addr).await;
-    let (_client_b, _sb, _rb, id_b) = handshake_ok(server.addr).await;
+    let (client_a, mut send_a, _ra, id_a) = handshake_ok(&server).await;
+    let (_client_b, _sb, _rb, id_b) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_a).await);
     assert!(wait_attached(&sim, id_b).await);
     write_input(&mut send_a, 1, MoveAxis::Right, false, false).await;
@@ -3800,8 +3845,8 @@ async fn expect_equipment(recv: &mut RecvStream) -> ServerEquipment {
 #[tokio::test]
 async fn two_clients_converge_on_authoritative_equipment() {
     let (server, sim) = spawn_gameplay().await;
-    let (client_a, mut send_a, mut recv_a, id_a) = handshake_ok(server.addr).await;
-    let (client_b, mut send_b, _recv_b, id_b) = handshake_ok(server.addr).await;
+    let (client_a, mut send_a, mut recv_a, id_a) = handshake_ok(&server).await;
+    let (client_b, mut send_b, _recv_b, id_b) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_a).await);
     assert!(wait_attached(&sim, id_b).await);
     assert!(lock_sim(&sim).owner.set_player_x(id_a, 0.0));
@@ -3970,8 +4015,8 @@ async fn two_clients_converge_on_authoritative_equipment() {
 #[tokio::test]
 async fn reconnect_reconstructs_remote_equipment_from_baseline() {
     let (server, sim) = spawn_gameplay().await;
-    let (_client_a, mut send_a, mut recv_a, id_a) = handshake_ok(server.addr).await;
-    let (client_b, send_b, recv_b, id_b) = handshake_ok(server.addr).await;
+    let (_client_a, mut send_a, mut recv_a, id_a) = handshake_ok(&server).await;
+    let (client_b, send_b, recv_b, id_b) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_a).await);
     assert!(wait_attached(&sim, id_b).await);
     assert!(lock_sim(&sim).owner.set_player_x(id_a, 0.0));
@@ -4016,7 +4061,7 @@ async fn reconnect_reconstructs_remote_equipment_from_baseline() {
         )
         .await
     );
-    let (client_b2, _send_b2, _recv_b2, id_b2) = handshake_ok(server.addr).await;
+    let (client_b2, _send_b2, _recv_b2, id_b2) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id_b2).await);
     assert!(lock_sim(&sim).owner.set_player_x(id_b2, 0.0));
     lock_sim(&sim).tick_n(8);
@@ -4057,7 +4102,7 @@ async fn expect_ability(recv: &mut RecvStream) -> ServerAbility {
 #[tokio::test]
 async fn ability_activate_empty_swing_over_quic() {
     let (server, sim) = spawn_gameplay().await;
-    let (_client, mut send, mut recv, id) = handshake_ok(server.addr).await;
+    let (_client, mut send, mut recv, id) = handshake_ok(&server).await;
     assert!(wait_attached(&sim, id).await);
     {
         let g = lock_sim(&sim);
@@ -4147,7 +4192,7 @@ fn replication_uni_is_opened_once_and_write_failure_ends_the_session() {
 /// The production handshake, with an actual persistence worker and gameplay owner present.
 /// The legacy test fixture is deliberately not requested by this Hello.
 async fn frontend_peer(
-    server: SocketAddr,
+    server: &TestServer,
     login: &str,
 ) -> (
     TestClient,
@@ -4155,7 +4200,17 @@ async fn frontend_peer(
     RecvStream,
     purgatory_protocol::FrontendSessionReady,
 ) {
-    let client = connect(server).await;
+    if let Some(persist) = &server.persist {
+        let parsed = DevLogin::parse(login).expect("frontend login");
+        if !persist
+            .user_registered(parsed.clone())
+            .await
+            .expect("lookup")
+        {
+            persist.provision_dev_user(parsed).await.expect("provision");
+        }
+    }
+    let client = connect(server.addr).await;
     let (mut send, mut recv) = client.conn.open_bi().await.unwrap();
     write_control(
         &mut send,
@@ -4199,9 +4254,9 @@ async fn frontend_session_roster_create_rejections_reconnect_without_gameplay_or
         CharacterCreateRejection as Rejection, CreateCharacterResult as Result,
     };
     let (server, sim) = spawn_gameplay().await;
-    let (a, mut sa, mut ra, ready) = frontend_peer(server.addr, "r5b.alice").await;
+    let (a, mut sa, mut ra, ready) = frontend_peer(&server, "r5b.alice").await;
     assert!(ready.roster.is_empty(), "Hello must not auto-create");
-    let (_same, _ss, _rs, same) = frontend_peer(server.addr, "r5b.alice").await;
+    let (_same, _ss, _rs, same) = frontend_peer(&server, "r5b.alice").await;
     assert!(
         same.roster.is_empty(),
         "a second session does not reserve occupancy"
@@ -4226,7 +4281,7 @@ async fn frontend_session_roster_create_rejections_reconnect_without_gameplay_or
         create_frontend(&mut sa, &mut ra, "TooLongHero1234").await,
         Result::Rejected(Rejection::InvalidName)
     );
-    let (_b, mut sb, mut rb, bob) = frontend_peer(server.addr, "r5b.bob").await;
+    let (_b, mut sb, mut rb, bob) = frontend_peer(&server, "r5b.bob").await;
     assert!(bob.roster.is_empty());
     assert_eq!(
         create_frontend(&mut sb, &mut rb, "FIRSTHERO").await,
@@ -4270,7 +4325,7 @@ async fn frontend_session_roster_create_rejections_reconnect_without_gameplay_or
         "no replication stream"
     );
     a.conn.close(0u32.into(), b"reconnect");
-    let (_again, _send, _recv, again) = frontend_peer(server.addr, "r5b.alice").await;
+    let (_again, _send, _recv, again) = frontend_peer(&server, "r5b.alice").await;
     assert_eq!(again.roster, full);
     server.shutdown();
 }
@@ -4279,7 +4334,7 @@ async fn frontend_session_roster_create_rejections_reconnect_without_gameplay_or
 async fn frontend_enter_exact_owned_character_same_connection_replication_and_detach() {
     use purgatory_protocol::{CharacterEnterRejection as R, CreateCharacterResult};
     let (server, sim) = spawn_gameplay().await;
-    let (alice, mut send, mut recv, ready) = frontend_peer(server.addr, "r5c.alice").await;
+    let (alice, mut send, mut recv, ready) = frontend_peer(&server, "r5c.alice").await;
     create_frontend(&mut send, &mut recv, "FirstR5c").await;
     let CreateCharacterResult::Created { roster } =
         create_frontend(&mut send, &mut recv, "SecondR5c").await
@@ -4287,8 +4342,8 @@ async fn frontend_enter_exact_owned_character_same_connection_replication_and_de
         panic!("roster")
     };
     let selected = roster[1].character_id;
-    let (other, mut os, mut or, other_ready) = frontend_peer(server.addr, "r5c.alice").await;
-    let (_bob, mut bs, mut br, _) = frontend_peer(server.addr, "r5c.bob").await;
+    let (other, mut os, mut or, other_ready) = frontend_peer(&server, "r5c.alice").await;
+    let (_bob, mut bs, mut br, _) = frontend_peer(&server, "r5c.bob").await;
     write_control(
         &mut bs,
         ClientControl::EnterCharacter {
@@ -4386,7 +4441,7 @@ async fn frontend_enter_exact_owned_character_same_connection_replication_and_de
         )
         .await
     );
-    let (_again, mut gs, mut gr, _) = frontend_peer(server.addr, "r5c.alice").await;
+    let (_again, mut gs, mut gr, _) = frontend_peer(&server, "r5c.alice").await;
     write_control(
         &mut gs,
         ClientControl::EnterCharacter {

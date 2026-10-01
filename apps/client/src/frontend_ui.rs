@@ -223,7 +223,7 @@ impl FrontendUi {
                 label(&shown, 640.0, 348.0, 390.0, 17.0);
                 label(
                     if DevLogin::parse(login).is_ok() {
-                        "DEV profile — no authentication"
+                        "Development allowlist — no password"
                     } else {
                         "2–32: a–z, 0–9, _ or .\nNo leading, trailing or consecutive dots"
                     },
@@ -329,6 +329,9 @@ impl FrontendUi {
                                 }
                                 purgatory_protocol::CharacterCreateRejection::StorageFailure => {
                                     "Server failure. Retry."
+                                }
+                                purgatory_protocol::CharacterCreateRejection::Unregistered => {
+                                    "Username is not registered"
                                 }
                             },
                         };

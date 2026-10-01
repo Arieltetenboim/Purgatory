@@ -659,7 +659,7 @@ animation_lab   (eframe; Hub-launched; ADR-0058)
 
 `simulation` must not depend on `winit`, `wgpu`, renderer code, UI, or OS window APIs.
 
-`purgatory-persistence` depends on `purgatory-common`, serde, and the synchronous `postgres` client (ADR-0070). Simulation does not depend on it. JSON, filesystem IO, and database sessions run on the persistence worker, not the 30 Hz simulation thread. The live data root is a per-user application-data directory (Windows `%LOCALAPPDATA%\Purgatory\`), not the source tree. `PURGATORY_DATA_DIR` overrides it. Server startup requires `PURGATORY_DATABASE_URL` and `PURGATORY_DEPLOYMENT_ID`. A missing URL does not fall back to the file writer. Fresh bootstrap creates an empty roster and does not touch the legacy data directory. Normal open checks the deployment identity stored in the database and does not need `durable_writer.json`. The explicit file writer remains available for tests and a deliberate legacy import. Channels do not get separate databases.
+`purgatory-persistence` depends on `purgatory-common`, serde, and the synchronous `postgres` client (ADR-0070, ADR-0073). Simulation does not depend on it. Database sessions run on the persistence worker, not the 30 Hz simulation thread. Server startup connects only to an existing initialized database. It does not create, reset, migrate, or fall back to files. Developer Hub administers the pinned local database `Purgatory_dev` through a separate maintenance connection. A development username must already exist in `dev_users` before Hello is admitted. Channels share one database. JSON game content, art, and maps are not character persistence.
 
 `server` must not depend on `winit`, `wgpu`, `egui`, or the client crate.
 

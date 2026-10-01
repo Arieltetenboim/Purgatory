@@ -137,6 +137,37 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
             return;
         }
     };
+    if let Some(worker) = persist.as_ref() {
+        match worker.user_registered(login.clone()).await {
+            Ok(true) => {}
+            Ok(false) => {
+                lifecycle.note_hello_fail();
+                stats.leave_handshake();
+                let reason = DisconnectReason::new(DisconnectReasonCode::UnknownUser, "dev_login");
+                stats.note_reject(reason.code);
+                println!(
+                    "handshake rejected {} reason={} detail={}",
+                    sanitize_log_text(&remote.to_string()),
+                    reason.code.as_str(),
+                    sanitize_log_text(&reason.detail)
+                );
+                let _ = write_server_control(&mut send, &ServerControl::Disconnect(reason.clone()))
+                    .await;
+                connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+                return;
+            }
+            Err(err) => {
+                eprintln!("PURGATORY user lookup failed: {err}");
+                lifecycle.note_hello_fail();
+                stats.leave_handshake();
+                connection.close(
+                    DisconnectReasonCode::ServerShutdown.as_u8().into(),
+                    b"storage unavailable",
+                );
+                return;
+            }
+        }
+    }
 
     // Historical gameplay integration fixtures opt in only in test binaries.
     // Shipping builds have no legacy entry route, regardless of client_build.
@@ -1771,8 +1802,9 @@ mod admission_race {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn channel_stop_during_admit_does_not_enter_world() {
         let dir = temp_dir("channel");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
+        worker.provision_dev_user(login.clone()).await.unwrap();
         let created = worker.create_character(login.clone(), "Alpha".into()).await;
         let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
             panic!("create character: {created:?}");
@@ -1883,7 +1915,7 @@ mod admission_race {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn character_deadline_during_enter_does_not_enter_world() {
         let dir = temp_dir("character");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
         let character_id = CharacterId::from_raw(9);
         worker.script_next_admit(leased_admission(character_id));
@@ -2043,8 +2075,9 @@ mod admission_race {
     #[tokio::test]
     async fn durable_restore_rejects_a_non_equippable_item_in_weapon() {
         let dir = temp_dir("potion-weapon");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
+        worker.provision_dev_user(login.clone()).await.unwrap();
         let created = worker.create_character(login.clone(), "Alpha".into()).await;
         let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
             panic!("create character: {created:?}");
@@ -2083,8 +2116,9 @@ mod admission_race {
     #[tokio::test]
     async fn durable_restore_rejects_an_equippable_item_in_the_wrong_slot() {
         let dir = temp_dir("cap-weapon");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
+        worker.provision_dev_user(login.clone()).await.unwrap();
         let created = worker.create_character(login.clone(), "Alpha".into()).await;
         let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
             panic!("create character: {created:?}");
@@ -2123,8 +2157,9 @@ mod admission_race {
     #[tokio::test]
     async fn durable_restore_keeps_valid_equipment() {
         let dir = temp_dir("sword-weapon");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
+        worker.provision_dev_user(login.clone()).await.unwrap();
         let created = worker.create_character(login.clone(), "Alpha".into()).await;
         let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
             panic!("create character: {created:?}");

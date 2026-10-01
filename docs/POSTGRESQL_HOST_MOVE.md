@@ -81,7 +81,8 @@ characters and items; it does not start a new world or reset player data.**
    restoration of a selected character and a retry of a stored command key.
 5. Configure the **same game server** with new runtime and migration URLs,
    the matching schema name, and the same `PURGATORY_DEPLOYMENT_ID` stored in
-   `durable_meta`. Do not copy `durable_writer.json`. A missing or different
+   `durable_meta`. Do not copy `durable_writer.json` or development characters
+   into a newly initialized database. A missing or different
    deployment id refuses to start and does not create an empty roster. Do not
    run `--bootstrap-postgresql` against the restored database. Start one
    server, verify the migration check, channel claim, ground retirement,

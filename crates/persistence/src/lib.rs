@@ -1,21 +1,25 @@
 //! Character persistence. Simulation does not depend on this crate.
 //!
-//! JSON, filesystem IO, and PostgreSQL sessions belong on the persistence
-//! worker, not the 30 Hz simulation thread. Server startup requires
-//! PostgreSQL. A missing URL does not fall back to the file writer. Fresh
-//! bootstrap creates an empty roster and does not read legacy files. Normal
-//! open checks the stored deployment identity and does not need a local marker.
+//! PostgreSQL sessions belong on the persistence worker, not the 30 Hz
+//! simulation thread. Server startup only reopens an initialized database.
+//! Creating, resetting, and provisioning development users are separate
+//! administration operations. Game character state is not written to files.
 
-mod atomic;
+mod admin;
 mod character;
 mod domain;
 mod error;
 mod identity;
 mod lifecycle;
+mod memory;
 mod postgres;
-mod repository;
 mod service;
 
+pub use admin::{
+    AdminAudience, AdminFailure, AdminOutcome, DatabaseAdminRequest, DatabaseInspection,
+    DatabaseStatus, LOCAL_DEV_DATABASE, LOCAL_DEV_DEPLOYMENT_ID, add_user as add_development_user,
+    create as create_database, inspect as inspect_database, reset as reset_database,
+};
 pub use character::{PERSISTENCE_SCHEMA_VERSION, PersistentCharacter, PersistentCharacterSnapshot};
 pub use domain::{
     CharacterItemLocation, CharacterNarrativeState, DURABLE_INVENTORY_CAPACITY, DurableCommand,
@@ -24,16 +28,12 @@ pub use domain::{
     ReservedItemOutcome, ReservedItemUse,
 };
 pub use error::{CreateCharacterRejection, PersistError};
-pub use identity::{
-    CharacterRosterEntry, DevIdentityStore, IDENTITY_FILE_NAME, IDENTITY_SCHEMA_VERSION,
-    MAX_ROSTER_SIZE,
-};
+pub use identity::{CharacterRosterEntry, MAX_ROSTER_SIZE};
 pub use lifecycle::{
     Admission, CHANNEL_GENERATION_EXPIRY, CHANNEL_GENERATION_RENEWAL, CHARACTER_LEASE_EXPIRY,
     CHARACTER_LEASE_RENEWAL, ChannelClaim, LeaseAuthority, LeaseBarrier, OwnedRestore,
 };
 pub use postgres::{PostgresSettings, drop_test_schema};
-pub use repository::{FileCharacterRepository, character_file_name};
 pub use service::{PersistenceService, SessionAdmission};
 
 #[cfg(test)]

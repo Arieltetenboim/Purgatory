@@ -209,6 +209,7 @@
 
         fn enter_as(&mut self, login: &str, name: &str) -> Entered {
             let login = DevLogin::parse(login).unwrap();
+            self.service.provision_dev_user(&login).unwrap();
             let created = self.service.create_character(&login, name).unwrap();
             let admission = self.service.admit(&login, created.character_id).unwrap();
             let SessionAdmission::Granted {

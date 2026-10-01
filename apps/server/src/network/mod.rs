@@ -171,10 +171,9 @@ fn spawn_durable_commits(
 
 async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     let bound = endpoint::bind(&config)?;
-    let data_dir = persist::data_dir_from_env();
-    let persist = persist::PersistenceHandle::spawn_from_env(&data_dir)?;
+    let persist = persist::PersistenceHandle::spawn_from_env()?;
     println!("network listening on {}", bound.local_addr());
-    println!("PURGATORY persist data_dir={}", data_dir.display());
+    println!("PURGATORY persist backend=postgresql");
 
     bound.stats.admission_cap.store(
         config.abuse.max_inflight_connection_tasks as u64,
@@ -236,6 +235,19 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
         println!("PURGATORY capacity artifacts dir={}", dir.display());
     }
     let outer_period = Duration::from_millis(8);
+    let (shutdown_file_tx, mut shutdown_file_rx) = tokio::sync::watch::channel(false);
+    if let Some(path) = std::env::var_os("PURGATORY_SHUTDOWN_FILE") {
+        let path = std::path::PathBuf::from(path);
+        tokio::spawn(async move {
+            loop {
+                if path.is_file() {
+                    let _ = shutdown_file_tx.send(true);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
 
     loop {
         tokio::select! {
@@ -327,52 +339,80 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
             }
             _ = tokio::signal::ctrl_c() => {
                 println!("PURGATORY server shutting down");
-                bound.endpoint.close(
-                    u32::from(DisconnectReasonCode::ServerShutdown.as_u8()).into(),
-                    b"shutdown",
-                );
-                let (active, peak) = {
-                    let table = session::lock_sessions(&bound.sessions);
-                    (table.len(), table.high_water())
-                };
-                println!(
-                    "PURGATORY server stats {}",
-                    bound.stats.summary(
-                        active,
-                        bound.inflight_tasks.load(Ordering::Relaxed),
-                        peak,
-                    )
-                );
-                owner.flush_persistent_snapshots();
-                domains.force_write();
-                let _ = stop_channel_tx.send(true);
-                let status = persist.shutdown(
+                finish_shutdown(
+                    &bound,
+                    &mut owner,
+                    &mut domains,
+                    &stop_channel_tx,
+                    &persist,
                     config.persistence_shutdown_timeout,
-                    held_channel.map(|(channel_id, generation, _)| (channel_id, generation)),
+                    held_channel.as_ref().map(|(id, generation, _)| (*id, *generation)),
                 )
-                    .await;
-                match status {
-                    persist::PersistenceShutdown::Drained { save_failures } => {
-                        println!(
-                            "PURGATORY persistence shutdown drained save_failures={save_failures}"
-                        );
-                    }
-                    persist::PersistenceShutdown::TimedOut { save_failures } => {
-                        eprintln!(
-                            "PURGATORY persistence shutdown timed out; snapshots were not confirmed save_failures={save_failures}"
-                        );
-                    }
-                    persist::PersistenceShutdown::WorkerClosed => {
-                        eprintln!(
-                            "PURGATORY persistence worker closed; snapshots were not confirmed"
-                        );
-                    }
+                .await;
+                break;
+            }
+            result = shutdown_file_rx.changed(), if !*shutdown_file_rx.borrow() => {
+                if result.is_err() || !*shutdown_file_rx.borrow() {
+                    continue;
                 }
+                println!("PURGATORY server shutting down");
+                finish_shutdown(
+                    &bound,
+                    &mut owner,
+                    &mut domains,
+                    &stop_channel_tx,
+                    &persist,
+                    config.persistence_shutdown_timeout,
+                    held_channel.as_ref().map(|(id, generation, _)| (*id, *generation)),
+                )
+                .await;
                 break;
             }
         }
     }
     Ok(())
+}
+
+async fn finish_shutdown(
+    bound: &endpoint::BoundEndpoint,
+    owner: &mut gameplay::GameplayOwner,
+    domains: &mut TickDomainAccounting,
+    stop_channel_tx: &tokio::sync::watch::Sender<bool>,
+    persist: &persist::PersistenceHandle,
+    timeout: Duration,
+    held_channel: Option<(i64, u64)>,
+) {
+    bound.endpoint.close(
+        u32::from(DisconnectReasonCode::ServerShutdown.as_u8()).into(),
+        b"shutdown",
+    );
+    let (active, peak) = {
+        let table = session::lock_sessions(&bound.sessions);
+        (table.len(), table.high_water())
+    };
+    println!(
+        "PURGATORY server stats {}",
+        bound
+            .stats
+            .summary(active, bound.inflight_tasks.load(Ordering::Relaxed), peak,)
+    );
+    owner.flush_persistent_snapshots();
+    domains.force_write();
+    let _ = stop_channel_tx.send(true);
+    let status = persist.clone().shutdown(timeout, held_channel).await;
+    match status {
+        persist::PersistenceShutdown::Drained { save_failures } => {
+            println!("PURGATORY persistence shutdown drained save_failures={save_failures}");
+        }
+        persist::PersistenceShutdown::TimedOut { save_failures } => {
+            eprintln!(
+                "PURGATORY persistence shutdown timed out; snapshots were not confirmed save_failures={save_failures}"
+            );
+        }
+        persist::PersistenceShutdown::WorkerClosed => {
+            eprintln!("PURGATORY persistence worker closed; snapshots were not confirmed");
+        }
+    }
 }
 
 async fn claim_startup_channel(

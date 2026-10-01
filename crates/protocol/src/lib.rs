@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_defined() {
-        assert_eq!(PROTOCOL_VERSION, 33);
+        assert_eq!(PROTOCOL_VERSION, 34);
     }
 
     #[test]

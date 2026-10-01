@@ -40,7 +40,9 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 33` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 34` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+
+Protocol v34 adds `DisconnectReasonCode::UnknownUser` (discriminant 7). The server sends it when a development username is not in `dev_users`, before `FrontendSessionReady`. `CharacterCreateRejection::Unregistered` (discriminant 5) is the same fence on character creation. The username is a development allowlist, not authentication.
 
 v26 is an intentional incompatible bump: v1–v25 peers are rejected with `DisconnectReasonCode::VersionMismatch`. Mismatches are never accepted silently. Hello is decoded **version-first**: an older Hello still decodes, then fails version check.
 

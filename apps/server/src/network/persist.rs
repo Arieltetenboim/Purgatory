@@ -5,7 +5,7 @@
 //! and filesystem work happen only on the persistence worker.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,6 +45,15 @@ enum PersistCmd {
         login: DevLogin,
         name: String,
         reply: tokio::sync::oneshot::Sender<purgatory_protocol::CreateCharacterResult>,
+    },
+    UserRegistered {
+        login: DevLogin,
+        reply: tokio::sync::oneshot::Sender<Result<bool, PersistError>>,
+    },
+    #[cfg(test)]
+    ProvisionDevUser {
+        login: DevLogin,
+        reply: tokio::sync::oneshot::Sender<Result<bool, PersistError>>,
     },
     #[cfg_attr(not(test), allow(dead_code))]
     CommitDurable {
@@ -234,6 +243,8 @@ struct SharedSaveState {
     renew_channel_hold: Mutex<Option<CommandHoldState>>,
     #[cfg(test)]
     scripted_admit: Mutex<Option<purgatory_persistence::SessionAdmission>>,
+    #[cfg(test)]
+    saved_ids: Mutex<Vec<(purgatory_common::CharacterId, u64)>>,
 }
 
 #[cfg(test)]
@@ -402,20 +413,17 @@ impl PersistenceHandle {
         )
     }
 
-    /// Pre-cutover file writer. Tests use this so an ambient database URL cannot
-    /// redirect them onto a developer database. The server binary uses
-    /// [`Self::spawn_from_env`].
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn spawn(dir: &Path) -> Result<Self, String> {
-        let service =
-            PersistenceService::open(dir).map_err(|err| format!("persistence open: {err}"))?;
-        Self::spawn_opened(service)
+    /// In-memory roster for server tests. It does not read or write game files
+    /// and is not a server startup path.
+    #[cfg(test)]
+    pub fn spawn_fixture() -> Result<Self, String> {
+        Self::spawn_opened(PersistenceService::unit_fixture())
     }
 
-    /// Server startup. PostgreSQL is required. A missing URL does not open the
-    /// file writer. The directory is not read or written for that database.
-    pub fn spawn_from_env(dir: &Path) -> Result<Self, String> {
-        let service = PersistenceService::open_from_env(dir)
+    /// Server startup. Connects only to an already initialized PostgreSQL
+    /// database. It does not create, reset, or migrate that database.
+    pub fn spawn_from_env() -> Result<Self, String> {
+        let service = PersistenceService::open_from_env()
             .map_err(|err| format!("persistence open: {err}"))?;
         Self::spawn_opened(service)
     }
@@ -461,7 +469,7 @@ impl PersistenceHandle {
                     }
                     #[cfg(test)]
                     PersistCmd::Resolve { login, reply } => {
-                        let _ = reply.send(service.resolve_or_create(&login));
+                        let _ = reply.send(service.resolve_existing(&login));
                     }
                     PersistCmd::Roster { login, reply } => {
                         let _ = reply.send(roster(&mut service, &login));
@@ -485,6 +493,9 @@ impl PersistenceHandle {
                                     }
                                     CreateCharacterRejection::NameTaken => Rejection::NameTaken,
                                     CreateCharacterRejection::RosterFull => Rejection::RosterFull,
+                                    CreateCharacterRejection::Unregistered => {
+                                        Rejection::Unregistered
+                                    }
                                 })
                             }
                             Err(err) => {
@@ -493,6 +504,13 @@ impl PersistenceHandle {
                             }
                         };
                         let _ = reply.send(result);
+                    }
+                    PersistCmd::UserRegistered { login, reply } => {
+                        let _ = reply.send(service.user_registered(&login));
+                    }
+                    #[cfg(test)]
+                    PersistCmd::ProvisionDevUser { login, reply } => {
+                        let _ = reply.send(service.provision_dev_user(&login));
                     }
                     PersistCmd::CommitDurable {
                         command,
@@ -675,6 +693,25 @@ impl PersistenceHandle {
         rx.await.map_err(|_| R::StorageFailure)?
     }
 
+    pub async fn user_registered(&self, login: DevLogin) -> Result<bool, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::UserRegistered { login, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
+    #[cfg(test)]
+    pub async fn provision_dev_user(&self, login: DevLogin) -> Result<bool, PersistError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistCmd::ProvisionDevUser { login, reply })
+            .await
+            .map_err(|_| worker_closed())?;
+        rx.await.map_err(|_| worker_closed())?
+    }
+
     pub async fn roster(
         &self,
         login: DevLogin,
@@ -839,6 +876,15 @@ impl PersistenceHandle {
             }
             Err(_) => unreachable!("try_save only sends Save commands"),
         }
+    }
+
+    #[cfg(test)]
+    pub fn saved_ids_for_test(&self) -> Vec<(purgatory_common::CharacterId, u64)> {
+        self.shared
+            .saved_ids
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
     }
 
     #[must_use]
@@ -1181,12 +1227,23 @@ fn save_snapshot_observed(
     snapshot: PersistentCharacterSnapshot,
     lease: Option<purgatory_persistence::LeaseAuthority>,
 ) {
+    #[cfg(test)]
+    let saved_id = snapshot.character_id;
+    #[cfg(test)]
+    let saved_revision = snapshot.persistence_revision;
     if let Err(err) = service.save_snapshot_leased(snapshot, lease.as_ref()) {
         shared
             .diagnostics
             .save_failures
             .fetch_add(1, Ordering::Relaxed);
         eprintln!("PURGATORY persist save failed: {err}");
+    } else {
+        #[cfg(test)]
+        shared
+            .saved_ids
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push((saved_id, saved_revision));
     }
 }
 
@@ -1210,77 +1267,9 @@ fn flush_deferred_latest(service: &mut PersistenceService, shared: &SharedSaveSt
     }
 }
 
-#[must_use]
-pub fn data_dir_from_env() -> PathBuf {
-    resolve_data_dir(|key| std::env::var(key))
-}
-
-/// Resolve the runtime persistence root.
-///
-/// `PURGATORY_DATA_DIR` wins when set and non-empty. Otherwise the default is
-/// a per-user application-data directory, never the source/install tree.
-pub(crate) fn resolve_data_dir(
-    mut getenv: impl FnMut(&str) -> Result<String, std::env::VarError>,
-) -> PathBuf {
-    if let Ok(dir) = getenv("PURGATORY_DATA_DIR") {
-        let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-    default_data_dir(getenv)
-}
-
-fn default_data_dir(mut getenv: impl FnMut(&str) -> Result<String, std::env::VarError>) -> PathBuf {
-    #[cfg(windows)]
-    {
-        getenv("LOCALAPPDATA")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Purgatory")
-    }
-    #[cfg(not(windows))]
-    {
-        if let Ok(xdg) = getenv("XDG_DATA_HOME") {
-            let trimmed = xdg.trim();
-            if !trimmed.is_empty() {
-                return PathBuf::from(trimmed).join("purgatory");
-            }
-        }
-        getenv("HOME")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(|home| {
-                PathBuf::from(home)
-                    .join(".local")
-                    .join("share")
-                    .join("purgatory")
-            })
-            .unwrap_or_else(|| PathBuf::from("/var/tmp/purgatory"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env::VarError;
-    use std::path::PathBuf;
-
-    fn env_map<'a>(
-        pairs: &'a [(&'a str, &'a str)],
-    ) -> impl FnMut(&str) -> Result<String, VarError> + 'a {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, v)| (*v).to_string())
-                .ok_or(VarError::NotPresent)
-        }
-    }
 
     #[test]
     fn durable_slots_match_the_simulation_contracts() {
@@ -1293,54 +1282,6 @@ mod tests {
                 .expect("durable equipment slot name");
             assert_eq!(durable.as_str(), slot.as_str());
         }
-    }
-
-    #[test]
-    fn override_wins_over_platform_default() {
-        let dir = resolve_data_dir(env_map(&[
-            ("PURGATORY_DATA_DIR", r"D:\forced\persist"),
-            ("LOCALAPPDATA", r"C:\should-not-use"),
-            ("XDG_DATA_HOME", "/should-not-use"),
-            ("HOME", "/should-not-use"),
-        ]));
-        assert_eq!(dir, PathBuf::from(r"D:\forced\persist"));
-    }
-
-    #[test]
-    fn empty_override_falls_through() {
-        let dir = resolve_data_dir(env_map(&[("PURGATORY_DATA_DIR", "  ")]));
-        assert_ne!(dir, PathBuf::from("data"));
-        assert_ne!(dir.as_os_str(), "data");
-    }
-
-    #[test]
-    fn default_is_never_repo_relative_data() {
-        let dir = resolve_data_dir(env_map(&[]));
-        assert_ne!(dir, PathBuf::from("data"));
-        assert_ne!(dir.as_os_str(), "data");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_default_is_localappdata_purgatory() {
-        let dir = resolve_data_dir(env_map(&[("LOCALAPPDATA", r"C:\fake-local")]));
-        assert_eq!(dir, PathBuf::from(r"C:\fake-local\Purgatory"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_missing_localappdata_is_still_not_repo_data() {
-        let dir = resolve_data_dir(env_map(&[]));
-        assert_eq!(dir, PathBuf::from(".").join("Purgatory"));
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn unix_default_prefers_xdg_then_home() {
-        let xdg = resolve_data_dir(env_map(&[("XDG_DATA_HOME", "/xdg/data")]));
-        assert_eq!(xdg, PathBuf::from("/xdg/data/purgatory"));
-        let home = resolve_data_dir(env_map(&[("HOME", "/home/dev")]));
-        assert_eq!(home, PathBuf::from("/home/dev/.local/share/purgatory"));
     }
 
     #[test]
@@ -1421,7 +1362,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let handle = PersistenceHandle::spawn(&dir).expect("spawn");
+        let handle = PersistenceHandle::spawn_fixture().expect("spawn");
         let id = purgatory_common::CharacterId::from_raw(33);
         let mut character = purgatory_persistence::PersistentCharacter::new_default(id);
         character.persistence_revision = 9;
@@ -1433,11 +1374,15 @@ mod tests {
             .unwrap_or_else(|err| err.into_inner())
             .insert(id, (snapshot, None));
 
-        handle.shutdown(Duration::from_secs(2), None).await;
+        handle.clone().shutdown(Duration::from_secs(2), None).await;
 
-        let repo = purgatory_persistence::FileCharacterRepository::open(&dir).unwrap();
-        let loaded = repo.load(id).unwrap().unwrap();
-        assert_eq!(loaded.persistence_revision, 9);
+        assert!(
+            handle
+                .saved_ids_for_test()
+                .iter()
+                .any(|(saved, revision)| saved.raw() == id.raw() && *revision == 9),
+            "shutdown must apply the deferred snapshot in memory"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1456,17 +1401,20 @@ mod tests {
         assert!(!text.contains("localappdata"));
         assert!(!text.contains("appdata\\purgatory"));
 
-        let handle = PersistenceHandle::spawn(&dir).expect("spawn");
+        let handle = PersistenceHandle::spawn_fixture().expect("spawn");
         let id = purgatory_common::CharacterId::from_raw(21);
         let character = purgatory_persistence::PersistentCharacter::new_default(id);
         let snapshot =
             purgatory_persistence::PersistentCharacterSnapshot::from_character(&character);
         assert_eq!(handle.try_save(snapshot), SaveHandoff::Accepted);
-        handle.shutdown(Duration::from_secs(2), None).await;
-        let path = dir.join(purgatory_persistence::character_file_name(id));
+        handle.clone().shutdown(Duration::from_secs(2), None).await;
         assert!(
-            path.exists(),
-            "shutdown must drain the pending save into the temp tree"
+            wrote(&handle, id.raw()),
+            "shutdown must drain the pending save"
+        );
+        assert!(
+            dir.read_dir().unwrap().next().is_none(),
+            "game state must not be written as files"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1524,7 +1472,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let handle = PersistenceHandle::spawn(&dir).unwrap();
+        let handle = PersistenceHandle::spawn_fixture().unwrap();
         let outer = handle.stall_next_command();
         let placeholder = snapshot_for(41);
         assert_eq!(handle.try_save(placeholder), SaveHandoff::Accepted);
@@ -1575,18 +1523,12 @@ mod tests {
             matches!(status, PersistenceShutdown::TimedOut { .. }),
             "shutdown confirmed work that was still inside Shutdown: {status:?}"
         );
-        let later = dir.join(purgatory_persistence::character_file_name(
-            purgatory_common::CharacterId::from_raw(101),
-        ));
-        let deferred = dir.join(purgatory_persistence::character_file_name(
-            purgatory_common::CharacterId::from_raw(102),
-        ));
         assert!(
-            !later.exists(),
+            !wrote(&handle, 101),
             "a later queued save was written after timeout"
         );
         assert!(
-            !deferred.exists(),
+            !wrote(&handle, 102),
             "deferred state was flushed after timeout"
         );
         assert_eq!(handle.channel_release_calls_for_test(), 0);
@@ -1597,19 +1539,16 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(handle.writer_finished_for_test(), "writer did not stop");
-        let started = dir.join(purgatory_persistence::character_file_name(
-            purgatory_common::CharacterId::from_raw(100),
-        ));
         assert!(
-            started.exists(),
+            wrote(&handle, 100),
             "the save already inside Shutdown did not finish"
         );
         assert!(
-            !later.exists(),
+            !wrote(&handle, 101),
             "a later queued save started after Shutdown timed out"
         );
         assert!(
-            !deferred.exists(),
+            !wrote(&handle, 102),
             "deferred state was written after Shutdown timed out"
         );
         assert_eq!(
@@ -1623,7 +1562,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn shutdown_timeout_during_deferred_flush_does_not_start_later_writes() {
         let dir = temp_persist_dir("purgatory-shutdown-deferred");
-        let handle = PersistenceHandle::spawn(&dir).unwrap();
+        let handle = PersistenceHandle::spawn_fixture().unwrap();
         let outer = handle.stall_next_command();
         let shutdown_handle = handle.clone();
         let shutdown = tokio::spawn(async move {
@@ -1655,14 +1594,14 @@ mod tests {
         wait_writer(&handle);
         let written = [200u64, 201]
             .into_iter()
-            .filter(|id| character_path(&dir, *id).exists())
+            .filter(|id| wrote(&handle, *id))
             .count();
         assert_eq!(
             written,
             1,
-            "deferred files after timeout: 200={} 201={}",
-            character_path(&dir, 200).exists(),
-            character_path(&dir, 201).exists()
+            "deferred saves after timeout: 200={} 201={}",
+            wrote(&handle, 200),
+            wrote(&handle, 201)
         );
         assert_eq!(
             handle.channel_release_calls_for_test(),
@@ -1675,7 +1614,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn shutdown_timeout_during_command_skips_post_command_deferred_flush() {
         let dir = temp_persist_dir("purgatory-shutdown-post-flush");
-        let handle = PersistenceHandle::spawn(&dir).unwrap();
+        let handle = PersistenceHandle::spawn_fixture().unwrap();
         let command = handle.stall_next_command_save();
         assert_eq!(handle.try_save(snapshot_for(300)), SaveHandoff::Accepted);
         wait_flag(
@@ -1700,14 +1639,14 @@ mod tests {
         command.release();
         wait_writer(&handle);
         assert!(
-            character_path(&dir, 300).exists(),
+            wrote(&handle, 300),
             "the save already inside the ordinary command did not finish"
         );
         assert!(
-            !character_path(&dir, 301).exists() && !character_path(&dir, 302).exists(),
+            !wrote(&handle, 301) && !wrote(&handle, 302),
             "post-command deferred flush wrote after timeout: 301={} 302={}",
-            character_path(&dir, 301).exists(),
-            character_path(&dir, 302).exists()
+            wrote(&handle, 301),
+            wrote(&handle, 302)
         );
         assert_eq!(handle.channel_release_calls_for_test(), 0);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1729,10 +1668,11 @@ fn temp_persist_dir(prefix: &str) -> std::path::PathBuf {
 }
 
 #[cfg(test)]
-fn character_path(dir: &std::path::Path, id: u64) -> std::path::PathBuf {
-    dir.join(purgatory_persistence::character_file_name(
-        purgatory_common::CharacterId::from_raw(id),
-    ))
+fn wrote(handle: &PersistenceHandle, id: u64) -> bool {
+    handle
+        .saved_ids_for_test()
+        .iter()
+        .any(|(saved, _)| saved.raw() == id)
 }
 
 #[cfg(test)]
@@ -1781,7 +1721,7 @@ fn stalled_shutdown_child() {
         .build()
         .unwrap();
     let (stall, observe) = runtime.block_on(async {
-        let handle = PersistenceHandle::spawn(&dir).unwrap();
+        let handle = PersistenceHandle::spawn_fixture().unwrap();
         let stall = handle.stall_next_command();
         let stalled_id = purgatory_common::CharacterId::from_raw(41);
         let stalled = purgatory_persistence::PersistentCharacterSnapshot::from_character(
@@ -1821,11 +1761,8 @@ fn stalled_shutdown_child() {
             elapsed <= timeout + std::time::Duration::from_millis(250),
             "shutdown waited {elapsed:?}, past the {timeout:?} deadline"
         );
-        let queued = dir.join(purgatory_persistence::character_file_name(
-            purgatory_common::CharacterId::from_raw(1_000),
-        ));
         assert!(
-            !queued.exists(),
+            !wrote(&handle, 1_000),
             "a queued save was written during the stall"
         );
         (stall, handle)
@@ -1840,11 +1777,8 @@ fn stalled_shutdown_child() {
         observe.writer_finished_for_test(),
         "the writer kept running after shutdown timed out"
     );
-    let queued = dir.join(purgatory_persistence::character_file_name(
-        purgatory_common::CharacterId::from_raw(1_000),
-    ));
     assert!(
-        !queued.exists(),
+        !wrote(&observe, 1_000),
         "the writer committed a queued save after shutdown timed out"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1877,50 +1811,38 @@ mod frontend_worker_tests {
     };
 
     #[tokio::test]
-    async fn load_owned_corrupt_character_maps_to_storage_failure_and_preserves_bytes() {
-        let dir = std::env::temp_dir().join(format!(
-            "purgatory-r5b-load-corrupt-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+    async fn unregistered_user_cannot_create_or_load() {
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("alice").unwrap();
-        let Result::Created { roster } = worker
-            .create_character(login.clone(), "CorruptHero".into())
-            .await
-        else {
-            panic!("create");
-        };
-        let id = roster[0].character_id;
-        let path = dir.join(purgatory_persistence::character_file_name(id));
-        let original = b"{not json".to_vec();
-        std::fs::write(&path, &original).unwrap();
-
-        assert_eq!(
-            worker.load_owned_character(login, id).await,
-            Err(purgatory_protocol::CharacterEnterRejection::StorageFailure)
+        let err = worker.roster(login.clone()).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PersistError::CreateRejected(
+                    purgatory_persistence::CreateCharacterRejection::Unregistered
+                )
+            ),
+            "{err}"
         );
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-
+        assert_eq!(
+            worker.create_character(login.clone(), "Hero".into()).await,
+            Result::Rejected(Rejection::Unregistered)
+        );
+        worker.provision_dev_user(login.clone()).await.unwrap();
+        assert!(worker.roster(login.clone()).await.unwrap().is_empty());
+        let missing = purgatory_common::CharacterId::from_raw(9);
+        assert_eq!(
+            worker.load_owned_character(login, missing).await,
+            Err(purgatory_protocol::CharacterEnterRejection::NotOwned)
+        );
         worker.shutdown(Duration::from_secs(2), None).await;
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
-    async fn frontend_storage_failure_has_no_projection_mutation_and_restart_keeps_order() {
-        let dir = std::env::temp_dir().join(format!(
-            "purgatory-r5b-worker-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+    async fn roster_order_stays_on_the_worker_without_files() {
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("alice").unwrap();
+        worker.provision_dev_user(login.clone()).await.unwrap();
         assert!(worker.roster(login.clone()).await.unwrap().is_empty());
         let Result::Created { roster: first } = worker
             .create_character(login.clone(), "FirstHero".into())
@@ -1928,32 +1850,19 @@ mod frontend_worker_tests {
         else {
             panic!("first");
         };
-        let obstacle = dir.join("identity.json.tmp");
-        std::fs::create_dir(&obstacle).unwrap();
-        assert_eq!(
-            worker
-                .create_character(login.clone(), "NextHero".into())
-                .await,
-            Result::Rejected(Rejection::StorageFailure)
-        );
-        assert_eq!(worker.roster(login.clone()).await.unwrap(), first);
-        std::fs::remove_dir(&obstacle).unwrap();
         let Result::Created { roster: second } = worker
             .create_character(login.clone(), "NextHero".into())
             .await
         else {
-            panic!("retry");
+            panic!("second");
         };
         assert_eq!(second[0], first[0]);
         assert_eq!(
             second[1].character_id.raw(),
             first[0].character_id.raw() + 1
         );
-        worker.shutdown(Duration::from_secs(2), None).await;
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
         assert_eq!(worker.roster(login).await.unwrap(), second);
         worker.shutdown(Duration::from_secs(2), None).await;
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -1966,7 +1875,7 @@ mod frontend_worker_tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let err = worker
             .commit_durable(
                 DurableCommand {
@@ -1983,7 +1892,7 @@ mod frontend_worker_tests {
                 None,
             )
             .await
-            .expect_err("file mode has no durable command result");
+            .expect_err("the unit fixture has no durable command result");
         let text = err.to_string();
         assert!(
             text.contains("postgresql"),

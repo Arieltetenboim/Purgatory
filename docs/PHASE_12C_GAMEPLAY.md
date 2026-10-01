@@ -94,8 +94,8 @@ A player drop keeps one item-instance id from inventory, through ground, through
 pickup, and back to character ownership. `postgres_12c_drop_pickup_reclaim_and_competition`
 reads that same id as `ItemOwner::Ground` and then as that character's item.
 Dialogue rewards still use `place_new` and the same counter, so those mints stay
-outside every reserved range. File mode has no durable allocator and does not
-substitute an epoch id. Issue #122 remains the ownership-history ledger, not
+outside every reserved range. The in-memory fixture has no durable allocator and
+does not substitute an epoch id. Issue #122 remains the ownership-history ledger, not
 this allocator. Issue #123 remains the later ground-capacity policy.
 
 A test can also retire one live ground item explicitly. That retire command has
@@ -115,38 +115,27 @@ Server startup requires PostgreSQL. Set `PURGATORY_DATABASE_URL` and
 `public`. A deployment id is 1 to 64 characters: ASCII letters, digits, `.`,
 `_`, and `-`.
 
-Bootstrap an empty application schema once:
-
-```text
-cargo run -p purgatory-server -- --bootstrap-postgresql
-```
-
-That command creates an empty roster (`next_character_id` 1,
-`next_item_instance_id` 1, `cutover` `fresh`, and the deployment id). It does
-not read or write `identity.json`, `char_*.json`, or `durable_writer.json`.
-Success prints `PURGATORY postgresql bootstrap OK` and exits before the game
-loop. Running it again against the same schema fails and does not erase
-characters or items.
+Database creation is a Developer Hub operation, or the headless
+`--database-create` command, against the pinned local database `Purgatory_dev`.
+`--bootstrap-postgresql`, `import_legacy_postgresql`, and the file writer are
+superseded by ADR-0073. Historical import steps in
+[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md) are not current setup.
 
 A later start is `cargo run -p purgatory-server` with the same URL, schema, and
-deployment id. It reopens the database and does not look for a local marker.
-It refuses a missing schema, a missing deployment row, or a different
-deployment id. It does not create an empty world to replace that database.
+deployment id. It reopens an initialized database and does not apply migrations.
+It refuses a missing schema, a missing deployment row, a different deployment
+id, or a migration history that does not match the binary.
 
-A missing URL, a failed connection, the wrong schema or deployment id, or a
-failed migration stops startup. The server does not open the file writer in
-those cases. `PersistenceService::open` remains the explicit file writer for
-tests. `import_legacy_postgresql` remains the explicit legacy import and is not
-called by server startup. The historical import steps stay in
-[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md).
+A missing URL, a failed connection, the wrong schema or deployment id, or
+unsupported migration history stops startup. There is no file writer.
 
 Moving the database to another host keeps the committed rows. Point
 `PURGATORY_DATABASE_URL` at the restored database and use the same
 `PURGATORY_DEPLOYMENT_ID`. Do not copy `durable_writer.json`. A mistaken URL or
 schema fails closed because its stored deployment id does not match.
 
-Collectible developer spawns still require this PostgreSQL writer. File mode
-cannot reserve an item id, so those spawns do not appear.
+Collectible developer spawns still require this PostgreSQL writer. The in-memory
+fixture cannot reserve an item id, so those spawns do not appear.
 
 ## Unresolved
 

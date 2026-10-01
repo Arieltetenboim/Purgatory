@@ -87,6 +87,12 @@ pub struct HubSession<B: ProcessBackend, H: HealthSource> {
     /// Hub-launched Phase 7.8 gate process. While alive, Hub must not adopt/probe/control
     /// capacity-ladder servers (those are gate-owned). Cleared when the process exits.
     phase78_gate_pid: Option<u32>,
+    database_pid: Option<u32>,
+    database_status: String,
+    database_detail: String,
+    database_follow_status: bool,
+    database_shutdown_deadline: Option<Instant>,
+    database_reset_confirm: Option<String>,
 }
 
 pub(crate) struct BuildSlot {
@@ -150,6 +156,12 @@ pub struct HubSnapshot {
     pub phase78_gate_active: bool,
     /// Latest Phase 7.8 gate summary artifact (read-only; not recomputed).
     pub phase78_gate: crate::phase78::Phase78GateBrief,
+    /// Pinned local development database. Reset only accepts this exact name.
+    pub database_name: String,
+    /// `missing`, `ready`, `error`, or `unknown`.
+    pub database_status: String,
+    pub database_detail: String,
+    pub database_busy: bool,
 }
 
 impl LiveHubSession {
@@ -230,6 +242,12 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             last_client_live: 0,
             log_level: LogLevel::Default,
             phase78_gate_pid: None,
+            database_pid: None,
+            database_status: "unknown".to_string(),
+            database_detail: String::new(),
+            database_follow_status: false,
+            database_shutdown_deadline: None,
+            database_reset_confirm: None,
         };
         session.log_hub(&format!("---- {} ----", session.identity.display()));
         session.startup_recovery(now);
@@ -284,6 +302,10 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 self.client_log.clear_view();
                 CommandOutcome::Accepted
             }
+            HubCommand::DatabaseStatus => self.request_database_status(),
+            HubCommand::DatabaseCreate { user } => self.request_database_create(user),
+            HubCommand::DatabaseReset { confirm } => self.request_database_reset(confirm, now),
+            HubCommand::DatabaseAddUser { user } => self.request_database_add_user(user),
             HubCommand::ClearLoadLog => {
                 self.load_log.clear_view();
                 CommandOutcome::Accepted
@@ -292,6 +314,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
     }
 
     pub fn tick(&mut self, now: Instant) {
+        self.poll_database(now);
         drain_into_activity(&self.incoming, &mut self.activity);
         self.server_log.poll();
         self.client_log.poll();
@@ -396,6 +419,7 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             endpoint: format!("{LISTEN_HOST}:{LISTEN_PORT}"),
             build_line,
             can_start: self.cargo_path.is_some()
+                && self.database_admits_gameplay()
                 && (self.state == ServerState::Stopped
                     || (self.state == ServerState::Failed && !alive)),
             can_stop: self.state != ServerState::Stopped || alive,
@@ -439,6 +463,10 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             log_level: self.log_level,
             phase78_gate_active: self.phase78_gate_pid.is_some(),
             phase78_gate: crate::phase78::read_latest_phase78_gate(&self.paths.root),
+            database_name: "Purgatory_dev".to_string(),
+            database_status: self.database_status.clone(),
+            database_detail: self.database_detail.clone(),
+            database_busy: self.database_pid.is_some() || self.database_shutdown_deadline.is_some(),
         }
     }
 
@@ -459,6 +487,8 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
             || self.load_is_active()
             || self.pending_clients > 0
             || self.phase78_gate_pid.is_some()
+            || self.database_pid.is_some()
+            || self.database_shutdown_deadline.is_some()
     }
 
     fn alloc_job(&mut self) -> JobId {
@@ -528,6 +558,10 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
     }
 
     fn request_start(&mut self, now: Instant) -> CommandOutcome {
+        if !self.database_admits_gameplay() {
+            self.log_hub("Start refused until the local database is Ready");
+            return CommandOutcome::Ignored;
+        }
         if !self.validation_is_active() && !self.load_is_active() {
             self.server_launch.extra_env.clear();
         }
@@ -1883,17 +1917,224 @@ impl<B: ProcessBackend, H: HealthSource> HubSession<B, H> {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone())),
         );
-        // Isolate Ready-probe character minting away from %LOCALAPPDATA%\Purgatory
-        // unless ExtraEnv (RV/load) already chose a persist root.
-        if !env.iter().any(|(k, _)| k == "PURGATORY_DATA_DIR") {
-            let persist = self.paths.dev_log_dir().join("hub_server_persist");
-            let _ = std::fs::create_dir_all(&persist);
-            env.push((
-                "PURGATORY_DATA_DIR".to_string(),
-                persist.to_string_lossy().replace('\\', "/"),
-            ));
-        }
+        let shutdown = self.paths.dev_log_dir().join("server.shutdown");
+        env.push((
+            "PURGATORY_SHUTDOWN_FILE".to_string(),
+            shutdown.to_string_lossy().replace('\\', "/"),
+        ));
         env
+    }
+
+    fn log_database_detail(&mut self) {
+        let detail = self.database_detail.clone();
+        self.log_hub(&detail);
+    }
+
+    fn database_admits_gameplay(&self) -> bool {
+        self.database_pid.is_none()
+            && self.database_shutdown_deadline.is_none()
+            && self.database_status != "missing"
+            && self.database_status != "error"
+    }
+
+    fn database_log_path(&self) -> PathBuf {
+        self.paths.dev_log_dir().join("database.log")
+    }
+
+    fn request_database_status(&mut self) -> CommandOutcome {
+        self.spawn_database_admin(&["--database-status".to_string()], false)
+    }
+
+    fn request_database_create(&mut self, user: String) -> CommandOutcome {
+        let mut args = vec!["--database-create".to_string()];
+        if !user.trim().is_empty() {
+            args.push("--user".to_string());
+            args.push(user.trim().to_string());
+        }
+        self.spawn_database_admin(&args, true)
+    }
+
+    fn request_database_add_user(&mut self, user: String) -> CommandOutcome {
+        let user = user.trim().to_string();
+        if user.is_empty() {
+            self.database_detail = "Enter a development username".to_string();
+            return CommandOutcome::Ignored;
+        }
+        self.spawn_database_admin(
+            &[
+                "--database-add-user".to_string(),
+                "--user".to_string(),
+                user,
+            ],
+            true,
+        )
+    }
+
+    fn request_database_reset(&mut self, confirm: String, now: Instant) -> CommandOutcome {
+        if self.database_pid.is_some() || self.database_shutdown_deadline.is_some() {
+            self.log_hub("Database operation already running");
+            return CommandOutcome::Ignored;
+        }
+        if confirm != "Purgatory_dev" {
+            self.database_status = "error".to_string();
+            self.database_detail = "Reset confirmation must be exactly Purgatory_dev".to_string();
+            let detail = self.database_detail.clone();
+            self.log_hub(&detail);
+            return CommandOutcome::Ignored;
+        }
+        let servers = self
+            .backend
+            .discover_workspace(SERVER_STEM, &self.paths.target_prefix());
+        let tracked = self.tracked.as_ref().map(|process| process.pid);
+        if servers.iter().any(|found| Some(found.pid) != tracked) {
+            self.database_detail =
+                "Reset refused: another server is using this workspace".to_string();
+            self.log_database_detail();
+            return CommandOutcome::Ignored;
+        }
+        if self.server_alive() {
+            let path = self.paths.dev_log_dir().join("server.shutdown");
+            if std::fs::write(&path, b"shutdown").is_err() {
+                self.database_detail = "Reset refused: could not request server shutdown".into();
+                self.log_database_detail();
+                return CommandOutcome::Ignored;
+            }
+            self.database_shutdown_deadline = Some(now + std::time::Duration::from_secs(8));
+            self.database_reset_confirm = Some(confirm);
+            self.database_detail = "Waiting for the game server to shut down".to_string();
+            self.log_database_detail();
+            return CommandOutcome::Accepted;
+        }
+        self.spawn_database_admin(
+            &[
+                "--database-reset".to_string(),
+                "--confirm".to_string(),
+                confirm,
+            ],
+            true,
+        )
+    }
+
+    fn spawn_database_admin(&mut self, args: &[String], follow_status: bool) -> CommandOutcome {
+        if self.database_pid.is_some() || self.database_shutdown_deadline.is_some() {
+            self.log_hub("Database operation already running");
+            return CommandOutcome::Ignored;
+        }
+        let exe = self.paths.server_exe();
+        if !exe.is_file() {
+            self.database_status = "error".to_string();
+            self.database_detail = "Build the server before administering the database".to_string();
+            self.log_database_detail();
+            return CommandOutcome::Ignored;
+        }
+        let log_path = self.database_log_path();
+        let _ = std::fs::remove_file(&log_path);
+        let spec = SpawnSpec {
+            program: exe,
+            args: args.to_vec(),
+            cwd: self.paths.root.clone(),
+            env: self.child_env(),
+            log_name: "database",
+            ui_pump: false,
+            lifetime: ProcessLifetime::Session,
+        };
+        match self
+            .backend
+            .spawn(spec, &self.incoming, &self.paths.dev_log_dir())
+        {
+            Ok(pid) => {
+                self.database_pid = Some(pid);
+                self.database_follow_status = follow_status;
+                self.database_detail = "Database operation running".to_string();
+                self.log_hub("Database operation started");
+                CommandOutcome::Accepted
+            }
+            Err(err) => {
+                self.database_status = "error".to_string();
+                self.database_detail = "Database operation failed to start".to_string();
+                self.log_hub(&format!("Database operation failed to start: {err}"));
+                CommandOutcome::Ignored
+            }
+        }
+    }
+
+    fn poll_database(&mut self, now: Instant) {
+        if let Some(deadline) = self.database_shutdown_deadline {
+            let drained = std::fs::read_to_string(self.paths.dev_log_dir().join("server.log"))
+                .unwrap_or_default()
+                .contains("PURGATORY persistence shutdown drained");
+            if !self.server_alive() && drained {
+                self.database_shutdown_deadline = None;
+                let confirm = self.database_reset_confirm.take().unwrap_or_default();
+                self.spawn_database_admin(
+                    &[
+                        "--database-reset".to_string(),
+                        "--confirm".to_string(),
+                        confirm,
+                    ],
+                    true,
+                );
+            } else if now >= deadline {
+                self.database_shutdown_deadline = None;
+                self.database_reset_confirm = None;
+                self.database_status = "error".to_string();
+                self.database_detail =
+                    "Reset refused: the game server did not shut down cleanly".to_string();
+                let detail = self.database_detail.clone();
+                self.log_hub(&detail);
+            }
+        }
+        let Some(pid) = self.database_pid else {
+            return;
+        };
+        let Some(exit) = self.backend.try_wait(pid) else {
+            return;
+        };
+        self.database_pid = None;
+        let log = std::fs::read_to_string(self.database_log_path()).unwrap_or_default();
+        self.apply_database_log(&log, exit);
+        if self.database_follow_status && exit == 0 {
+            self.database_follow_status = false;
+            self.spawn_database_admin(&["--database-status".to_string()], false);
+        }
+    }
+
+    fn apply_database_log(&mut self, log: &str, exit: i32) {
+        let mut status = None;
+        let mut detail = None;
+        for line in log.lines() {
+            if let Some(rest) = line.split("status=").nth(1) {
+                status = rest.split_whitespace().next().map(str::to_string);
+            }
+            if line.contains("PURGATORY database detail:")
+                || line.contains("PURGATORY database error:")
+            {
+                detail = Some(
+                    line.split_once(':')
+                        .map(|(_, text)| text.trim().to_string())
+                        .unwrap_or_else(|| line.to_string()),
+                );
+            }
+            if line.contains("database is absent") || line.contains("present=false") {
+                self.database_status = "missing".to_string();
+            }
+        }
+        if let Some(status) = status {
+            self.database_status = status;
+        } else if exit != 0 {
+            self.database_status = "error".to_string();
+        }
+        if let Some(detail) = detail {
+            self.database_detail = detail;
+        } else if exit == 0 {
+            self.database_detail.clear();
+        } else {
+            self.database_detail = "Database operation failed".to_string();
+        }
+        self.log_hub(&format!(
+            "Database status {} {}",
+            self.database_status, self.database_detail
+        ));
     }
 
     fn fail_server_or_validation(&mut self, reason: &str) {
@@ -3238,21 +3479,27 @@ mod tests {
     }
 
     #[test]
-    fn spawned_server_defaults_isolated_persist_dir() {
+    fn spawned_server_requests_clean_shutdown_without_a_file_database() {
         let mut backend = FakeProcessBackend::new();
         backend.probe_exit = Some(0);
         let (mut session, now) = harness("persist-isolate", backend, FakeHealthSource::none());
         drive_to_ready(&mut session, now);
-        let persist = session
+        let shutdown = session
             .backend
             .extra_env_log
             .iter()
-            .find(|(k, _)| k == "PURGATORY_DATA_DIR")
+            .find(|(k, _)| k == "PURGATORY_SHUTDOWN_FILE")
             .map(|(_, v)| v.as_str());
         assert!(
-            persist.is_some_and(|v| v.contains("hub_server_persist")),
-            "expected hub_server_persist, got {persist:?}; log={:?}",
-            session.backend.extra_env_log
+            shutdown.is_some_and(|path| path.contains("server.shutdown")),
+            "expected a shutdown file, got {shutdown:?}"
+        );
+        assert!(
+            session
+                .backend
+                .extra_env_log
+                .iter()
+                .all(|(key, _)| key != "PURGATORY_DATA_DIR")
         );
     }
 

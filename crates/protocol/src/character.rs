@@ -40,6 +40,8 @@ pub enum CharacterCreateRejection {
     NameTaken = 2,
     RosterFull = 3,
     StorageFailure = 4,
+    /// The development allowlist has no row for this username.
+    Unregistered = 5,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +115,7 @@ pub(crate) fn decode_result(bytes: &[u8]) -> Result<CreateCharacterResult, Codec
         2 => CharacterCreateRejection::NameTaken,
         3 => CharacterCreateRejection::RosterFull,
         4 => CharacterCreateRejection::StorageFailure,
+        5 => CharacterCreateRejection::Unregistered,
         other => return Err(CodecError::UnknownDiscriminant(other)),
     };
     Ok(CreateCharacterResult::Rejected(reason))

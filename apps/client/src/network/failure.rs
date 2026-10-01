@@ -16,6 +16,7 @@ pub enum NetworkFailureKind {
     IdleTimeout,
     ServerShutdown,
     AlreadyConnected,
+    UnknownUser,
     ClientRequestedDisconnect,
     LocalShutdown,
     InternalNetworkError,
@@ -49,6 +50,7 @@ impl NetworkFailureKind {
             DisconnectReasonCode::UnexpectedMessage => Self::UnexpectedMessage,
             DisconnectReasonCode::ServerShutdown => Self::ServerShutdown,
             DisconnectReasonCode::AlreadyConnected => Self::AlreadyConnected,
+            DisconnectReasonCode::UnknownUser => Self::UnknownUser,
         }
     }
 
@@ -76,7 +78,8 @@ impl NetworkFailureKind {
             | Self::UnexpectedMessage
             | Self::ProtocolRejected
             | Self::ServerShutdown
-            | Self::AlreadyConnected => FailureOrigin::Wire,
+            | Self::AlreadyConnected
+            | Self::UnknownUser => FailureOrigin::Wire,
             Self::ConnectFailed
             | Self::TransportLost
             | Self::IdleTimeout
@@ -103,6 +106,7 @@ impl NetworkFailureKind {
             | Self::UnexpectedMessage
             | Self::ProtocolRejected
             | Self::AlreadyConnected
+            | Self::UnknownUser
             | Self::ClientRequestedDisconnect
             | Self::LocalShutdown => false,
         }
@@ -129,6 +133,7 @@ impl NetworkFailureKind {
             }
             Self::ServerShutdown => "Server shutting down",
             Self::AlreadyConnected => "Already connected",
+            Self::UnknownUser => "Unknown username",
             Self::ClientRequestedDisconnect | Self::LocalShutdown => "Disconnected",
         }
     }
@@ -146,6 +151,7 @@ impl NetworkFailureKind {
             Self::IdleTimeout => "IdleTimeout",
             Self::ServerShutdown => "ServerShutdown",
             Self::AlreadyConnected => "AlreadyConnected",
+            Self::UnknownUser => "UnknownUser",
             Self::ClientRequestedDisconnect => "ClientRequestedDisconnect",
             Self::LocalShutdown => "LocalShutdown",
             Self::InternalNetworkError => "InternalNetworkError",

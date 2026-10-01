@@ -2,7 +2,7 @@
 
 Status: **accepted** as the Phase 12B save/load lifecycle (2026-09-30). Not a Phase 12 exit. Root `PHASE` stays `12.12B`. 12C is not started.
 
-PostgreSQL remains the only durable authority. Database work stays on the persistence worker. File mode, selected by an explicit `PersistenceService::open`, has no character lease and keeps the existing local occupancy rule. Server startup requires `PURGATORY_DATABASE_URL`.
+PostgreSQL remains the only durable authority. Database work stays on the persistence worker. ADR-0073 removes the file writer; unit tests use an in-memory fixture that does not grant leases. Server startup requires an already initialized `PURGATORY_DATABASE_URL`.
 
 ## Policy values
 
@@ -36,7 +36,7 @@ The holding process also keeps a local monotonic deadline. It is the instant the
 
 Channel authority is checked again after the admit reply, before world entry. `enter_restored` checks the character deadline and the channel deadline before it creates a binding. An already-expired deadline returns `AuthorityLost` and does not spawn an entity, so there is no simulation tick or replication to clean up. That is entry prevented. If `enter_restored` has already returned success and authority then ends before the connection task finishes, that task removes the binding without a save and releases the unused lease through the persistence worker. That second path is cleanup after an entry that was still authorized when World created the binding. A channel stop also sticks on the gameplay owner: an entry command drained after that stop does not create a binding. The character renewal supervisor still starts only after a successful entry.
 
-The simulation thread stores those same deadlines. `apply_input` and `simulate_tick` refuse new input and do not apply held movement once a deadline has passed, even while `LoseAuthority` or `LoseAllAuthority` is still queued. A rejected renewal sets `authority_lost` before that deadline; the next tick also drops held movement. Before the critical scheduler runs, an ended character or channel authority interrupts the player's active ability and clears Dash, so a windup effect due on that tick does not land and Dash does not keep moving. Damage and displacement already integrated on earlier ticks stay. Vertical motion is left to ordinary physics. The simulation thread does not call the database. File mode stores no deadline and keeps its current input and Dash behavior. A successful renewal delivers the extended deadline on the lifecycle channel; until that message is drained, the previous deadline still bounds gameplay. The database clock remains what another process sees.
+The simulation thread stores those same deadlines. `apply_input` and `simulate_tick` refuse new input and do not apply held movement once a deadline has passed, even while `LoseAuthority` or `LoseAllAuthority` is still queued. A rejected renewal sets `authority_lost` before that deadline; the next tick also drops held movement. Before the critical scheduler runs, an ended character or channel authority interrupts the player's active ability and clears Dash, so a windup effect due on that tick does not land and Dash does not keep moving. Damage and displacement already integrated on earlier ticks stay. Vertical motion is left to ordinary physics. The simulation thread does not call the database. A session with no lease authority has no database deadline and keeps its current input and Dash behavior. A successful renewal delivers the extended deadline on the lifecycle channel; until that message is drained, the previous deadline still bounds gameplay. The database clock remains what another process sees.
 
 ## Restore
 
@@ -121,7 +121,7 @@ Gameplay tests, without a database:
 - `durable_restore_rejects_a_non_equippable_item_in_weapon`
 - `durable_restore_rejects_an_equippable_item_in_the_wrong_slot`
 - `durable_restore_keeps_valid_equipment`
-- `character_occupancy_rejects_second_session_and_reconnect_gets_new_entity` — file mode still rejects a second local session
+- `character_occupancy_rejects_second_session_and_reconnect_gets_new_entity` — a second local session for the same character is still rejected
 
 `network::lease_clock` tests, without a database: `queued_reply_time_counts_against_the_deadline`, `stalled_renewal_expires_while_the_worker_reply_is_still_blocked`, `renewal_reply_extends_from_the_send_instant_not_past_it`.
 

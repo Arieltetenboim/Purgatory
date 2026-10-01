@@ -807,3 +807,14 @@ this does not certify the absence of every possible one-frame flash. Existing Id
 preview changes are retained. A one-bot live connectivity run completed with zero
 errors, including empty-roster creation and explicit entry. No full-workspace gate
 or extended soak was run for this bounded slice.
+
+## PostgreSQL-only persistence (ADR-0073)
+
+File-backed character storage, legacy import, and `--bootstrap-postgresql` are
+not current setup instructions. The default quality gate does not require
+PostgreSQL. Ignored persistence tests, including physical create/reset of a
+disposable `p12a_db_*` database, require `PURGATORY_TEST_DATABASE_URL` and
+must not use `Purgatory_dev`. Normal server startup does not migrate. An
+unknown development username is rejected before `FrontendSessionReady`.
+
+- Quality gate actually run on 2026-10-01 after this cut: `./scripts/check.ps1` **PASS** (`PURGATORY quality gate OK`, exit 0, about 196s). Unrelated local map and art edits were set aside for that run and restored afterward. Disposable PostgreSQL suites were not run: `PURGATORY_TEST_DATABASE_URL` is unset. Those ignored tests must not target `Purgatory_dev`. Hub database-panel clicks and a normal-client login were not exercised in this run.

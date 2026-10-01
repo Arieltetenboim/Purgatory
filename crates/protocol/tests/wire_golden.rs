@@ -700,8 +700,8 @@ fn v3_golden_vectors_remain_frozen() {
 }
 
 #[test]
-fn current_protocol_version_is_33() {
-    assert_eq!(PROTOCOL_VERSION, 33);
+fn current_protocol_version_is_34() {
+    assert_eq!(PROTOCOL_VERSION, 34);
 }
 
 #[test]
@@ -866,12 +866,13 @@ fn disconnect_reason_codes_keep_their_wire_discriminants() {
         (DisconnectReasonCode::UnexpectedMessage, 4),
         (DisconnectReasonCode::ServerShutdown, 5),
         (DisconnectReasonCode::AlreadyConnected, 6),
+        (DisconnectReasonCode::UnknownUser, 7),
     ] {
         assert_eq!(code.as_u8(), byte, "{code:?} discriminant moved");
         assert_eq!(DisconnectReasonCode::from_u8(byte), Some(code));
     }
     assert_eq!(DisconnectReasonCode::from_u8(0), None);
-    assert_eq!(DisconnectReasonCode::from_u8(7), None);
+    assert_eq!(DisconnectReasonCode::from_u8(8), None);
 }
 
 #[test]

@@ -50,7 +50,9 @@
 /// Historical golden vectors remain frozen.
 /// Protocol v32 adds pre-game session readiness and authoritative roster/create.
 /// Protocol v33 adds explicit owned-character entry on the live pre-game session.
-pub const PROTOCOL_VERSION: u32 = 33;
+/// Protocol v34 rejects an unregistered development username before
+/// `FrontendSessionReady`. The username is a development allowlist, not a password.
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;
