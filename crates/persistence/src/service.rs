@@ -330,6 +330,17 @@ impl PersistenceService {
     }
 
     #[cfg(test)]
+    pub fn leave_unissued_item_gap_for_test(&mut self, next: u64) -> Result<(), PersistError> {
+        match &mut self.backend {
+            Backend::Files { .. } => Err(PersistError::migration(
+                "<postgresql>",
+                "durable item ids require the postgresql writer",
+            )),
+            Backend::Postgres(store) => store.leave_unissued_item_gap_for_test(next),
+        }
+    }
+
+    #[cfg(test)]
     pub fn remember_channel_for_test(&mut self, channel_id: i64, generation: u64) {
         if let Backend::Postgres(store) = &mut self.backend {
             store.remember_channel_for_test(channel_id, generation);

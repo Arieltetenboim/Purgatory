@@ -2034,6 +2034,12 @@ fn reserved_ids_stay_disjoint_across_connections_and_restarts() {
     with_db(|dir, settings| {
         let mut first = open(dir, settings);
         let mut second = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = first.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let ChannelClaim::Claimed { .. } = second.claim_channel(2, None).unwrap() else {
+            panic!("channel 2 should be claimed");
+        };
         let left = first.reserve_item_ids(4).unwrap();
         let right = second.reserve_item_ids(4).unwrap();
         assert_eq!(left.len(), 4);
@@ -2053,6 +2059,9 @@ fn reserved_ids_stay_disjoint_across_connections_and_restarts() {
         drop(first);
         drop(second);
         let mut restarted = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = restarted.claim_channel(3, None).unwrap() else {
+            panic!("channel 3 should be claimed while 1 and 2 stay live");
+        };
         let again = restarted.reserve_item_ids(4).unwrap();
         assert!(
             again
@@ -2133,7 +2142,146 @@ fn reserved_pickup_keeps_its_id_against_retry_expiry_and_reuse() {
 
         drop(service);
         let mut restarted = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = restarted.claim_channel(2, None).unwrap() else {
+            panic!("channel 2 should be claimed while channel 1 stays live");
+        };
         let next = restarted.reserve_item_ids(3).unwrap();
         assert!(next.iter().all(|id| !ids.contains(id)));
+        let err = restarted
+            .commit_durable(&reserved_inventory(
+                ids[2],
+                entry.character_id,
+                2,
+                "spend-wasted-after-restart",
+                1,
+            ))
+            .unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(restarted.item(ids[2]).unwrap().is_none());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn another_channels_unused_id_cannot_be_inserted() {
+    with_db(|dir, settings| {
+        let mut holder = open(dir, settings);
+        let mut other = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = holder.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let ChannelClaim::Claimed { .. } = other.claim_channel(2, None).unwrap() else {
+            panic!("channel 2 should be claimed");
+        };
+        let alice = login("alice");
+        let entry = holder.create_character(&alice, "Alice").unwrap();
+        let issued = holder.reserve_item_ids(4).unwrap();
+        let stolen = issued[1];
+        let err = other.commit_durable(&reserved_inventory(
+            stolen,
+            entry.character_id,
+            1,
+            "steal-other-range",
+            0,
+        ));
+        assert!(
+            err.is_err(),
+            "channel 2 inserted unused id {} from channel 1's range",
+            stolen.raw()
+        );
+        let err = err.unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(other.item(stolen).unwrap().is_none());
+        holder
+            .commit_durable(&reserved_inventory(
+                issued[0],
+                entry.character_id,
+                1,
+                "spend-own-range",
+                0,
+            ))
+            .unwrap();
+        assert!(holder.item(issued[0]).unwrap().is_some());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn unissued_gap_below_the_counter_cannot_be_inserted() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = service.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        service.leave_unissued_item_gap_for_test(40).unwrap();
+        let gap = ItemInstanceId::from_raw(20);
+        let err = service.commit_durable(&reserved_inventory(
+            gap,
+            entry.character_id,
+            1,
+            "insert-unissued-gap",
+            0,
+        ));
+        assert!(
+            err.is_err(),
+            "inserted unissued id {} while the counter was already past it",
+            gap.raw()
+        );
+        let err = err.unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(service.item(gap).unwrap().is_none());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn previous_channel_generation_cannot_spend_its_unused_ids() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let ChannelClaim::Claimed { generation, .. } = service.claim_channel(1, None).unwrap()
+        else {
+            panic!("channel 1 should be claimed");
+        };
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let issued = service.reserve_item_ids(4).unwrap();
+        service.expire_channel_for_test(1).unwrap();
+        let ChannelClaim::Claimed {
+            generation: renewed,
+            ..
+        } = service.claim_channel(1, None).unwrap()
+        else {
+            panic!("expired channel 1 should be claimable");
+        };
+        assert!(renewed > generation);
+        let err = service.commit_durable(&reserved_inventory(
+            issued[0],
+            entry.character_id,
+            1,
+            "spend-previous-generation",
+            0,
+        ));
+        assert!(
+            err.is_err(),
+            "generation {renewed} inserted id {} issued to generation {generation}",
+            issued[0].raw()
+        );
+        let err = err.unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(service.item(issued[0]).unwrap().is_none());
+        let fresh = service.reserve_item_ids(2).unwrap();
+        assert!(fresh.iter().all(|id| !issued.contains(id)));
+        service
+            .commit_durable(&reserved_inventory(
+                fresh[0],
+                entry.character_id,
+                1,
+                "spend-current-generation",
+                0,
+            ))
+            .unwrap();
+        assert!(service.item(fresh[0]).unwrap().is_some());
     });
 }

@@ -32,6 +32,10 @@ use crate::repository::character_file_name;
 const MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../migrations/0001_foundation.sql")),
     (2, include_str!("../migrations/0002_lifecycle.sql")),
+    (
+        3,
+        include_str!("../migrations/0003_item_id_reservations.sql"),
+    ),
 ];
 const IMPORT_LOCK_KEY: i64 = 0x120A_0001;
 pub(crate) const DURABLE_WRITER_FILE: &str = "durable_writer.json";
@@ -287,9 +291,10 @@ impl PostgresStore {
         }
     }
 
-    /// Advance `next_item_instance_id` and return that range. A crash after
-    /// this commit wastes unused ids. A crash before it issues none. The same
-    /// counter feeds `place_new`, so the ranges stay disjoint.
+    /// Advance `next_item_instance_id` and record that range for the process's
+    /// live channel generation. A crash after this commit wastes unused ids.
+    /// A crash before it issues none. The same counter feeds `place_new`, so
+    /// the ranges stay disjoint. A later generation cannot spend this range.
     pub(crate) fn reserve_item_ids(
         &mut self,
         count: u32,
@@ -300,6 +305,7 @@ impl PostgresStore {
                 "item id reservation count is invalid",
             ));
         }
+        let (channel_id, generation) = reservation_channel(&self.channels)?;
         self.ensure_connection()?;
         let mut tx = self.client.transaction().map_err(map_sql)?;
         tx.execute(
@@ -307,6 +313,7 @@ impl PostgresStore {
             &[],
         )
         .map_err(map_sql)?;
+        lifecycle::lock_live_channel(&mut tx, channel_id, generation)?;
         let start = read_next_item_id(&mut tx)?;
         let end = start
             .checked_add(u64::from(count))
@@ -314,6 +321,15 @@ impl PostgresStore {
         if start == 0 {
             return Err(PersistError::ItemIdsExhausted);
         }
+        let start_sql = item_id_i64(start)?;
+        let end_sql = item_id_i64(end)?;
+        let generation_sql = revision_i64(generation)?;
+        tx.execute(
+            "INSERT INTO item_id_reservations (range_start, range_end, channel_id, generation)
+             VALUES ($1, $2, $3, $4)",
+            &[&start_sql, &end_sql, &channel_id, &generation_sql],
+        )
+        .map_err(map_sql)?;
         tx.execute(
             "UPDATE durable_meta SET value = $1 WHERE key = 'next_item_instance_id'",
             &[&end.to_string()],
@@ -326,6 +342,42 @@ impl PostgresStore {
             map_sql(err)
         })?;
         Ok((start..end).map(ItemInstanceId::from_raw).collect())
+    }
+
+    /// Raise the item-id counter without recording a reservation. Tests use
+    /// this to prove an unissued gap cannot be inserted.
+    #[cfg(test)]
+    pub(crate) fn leave_unissued_item_gap_for_test(
+        &mut self,
+        next: u64,
+    ) -> Result<(), PersistError> {
+        if next <= 1 {
+            return Err(PersistError::corrupt(
+                db_path(),
+                "unissued item gap must end above 1",
+            ));
+        }
+        self.ensure_connection()?;
+        let mut tx = self.client.transaction().map_err(map_sql)?;
+        tx.execute(
+            "SELECT value FROM durable_meta WHERE key = 'next_item_instance_id' FOR UPDATE",
+            &[],
+        )
+        .map_err(map_sql)?;
+        let current = read_next_item_id(&mut tx)?;
+        if next < current {
+            return Err(PersistError::corrupt(
+                db_path(),
+                "unissued item gap cannot rewind the counter",
+            ));
+        }
+        tx.execute(
+            "UPDATE durable_meta SET value = $1 WHERE key = 'next_item_instance_id'",
+            &[&next.to_string()],
+        )
+        .map_err(map_sql)?;
+        tx.commit().map_err(map_sql)?;
+        Ok(())
     }
 
     fn note_closed_client(&mut self) {
@@ -886,7 +938,8 @@ fn grant_runtime(
          GRANT SELECT, INSERT ON {schema_sql}.dev_users, {schema_sql}.character_npcs_met, {schema_sql}.character_dialogue_heard, {schema_sql}.character_learned_abilities TO {user_sql};
          GRANT SELECT, INSERT, UPDATE ON {schema_sql}.durable_commands TO {user_sql};
          GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_facts TO {user_sql};
-         GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_leases, {schema_sql}.channel_generations TO {user_sql};"
+         GRANT SELECT, INSERT, UPDATE, DELETE ON {schema_sql}.character_leases, {schema_sql}.channel_generations TO {user_sql};
+         GRANT SELECT, INSERT ON {schema_sql}.item_id_reservations TO {user_sql};"
     );
     client.batch_execute(&sql).map_err(map_sql)
 }
@@ -1396,7 +1449,15 @@ fn apply_command(
     }
     let mut minted = place_items(tx, command)?;
     if let Some(ceiling) = reserved_ceiling {
-        minted.extend(apply_reserved_uses(tx, command, ceiling)?);
+        let (channel_id, generation) = channel.ok_or_else(|| {
+            PersistError::conflict(
+                db_path(),
+                "item id reservation has no live channel generation",
+            )
+        })?;
+        minted.extend(apply_reserved_uses(
+            tx, command, channel_id, generation, ceiling,
+        )?);
     }
     for item in &command.moves {
         let stamp = match item.to {
@@ -1607,12 +1668,17 @@ fn read_next_item_id(tx: &mut postgres::Transaction<'_>) -> Result<u64, PersistE
 }
 
 /// Insert ids that were reserved before they became visible. The counter is
-/// not advanced here. An id at or past the counter was never reserved.
+/// not advanced here. The id must fall inside a range recorded for this
+/// channel generation. An id below the counter with no such row was not issued
+/// to this generation.
 fn apply_reserved_uses(
     tx: &mut postgres::Transaction<'_>,
     command: &DurableCommand,
+    channel_id: i64,
+    generation: u64,
     ceiling: u64,
 ) -> Result<Vec<ItemInstanceId>, PersistError> {
+    let generation_sql = revision_i64(generation)?;
     let mut written = Vec::new();
     for reserved in &command.reserved_uses {
         let raw_id = reserved.item_instance_id.raw();
@@ -1620,6 +1686,28 @@ fn apply_reserved_uses(
             return Err(PersistError::conflict(
                 db_path(),
                 format!("item {raw_id} was not reserved"),
+            ));
+        }
+        let id_sql = item_id_i64(raw_id).map_err(|_| {
+            PersistError::conflict(db_path(), format!("item {raw_id} was not reserved"))
+        })?;
+        let covered: bool = tx
+            .query_one(
+                "SELECT EXISTS (
+                    SELECT 1 FROM item_id_reservations
+                    WHERE channel_id = $1
+                      AND generation = $2
+                      AND range_start <= $3
+                      AND range_end > $3
+                )",
+                &[&channel_id, &generation_sql, &id_sql],
+            )
+            .map_err(map_sql)?
+            .get(0);
+        if !covered {
+            return Err(PersistError::conflict(
+                db_path(),
+                format!("item {raw_id} was not reserved for this channel generation"),
             ));
         }
         let raw = id_bytes(raw_id);
@@ -1705,6 +1793,25 @@ fn location_sql(location: CharacterItemLocation) -> LocationSql {
             inventory: None,
             equipment: Some(slot.as_str().to_string()),
         },
+    }
+}
+
+fn reservation_channel(
+    channels: &std::collections::BTreeMap<i64, u64>,
+) -> Result<(i64, u64), PersistError> {
+    match channels.len() {
+        1 => {
+            let (channel_id, generation) = channels.iter().next().expect("one channel");
+            Ok((*channel_id, *generation))
+        }
+        0 => Err(PersistError::conflict(
+            db_path(),
+            "item id reservation has no live channel generation",
+        )),
+        _ => Err(PersistError::conflict(
+            db_path(),
+            "item id reservation channel is ambiguous",
+        )),
     }
 }
 
@@ -2598,6 +2705,10 @@ fn id_from_bytes(bytes: &[u8]) -> Result<u64, PersistError> {
         .try_into()
         .map_err(|_| PersistError::integrity(db_path(), "stored identity width is not 8 bytes"))?;
     Ok(u64::from_be_bytes(array))
+}
+
+fn item_id_i64(value: u64) -> Result<i64, PersistError> {
+    i64::try_from(value).map_err(|_| PersistError::ItemIdsExhausted)
 }
 
 fn revision_i64(value: u64) -> Result<i64, PersistError> {

@@ -65,14 +65,25 @@ durable range. Expiry inserts that id as a retired row. It is not an epoch mint.
 `manifest_monster_loot` is the authoritative spawn and eligibility path for a
 future loot drop. No loot table is authored, and monster death does not call it.
 Both that path and a developer-spawned collectible item take an id that
-PostgreSQL has already reserved. If the local range is empty, nothing is
-spawned. The network loop replenishes the range through the persistence worker.
-The simulation tick does not. A crash may waste ids that were reserved and never
-shown. A visible id and a retired id are not issued again.
+PostgreSQL has already reserved. Collectible developer spawns require
+PostgreSQL. File mode cannot reserve an id, so those spawns do not appear.
+If the local range is empty, nothing is spawned. The network loop replenishes
+the range through the persistence worker. The simulation tick does not. A crash
+may waste ids that were reserved and never shown. A visible id and a retired id
+are not issued again.
+
+The reservation and the counter advance are one transaction. The row records
+the channel generation that issued the range. At commit, an id is accepted only
+when that live generation has a covering row. An unused id from another
+channel, an unissued gap below the counter, and a range issued to a previous
+generation are rejected and write no item row. Renewal keeps the same
+generation, so its unused ids remain spendable. A new generation receives a
+later disjoint range.
 
 Pickup of that visible id inserts the same id. It does not call `place_new`.
-The command rejects an id that was not reserved, an id that already exists, a
-retired id, a stale channel generation, and a second pickup of the same id.
+The command rejects an id that was not reserved for this channel generation, an
+id that already exists, a retired id, a stale channel generation, and a second
+pickup of the same id.
 The same command key still returns the stored result. An unknown outcome stays
 unknown until that key is retried. Expiry of an unpicked reserved id writes a
 retired stub under the claimed channel generation. A later pickup of that id
@@ -302,3 +313,23 @@ ignored persistence tests in 32.49s (`admit_us=26091`; workload `total_ms=3275`,
 `mean_us=36393`, debug profile, not a capacity claim) and 15 ignored server
 `postgres_12c` tests in 10.99s. The container was removed. File mode cannot
 reserve ids. Monster death does not spawn loot. Phase 12C remains in review.
+
+Before the range check, an id below `next_item_instance_id` with no item row
+was enough. `another_channels_unused_id_cannot_be_inserted` inserted unused id
+`2` from channel 1 through channel 2. `unissued_gap_below_the_counter_cannot_be_inserted`
+inserted unissued id `20` after the counter had been moved to `40` with no
+reservation. `previous_channel_generation_cannot_spend_its_unused_ids` let
+generation 2 insert id `1`, which generation 1 had reserved. After migration
+`0003_item_id_reservations.sql`, those three reject the insert and write no
+row. The issuing generation can still spend its own id. A new generation
+receives a later range and can spend that. A restarted connection cannot spend
+an unused id from the previous process. `./scripts/check.ps1` exited 0 in
+about 140s. Persistence lib tests were 39 passed and 36 ignored. Server bin
+tests were 362 passed and 24 ignored in 2.64s. Simulation lib tests were 431
+passed. A disposable `postgres:18` container `purgatory-12c-range`, database
+`purgatory_12a_test` on `127.0.0.1:5433`, not `Purgatory_dev`, then passed 36
+ignored persistence tests in 21.06s (`admit_us=17338`; workload `total_ms=1821`,
+`mean_us=20243`, debug profile, not a capacity claim) and 15 ignored server
+`postgres_12c` tests in 5.87s. The container was removed. Collectible developer
+spawns require PostgreSQL; file mode does not show them. Phase 12C remains in
+review.
