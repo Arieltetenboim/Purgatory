@@ -72,6 +72,10 @@ impl ContentRegistry {
         self.abilities.len()
     }
 
+    pub fn iter_abilities(&self) -> impl Iterator<Item = &AbilityDefinition> {
+        self.abilities.values()
+    }
+
     #[must_use]
     pub fn ability(&self, authored: &str) -> Option<&AbilityDefinition> {
         self.abilities.get(authored)

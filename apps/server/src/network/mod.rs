@@ -16,6 +16,7 @@ mod connection_lifecycle;
 mod dev_admin;
 mod dialogue;
 mod dialogue_actions;
+mod durable_play;
 mod endpoint;
 mod gameplay;
 mod handshake;
@@ -98,9 +99,82 @@ pub(crate) fn install_crypto_provider() -> Result<(), String> {
     Ok(())
 }
 
+fn spawn_id_replenish(
+    owner: &mut gameplay::GameplayOwner,
+    persist: &persist::PersistenceHandle,
+    gameplay_tx: &gameplay::GameplayTx,
+) {
+    let Some(count) = owner.begin_id_replenish() else {
+        return;
+    };
+    let persist = persist.clone();
+    let tx = gameplay_tx.clone();
+    tokio::spawn(async move {
+        let ids = persist.reserve_item_ids(count).await;
+        let _ = tx
+            .lifecycle
+            .send(gameplay::LifecycleCmd::InstallReservedIds { ids })
+            .await;
+    });
+}
+
+fn spawn_durable_commits(
+    owner: &mut gameplay::GameplayOwner,
+    persist: &persist::PersistenceHandle,
+    gameplay_tx: &gameplay::GameplayTx,
+) {
+    for submit in owner.take_durable_commits() {
+        let persist = persist.clone();
+        let tx = gameplay_tx.clone();
+        tokio::spawn(async move {
+            let result = persist.commit_durable(submit.command, submit.lease).await;
+            let _ = tx
+                .lifecycle
+                .send(gameplay::LifecycleCmd::SettleDurable {
+                    token: submit.token,
+                    result,
+                })
+                .await;
+        });
+    }
+    for (connection_id, character_id, revision) in owner.take_reconcile_jobs() {
+        let persist = persist.clone();
+        let tx = gameplay_tx.clone();
+        tokio::spawn(async move {
+            let mut attempts = 0u32;
+            let restore = loop {
+                match persist.read_owned_restore(character_id).await {
+                    Ok(restore) => break Ok(restore),
+                    Err(purgatory_persistence::PersistError::Storage { .. }) => {
+                        attempts = attempts.saturating_add(1);
+                        if tx.lifecycle.is_closed() {
+                            return;
+                        }
+                        if attempts >= 2 {
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+                    }
+                    Err(err) => break Err(err),
+                }
+            };
+            let _ = tx
+                .lifecycle
+                .send(gameplay::LifecycleCmd::ReconcileDurable {
+                    connection_id,
+                    revision,
+                    restore,
+                })
+                .await;
+        });
+    }
+}
+
 async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     let bound = endpoint::bind(&config)?;
+    let persist = persist::PersistenceHandle::spawn_from_env().await?;
     println!("network listening on {}", bound.local_addr());
+    println!("PURGATORY persist backend=postgresql");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 
     bound.stats.admission_cap.store(
         config.abuse.max_inflight_connection_tasks as u64,
@@ -112,9 +186,6 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
     if let Err(err) = dev_admin::spawn(gameplay_tx.clone(), bound.sessions.clone()) {
         eprintln!("DEV_ADMIN unavailable: {err}");
     }
-    let data_dir = persist::data_dir_from_env();
-    println!("PURGATORY persist data_dir={}", data_dir.display());
-    let persist = persist::PersistenceHandle::spawn_from_env(&data_dir)?;
     let channel_live = Arc::new(AtomicBool::new(true));
     let held_channel = claim_startup_channel(&persist, &channel_live).await?;
     let (stop_channel_tx, stop_channel_rx) = tokio::sync::watch::channel(false);
@@ -132,6 +203,10 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
         );
     }
     owner.set_persist(persist.clone());
+    let rules = owner.durable_content_rules();
+    if let Err(err) = persist.install_content_rules(rules).await {
+        eprintln!("PURGATORY durable content rules were not installed: {err}");
+    }
     let pressure = Arc::new(network_pressure::NetworkPressureBook::new());
     let lifecycle = Arc::new(connection_lifecycle::ConnectionLifecycleBook::new());
     owner.set_pressure(pressure.clone());
@@ -161,6 +236,19 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
         println!("PURGATORY capacity artifacts dir={}", dir.display());
     }
     let outer_period = Duration::from_millis(8);
+    let (shutdown_file_tx, mut shutdown_file_rx) = tokio::sync::watch::channel(false);
+    if let Some(path) = std::env::var_os("PURGATORY_SHUTDOWN_FILE") {
+        let path = std::path::PathBuf::from(path);
+        tokio::spawn(async move {
+            loop {
+                if path.is_file() {
+                    let _ = shutdown_file_tx.send(true);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+    }
 
     loop {
         tokio::select! {
@@ -193,7 +281,10 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                 let lateness = elapsed.saturating_sub(outer_period);
 
                 let drain_start = Instant::now();
+                owner.advance_ground_clock(elapsed);
                 owner.drain(&mut life_rx, &mut input_rx);
+                spawn_id_replenish(&mut owner, &persist, &gameplay_tx);
+                spawn_durable_commits(&mut owner, &persist, &gameplay_tx);
                 let input_depth = input_cap.saturating_sub(input_rx.capacity()) as u64;
                 bound.stats.input_queue_current.store(input_depth, Ordering::Relaxed);
                 bound.stats.input_queue_max.fetch_max(input_depth, Ordering::Relaxed);
@@ -233,6 +324,8 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
                     // Drain between ticks so long snapshot work does not starve
                     // awaiting producers on the input handoff.
                     owner.drain(&mut life_rx, &mut input_rx);
+                    spawn_id_replenish(&mut owner, &persist, &gameplay_tx);
+                    spawn_durable_commits(&mut owner, &persist, &gameplay_tx);
                     let depth = input_cap.saturating_sub(input_rx.capacity()) as u64;
                     bound.stats.input_queue_current.store(depth, Ordering::Relaxed);
                     bound.stats.input_queue_max.fetch_max(depth, Ordering::Relaxed);
@@ -247,52 +340,87 @@ async fn run(config: ServerEndpointConfig) -> Result<(), String> {
             }
             _ = tokio::signal::ctrl_c() => {
                 println!("PURGATORY server shutting down");
-                bound.endpoint.close(
-                    u32::from(DisconnectReasonCode::ServerShutdown.as_u8()).into(),
-                    b"shutdown",
-                );
-                let (active, peak) = {
-                    let table = session::lock_sessions(&bound.sessions);
-                    (table.len(), table.high_water())
-                };
-                println!(
-                    "PURGATORY server stats {}",
-                    bound.stats.summary(
-                        active,
-                        bound.inflight_tasks.load(Ordering::Relaxed),
-                        peak,
-                    )
-                );
-                owner.flush_persistent_snapshots();
-                domains.force_write();
-                let _ = stop_channel_tx.send(true);
-                let status = persist.shutdown(
+                finish_shutdown(
+                    &bound,
+                    &mut owner,
+                    &mut domains,
+                    &stop_channel_tx,
+                    &persist,
                     config.persistence_shutdown_timeout,
-                    held_channel.map(|(channel_id, generation, _)| (channel_id, generation)),
+                    held_channel.as_ref().map(|(id, generation, _)| (*id, *generation)),
                 )
-                    .await;
-                match status {
-                    persist::PersistenceShutdown::Drained { save_failures } => {
-                        println!(
-                            "PURGATORY persistence shutdown drained save_failures={save_failures}"
-                        );
-                    }
-                    persist::PersistenceShutdown::TimedOut { save_failures } => {
-                        eprintln!(
-                            "PURGATORY persistence shutdown timed out; snapshots were not confirmed save_failures={save_failures}"
-                        );
-                    }
-                    persist::PersistenceShutdown::WorkerClosed => {
-                        eprintln!(
-                            "PURGATORY persistence worker closed; snapshots were not confirmed"
-                        );
-                    }
+                .await;
+                break;
+            }
+            result = shutdown_file_rx.changed(), if !*shutdown_file_rx.borrow() => {
+                if result.is_err() || !*shutdown_file_rx.borrow() {
+                    continue;
                 }
+                println!("PURGATORY server shutting down");
+                finish_shutdown(
+                    &bound,
+                    &mut owner,
+                    &mut domains,
+                    &stop_channel_tx,
+                    &persist,
+                    config.persistence_shutdown_timeout,
+                    held_channel.as_ref().map(|(id, generation, _)| (*id, *generation)),
+                )
+                .await;
                 break;
             }
         }
     }
     Ok(())
+}
+
+async fn finish_shutdown(
+    bound: &endpoint::BoundEndpoint,
+    owner: &mut gameplay::GameplayOwner,
+    domains: &mut TickDomainAccounting,
+    stop_channel_tx: &tokio::sync::watch::Sender<bool>,
+    persist: &persist::PersistenceHandle,
+    timeout: Duration,
+    held_channel: Option<(i64, u64)>,
+) {
+    bound.endpoint.close(
+        u32::from(DisconnectReasonCode::ServerShutdown.as_u8()).into(),
+        b"shutdown",
+    );
+    let (active, peak) = {
+        let table = session::lock_sessions(&bound.sessions);
+        (table.len(), table.high_water())
+    };
+    println!(
+        "PURGATORY server stats {}",
+        bound
+            .stats
+            .summary(active, bound.inflight_tasks.load(Ordering::Relaxed), peak,)
+    );
+    owner.flush_persistent_snapshots();
+    domains.force_write();
+    let _ = stop_channel_tx.send(true);
+    let status = persist.clone().shutdown(timeout, held_channel).await;
+    match status {
+        persist::PersistenceShutdown::Drained { save_failures } => {
+            println!(
+                "PURGATORY persistence shutdown drained pid={} save_failures={save_failures}",
+                std::process::id()
+            );
+        }
+        persist::PersistenceShutdown::TimedOut { save_failures } => {
+            eprintln!(
+                "PURGATORY persistence shutdown timed out pid={} save_failures={save_failures}",
+                std::process::id()
+            );
+        }
+        persist::PersistenceShutdown::WorkerClosed => {
+            eprintln!(
+                "PURGATORY persistence worker closed pid={}; snapshots were not confirmed",
+                std::process::id()
+            );
+        }
+    }
 }
 
 async fn claim_startup_channel(

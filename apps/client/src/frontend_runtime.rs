@@ -880,6 +880,7 @@ mod pregame_tests {
             CharacterCreateRejection::RosterFull,
             CharacterCreateRejection::InvalidName,
             CharacterCreateRejection::StorageFailure,
+            CharacterCreateRejection::Unregistered,
         ] {
             runtime.act(FrontendAction::CreateCharacter, &mut scene);
             assert_eq!(runtime.character_area.creation, CreationState::Pending);

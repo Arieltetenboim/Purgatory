@@ -164,9 +164,14 @@ impl BotSession {
             .await
             .map_err(|e| format!("open bi stream: {e}"))?;
 
+        let build = if frontend_only && dev_login == crate::PROBE_DEV_LOGIN {
+            crate::probe_client_build()
+        } else {
+            client_build()
+        };
         let hello = ClientControl::Hello(Hello {
             protocol_version: PROTOCOL_VERSION,
-            client_build: client_build(),
+            client_build: build,
             dev_login: dev_login.to_string(),
         });
         write_client_control(&mut send, &hello).await?;

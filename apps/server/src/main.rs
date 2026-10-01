@@ -6,6 +6,14 @@ use purgatory_simulation::{SimulationClock, TICK_RATE_HZ, World};
 
 fn main() {
     init_tracing();
+    if let Some(result) = database_admin_command() {
+        if let Err(err) = result {
+            let err = purgatory_persistence::redact_connection_text(&err);
+            eprintln!("PURGATORY database error: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let _ = (
         purgatory_common::version(),
         purgatory_simulation::version(),
@@ -19,9 +27,171 @@ fn main() {
     run_headless_clock_sample();
     run_headless_world_sample();
     if let Err(err) = network::run_blocking(network::ServerEndpointConfig::dev()) {
+        let err = purgatory_persistence::redact_connection_text(&err);
         eprintln!("PURGATORY server error: {err}");
         std::process::exit(1);
     }
+}
+
+/// Headless local-development database administration. Ordinary startup never
+/// calls this. Output is status text only; connection strings stay in the
+/// environment.
+fn database_admin_command() -> Option<Result<(), String>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = args.first().map(String::as_str)?;
+    if !flag.starts_with("--database-") {
+        return None;
+    }
+    let name = purgatory_persistence::LOCAL_DEV_DATABASE;
+    match flag {
+        "--database-status" => Some(database_runtime_status(name)),
+        "--database-create" => {
+            let request = match purgatory_persistence::DatabaseAdminRequest::from_env() {
+                Ok(request) => request,
+                Err(err) => {
+                    return Some(Err(purgatory_persistence::redact_connection_text(
+                        &err.to_string(),
+                    )));
+                }
+            };
+            let user = optional_flag(&args, "--user");
+            Some(database_create(&request, name, user.as_deref()))
+        }
+        "--database-reset" => {
+            let Some(confirm) = optional_flag(&args, "--confirm") else {
+                return Some(Err("missing --confirm".into()));
+            };
+            let request = match purgatory_persistence::DatabaseAdminRequest::from_env() {
+                Ok(request) => request,
+                Err(err) => {
+                    return Some(Err(purgatory_persistence::redact_connection_text(
+                        &err.to_string(),
+                    )));
+                }
+            };
+            Some(database_reset(&request, name, &confirm))
+        }
+        "--database-add-user" => {
+            let Some(user) = optional_flag(&args, "--user") else {
+                return Some(Err("missing --user".into()));
+            };
+            let request = match purgatory_persistence::DatabaseAdminRequest::from_env_for_user_add()
+            {
+                Ok(request) => request,
+                Err(err) => {
+                    return Some(Err(purgatory_persistence::redact_connection_text(
+                        &err.to_string(),
+                    )));
+                }
+            };
+            Some(database_add_user(&request, &user))
+        }
+        other => Some(Err(format!("unknown database command {other}"))),
+    }
+}
+
+fn database_runtime_status(name: &str) -> Result<(), String> {
+    let settings = purgatory_persistence::PostgresSettings::from_env()
+        .map_err(|err| purgatory_persistence::redact_connection_text(&err.to_string()))?
+        .ok_or_else(|| "PURGATORY_DATABASE_URL is required".to_string())?;
+    let inspection = purgatory_persistence::inspect_runtime_database(&settings)
+        .map_err(|err| purgatory_persistence::redact_connection_text(&err.to_string()))?;
+    database_status_line(&inspection, name)
+}
+
+fn database_status_line(
+    inspection: &purgatory_persistence::DatabaseInspection,
+    name: &str,
+) -> Result<(), String> {
+    println!(
+        "PURGATORY database status={} name={name} present={}",
+        match inspection.status {
+            purgatory_persistence::DatabaseStatus::Missing => "missing",
+            purgatory_persistence::DatabaseStatus::Ready => "ready",
+            purgatory_persistence::DatabaseStatus::Error => "error",
+        },
+        inspection.status != purgatory_persistence::DatabaseStatus::Missing
+    );
+    if !inspection.detail.is_empty() {
+        let detail = purgatory_persistence::redact_connection_text(&inspection.detail);
+        eprintln!("PURGATORY database detail: {detail}");
+    }
+    if inspection.status == purgatory_persistence::DatabaseStatus::Error {
+        return Err(purgatory_persistence::redact_connection_text(
+            &inspection.detail,
+        ));
+    }
+    Ok(())
+}
+
+fn database_create(
+    request: &purgatory_persistence::DatabaseAdminRequest,
+    name: &str,
+    user: Option<&str>,
+) -> Result<(), String> {
+    let login = user
+        .map(purgatory_common::DevLogin::parse)
+        .transpose()
+        .map_err(|err| format!("{err:?}"))?;
+    match purgatory_persistence::create_database(request, login.as_ref())
+        .map_err(|err| err.to_string())?
+    {
+        purgatory_persistence::AdminOutcome::Created => {
+            println!("PURGATORY database create=created name={name}");
+        }
+        purgatory_persistence::AdminOutcome::AlreadyInitialized => {
+            println!("PURGATORY database create=already_initialized name={name}");
+            if user.is_some() {
+                println!("PURGATORY database user=not_added reason=already_initialized");
+            }
+        }
+        purgatory_persistence::AdminOutcome::Reset => {
+            return Err("create reported a reset".into());
+        }
+        purgatory_persistence::AdminOutcome::UserAdded
+        | purgatory_persistence::AdminOutcome::UserAlreadyPresent => {
+            return Err("create reported a user add".into());
+        }
+    }
+    Ok(())
+}
+
+fn database_reset(
+    request: &purgatory_persistence::DatabaseAdminRequest,
+    name: &str,
+    confirm: &str,
+) -> Result<(), String> {
+    match purgatory_persistence::reset_database(request, confirm).map_err(|err| err.to_string())? {
+        purgatory_persistence::AdminOutcome::Reset => {
+            println!("PURGATORY database reset=reset name={name}");
+            Ok(())
+        }
+        other => Err(format!("reset finished as {other:?}")),
+    }
+}
+
+fn database_add_user(
+    request: &purgatory_persistence::DatabaseAdminRequest,
+    user: &str,
+) -> Result<(), String> {
+    let login = purgatory_common::DevLogin::parse(user).map_err(|err| format!("{err:?}"))?;
+    match purgatory_persistence::add_development_user(request, &login)
+        .map_err(|err| err.to_string())?
+    {
+        purgatory_persistence::AdminOutcome::UserAdded
+        | purgatory_persistence::AdminOutcome::UserAlreadyPresent => {
+            println!("PURGATORY database user=added name={user}");
+            Ok(())
+        }
+        other => Err(format!("add user finished as {other:?}")),
+    }
+}
+
+fn optional_flag(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|arg| arg == name)
+        .and_then(|index| args.get(index + 1))
+        .cloned()
 }
 
 fn init_tracing() {

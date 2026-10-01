@@ -2,7 +2,7 @@
 
 PURGATORY Developer Tools is the development-side control surface for running, testing, and diagnosing the game. The launcher is one component of that product, not the whole product.
 
-Open it with [`DEV.BAT`](../../DEV.BAT) at the repository root (PowerShell fallback). The Rust Developer Hub is [`DEV_HUB.BAT`](../../DEV_HUB.BAT): it builds `purgatory-dev-hub` if needed, starts `target\debug\purgatory-dev-hub.exe` independently, and exits. The Hub is a Windows GUI process (no bootstrap console). Do not use `cargo run -p purgatory-dev-hub` as the normal path — that leaves a console and can put the Hub (and a spawned server) in cargo’s job, so closing the shell kills them. The PowerShell bootstrap is not a Cargo build.
+Open it with [`DEV.BAT`](../../DEV.BAT) at the repository root (PowerShell fallback). The Rust Developer Hub is [`DEV_HUB.BAT`](../../DEV_HUB.BAT): it builds `purgatory-dev-hub` if needed, starts `target\debug\purgatory-dev-hub.exe` independently, and exits. The Hub loads git-ignored `config/local/database.env` on startup, including when `DEV_HUB.BAT` is double-clicked. See [`POSTGRESQL_LOCAL_RUN.md`](../POSTGRESQL_LOCAL_RUN.md). The Hub is a Windows GUI process (no bootstrap console). Do not use `cargo run -p purgatory-dev-hub` as the normal path — that leaves a console and can put the Hub (and a spawned server) in cargo’s job, so closing the shell kills them. The PowerShell bootstrap is not a Cargo build.
 
 This document describes **what exists now**. Planned editors and later tool areas are labeled PLANNED. Capability inventory and Hub migration slices: [`PARITY.md`](PARITY.md). Architecture: ADR-0050 (foundation) and ADR-0052 (Rust Hub).
 
@@ -55,7 +55,7 @@ These are not synonyms. See [RUNTIME_LIFECYCLE.md](RUNTIME_LIFECYCLE.md).
 
 ### Probe persistence (known debt)
 
-`--probe` uses the normal DEV login / persistence / enter path with reserved login `dev.probe`. A successful probe may **create or restore** that character under the persist root (`%LOCALAPPDATA%\Purgatory\` unless `PURGATORY_DATA_DIR` is set). This is not the long-term health design. The probe must track the repository's current `PROTOCOL_VERSION`; the persistence debt does not by itself justify another wire change.
+`--probe` sends a readiness Hello for reserved login `dev.probe` with client build prefix `purgatory-probe`. That session can reach `FrontendSessionReady` with an empty roster. It is not a `dev_users` row, and it cannot create or enter a character. The normal client username `dev.probe` is rejected before `FrontendSessionReady`. The probe must track the repository's current `PROTOCOL_VERSION`.
 
 ## PLANNED
 

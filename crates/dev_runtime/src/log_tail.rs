@@ -96,9 +96,10 @@ impl FileTail {
                 self.offset -= raw.len() as u64;
                 break;
             }
+            let line = purgatory_persistence::redact_connection_text(line);
             let display = {
                 let body = if self.prefix.is_empty() {
-                    line.to_string()
+                    line
                 } else {
                     format!("{} | {line}", self.prefix)
                 };
@@ -155,6 +156,28 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir.join("server.log")
+    }
+
+    #[test]
+    fn displayed_log_lines_redact_connection_urls() {
+        let path = temp_log("redact");
+        {
+            let mut file = fs::File::create(&path).unwrap();
+            writeln!(
+                file,
+                "PURGATORY server error: postgresql://purgatory_dev:runtime-secret-value@127.0.0.1:5432/Purgatory_dev?sslmode=disable"
+            )
+            .unwrap();
+        }
+        let mut tail = FileTail::new(path, "server");
+        tail.poll();
+        let view = tail.view_lines().join("\n");
+        assert!(
+            view.contains("[redacted]"),
+            "diagnostics should mark a removed connection"
+        );
+        assert!(!view.contains("runtime-secret-value"));
+        assert!(!view.contains("postgresql://"));
     }
 
     #[test]

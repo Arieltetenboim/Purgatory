@@ -40,10 +40,10 @@ draft and must not be merged as the Phase 12 foundation.
 
 | Event | Item and world result |
 |---|---|
-| Player drops an item | Commit the removal from the character and a temporary ground owner **atomically** before reporting success. It can be picked up by A/B/C according to server eligibility rules while the server is running. |
-| Monster drops loot | The ordinary ground entity is temporary; killer/party exclusivity and disappearance timers are server-enforced during that run. A pickup must create/transfer durable ownership exactly once before reporting success. |
+| Player drops an item | Commit the removal from the character and a temporary ground owner **atomically** before reporting success. The item belongs to the map and is open to every player immediately. It disappears after 200 seconds while the server is running. |
+| Monster drops loot | The ordinary ground entity is temporary and disappears after 200 seconds. It is exclusive to the player who killed the monster for the first 40 seconds, then eligible for other players. A pickup must create/transfer durable ownership exactly once before reporting success. |
 | Eligible pickup | Commit removal from ground and assignment to one character in one transaction; if expiry or another pickup wins first, reject. |
-| Runtime expiry | Retire the unclaimed item; never return a player-dropped item to its previous character. |
+| Runtime expiry | Retire the unclaimed item after 200 seconds; never return a player-dropped item to its previous character. |
 | Clean shutdown **or crash** | All ordinary unclaimed ground drops disappear. On recovery, retire any persisted temporary ground owners **before** admitting gameplay; do not refund them or reconstruct their timers. No item ID may be reissued. |
 | Map population after restart | Spawn the authored number of ordinary monsters afresh. Do not restore their death count or exact temporary map state. Persist character-owned credited progress separately if a future Quest requires it. |
 
@@ -119,20 +119,20 @@ content; its character attempt, progress and reward claim become durable
 when that gameplay is implemented. One turn-in transaction includes claim,
 consumption, items, facts, abilities and any later currency/experience.
 
-The cutover imports development v1 `identity.json` and `char_*.json` records,
-and any 12A-format test data that is to be retained. It does not import
-production player data. The supported deployment is one legacy file server,
-then one PostgreSQL server. Before inventory, that file server has exited and
-the source directory stays unchanged through import and identity/count
-verification. The ordered steps are in
-[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). Import reads completed
-files. A snapshot still only queued is not a durable record. Validate IDs,
-roster ownership, revisions, restore fields and catalog references. Migrate
-supported state once, prove counts and identities, and switch to one writer;
-no silent blank-character fallback or concurrent file/database dual write.
-After cutover, PostgreSQL is the only durable authority. A marker check
-inside an already-open file service stops a later file-mode open of this
-server. An unrelated process is outside this threat model.
+New development starts from an empty PostgreSQL roster. Server startup does
+not import `identity.json` or `char_*.json`, and it does not read or write
+`durable_writer.json`. Creating the local development database is a deliberate
+Hub or `--database-create` action. It creates the physical database, applies
+the versioned migrations, and initializes empty durable metadata. Normal
+startup reopens that database only when the configured deployment identity
+and migration history already match. A missing URL, a failed connection, the
+wrong schema or identity, an uninitialized database, or a migration history
+the binary does not support fails closed. There is no file writer and no
+legacy import command. The ordered historical import steps in
+[`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md) are superseded. A snapshot
+that was only queued in the old file writer is not a durable record. No silent
+blank-character fallback. After initialization, PostgreSQL is the only durable
+authority.
 
 Already lost NPC facts or learned grants cannot be invented by migration.
 Unknown schema, invalid content, duplicate ownership or a missing migration
@@ -186,9 +186,12 @@ the durable transaction foundation.
 - Define the concrete migration source and cutover for existing development
   records and the unmerged 12A test format. Treat the file branch as unmerged
   work, not deployed production data.
-- Confirm the policy for damaged/dead logout and long cooldowns; current
-  safe-point/full-health entry could permit a logout exploit. This does not
-  block the storage-domain design but blocks a full Phase 12 exit claim.
+- Current HP is stored on the character. Logout, disconnect, server stop, and
+  the next login restore the last committed value, clamped to the live maximum.
+  A row whose `current_health` is still NULL has never stored HP and loads at
+  full maximum. Death followed by respawn still restores full HP. Revival HP
+  stays whatever the revival ability applies. Long cooldowns are still an open
+  policy and still block a full Phase 12 exit claim.
 - Measure connection limits, transaction latency, restart cleanup and restore
   time on the intended development workload; do not infer international
   production capacity from a local PostgreSQL installation.

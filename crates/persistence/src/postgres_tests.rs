@@ -17,9 +17,9 @@ use purgatory_common::{CharacterId, ContentId, DevLogin, ItemInstanceId, Restore
 use crate::postgres::{self, PostgresSettings};
 use crate::{
     ChannelClaim, CharacterItemLocation, DurableCommand, DurableContentRules, DurableEquipmentSlot,
-    IDENTITY_FILE_NAME, ItemContentRule, ItemOwner, LearnedAbilityWrite, LeaseAuthority,
-    LeaseBarrier, LiveDestination, MoveItem, NarrativeWrite, PersistError, PersistenceService,
-    PersistentCharacterSnapshot, PlaceNewItem, SessionAdmission,
+    ItemContentRule, ItemOwner, LearnedAbilityWrite, LeaseAuthority, LeaseBarrier, LiveDestination,
+    MoveItem, NarrativeWrite, PersistError, PersistenceService, PersistentCharacterSnapshot,
+    PlaceNewItem, ReservedItemOutcome, ReservedItemUse, SessionAdmission,
 };
 
 static DB_LOCK: Mutex<()> = Mutex::new(());
@@ -101,9 +101,19 @@ fn place(owner: CharacterId, slot: u16) -> PlaceNewItem {
     }
 }
 
-fn open(dir: &Path, settings: &PostgresSettings) -> PersistenceService {
-    let mut service = PersistenceService::open_postgresql(dir, settings).unwrap();
+fn allow_players(service: &mut PersistenceService) {
+    for name in ["alice", "bob", "zed"] {
+        service.provision_dev_user(&login(name)).unwrap();
+    }
+}
+
+fn open(_dir: &Path, settings: &PostgresSettings) -> PersistenceService {
+    if let Err(err) = PersistenceService::bootstrap_postgresql(settings) {
+        assert!(err.to_string().contains("already bootstrapped"), "{err}");
+    }
+    let mut service = PersistenceService::open_postgresql(settings).unwrap();
     service.set_durable_content_rules(rules());
+    allow_players(&mut service);
     service
 }
 
@@ -114,7 +124,7 @@ fn revision_conflict_rolls_the_loser_back() {
         let mut first = open(dir, settings);
         let alice = login("alice");
         let entry = first.create_character(&alice, "Alice").unwrap();
-        let mut second = PersistenceService::open_postgresql(dir, settings).unwrap();
+        let mut second = PersistenceService::open_postgresql(settings).unwrap();
         second.set_durable_content_rules(rules());
         let winner = DurableCommand {
             key: "winner".into(),
@@ -124,6 +134,8 @@ fn revision_conflict_rolls_the_loser_back() {
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         };
         let mut loser = winner.clone();
         loser.key = "loser".into();
@@ -171,6 +183,8 @@ fn same_slot_conflict_rolls_back_the_whole_command() {
                     value: true,
                 }],
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::Conflict { .. }), "{err}");
@@ -213,6 +227,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         let item_id = minted.minted_item_ids[0];
@@ -229,6 +245,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         service
@@ -240,6 +258,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: vec![item_id],
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         drop(service);
@@ -260,6 +280,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert_ne!(again.minted_item_ids[0], item_id);
@@ -279,6 +301,8 @@ fn retired_ids_survive_reconnect_and_are_not_reused() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::Conflict { .. }), "{err}");
@@ -307,6 +331,8 @@ fn lost_reply_retry_returns_the_committed_result() {
                 character_id: entry.character_id,
                 ability_content_id: ContentId::from_raw(40_001),
             }],
+
+            reserved_uses: Vec::new(),
         };
         let first = service.commit_durable(&command).unwrap();
         let second = service.commit_durable(&command).unwrap();
@@ -327,93 +353,6 @@ fn lost_reply_retry_returns_the_committed_result() {
             postgres::count_table(settings, "item_instances").unwrap(),
             1
         );
-    });
-}
-
-#[test]
-#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
-fn invalid_import_preserves_source_and_writes_no_rows() {
-    with_db(|dir, settings| {
-        let identity = br#"{"schema_version":2,"next_character_id":2,"logins":{"alice":[{"character_id":1,"display_name":"Alice"}]}}"#;
-        std::fs::write(dir.join(IDENTITY_FILE_NAME), identity).unwrap();
-        let character = dir.join(crate::character_file_name(CharacterId::from_raw(1)));
-        let original = br#"{"schema_version":1,"character_id":1,"persistence_revision":4,"restore":{"map_authored":"map.map1","point_id":"default"},"items":[]}"#;
-        std::fs::write(&character, original).unwrap();
-        let err = match PersistenceService::open_postgresql(dir, settings) {
-            Ok(_) => panic!("corrupt import must fail closed"),
-            Err(err) => err,
-        };
-        assert!(
-            matches!(
-                err,
-                PersistError::Json { .. } | PersistError::Corrupt { .. }
-            ),
-            "{err}"
-        );
-        assert_eq!(
-            std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(),
-            identity
-        );
-        assert_eq!(std::fs::read(&character).unwrap(), original);
-        assert!(dir.join(postgres::DURABLE_WRITER_FILE).exists());
-        let err = match PersistenceService::open(dir) {
-            Ok(_) => panic!("a fenced directory must not accept the file writer"),
-            Err(err) => err,
-        };
-        assert!(matches!(err, PersistError::Migration { .. }), "{err}");
-        assert_eq!(postgres::count_table(settings, "dev_users").unwrap(), 0);
-        assert_eq!(postgres::count_table(settings, "characters").unwrap(), 0);
-    });
-}
-
-#[test]
-#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
-fn supported_v1_import_preserves_identity_and_invents_nothing() {
-    with_db(|dir, settings| {
-        let identity =
-            br#"{"schema_version":1,"next_character_id":8,"logins":{"zed":7,"alice":1}}"#;
-        std::fs::write(dir.join(IDENTITY_FILE_NAME), identity).unwrap();
-        let character = dir.join(crate::character_file_name(CharacterId::from_raw(7)));
-        let body = br#"{"schema_version":1,"character_id":7,"persistence_revision":4,"restore":{"map_authored":"map.map2","point_id":"gate","checkpoint_id":"cp"}}"#;
-        std::fs::write(&character, body).unwrap();
-        let mut service = open(dir, settings);
-        assert_eq!(
-            std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(),
-            identity
-        );
-        assert_eq!(std::fs::read(&character).unwrap(), body);
-        let zed = login("zed");
-        let alice = login("alice");
-        let loaded = service
-            .load_owned_character(&zed, CharacterId::from_raw(7))
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded.persistence_revision, 4);
-        assert_eq!(loaded.restore.map_authored, "map.map2");
-        assert_eq!(loaded.restore.point_id, "gate");
-        assert!(
-            service
-                .narrative(CharacterId::from_raw(7))
-                .unwrap()
-                .facts
-                .is_empty()
-        );
-        assert!(
-            service
-                .narrative(CharacterId::from_raw(7))
-                .unwrap()
-                .learned_abilities
-                .is_empty()
-        );
-        let alice_roster = service.roster(&alice).unwrap();
-        assert_eq!(alice_roster.len(), 1);
-        assert_eq!(alice_roster[0].character_id, CharacterId::from_raw(1));
-        assert!(service.item(ItemInstanceId::from_raw(1)).unwrap().is_none());
-        let err = match PersistenceService::open(dir) {
-            Ok(_) => panic!("file writer must stay closed after postgresql cutover"),
-            Err(err) => err,
-        };
-        assert!(matches!(err, PersistError::Migration { .. }), "{err}");
     });
 }
 
@@ -442,6 +381,8 @@ fn ownership_is_isolated_and_restore_does_not_erase_items() {
                     character_id: alice_entry.character_id,
                     ability_content_id: ContentId::from_raw(40_001),
                 }],
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert!(
@@ -465,6 +406,8 @@ fn ownership_is_isolated_and_restore_does_not_erase_items() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::Conflict { .. }), "{err}");
@@ -486,6 +429,8 @@ fn ownership_is_isolated_and_restore_does_not_erase_items() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let restored = service
@@ -537,6 +482,8 @@ fn representative_command_workload_is_measured_not_a_capacity_claim() {
                     retire: Vec::new(),
                     narrative: Vec::new(),
                     learned: Vec::new(),
+
+                    reserved_uses: Vec::new(),
                 })
                 .unwrap();
             revision += 1;
@@ -554,6 +501,8 @@ fn representative_command_workload_is_measured_not_a_capacity_claim() {
                     retire: Vec::new(),
                     narrative: Vec::new(),
                     learned: Vec::new(),
+
+                    reserved_uses: Vec::new(),
                 })
                 .unwrap();
             revision += 1;
@@ -566,6 +515,8 @@ fn representative_command_workload_is_measured_not_a_capacity_claim() {
                     retire: vec![item_id],
                     narrative: Vec::new(),
                     learned: Vec::new(),
+
+                    reserved_uses: Vec::new(),
                 })
                 .unwrap();
             assert_eq!(
@@ -599,6 +550,8 @@ fn moving_a_non_equippable_item_into_weapon_is_rejected() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         let item_id = placed.minted_item_ids[0];
@@ -619,6 +572,8 @@ fn moving_a_non_equippable_item_into_weapon_is_rejected() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::ContentRejected { .. }), "{err}");
@@ -642,56 +597,6 @@ fn moving_a_non_equippable_item_into_weapon_is_rejected() {
 
 #[test]
 #[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
-fn file_writer_is_fenced_before_import_commits() {
-    with_db(|dir, settings| {
-        let identity = br#"{"schema_version":1,"next_character_id":8,"logins":{"zed":7}}"#;
-        std::fs::write(dir.join(IDENTITY_FILE_NAME), identity).unwrap();
-        let character = dir.join(crate::character_file_name(CharacterId::from_raw(7)));
-        let body = br#"{"schema_version":1,"character_id":7,"persistence_revision":4,"restore":{"map_authored":"map.map2","point_id":"gate"}}"#;
-        std::fs::write(&character, body).unwrap();
-        postgres::fence_file_writer(dir).unwrap();
-        let err = match PersistenceService::open(dir) {
-            Ok(_) => panic!("file writer must refuse once the cutover fence exists"),
-            Err(err) => err,
-        };
-        assert!(matches!(err, PersistError::Migration { .. }), "{err}");
-        let mut service = open(dir, settings);
-        let loaded = service
-            .load_owned_character(&login("zed"), CharacterId::from_raw(7))
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded.restore.point_id, "gate");
-        std::fs::write(&character, b"{\"schema_version\":1}").unwrap();
-        let again = PersistenceService::open_postgresql(dir, settings).unwrap();
-        drop(again);
-        let loaded = service
-            .load_owned_character(&login("zed"), CharacterId::from_raw(7))
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded.restore.point_id, "gate");
-        assert_eq!(loaded.persistence_revision, 4);
-    });
-}
-
-#[test]
-#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
-fn marker_write_failure_does_not_commit_import() {
-    with_db(|dir, settings| {
-        postgres::fail_next_marker_write();
-        let err = match PersistenceService::open_postgresql(dir, settings) {
-            Ok(_) => panic!("marker failure must not open a writer"),
-            Err(err) => err,
-        };
-        assert!(matches!(err, PersistError::Io { .. }), "{err}");
-        assert!(!dir.join(postgres::DURABLE_WRITER_FILE).exists());
-        assert_eq!(postgres::count_table(settings, "characters").unwrap(), 0);
-        let mut files = PersistenceService::open(dir).unwrap();
-        files.create_character(&login("alice"), "Alice").unwrap();
-    });
-}
-
-#[test]
-#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
 fn gameplay_save_at_the_command_revision_keeps_its_restore() {
     with_db(|dir, settings| {
         let mut service = open(dir, settings);
@@ -706,6 +611,8 @@ fn gameplay_save_at_the_command_revision_keeps_its_restore() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         // Gameplay loads revision 1, then detach and request_save both emit
@@ -720,6 +627,8 @@ fn gameplay_save_at_the_command_revision_keeps_its_restore() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let loaded = service
@@ -738,6 +647,8 @@ fn gameplay_save_at_the_command_revision_keeps_its_restore() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let loaded = service
@@ -767,6 +678,8 @@ fn lost_commit_reply_and_later_rule_change_return_the_stored_result() {
                 character_id: entry.character_id,
                 ability_content_id: ContentId::from_raw(40_001),
             }],
+
+            reserved_uses: Vec::new(),
         };
         service.hide_next_commit_reply_for_test();
         let hidden = service.commit_durable(&command).unwrap();
@@ -796,6 +709,8 @@ fn lost_commit_reply_and_later_rule_change_return_the_stored_result() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap_err();
         assert!(matches!(err, PersistError::ContentRejected { .. }), "{err}");
@@ -818,6 +733,8 @@ fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         let left = first.minted_item_ids[0];
@@ -846,6 +763,8 @@ fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert_eq!(
@@ -871,6 +790,8 @@ fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
                 retire: vec![right],
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert_eq!(
@@ -894,11 +815,30 @@ fn retire_and_reward_can_share_a_slot_and_two_items_can_swap() {
 #[test]
 #[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
 fn distinct_runtime_role_can_commit_and_cannot_create_tables() {
-    with_db(|dir, settings| {
+    with_db(|_dir, settings| {
         let roles = postgres::provision_ephemeral_roles(settings).expect("distinct test roles");
-        let mut service = PersistenceService::open_postgresql(dir, &roles.runtime).unwrap();
+        PersistenceService::bootstrap_postgresql(&roles.runtime).expect("migration-role bootstrap");
+        let migration = PostgresSettings {
+            url: roles.runtime.migration_url.clone().expect("migration url"),
+            migration_url: None,
+            schema: roles.runtime.schema.clone(),
+            deployment_id: roles.runtime.deployment_id.clone(),
+        };
+        {
+            let mut admin = PersistenceService::open_postgresql(&migration).expect("migrator");
+            assert!(admin.provision_dev_user(&login("alice")).unwrap());
+        }
+        let mut service = PersistenceService::open_postgresql(&roles.runtime).unwrap();
         service.set_durable_content_rules(rules());
         let alice = login("alice");
+        let denied = service.provision_dev_user(&login("bob")).unwrap_err();
+        assert!(
+            denied
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("permission denied"),
+            "{denied}"
+        );
         let entry = service.create_character(&alice, "Alice").unwrap();
         let committed = service
             .commit_durable(&DurableCommand {
@@ -913,6 +853,8 @@ fn distinct_runtime_role_can_commit_and_cannot_create_tables() {
                     value: true,
                 }],
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         assert_eq!(committed.minted_item_ids.len(), 1);
@@ -922,59 +864,36 @@ fn distinct_runtime_role_can_commit_and_cannot_create_tables() {
 
 #[test]
 #[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
-fn already_open_file_service_cannot_change_source_files_after_cutover() {
-    with_db(|dir, settings| {
-        let mut files = PersistenceService::open(dir).unwrap();
-        let alice = login("alice");
-        let entry = files.create_character(&alice, "Alice").unwrap();
-        files
-            .save_snapshot(crate::PersistentCharacterSnapshot {
-                character_id: entry.character_id,
-                persistence_revision: 1,
-                restore: RestoreIntent {
-                    map_authored: "map.map1".into(),
-                    point_id: "default".into(),
-                    checkpoint_id: None,
-                },
-                instance_exit: None,
-            })
-            .unwrap();
-        let identity = std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap();
-        let character_path = dir.join(crate::character_file_name(entry.character_id));
-        let character = std::fs::read(&character_path).unwrap();
-        let mut durable = open(dir, settings);
-        let save = files.save_snapshot(crate::PersistentCharacterSnapshot {
-            character_id: entry.character_id,
-            persistence_revision: 2,
-            restore: RestoreIntent {
-                map_authored: "map.map2".into(),
-                point_id: "after-cutover".into(),
-                checkpoint_id: None,
-            },
-            instance_exit: None,
-        });
+fn fresh_database_admits_only_provisioned_users() {
+    with_db(|_dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        let probe = login("dev.probe");
+        assert!(!service.user_registered(&probe).unwrap());
+        let err = service.provision_dev_user(&probe).unwrap_err();
+        assert!(err.to_string().contains("not a player account"), "{err}");
+        let created = service.create_character(&probe, "Probe").unwrap_err();
         assert!(
-            matches!(save, Err(PersistError::Migration { .. })),
-            "{save:?}"
+            matches!(
+                created,
+                PersistError::CreateRejected(crate::error::CreateCharacterRejection::Unregistered)
+            ),
+            "{created}"
         );
-        let created = files.create_character(&login("bob"), "Bob");
+        assert_eq!(postgres::count_table(settings, "dev_users").unwrap(), 0);
+        let player = login("dev.player");
+        assert!(!service.user_registered(&player).unwrap());
+        let rejected = service.create_character(&player, "Player").unwrap_err();
         assert!(
-            matches!(created, Err(PersistError::Migration { .. })),
-            "{created:?}"
+            matches!(
+                rejected,
+                PersistError::CreateRejected(crate::error::CreateCharacterRejection::Unregistered)
+            ),
+            "{rejected}"
         );
-        assert_eq!(
-            std::fs::read(dir.join(IDENTITY_FILE_NAME)).unwrap(),
-            identity
-        );
-        assert_eq!(std::fs::read(&character_path).unwrap(), character);
-        let loaded = durable
-            .load_owned_character(&alice, entry.character_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded.restore.point_id, "default");
-        assert_eq!(loaded.persistence_revision, 1);
-        assert!(durable.roster(&login("bob")).unwrap().is_empty());
-        assert_eq!(durable.roster(&alice).unwrap().len(), 1);
+        assert!(service.provision_dev_user(&player).unwrap());
+        assert!(service.create_character(&player, "Player").is_ok());
+        assert_eq!(postgres::count_table(settings, "dev_users").unwrap(), 1);
     });
 }
 
@@ -994,6 +913,8 @@ fn later_equal_revision_restore_does_not_replace_the_recorded_one() {
                 retire: Vec::new(),
                 narrative: Vec::new(),
                 learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         service
@@ -1006,6 +927,8 @@ fn later_equal_revision_restore_does_not_replace_the_recorded_one() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         service
@@ -1018,6 +941,8 @@ fn later_equal_revision_restore_does_not_replace_the_recorded_one() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let loaded = service
@@ -1036,6 +961,8 @@ fn later_equal_revision_restore_does_not_replace_the_recorded_one() {
                     checkpoint_id: None,
                 },
                 instance_exit: None,
+                current_health_milli: None,
+                health_revision: 0,
             })
             .unwrap();
         let loaded = service
@@ -1062,6 +989,8 @@ fn unusable_connection_at_the_commit_reply_stays_unknown_until_retry() {
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         };
         // Scope: COMMIT has already succeeded. The hook then closes that
         // connection before the reply is read. This does not fail during COMMIT.
@@ -1072,17 +1001,10 @@ fn unusable_connection_at_the_commit_reply_stays_unknown_until_retry() {
         let text = err.to_string();
         assert!(text.contains("commit outcome unknown"), "{text}");
         assert!(!text.contains("not committed"), "{text}");
-        let again = service.commit_durable(&command).unwrap_err();
-        let again_text = again.to_string();
-        assert!(
-            again_text.contains("commit outcome unknown"),
-            "{again_text}"
-        );
-        let mut recovered = open(dir, settings);
-        let result = recovered.commit_durable(&command).unwrap();
+        let result = service.commit_durable(&command).unwrap();
         assert_eq!(result.revisions, vec![(entry.character_id, 2)]);
         assert_eq!(result.minted_item_ids.len(), 1);
-        let loaded = recovered
+        let loaded = service
             .load_owned_character(&alice, entry.character_id)
             .unwrap()
             .unwrap();
@@ -1095,8 +1017,82 @@ fn unusable_connection_at_the_commit_reply_stays_unknown_until_retry() {
             postgres::count_table(settings, "durable_commands").unwrap(),
             1
         );
-        let repeated = recovered.commit_durable(&command).unwrap();
+        let repeated = service.commit_durable(&command).unwrap();
         assert_eq!(repeated, result);
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn same_worker_reconnects_after_a_lost_commit_reply() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let command = DurableCommand {
+            key: "same-worker".into(),
+            expected_revisions: vec![(entry.character_id, 1)],
+            place_new: vec![place(entry.character_id, 0)],
+            moves: Vec::new(),
+            retire: Vec::new(),
+            narrative: Vec::new(),
+            learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
+        };
+        service.discard_connection_after_next_commit_for_test();
+        let lost = service.commit_durable(&command).unwrap_err();
+        let lost_text = lost.to_string();
+        assert!(lost_text.contains("commit outcome unknown"), "{lost_text}");
+        assert!(!lost_text.contains("not committed"), "{lost_text}");
+        service.fail_next_reconnects_for_test(1);
+        let blocked = service.commit_durable(&command).unwrap_err();
+        let blocked_text = blocked.to_string();
+        assert!(
+            blocked_text.contains("commit outcome unknown"),
+            "a committed command was rejected as a definite failure: {blocked_text}"
+        );
+        assert!(
+            !matches!(blocked, PersistError::Conflict { .. }),
+            "{blocked_text}"
+        );
+        let result = service
+            .commit_durable(&command)
+            .expect("the same worker must reconnect and return the committed result");
+        assert_eq!(result.revisions, vec![(entry.character_id, 2)]);
+        assert_eq!(result.minted_item_ids.len(), 1);
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+        assert_eq!(
+            postgres::count_table(settings, "durable_commands").unwrap(),
+            1
+        );
+        let repeated = service.commit_durable(&command).unwrap();
+        assert_eq!(repeated, result);
+        let bogus = LeaseAuthority {
+            login: login("alice"),
+            character_id: entry.character_id,
+            generation: 99,
+        };
+        let leased = service
+            .commit_durable_leased(&command, Some(&bogus))
+            .expect("a stored command is not re-rejected by a later lease");
+        assert_eq!(leased, result);
+        let mut changed = command.clone();
+        changed.place_new[0].location = CharacterItemLocation::Inventory { slot: 4 };
+        let mismatch = service.commit_durable(&changed).unwrap_err();
+        assert!(
+            mismatch
+                .to_string()
+                .contains("reused for a different command"),
+            "{mismatch}"
+        );
         assert_eq!(
             postgres::count_table(settings, "item_instances").unwrap(),
             1
@@ -1123,6 +1119,7 @@ fn mint(id: CharacterId, revision: u64, key: &str) -> DurableCommand {
         retire: Vec::new(),
         narrative: Vec::new(),
         learned: Vec::new(),
+        reserved_uses: Vec::new(),
     }
 }
 
@@ -1302,6 +1299,8 @@ fn admit_restores_owned_items_facts_and_grants_without_runtime_ids() {
                     character_id: id,
                     ability_content_id: ContentId::from_raw(40_001),
                 }],
+
+                reserved_uses: Vec::new(),
             })
             .unwrap();
         let (lease, restore) = granted(service.admit(&alice, id).unwrap());
@@ -1413,6 +1412,8 @@ fn drop_item(
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         })
         .unwrap();
 }
@@ -1499,6 +1500,8 @@ fn ground_retirement_is_scoped_idempotent_and_does_not_reuse_ids() {
             retire: Vec::new(),
             narrative: Vec::new(),
             learned: Vec::new(),
+
+            reserved_uses: Vec::new(),
         });
         assert!(
             matches!(stale, Err(PersistError::Conflict { .. })),
@@ -1810,5 +1813,738 @@ fn randomized_lease_steps_keep_one_authority() {
                 }
             }
         }
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn expired_channel_cannot_retire_live_ground() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alpha").unwrap();
+        let id = entry.character_id;
+        let ChannelClaim::Claimed { .. } = service.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let item = service
+            .commit_durable(&mint(id, 1, "ground"))
+            .unwrap()
+            .minted_item_ids[0];
+        drop_item(&mut service, id, item, 2);
+        service.expire_channel_for_test(1).unwrap();
+        let err = service
+            .commit_durable(&DurableCommand {
+                key: format!("retire-{}", item.raw()),
+                expected_revisions: Vec::new(),
+                place_new: Vec::new(),
+                moves: Vec::new(),
+                retire: vec![item],
+                narrative: Vec::new(),
+                learned: Vec::new(),
+
+                reserved_uses: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, PersistError::Conflict { .. }));
+        assert_eq!(
+            service.item(item).unwrap().unwrap().owner,
+            ItemOwner::Ground
+        );
+    });
+}
+
+fn reserved_inventory(
+    item: ItemInstanceId,
+    owner: CharacterId,
+    revision: u64,
+    key: &str,
+    slot: u16,
+) -> DurableCommand {
+    DurableCommand {
+        key: key.into(),
+        expected_revisions: vec![(owner, revision)],
+        place_new: Vec::new(),
+        moves: Vec::new(),
+        retire: Vec::new(),
+        narrative: Vec::new(),
+        learned: Vec::new(),
+        reserved_uses: vec![ReservedItemUse {
+            item_instance_id: item,
+            definition_content_id: ContentId::from_raw(30_011),
+            quantity: 1,
+            outcome: ReservedItemOutcome::Inventory { owner, slot },
+        }],
+    }
+}
+
+fn reserved_retired(item: ItemInstanceId) -> DurableCommand {
+    DurableCommand {
+        key: format!("retire-{}", item.raw()),
+        expected_revisions: Vec::new(),
+        place_new: Vec::new(),
+        moves: Vec::new(),
+        retire: Vec::new(),
+        narrative: Vec::new(),
+        learned: Vec::new(),
+        reserved_uses: vec![ReservedItemUse {
+            item_instance_id: item,
+            definition_content_id: ContentId::from_raw(30_011),
+            quantity: 1,
+            outcome: ReservedItemOutcome::Retired,
+        }],
+    }
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn reserved_ids_stay_disjoint_across_connections_and_restarts() {
+    with_db(|dir, settings| {
+        let mut first = open(dir, settings);
+        let mut second = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = first.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let ChannelClaim::Claimed { .. } = second.claim_channel(2, None).unwrap() else {
+            panic!("channel 2 should be claimed");
+        };
+        let left = first.reserve_item_ids(4).unwrap();
+        let right = second.reserve_item_ids(4).unwrap();
+        assert_eq!(left.len(), 4);
+        assert_eq!(right.len(), 4);
+        assert!(left.iter().all(|id| !right.contains(id)));
+        assert!(
+            left.windows(2)
+                .all(|pair| pair[0].raw() + 1 == pair[1].raw())
+        );
+        let alice = login("alice");
+        let entry = first.create_character(&alice, "Alice").unwrap();
+        let minted = first
+            .commit_durable(&mint(entry.character_id, 1, "after-reserve"))
+            .unwrap()
+            .minted_item_ids[0];
+        assert!(!left.contains(&minted) && !right.contains(&minted));
+        drop(first);
+        drop(second);
+        let mut restarted = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = restarted.claim_channel(3, None).unwrap() else {
+            panic!("channel 3 should be claimed while 1 and 2 stay live");
+        };
+        let again = restarted.reserve_item_ids(4).unwrap();
+        assert!(
+            again
+                .iter()
+                .all(|id| !left.contains(id) && !right.contains(id))
+        );
+        assert!(!again.contains(&minted));
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn reserved_pickup_keeps_its_id_against_retry_expiry_and_reuse() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = service.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let ids = service.reserve_item_ids(3).unwrap();
+        let pickup = reserved_inventory(ids[0], entry.character_id, 1, "pickup-visible", 0);
+        let first = service.commit_durable(&pickup).unwrap();
+        assert_eq!(first.minted_item_ids, vec![ids[0]]);
+        let retry = service.commit_durable(&pickup).unwrap();
+        assert_eq!(retry, first);
+        assert_eq!(
+            service.item(ids[0]).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+        let competing = reserved_inventory(ids[0], entry.character_id, 2, "pickup-competitor", 1);
+        let err = service.commit_durable(&competing).unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+        let err = service
+            .commit_durable(&DurableCommand {
+                key: format!("retire-{}", ids[0].raw()),
+                expected_revisions: Vec::new(),
+                place_new: Vec::new(),
+                moves: Vec::new(),
+                retire: vec![ids[0]],
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, PersistError::Conflict { .. }), "{err}");
+        assert!(matches!(
+            service.item(ids[0]).unwrap().unwrap().owner,
+            ItemOwner::Character { .. }
+        ));
+
+        let retired = service.commit_durable(&reserved_retired(ids[1])).unwrap();
+        assert_eq!(retired.minted_item_ids, vec![ids[1]]);
+        assert_eq!(
+            service.item(ids[1]).unwrap().unwrap().owner,
+            ItemOwner::Retired
+        );
+        let late = reserved_inventory(ids[1], entry.character_id, 2, "pickup-retired", 1);
+        let err = service.commit_durable(&late).unwrap_err();
+        assert!(err.to_string().contains("retired"), "{err}");
+
+        let unreserved = ItemInstanceId::from_raw(9_000_000);
+        let err = service
+            .commit_durable(&reserved_inventory(
+                unreserved,
+                entry.character_id,
+                2,
+                "pickup-unreserved",
+                1,
+            ))
+            .unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(service.item(unreserved).unwrap().is_none());
+        assert!(service.item(ids[2]).unwrap().is_none());
+
+        drop(service);
+        let mut restarted = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = restarted.claim_channel(2, None).unwrap() else {
+            panic!("channel 2 should be claimed while channel 1 stays live");
+        };
+        let next = restarted.reserve_item_ids(3).unwrap();
+        assert!(next.iter().all(|id| !ids.contains(id)));
+        let err = restarted
+            .commit_durable(&reserved_inventory(
+                ids[2],
+                entry.character_id,
+                2,
+                "spend-wasted-after-restart",
+                1,
+            ))
+            .unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(restarted.item(ids[2]).unwrap().is_none());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn another_channels_unused_id_cannot_be_inserted() {
+    with_db(|dir, settings| {
+        let mut holder = open(dir, settings);
+        let mut other = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = holder.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let ChannelClaim::Claimed { .. } = other.claim_channel(2, None).unwrap() else {
+            panic!("channel 2 should be claimed");
+        };
+        let alice = login("alice");
+        let entry = holder.create_character(&alice, "Alice").unwrap();
+        let issued = holder.reserve_item_ids(4).unwrap();
+        let stolen = issued[1];
+        let err = other.commit_durable(&reserved_inventory(
+            stolen,
+            entry.character_id,
+            1,
+            "steal-other-range",
+            0,
+        ));
+        assert!(
+            err.is_err(),
+            "channel 2 inserted unused id {} from channel 1's range",
+            stolen.raw()
+        );
+        let err = err.unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(other.item(stolen).unwrap().is_none());
+        holder
+            .commit_durable(&reserved_inventory(
+                issued[0],
+                entry.character_id,
+                1,
+                "spend-own-range",
+                0,
+            ))
+            .unwrap();
+        assert!(holder.item(issued[0]).unwrap().is_some());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn unissued_gap_below_the_counter_cannot_be_inserted() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let ChannelClaim::Claimed { .. } = service.claim_channel(1, None).unwrap() else {
+            panic!("channel 1 should be claimed");
+        };
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        service.leave_unissued_item_gap_for_test(40).unwrap();
+        let gap = ItemInstanceId::from_raw(20);
+        let err = service.commit_durable(&reserved_inventory(
+            gap,
+            entry.character_id,
+            1,
+            "insert-unissued-gap",
+            0,
+        ));
+        assert!(
+            err.is_err(),
+            "inserted unissued id {} while the counter was already past it",
+            gap.raw()
+        );
+        let err = err.unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(service.item(gap).unwrap().is_none());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn previous_channel_generation_cannot_spend_its_unused_ids() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let ChannelClaim::Claimed { generation, .. } = service.claim_channel(1, None).unwrap()
+        else {
+            panic!("channel 1 should be claimed");
+        };
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let issued = service.reserve_item_ids(4).unwrap();
+        service.expire_channel_for_test(1).unwrap();
+        let ChannelClaim::Claimed {
+            generation: renewed,
+            ..
+        } = service.claim_channel(1, None).unwrap()
+        else {
+            panic!("expired channel 1 should be claimable");
+        };
+        assert!(renewed > generation);
+        let err = service.commit_durable(&reserved_inventory(
+            issued[0],
+            entry.character_id,
+            1,
+            "spend-previous-generation",
+            0,
+        ));
+        assert!(
+            err.is_err(),
+            "generation {renewed} inserted id {} issued to generation {generation}",
+            issued[0].raw()
+        );
+        let err = err.unwrap_err();
+        assert!(err.to_string().contains("not reserved"), "{err}");
+        assert!(service.item(issued[0]).unwrap().is_none());
+        let fresh = service.reserve_item_ids(2).unwrap();
+        assert!(fresh.iter().all(|id| !issued.contains(id)));
+        service
+            .commit_durable(&reserved_inventory(
+                fresh[0],
+                entry.character_id,
+                1,
+                "spend-current-generation",
+                0,
+            ))
+            .unwrap();
+        assert!(service.item(fresh[0]).unwrap().is_some());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn fresh_bootstrap_with_legacy_files_does_not_import_or_write() {
+    with_db(|dir, settings| {
+        let identity =
+            br#"{"schema_version":2,"next_character_id":8,"logins":{"zed":[{"character_id":7,"display_name":"Zed"}]}}"#;
+        let character = dir.join("char_0000000000000007.json");
+        let body = br#"{"schema_version":1,"character_id":7,"persistence_revision":4,"restore":{"map_authored":"map.map2","point_id":"gate"}}"#;
+        std::fs::write(dir.join("identity.json"), identity).unwrap();
+        std::fs::write(&character, body).unwrap();
+        let mut names_before = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names_before.sort();
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        assert_eq!(std::fs::read(dir.join("identity.json")).unwrap(), identity);
+        assert_eq!(std::fs::read(&character).unwrap(), body);
+        let mut names_after = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names_after.sort();
+        assert_eq!(names_before, names_after);
+        assert!(
+            !dir.join("durable_writer.json").exists(),
+            "fresh bootstrap wrote durable_writer.json"
+        );
+        assert!(
+            !service.user_registered(&login("zed")).unwrap(),
+            "fresh bootstrap imported a legacy character"
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn restart_preserves_ownership_without_a_local_marker() {
+    with_db(|dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        allow_players(&mut service);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let committed = service
+            .commit_durable(&DurableCommand {
+                key: "owned".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap();
+        let item = committed.minted_item_ids[0];
+        drop(service);
+        assert!(!dir.join("durable_writer.json").exists());
+        let mut restarted = PersistenceService::open_postgresql(settings).unwrap();
+        restarted.set_durable_content_rules(rules());
+        assert!(!dir.join("durable_writer.json").exists());
+        assert_eq!(
+            restarted.roster(&alice).unwrap()[0].character_id,
+            entry.character_id
+        );
+        assert_eq!(
+            restarted.item(item).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn duplicate_bootstrap_cannot_erase_progress() {
+    with_db(|_dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        allow_players(&mut service);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let committed = service
+            .commit_durable(&DurableCommand {
+                key: "keep".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap();
+        let item = committed.minted_item_ids[0];
+        drop(service);
+        let err = PersistenceService::bootstrap_postgresql(settings).unwrap_err();
+        assert!(err.to_string().contains("already bootstrapped"), "{err}");
+        let mut again = PersistenceService::open_postgresql(settings).unwrap();
+        again.set_durable_content_rules(rules());
+        assert_eq!(
+            again.roster(&alice).unwrap()[0].character_id,
+            entry.character_id
+        );
+        assert_eq!(
+            again.item(item).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn wrong_database_identity_fails_closed() {
+    with_db(|_dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        allow_players(&mut service);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        drop(service);
+        let wrong_id = settings
+            .clone()
+            .with_deployment_id("other-world".into())
+            .unwrap();
+        let err = match PersistenceService::open_postgresql(&wrong_id) {
+            Ok(_) => panic!("wrong deployment identity opened"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("does not match"), "{err}");
+        let mut wrong_schema = settings.clone();
+        wrong_schema.schema = format!("{}_missing", settings.schema);
+        let err = match PersistenceService::open_postgresql(&wrong_schema) {
+            Ok(_) => panic!("missing schema opened"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("not bootstrapped"), "{err}");
+        let mut again = PersistenceService::open_postgresql(settings).unwrap();
+        assert_eq!(
+            again.roster(&alice).unwrap()[0].character_id,
+            entry.character_id
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn restored_database_starts_on_another_host_without_a_local_marker() {
+    with_db(|_dir, settings| {
+        PersistenceService::bootstrap_postgresql(settings).unwrap();
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        service.set_durable_content_rules(rules());
+        allow_players(&mut service);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        let committed = service
+            .commit_durable(&DurableCommand {
+                key: "moved".into(),
+                expected_revisions: vec![(entry.character_id, 1)],
+                place_new: vec![place(entry.character_id, 0)],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap();
+        let item = committed.minted_item_ids[0];
+        drop(service);
+        let other_host = unique_dir();
+        assert!(!other_host.join("durable_writer.json").exists());
+        let mut restored = PersistenceService::open_postgresql(settings).unwrap();
+        restored.set_durable_content_rules(rules());
+        assert!(!other_host.join("durable_writer.json").exists());
+        assert_eq!(
+            restored.roster(&alice).unwrap()[0].character_id,
+            entry.character_id
+        );
+        assert_eq!(
+            restored.item(item).unwrap().unwrap().owner,
+            ItemOwner::Character {
+                character_id: entry.character_id,
+                location: CharacterItemLocation::Inventory { slot: 0 },
+            }
+        );
+        let _ = std::fs::remove_dir_all(other_host);
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn current_health_migration_keeps_existing_rows() {
+    with_db(|_dir, settings| {
+        let name = postgres::database_name(&settings.url).unwrap();
+        assert!(
+            !name.eq_ignore_ascii_case("purgatory_dev"),
+            "refusing Purgatory_dev"
+        );
+        let mut client = postgres::install_pre_health_schema(settings).unwrap();
+        postgres::bootstrap_empty(&mut client, &settings.deployment_id).unwrap();
+        let character_id = 1u64.to_be_bytes();
+        let item_id = 1u64.to_be_bytes();
+        client
+            .execute("INSERT INTO dev_users (login) VALUES ($1)", &[&"alice"])
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO characters (
+                    character_id, owner_login, display_name, name_key, roster_position,
+                    persistence_revision, restore_revision, restore_map_authored, restore_point_id,
+                    restore_checkpoint_id, instance_exit_reason
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, NULL, NULL)",
+                &[
+                    &character_id.as_slice() as &(dyn ::postgres::types::ToSql + Sync),
+                    &"alice",
+                    &"Mira",
+                    &"mira",
+                    &0i32,
+                    &1i64,
+                    &"map.map2",
+                    &"default",
+                ],
+            )
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO item_instances (
+                    item_instance_id, definition_content_id, quantity, state,
+                    owner_character_id, location_kind, inventory_slot, equipment_slot
+                 ) VALUES ($1, $2, $3, 'live', $4, 'equipped', NULL, 'weapon')",
+                &[
+                    &item_id.as_slice() as &(dyn ::postgres::types::ToSql + Sync),
+                    &30_001i32,
+                    &1i32,
+                    &character_id.as_slice(),
+                ],
+            )
+            .unwrap();
+        let users_before = postgres::count_table(settings, "dev_users").unwrap();
+        let characters_before = postgres::count_table(settings, "characters").unwrap();
+        let items_before = postgres::count_table(settings, "item_instances").unwrap();
+        assert_eq!((users_before, characters_before, items_before), (1, 1, 1));
+        let startup = postgres::require_exact_migrations(&mut client).unwrap_err();
+        assert!(
+            startup
+                .to_string()
+                .contains("unsupported postgresql migration history"),
+            "{startup}"
+        );
+
+        postgres::migrate(&mut client).unwrap();
+        postgres::require_exact_migrations(&mut client).unwrap();
+        assert_eq!(postgres::count_table(settings, "dev_users").unwrap(), 1);
+        assert_eq!(postgres::count_table(settings, "characters").unwrap(), 1);
+        assert_eq!(
+            postgres::count_table(settings, "item_instances").unwrap(),
+            1
+        );
+        let unchanged: i64 = client
+            .query_one(
+                "SELECT count(*)::bigint FROM characters
+                 WHERE current_health IS NULL AND health_revision = 0
+                   AND restore_map_authored = 'map.map2' AND restore_point_id = 'default'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(unchanged, 1);
+        let equipped: i64 = client
+            .query_one(
+                "SELECT count(*)::bigint FROM item_instances
+                 WHERE state = 'live' AND location_kind = 'equipped' AND equipment_slot = 'weapon'",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(equipped, 1);
+
+        let mut service = PersistenceService::open_postgresql(settings).unwrap();
+        let loaded = service
+            .load_owned_character(&login("alice"), CharacterId::from_raw(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.current_health_milli, None);
+        assert_eq!(loaded.health_revision, 0);
+        assert_eq!(loaded.restore.map_authored, "map.map2");
+        assert!(service.item(ItemInstanceId::from_raw(1)).unwrap().is_some());
+    });
+}
+
+#[test]
+#[ignore = "requires PURGATORY_TEST_DATABASE_URL and does not use Purgatory_dev"]
+fn older_map_or_equipment_write_does_not_raise_stored_health() {
+    with_db(|dir, settings| {
+        let mut service = open(dir, settings);
+        let alice = login("alice");
+        let entry = service.create_character(&alice, "Alice").unwrap();
+        service
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 2,
+                restore: RestoreIntent {
+                    map_authored: "map.map1".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+                current_health_milli: Some(15_000),
+                health_revision: 2,
+            })
+            .unwrap();
+        service
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 3,
+                restore: RestoreIntent {
+                    map_authored: "map.map2".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+                current_health_milli: Some(20_000),
+                health_revision: 1,
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.map_authored, "map.map2");
+        assert_eq!(loaded.current_health_milli, Some(15_000));
+        assert_eq!(loaded.health_revision, 2);
+
+        service
+            .commit_durable(&DurableCommand {
+                key: "equip-after-health".into(),
+                expected_revisions: vec![(entry.character_id, 3)],
+                place_new: vec![PlaceNewItem {
+                    owner: entry.character_id,
+                    definition_content_id: ContentId::from_raw(30_001),
+                    quantity: 1,
+                    location: CharacterItemLocation::Equipped {
+                        slot: DurableEquipmentSlot::Weapon,
+                    },
+                }],
+                moves: Vec::new(),
+                retire: Vec::new(),
+                narrative: Vec::new(),
+                learned: Vec::new(),
+                reserved_uses: Vec::new(),
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.persistence_revision, 4);
+        assert_eq!(loaded.current_health_milli, Some(15_000));
+        assert_eq!(loaded.health_revision, 2);
+
+        service
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 2,
+                restore: RestoreIntent {
+                    map_authored: "map.map1".into(),
+                    point_id: "default".into(),
+                    checkpoint_id: None,
+                },
+                instance_exit: None,
+                current_health_milli: Some(4_000),
+                health_revision: 3,
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&alice, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.restore.map_authored, "map.map2");
+        assert_eq!(loaded.current_health_milli, Some(4_000));
+        assert_eq!(loaded.health_revision, 3);
     });
 }

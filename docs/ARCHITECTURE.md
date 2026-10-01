@@ -638,6 +638,14 @@ server
 
 common
   ↑
+persistence
+  ↑
+dev_runtime
+  ↑
+dev_hub
+
+common
+  ↑
 dev_runtime
   ↑
 dev_hub
@@ -659,11 +667,11 @@ animation_lab   (eframe; Hub-launched; ADR-0058)
 
 `simulation` must not depend on `winit`, `wgpu`, renderer code, UI, or OS window APIs.
 
-`purgatory-persistence` depends on `purgatory-common`, serde, and the synchronous `postgres` client (ADR-0070). Simulation does not depend on it. JSON, filesystem IO, and database sessions run on the persistence worker, not the 30 Hz simulation thread. The live data root is a per-user application-data directory (Windows `%LOCALAPPDATA%\Purgatory\`), not the source tree. `PURGATORY_DATA_DIR` overrides it. `PURGATORY_DATABASE_URL` selects PostgreSQL as the only durable writer; until that URL is set, the file roster remains the pre-cutover writer. Channels do not get separate databases.
+`purgatory-persistence` depends on `purgatory-common`, serde, and the synchronous `postgres` client (ADR-0070, ADR-0073). Simulation does not depend on it. Database sessions, including the initial connection, run on the persistence worker, not the 30 Hz simulation thread and not the Tokio accept runtime. Server startup waits for that worker's initialization result before it reports that it is listening. It connects only to an existing initialized database. It does not create, reset, migrate, or fall back to files. Developer Hub administers the pinned local database `Purgatory_dev` through a separate maintenance connection. Ordinary Check and server startup use the runtime role from `config/local/database.env` and do not require the administrator password. A development username must already exist in `dev_users` before Hello is admitted. Channels share one database. JSON game content, art, and maps are not character persistence.
 
 `server` must not depend on `winit`, `wgpu`, `egui`, or the client crate.
 
-`purgatory-dev-runtime` must not depend on `purgatory-client`, `purgatory-simulation`, Quinn, egui, winit, or wgpu. It may depend on `purgatory-common` for metrics decode. It spawns `purgatory-load --probe`; it does not open a game protocol session itself.
+`purgatory-dev-runtime` must not depend on `purgatory-client`, `purgatory-simulation`, Quinn, egui, winit, or wgpu. It may depend on `purgatory-common` for metrics decode and on `purgatory-persistence` to read `config/local/database.env`. That read does not open a PostgreSQL connection. The Hub passes the runtime role to the game server and to Check, adds the migration role for Add User, and adds the administrator password only for Create and Reset. It spawns `purgatory-load --probe`; it does not open a game protocol session itself.
 
 The existing `Graphic/` directory stays in place. The Connection Frontend logo is `Graphic/frontend/LOGO.png`; Frontend Scene Runtime R1 also loads the canonical guide through the centralized Graphic loader (see above). The game client compile-embeds the four Headwear Side proof cells and registers them through the shared client asset runtime; that is not a Graphic/ scan. Do not modify files in `Graphic/` as part of networking work.
 

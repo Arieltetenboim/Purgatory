@@ -38,7 +38,7 @@ jobs:
         run: ./scripts/check.sh
 
   postgres_12a:
-    name: PostgreSQL 12A and 12B tests
+    name: PostgreSQL 12A, 12B, and 12C tests
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -80,3 +80,9 @@ jobs:
 
       - name: Run PostgreSQL 12A and 12B integration tests
         run: cargo test -p purgatory-persistence --lib postgres_tests -- --ignored --nocapture --test-threads=1
+
+      - name: Run PostgreSQL 12C gameplay command tests
+        run: cargo test -p purgatory-server --bin purgatory-server postgres_12c -- --ignored --nocapture --test-threads=1
+
+      - name: Run PostgreSQL server process startup tests
+        run: cargo test -p purgatory-server --test postgres_startup -- --ignored --nocapture --test-threads=1

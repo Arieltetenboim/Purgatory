@@ -7,13 +7,13 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 ## Current
 
 - **ERA II — Combat & First Playable Loop**
-- **Phase 12 — Character Continuity: 12A accepted; 12B lifecycle accepted; 12C not started**
-- **Root `PHASE`: `12.12B`**
+- **Phase 12 — Character Continuity: 12A accepted; 12B lifecycle accepted; 12C in review**
+- **Root `PHASE`: `12.12C`**
 - **Master version:** `0.12.A`
 - **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
 - **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
 - **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
-- **Main gameplay:** 12B save/load lifecycle is accepted; 12A is accepted; draft PR #116 stays unmerged
+- **Main gameplay:** 12B save/load lifecycle is accepted; 12A is accepted; 12C is in review and is not accepted; draft PR #116 stays unmerged
 - **Dash / learned abilities:** authoritative Dash + NPC `GrantAbility` restored to current `master`; presentation polish remains tracked separately
 - **Protocol: v31**
 
@@ -95,7 +95,8 @@ and ADR-0069. Draft PR #116 implements the older rule and must not merge
 unchanged. The PostgreSQL 12A writer is accepted in
 [`PHASE_12A_POSTGRESQL.md`](PHASE_12A_POSTGRESQL.md). 12B lifecycle is accepted in
 [`PHASE_12B_LIFECYCLE.md`](PHASE_12B_LIFECYCLE.md) and ADR-0071
-and is not a Phase 12 exit. 12C is not started. Existing NPC facts, learned
+and is not a Phase 12 exit. 12C is in review in
+[`PHASE_12C_GAMEPLAY.md`](PHASE_12C_GAMEPLAY.md) and is not accepted. Existing NPC facts, learned
 grants and item rewards need one atomic commit before Phase 12 can close.
 See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
 
@@ -103,10 +104,10 @@ See [`PHASE_12_ENTRY.md`](PHASE_12_ENTRY.md).
 |---|---|---|
 | 12A | PostgreSQL durable foundation | accepted 2026-09-29; not a Phase 12 exit |
 | 12B | Save / Load and lifecycle | accepted 2026-09-30; not a Phase 12 exit |
-| 12C | Existing item and NPC-earned state integration | planned |
+| 12C | Existing item and NPC-earned state integration | in review 2026-09-30; not accepted; not a Phase 12 exit |
 | Phase 12 exit | Normal client continuity and recovery proof | planned |
 
-12A is the accepted storage foundation. 12B is the accepted save/load lifecycle. 12C is not started. Saving
+12A is the accepted storage foundation. 12B is the accepted save/load lifecycle. 12C is in review and is not accepted. Saving
 an NPC's item without its fact/learned grant is unsafe. Live Quests,
 progression, currency, Trade and production authentication remain separately
 scoped. Do not call Phase 12 GREEN after item-only persistence.

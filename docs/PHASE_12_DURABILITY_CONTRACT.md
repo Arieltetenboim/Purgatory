@@ -100,7 +100,9 @@ it must durably reserve a monotonic range of `ItemInstanceId` values; gameplay
 receives an already reserved range and never waits for file I/O in the 30 Hz
 tick. Gaps after a crash are valid; reuse is not. Exhaustion or inability to
 replenish a range blocks new item creation. Reservation is recorded in the
-same durable transaction domain before an ID is issued; recovery fails closed.
+same durable transaction domain before an ID is issued, and that record names
+the channel generation that may spend the range. A later generation cannot
+spend it. Recovery fails closed.
 A restart scan of only live records or a random/time epoch is not equivalent.
 Loaded character and map-drop records must reject duplicate active item IDs.
 

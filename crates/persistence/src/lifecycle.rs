@@ -563,12 +563,15 @@ fn insert_lease(
     Ok(())
 }
 
-fn load_restore(tx: &mut Transaction<'_>, id: CharacterId) -> Result<OwnedRestore, PersistError> {
+pub(crate) fn load_restore(
+    tx: &mut Transaction<'_>,
+    id: CharacterId,
+) -> Result<OwnedRestore, PersistError> {
     let raw = id_bytes(id.raw());
     let row = tx
         .query_opt(
             "SELECT persistence_revision, restore_map_authored, restore_point_id,
-                    restore_checkpoint_id, instance_exit_reason
+                    restore_checkpoint_id, instance_exit_reason, current_health, health_revision
              FROM characters WHERE character_id = $1",
             &[&raw.as_slice()],
         )
@@ -584,6 +587,7 @@ fn load_restore(tx: &mut Transaction<'_>, id: CharacterId) -> Result<OwnedRestor
     let point_id: String = row.get(2);
     let checkpoint: Option<String> = row.get(3);
     let exit_reason: Option<String> = row.get(4);
+    let (current_health_milli, health_revision) = crate::postgres::read_health(&row, 5, 6)?;
     if map_authored.is_empty() || point_id.is_empty() {
         return Err(PersistError::corrupt(
             db_path(),
@@ -603,6 +607,8 @@ fn load_restore(tx: &mut Transaction<'_>, id: CharacterId) -> Result<OwnedRestor
         instance_exit: exit_reason.map(|reason| purgatory_common::InstanceExitContext {
             reason: Some(reason),
         }),
+        current_health_milli,
+        health_revision,
     };
     let items = load_items(tx, &raw)?;
     let narrative = load_narrative(tx, &raw)?;

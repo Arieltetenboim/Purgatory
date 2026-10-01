@@ -137,6 +137,56 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
             return;
         }
     };
+    const READINESS_PROBE_LOGIN: &str = "dev.probe";
+    const READINESS_PROBE_BUILD_PREFIX: &str = "purgatory-probe";
+    let readiness_probe = login.as_str() == READINESS_PROBE_LOGIN
+        && hello.client_build.starts_with(READINESS_PROBE_BUILD_PREFIX);
+    if login.as_str() == READINESS_PROBE_LOGIN && !readiness_probe {
+        lifecycle.note_hello_fail();
+        stats.leave_handshake();
+        let reason = DisconnectReason::new(DisconnectReasonCode::UnknownUser, "dev_login");
+        stats.note_reject(reason.code);
+        println!(
+            "handshake rejected {} reason={} detail={}",
+            sanitize_log_text(&remote.to_string()),
+            reason.code.as_str(),
+            sanitize_log_text(&reason.detail)
+        );
+        let _ = write_server_control(&mut send, &ServerControl::Disconnect(reason.clone())).await;
+        connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+        return;
+    }
+    if let Some(worker) = persist.as_ref().filter(|_| !readiness_probe) {
+        match worker.user_registered(login.clone()).await {
+            Ok(true) => {}
+            Ok(false) => {
+                lifecycle.note_hello_fail();
+                stats.leave_handshake();
+                let reason = DisconnectReason::new(DisconnectReasonCode::UnknownUser, "dev_login");
+                stats.note_reject(reason.code);
+                println!(
+                    "handshake rejected {} reason={} detail={}",
+                    sanitize_log_text(&remote.to_string()),
+                    reason.code.as_str(),
+                    sanitize_log_text(&reason.detail)
+                );
+                let _ = write_server_control(&mut send, &ServerControl::Disconnect(reason.clone()))
+                    .await;
+                connection.close(reason.code.as_u8().into(), reason.code.as_str().as_bytes());
+                return;
+            }
+            Err(err) => {
+                eprintln!("PURGATORY user lookup failed: {err}");
+                lifecycle.note_hello_fail();
+                stats.leave_handshake();
+                connection.close(
+                    DisconnectReasonCode::ServerShutdown.as_u8().into(),
+                    b"storage unavailable",
+                );
+                return;
+            }
+        }
+    }
 
     // Historical gameplay integration fixtures opt in only in test binaries.
     // Shipping builds have no legacy entry route, regardless of client_build.
@@ -240,20 +290,24 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         };
         (replication, interact_rx, occupancy)
     };
-    let roster = match &persist {
-        Some(worker) => match worker.roster(login.clone()).await {
-            Ok(roster) => roster,
-            Err(err) => {
-                eprintln!("PURGATORY roster failed: {err}");
-                stats.leave_handshake();
-                connection.close(
-                    DisconnectReasonCode::ServerShutdown.as_u8().into(),
-                    b"storage unavailable",
-                );
-                return;
-            }
-        },
-        None => Vec::new(),
+    let roster = if readiness_probe {
+        Vec::new()
+    } else {
+        match &persist {
+            Some(worker) => match worker.roster(login.clone()).await {
+                Ok(roster) => roster,
+                Err(err) => {
+                    eprintln!("PURGATORY roster failed: {err}");
+                    stats.leave_handshake();
+                    connection.close(
+                        DisconnectReasonCode::ServerShutdown.as_u8().into(),
+                        b"storage unavailable",
+                    );
+                    return;
+                }
+            },
+            None => Vec::new(),
+        }
     };
     let ready = FrontendSessionReady {
         connection_id,
@@ -330,6 +384,7 @@ pub(crate) async fn handle_incoming(incoming: quinn::Incoming, ctx: super::Incom
         #[cfg(not(test))]
         occupancy: None,
         login,
+        readiness_probe,
         persist,
         lifecycle,
         pressure,
@@ -387,6 +442,7 @@ struct LiveSession {
     interact_rx: Option<tokio::sync::mpsc::Receiver<ServerControl>>,
     occupancy: Option<OccupancyLease>,
     login: DevLogin,
+    readiness_probe: bool,
     persist: Option<super::persist::PersistenceHandle>,
     lifecycle: Arc<ConnectionLifecycleBook>,
     pressure: Arc<NetworkPressureBook>,
@@ -675,6 +731,7 @@ async fn serve_connection(live: LiveSession) {
         mut interact_rx,
         mut occupancy,
         login,
+        readiness_probe,
         persist,
         lifecycle,
         pressure,
@@ -756,6 +813,13 @@ async fn serve_connection(live: LiveSession) {
                 match control {
                     Ok(ClientControl::EnterCharacter { character_id }) => {
                         use purgatory_protocol::CharacterEnterRejection as R;
+                        if readiness_probe {
+                            let response = ServerControl::EnterCharacterRejected(R::NotOwned);
+                            if write_server_control(&mut send, &response).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
                         if !matches!(rate.note(Instant::now(), abuse_cfg), RateDecision::Allow) {
                             connection.close(DisconnectReasonCode::Malformed.as_u8().into(), b"rate");
                             break;
@@ -810,6 +874,21 @@ async fn serve_connection(live: LiveSession) {
                         if write_server_control(&mut send, &response).await.is_err() { break; }
                     }
                     Ok(ClientControl::CreateCharacter { name }) => {
+                        if readiness_probe {
+                            let result = purgatory_protocol::CreateCharacterResult::Rejected(
+                                purgatory_protocol::CharacterCreateRejection::Unregistered,
+                            );
+                            if write_server_control(
+                                &mut send,
+                                &ServerControl::CreateCharacterResult(result),
+                            )
+                            .await
+                            .is_err()
+                            {
+                                break;
+                            }
+                            continue;
+                        }
                         if !matches!(rate.note(Instant::now(), abuse_cfg), RateDecision::Allow) {
                             connection.close(DisconnectReasonCode::Malformed.as_u8().into(), b"rate");
                             break;
@@ -1717,9 +1796,26 @@ mod admission_race {
             if ready() {
                 return;
             }
+            // Real sleep, not paused Tokio time: the persistence worker is an
+            // OS thread, and a yield can finish before that thread enters.
+            std::thread::sleep(Duration::from_millis(2));
             tokio::task::yield_now().await;
         }
         panic!("timed out waiting for {label}");
+    }
+
+    /// The channel-renewal hold is set by the persistence worker thread.
+    /// Paused Tokio time does not run that thread, so the wait has to observe
+    /// real time. Yielding alone times out while the worker is still entering.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn channel_renewal_wait_observes_the_worker_thread() {
+        let entered = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&entered);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            flag.store(true, Ordering::SeqCst);
+        });
+        until("channel renewal held", || entered.load(Ordering::SeqCst)).await;
     }
 
     fn leased_admission(character_id: CharacterId) -> SessionAdmission {
@@ -1754,8 +1850,9 @@ mod admission_race {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn channel_stop_during_admit_does_not_enter_world() {
         let dir = temp_dir("channel");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
+        worker.provision_dev_user(login.clone()).await.unwrap();
         let created = worker.create_character(login.clone(), "Alpha".into()).await;
         let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
             panic!("create character: {created:?}");
@@ -1866,7 +1963,7 @@ mod admission_race {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn character_deadline_during_enter_does_not_enter_world() {
         let dir = temp_dir("character");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
         let character_id = CharacterId::from_raw(9);
         worker.script_next_admit(leased_admission(character_id));
@@ -2026,8 +2123,9 @@ mod admission_race {
     #[tokio::test]
     async fn durable_restore_rejects_a_non_equippable_item_in_weapon() {
         let dir = temp_dir("potion-weapon");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
+        worker.provision_dev_user(login.clone()).await.unwrap();
         let created = worker.create_character(login.clone(), "Alpha".into()).await;
         let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
             panic!("create character: {created:?}");
@@ -2066,8 +2164,9 @@ mod admission_race {
     #[tokio::test]
     async fn durable_restore_rejects_an_equippable_item_in_the_wrong_slot() {
         let dir = temp_dir("cap-weapon");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
+        worker.provision_dev_user(login.clone()).await.unwrap();
         let created = worker.create_character(login.clone(), "Alpha".into()).await;
         let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
             panic!("create character: {created:?}");
@@ -2106,8 +2205,9 @@ mod admission_race {
     #[tokio::test]
     async fn durable_restore_keeps_valid_equipment() {
         let dir = temp_dir("sword-weapon");
-        let worker = PersistenceHandle::spawn(&dir).unwrap();
+        let worker = PersistenceHandle::spawn_fixture().unwrap();
         let login = DevLogin::parse("dev.local").unwrap();
+        worker.provision_dev_user(login.clone()).await.unwrap();
         let created = worker.create_character(login.clone(), "Alpha".into()).await;
         let purgatory_protocol::CreateCharacterResult::Created { roster } = created else {
             panic!("create character: {created:?}");

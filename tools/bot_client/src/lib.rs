@@ -43,6 +43,12 @@ pub fn client_build() -> String {
     format!("purgatory-load-{}", version())
 }
 
+/// Readiness Hello. This build is not a player session and does not match
+/// [`client_build`].
+pub fn probe_client_build() -> String {
+    format!("purgatory-probe-{}", version())
+}
+
 /// Shared entry for `purgatory-load` and the `purgatory-bot-client` alias.
 pub fn run_from_env() -> ! {
     use std::sync::Arc;

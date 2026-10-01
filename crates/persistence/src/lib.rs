@@ -1,37 +1,48 @@
 //! Character persistence. Simulation does not depend on this crate.
 //!
-//! JSON, filesystem IO, and PostgreSQL sessions belong on the persistence
-//! worker, not the 30 Hz simulation thread. When `PURGATORY_DATABASE_URL` is
-//! set, PostgreSQL is the only writer. The file roster is then an import
-//! source, not a second durable copy.
+//! PostgreSQL sessions belong on the persistence worker, not the 30 Hz
+//! simulation thread. Server startup only reopens an initialized database.
+//! Creating, resetting, and provisioning development users are separate
+//! administration operations. Game character state is not written to files.
 
-mod atomic;
+mod admin;
 mod character;
 mod domain;
 mod error;
 mod identity;
 mod lifecycle;
+mod local_config;
+mod memory;
 mod postgres;
-mod repository;
 mod service;
 
-pub use character::{PERSISTENCE_SCHEMA_VERSION, PersistentCharacter, PersistentCharacterSnapshot};
+pub use admin::{
+    AdminAudience, AdminFailure, AdminOutcome, DatabaseAdminRequest, DatabaseInspection,
+    DatabaseStatus, LOCAL_DEV_DATABASE, LOCAL_DEV_DEPLOYMENT_ID, add_user as add_development_user,
+    create as create_database, inspect as inspect_database,
+    inspect_runtime as inspect_runtime_database, reset as reset_database,
+};
+pub use character::{
+    PERSISTENCE_SCHEMA_VERSION, PersistentCharacter, PersistentCharacterSnapshot,
+    current_from_milli, health_milli,
+};
 pub use domain::{
     CharacterItemLocation, CharacterNarrativeState, DURABLE_INVENTORY_CAPACITY, DurableCommand,
     DurableCommandResult, DurableContentRules, DurableEquipmentSlot, ItemContentRule, ItemOwner,
     ItemRecord, LearnedAbilityWrite, LiveDestination, MoveItem, NarrativeWrite, PlaceNewItem,
+    ReservedItemOutcome, ReservedItemUse,
 };
 pub use error::{CreateCharacterRejection, PersistError};
-pub use identity::{
-    CharacterRosterEntry, DevIdentityStore, IDENTITY_FILE_NAME, IDENTITY_SCHEMA_VERSION,
-    MAX_ROSTER_SIZE,
-};
+pub use identity::{CharacterRosterEntry, MAX_ROSTER_SIZE};
 pub use lifecycle::{
     Admission, CHANNEL_GENERATION_EXPIRY, CHANNEL_GENERATION_RENEWAL, CHARACTER_LEASE_EXPIRY,
     CHARACTER_LEASE_RENEWAL, ChannelClaim, LeaseAuthority, LeaseBarrier, OwnedRestore,
 };
-pub use postgres::PostgresSettings;
-pub use repository::{FileCharacterRepository, character_file_name};
+pub use local_config::{
+    LocalDatabaseConfig, LocalDatabaseConfigError, RELATIVE_PATH as LOCAL_DATABASE_FILE,
+    redact_connection_text,
+};
+pub use postgres::{PostgresSettings, drop_test_schema};
 pub use service::{PersistenceService, SessionAdmission};
 
 #[cfg(test)]

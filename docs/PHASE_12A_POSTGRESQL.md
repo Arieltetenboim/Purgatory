@@ -4,6 +4,12 @@ Status: **accepted** as the Phase 12A storage foundation (2026-09-29). This is
 not a Phase 12 exit. Root `PHASE` moved to `12.12B` when lifecycle review started. 12C is
 not started. Draft PR #116 stays unmerged.
 
+This is the historical 12A acceptance record. Its file-import steps are
+superseded by ADR-0073 and are not current setup. For the current local run
+procedure, including later lifecycle and item-ID-range migrations, use
+[`POSTGRESQL_LOCAL_RUN.md`](POSTGRESQL_LOCAL_RUN.md). The future host move is
+in [`POSTGRESQL_HOST_MOVE.md`](POSTGRESQL_HOST_MOVE.md).
+
 ## What 12A stores
 
 Migration `crates/persistence/migrations/0001_foundation.sql` is the only
@@ -28,6 +34,12 @@ clears its owner and never writes it back to a character. The id stays retired.
 and it does not wire live Drop, pickup, equip, dialogue, or client replies.
 
 ## Cutover
+
+This section records the accepted 12A import procedure. Current server startup
+does not run it. A fresh development database is bootstrapped once and does
+not read legacy files. A restored database starts on another host when
+`PURGATORY_DEPLOYMENT_ID` matches the stored identity, with no local
+`durable_writer.json`. See [Phase 12C local startup and host move](PHASE_12C_GAMEPLAY.md).
 
 Do these steps in order. Inventory and import come only after the file-writing
 server is gone and the source directory is stable.

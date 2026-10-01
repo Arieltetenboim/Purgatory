@@ -9,12 +9,12 @@ This README is intentionally small. It is the project entry point, not the proje
 ## Current
 
 - **Master version:** `0.12.A`
-- **Phase:** `12.12B` — 12A is accepted; 12B lifecycle is accepted; 12C is not started
+- **Phase:** `12.12C` — 12A is accepted; 12B lifecycle is accepted; 12C is in review and is not accepted
 - **FORGE M:** M4 implementation is merged to `master`; GitHub Issue #75 remains open for the recorded manual two-Monster visual smoke and final M4/M5 closeout evidence
 - **FORGE N:** NPC authoring/runtime N10a-N10f complete and merged
 - **Character Lab:** integrated on `master`; Hub launch, Humanoid v0 contract export, Template V1 (2048×2048) import/validation/conversion, and the current visual-pack/atlas path are present
 - **Production client UI:** Inventory foundation, player-facing Settings, and the Glyphon production-text foundation are merged
-- **Main gameplay:** Phase 12 — Character Continuity; 12B lifecycle is accepted ([lifecycle](docs/PHASE_12B_LIFECYCLE.md), [revised contract](docs/PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md)); draft PR #116 stays unmerged
+- **Main gameplay:** Phase 12 — Character Continuity; 12B lifecycle is accepted ([lifecycle](docs/PHASE_12B_LIFECYCLE.md), [revised contract](docs/PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md)); 12C is in review ([gameplay commands](docs/PHASE_12C_GAMEPLAY.md)) and is not accepted; draft PR #116 stays unmerged
 - **Dash / learned ability:** authoritative Dash + NPC `GrantAbility` integration restored on `master`; Shift activates Dash after it has been granted
 - **Protocol:** v31
 - **Simulation:** server authoritative
@@ -52,7 +52,13 @@ cargo run -p purgatory-client
 cargo run -p purgatory-server
 ```
 
-The server listens on `127.0.0.1:5001` by default.
+The server listens on `127.0.0.1:5001` by default. Bootstrap the empty database once before the first start.
+
+To run the current Phase 12 gameplay with the local PostgreSQL database,
+follow [the Windows database runbook](docs/POSTGRESQL_LOCAL_RUN.md). It covers
+the chosen fresh development start, role permissions, connection settings,
+Developer Hub, and pgAdmin verification. [Moving the database to a dedicated
+host](docs/POSTGRESQL_HOST_MOVE.md) has a separate procedure.
 
 FORGE W1.3A Map Lab can be launched directly with:
 
@@ -92,7 +98,10 @@ does not parse TMX/TSX at runtime.
 - **Backquote / `~`** toggles the debug overlay.
 - The client starts on the Connection Frontend and does not auto-connect in normal development builds.
 - Default local server address: `127.0.0.1:5001`.
-- File-backed character data lives outside the repository. On Windows the default is under `%LOCALAPPDATA%\Purgatory\` unless overridden.
+- Game persistence is PostgreSQL only. There is no file-backed character database and no import of old `identity.json` or `char_*.json` saves. The Windows procedure is [`docs/POSTGRESQL_LOCAL_RUN.md`](docs/POSTGRESQL_LOCAL_RUN.md).
+- Developer Hub creates the local `Purgatory_dev` database, asks for the first development username, then Start Server. The normal client enters that username and reaches an empty character roster. An unknown username is rejected before a session is admitted. This username is a development allowlist, not a password.
+- Normal server startup only connects to an already initialized database. It does not create, reset, or migrate it. A missing URL, missing database, wrong deployment identity, or failed connection stops startup.
+- Moving the database to another host keeps the committed rows when that database is already initialized. See [`docs/POSTGRESQL_HOST_MOVE.md`](docs/POSTGRESQL_HOST_MOVE.md). Do not copy development characters into a released database.
 - `Graphic/` is not a general runtime asset scan. Visual assets are integrated deliberately through the relevant runtime paths.
 
 ### Core controls
@@ -148,6 +157,8 @@ The detailed validation policy and extended network/load gates live in the docs 
 | [`docs/TEST_GATES.md`](docs/TEST_GATES.md) | Validation and test gates |
 | [`docs/PERFORMANCE_BUDGETS.md`](docs/PERFORMANCE_BUDGETS.md) | Performance budgets |
 | [`docs/CONTENT_PIPELINE.md`](docs/CONTENT_PIPELINE.md) | Content pipeline |
+| [`docs/POSTGRESQL_LOCAL_RUN.md`](docs/POSTGRESQL_LOCAL_RUN.md) | Local PostgreSQL setup, first run, and pgAdmin checks |
+| [`docs/POSTGRESQL_HOST_MOVE.md`](docs/POSTGRESQL_HOST_MOVE.md) | Planned move to a dedicated or managed database host |
 | [`docs/NPC_DIALOGUE_RUNTIME.md`](docs/NPC_DIALOGUE_RUNTIME.md) | Current NPC dialogue runtime, ownership and operation |
 | [`docs/CHARACTER_ANIMATION_ARCHITECTURE.md`](docs/CHARACTER_ANIMATION_ARCHITECTURE.md) | Character animation architecture |
 | [`docs/dev-tools/README.md`](docs/dev-tools/README.md) | Developer tooling details |

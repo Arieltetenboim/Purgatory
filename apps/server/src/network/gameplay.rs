@@ -5,7 +5,7 @@
 //! one `tick_player` (latest held + `jump_pressed` OR). Intermediate historical
 //! held commands may be acknowledged without individual physics steps.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use purgatory_common::{
@@ -38,7 +38,7 @@ use purgatory_simulation::{
 use super::dialogue::{
     ActiveDialogue, AdvanceResult, ChoiceResult, DialogueRuntime, RuntimeConditions,
 };
-use super::dialogue_actions::execute_dialogue_actions;
+use super::dialogue_actions::{execute_dialogue_actions, preview_dialogue_actions};
 use super::narrative::NarrativeRuntime;
 use super::persist::{PersistenceHandle, SaveHandoff};
 use super::replication::{
@@ -418,7 +418,17 @@ pub struct PlayerBinding {
     pub entity: EntityId,
     pub character_id: Option<CharacterId>,
     persistence_revision: u64,
+    /// Revision last loaded at entry, returned by a durable command, or
+    /// reported committed by the persistence worker. Queue acceptance does
+    /// not change it.
+    committed_revision: u64,
+    /// Snapshots admitted to the worker and not yet reported. A revision here
+    /// is not a database commit.
+    snapshots: SnapshotAdmission,
     restore: RestoreIntent,
+    /// Last health value written, or the value loaded at entry. Thousandths of a point.
+    stored_health_milli: Option<u32>,
+    health_revision: u64,
     pub input: SessionInput,
     replication: Option<ReplicationPipe>,
     interest: ObserverReplicationState,
@@ -437,8 +447,72 @@ pub struct PlayerBinding {
     /// Local character-lease deadline. `None` is file mode, which has no lease.
     lease_deadline: Option<super::lease_clock::LocalLeaseDeadline>,
     authority_lost: bool,
+    /// A committed command could not be applied. Player control stays stopped
+    /// until that character is restored or the session is stopped.
+    reconcile_required: bool,
+    /// The latest durable reply was lost, so the database may already differ
+    /// from `World`. Player control stays stopped until that same command key
+    /// returns a definite result. A command that is still in flight does not
+    /// set this.
+    commit_uncertain: bool,
     pending_durable: u32,
     detach_when_idle: bool,
+}
+
+/// One character's snapshot handoffs that the worker has not reported yet.
+///
+/// Ordering rule: `committed_revision` advances when a snapshot report says
+/// that revision committed, or when a durable command result is adopted.
+/// Accepted and deferred handoffs do not advance it. A failed report does
+/// not advance it. A drop, pickup, equip, or dialogue command is held while
+/// a queued or deferred revision is still above `committed_revision`, then
+/// rewritten to the adopted revision before it is submitted. A command that
+/// was already submitted keeps the revision it carried. A later snapshot at
+/// or below that command result is overtaken and does not move
+/// `committed_revision` again.
+struct SnapshotAdmission {
+    queued: VecDeque<u64>,
+    deferred: Option<u64>,
+}
+
+struct PickupCommit {
+    item: purgatory_common::ItemInstanceId,
+    slot: u16,
+    durable: bool,
+    definition: ContentId,
+    quantity: u32,
+    stack_limit: u32,
+}
+
+enum InFlight {
+    Drop,
+    Pickup,
+    Equipment,
+}
+
+fn effect_connection(effect: &super::durable_play::DurableEffect) -> Option<ConnectionId> {
+    match effect {
+        super::durable_play::DurableEffect::RetireGround { .. } => None,
+        super::durable_play::DurableEffect::Drop { connection_id, .. }
+        | super::durable_play::DurableEffect::Pickup { connection_id, .. }
+        | super::durable_play::DurableEffect::Equip { connection_id, .. }
+        | super::durable_play::DurableEffect::Unequip { connection_id, .. }
+        | super::durable_play::DurableEffect::Dialogue { connection_id, .. }
+        | super::durable_play::DurableEffect::Heard { connection_id, .. } => Some(*connection_id),
+    }
+}
+
+struct DurablePending {
+    command: purgatory_persistence::DurableCommand,
+    lease: Option<purgatory_persistence::LeaseAuthority>,
+    effect: super::durable_play::DurableEffect,
+    reserved: Vec<purgatory_common::ItemInstanceId>,
+}
+
+struct ReconcileJob {
+    connection_id: ConnectionId,
+    character_id: CharacterId,
+    revision: u64,
 }
 
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
@@ -505,6 +579,67 @@ pub struct GameplayOwner {
     last_observer_bytes: HashMap<ConnectionId, u32>,
     tick_overrun_hint: bool,
     pressure: Option<std::sync::Arc<super::network_pressure::NetworkPressureBook>>,
+    durable_tokens: u64,
+    durable_outbound: Vec<u64>,
+    durable_pending: HashMap<u64, DurablePending>,
+    /// Same-key retry is not due before this instant. An unknown commit stays
+    /// reserved until that retry returns a definite result.
+    durable_retry_at: HashMap<u64, std::time::Instant>,
+    reconcile_outbound: Vec<ReconcileJob>,
+    reconcile_reserved: HashMap<ConnectionId, Vec<purgatory_common::ItemInstanceId>>,
+    reconcile_effects: HashMap<ConnectionId, super::durable_play::DurableEffect>,
+    reserved_items: HashSet<purgatory_common::ItemInstanceId>,
+    durable_items: HashSet<purgatory_common::ItemInstanceId>,
+    /// Ids reserved by PostgreSQL and not yet shown in `World`.
+    id_pool: VecDeque<purgatory_common::ItemInstanceId>,
+    id_replenish_inflight: bool,
+    /// File mode has no durable allocator. Stop asking after that refusal.
+    id_reserve_unavailable: bool,
+    /// Visible ids that are reserved but not yet a database row.
+    reserved_visible: HashSet<purgatory_common::ItemInstanceId>,
+    /// Times the network loop asked for a new id range. `simulate_tick` must
+    /// leave this at zero.
+    #[cfg(test)]
+    id_reserve_requests: u32,
+    /// Time the claimed channel has been running. Tests advance it directly.
+    ground_elapsed: Duration,
+    live_ground: HashMap<purgatory_common::ItemInstanceId, LiveGround>,
+    /// One entry per item, ordered by due time. Removal is one map operation.
+    ground_expiry: BTreeMap<(Duration, u64), ()>,
+    /// Due items whose pickup is still waiting on the persistence worker.
+    /// A wake inspects only a bounded prefix of this queue.
+    ground_deferred: VecDeque<purgatory_common::ItemInstanceId>,
+    ground_deferred_member: HashSet<purgatory_common::ItemInstanceId>,
+    /// Items inspected by the latest ground wake. Tests use this as the
+    /// representative cost of `promote_due_ground`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    ground_wake_ops: u32,
+    /// Map entries removed by the latest `forget_ground_item`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    ground_remove_ops: u32,
+}
+
+/// Ordinary ground stays visible for 200 seconds. Monster loot is exclusive to
+/// the killer until 40 seconds have elapsed.
+const GROUND_EXCLUSIVE_WINDOW: Duration = Duration::from_secs(40);
+const GROUND_LIFETIME: Duration = Duration::from_secs(200);
+/// Database retires and local despawns started from one wake.
+const GROUND_RETIRE_BATCH: usize = 8;
+/// Ids requested from PostgreSQL when the local pool runs low.
+pub(crate) const ID_RESERVE_BATCH: u32 = 32;
+const ID_RESERVE_LOW_WATER: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GroundOrigin {
+    PlayerDrop,
+    MonsterLoot { killer: CharacterId },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LiveGround {
+    visible_at: Duration,
+    expires_at: Duration,
+    origin: GroundOrigin,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -623,6 +758,9 @@ pub enum LifecycleCmd {
     NoteChannelDeadline {
         deadline: super::lease_clock::LocalLeaseDeadline,
     },
+    InstallReservedIds {
+        ids: Result<Vec<purgatory_common::ItemInstanceId>, purgatory_persistence::PersistError>,
+    },
     #[allow(dead_code)]
     BeginDurable {
         connection_id: ConnectionId,
@@ -640,6 +778,18 @@ pub enum LifecycleCmd {
     },
     Detach {
         connection_id: ConnectionId,
+    },
+    SettleDurable {
+        token: u64,
+        result: Result<
+            purgatory_persistence::DurableCommandResult,
+            purgatory_persistence::PersistError,
+        >,
+    },
+    ReconcileDurable {
+        connection_id: ConnectionId,
+        revision: u64,
+        restore: Result<purgatory_persistence::OwnedRestore, purgatory_persistence::PersistError>,
     },
 }
 
@@ -1375,7 +1525,33 @@ impl GameplayOwner {
             last_observer_bytes: HashMap::new(),
             tick_overrun_hint: false,
             pressure: None,
+            durable_tokens: 1,
+            durable_outbound: Vec::new(),
+            durable_pending: HashMap::new(),
+            durable_retry_at: HashMap::new(),
+            reconcile_outbound: Vec::new(),
+            reconcile_reserved: HashMap::new(),
+            reconcile_effects: HashMap::new(),
+            reserved_items: HashSet::new(),
+            durable_items: HashSet::new(),
+            id_pool: VecDeque::new(),
+            id_replenish_inflight: false,
+            id_reserve_unavailable: false,
+            reserved_visible: HashSet::new(),
+            #[cfg(test)]
+            id_reserve_requests: 0,
+            ground_elapsed: Duration::ZERO,
+            live_ground: HashMap::new(),
+            ground_expiry: BTreeMap::new(),
+            ground_deferred: VecDeque::new(),
+            ground_deferred_member: HashSet::new(),
+            ground_wake_ops: 0,
+            ground_remove_ops: 0,
         }
+    }
+
+    pub fn durable_content_rules(&self) -> purgatory_persistence::DurableContentRules {
+        super::durable_play::rules_from_registry(&self.registry)
     }
 
     pub fn set_persist(&mut self, persist: PersistenceHandle) {
@@ -1599,11 +1775,46 @@ impl GameplayOwner {
             interact,
             seed_welcome,
         ) {
-            true => Ok(()),
+            true => {
+                self.apply_stored_health(connection_id, &character);
+                Ok(())
+            }
             false => {
                 self.occupancy.remove(&character_id);
                 Err(EnterError::SpawnFailed)
             }
+        }
+    }
+
+    fn apply_stored_health(
+        &mut self,
+        connection_id: ConnectionId,
+        character: &purgatory_persistence::PersistentCharacter,
+    ) {
+        let Some(milli) = character.current_health_milli else {
+            if let Some(binding) = self.bindings.get_mut(&connection_id) {
+                binding.health_revision = character.health_revision;
+            }
+            return;
+        };
+        let Some(entity) = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+        else {
+            return;
+        };
+        let Some(max) = self.world.health_of(entity).map(|health| health.max) else {
+            return;
+        };
+        let current = purgatory_persistence::current_from_milli(milli, max);
+        let _ = self.world.set_health(entity, Health { current, max });
+        if let Some(binding) = self.bindings.get_mut(&connection_id) {
+            binding.health_revision = character.health_revision;
+            binding.stored_health_milli = self
+                .world
+                .health_of(entity)
+                .map(|health| purgatory_persistence::health_milli(health.current, health.max));
         }
     }
 
@@ -1640,6 +1851,10 @@ impl GameplayOwner {
         let _ = self
             .world
             .set_health(entity, Health::full(PLAYER_HEALTH_MAX));
+        let spawned_health_milli = self
+            .world
+            .health_of(entity)
+            .map(|health| purgatory_persistence::health_milli(health.current, health.max));
         let _ = self.world.grant_ability(entity, live_basic_strike_id());
         self.narrative.initialize_actor(entity);
         if seed_welcome {
@@ -1653,11 +1868,18 @@ impl GameplayOwner {
                 entity,
                 character_id,
                 persistence_revision,
+                committed_revision: persistence_revision,
+                snapshots: SnapshotAdmission {
+                    queued: VecDeque::new(),
+                    deferred: None,
+                },
                 restore,
                 input: SessionInput::new(),
                 replication,
                 interest: ObserverReplicationState::new(),
                 interact,
+                stored_health_milli: spawned_health_milli,
+                health_revision: 0,
                 last_equipment_seq: None,
                 last_equipment_result: None,
                 last_ability_seq: None,
@@ -1671,6 +1893,8 @@ impl GameplayOwner {
                 authority: None,
                 lease_deadline: None,
                 authority_lost: false,
+                reconcile_required: false,
+                commit_uncertain: false,
                 pending_durable: 0,
                 detach_when_idle: false,
             },
@@ -1793,12 +2017,19 @@ impl GameplayOwner {
             return true;
         }
         self.bindings.get(&connection_id).is_some_and(|binding| {
-            binding.authority_lost || Self::deadline_expired(binding.lease_deadline)
+            binding.authority_lost
+                || binding.reconcile_required
+                || binding.commit_uncertain
+                || Self::deadline_expired(binding.lease_deadline)
         })
     }
 
     fn control_ended(channel_expired: bool, binding: &PlayerBinding) -> bool {
-        channel_expired || binding.authority_lost || Self::deadline_expired(binding.lease_deadline)
+        channel_expired
+            || binding.authority_lost
+            || binding.reconcile_required
+            || binding.commit_uncertain
+            || Self::deadline_expired(binding.lease_deadline)
     }
 
     /// Drop player-controlled work that has not landed yet. Damage and movement
@@ -1874,6 +2105,10 @@ impl GameplayOwner {
             if revision > binding.persistence_revision {
                 binding.persistence_revision = revision;
             }
+            if revision > binding.committed_revision {
+                binding.committed_revision = revision;
+            }
+            binding.commit_uncertain = false;
             binding.pending_durable = binding.pending_durable.saturating_sub(1);
             binding.pending_durable == 0 && binding.detach_when_idle
         } else {
@@ -1946,6 +2181,7 @@ impl GameplayOwner {
                 PersistentCharacterSnapshot,
             ),
         }
+        self.sync_live_health(connection_id);
         let kind = {
             let Some(binding) = self.bindings.get(&connection_id) else {
                 return Ok(None);
@@ -2073,6 +2309,7 @@ impl GameplayOwner {
             if restored.is_err() {
                 return Err(EnterError::RestoreFailed);
             }
+            self.durable_items.insert(item.item_instance_id);
         }
         for (fact, value) in &owned.narrative.facts {
             self.narrative.set_fact(entity, fact, *value);
@@ -2136,6 +2373,7 @@ impl GameplayOwner {
             }
             return;
         }
+        self.sync_live_health(connection_id);
         if let Some(binding) = self.bindings.remove(&connection_id) {
             self.dialogues.forget_actor(binding.entity);
             self.narrative.forget_actor(binding.entity);
@@ -2146,6 +2384,8 @@ impl GameplayOwner {
                     persistence_revision: binding.persistence_revision.saturating_add(1),
                     restore: binding.restore.clone(),
                     instance_exit: None,
+                    current_health_milli: binding.stored_health_milli,
+                    health_revision: binding.health_revision,
                 };
                 if !save || binding.authority_lost {
                     if binding.authority_lost {
@@ -2171,11 +2411,75 @@ impl GameplayOwner {
             self.interest_fanout.clear_observer(binding.entity);
             self.interest_fanout.clear_subject(binding.entity);
             self.world.despawn(binding.entity);
+            self.forget_departed_durable_items();
             self.player_entity_despawned = self.player_entity_despawned.saturating_add(1);
         }
     }
 
+    /// Drop registrations whose records left `World` with a character.
+    /// A ground item that is still manifested stays registered.
+    fn forget_departed_durable_items(&mut self) {
+        self.durable_items
+            .retain(|id| self.world.item_record(*id).is_some());
+    }
+
+    fn sync_live_health(&mut self, connection_id: ConnectionId) {
+        let Some(entity) = self
+            .bindings
+            .get(&connection_id)
+            .map(|binding| binding.entity)
+        else {
+            return;
+        };
+        let Some(health) = self.world.health_of(entity) else {
+            return;
+        };
+        if !health.current.is_finite() || !health.max.is_finite() {
+            return;
+        }
+        let milli = purgatory_persistence::health_milli(health.current, health.max);
+        let Some(binding) = self.bindings.get_mut(&connection_id) else {
+            return;
+        };
+        if binding.stored_health_milli != Some(milli) {
+            binding.health_revision = binding.health_revision.saturating_add(1);
+            binding.stored_health_milli = Some(milli);
+        }
+    }
+
+    fn health_changed(&self, connection_id: ConnectionId) -> bool {
+        let Some(binding) = self.bindings.get(&connection_id) else {
+            return false;
+        };
+        let Some(health) = self.world.health_of(binding.entity) else {
+            return false;
+        };
+        if !health.current.is_finite() || !health.max.is_finite() {
+            return false;
+        }
+        let milli = purgatory_persistence::health_milli(health.current, health.max);
+        binding.stored_health_milli != Some(milli)
+    }
+
+    /// Enqueue a snapshot when live HP differs from the last committed value.
+    /// The persistence worker performs the SQL; this stays off the simulation clock.
+    fn persist_changed_health(&mut self) {
+        if self.persist.is_none() {
+            return;
+        }
+        let changed: Vec<ConnectionId> = self
+            .bindings
+            .keys()
+            .copied()
+            .filter(|id| self.health_changed(*id))
+            .collect();
+        for connection_id in changed {
+            self.request_save(connection_id);
+        }
+    }
+
     fn request_save(&mut self, connection_id: ConnectionId) {
+        self.sync_live_health(connection_id);
         let Some(binding) = self.bindings.get_mut(&connection_id) else {
             return;
         };
@@ -2188,6 +2492,8 @@ impl GameplayOwner {
             persistence_revision: binding.persistence_revision,
             restore: binding.restore.clone(),
             instance_exit: None,
+            current_health_milli: binding.stored_health_milli,
+            health_revision: binding.health_revision,
         };
         let lease = binding.authority.clone();
         if binding.authority_lost {
@@ -2204,35 +2510,103 @@ impl GameplayOwner {
         snapshot: &PersistentCharacterSnapshot,
         lease: Option<purgatory_persistence::LeaseAuthority>,
     ) {
-        if let Some(persist) = &self.persist {
-            let t0 = std::time::Instant::now();
-            match persist.try_save_leased(snapshot.clone(), lease) {
-                SaveHandoff::Accepted => {}
-                SaveHandoff::DeferredLatest => {
-                    let diagnostics = persist.diagnostics();
-                    if diagnostics.queue_full.is_power_of_two() {
-                        eprintln!(
-                            "PURGATORY persist queue pressure full={} deferred={} replaced={} stale_ignored={}",
-                            diagnostics.queue_full,
-                            diagnostics.deferred_latest,
-                            diagnostics.coalesced_replaced,
-                            diagnostics.coalesced_stale_ignored
-                        );
-                    }
-                }
-                SaveHandoff::Closed => {
-                    let diagnostics = persist.diagnostics();
+        let Some(persist) = self.persist.clone() else {
+            return;
+        };
+        let t0 = std::time::Instant::now();
+        let handoff = persist.try_save_leased(snapshot.clone(), lease);
+        match handoff {
+            SaveHandoff::Accepted => {}
+            SaveHandoff::DeferredLatest => {
+                let diagnostics = persist.diagnostics();
+                if diagnostics.queue_full.is_power_of_two() {
                     eprintln!(
-                        "PURGATORY persist handoff closed character={} revision={} closed_total={} save_failures={}",
-                        snapshot.character_id,
-                        snapshot.persistence_revision,
-                        diagnostics.worker_closed,
-                        diagnostics.save_failures
+                        "PURGATORY persist queue pressure full={} deferred={} replaced={} stale_ignored={}",
+                        diagnostics.queue_full,
+                        diagnostics.deferred_latest,
+                        diagnostics.coalesced_replaced,
+                        diagnostics.coalesced_stale_ignored
                     );
                 }
             }
-            let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
-            self.persist_enqueue_us = self.persist_enqueue_us.saturating_add(us);
+            SaveHandoff::Closed => {
+                let diagnostics = persist.diagnostics();
+                eprintln!(
+                    "PURGATORY persist handoff closed character={} revision={} closed_total={} save_failures={}",
+                    snapshot.character_id,
+                    snapshot.persistence_revision,
+                    diagnostics.worker_closed,
+                    diagnostics.save_failures
+                );
+            }
+        }
+        let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.persist_enqueue_us = self.persist_enqueue_us.saturating_add(us);
+        self.note_snapshot_admission(
+            snapshot.character_id,
+            snapshot.persistence_revision,
+            handoff,
+            persist.parked_snapshot_revision(snapshot.character_id),
+        );
+    }
+
+    /// Record a handoff. This does not change `committed_revision`.
+    fn note_snapshot_admission(
+        &mut self,
+        character_id: CharacterId,
+        revision: u64,
+        handoff: SaveHandoff,
+        parked_revision: Option<u64>,
+    ) {
+        let Some(connection_id) = self.occupancy.get(&character_id).copied() else {
+            return;
+        };
+        let Some(binding) = self.bindings.get_mut(&connection_id) else {
+            return;
+        };
+        match handoff {
+            SaveHandoff::Accepted => binding.snapshots.queued.push_back(revision),
+            SaveHandoff::DeferredLatest => {
+                binding.snapshots.deferred = Some(parked_revision.unwrap_or(revision));
+            }
+            SaveHandoff::Closed => {}
+        }
+    }
+
+    /// Apply worker save reports. A successful report raises `committed_revision`
+    /// only when its revision is newer. A failed report clears the handoff and
+    /// leaves the committed revision unchanged.
+    pub(crate) fn adopt_snapshot_reports(&mut self) {
+        let Some(persist) = self.persist.clone() else {
+            return;
+        };
+        for report in persist.take_save_reports() {
+            let Some(connection_id) = self.occupancy.get(&report.character_id).copied() else {
+                continue;
+            };
+            let Some(binding) = self.bindings.get_mut(&connection_id) else {
+                continue;
+            };
+            if binding.snapshots.deferred == Some(report.revision) {
+                binding.snapshots.deferred = None;
+            }
+            if let Some(index) = binding
+                .snapshots
+                .queued
+                .iter()
+                .position(|queued| *queued == report.revision)
+            {
+                binding.snapshots.queued.remove(index);
+            }
+            if !report.committed {
+                continue;
+            }
+            if report.revision > binding.committed_revision {
+                binding.committed_revision = report.revision;
+            }
+            if report.revision > binding.persistence_revision {
+                binding.persistence_revision = report.revision;
+            }
         }
     }
 
@@ -2255,6 +2629,8 @@ fn logout_snapshot(binding: &PlayerBinding) -> Option<PersistentCharacterSnapsho
         persistence_revision: binding.persistence_revision.saturating_add(1),
         restore: binding.restore.clone(),
         instance_exit: None,
+        current_health_milli: binding.stored_health_milli,
+        health_revision: binding.health_revision,
     })
 }
 
@@ -2590,6 +2966,10 @@ impl GameplayOwner {
                 LifecycleCmd::NoteChannelDeadline { deadline } => {
                     self.note_channel_deadline(deadline);
                 }
+                LifecycleCmd::InstallReservedIds { ids } => match ids {
+                    Ok(ids) => self.install_reserved_ids(ids),
+                    Err(err) => self.fail_id_replenish(&err),
+                },
                 LifecycleCmd::LoseAllAuthority => self.lose_all_authority(),
                 LifecycleCmd::AbandonAdmission {
                     connection_id,
@@ -2609,6 +2989,25 @@ impl GameplayOwner {
                     revision,
                 } => self.finish_durable(connection_id, revision),
                 LifecycleCmd::Detach { connection_id } => self.detach(connection_id),
+                LifecycleCmd::SettleDurable { token, result } => {
+                    self.settle_durable(token, result);
+                }
+                LifecycleCmd::ReconcileDurable {
+                    connection_id,
+                    revision,
+                    restore,
+                } => match restore {
+                    Ok(restore) => {
+                        if !self.complete_reconcile(connection_id, revision, restore) {
+                            eprintln!(
+                                "PURGATORY durable reconcile could not apply the committed character"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("PURGATORY durable reconcile read failed: {err}");
+                    }
+                },
             }
         }
         while let Ok(update) = input.try_recv() {
@@ -2765,6 +3164,7 @@ impl GameplayOwner {
             sample.gameplay_services += services2_t0.elapsed();
         }
 
+        self.persist_changed_health();
         self.ticks = tick.get();
         let pub_t = self.publish_snapshots(detail);
         sample.spatial_aoi += Duration::from_micros(pub_t.aoi_us);
@@ -3137,6 +3537,11 @@ impl GameplayOwner {
             SeqDecision::Accept => {}
         }
 
+        if self.stages_durable(connection_id) {
+            self.stage_equipment(connection_id, seq, slot, item_instance_id);
+            return;
+        }
+
         let grants_before = self
             .bindings
             .get(&connection_id)
@@ -3382,6 +3787,11 @@ impl GameplayOwner {
             SeqDecision::Accept => {}
         }
 
+        if self.stages_durable(connection_id) {
+            self.stage_pickup(connection_id, request);
+            return;
+        }
+
         let result = self.apply_pickup(connection_id, request.target);
         let event = match result {
             Ok((item_instance_id, slot)) => ServerItem::PickupAccepted {
@@ -3442,8 +3852,16 @@ impl GameplayOwner {
             SeqDecision::Accept => {}
         }
 
+        if self.stages_durable(connection_id) {
+            self.stage_drop(connection_id, request);
+            return;
+        }
+
         let event = match self.apply_drop(connection_id, request.item_instance_id) {
-            Ok(()) => ServerItem::DropAccepted { seq: request.seq },
+            Ok(()) => {
+                self.note_player_ground(request.item_instance_id);
+                ServerItem::DropAccepted { seq: request.seq }
+            }
             Err(reason) => ServerItem::DropRejected {
                 seq: request.seq,
                 reason,
@@ -3467,8 +3885,16 @@ impl GameplayOwner {
         let actor = self
             .command_actor(connection_id, CommandClass::Pickup)
             .map_err(|_| PickupRejectReason::StateBlocked)?;
-        self.world
-            .pickup_world_drop(actor, super::snapshot::from_wire_id(target))
+        let target_entity = super::snapshot::from_wire_id(target);
+        let Some(item) = self.world.item_instance_at_world_drop(target_entity) else {
+            return Err(PickupRejectReason::TargetMissing);
+        };
+        if !self.ground_collectible(connection_id, item) {
+            return Err(PickupRejectReason::StateBlocked);
+        }
+        let picked = self
+            .world
+            .pickup_world_drop(actor, target_entity)
             .map_err(|reason| match reason {
                 ItemRuntimeError::PickupTargetMissing(_)
                 | ItemRuntimeError::MissingItem(_)
@@ -3477,7 +3903,9 @@ impl GameplayOwner {
                 ItemRuntimeError::PickupOutOfRange => PickupRejectReason::OutOfRange,
                 ItemRuntimeError::InventoryFull(_) => PickupRejectReason::InventoryFull,
                 _ => PickupRejectReason::InvalidRequest,
-            })
+            })?;
+        self.forget_ground_item(item);
+        Ok(picked)
     }
 
     fn apply_drop(
@@ -3798,6 +4226,13 @@ impl GameplayOwner {
                 }
             }
             AdvanceResult::Complete(active) => {
+                if self.stages_durable(connection_id) {
+                    let beat_id = definition
+                        .beat(active.beat_index)
+                        .map(|beat| beat.id.clone());
+                    self.stage_heard(connection_id, active, beat_id);
+                    return;
+                }
                 self.narrative
                     .mark_dialogue_heard(actor, active.npc_content_id, active.beat_index);
                 let _ = self.world.close_interaction(
@@ -3847,6 +4282,13 @@ impl GameplayOwner {
         ) else {
             return;
         };
+        if self.stages_durable(connection_id) {
+            let beat_id = definition
+                .beat(plan.accepted.beat_index)
+                .map(|beat| beat.id.clone());
+            self.stage_dialogue(connection_id, plan, beat_id);
+            return;
+        }
         let action_outcome = match execute_dialogue_actions(
             &plan.actions,
             actor,
@@ -4402,15 +4844,18 @@ impl GameplayOwner {
         }
         let stack_limit = item.stack_limit;
         let spawn_position = [position[0] + 0.75, position[1] + 0.25];
-        self.world
-            .spawn_world_drop_item(
-                address,
-                spawn_position,
-                item_content_id,
-                quantity,
-                stack_limit,
-            )
-            .map_err(|error| format!("world-drop spawn failed: {error:?}"))?;
+        if self.id_pool.is_empty() {
+            return Err("no reserved item id is available".to_string());
+        }
+        self.manifest_reserved_drop(
+            address,
+            spawn_position,
+            item_content_id,
+            quantity,
+            stack_limit,
+            GroundOrigin::PlayerDrop,
+        )
+        .map_err(|error| format!("world-drop spawn failed: {error:?}"))?;
 
         println!(
             "DEV_ITEM_SPAWN spawned connection={connection_id} actor={actor} item={item_content_id} quantity={quantity} address={address} position=({:.3},{:.3})",
@@ -5024,6 +5469,8 @@ impl Default for GameplayOwner {
     }
 }
 
+include!("durable_owner_methods.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5221,6 +5668,7 @@ mod tests {
         let mut owner = GameplayOwner::new();
         let connection = ConnectionId::from_raw(1);
         owner.attach(connection);
+        fund_ids(&mut owner, 85_000, 1);
         let item = purgatory_common::ITEM_SMALL_POTION;
         let before = owner.world().iter().count();
 
@@ -10393,4 +10841,6 @@ mod tests {
         assert_eq!(owner.world().transform_of(actor).unwrap().position, before);
         assert_eq!(owner.entity_of(id), Some(actor));
     }
+
+    include!("durable_12c_tests.rs");
 }

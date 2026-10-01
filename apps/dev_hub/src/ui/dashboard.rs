@@ -236,6 +236,99 @@ fn server_panel(
                 outcome.navigate = Some(HubPage::RuntimeServer);
             }
         });
+        database_panel(ui, snap, outcome);
+    });
+}
+
+fn database_panel(
+    ui: &mut egui::Ui,
+    snap: &purgatory_dev_runtime::HubSnapshot,
+    outcome: &mut PageOutcome,
+) {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.label(format!(
+        "Database {} — {}",
+        snap.database_name, snap.database_status
+    ));
+    if !snap.database_detail.is_empty() {
+        ui.label(snap.database_detail.as_str());
+    }
+    let user_id = egui::Id::new("purgatory-dev-user");
+    let confirm_id = egui::Id::new("purgatory-dev-reset-confirm");
+    let admin_id = egui::Id::new("purgatory-dev-admin-password");
+    let mut user = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<String>(user_id))
+        .unwrap_or_default();
+    let mut confirm = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<String>(confirm_id))
+        .unwrap_or_default();
+    let mut admin_password = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<String>(admin_id))
+        .unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.label("Development user");
+        ui.add(egui::TextEdit::singleline(&mut user).desired_width(160.0));
+    });
+    ui.horizontal(|ui| {
+        ui.label("Administrator password");
+        ui.add(
+            egui::TextEdit::singleline(&mut admin_password)
+                .password(true)
+                .desired_width(160.0)
+                .hint_text("Create / Reset only"),
+        );
+    });
+    ui.horizontal(|ui| {
+        let busy = snap.database_busy;
+        if ui.add_enabled(!busy, btn_ghost("Check")).clicked() {
+            outcome.command = Some(purgatory_dev_runtime::HubCommand::DatabaseStatus);
+        }
+        if ui
+            .add_enabled(!busy, btn_primary("Create"))
+            .on_hover_text(
+                "Create Purgatory_dev if it is missing, then add the username above. Uses the administrator password in this panel, not the local database file.",
+            )
+            .clicked()
+        {
+            outcome.command = Some(purgatory_dev_runtime::HubCommand::DatabaseCreate {
+                user: user.clone(),
+                admin_password: admin_password.clone(),
+            });
+        }
+        if ui
+            .add_enabled(!busy && !user.trim().is_empty(), btn_ghost("Add User"))
+            .clicked()
+        {
+            outcome.command =
+                Some(purgatory_dev_runtime::HubCommand::DatabaseAddUser { user: user.clone() });
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Type Purgatory_dev to reset");
+        ui.add(egui::TextEdit::singleline(&mut confirm).desired_width(140.0));
+        let armed = confirm == snap.database_name && !snap.database_busy;
+        if ui
+            .add_enabled(armed, btn_destructive("Reset"))
+            .on_hover_text(
+                "Deletes every local user, character, item, lease, and reservation in Purgatory_dev.",
+            )
+            .clicked()
+        {
+            outcome.command = Some(purgatory_dev_runtime::HubCommand::DatabaseReset {
+                confirm: confirm.clone(),
+                admin_password: admin_password.clone(),
+            });
+            confirm.clear();
+        }
+    });
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(user_id, user);
+        data.insert_temp(confirm_id, confirm);
+        data.insert_temp(admin_id, admin_password);
     });
 }
 

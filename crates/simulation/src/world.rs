@@ -27,7 +27,7 @@ use crate::interaction::{
     InteractionSessionState,
 };
 use crate::interest_locality::InterestLocalityAccounting;
-use crate::item_runtime::{ItemRecord, ItemRuntimeError, ItemRuntimeState};
+use crate::item_runtime::{ItemLocation, ItemRecord, ItemRuntimeError, ItemRuntimeState};
 use crate::lifecycle::EntityLifecycle;
 use crate::map_runtime::InstantiatedMap;
 use crate::motion_debug::PlayerMotionDebug;
@@ -691,6 +691,35 @@ impl World {
         Ok(moved)
     }
 
+    #[must_use]
+    pub fn equipped_instance(
+        &self,
+        owner: EntityId,
+        slot: EquipmentSlot,
+    ) -> Option<ItemInstanceId> {
+        self.item_runtime.equipped_item(owner, slot)
+    }
+
+    /// Remove one inventory instance. Used when a durable retire names that id.
+    pub fn retire_inventory_instance(&mut self, owner: EntityId, item: ItemInstanceId) -> bool {
+        let Some(record) = self.item_record(item) else {
+            return false;
+        };
+        let ItemLocation::Inventory {
+            owner: record_owner,
+            slot,
+        } = record.location
+        else {
+            return false;
+        };
+        if record_owner != owner {
+            return false;
+        }
+        self.item_runtime
+            .remove_inventory_item(owner, slot)
+            .is_some()
+    }
+
     fn equipment_ability(definition: ContentId) -> Option<crate::ability::AbilityId> {
         (definition == purgatory_common::ITEM_PRACTICE_SWORD)
             .then_some(purgatory_common::ABILITY_PRACTICE_SWORD_STRIKE)
@@ -942,6 +971,30 @@ impl World {
         )
     }
 
+    /// Place a committed drop into the live world under its existing instance id.
+    pub fn manifest_committed_world_drop(
+        &mut self,
+        id: ItemInstanceId,
+        address: WorldAddress,
+        position: [f32; 2],
+        definition: ContentId,
+        quantity: u32,
+        stack_limit: u32,
+    ) -> Result<EntityId, ItemRuntimeError> {
+        if let Some(entity) = self.world_drop_entity_for_item(id) {
+            return Ok(entity);
+        }
+        self.spawn_world_drop_item_with_instance(
+            id,
+            address,
+            position,
+            definition,
+            quantity,
+            stack_limit,
+        )
+        .map(|(_, entity)| entity)
+    }
+
     /// Authoritative restore/test insert with an explicit instance id.
     pub(crate) fn spawn_world_drop_item_with_instance(
         &mut self,
@@ -1012,6 +1065,20 @@ impl World {
 
     pub(crate) fn cleanup_item_runtime_for_entity(&mut self, entity: EntityId) {
         let _ = self.item_runtime.remove_by_world_drop(entity);
+        let _ = self.item_runtime.take_owner_items(entity);
+    }
+
+    /// Remove this actor's inventory, equipment, and derived grants so a
+    /// committed restore can bind the same item ids again.
+    pub fn clear_character_durable_runtime(&mut self, owner: EntityId) -> Vec<ItemInstanceId> {
+        for slot in EquipmentSlot::ALL {
+            if let Some(item) = self.equipped_instance(owner, slot) {
+                self.revoke_equipment_ability_grant(owner, item);
+            }
+            let _ = self.clear_equipment_slot(owner, slot);
+        }
+        self.ability_grants.retain_intrinsic(owner);
+        self.item_runtime.take_owner_items(owner)
     }
 
     #[must_use]

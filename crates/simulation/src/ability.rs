@@ -478,6 +478,14 @@ impl AbilityGrantTable {
         });
     }
 
+    /// Keep intrinsic spawn grants. Learned and equipment grants are rebuilt
+    /// from committed character state.
+    pub fn retain_intrinsic(&mut self, owner: EntityId) {
+        self.grants.retain(|(entity, _, source)| {
+            *entity != owner || matches!(source, AbilityGrantSource::Intrinsic)
+        });
+    }
+
     pub fn remove_from_source(
         &mut self,
         owner: EntityId,

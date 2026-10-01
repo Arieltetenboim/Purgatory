@@ -16,6 +16,19 @@ pub enum ProcessOrigin {
 pub struct DiscoveredProcess {
     pub pid: u32,
     pub exe_path: PathBuf,
+    /// Arguments observed for this process. Empty when the scan did not record a command line.
+    pub args: Vec<String>,
+}
+
+/// Database administration is the same `purgatory-server` executable as the game server.
+#[must_use]
+pub fn is_database_admin_command(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--database-status" | "--database-create" | "--database-reset" | "--database-add-user"
+        )
+    })
 }
 
 /// A process this session tracks. Tracking is not the same as OS exclusive ownership.
