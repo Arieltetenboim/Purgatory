@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PURGATORY Item Lab</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brandline">
+    <span class="brand">PURGATORY</span>
+    <span class="brand-separator">/</span>
+    <span class="tool">ITEM LAB</span>
+  </div>
+  <div class="actions">
+    <button id="newButton" type="button">NEW ITEM</button>
+    <button id="duplicateButton" type="button" disabled>DUPLICATE</button>
+    <button id="reloadButton" type="button">RELOAD</button>
+    <button id="revertButton" type="button" disabled>REVERT</button>
+    <button id="saveButton" class="primary" type="button" disabled>SAVE</button>
+  </div>
+</header>
+<main class="app-shell">
+  <aside class="panel library">
+    <div class="panel-heading">LIBRARY</div>
+    <input id="searchInput" placeholder="Search name, id, or label" autocomplete="off">
+    <select id="categoryFilter">
+      <option value="">All categories</option>
+      <option>equipment</option>
+      <option>consumable</option>
+      <option>material</option>
+      <option>tool</option>
+      <option>misc</option>
+    </select>
+    <div id="itemList" class="list"></div>
+  </aside>
+  <section class="workspace">
+    <div id="banner" class="banner">Loading items…</div>
+    <form id="editor" class="editor">
+      <div class="identity">
+        <div>
+          <label>Content ID<input id="contentId" readonly></label>
+          <p class="muted">Allocated from the canonical catalog. It does not change after creation.</p>
+        </div>
+        <div>
+          <label>Technical label<input id="label" autocomplete="off" spellcheck="false"></label>
+          <p class="field-error" data-for="label"></p>
+        </div>
+      </div>
+      <label>Display name<input id="displayName" dir="auto" autocomplete="off"></label>
+      <label>Description<textarea id="description" dir="auto" rows="3"></textarea></label>
+      <div class="grid">
+        <label>Category
+          <select id="category">
+            <option>equipment</option>
+            <option>consumable</option>
+            <option>material</option>
+            <option>tool</option>
+            <option>misc</option>
+          </select>
+        </label>
+        <label>Stack limit<input id="stackLimit" type="number" min="1" step="1"></label>
+        <label class="check"><input id="confirmDrop" type="checkbox"> Drop requires confirmation</label>
+      </div>
+      <p class="field-error" data-for="category"></p>
+      <p class="field-error" data-for="stack"></p>
+      <div id="equipmentBlock">
+        <label>Equipment slot
+          <select id="equipmentSlot">
+            <option>headwear</option>
+            <option>bodywear</option>
+            <option>pants</option>
+            <option>gloves</option>
+            <option>boots</option>
+            <option>weapon</option>
+          </select>
+        </label>
+        <p class="muted">The slot uses the same Content ID. Changing it after creation is rejected. Worn art stays in the equipment presentation file.</p>
+        <p class="field-error" data-for="slot"></p>
+      </div>
+      <label>Icon visual key<input id="icon" autocomplete="off" spellcheck="false"></label>
+      <p class="field-error" data-for="icon"></p>
+      <div class="previews">
+        <div>
+          <div class="muted">Inventory</div>
+          <img id="iconPreview" alt="" width="32" height="32">
+        </div>
+        <div>
+          <div class="muted">Ground</div>
+          <div class="ground"><img id="groundPreview" alt="" width="32" height="32"></div>
+        </div>
+        <div class="info-preview">
+          <div class="muted">Item info</div>
+          <strong id="infoTitle" dir="auto"></strong>
+          <div id="infoDetail"></div>
+          <p id="infoBody" dir="auto"></p>
+        </div>
+      </div>
+      <label>Add a 32×32 RGBA PNG<input id="iconFile" type="file" accept="image/png"></label>
+      <label>Author notes<textarea id="notes" rows="2"></textarea></label>
+      <label>Search tags<input id="tags" placeholder="comma separated" autocomplete="off"></label>
+      <p class="muted">Notes and tags stay outside gameplay. A consumable can be authored here; using or healing it is not implemented.</p>
+      <p class="muted">A new Content ID is compiled into the catalog, so the client and server must be rebuilt before the game can load it. Edits to an existing item's JSON need a restart of the processes that already loaded content.</p>
+      <div id="errors" class="errors"></div>
+    </form>
+  </section>
+  <aside class="panel used">
+    <div class="panel-heading">WHERE USED</div>
+    <div id="whereUsed" class="muted">Select an item.</div>
+  </aside>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

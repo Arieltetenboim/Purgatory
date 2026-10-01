@@ -553,6 +553,21 @@ fn quick_actions(
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
+            let response = ui.add(btn_ghost("Item Lab").min_size(button_size));
+            if action_response(
+                response,
+                "Launch Item Lab in its own PowerShell window. Closing that window stops the Item Lab server.",
+            )
+            .clicked()
+            {
+                let notice = match tool_launch::launch_item_lab() {
+                    Ok(()) => "Item Lab launch requested".to_owned(),
+                    Err(err) => format!("Item Lab launch failed: {err}"),
+                };
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(egui::Id::new("item_lab_notice"), notice);
+                });
+            }
             let response = ui.add(btn_ghost("Asset Slicer").min_size(button_size));
             if action_response(
                 response,
@@ -563,6 +578,14 @@ fn quick_actions(
                 let _ = tool_launch::launch_asset_slicer();
             }
         });
+
+        if let Some(notice) = ui
+            .ctx()
+            .data(|data| data.get_temp::<String>(egui::Id::new("item_lab_notice")))
+        {
+            ui.add_space(6.0);
+            ui.colored_label(theme::muted(), notice);
+        }
 
         ui.add_space(6.0);
         ui.separator();

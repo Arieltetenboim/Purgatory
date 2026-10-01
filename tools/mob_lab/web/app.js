@@ -1,4 +1,4 @@
-const state={
+const state = window.mobLabState = {
   items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,
   presentation:null,previewImage:null,previewFrame:0,previewTimer:null,previewTime:0,previewStarted:false,previewFinished:false,markerFeedback:"",
   manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle",activeTab:"atlas",
@@ -242,6 +242,7 @@ function localErrors(doc){
     if(Number(b.left)+Number(b.right)<=0)e.push("horizontal collision span must be > 0.");
     if(Number(b.bottom)+Number(b.top)<=0)e.push("vertical collision span must be > 0.");
   }
+  if(window.validateMonsterDrops)e.push(...window.validateMonsterDrops(doc));
   if(doc.behavior?.kind!=="chase_contact")e.push("behavior.kind must be chase_contact.");
   if(doc.behavior?.aggro!=="when_attacked")e.push("behavior.aggro must be when_attacked.");
   if(!(Number.isFinite(Number(doc.behavior?.home_leash_radius))&&Number(doc.behavior.home_leash_radius)>0)){
@@ -958,6 +959,7 @@ function renderForm(){
   els.kindInput.value=state.doc.behavior?.kind||"chase_contact";
   els.aggroInput.value=state.doc.behavior?.aggro||"when_attacked";
   syncRaw();updateInspector();updateDirty();drawPreview();updateQuickInfo();
+  window.renderMonsterDrops?.();
 }
 
 function applyForm(){
@@ -1253,6 +1255,7 @@ els.newMonsterForm.addEventListener("submit",async event=>{
   }
 });
 
+window.mobNoteDrops = function(){ syncRaw(); updateInspector(); updateDirty(); };
 (async()=>{
   try{
     await loadSprites();
