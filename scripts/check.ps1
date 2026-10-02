@@ -43,6 +43,9 @@ Invoke-GateStep -Id "check" -Label "Cargo Check" -FilePath $cargo.Source -Argume
 Invoke-GateStep -Id "clippy" -Label "Clippy" -FilePath $cargo.Source -ArgumentList @("clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
 Invoke-GateStep -Id "tests" -Label "Workspace Tests" -FilePath $cargo.Source -ArgumentList @("test", "--workspace")
 Invoke-GateStep -Id "mob-lab" -Label "Mob Lab Tests" -FilePath $python.Source -ArgumentList ($pythonArgs + @("-m", "unittest", "discover", "-s", ".\tools\mob_lab", "-p", "test_*.py"))
+Invoke-GateStep -Id "item-lab" -Label "Item Lab Tests" -FilePath $python.Source -ArgumentList ($pythonArgs + @("-m", "unittest", "discover", "-s", ".\tools\item_lab", "-p", "test_*.py"))
+$node = Get-Command node -ErrorAction Stop
+Invoke-GateStep -Id "authoring-chart" -Label "Shared drop chart" -FilePath $node.Source -ArgumentList @("tools/test_authoring_chart.mjs")
 Invoke-GateStep -Id "content" -Label "Content Validation" -FilePath $cargo.Source -ArgumentList @("run", "-p", "purgatory-content-validator", "-q")
 
 Write-Host "HUB_GATE|DONE|quality|Quality Gate"
