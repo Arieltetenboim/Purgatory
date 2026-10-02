@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import binascii
 import importlib.util
 import json
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
+import time
+import types
 import unittest
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,10 +65,12 @@ class SaveTests(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.root = Path(self._tmpdir.name)
         self._validate = LAB.validate_pack
+        self._format = LAB.format_rust
         LAB.validate_pack = lambda root: None
 
     def tearDown(self) -> None:
         LAB.validate_pack = self._validate
+        LAB.format_rust = self._format
         self._tmpdir.cleanup()
 
     def test_concurrent_saves_from_one_revision_conflict(self) -> None:
@@ -338,6 +345,136 @@ os._exit(77)
         self.assertIn("monster.alloc_b", catalog)
         self.assertIn(f"| `{ids[0] if ids[0] >= 30000 else ids[1]}` | `item.alloc_a` | active |", LAB.catalog_md(self.root).read_text(encoding="utf-8"))
 
+    def test_validation_failure_after_formatting_restores_the_tree(self) -> None:
+        self._copy_catalog()
+        unrelated = self.root / "crates" / "common" / "src" / "unrelated.rs"
+        unrelated.write_text("fn  messy( ){ }\n", encoding="utf-8")
+        original_catalog = (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_bytes()
+        seen: list[str] = []
+
+        def mark(text: str) -> str:
+            seen.append(text)
+            return text + "// formatted-marker\n"
+
+        def reject(root: Path) -> None:
+            catalog = (root / "crates" / "common" / "src" / "content_catalog.rs").read_text(encoding="utf-8")
+            if "// formatted-marker" not in catalog:
+                raise AssertionError("published catalog was not the formatted source")
+            raise RuntimeError("validator failed after formatting")
+
+        LAB.format_rust = mark
+        LAB.validate_pack = reject
+        with self.assertRaises(RuntimeError):
+            LAB.commit_item_create(self.root, payload("item.formatted"))
+        catalog = (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_bytes()
+        self.assertEqual(original_catalog, catalog)
+        self.assertFalse((LAB.items_dir(self.root) / "item.formatted.json").exists())
+        self.assertEqual("fn  messy( ){ }\n", unrelated.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(seen), 2)
+        self.assertFalse((self.root / "content" / ".authoring-recovery").exists())
+
+    def test_reader_waits_out_a_torn_save(self) -> None:
+        seed_item(self.root, "item.sample", 30000)
+        gameplay = LAB.items_dir(self.root) / "item.sample.json"
+        original = gameplay.read_bytes()
+        started = threading.Event()
+        entered = threading.Event()
+        release = threading.Event()
+        reader_done = threading.Event()
+        seen: dict[str, object] = {}
+
+        def writer() -> None:
+            with CatalogWriteLock(self.root):
+                gameplay.write_bytes(b'{"torn":true}\n')
+                started.set()
+                self.assertTrue(release.wait(3))
+                gameplay.write_bytes(original)
+
+        def reader() -> None:
+            self.assertTrue(started.wait(3))
+            entered.set()
+            seen["item"] = LAB.read_item(self.root, gameplay)
+            reader_done.set()
+
+        threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+        for thread in threads:
+            thread.start()
+        self.assertTrue(entered.wait(3))
+        time.sleep(0.2)
+        self.assertFalse(reader_done.is_set())
+        release.set()
+        for thread in threads:
+            thread.join()
+        item = seen["item"]
+        self.assertIsInstance(item, dict)
+        assert isinstance(item, dict)
+        self.assertEqual("item.sample", item["label"])
+        self.assertEqual(original, gameplay.read_bytes())
+        self.assertEqual(item["revision"], LAB.snapshot_item(self.root, gameplay)["revision"])
+
+    def test_posix_lock_times_out_then_acquires(self) -> None:
+        fake = types.ModuleType("fcntl")
+        fake.LOCK_EX = 2
+        fake.LOCK_NB = 4
+        fake.LOCK_UN = 8
+        held = {"value": False}
+
+        def flock(_fd: int, flags: int) -> None:
+            if flags & fake.LOCK_UN:
+                held["value"] = False
+                return
+            if held["value"]:
+                raise BlockingIOError("busy")
+            if flags != (fake.LOCK_EX | fake.LOCK_NB):
+                raise AssertionError(flags)
+            held["value"] = True
+
+        fake.flock = flock
+        sys.modules["fcntl"] = fake
+        try:
+            with CatalogWriteLock(self.root, timeout_s=2, platform="linux"):
+                with self.assertRaises(TimeoutError):
+                    with CatalogWriteLock(self.root, timeout_s=0.2, platform="linux"):
+                        pass
+            with CatalogWriteLock(self.root, timeout_s=0.2, platform="linux"):
+                self.assertTrue(held["value"])
+        finally:
+            sys.modules.pop("fcntl", None)
+
+    def test_retry_compares_the_equipment_slot(self) -> None:
+        self._copy_catalog()
+        LAB.format_rust = lambda text: text
+        body = payload(
+            "item.helm_retry",
+            category="equipment",
+            stack_limit=1,
+            equipment_slot="headwear",
+            drop_requires_confirmation=True,
+        )
+        first = LAB.commit_item_create(self.root, body)
+        second = LAB.commit_item_create(self.root, body)
+        self.assertEqual(first["content_id"], second["content_id"])
+        self.assertTrue(second.get("idempotent"))
+        moved = dict(body)
+        moved["equipment_slot"] = "boots"
+        with self.assertRaises(LAB.AuthoringConflict):
+            LAB.commit_item_create(self.root, moved)
+        slot = json.loads(
+            (LAB.equipment_dir(self.root) / "item.helm_retry.json").read_text(encoding="utf-8")
+        )["equipment_slot"]
+        self.assertEqual("headwear", slot)
+
+    def test_icon_must_decode(self) -> None:
+        LAB.commit_icon(self.root, "item.ok", _png(32, 32))
+        self.assertTrue((LAB.icons_dir(self.root) / "item.ok.png").is_file())
+        bad = _png(32, 32, broken_filter=True)
+        with self.assertRaises(LAB.AuthoringRejected):
+            LAB.commit_icon(self.root, "item.bad", bad)
+        self.assertFalse((LAB.icons_dir(self.root) / "item.bad.png").exists())
+        with self.assertRaises(LAB.AuthoringRejected):
+            LAB.commit_icon(self.root, "item.short", _header_only_png())
+        self.assertFalse((LAB.icons_dir(self.root) / "item.short.png").exists())
+
     def test_chart_module(self) -> None:
         node = shutil.which("node")
         self.assertIsNotNone(node)
@@ -359,6 +496,33 @@ os._exit(77)
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, destination)
+
+
+def _chunk(kind: bytes, payload: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(payload))
+        + kind
+        + payload
+        + struct.pack(">I", binascii.crc32(kind + payload) & 0xFFFFFFFF)
+    )
+
+
+def _png(width: int, height: int, broken_filter: bool = False) -> bytes:
+    rows = []
+    for _ in range(height):
+        rows.append(bytes([9 if broken_filter else 0]) + b"\x00\x00\x00\x00" * width)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + _chunk(b"IDAT", zlib.compress(b"".join(rows)))
+        + _chunk(b"IEND", b"")
+    )
+
+
+def _header_only_png() -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + _chunk(
+        b"IHDR", struct.pack(">IIBBBBB", 32, 32, 8, 6, 0, 0, 0)
+    )
 
 
 if __name__ == "__main__":

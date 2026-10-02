@@ -6,8 +6,11 @@ import hashlib
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
+import tempfile
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -83,16 +86,14 @@ def atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+ABSENT_PRESENTATION = b"<absent-presentation>"
+ABSENT_EQUIPMENT = b"<absent-equipment>"
+ABSENT_NOTES = b"<absent-notes>"
+
+
 def item_revision(root: Path, path: Path, content_id: int) -> str:
-    presentation_path = presentation_dir(root) / path.name
-    notes_path = notes_dir(root) / f"{content_id}.json"
-    equip = equipment_path(root, content_id)
-    return revision_of(
-        path.read_text(encoding="utf-8") if path.exists() else "<absent-gameplay>",
-        presentation_path.read_text(encoding="utf-8") if presentation_path.exists() else "<absent-presentation>",
-        equip.read_text(encoding="utf-8") if equip is not None else "<absent-equipment>",
-        notes_path.read_text(encoding="utf-8") if notes_path.exists() else "<absent-notes>",
-    )
+    del content_id
+    return snapshot_item(root, path)["revision"]
 
 
 def equipment_path(root: Path, content_id: int) -> Path | None:
@@ -105,37 +106,128 @@ def equipment_path(root: Path, content_id: int) -> Path | None:
     return None
 
 
-def revision_of(*parts: str) -> str:
+def revision_of_bytes(*parts: bytes) -> str:
     digest = hashlib.sha256()
     for part in parts:
-        digest.update(part.encode("utf-8"))
+        digest.update(part)
         digest.update(b"\0")
     return digest.hexdigest()
 
 
-def png_size(data: bytes) -> tuple[int, int, int]:
+def _paeth(left: int, up: int, upper_left: int) -> int:
+    estimate = left + up - upper_left
+    left_distance = abs(estimate - left)
+    up_distance = abs(estimate - up)
+    upper_left_distance = abs(estimate - upper_left)
+    if left_distance <= up_distance and left_distance <= upper_left_distance:
+        return left
+    if up_distance <= upper_left_distance:
+        return up
+    return upper_left
+
+
+def decode_png_rgba(data: bytes) -> tuple[int, int]:
+    """Decode a non-interlaced 8-bit RGBA PNG. Header size alone is not enough."""
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("file is not a PNG")
-    if data[12:16] != b"IHDR":
-        raise ValueError("PNG is missing IHDR")
-    width = int.from_bytes(data[16:20], "big")
-    height = int.from_bytes(data[20:24], "big")
-    color = data[25]
-    return width, height, color
+    position = 8
+    width = height = None
+    idat: list[bytes] = []
+    ended = False
+    while position < len(data):
+        if position + 8 > len(data):
+            raise ValueError("PNG chunk is truncated")
+        length = int.from_bytes(data[position : position + 4], "big")
+        kind = data[position + 4 : position + 8]
+        position += 8
+        if position + length + 4 > len(data):
+            raise ValueError("PNG chunk is truncated")
+        chunk = data[position : position + length]
+        crc = int.from_bytes(data[position + length : position + length + 4], "big")
+        if crc != (zlib.crc32(kind + chunk) & 0xFFFFFFFF):
+            raise ValueError("PNG chunk CRC does not match")
+        position += length + 4
+        if kind == b"IHDR":
+            if len(chunk) != 13 or width is not None:
+                raise ValueError("PNG IHDR is invalid")
+            width, height = struct.unpack(">II", chunk[:8])
+            if tuple(chunk[8:13]) != (8, 6, 0, 0, 0):
+                raise ValueError("icon must be a non-interlaced 8-bit RGBA PNG")
+            if width < 1 or height < 1:
+                raise ValueError("PNG image size is invalid")
+        elif kind == b"IDAT":
+            idat.append(chunk)
+        elif kind == b"IEND":
+            ended = True
+            break
+    if width is None or height is None or not ended or not idat:
+        raise ValueError("PNG image data is incomplete")
+    try:
+        raw = zlib.decompress(b"".join(idat))
+    except zlib.error as error:
+        raise ValueError("PNG image data does not decode") from error
+    stride = width * 4
+    if len(raw) != (stride + 1) * height:
+        raise ValueError("PNG image data has the wrong size")
+    previous = bytearray(stride)
+    for row in range(height):
+        start = row * (stride + 1)
+        filter_type = raw[start]
+        scan = bytearray(raw[start + 1 : start + 1 + stride])
+        if filter_type > 4:
+            raise ValueError("PNG row filter is invalid")
+        for index in range(stride):
+            left = scan[index - 4] if index >= 4 else 0
+            up = previous[index]
+            upper_left = previous[index - 4] if index >= 4 else 0
+            if filter_type == 1:
+                scan[index] = (scan[index] + left) & 0xFF
+            elif filter_type == 2:
+                scan[index] = (scan[index] + up) & 0xFF
+            elif filter_type == 3:
+                scan[index] = (scan[index] + ((left + up) // 2)) & 0xFF
+            elif filter_type == 4:
+                scan[index] = (scan[index] + _paeth(left, up, upper_left)) & 0xFF
+        previous = scan
+    return width, height
 
 
 def item_files(root: Path) -> list[Path]:
     return sorted(items_dir(root).glob("*.json"))
 
 
-def load_item(root: Path, path: Path) -> dict:
-    doc = read_json(path)
+def _read_optional(path: Path, absent: bytes) -> tuple[bytes, dict]:
+    if not path.is_file():
+        return absent, {}
+    payload = path.read_bytes()
+    return payload, json.loads(payload.decode("utf-8"))
+
+
+def snapshot_item(root: Path, path: Path) -> dict:
+    """Parse one item from a single read of each resource. The revision hashes those bytes."""
+    gameplay = path.read_bytes()
+    doc = json.loads(gameplay.decode("utf-8"))
     content_id = int(doc["id"])
-    presentation_path = presentation_dir(root) / path.name
-    presentation = read_json(presentation_path) if presentation_path.exists() else {}
-    equipment = equipment_document(root, content_id)
-    notes_path = notes_dir(root) / f"{content_id}.json"
-    notes = read_json(notes_path) if notes_path.exists() else {"notes": "", "tags": []}
+    presentation_bytes, presentation = _read_optional(
+        presentation_dir(root) / path.name, ABSENT_PRESENTATION
+    )
+    if presentation_bytes == ABSENT_PRESENTATION:
+        presentation = {}
+    equipment_bytes = ABSENT_EQUIPMENT
+    equipment: dict | None = None
+    for candidate in equipment_dir(root).glob("*.json"):
+        try:
+            payload = candidate.read_bytes()
+            parsed = json.loads(payload.decode("utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            continue
+        if parsed.get("id") == content_id:
+            equipment_bytes = payload
+            equipment = parsed
+            break
+    notes_bytes, notes = _read_optional(notes_dir(root) / f"{content_id}.json", ABSENT_NOTES)
+    if notes_bytes == ABSENT_NOTES:
+        notes = {"notes": "", "tags": []}
     return {
         "path": str(path.relative_to(root)).replace("\\", "/"),
         "content_id": content_id,
@@ -149,19 +241,32 @@ def load_item(root: Path, path: Path) -> dict:
         "equipment_slot": None if equipment is None else equipment.get("equipment_slot"),
         "notes": notes.get("notes", ""),
         "tags": notes.get("tags", []),
-        "revision": item_revision(root, path, content_id),
+        "revision": revision_of_bytes(gameplay, presentation_bytes, equipment_bytes, notes_bytes),
         "icon_file": (icons_dir(root) / f"{presentation.get('icon', '')}.png").is_file(),
     }
 
 
+def load_item(root: Path, path: Path) -> dict:
+    return snapshot_item(root, path)
+
+
+def read_item(root: Path, path: Path) -> dict:
+    """Lock, recover a publishing journal, then read one coherent snapshot."""
+    with CatalogWriteLock(root):
+        recover_authoring(root)
+        return snapshot_item(root, path)
+
+
 def list_items(root: Path) -> list[dict]:
-    rows = []
-    for path in item_files(root):
-        try:
-            rows.append(load_item(root, path))
-        except (OSError, json.JSONDecodeError, KeyError, ValueError):
-            continue
-    return rows
+    with CatalogWriteLock(root):
+        recover_authoring(root)
+        rows = []
+        for path in item_files(root):
+            try:
+                rows.append(snapshot_item(root, path))
+            except (OSError, json.JSONDecodeError, KeyError, ValueError, UnicodeError):
+                continue
+        return rows
 
 
 def equipment_document(root: Path, content_id: int) -> dict | None:
@@ -440,7 +545,29 @@ def _same_draft(current: dict, payload: dict) -> bool:
         and list(current.get("tags") or []) == list(payload.get("tags") or [])
         and bool(current.get("drop_requires_confirmation"))
         == bool(payload.get("drop_requires_confirmation", False))
+        and (current.get("equipment_slot") or None) == (payload.get("equipment_slot") or None)
     )
+
+
+def format_rust(text: str) -> str:
+    """Format one Rust source in a temporary file before it is staged."""
+    handle = tempfile.NamedTemporaryFile("w", suffix=".rs", delete=False, encoding="utf-8", newline="\n")
+    path = Path(handle.name)
+    try:
+        handle.write(text)
+        handle.close()
+        completed = subprocess.run(
+            ["rustfmt", "--edition", "2024", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "rustfmt failed").strip()
+            raise RuntimeError(detail[-2000:])
+        return path.read_text(encoding="utf-8")
+    finally:
+        path.unlink(missing_ok=True)
 
 
 class AuthoringRejected(Exception):
@@ -459,7 +586,7 @@ def commit_item_create(root: Path, payload: dict) -> dict:
         recover_authoring(root)
         existing = items_dir(root) / f"{label}.json"
         if existing.is_file():
-            current = load_item(root, existing)
+            current = snapshot_item(root, existing)
             if _same_draft(current, payload):
                 return {"content_id": current["content_id"], "item": current, "idempotent": True}
             raise AuthoringConflict(
@@ -472,31 +599,24 @@ def commit_item_create(root: Path, payload: dict) -> dict:
         ledger = ledger_path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
         library = lib_path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
         content_id = next_item_id(catalog, ledger)
-        operation = AuthoringOperation(root)
-        for path, text in [
-            (catalog_path, insert_catalog(catalog, label, content_id)),
-            (lib_path, insert_lib_export(library, label)),
+        staged = [
+            (catalog_path, format_rust(insert_catalog(catalog, label, content_id))),
+            (lib_path, format_rust(insert_lib_export(library, label))),
             (ledger_path, insert_ledger(ledger, label, content_id)),
             *planned_item_files(root, payload, content_id),
-        ]:
+        ]
+        operation = AuthoringOperation(root)
+        for path, text in staged:
             operation.stage(path, text.encode("utf-8"))
         try:
             operation.publish()
-            formatted = subprocess.run(
-                ["cargo", "fmt", "-p", "purgatory-common"],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if formatted.returncode != 0:
-                raise RuntimeError(formatted.stderr or "cargo fmt failed")
             validate_pack(root)
             operation.finish()
         except Exception:
             operation.rollback()
             raise
-    return {"content_id": content_id, "item": load_item(root, items_dir(root) / f"{label}.json")}
+        created = snapshot_item(root, items_dir(root) / f"{label}.json")
+    return {"content_id": content_id, "item": created}
 
 
 def commit_item_save(root: Path, payload: dict) -> dict:
@@ -509,7 +629,7 @@ def commit_item_save(root: Path, payload: dict) -> dict:
         recover_authoring(root)
         if not path.is_file():
             raise AuthoringRejected(404, {"error": "item was not found"})
-        current = load_item(root, path)
+        current = snapshot_item(root, path)
         if payload.get("revision") != current["revision"]:
             raise AuthoringConflict("The item changed on disk. Reload before saving.")
         if payload.get("category") != current["category"]:
@@ -521,7 +641,7 @@ def commit_item_save(root: Path, payload: dict) -> dict:
         if current["category"] == "equipment" and payload.get("equipment_slot") != current["equipment_slot"]:
             raise AuthoringRejected(400, {"error": "Changing the equipment slot is rejected."})
         publish_files(root, planned_item_files(root, payload, int(current["content_id"])), validate=True)
-        saved = load_item(root, path)
+        saved = snapshot_item(root, path)
     return {"item": saved}
 
 
@@ -529,10 +649,10 @@ def commit_icon(root: Path, key: str, data: bytes) -> dict:
     if not VISUAL_RE.fullmatch(key):
         raise AuthoringRejected(400, {"error": "icon key is invalid"})
     try:
-        width, height, color = png_size(data)
-    except (ValueError, IndexError) as error:
+        width, height = decode_png_rgba(data)
+    except (ValueError, IndexError, struct.error, zlib.error) as error:
         raise AuthoringRejected(400, {"error": str(error)}) from error
-    if (width, height) != (ICON_PX, ICON_PX) or color != 6:
+    if (width, height) != (ICON_PX, ICON_PX):
         raise AuthoringRejected(400, {"error": "icon must be a 32x32 RGBA PNG"})
     destination = icons_dir(root) / f"{key}.png"
     with CatalogWriteLock(root):
@@ -562,6 +682,14 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(raw.decode("utf-8"))
 
     def do_GET(self) -> None:
+        try:
+            self._do_GET()
+        except AuthoringRepair as error:
+            self.send_json(409, {"error": str(error), "repair": True})
+        except TimeoutError as error:
+            self.send_json(503, {"error": str(error)})
+
+    def _do_GET(self) -> None:
         parsed = urlparse(self.path)
         root = repo_root()
         if parsed.path == "/api/health":
@@ -595,7 +723,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path.is_file():
                 self.send_json(404, {"error": "item was not found"})
                 return
-            self.send_json(200, load_item(root, path))
+            self.send_json(200, read_item(root, path))
             return
         if parsed.path == "/api/where-used":
             content_id = int(parse_qs(parsed.query).get("id", ["0"])[0])

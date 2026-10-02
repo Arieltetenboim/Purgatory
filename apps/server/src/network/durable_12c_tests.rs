@@ -3376,7 +3376,7 @@
 
     #[test]
     #[ignore]
-    fn postgres_monster_death_pickup_survives_restart() {
+    fn postgres_12c_monster_death_pickup_survives_restart() {
         with_db(|pg| {
             let hero = pg.enter("Mira");
             let batch = pg

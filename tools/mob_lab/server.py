@@ -1165,19 +1165,32 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             if not path.is_file():
                 self._json_response({"error": "Monster file not found."}, HTTPStatus.NOT_FOUND)
                 return
-            doc = json.loads(path.read_text(encoding="utf-8"))
-            authored = doc.get("id") if isinstance(doc, dict) else None
+            with CONTENT_WRITE_LOCK, CatalogWriteLock(self.repo_root):
+                recover_authoring(self.repo_root)
+                if not path.is_file():
+                    self._json_response({"error": "Monster file not found."}, HTTPStatus.NOT_FOUND)
+                    return
+                raw = path.read_bytes()
+                doc = json.loads(raw.decode("utf-8"))
+                authored = doc.get("id") if isinstance(doc, dict) else None
+                content_id = (
+                    load_numeric_catalog(self.repo_root).get(authored)
+                    if isinstance(authored, str)
+                    else None
+                )
             self._json_response(
                 {
                     "path": path.name,
                     "document": doc,
-                    "content_id": load_numeric_catalog(self.repo_root).get(authored)
-                    if isinstance(authored, str)
-                    else None,
+                    "content_id": content_id,
                     "validation_errors": validate_monster_document(doc),
-                    "revision": source_revision(path.read_bytes()),
+                    "revision": source_revision(raw),
                 }
             )
+        except AuthoringRepair as exc:
+            self._json_response({"error": str(exc), "repair": True}, HTTPStatus.CONFLICT)
+        except TimeoutError as exc:
+            self._json_response({"error": str(exc)}, HTTPStatus.SERVICE_UNAVAILABLE)
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
