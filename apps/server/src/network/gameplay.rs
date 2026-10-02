@@ -515,6 +515,46 @@ struct ReconcileJob {
     revision: u64,
 }
 
+/// SplitMix64. Seeded once when the owner is created, never from the tick.
+struct LootRng {
+    state: u64,
+}
+
+impl LootRng {
+    fn from_entropy() -> Self {
+        Self::from_seed(loot_entropy())
+    }
+
+    fn from_seed(seed: u64) -> Self {
+        Self { state: seed | 1 }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 32) as u32
+    }
+}
+
+fn loot_entropy() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let step = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let local = 0u8;
+    let address = &local as *const u8 as u64;
+    let tick = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(0);
+    address
+        ^ tick.rotate_left(17)
+        ^ u64::from(std::process::id()).wrapping_mul(0x9E37)
+        ^ step.wrapping_mul(0xBF58_476D_1CE4_E5B9)
+}
+
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
 pub struct GameplayOwner {
     world: World,
@@ -617,6 +657,13 @@ pub struct GameplayOwner {
     /// Map entries removed by the latest `forget_ground_item`.
     #[cfg_attr(not(test), allow(dead_code))]
     ground_remove_ops: u32,
+    /// Rolled drops still waiting for a reserved id. Already manifested rows are gone.
+    pending_loot: VecDeque<PendingMonsterLoot>,
+    closed_loot_addresses: HashSet<WorldAddress>,
+    loot_rng: LootRng,
+    loot_manifested: u64,
+    loot_allocation_deferred: u64,
+    loot_abandoned: u64,
 }
 
 /// Ordinary ground stays visible for 200 seconds. Monster loot is exclusive to
@@ -625,6 +672,8 @@ const GROUND_EXCLUSIVE_WINDOW: Duration = Duration::from_secs(40);
 const GROUND_LIFETIME: Duration = Duration::from_secs(200);
 /// Database retires and local despawns started from one wake.
 const GROUND_RETIRE_BATCH: usize = 8;
+/// Unmanifested drop plans kept from one channel. A full queue abandons the new plan.
+const MAX_PENDING_MONSTER_LOOT: usize = 32;
 /// Ids requested from PostgreSQL when the local pool runs low.
 pub(crate) const ID_RESERVE_BATCH: u32 = 32;
 const ID_RESERVE_LOW_WATER: usize = 8;
@@ -633,6 +682,14 @@ const ID_RESERVE_LOW_WATER: usize = 8;
 enum GroundOrigin {
     PlayerDrop,
     MonsterLoot { killer: CharacterId },
+}
+
+/// Drops from one death that do not yet have a reserved id.
+struct PendingMonsterLoot {
+    killer: CharacterId,
+    address: WorldAddress,
+    position: [f32; 2],
+    remaining: Vec<purgatory_content::RolledMonsterDrop>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1547,6 +1604,12 @@ impl GameplayOwner {
             ground_deferred_member: HashSet::new(),
             ground_wake_ops: 0,
             ground_remove_ops: 0,
+            pending_loot: VecDeque::new(),
+            closed_loot_addresses: HashSet::new(),
+            loot_rng: LootRng::from_entropy(),
+            loot_manifested: 0,
+            loot_allocation_deferred: 0,
+            loot_abandoned: 0,
         }
     }
 
@@ -2356,6 +2419,7 @@ impl GameplayOwner {
                 binding.authority_lost = true;
             }
         }
+        self.flush_pending_monster_loot();
     }
 
     pub fn detach(&mut self, connection_id: ConnectionId) {
@@ -4479,6 +4543,7 @@ impl GameplayOwner {
 
     fn fanout_presentation_runtime_events(&mut self) {
         use purgatory_simulation::RuntimeEvent;
+        self.flush_pending_monster_loot();
         let events = self.world.commit_runtime_events();
         for event in events {
             match event {
@@ -4512,6 +4577,9 @@ impl GameplayOwner {
                     });
                     println!("9D_PRESENTATION clear actor={entity}");
                     self.broadcast_presentation_oneshot(wire);
+                }
+                RuntimeEvent::NpcDied { entity, killer } => {
+                    self.plan_monster_loot(entity, killer);
                 }
                 _ => {}
             }
@@ -5475,6 +5543,7 @@ include!("durable_owner_methods.rs");
 mod tests {
     use super::*;
     use purgatory_common::MONSTER_MOSS_CRAB;
+    include!("monster_loot_tests.rs");
 
     fn test_lease(
         character_id: CharacterId,

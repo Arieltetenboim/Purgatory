@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "id": 30015,
+  "label": "item.dev.sample_scrap",
+  "icon": "item.dev.sample_scrap",
+  "display_name": "Sample scrap",
+  "description": "Development material used to prove authored monster drops."
+}

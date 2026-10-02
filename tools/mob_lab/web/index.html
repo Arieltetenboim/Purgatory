@@ -83,6 +83,7 @@
         <button type="button" class="editor-tab" data-tab="gameplay">GAMEPLAY</button>
         <button type="button" class="editor-tab" data-tab="behavior">BEHAVIOR</button>
         <button type="button" class="editor-tab" data-tab="collision">COLLISION</button>
+        <button type="button" class="editor-tab" data-tab="drops">DROPS</button>
         <button type="button" class="editor-tab" data-tab="raw">RAW JSON</button>
       </nav>
 
@@ -232,6 +233,33 @@
           </div>
         </div>
 
+        <div class="tab-panel" data-panel="drops" id="dropsPanel">
+          <div class="section-head">
+            <div><h2>Drops</h2><p>Each row is rolled independently when this monster dies. Chances do not need to sum to 100. An empty list means no authored drops.</p></div>
+            <button type="button" id="addDropButton">ADD DROP</button>
+          </div>
+          <div id="dropRows"></div>
+          <p id="dropEmpty" class="muted">No authored drops.</p>
+          <div class="drop-chart-wrap">
+            <div class="drop-chart-head">
+              <strong id="dropChartTitle">Expected drop</strong>
+              <span id="dropChartDraft" class="muted"></span>
+            </div>
+            <div class="drop-presets">
+              <button type="button" data-kills="100">100</button>
+              <button type="button" data-kills="1000">1,000</button>
+              <button type="button" data-kills="10000">10,000</button>
+              <button type="button" data-kills="100000">100,000</button>
+              <label>Inspect N<input id="dropKills" type="number" min="0" max="1000000" step="1" value="1000"></label>
+            </div>
+            <p id="dropInspect" class="muted"></p>
+            <p class="muted">Expectation is a long-run average, not a guaranteed quota. Editing the chart does not save. A future runtime simulator is separate and must call the server resolver.</p>
+            <svg id="dropChart" viewBox="0 0 640 280" role="img" aria-label="Expected cumulative drops"></svg>
+            <div id="dropHover" class="drop-hover" hidden></div>
+            <p class="muted">The line is the analytic expectation, not an observed sample. Future runtime simulation is documented separately and is not running here.</p>
+          </div>
+        </div>
+
         <div class="tab-panel" data-panel="raw">
           <div class="raw-grid">
             <section>
@@ -309,6 +337,8 @@
     </div>
   </form>
 </dialog>
-<script src="/app.js?v=m3-prototype-parity-v13"></script>
+<script src="/authoring_chart.js?v=item-lab-v1"></script>
+<script src="/drops.js?v=item-lab-v1"></script>
+<script src="/app.js?v=m3-prototype-parity-v14"></script>
 </body>
 </html>

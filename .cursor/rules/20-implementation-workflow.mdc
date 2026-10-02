@@ -36,6 +36,7 @@ Escalate decisions that materially affect architecture, scope, public contracts,
 8. Avoid opportunistic cleanup outside the requested scope.
 9. Add focused tests for new behavior and important regressions.
 10. Run the project-defined quality gate before reporting completion.
+11. If the change writes authored content or durable gameplay state, follow `docs/PERSISTENCE_AND_AUTHORING_CONTRACT.md` and include its Persistence Impact note. Do not copy the contract into this rule.
 
 ## Bug fixes
 

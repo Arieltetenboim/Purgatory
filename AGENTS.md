@@ -21,6 +21,7 @@ Scoped workflows: [`.cursor/skills/`](.cursor/skills/) (`purgatory-implement`, `
 - `docs/QUALITY.md` — repository quality policy
 - `docs/PERFORMANCE_BUDGETS.md` — living performance budgets
 - `docs/CONTENT_PIPELINE.md` — content authoring boundary
+- `docs/PERSISTENCE_AND_AUTHORING_CONTRACT.md` — saving rules for authored content and durable gameplay state
 - `docs/DIAGNOSTICS_ARCHITECTURE.md` — client debug/diagnostics split (D-track)
 - root `PHASE` — current phase marker
 
@@ -29,6 +30,7 @@ Scoped workflows: [`.cursor/skills/`](.cursor/skills/) (`purgatory-implement`, `
 - Inspect existing implementation, callers, and tests before modifying them.
 - Honor the requested phase/sub-phase boundary. Do not start the next phase until instructed.
 - Respect the project-defined quality gate (`./scripts/check.ps1` or `./scripts/check.sh`). Compiling is not completion.
+- Changes that write authored content or durable gameplay state follow `docs/PERSISTENCE_AND_AUTHORING_CONTRACT.md` and include a Persistence Impact note. Do not copy that contract here.
 - Surface architectural uncertainty rather than silently resolving it.
 
 

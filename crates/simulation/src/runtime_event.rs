@@ -64,6 +64,11 @@ pub enum RuntimeEvent {
     PresentationOneShotCleared {
         entity: EntityId,
     },
+    /// One monster life reached zero health. `killer` is the lethal damage source.
+    NpcDied {
+        entity: EntityId,
+        killer: Option<EntityId>,
+    },
 }
 
 /// Double-buffer queue. `push` during a tick; `commit` drains once.

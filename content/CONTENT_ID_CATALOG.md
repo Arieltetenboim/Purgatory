@@ -45,6 +45,7 @@ Rules:
 | `30012` | `item.package` | active |
 | `30013` | `item.welcome.road_marker_cloth_bundle` | active |
 | `30014` | `item.welcome.watch_signal_lantern` | active |
+| `30015` | `item.dev.sample_scrap` | active |
 
 The matching equipment gameplay and equipment-presentation facets use the same Item ID as the item row above.
 
@@ -68,6 +69,8 @@ The matching equipment gameplay and equipment-presentation facets use the same I
 | `10002` | `monster.moss_crab` | active |
 
 | `10003` | `monster.shroom` | active |
+| `10004` | `monster.dev.guaranteed_drop` | active |
+| `10005` | `monster.dev.mixed_drops` | active |
 
 ### NPCs — 20,000–29,999
 

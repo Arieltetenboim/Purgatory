@@ -343,6 +343,7 @@ mod tests {
             movement_speed: 1.75,
             behavior: MonsterBehavior::ChaseContactWhenAttacked,
             home_leash_radius: 6.5,
+            drops: Vec::new(),
         };
 
         let request = spawn_request_for_monster(

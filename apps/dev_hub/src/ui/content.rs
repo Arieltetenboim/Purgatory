@@ -13,7 +13,7 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
     layout::page_header(
         ui,
         "Content",
-        "Standalone authoring tools. Animation Lab, Character Lab, NPC Lab, Mob Lab, Map Lab, and Asset Slicer launch independently of the Hub.",
+        "Standalone authoring tools. Animation Lab, Character Lab, NPC Lab, Mob Lab, Item Lab, Map Lab, and Asset Slicer launch independently of the Hub.",
     );
     ui.columns(4, |columns| {
         card(&mut columns[0], "Animation Lab", |ui| {
@@ -82,6 +82,24 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
                 });
             }
         });
+    });
+
+    ui.add_space(12.0);
+
+    card(ui, "Item Lab", |ui| {
+        ui.label("Local item authoring. Saved items use the same content the game loads.");
+        ui.add_space(6.0);
+        ui.colored_label(
+            theme::muted(),
+            "Runs in its own PowerShell window. Closing that window stops the Item Lab server.",
+        );
+        ui.add_space(8.0);
+        if ui.add(btn_primary("Launch Item Lab")).clicked() {
+            *export_status = Some(match tool_launch::launch_item_lab() {
+                Ok(()) => "Item Lab launch requested".to_owned(),
+                Err(err) => format!("Item Lab launch failed: {err}"),
+            });
+        }
     });
 
     ui.add_space(12.0);

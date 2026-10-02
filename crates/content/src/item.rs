@@ -65,6 +65,9 @@ pub struct ItemPresentation {
     pub authored_id: String,
     /// Logical visual key, never a filesystem path or renderer handle.
     pub icon: String,
+    /// Empty falls back to the technical label in the inventory tooltip.
+    pub display_name: String,
+    pub description: String,
 }
 
 #[must_use]
@@ -191,6 +194,8 @@ mod tests {
             content_id: purgatory_common::ITEM_SMALL_POTION,
             authored_id: "item.debug.small_potion".into(),
             icon: "Graphic/items/icon.png".into(),
+            display_name: String::new(),
+            description: String::new(),
         };
         let err = validate_item_presentation(&def).unwrap_err();
         assert!(err.to_string().contains("must not be a path"));

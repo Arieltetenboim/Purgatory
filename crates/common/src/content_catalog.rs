@@ -13,6 +13,8 @@ pub const MONSTER_RED_SLIME: ContentId = ContentId::from_raw(10_001);
 pub const MONSTER_MOSS_CRAB: ContentId = ContentId::from_raw(10_002);
 
 pub const MONSTER_SHROOM: ContentId = ContentId::from_raw(10_003);
+pub const MONSTER_DEV_GUARANTEED_DROP: ContentId = ContentId::from_raw(10_004);
+pub const MONSTER_DEV_MIXED_DROPS: ContentId = ContentId::from_raw(10_005);
 
 pub const NPC_WELCOME_TRAVELER_STAYED: ContentId = ContentId::from_raw(20_001);
 pub const NPC_WELCOME_GATE_WATCHMAN: ContentId = ContentId::from_raw(20_002);
@@ -36,6 +38,7 @@ pub const ITEM_SMALL_POTION: ContentId = ContentId::from_raw(30_011);
 pub const ITEM_PACKAGE: ContentId = ContentId::from_raw(30_012);
 pub const ITEM_ROAD_MARKER_CLOTH_BUNDLE: ContentId = ContentId::from_raw(30_013);
 pub const ITEM_WATCH_SIGNAL_LANTERN: ContentId = ContentId::from_raw(30_014);
+pub const ITEM_DEV_SAMPLE_SCRAP: ContentId = ContentId::from_raw(30_015);
 
 pub const WORLD_OBJECT_CHEST: ContentId = ContentId::from_raw(60_001);
 pub const WORLD_OBJECT_MAP_B_SWITCH: ContentId = ContentId::from_raw(60_002);
@@ -56,6 +59,8 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
         "monster.moss_crab" => MONSTER_MOSS_CRAB,
 
         "monster.shroom" => MONSTER_SHROOM,
+        "monster.dev.guaranteed_drop" => MONSTER_DEV_GUARANTEED_DROP,
+        "monster.dev.mixed_drops" => MONSTER_DEV_MIXED_DROPS,
         "npc.welcome.traveler_stayed" => NPC_WELCOME_TRAVELER_STAYED,
         "npc.welcome.gate_watchman" => NPC_WELCOME_GATE_WATCHMAN,
         "npc.welcome.shopkeeper" => NPC_WELCOME_SHOPKEEPER,
@@ -76,6 +81,7 @@ pub fn allocated_id_for_label(label: &str) -> Option<ContentId> {
         "item.package" => ITEM_PACKAGE,
         "item.welcome.road_marker_cloth_bundle" => ITEM_ROAD_MARKER_CLOTH_BUNDLE,
         "item.welcome.watch_signal_lantern" => ITEM_WATCH_SIGNAL_LANTERN,
+        "item.dev.sample_scrap" => ITEM_DEV_SAMPLE_SCRAP,
         "entity.interactable.chest" => WORLD_OBJECT_CHEST,
         "entity.interactable.map_b_switch" => WORLD_OBJECT_MAP_B_SWITCH,
         "entity.interactable.switch" => WORLD_OBJECT_SWITCH,
@@ -95,6 +101,8 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
         MONSTER_MOSS_CRAB => "monster.moss_crab",
 
         MONSTER_SHROOM => "monster.shroom",
+        MONSTER_DEV_GUARANTEED_DROP => "monster.dev.guaranteed_drop",
+        MONSTER_DEV_MIXED_DROPS => "monster.dev.mixed_drops",
         NPC_WELCOME_TRAVELER_STAYED => "npc.welcome.traveler_stayed",
         NPC_WELCOME_GATE_WATCHMAN => "npc.welcome.gate_watchman",
         NPC_WELCOME_SHOPKEEPER => "npc.welcome.shopkeeper",
@@ -115,6 +123,7 @@ pub fn label_for_allocated_id(id: ContentId) -> Option<&'static str> {
         ITEM_PACKAGE => "item.package",
         ITEM_ROAD_MARKER_CLOTH_BUNDLE => "item.welcome.road_marker_cloth_bundle",
         ITEM_WATCH_SIGNAL_LANTERN => "item.welcome.watch_signal_lantern",
+        ITEM_DEV_SAMPLE_SCRAP => "item.dev.sample_scrap",
         WORLD_OBJECT_CHEST => "entity.interactable.chest",
         WORLD_OBJECT_MAP_B_SWITCH => "entity.interactable.map_b_switch",
         WORLD_OBJECT_SWITCH => "entity.interactable.switch",
@@ -146,6 +155,7 @@ mod tests {
             ITEM_PACKAGE,
             ITEM_ROAD_MARKER_CLOTH_BUNDLE,
             ITEM_WATCH_SIGNAL_LANTERN,
+            ITEM_DEV_SAMPLE_SCRAP,
         ] {
             assert_eq!(id.kind(), Some(ContentKind::Item));
         }
@@ -156,7 +166,13 @@ mod tests {
         ] {
             assert_eq!(id.kind(), Some(ContentKind::Ability));
         }
-        for id in [MONSTER_RED_SLIME, MONSTER_MOSS_CRAB] {
+        for id in [
+            MONSTER_RED_SLIME,
+            MONSTER_MOSS_CRAB,
+            MONSTER_SHROOM,
+            MONSTER_DEV_GUARANTEED_DROP,
+            MONSTER_DEV_MIXED_DROPS,
+        ] {
             assert_eq!(id.kind(), Some(ContentKind::Monster));
         }
         for id in [

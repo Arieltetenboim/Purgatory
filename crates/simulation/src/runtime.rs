@@ -824,6 +824,12 @@ impl World {
         self.apply_damage_from_source(None, target, amount, DamageImmunityPolicy::Respect)
     }
 
+    /// Authoritative damage from a player entity. A lethal hit records that entity,
+    /// not the NPC's current target.
+    pub fn apply_player_damage(&mut self, source: EntityId, target: EntityId, amount: f32) -> bool {
+        self.apply_damage_from_source(Some(source), target, amount, DamageImmunityPolicy::Bypass)
+    }
+
     /// Apply normal NPC contact damage through the victim immunity gate.
     pub fn apply_contact_damage(&mut self, target: EntityId, amount: f32) -> bool {
         self.apply_damage_from_source(None, target, amount, DamageImmunityPolicy::Respect)
@@ -837,7 +843,7 @@ impl World {
         immunity: DamageImmunityPolicy,
     ) -> bool {
         let before = self.health_of(target).map(|health| health.current);
-        if !self.apply_damage_with_immunity(target, amount, immunity) {
+        if !self.apply_damage_with_immunity(source, target, amount, immunity) {
             return false;
         }
         let after = self.health_of(target).map(|health| health.current);
@@ -859,6 +865,7 @@ impl World {
     /// Apply flat damage with an explicit victim-immunity policy.
     pub fn apply_damage_with_immunity(
         &mut self,
+        source: Option<EntityId>,
         target: EntityId,
         amount: f32,
         immunity: DamageImmunityPolicy,
@@ -890,7 +897,7 @@ impl World {
         if health.current <= 0.0 {
             self.interrupt_player_dash(target);
             let _ = self.clear_presentation_oneshot(target);
-            self.handle_zero_health(target);
+            self.handle_zero_health(target, source);
         } else if health.current < before
             && let Some(kind) =
                 crate::ability::oneshot_kind_for_cue(crate::ability::cue_for_damage_outcome(false))
@@ -1446,13 +1453,17 @@ impl World {
             ))
     }
 
-    fn handle_zero_health(&mut self, id: EntityId) {
+    fn handle_zero_health(&mut self, id: EntityId, killer: Option<EntityId>) {
         let Some(mut npc) = self.npc_of(id) else {
             return;
         };
         if npc.dead_pending {
             return;
         }
+        let killer =
+            killer.filter(|source| self.kind(*source) == Some(crate::entity::EntityKind::Player));
+        self.events
+            .push(RuntimeEvent::NpcDied { entity: id, killer });
         npc.dead_pending = true;
         npc.active = false;
         npc.target = None;

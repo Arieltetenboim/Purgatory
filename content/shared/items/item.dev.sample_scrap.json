@@ -1,0 +1,8 @@
+{
+  "schema_version": 3,
+  "id": 30015,
+  "label": "item.dev.sample_scrap",
+  "category": "material",
+  "stack_limit": 20,
+  "drop_requires_confirmation": false
+}
