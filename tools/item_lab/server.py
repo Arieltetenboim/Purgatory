@@ -550,36 +550,28 @@ def _same_draft(current: dict, payload: dict) -> bool:
 
 
 def format_rust(text: str, directory: Path | None = None) -> str:
-    """Format one Rust source in a temporary file before it is staged.
+    """Format one Rust source before it is staged.
 
-    The file sits beside the real source when ``directory`` is set, so rustfmt
-    can resolve sibling modules. It is removed before those bytes are staged.
+    rustfmt runs on an independent file in a private temporary directory, with
+    ``skip_children`` so a ``mod`` declaration cannot rewrite another source file.
+    ``directory`` is not a write target. The temporary directory is removed before
+    the formatted bytes are staged.
     """
-    handle = tempfile.NamedTemporaryFile(
-        "w",
-        suffix=".rs",
-        prefix=".authoring-format-",
-        dir=directory,
-        delete=False,
-        encoding="utf-8",
-        newline="\n",
-    )
-    path = Path(handle.name)
-    try:
-        handle.write(text)
-        handle.close()
-        completed = subprocess.run(
-            ["rustfmt", "--edition", "2024", str(path)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    del directory
+    config = Path(__file__).resolve().parents[2] / "rustfmt.toml"
+    with tempfile.TemporaryDirectory(prefix="purgatory-rustfmt-") as temporary:
+        path = Path(temporary) / "source.rs"
+        path.write_text(text, encoding="utf-8", newline="\n")
+        command = ["rustfmt", "--config", "skip_children=true", str(path)]
+        if config.is_file():
+            command[1:1] = ["--config-path", str(config)]
+        else:
+            command[1:1] = ["--edition", "2024"]
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "rustfmt failed").strip()
             raise RuntimeError(detail[-2000:])
         return path.read_text(encoding="utf-8")
-    finally:
-        path.unlink(missing_ok=True)
 
 
 class AuthoringRejected(Exception):

@@ -470,6 +470,80 @@ os._exit(77)
         self.assertGreaterEqual(len(seen), 2)
         self.assertFalse((self.root / "content" / ".authoring-recovery").exists())
 
+    def test_real_rustfmt_does_not_rewrite_a_declared_module(self) -> None:
+        folder = self.root / "crate"
+        folder.mkdir()
+        sibling = folder / "sibling.rs"
+        original = b"fn  messy( ){ }\n"
+        sibling.write_bytes(original)
+        formatted = LAB.format_rust("mod sibling;\nfn  also( ){ }\n", folder)
+        self.assertEqual(original, sibling.read_bytes())
+        self.assertIn("fn also()", formatted)
+        self.assertNotIn("fn  also", formatted)
+        self.assertEqual([], list(folder.glob("source.rs")))
+        self.assertEqual([], list(folder.glob(".authoring-format-*")))
+
+    def test_real_rustfmt_failure_leaves_sources_unchanged(self) -> None:
+        folder = self.root / "crate"
+        folder.mkdir()
+        sibling = folder / "sibling.rs"
+        original = b"fn  messy( ){ }\n"
+        sibling.write_bytes(original)
+        with self.assertRaises(RuntimeError):
+            LAB.format_rust("mod sibling;\nfn broken(\n", folder)
+        self.assertEqual(original, sibling.read_bytes())
+        self.assertEqual([], list(folder.glob("source.rs")))
+
+    def test_real_create_formats_only_the_intended_files(self) -> None:
+        self._copy_catalog()
+        lib, sibling, original = self._plant_unformatted_module()
+        unrelated = lib.parent / "unrelated.rs"
+        unrelated.write_text("leave me\n", encoding="utf-8")
+        created = LAB.commit_item_create(self.root, payload("item.real_format"))
+        self.assertEqual(original, sibling.read_bytes())
+        self.assertEqual("leave me\n", unrelated.read_text(encoding="utf-8"))
+        catalog = (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_text(encoding="utf-8")
+        self.assertIn("ITEM_REAL_FORMAT", catalog)
+        self.assertIn("ITEM_REAL_FORMAT", lib.read_text(encoding="utf-8"))
+        self.assertTrue((LAB.items_dir(self.root) / "item.real_format.json").is_file())
+        self.assertNotIn("sibling.rs", str(created))
+
+    def test_real_formatter_validation_failure_restores_without_touching_the_module(self) -> None:
+        self._copy_catalog()
+        lib, sibling, original = self._plant_unformatted_module()
+        catalog_path = self.root / "crates" / "common" / "src" / "content_catalog.rs"
+        catalog_before = catalog_path.read_bytes()
+        lib_before = lib.read_bytes()
+
+        seen = {"validated": False}
+
+        def reject(_root: Path) -> None:
+            seen["validated"] = True
+            raise RuntimeError("validator failed after formatting")
+
+        LAB.validate_pack = reject
+        with self.assertRaises(RuntimeError):
+            LAB.commit_item_create(self.root, payload("item.real_rollback"))
+        self.assertTrue(seen["validated"])
+        self.assertEqual(catalog_before, catalog_path.read_bytes())
+        self.assertEqual(lib_before, lib.read_bytes())
+        self.assertEqual(original, sibling.read_bytes())
+        self.assertFalse((LAB.items_dir(self.root) / "item.real_rollback.json").exists())
+        self.assertFalse((self.root / "content" / ".authoring-recovery").exists())
+
+    def _plant_unformatted_module(self) -> tuple[Path, Path, bytes]:
+        lib = self.root / "crates" / "common" / "src" / "lib.rs"
+        text = lib.read_text(encoding="utf-8")
+        needle = "pub mod capacity_accounting;"
+        if "mod sibling;" not in text:
+            if needle not in text:
+                raise AssertionError("copied lib.rs has no module rustfmt could walk")
+            lib.write_text(text.replace(needle, "mod sibling;\n" + needle, 1), encoding="utf-8")
+        sibling = lib.parent / "sibling.rs"
+        original = b"fn  messy( ){ }\n"
+        sibling.write_bytes(original)
+        return lib, sibling, original
+
     def test_reader_waits_out_a_torn_save(self) -> None:
         seed_item(self.root, "item.sample", 30000)
         gameplay = LAB.items_dir(self.root) / "item.sample.json"
