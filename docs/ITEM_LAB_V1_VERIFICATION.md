@@ -1,44 +1,67 @@
 # Item Lab V1 verification
 
-Branch `forge/item-lab-v1` in `C:\Users\Ariel\OneDrive\Desktop\Purgatory\item-lab-v1`. Reviewed head before these corrections: `aa7104ee0ebdd7d4c2544088a2b630811036b4d3`. Reviewed base: `origin/master` `5397a71f689cf541a69fd3ec28fda8d4f099d3ad`. `origin/master` had not moved at fetch time. The checkout at `Purgatory\1` was not modified.
+Branch `forge/item-lab-v1` in `C:\Users\Ariel\OneDrive\Desktop\Purgatory\item-lab-v1`. Draft pull request: https://github.com/Arieltetenboim/Purgatory/pull/125. The checkout at `Purgatory\1` was not modified.
 
-Saving rules: [`PERSISTENCE_AND_AUTHORING_CONTRACT.md`](PERSISTENCE_AND_AUTHORING_CONTRACT.md).
+Saving rules stay in [`PERSISTENCE_AND_AUTHORING_CONTRACT.md`](PERSISTENCE_AND_AUTHORING_CONTRACT.md). This file is the acceptance record. It does not replace that contract.
 
-## Automated
+## History, commit `3f2cb13` only
 
-Commands run from this worktree on Windows, Python 3.13, stable Rust:
+The notes below were true for `3f2cb13b6b77b4547ca3f2d9cf028d9fbfbd4251`. They are not evidence for a later commit.
 
-- `cargo test -p purgatory-server production_rng -- --test-threads=8` — passed. 10,000 deaths of a 100% quantity 1–2 row hit both endpoints (each more than 4,000) and the mean stayed within 0.05 of 1.5. The same production `LootRng` plus `roll_monster_drops` covered a fixed quantity, a 1–6 range, independent 0% and 100% rows, and a 10% row (successes in 700..1300 of 10,000, not an exact quota).
-- `cargo test -p purgatory-server --bin purgatory-server postgres_12c -- --ignored --test-threads=1` — **20 passed, 0 failed** in 10.48s on this commit's tree. This includes `postgres_12c_monster_death_pickup_survives_restart`: a real `reserve_item_ids` for the live channel, a lethal hit, durable pickup, and the same item after restart. Disposable `postgres:18` container, database `purgatory_12a_test` on `127.0.0.1:5433`, not `Purgatory_dev`. The container was removed after the run. In-memory tests that install ids with `install_reserved_ids_for_test` are not that proof.
-- `./scripts/check.ps1` — passed (fmt `--check`, `cargo check --workspace`, clippy `-D warnings`, workspace tests, Mob Lab unittest 45 tests, content validator OK: maps=3, entities=7, monsters=4, equipment=8, defs=44). The default workspace test run skips `#[ignore]` PostgreSQL tests. The verification paragraph was written after that green run and does not change code.
-- `py -3 -m unittest discover -s .\tools\mob_lab -p test_authoring_save.py` — 19 passed. The added response case holds the first save after commit and before the HTTP body: a second save with the new revision lands, a draft that still names the previous revision returns HTTP 409, and the first response's document and revision still hash to the committed bytes. Earlier cases remain: a validator failure after formatting, a reader blocked on a torn save, a POSIX `flock` timeout then acquire, an equipment-slot mismatch on create retry, and a PNG whose IHDR is 32×32 but whose image data does not decode.
-- `node tools/test_authoring_chart.mjs` — passed, also invoked by that Python test. It calls `tools/authoring_chart.js` for 10% quantity 1, 10% quantity 1–3, 100% quantity 2, 0%, and 0.01% quantity 1–2 (`formatExact` keeps `0.00015`).
+On that commit, GitHub's quality gate and PostgreSQL job passed. `postgres_12c_monster_death_pickup_survives_restart` ran in that job. Locally, the same ignored filter passed 20 tests in 10.48s on a disposable `postgres:18` database `purgatory_12a_test` at `127.0.0.1:5433`. `./scripts/check.ps1` passed. The authoring file had 19 tests. `node tools/test_authoring_chart.mjs` passed.
 
-In-memory monster loot tests from the earlier commits still run in the workspace suite: lethal character, disconnect before manifestation, partial refill, closed address, empty table. They do not prove a database commit or reconnect restore.
+Lab pages were opened directly, not from the Hub buttons. Item Lab reported build `item-lab-v1` from this worktree. A temporary item `item.verify.session_scrap` (ContentId 30000) was created through the page, including a 32×32 PNG posted to `/api/icons`. The file chooser was not used. Search, the equipment filter, WHERE USED for Sample scrap, and both expectation graphs were read in the browser, including hover values. That item and its catalog edits were removed and are not in any commit. The Hub window was not clicked. The native client was not used.
 
-## Graphical
+## This cycle
 
-Item Lab at `http://127.0.0.1:8767` reported build `item-lab-v1` and this worktree. Mob Lab at `http://127.0.0.1:8766` was the same worktree. `target\debug\purgatory-dev-hub.exe` from this worktree was built and started. The Hub window itself was not clicked.
+Implementation commit: `abc69a9e90a139eef71347abfa673fafbda1549f`.
 
-Passed in the lab pages:
+The commands below ran on that commit's code, from this worktree, before this matrix was added. This file does not change that code. Map JSON line-ending noise in `map.map1.json` and `map.map3.json` was left unstaged.
 
-- Created `item.verify.session_scrap` with display name Session scrap, description "A verification scrap from Item Lab.", tag `verify`, and icon key `item.verify.session_scrap`. The 32×32 RGBA PNG was stored through `/api/icons`, the endpoint the file control calls. The file chooser itself was not used. The allocated ContentId was 30000. Opening Sample scrap and then Session scrap again restored the name, description, icon, and tag from the server.
-- Search `Session` listed only that item. The equipment category filter hid it.
-- Item Lab WHERE USED for Sample scrap (30015) listed `monster.dev.guaranteed_drop`. Inspect N=1000 read expected successes 1000 and expected units 2000. Hover at N 588 read chance 100%, mean quantity 2, expected successes 588, and expected units 1176.
-- Mob Lab DROPS for `monster.dev.guaranteed_drop` titled `100% / qty 2–2 / mean 2`. Inspect N=1000 read the same 1000 successes and 2000 units. Hover at N 507 read chance 100%, mean quantity 2, expected successes 507, and expected units 1014. Nothing was saved from that page.
+`rustfmt` is the stable toolchain component (`rustfmt 1.9.0-stable`). `format_rust` writes one independent `source.rs` in a private `purgatory-rustfmt-` directory, passes `--config-path` to the repository `rustfmt.toml` and `--config skip_children=true`, reads the formatted text, and deletes that directory before `AuthoringOperation.stage`. The directory argument is not a write target. No symlink or hard link is used.
 
-The verification item, its icon, its notes, and the catalog edits were removed after the session. They are not part of the commit. No development monster was written onto a map.
+### Acceptance matrix
 
-## NOT RUN
+| Requirement | Verification type | Test or evidence | Code version tested | Result | Remaining gap |
+|---|---|---|---|---|---|
+| Formatting preparation does not write original source files before the journal | Automated, real `rustfmt` | `test_real_rustfmt_does_not_rewrite_a_declared_module`: a root declares `mod sibling`, the sibling is valid Rust the formatter would change, and those bytes stay identical. No `source.rs` remains beside it. | `abc69a9` | PASS | A tree whose modules are already formatted would not show this. This case uses unformatted sibling bytes. |
+| Successful creation changes only the intended files | Automated, real `rustfmt` | `test_real_create_formats_only_the_intended_files`: `mod sibling` is planted after the crate docs in the copied `lib.rs`. Sibling bytes and `unrelated.rs` stay unchanged. Catalog and `lib.rs` gain `ITEM_REAL_FORMAT`. The item JSON is created. The content validator is the test stub. | `abc69a9` | PASS | Does not run the content-validator binary. The quality gate does, on the real tree. |
+| Preparation failure leaves unrelated files unchanged | Automated, real `rustfmt` | `test_real_rustfmt_failure_leaves_sources_unchanged`: invalid Rust raises `RuntimeError`. The sibling bytes are unchanged. No `source.rs` is left in the source folder. | `abc69a9` | PASS | None for this boundary. Failure is before `stage`, so there is no journal to roll back. |
+| Validation failure after publication restores the operation and leaves other files unchanged | Automated, real `rustfmt` | `test_real_formatter_validation_failure_restores_without_touching_the_module`: the stub validator sets `validated` and then fails. The test requires that flag, so a formatter error before publish cannot pass it. Catalog and `lib.rs` return to their pre-create bytes. The sibling is unchanged. The item JSON and the journal are absent. | `abc69a9` | PASS | The validator here is a stub that runs after real formatting and publish. |
+| Process-crash recovery restores the operation's files | Automated | `test_process_exit_during_publish_recovers_on_restart`, inside the 23-test authoring file. | `abc69a9` | PASS | This is a process-crash journal. It does not fsync and is not a power-loss guarantee. |
+| A second save between commit and the HTTP body cannot change the first response | Automated | `test_mob_save_response_matches_the_committed_bytes`: the second save lands in `before_authoring_http_response`. A draft that still names the previous revision gets HTTP 409. The first response's document and revision still hash to the committed bytes. | `abc69a9` | PASS | The seam is a test hook. Production is a no-op between unlock and the HTTP write. |
+| Lock, recover, one-read revision, compare, and publish stay on one lock hold | Code review plus the authoring file | Item Lab create, save, and icon, and Mob Lab save, create, and duplicate, take `CatalogWriteLock` (Mob Lab also takes `CONTENT_WRITE_LOCK`), call `recover_authoring`, then read. `snapshot_item` and the Mob Lab response hash the bytes just read. `AuthoringOperation` does not take the catalog lock. HTTP is written after the `with` block exits. | `abc69a9` | PASS | Sprite-manifest saves, NPC Lab, and editors that skip the lock are still not on this journal. That migration is outside this change. |
+| A stale draft is HTTP 409 and does not overwrite the newer file or replace the open draft | Automated plus client-source review | Server: the concurrency test above, and `test_concurrent_saves_from_one_revision_conflict`. Item Lab `app.js` sets `error.conflict` and does not call `boot` on that error, so the form stays. Mob Lab `api` throws before `state.doc` is replaced. | `abc69a9` | PASS | The 409 banner was not clicked in a browser in this cycle. |
+| A retried create compares the full draft, including `equipment_slot` | Automated | `test_retry_compares_the_equipment_slot` and `test_finish_is_the_commit_and_retry_does_not_allocate_again`. | `abc69a9` | PASS | None for this rule. |
+| Published and retired catalog ids are not reused | Automated | `test_retired_id_is_not_reused` and `test_concurrent_catalog_allocation_keeps_distinct_ids`. | `abc69a9` | PASS | Cleanup of a published id by deleting its registration and allocating it again is still forbidden. |
+| Unexpected external bytes fail closed | Automated | `test_external_bytes_fail_closed`. | `abc69a9` | PASS | Recovery will not guess over bytes that match neither image. |
+| Shared expectation: 10% quantity 1 at N=1000 is 100 units; a quantity range uses the mean | Automated | `node tools/test_authoring_chart.mjs` (`authoring chart ok`) and `test_chart_module`. Both labs load `tools/authoring_chart.js`. 10% of quantity 1–3 at N=1000 is 100 successes and 200 units. | `abc69a9` | PASS | This is the formula. It is not a hover in the Lab window, and it is not the future in-editor drop simulator. |
+| Production loot rolls use `LootRng` and unbiased bounds | Automated | `cargo test -p purgatory-server production_rng -- --test-threads=8`: 2 passed. Quantity 1–2 hit both ends (each more than 4,000 of 10,000) with the mean within 0.05 of 1.5. The 10% band was 700..1300 of 10,000, not an exact quota. | `abc69a9` | PASS | These are generator diagnostics. They do not show a simulator screen. |
+| Death, real id reservation, pickup, and restart keep the same item | Automated, ignored PostgreSQL | `cargo test -p purgatory-server --bin purgatory-server postgres_12c -- --ignored --test-threads=1`: 20 passed, 0 failed, 9.45s. The output names `postgres_12c_monster_death_pickup_survives_restart` and that test passed. It calls `begin_id_replenish` and `reserve_item_ids` for the live channel, kills `MONSTER_DEV_GUARANTEED_DROP`, checks quantity 2 of `ITEM_DEV_SAMPLE_SCRAP`, and after restart the same `ItemInstanceId` is in inventory. Disposable `postgres:18` container, database `purgatory_12a_test` on `127.0.0.1:5433`. The container was removed. | `abc69a9` | PASS | The default quality gate skips `#[ignore]` tests. This run is headless. It does not show the ground icon or the native client. |
+| Workspace quality gate | Automated | `./scripts/check.ps1` exit 0: fmt `--check`, `cargo check --workspace`, clippy `-D warnings`, workspace tests, Mob Lab unittest 49 tests, content validator OK (maps=3, entities=7, monsters=4, equipment=8, defs=44). | `abc69a9` | PASS | Does not include the ignored PostgreSQL filter. That filter was run separately, above. |
+| Hub buttons open Item Lab and Mob Lab from this worktree | Manual window | Not executed. | `abc69a9` | NOT RUN | Needs a click in the eframe Hub. This session has no input driver for that window. See the manual script. |
+| Create an item in Item Lab (name, description, category, tag, icon), save, leave, and reopen | Manual window | Not executed on this commit. The `3f2cb13` page session is history only. | `abc69a9` | NOT RUN | Needs the Item Lab page after the Hub button. A rebuilt catalog id also needs a client and server restart before the game can load it. |
+| Search and category filtering | Manual window | Not executed on this commit. | `abc69a9` | NOT RUN | Same Hub-to-page path. |
+| Icon selection and import | Manual window | Not executed on this commit. The earlier session posted `/api/icons` and did not use the file chooser. | `abc69a9` | NOT RUN | The file chooser and the endpoint are different checks. Both are unrun for this commit. |
+| Add the item to a development monster drop and save chance and quantity | Manual window | Not executed on this commit. | `abc69a9` | NOT RUN | Needs Mob Lab from the Hub, then a save. Do not leave that monster on a production map. |
+| Reopen the drop table; WHERE USED names the same source | Manual window | Not executed on this commit. | `abc69a9` | NOT RUN | Same pages. |
+| Both graphs, including hover of a precise N | Manual window | Not executed on this commit. The shared formula row above passed. | `abc69a9` | NOT RUN | Hover is a window check. The formula test does not replace it. |
+| Native client: kill a development monster, see one ground drop with the right icon, pick it up, read the quantity, reconnect, same instance | Manual window plus a disposable database | Not executed. | `abc69a9` | NOT RUN | Needs the native winit client. Do not use the owner's player database. Do not place a development monster on a production map. The headless PostgreSQL row does not replace this. |
+| Future in-editor runtime drop simulator | Out of V1 scope | Not part of this closeout. | `abc69a9` | DEFERRED | Explicitly outside V1. Do not treat `production_rng` or the chart formula as that screen. |
 
-- Clicking Item Lab or Mob Lab from the Hub window.
-- Rebuilding the client and server for a newly compiled catalog id, restarting them, killing the development monster, reading the ground icon, picking the item up, reading the tooltip quantity, and reconnecting to the same owned item.
+### Manual script
 
-Those steps need the native client. This session has no input driver for that window, and the development monster must not be placed on a production map or written through the owner's player database.
+Build and start `target\debug\purgatory-dev-hub.exe` from this worktree. On the Hub dashboard, click **Item Lab**, then **Mob Lab**. Each PowerShell window should be this worktree. Item Lab health should report build `item-lab-v1` and this workspace path.
+
+In Item Lab, create an item with a display name, description, category, tag, and a new 32×32 icon. Use the file chooser, not only a direct POST. Save. Select another item. Reopen the new item and confirm the values. Search by name. Filter by a category that hides it, then clear the filter.
+
+In Mob Lab, add that item to a development monster's drop row. Save a 10% row with quantity 1, and a row with a quantity range. Reopen the monster. In Item Lab WHERE USED, the monster id should appear for that item. In both graphs, Inspect at N=1000 for the 10% quantity-1 row should read 100 expected units. Hover along the line and confirm the readout matches the same formula. A range uses the mean quantity. The graph is an average prediction, not a quota.
+
+For the game, use a disposable database and test characters. If the new item's catalog id was compiled in, rebuild and restart the server and the client. On an isolated test map, place a development monster with a guaranteed drop and a known quantity. Kill it in the native client. The drop should appear once, with that item's ground icon. Pick it up. The inventory and the information window should show the quantity. Disconnect and reconnect. The same stack should remain, and its instance id should be unchanged in the existing diagnostics. Remove the monster from the test map when finished. Do not delete a published catalog registration to reuse the id.
 
 ## Limits
 
 - Authoring recovery is a process-crash journal. It does not fsync and is not a power-loss or database disaster-recovery claim.
 - `close_world_address` abandons an unmanifested remainder. Production channel stop uses `lose_all_authority`. The single-address method's callers are tests.
 - Sprite-manifest saves and other labs are not on this journal.
-- Protocol version stays 34.
+- Protocol version stays 34. This cycle does not change the database schema or the protocol.
