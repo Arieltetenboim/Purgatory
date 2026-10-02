@@ -549,9 +549,21 @@ def _same_draft(current: dict, payload: dict) -> bool:
     )
 
 
-def format_rust(text: str) -> str:
-    """Format one Rust source in a temporary file before it is staged."""
-    handle = tempfile.NamedTemporaryFile("w", suffix=".rs", delete=False, encoding="utf-8", newline="\n")
+def format_rust(text: str, directory: Path | None = None) -> str:
+    """Format one Rust source in a temporary file before it is staged.
+
+    The file sits beside the real source when ``directory`` is set, so rustfmt
+    can resolve sibling modules. It is removed before those bytes are staged.
+    """
+    handle = tempfile.NamedTemporaryFile(
+        "w",
+        suffix=".rs",
+        prefix=".authoring-format-",
+        dir=directory,
+        delete=False,
+        encoding="utf-8",
+        newline="\n",
+    )
     path = Path(handle.name)
     try:
         handle.write(text)
@@ -600,8 +612,8 @@ def commit_item_create(root: Path, payload: dict) -> dict:
         library = lib_path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
         content_id = next_item_id(catalog, ledger)
         staged = [
-            (catalog_path, format_rust(insert_catalog(catalog, label, content_id))),
-            (lib_path, format_rust(insert_lib_export(library, label))),
+            (catalog_path, format_rust(insert_catalog(catalog, label, content_id), catalog_path.parent)),
+            (lib_path, format_rust(insert_lib_export(library, label), lib_path.parent)),
             (ledger_path, insert_ledger(ledger, label, content_id)),
             *planned_item_files(root, payload, content_id),
         ]

@@ -42,6 +42,15 @@ MONSTER_CONTENT_ID_END = 19_999
 CONTENT_WRITE_LOCK = threading.Lock()
 
 
+def before_authoring_http_response() -> None:
+    """Runs after the catalog lock is released and before the HTTP body is written.
+
+    The saved document and source revision are already fixed. Tests replace this
+    to interleave another save. Production does nothing.
+    """
+    return
+
+
 def validate_monster_document(value: Any) -> list[str]:
     errors: list[str] = []
     if not isinstance(value, dict):
@@ -1249,27 +1258,26 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             with CONTENT_WRITE_LOCK, CatalogWriteLock(self.repo_root):
                 recover_authoring(self.repo_root)
                 ok, errors, output = self._save_candidate(path, doc, expected)
-            if not ok:
-                self._json_response(
-                    {
+                if not ok:
+                    payload = {
                         "error": "Monster save rejected.",
                         "validation_errors": errors,
                         "validator_output": output,
-                    },
-                    HTTPStatus.UNPROCESSABLE_ENTITY,
-                )
-                return
-            saved_doc = json.loads(path.read_text(encoding="utf-8"))
-            self._json_response(
-                {
-                    "ok": True,
-                    "path": path.name,
-                    "document": saved_doc,
-                    "revision": source_revision(path.read_bytes()),
-                    "validation_errors": [],
-                    "validator_output": output,
-                }
-            )
+                    }
+                    status = HTTPStatus.UNPROCESSABLE_ENTITY
+                else:
+                    raw = path.read_bytes()
+                    payload = {
+                        "ok": True,
+                        "path": path.name,
+                        "document": json.loads(raw.decode("utf-8")),
+                        "revision": source_revision(raw),
+                        "validation_errors": [],
+                        "validator_output": output,
+                    }
+                    status = HTTPStatus.OK
+            before_authoring_http_response()
+            self._json_response(payload, status)
         except AuthoringConflict as exc:
             self._json_response({"error": str(exc), "conflict": True}, HTTPStatus.CONFLICT)
         except TimeoutError as exc:
@@ -1304,68 +1312,68 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                     self.definitions_root, safe_filename(authored_id)
                 )
                 if path.exists():
-                    existing = json.loads(path.read_text(encoding="utf-8"))
+                    raw = path.read_bytes()
+                    existing = json.loads(raw.decode("utf-8"))
                     if isinstance(existing, dict) and existing.get("id") == authored_id:
-                        self._json_response(
-                            {
-                                "ok": True,
-                                "path": path.name,
-                                "document": existing,
-                                "content_id": load_numeric_catalog(self.repo_root).get(authored_id),
-                                "idempotent": True,
-                                "revision": source_revision(path.read_bytes()),
-                            }
-                        )
-                        return
-                    self._json_response(
-                        {"error": f"Monster already exists at {path.name}."},
-                        HTTPStatus.CONFLICT,
-                    )
-                    return
-
-                content_id, allocation_writes = prepare_monster_allocation(
-                    self.repo_root, authored_id
-                )
-                if template_path:
-                    source_path = resolve_monster_path(
-                        self.definitions_root, template_path
-                    )
-                    if not source_path.is_file():
-                        raise ValueError(
-                            f"Duplicate source Monster not found: {template_path}."
-                        )
-                    source_doc = json.loads(source_path.read_text(encoding="utf-8"))
-                    doc = clone_monster_document(
-                        source_doc, authored_id, debug_name, sprite["id"]
-                    )
+                        payload = {
+                            "ok": True,
+                            "path": path.name,
+                            "document": existing,
+                            "content_id": load_numeric_catalog(self.repo_root).get(authored_id),
+                            "idempotent": True,
+                            "revision": source_revision(raw),
+                        }
+                        status = HTTPStatus.OK
+                    else:
+                        payload = {"error": f"Monster already exists at {path.name}."}
+                        status = HTTPStatus.CONFLICT
                 else:
-                    doc = new_monster_document(authored_id, debug_name, sprite["id"])
-                encoded = (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-                operation = AuthoringOperation(self.repo_root)
-                for target, _old, new in allocation_writes:
-                    operation.stage(target, new)
-                operation.stage(path, encoded)
-                try:
-                    operation.publish()
-                    ok, output = validate_runtime_pack(self.repo_root)
-                    if not ok:
-                        raise RuntimeError(output or "runtime content validation failed")
-                    operation.finish()
-                except Exception:
-                    operation.rollback()
-                    raise
-
-                self._json_response(
-                    {
+                    content_id, allocation_writes = prepare_monster_allocation(
+                        self.repo_root, authored_id
+                    )
+                    if template_path:
+                        source_path = resolve_monster_path(
+                            self.definitions_root, template_path
+                        )
+                        if not source_path.is_file():
+                            raise ValueError(
+                                f"Duplicate source Monster not found: {template_path}."
+                            )
+                        source_raw = source_path.read_bytes()
+                        source_doc = json.loads(source_raw.decode("utf-8"))
+                        doc = clone_monster_document(
+                            source_doc, authored_id, debug_name, sprite["id"]
+                        )
+                    else:
+                        doc = new_monster_document(authored_id, debug_name, sprite["id"])
+                    encoded = (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode(
+                        "utf-8"
+                    )
+                    operation = AuthoringOperation(self.repo_root)
+                    for target, _old, new in allocation_writes:
+                        operation.stage(target, new)
+                    operation.stage(path, encoded)
+                    try:
+                        operation.publish()
+                        ok, output = validate_runtime_pack(self.repo_root)
+                        if not ok:
+                            raise RuntimeError(output or "runtime content validation failed")
+                        operation.finish()
+                    except Exception:
+                        operation.rollback()
+                        raise
+                    raw = path.read_bytes()
+                    payload = {
                         "ok": True,
                         "path": path.name,
-                        "document": doc,
+                        "document": json.loads(raw.decode("utf-8")),
                         "content_id": content_id,
-                        "revision": source_revision(path.read_bytes()),
+                        "revision": source_revision(raw),
                         "validator_output": output,
-                    },
-                    HTTPStatus.CREATED,
-                )
+                    }
+                    status = HTTPStatus.CREATED
+            before_authoring_http_response()
+            self._json_response(payload, status)
         except AuthoringConflict as exc:
             self._json_response({"error": str(exc), "conflict": True}, HTTPStatus.CONFLICT)
         except TimeoutError as exc:

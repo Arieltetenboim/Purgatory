@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import binascii
 import importlib.util
+import io
 import json
 import shutil
 import struct
@@ -22,7 +23,12 @@ TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 
 from authoring_catalog import CatalogWriteLock
-from authoring_save import AuthoringOperation, AuthoringRepair, recover_authoring
+from authoring_save import (
+    AuthoringOperation,
+    AuthoringRepair,
+    recover_authoring,
+    source_revision,
+)
 
 
 def load_item_lab():
@@ -33,6 +39,16 @@ def load_item_lab():
 
 
 LAB = load_item_lab()
+
+
+def load_mob_lab():
+    spec = importlib.util.spec_from_file_location("mob_lab_server", TOOLS / "mob_lab" / "server.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+MOB = load_mob_lab()
 
 
 def payload(label: str, **extra) -> dict:
@@ -95,6 +111,87 @@ class SaveTests(unittest.TestCase):
         self.assertEqual(1, sum(isinstance(result, LAB.AuthoringConflict) for result in results))
         saved = LAB.load_item(self.root, LAB.items_dir(self.root) / "item.sample.json")
         self.assertIn(saved["display_name"], {"One", "Two"})
+
+    def test_mob_save_response_matches_the_committed_bytes(self) -> None:
+        monsters = self.root / "content" / "definitions" / "monsters"
+        monsters.mkdir(parents=True)
+        path = monsters / "monster.sample.json"
+        original = _monster("Original")
+        encoded = (json.dumps(original, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        path.write_bytes(encoded)
+        original_revision = source_revision(encoded)
+        committed = threading.Event()
+        second_done = threading.Event()
+        observed: dict[str, tuple[int, dict]] = {}
+        previous_hook = MOB.before_authoring_http_response
+        previous_validate = MOB.validate_runtime_pack
+        previous_sprite = MOB.load_sprite_record
+        MOB.validate_runtime_pack = lambda root: (True, "ok")
+        MOB.load_sprite_record = lambda root, sprite_id: {"id": sprite_id}
+
+        def call_save(doc: dict, revision: str) -> tuple[int, dict]:
+            body = json.dumps(doc).encode("utf-8")
+            handler = MOB.MobLabHandler.__new__(MOB.MobLabHandler)
+            handler.repo_root = self.root
+            handler.definitions_root = monsters
+            handler.path = "/api/monster?path=monster.sample.json"
+            handler.headers = {
+                "Content-Length": str(len(body)),
+                "X-Source-Revision": revision,
+            }
+            handler.rfile = io.BytesIO(body)
+            handler.wfile = io.BytesIO()
+            handler.send_response = lambda code, message=None: setattr(handler, "_status", code)
+            handler.send_header = lambda *args, **kwargs: None
+            handler.end_headers = lambda: None
+            handler._handle_save()
+            return handler._status, json.loads(handler.wfile.getvalue().decode("utf-8"))
+
+        def hook() -> None:
+            MOB.before_authoring_http_response = lambda: None
+            committed.set()
+            self.assertTrue(second_done.wait(5), "second save did not finish")
+
+        def second_save() -> None:
+            self.assertTrue(committed.wait(5), "first save did not reach its response gap")
+            current = source_revision(path.read_bytes())
+            observed["accepted"] = call_save(_monster("Second"), current)
+            observed["stale"] = call_save(_monster("Stale"), original_revision)
+            second_done.set()
+
+        MOB.before_authoring_http_response = hook
+        worker = threading.Thread(target=second_save)
+        worker.start()
+        try:
+            status, body = call_save(_monster("First"), original_revision)
+            worker.join(5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(200, status)
+            self.assertEqual("First", body["document"]["debug_name"])
+            committed_bytes = (
+                json.dumps(body["document"], ensure_ascii=False, indent=2) + "\n"
+            ).encode("utf-8")
+            self.assertEqual(source_revision(committed_bytes), body["revision"])
+            self.assertNotEqual(source_revision(path.read_bytes()), body["revision"])
+            accepted_status, accepted = observed["accepted"]
+            self.assertEqual(200, accepted_status)
+            self.assertEqual("Second", accepted["document"]["debug_name"])
+            accepted_bytes = (
+                json.dumps(accepted["document"], ensure_ascii=False, indent=2) + "\n"
+            ).encode("utf-8")
+            self.assertEqual(source_revision(accepted_bytes), accepted["revision"])
+            self.assertEqual(accepted["revision"], source_revision(path.read_bytes()))
+            stale_status, stale = observed["stale"]
+            self.assertEqual(409, stale_status)
+            self.assertTrue(stale.get("conflict"))
+            self.assertEqual("Second", json.loads(path.read_text(encoding="utf-8"))["debug_name"])
+        finally:
+            MOB.before_authoring_http_response = previous_hook
+            MOB.validate_runtime_pack = previous_validate
+            MOB.load_sprite_record = previous_sprite
+            if worker.is_alive():
+                second_done.set()
+                worker.join(5)
 
     def test_notes_only_change_invalidates_older_notes_draft(self) -> None:
         current = seed_item(self.root, "item.sample", 30000, notes="first")
@@ -352,7 +449,7 @@ os._exit(77)
         original_catalog = (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_bytes()
         seen: list[str] = []
 
-        def mark(text: str) -> str:
+        def mark(text: str, directory: Path | None = None) -> str:
             seen.append(text)
             return text + "// formatted-marker\n"
 
@@ -443,7 +540,7 @@ os._exit(77)
 
     def test_retry_compares_the_equipment_slot(self) -> None:
         self._copy_catalog()
-        LAB.format_rust = lambda text: text
+        LAB.format_rust = lambda text, directory=None: text
         body = payload(
             "item.helm_retry",
             category="equipment",
@@ -496,6 +593,23 @@ os._exit(77)
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, destination)
+
+
+def _monster(debug_name: str) -> dict:
+    return {
+        "schema_version": 4,
+        "id": "monster.sample",
+        "debug_name": debug_name,
+        "sprite": "sprite.sample",
+        "health_max": 20.0,
+        "collision_bounds": {"left": 0.4, "right": 0.4, "bottom": 0.6, "top": 0.6},
+        "movement_speed": 2.0,
+        "behavior": {
+            "kind": "chase_contact",
+            "aggro": "when_attacked",
+            "home_leash_radius": 3.0,
+        },
+    }
 
 
 def _chunk(kind: bytes, payload: bytes) -> bytes:
