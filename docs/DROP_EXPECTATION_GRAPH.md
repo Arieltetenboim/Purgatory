@@ -1,6 +1,6 @@
 # Expected drop graph
 
-The Mob Lab DROPS graph is per monster, per item, per row. It is not a global drop chance.
+Item Lab WHERE USED and the Mob Lab DROPS graph both call `tools/authoring_chart.js`. The graph is per monster, per item, per row. It is not a global drop chance. Presets are 100, 1,000, 10,000, and 100,000 kills. Inspect N evaluates the formula, including values such as 0.01% of quantity 1–2, and does not read the drawn pixels.
 
 For chance `p` and quantity bounds `a` and `b`:
 

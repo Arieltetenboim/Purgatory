@@ -22,6 +22,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from authoring_catalog import CatalogWriteLock
+from authoring_save import (
+    AuthoringConflict,
+    AuthoringOperation,
+    AuthoringRepair,
+    recover_authoring,
+    source_revision,
+)
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
@@ -899,10 +906,23 @@ def ensure_item_lab(repo_root: Path) -> str:
         except Exception:
             return None
 
+    def matches(health: dict[str, Any] | None) -> bool:
+        if not health or health.get("tool") != "item-lab" or health.get("build") != "item-lab-v1":
+            return False
+        workspace = health.get("workspace")
+        if not workspace:
+            return False
+        return Path(workspace).resolve() == repo_root.resolve()
+
     health = read_health()
     if health is not None:
-        if health.get("tool") == "item-lab" and health.get("build") == "item-lab-v1":
+        if matches(health):
             return page
+        if health.get("tool") == "item-lab":
+            raise RuntimeError(
+                "Port 8767 is Item Lab for a different workspace or an older build. "
+                "Stop it before opening this checkout."
+            )
         raise RuntimeError(
             "Port 8767 is in use by something other than the current Item Lab. "
             "Close that process before opening Item Lab."
@@ -926,7 +946,7 @@ def ensure_item_lab(repo_root: Path) -> str:
     for _ in range(40):
         time.sleep(0.25)
         health = read_health()
-        if health and health.get("tool") == "item-lab" and health.get("build") == "item-lab-v1":
+        if matches(health):
             return page
     raise RuntimeError("Item Lab did not become ready. Check its PowerShell window.")
 
@@ -969,6 +989,15 @@ class MobLabHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/authoring_chart.js":
+            chart = self.repo_root / "tools" / "authoring_chart.js"
+            body = chart.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/javascript")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path == "/api/health":
             self._json_response(
                 {
@@ -1146,6 +1175,7 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                     if isinstance(authored, str)
                     else None,
                     "validation_errors": validate_monster_document(doc),
+                    "revision": source_revision(path.read_bytes()),
                 }
             )
         except (ValueError, OSError, json.JSONDecodeError) as exc:
@@ -1159,7 +1189,9 @@ class MobLabHandler(SimpleHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as exc:
             self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
-    def _save_candidate(self, path: Path, doc: Any) -> tuple[bool, list[str], str]:
+    def _save_candidate(
+        self, path: Path, doc: Any, expected_revision: str | None = None
+    ) -> tuple[bool, list[str], str]:
         errors = validate_monster_document(doc)
         if errors:
             return False, errors, ""
@@ -1167,27 +1199,43 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             load_sprite_record(self.repo_root, doc["sprite"])
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             return False, [str(exc)], ""
+        if expected_revision is not None:
+            current = source_revision(path.read_bytes()) if path.is_file() else ""
+            if expected_revision != current:
+                raise AuthoringConflict("The monster changed on disk. Reload before saving.")
 
-        original = path.read_bytes() if path.exists() else None
         encoded = (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-        atomic_write(path, encoded)
-
-        ok, output = validate_runtime_pack(self.repo_root)
-        if ok:
-            return True, [], output
-
-        if original is None:
-            path.unlink(missing_ok=True)
-        else:
-            atomic_write(path, original)
-        return False, ["Runtime content validation failed; save rolled back."], output
+        operation = AuthoringOperation(self.repo_root)
+        operation.stage(path, encoded)
+        try:
+            operation.publish()
+            ok, output = validate_runtime_pack(self.repo_root)
+            if not ok:
+                operation.rollback()
+                return False, ["Runtime content validation failed; save rolled back."], output
+            operation.finish()
+        except Exception:
+            operation.rollback()
+            raise
+        return True, [], output
 
     def _handle_save(self) -> None:
         try:
             path = resolve_monster_path(self.definitions_root, self._query_value("path"))
             doc = self._read_json_body()
+            expected = self.headers.get("X-Source-Revision")
+            if not expected:
+                self._json_response(
+                    {
+                        "error": "Save is missing the source revision. Reload the monster.",
+                        "conflict": True,
+                    },
+                    HTTPStatus.CONFLICT,
+                )
+                return
             with CONTENT_WRITE_LOCK, CatalogWriteLock(self.repo_root):
-                ok, errors, output = self._save_candidate(path, doc)
+                recover_authoring(self.repo_root)
+                ok, errors, output = self._save_candidate(path, doc, expected)
             if not ok:
                 self._json_response(
                     {
@@ -1204,10 +1252,17 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                     "ok": True,
                     "path": path.name,
                     "document": saved_doc,
+                    "revision": source_revision(path.read_bytes()),
                     "validation_errors": [],
                     "validator_output": output,
                 }
             )
+        except AuthoringConflict as exc:
+            self._json_response({"error": str(exc), "conflict": True}, HTTPStatus.CONFLICT)
+        except TimeoutError as exc:
+            self._json_response({"error": str(exc)}, HTTPStatus.SERVICE_UNAVAILABLE)
+        except AuthoringRepair as exc:
+            self._json_response({"error": str(exc), "repair": True}, HTTPStatus.CONFLICT)
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
@@ -1231,10 +1286,24 @@ class MobLabHandler(SimpleHTTPRequestHandler):
             sprite = load_sprite_record(self.repo_root, sprite_id)
 
             with CONTENT_WRITE_LOCK, CatalogWriteLock(self.repo_root):
+                recover_authoring(self.repo_root)
                 path = resolve_monster_path(
                     self.definitions_root, safe_filename(authored_id)
                 )
                 if path.exists():
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(existing, dict) and existing.get("id") == authored_id:
+                        self._json_response(
+                            {
+                                "ok": True,
+                                "path": path.name,
+                                "document": existing,
+                                "content_id": load_numeric_catalog(self.repo_root).get(authored_id),
+                                "idempotent": True,
+                                "revision": source_revision(path.read_bytes()),
+                            }
+                        )
+                        return
                     self._json_response(
                         {"error": f"Monster already exists at {path.name}."},
                         HTTPStatus.CONFLICT,
@@ -1244,44 +1313,33 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                 content_id, allocation_writes = prepare_monster_allocation(
                     self.repo_root, authored_id
                 )
-                originals: list[tuple[Path, bytes | None]] = [
-                    (target, old) for target, old, _new in allocation_writes
-                ]
-                originals.append((path, None))
+                if template_path:
+                    source_path = resolve_monster_path(
+                        self.definitions_root, template_path
+                    )
+                    if not source_path.is_file():
+                        raise ValueError(
+                            f"Duplicate source Monster not found: {template_path}."
+                        )
+                    source_doc = json.loads(source_path.read_text(encoding="utf-8"))
+                    doc = clone_monster_document(
+                        source_doc, authored_id, debug_name, sprite["id"]
+                    )
+                else:
+                    doc = new_monster_document(authored_id, debug_name, sprite["id"])
+                encoded = (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+                operation = AuthoringOperation(self.repo_root)
+                for target, _old, new in allocation_writes:
+                    operation.stage(target, new)
+                operation.stage(path, encoded)
                 try:
-                    for target, _old, new in allocation_writes:
-                        atomic_write(target, new)
-                    if template_path:
-                        source_path = resolve_monster_path(
-                            self.definitions_root, template_path
-                        )
-                        if not source_path.is_file():
-                            raise ValueError(
-                                f"Duplicate source Monster not found: {template_path}."
-                            )
-                        source_doc = json.loads(
-                            source_path.read_text(encoding="utf-8")
-                        )
-                        doc = clone_monster_document(
-                            source_doc, authored_id, debug_name, sprite["id"]
-                        )
-                    else:
-                        doc = new_monster_document(
-                            authored_id, debug_name, sprite["id"]
-                        )
-                    encoded = (
-                        json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
-                    ).encode("utf-8")
-                    atomic_write(path, encoded)
+                    operation.publish()
                     ok, output = validate_runtime_pack(self.repo_root)
                     if not ok:
                         raise RuntimeError(output or "runtime content validation failed")
+                    operation.finish()
                 except Exception:
-                    for target, original in reversed(originals):
-                        if original is None:
-                            target.unlink(missing_ok=True)
-                        else:
-                            atomic_write(target, original)
+                    operation.rollback()
                     raise
 
                 self._json_response(
@@ -1290,10 +1348,17 @@ class MobLabHandler(SimpleHTTPRequestHandler):
                         "path": path.name,
                         "document": doc,
                         "content_id": content_id,
+                        "revision": source_revision(path.read_bytes()),
                         "validator_output": output,
                     },
                     HTTPStatus.CREATED,
                 )
+        except AuthoringConflict as exc:
+            self._json_response({"error": str(exc), "conflict": True}, HTTPStatus.CONFLICT)
+        except TimeoutError as exc:
+            self._json_response({"error": str(exc)}, HTTPStatus.SERVICE_UNAVAILABLE)
+        except AuthoringRepair as exc:
+            self._json_response({"error": str(exc), "repair": True}, HTTPStatus.CONFLICT)
         except RuntimeError as exc:
             self._json_response(
                 {
@@ -1322,6 +1387,11 @@ def main() -> int:
         raise SystemExit(f"Mob Lab web root not found: {web_root}")
     if not definitions_root.is_dir():
         raise SystemExit(f"Monster definitions root not found: {definitions_root}")
+    try:
+        for note in recover_authoring(repo_root):
+            print(f"MOB_LAB|RECOVERY|{note}")
+    except AuthoringRepair as error:
+        raise SystemExit(str(error)) from error
 
     MobLabHandler.repo_root = repo_root
     MobLabHandler.definitions_root = definitions_root

@@ -14,6 +14,12 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from authoring_catalog import CatalogWriteLock
+from authoring_save import (
+    AuthoringConflict,
+    AuthoringOperation,
+    AuthoringRepair,
+    recover_authoring,
+)
 
 HOST = "127.0.0.1"
 PORT = 8767
@@ -77,6 +83,28 @@ def atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def item_revision(root: Path, path: Path, content_id: int) -> str:
+    presentation_path = presentation_dir(root) / path.name
+    notes_path = notes_dir(root) / f"{content_id}.json"
+    equip = equipment_path(root, content_id)
+    return revision_of(
+        path.read_text(encoding="utf-8") if path.exists() else "<absent-gameplay>",
+        presentation_path.read_text(encoding="utf-8") if presentation_path.exists() else "<absent-presentation>",
+        equip.read_text(encoding="utf-8") if equip is not None else "<absent-equipment>",
+        notes_path.read_text(encoding="utf-8") if notes_path.exists() else "<absent-notes>",
+    )
+
+
+def equipment_path(root: Path, content_id: int) -> Path | None:
+    for path in equipment_dir(root).glob("*.json"):
+        try:
+            if read_json(path).get("id") == content_id:
+                return path
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
+
+
 def revision_of(*parts: str) -> str:
     digest = hashlib.sha256()
     for part in parts:
@@ -108,8 +136,6 @@ def load_item(root: Path, path: Path) -> dict:
     equipment = equipment_document(root, content_id)
     notes_path = notes_dir(root) / f"{content_id}.json"
     notes = read_json(notes_path) if notes_path.exists() else {"notes": "", "tags": []}
-    gameplay_text = path.read_text(encoding="utf-8")
-    presentation_text = presentation_path.read_text(encoding="utf-8") if presentation_path.exists() else ""
     return {
         "path": str(path.relative_to(root)).replace("\\", "/"),
         "content_id": content_id,
@@ -123,7 +149,7 @@ def load_item(root: Path, path: Path) -> dict:
         "equipment_slot": None if equipment is None else equipment.get("equipment_slot"),
         "notes": notes.get("notes", ""),
         "tags": notes.get("tags", []),
-        "revision": revision_of(gameplay_text, presentation_text),
+        "revision": item_revision(root, path, content_id),
         "icon_file": (icons_dir(root) / f"{presentation.get('icon', '')}.png").is_file(),
     }
 
@@ -317,42 +343,204 @@ def validate_pack(root: Path) -> None:
         raise RuntimeError(detail[-2000:])
 
 
-def write_item_files(root: Path, payload: dict, content_id: int) -> None:
+def _merged(path: Path, updates: dict) -> str:
+    current = read_json(path) if path.exists() else {}
+    current.update(updates)
+    return json.dumps(current, indent=2) + "\n"
+
+
+def planned_item_files(root: Path, payload: dict, content_id: int) -> list[tuple[Path, str]]:
     label = payload["label"]
-    gameplay = {
-        "schema_version": SCHEMA_VERSION,
-        "id": content_id,
-        "label": label,
-        "category": payload["category"],
-        "stack_limit": int(payload["stack_limit"]),
-        "drop_requires_confirmation": bool(payload.get("drop_requires_confirmation", False)),
-    }
-    presentation = {
-        "schema_version": PRESENTATION_SCHEMA,
-        "id": content_id,
-        "label": label,
-        "icon": payload["icon"],
-        "display_name": payload.get("display_name", ""),
-        "description": payload.get("description", ""),
-    }
-    atomic_write(items_dir(root) / f"{label}.json", json.dumps(gameplay, indent=2) + "\n")
-    atomic_write(
-        presentation_dir(root) / f"{label}.json",
-        json.dumps(presentation, indent=2) + "\n",
-    )
+    gameplay_path = items_dir(root) / f"{label}.json"
+    presentation_path = presentation_dir(root) / f"{label}.json"
+    planned = [
+        (
+            gameplay_path,
+            _merged(
+                gameplay_path,
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "id": content_id,
+                    "label": label,
+                    "category": payload["category"],
+                    "stack_limit": int(payload["stack_limit"]),
+                    "drop_requires_confirmation": bool(payload.get("drop_requires_confirmation", False)),
+                },
+            ),
+        ),
+        (
+            presentation_path,
+            _merged(
+                presentation_path,
+                {
+                    "schema_version": PRESENTATION_SCHEMA,
+                    "id": content_id,
+                    "label": label,
+                    "icon": payload["icon"],
+                    "display_name": payload.get("display_name", ""),
+                    "description": payload.get("description", ""),
+                },
+            ),
+        ),
+    ]
     if payload["category"] == "equipment":
-        equipment = {
-            "schema_version": EQUIPMENT_SCHEMA,
-            "id": content_id,
-            "label": label,
-            "equipment_slot": payload["equipment_slot"],
-        }
-        atomic_write(
-            equipment_dir(root) / f"{label}.json",
-            json.dumps(equipment, indent=2) + "\n",
+        equip = equipment_path(root, content_id) or equipment_dir(root) / f"{label}.json"
+        planned.append(
+            (
+                equip,
+                _merged(
+                    equip,
+                    {
+                        "schema_version": EQUIPMENT_SCHEMA,
+                        "id": content_id,
+                        "label": label,
+                        "equipment_slot": payload["equipment_slot"],
+                    },
+                ),
+            )
         )
-    notes = {"notes": payload.get("notes", ""), "tags": payload.get("tags") or []}
-    atomic_write(notes_dir(root) / f"{content_id}.json", json.dumps(notes, indent=2) + "\n")
+    notes_path = notes_dir(root) / f"{content_id}.json"
+    planned.append(
+        (
+            notes_path,
+            json.dumps(
+                {"notes": payload.get("notes", ""), "tags": payload.get("tags") or []},
+                indent=2,
+            )
+            + "\n",
+        )
+    )
+    return planned
+
+
+def publish_files(root: Path, files: list[tuple[Path, str | bytes]], *, validate: bool) -> AuthoringOperation:
+    operation = AuthoringOperation(root)
+    for path, payload in files:
+        body = payload.encode("utf-8") if isinstance(payload, str) else payload
+        operation.stage(path, body)
+    try:
+        operation.publish()
+        if validate:
+            validate_pack(root)
+        operation.finish()
+    except Exception:
+        operation.rollback()
+        raise
+    return operation
+
+
+def _same_draft(current: dict, payload: dict) -> bool:
+    return (
+        current.get("category") == payload.get("category")
+        and int(current.get("stack_limit", 0)) == int(payload.get("stack_limit", 0))
+        and (current.get("display_name") or "") == (payload.get("display_name") or "")
+        and (current.get("description") or "") == (payload.get("description") or "")
+        and current.get("icon") == payload.get("icon")
+        and (current.get("notes") or "") == (payload.get("notes") or "")
+        and list(current.get("tags") or []) == list(payload.get("tags") or [])
+        and bool(current.get("drop_requires_confirmation"))
+        == bool(payload.get("drop_requires_confirmation", False))
+    )
+
+
+class AuthoringRejected(Exception):
+    def __init__(self, status: int, payload: dict) -> None:
+        super().__init__(payload.get("error") or "; ".join(payload.get("errors") or []))
+        self.status = status
+        self.payload = payload
+
+
+def commit_item_create(root: Path, payload: dict) -> dict:
+    errors = validate_payload(payload, creating=True)
+    if errors:
+        raise AuthoringRejected(400, {"errors": errors})
+    label = payload["label"]
+    with CatalogWriteLock(root):
+        recover_authoring(root)
+        existing = items_dir(root) / f"{label}.json"
+        if existing.is_file():
+            current = load_item(root, existing)
+            if _same_draft(current, payload):
+                return {"content_id": current["content_id"], "item": current, "idempotent": True}
+            raise AuthoringConflict(
+                f"{label} already exists. Reload it instead of allocating another id."
+            )
+        catalog_path = catalog_rs(root)
+        ledger_path = catalog_md(root)
+        lib_path = common_lib(root)
+        catalog = catalog_path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        ledger = ledger_path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        library = lib_path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        content_id = next_item_id(catalog, ledger)
+        operation = AuthoringOperation(root)
+        for path, text in [
+            (catalog_path, insert_catalog(catalog, label, content_id)),
+            (lib_path, insert_lib_export(library, label)),
+            (ledger_path, insert_ledger(ledger, label, content_id)),
+            *planned_item_files(root, payload, content_id),
+        ]:
+            operation.stage(path, text.encode("utf-8"))
+        try:
+            operation.publish()
+            formatted = subprocess.run(
+                ["cargo", "fmt", "-p", "purgatory-common"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if formatted.returncode != 0:
+                raise RuntimeError(formatted.stderr or "cargo fmt failed")
+            validate_pack(root)
+            operation.finish()
+        except Exception:
+            operation.rollback()
+            raise
+    return {"content_id": content_id, "item": load_item(root, items_dir(root) / f"{label}.json")}
+
+
+def commit_item_save(root: Path, payload: dict) -> dict:
+    errors = validate_payload(payload, creating=False)
+    if errors:
+        raise AuthoringRejected(400, {"errors": errors})
+    label = payload["label"]
+    path = items_dir(root) / f"{label}.json"
+    with CatalogWriteLock(root):
+        recover_authoring(root)
+        if not path.is_file():
+            raise AuthoringRejected(404, {"error": "item was not found"})
+        current = load_item(root, path)
+        if payload.get("revision") != current["revision"]:
+            raise AuthoringConflict("The item changed on disk. Reload before saving.")
+        if payload.get("category") != current["category"]:
+            raise AuthoringRejected(
+                400, {"error": "Changing category is rejected. Duplicate the item instead."}
+            )
+        if int(payload["stack_limit"]) < int(current["stack_limit"]):
+            raise AuthoringRejected(400, {"error": "Reducing stack_limit is rejected."})
+        if current["category"] == "equipment" and payload.get("equipment_slot") != current["equipment_slot"]:
+            raise AuthoringRejected(400, {"error": "Changing the equipment slot is rejected."})
+        publish_files(root, planned_item_files(root, payload, int(current["content_id"])), validate=True)
+        saved = load_item(root, path)
+    return {"item": saved}
+
+
+def commit_icon(root: Path, key: str, data: bytes) -> dict:
+    if not VISUAL_RE.fullmatch(key):
+        raise AuthoringRejected(400, {"error": "icon key is invalid"})
+    try:
+        width, height, color = png_size(data)
+    except (ValueError, IndexError) as error:
+        raise AuthoringRejected(400, {"error": str(error)}) from error
+    if (width, height) != (ICON_PX, ICON_PX) or color != 6:
+        raise AuthoringRejected(400, {"error": "icon must be a 32x32 RGBA PNG"})
+    destination = icons_dir(root) / f"{key}.png"
+    with CatalogWriteLock(root):
+        recover_authoring(root)
+        if destination.exists():
+            raise AuthoringRejected(400, {"error": "an icon with that key already exists"})
+        publish_files(root, [(destination, data)], validate=False)
+    return {"icon": key}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -377,7 +565,26 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         root = repo_root()
         if parsed.path == "/api/health":
-            self.send_json(200, {"tool": "item-lab", "build": BUILD, "port": PORT})
+            self.send_json(
+                200,
+                {
+                    "tool": "item-lab",
+                    "build": BUILD,
+                    "port": PORT,
+                    "workspace": str(root),
+                },
+            )
+            return
+        if parsed.path == "/api/icons":
+            keys = sorted(
+                {
+                    row.get("icon", "")
+                    for row in list_items(root)
+                    if row.get("icon")
+                }
+                | {path.stem for path in icons_dir(root).glob("*.png")}
+            )
+            self.send_json(200, {"icons": [key for key in keys if key]})
             return
         if parsed.path == "/api/items":
             self.send_json(200, {"items": list_items(root)})
@@ -412,6 +619,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path in ("/", "/index.html"):
             self._file(root / "tools" / "item_lab" / "web" / "index.html", "text/html")
             return
+        if parsed.path == "/authoring_chart.js":
+            self._file(root / "tools" / "authoring_chart.js", "text/javascript")
+            return
         if parsed.path.startswith("/") and parsed.path.count("/") == 1:
             candidate = root / "tools" / "item_lab" / "web" / parsed.path.lstrip("/")
             if candidate.is_file():
@@ -440,127 +650,29 @@ class Handler(BaseHTTPRequestHandler):
                 self.import_icon(root)
             else:
                 self.send_json(404, {"error": "not found"})
+        except AuthoringRejected as error:
+            self.send_json(error.status, error.payload)
+        except AuthoringConflict as error:
+            self.send_json(409, {"error": str(error), "conflict": True})
+        except TimeoutError as error:
+            self.send_json(503, {"error": str(error)})
+        except AuthoringRepair as error:
+            self.send_json(409, {"error": str(error), "repair": True})
         except Exception as error:  # surface authoring failures to the page
             self.send_json(400, {"error": str(error)})
 
     def create_item(self, root: Path) -> None:
-        payload = self.read_body()
-        errors = validate_payload(payload, creating=True)
-        if errors:
-            self.send_json(400, {"errors": errors})
-            return
-        touched: dict[Path, str | None] = {}
-        with CatalogWriteLock(root):
-            catalog_path = catalog_rs(root)
-            ledger_path = catalog_md(root)
-            lib_path = common_lib(root)
-            originals = {
-                catalog_path: catalog_path.read_text(encoding="utf-8"),
-                ledger_path: ledger_path.read_text(encoding="utf-8"),
-                lib_path: lib_path.read_text(encoding="utf-8"),
-            }
-            content_id = next_item_id(originals[catalog_path], originals[ledger_path])
-            label = payload["label"]
-            created = [
-                items_dir(root) / f"{label}.json",
-                presentation_dir(root) / f"{label}.json",
-                equipment_dir(root) / f"{label}.json",
-                notes_dir(root) / f"{content_id}.json",
-            ]
-            for path in created:
-                touched[path] = path.read_text(encoding="utf-8") if path.exists() else None
-            try:
-                catalog = originals[catalog_path].replace("\r\n", "\n").replace("\r", "\n")
-                atomic_write(catalog_path, insert_catalog(catalog, label, content_id))
-                atomic_write(lib_path, insert_lib_export(originals[lib_path].replace("\r\n", "\n"), label))
-                atomic_write(ledger_path, insert_ledger(originals[ledger_path].replace("\r\n", "\n"), label, content_id))
-                write_item_files(root, payload, content_id)
-                formatted = subprocess.run(
-                    ["cargo", "fmt", "-p", "purgatory-common"],
-                    cwd=root,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if formatted.returncode != 0:
-                    raise RuntimeError(formatted.stderr or "cargo fmt failed")
-                validate_pack(root)
-            except Exception:
-                for path, previous in originals.items():
-                    atomic_write(path, previous)
-                for path, previous in touched.items():
-                    if previous is None and path.exists():
-                        path.unlink()
-                    elif previous is not None:
-                        atomic_write(path, previous)
-                raise
-        self.send_json(200, {"content_id": content_id, "item": load_item(root, items_dir(root) / f"{label}.json")})
+        self.send_json(200, commit_item_create(root, self.read_body()))
 
     def save_item(self, root: Path) -> None:
-        payload = self.read_body()
-        errors = validate_payload(payload, creating=False)
-        if errors:
-            self.send_json(400, {"errors": errors})
-            return
-        label = payload["label"]
-        path = items_dir(root) / f"{label}.json"
-        if not path.is_file():
-            self.send_json(404, {"error": "item was not found"})
-            return
-        current = load_item(root, path)
-        if payload.get("revision") != current["revision"]:
-            self.send_json(409, {"error": "The item changed on disk. Reload before saving."})
-            return
-        if payload.get("category") != current["category"]:
-            self.send_json(400, {"error": "Changing category is rejected. Duplicate the item instead."})
-            return
-        if int(payload["stack_limit"]) < int(current["stack_limit"]):
-            self.send_json(400, {"error": "Reducing stack_limit is rejected."})
-            return
-        if current["category"] == "equipment" and payload.get("equipment_slot") != current["equipment_slot"]:
-            self.send_json(400, {"error": "Changing the equipment slot is rejected."})
-            return
-        content_id = int(current["content_id"])
-        presentation_path = presentation_dir(root) / f"{label}.json"
-        notes_path = notes_dir(root) / f"{content_id}.json"
-        previous = {
-            path: path.read_text(encoding="utf-8"),
-            presentation_path: presentation_path.read_text(encoding="utf-8"),
-            notes_path: notes_path.read_text(encoding="utf-8") if notes_path.exists() else None,
-        }
-        try:
-            write_item_files(root, payload, content_id)
-            validate_pack(root)
-        except Exception:
-            for file_path, text in previous.items():
-                if text is None and file_path.exists():
-                    file_path.unlink()
-                elif text is not None:
-                    atomic_write(file_path, text)
-            raise
-        self.send_json(200, {"item": load_item(root, path)})
+        self.send_json(200, commit_item_save(root, self.read_body()))
 
     def import_icon(self, root: Path) -> None:
-        payload = self.read_body()
-        key = str(payload.get("icon", ""))
-        if not VISUAL_RE.fullmatch(key):
-            self.send_json(400, {"error": "icon key is invalid"})
-            return
-        raw = payload.get("png_base64", "")
         import base64
 
-        data = base64.b64decode(raw)
-        width, height, color = png_size(data)
-        if (width, height) != (ICON_PX, ICON_PX) or color != 6:
-            self.send_json(400, {"error": "icon must be a 32x32 RGBA PNG"})
-            return
-        destination = icons_dir(root) / f"{key}.png"
-        if destination.exists():
-            self.send_json(400, {"error": "an icon with that key already exists"})
-            return
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(data)
-        self.send_json(200, {"icon": key})
+        payload = self.read_body()
+        data = base64.b64decode(payload.get("png_base64", ""))
+        self.send_json(200, commit_icon(root, str(payload.get("icon", "")), data))
 
 
 def main() -> None:
@@ -572,6 +684,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--open", action="store_true")
     args = parser.parse_args()
+    try:
+        notes = recover_authoring(repo_root())
+    except AuthoringRepair as error:
+        raise SystemExit(str(error)) from error
+    for note in notes:
+        print(f"ITEM_LAB|RECOVERY|{note}", flush=True)
     server = ThreadingHTTPServer((HOST, args.port), Handler)
     print(f"Item Lab http://{HOST}:{args.port} build {BUILD}", flush=True)
     if args.open:

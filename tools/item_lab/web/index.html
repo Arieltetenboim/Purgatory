@@ -24,7 +24,7 @@
 <main class="app-shell">
   <aside class="panel library">
     <div class="panel-heading">LIBRARY</div>
-    <input id="searchInput" placeholder="Search name, id, or label" autocomplete="off">
+    <input id="searchInput" placeholder="Search name, id, label, or tags" autocomplete="off">
     <select id="categoryFilter">
       <option value="">All categories</option>
       <option>equipment</option>
@@ -79,7 +79,9 @@
         <p class="muted">The slot uses the same Content ID. Changing it after creation is rejected. Worn art stays in the equipment presentation file.</p>
         <p class="field-error" data-for="slot"></p>
       </div>
-      <label>Icon visual key<input id="icon" autocomplete="off" spellcheck="false"></label>
+      <label>Icon visual key<input id="icon" list="iconKeys" autocomplete="off" spellcheck="false"></label>
+      <datalist id="iconKeys"></datalist>
+      <p id="iconMissing" class="muted" hidden>No file for this key. Ground and inventory use the missing-icon fallback.</p>
       <p class="field-error" data-for="icon"></p>
       <div class="previews">
         <div>
@@ -108,8 +110,23 @@
   <aside class="panel used">
     <div class="panel-heading">WHERE USED</div>
     <div id="whereUsed" class="muted">Select an item.</div>
+    <label>Source monster<select id="sourceMonster"></select></label>
+    <p id="chartEmpty" class="muted">Select an item that a monster drops.</p>
+    <strong id="itemChartTitle"></strong>
+    <div class="drop-presets">
+      <button type="button" data-item-kills="100">100</button>
+      <button type="button" data-item-kills="1000">1,000</button>
+      <button type="button" data-item-kills="10000">10,000</button>
+      <button type="button" data-item-kills="100000">100,000</button>
+      <label>Inspect N<input id="itemKills" type="number" min="0" max="1000000" step="1" value="1000"></label>
+    </div>
+    <p id="itemInspect" class="muted"></p>
+    <svg id="itemChart" viewBox="0 0 640 280" role="img" aria-label="Expected units from this source"></svg>
+    <div id="itemHover" class="drop-hover" hidden></div>
+    <p class="muted">Expectation is a long-run average, not a guaranteed quota. This chart does not save. A future runtime simulator is separate.</p>
   </aside>
 </main>
+<script src="/authoring_chart.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

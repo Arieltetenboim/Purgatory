@@ -21,6 +21,14 @@ Write-Host "ITEM_LAB|LIFETIME|Close this PowerShell window or press Ctrl+C to st
 try {
     $health = Invoke-RestMethod -Uri $HealthUrl -Method Get -TimeoutSec 1
     if ($health.tool -eq "item-lab" -and $health.build -eq $ExpectedBuild) {
+        $running = ""
+        if ($health.workspace) {
+            $running = [System.IO.Path]::GetFullPath([string]$health.workspace)
+        }
+        $expected = [System.IO.Path]::GetFullPath($RepoRoot)
+        if ($running -ne $expected) {
+            throw "Port $Port is Item Lab for another workspace. Stop it before opening $expected."
+        }
         if (-not $NoBrowser) {
             Start-Process $Url | Out-Null
         }

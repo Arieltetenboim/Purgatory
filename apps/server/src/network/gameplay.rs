@@ -515,6 +515,46 @@ struct ReconcileJob {
     revision: u64,
 }
 
+/// SplitMix64. Seeded once when the owner is created, never from the tick.
+struct LootRng {
+    state: u64,
+}
+
+impl LootRng {
+    fn from_entropy() -> Self {
+        Self::from_seed(loot_entropy())
+    }
+
+    fn from_seed(seed: u64) -> Self {
+        Self { state: seed | 1 }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 32) as u32
+    }
+}
+
+fn loot_entropy() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let step = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let local = 0u8;
+    let address = &local as *const u8 as u64;
+    let tick = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(0);
+    address
+        ^ tick.rotate_left(17)
+        ^ u64::from(std::process::id()).wrapping_mul(0x9E37)
+        ^ step.wrapping_mul(0xBF58_476D_1CE4_E5B9)
+}
+
 /// Simulation-thread owner of `World` and `ConnectionId → EntityId`.
 pub struct GameplayOwner {
     world: World,
@@ -620,7 +660,7 @@ pub struct GameplayOwner {
     /// Rolled drops still waiting for a reserved id. Already manifested rows are gone.
     pending_loot: VecDeque<PendingMonsterLoot>,
     closed_loot_addresses: HashSet<WorldAddress>,
-    loot_rng: u32,
+    loot_rng: LootRng,
     loot_manifested: u64,
     loot_allocation_deferred: u64,
     loot_abandoned: u64,
@@ -1566,7 +1606,7 @@ impl GameplayOwner {
             ground_remove_ops: 0,
             pending_loot: VecDeque::new(),
             closed_loot_addresses: HashSet::new(),
-            loot_rng: 0xC0FF_EE01,
+            loot_rng: LootRng::from_entropy(),
             loot_manifested: 0,
             loot_allocation_deferred: 0,
             loot_abandoned: 0,

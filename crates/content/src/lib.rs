@@ -77,8 +77,8 @@ pub use map_presentation::{
 };
 pub use monster::{
     DROP_CHANCE_BPS_MAX, MONSTER_CONTENT_SCHEMA_VERSION, MonsterBehavior, MonsterDefinition,
-    MonsterDropEntry, RolledMonsterDrop, roll_monster_drops, validate_monster_definition,
-    validate_monster_drop_items,
+    MonsterDropEntry, RolledMonsterDrop, roll_monster_drops, uniform_below,
+    validate_monster_definition, validate_monster_drop_items,
 };
 pub use registry::ContentRegistry;
 pub use restore::{LogicalRestoreDestination, resolve_restore, runtime_placement};

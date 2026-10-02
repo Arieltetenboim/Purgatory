@@ -112,13 +112,26 @@ pub struct MonsterDefinition {
 
 /// Roll each entry once. `next_unit` supplies raw entropy; this function reduces it.
 /// A failed chance does not consume a second value. 0 never succeeds and 10_000 always does.
+/// Uniform integer in `0..bound`. Rejects the incomplete top of the `u32` range
+/// so a small bound does not collapse onto one residue of a generator's low bits.
+pub fn uniform_below(next_unit: &mut impl FnMut() -> u32, bound: u32) -> u32 {
+    assert!(bound > 0, "uniform bound must be positive");
+    let limit = u32::MAX - (u32::MAX % bound);
+    loop {
+        let value = next_unit();
+        if value < limit {
+            return value % bound;
+        }
+    }
+}
+
 pub fn roll_monster_drops(
     entries: &[MonsterDropEntry],
     mut next_unit: impl FnMut() -> u32,
 ) -> Vec<RolledMonsterDrop> {
     let mut rolled = Vec::new();
     for entry in entries {
-        let chance = next_unit() % DROP_CHANCE_BPS_MAX;
+        let chance = uniform_below(&mut next_unit, DROP_CHANCE_BPS_MAX);
         if chance >= entry.chance_bps {
             continue;
         }
@@ -126,7 +139,7 @@ pub fn roll_monster_drops(
         let quantity = if span == 0 {
             entry.quantity_min
         } else {
-            entry.quantity_min + (next_unit() % (span + 1))
+            entry.quantity_min + uniform_below(&mut next_unit, span + 1)
         };
         rolled.push(RolledMonsterDrop {
             item: entry.item,

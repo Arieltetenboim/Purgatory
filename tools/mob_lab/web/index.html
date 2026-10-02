@@ -250,8 +250,10 @@
               <button type="button" data-kills="1000">1,000</button>
               <button type="button" data-kills="10000">10,000</button>
               <button type="button" data-kills="100000">100,000</button>
-              <label>Kills N<input id="dropKills" type="number" min="0" max="1000000" step="1" value="1000"></label>
+              <label>Inspect N<input id="dropKills" type="number" min="0" max="1000000" step="1" value="1000"></label>
             </div>
+            <p id="dropInspect" class="muted"></p>
+            <p class="muted">Expectation is a long-run average, not a guaranteed quota. Editing the chart does not save. A future runtime simulator is separate and must call the server resolver.</p>
             <svg id="dropChart" viewBox="0 0 640 280" role="img" aria-label="Expected cumulative drops"></svg>
             <div id="dropHover" class="drop-hover" hidden></div>
             <p class="muted">The line is the analytic expectation, not an observed sample. Future runtime simulation is documented separately and is not running here.</p>
@@ -335,6 +337,7 @@
     </div>
   </form>
 </dialog>
+<script src="/authoring_chart.js?v=item-lab-v1"></script>
 <script src="/drops.js?v=item-lab-v1"></script>
 <script src="/app.js?v=m3-prototype-parity-v14"></script>
 </body>

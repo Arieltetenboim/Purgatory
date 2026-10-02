@@ -175,3 +175,92 @@ fn empty_table_and_despawn_do_not_drop() {
     owner.simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
     assert!(owner.world().item_record(reserved(880_031)).is_none());
 }
+
+fn roll_with_seed(seed: u64, entries: &[purgatory_content::MonsterDropEntry], deaths: usize) -> Vec<purgatory_content::RolledMonsterDrop> {
+    let mut owner = GameplayOwner::new();
+    owner.seed_loot_rng_for_test(seed);
+    let mut rolled = Vec::new();
+    for _ in 0..deaths {
+        rolled.extend(purgatory_content::roll_monster_drops(entries, || {
+            owner.next_loot_unit()
+        }));
+    }
+    rolled
+}
+
+#[test]
+fn production_rng_quantity_one_to_two_hits_both_endpoints() {
+    let entries = [purgatory_content::MonsterDropEntry {
+        item: ITEM_DEV_SAMPLE_SCRAP,
+        chance_bps: 10_000,
+        quantity_min: 1,
+        quantity_max: 2,
+    }];
+    let deaths = 10_000;
+    let rolled = roll_with_seed(0xC0FF_EE01_1234_5678, &entries, deaths);
+    assert_eq!(rolled.len(), deaths);
+    let ones = rolled.iter().filter(|drop| drop.quantity == 1).count();
+    let twos = rolled.iter().filter(|drop| drop.quantity == 2).count();
+    assert!(ones > 4_000 && twos > 4_000, "ones={ones} twos={twos}");
+    let mean = rolled.iter().map(|drop| u64::from(drop.quantity)).sum::<u64>() as f64
+        / deaths as f64;
+    assert!((mean - 1.5).abs() < 0.05, "mean={mean}");
+}
+
+#[test]
+fn production_rng_covers_bounds_and_independent_rows() {
+    let fixed = [purgatory_content::MonsterDropEntry {
+        item: ITEM_SMALL_POTION,
+        chance_bps: 10_000,
+        quantity_min: 2,
+        quantity_max: 2,
+    }];
+    let fixed_rolls = roll_with_seed(7, &fixed, 100);
+    assert!(fixed_rolls.iter().all(|drop| drop.quantity == 2));
+
+    let wide = [purgatory_content::MonsterDropEntry {
+        item: ITEM_DEV_SAMPLE_SCRAP,
+        chance_bps: 10_000,
+        quantity_min: 1,
+        quantity_max: 6,
+    }];
+    let wide_rolls = roll_with_seed(11, &wide, 2_000);
+    for quantity in 1..=6 {
+        assert!(
+            wide_rolls.iter().any(|drop| drop.quantity == quantity),
+            "missing {quantity}"
+        );
+    }
+
+    let rows = [
+        purgatory_content::MonsterDropEntry {
+            item: ITEM_SMALL_POTION,
+            chance_bps: 0,
+            quantity_min: 1,
+            quantity_max: 2,
+        },
+        purgatory_content::MonsterDropEntry {
+            item: ITEM_DEV_SAMPLE_SCRAP,
+            chance_bps: 10_000,
+            quantity_min: 1,
+            quantity_max: 3,
+        },
+    ];
+    let mixed = roll_with_seed(19, &rows, 1_000);
+    assert!(mixed.iter().all(|drop| drop.item == ITEM_DEV_SAMPLE_SCRAP));
+    assert!(mixed.iter().any(|drop| drop.quantity == 1));
+    assert!(mixed.iter().any(|drop| drop.quantity == 3));
+
+    let rare = [purgatory_content::MonsterDropEntry {
+        item: ITEM_IRON_SCRAP,
+        chance_bps: 1_000,
+        quantity_min: 1,
+        quantity_max: 1,
+    }];
+    let rare_rolls = roll_with_seed(23, &rare, 10_000);
+    assert!(
+        (700..1_300).contains(&rare_rolls.len()),
+        "successes={}",
+        rare_rolls.len()
+    );
+}

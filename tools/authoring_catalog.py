@@ -25,6 +25,8 @@ class CatalogWriteLock:
                 return self
             except OSError:
                 if time.monotonic() >= deadline:
+                    self._file.close()
+                    self._file = None
                     raise TimeoutError(
                         "Another Lab holds the content catalog lock. Retry after it finishes."
                     )

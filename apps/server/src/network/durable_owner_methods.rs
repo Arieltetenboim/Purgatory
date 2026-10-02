@@ -1578,14 +1578,12 @@ impl GameplayOwner {
     }
 
     fn next_loot_unit(&mut self) -> u32 {
-        self.loot_rng = self
-            .loot_rng
-            .wrapping_mul(1_664_525)
-            .wrapping_add(1_013_904_223);
-        if self.loot_rng == 0 {
-            self.loot_rng = 0xA5A5_1234;
-        }
-        self.loot_rng
+        self.loot_rng.next_u32()
+    }
+
+    #[cfg(test)]
+    pub fn seed_loot_rng_for_test(&mut self, seed: u64) {
+        self.loot_rng = LootRng::from_seed(seed);
     }
 
     fn loot_address_open(&self, address: WorldAddress) -> bool {

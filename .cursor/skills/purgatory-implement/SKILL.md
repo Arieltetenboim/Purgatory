@@ -19,7 +19,7 @@ UNDERSTAND → INSPECT → IMPLEMENT → TEST → QUALITY GATE → REPORT → ST
 
 ### 1. UNDERSTAND
 
-Read the user's requested scope carefully. If a detailed implementation plan is provided, treat it as the intended scope. Do not redesign it casually.
+Read the user's requested scope carefully. If a detailed implementation plan is provided, treat it as the intended scope. Do not redesign it casually. If the change writes authored content or durable gameplay state, read `docs/PERSISTENCE_AND_AUTHORING_CONTRACT.md` before editing a save path.
 
 ### 2. INSPECT
 

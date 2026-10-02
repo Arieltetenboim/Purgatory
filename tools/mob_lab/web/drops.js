@@ -1,24 +1,8 @@
-const DROP_BPS = 10000;
-const DROP_N_MAX = 1000000;
+const DROP_BPS = window.DROP_BPS;
+const DROP_N_MAX = window.DROP_N_MAX;
+const dropExpectation = window.dropExpectation;
+const formatExact = window.formatExact;
 const dropUi = { items: [], selected: 0, kills: 1000 };
-
-function dropExpectation(chanceBps, quantityMin, quantityMax, kills) {
-  const n = Math.max(0, Math.round(Number(kills) || 0));
-  const p = Math.min(DROP_BPS, Math.max(0, Number(chanceBps) || 0)) / DROP_BPS;
-  const mean = (Number(quantityMin) + Number(quantityMax)) / 2;
-  return {
-    kills: n,
-    chance: p,
-    mean,
-    successes: n * p,
-    units: n * p * mean,
-  };
-}
-
-function formatExact(value) {
-  if (Number.isInteger(value)) return String(value);
-  return value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
-}
 
 window.validateMonsterDrops = function(doc) {
   const errors = [];
@@ -64,85 +48,30 @@ function commitDrops(rows) {
 }
 
 function renderChart() {
-  const svg = document.getElementById("dropChart");
   const rows = dropRows();
   const entry = rows[dropUi.selected] || null;
   const item = entry ? dropUi.items.find((row) => row.content_id === Number(entry.item)) : null;
-  const bound = Math.min(DROP_N_MAX, Math.max(0, dropUi.kills));
-  const expected = entry
-    ? dropExpectation(entry.chance_bps, entry.quantity_min, entry.quantity_max, bound)
-    : { successes: 0, units: 0, chance: 0, mean: 0, kills: bound };
-  const monster = window.mobLabState?.doc?.id || "monster";
-  const name = item ? (item.display_name || item.label) : "no item";
-  document.getElementById("dropChartTitle").textContent =
-    `${monster} / ${name} / ${formatExact(expected.chance * 100)}% / qty ${entry ? entry.quantity_min + "–" + entry.quantity_max : "—"} / mean ${formatExact(expected.mean || 0)}`;
   document.getElementById("dropChartDraft").textContent = window.mobLabState?.dirty ? "Unsaved draft" : "";
-  const width = 640;
-  const height = 280;
-  const pad = { l: 56, r: 16, t: 16, b: 32 };
-  const plotW = width - pad.l - pad.r;
-  const plotH = height - pad.t - pad.b;
-  const yMax = expected.units > 0 ? expected.units : 1;
-  const xAt = (n) => pad.l + (bound === 0 ? 0 : (n / bound) * plotW);
-  const yAt = (units) => pad.t + plotH - (units / yMax) * plotH;
-  const ticks = 4;
-  let axis = "";
-  for (let i = 0; i <= ticks; i++) {
-    const n = Math.round((bound * i) / ticks);
-    const units = (yMax * i) / ticks;
-    axis += `<line x1="${xAt(n)}" y1="${pad.t}" x2="${xAt(n)}" y2="${pad.t + plotH}" stroke="#20323d"/>`;
-    axis += `<text x="${xAt(n)}" y="${height - 8}" fill="#9aadb8" font-size="11" text-anchor="middle">${n}</text>`;
-    axis += `<text x="${pad.l - 8}" y="${yAt(expected.units > 0 ? units : 0)}" fill="#9aadb8" font-size="11" text-anchor="end">${formatExact(expected.units > 0 ? units : (i === 0 ? 0 : 1))}</text>`;
+  const chart = window.renderExpectationChart(document.getElementById("dropChart"), {
+    monster: window.mobLabState?.doc?.id || "no source",
+    itemName: item ? (item.display_name || item.label) : "no item",
+    chanceBps: entry ? entry.chance_bps : 0,
+    quantityMin: entry ? entry.quantity_min : 0,
+    quantityMax: entry ? entry.quantity_max : 0,
+    kills: dropUi.kills,
+    entry: Boolean(entry),
+    title: document.getElementById("dropChartTitle"),
+    hover: document.getElementById("dropHover"),
+    prefix: "drop",
+  });
+  dropUi.inspect = chart ? chart.inspect : null;
+  const readout = document.getElementById("dropInspect");
+  if (readout && chart) {
+    const point = chart.inspect(dropUi.kills);
+    readout.textContent = entry
+      ? `At N=${point.kills}: expected successes ${formatExact(point.successes)}, expected units ${formatExact(point.units)}.`
+      : "No drop row is selected.";
   }
-  const line = `<line x1="${xAt(0)}" y1="${yAt(0)}" x2="${xAt(bound)}" y2="${yAt(expected.units)}" stroke="#56c7da" stroke-width="2"/>`;
-  svg.innerHTML = `
-    <text x="${pad.l}" y="12" fill="#9aadb8" font-size="11">Expected units</text>
-    <text x="${width - 8}" y="${height - 8}" fill="#9aadb8" font-size="11" text-anchor="end">Eligible kills</text>
-    ${axis}${line}
-    <line id="dropCrossX" stroke="#e6b75e" stroke-dasharray="3 3" visibility="hidden"/>
-    <line id="dropCrossY" stroke="#e6b75e" stroke-dasharray="3 3" visibility="hidden"/>
-    <circle id="dropMarker" r="4" fill="#56c7da" visibility="hidden"/>`;
-  svg.onmousemove = (event) => {
-    const rect = svg.getBoundingClientRect();
-    const local = ((event.clientX - rect.left) / rect.width) * width;
-    const ratio = Math.min(1, Math.max(0, (local - pad.l) / plotW));
-    const n = Math.round(ratio * bound);
-    const point = entry
-      ? dropExpectation(entry.chance_bps, entry.quantity_min, entry.quantity_max, n)
-      : { kills: n, successes: 0, units: 0, chance: 0 };
-    const marker = document.getElementById("dropMarker");
-    const crossX = document.getElementById("dropCrossX");
-    const crossY = document.getElementById("dropCrossY");
-    const x = xAt(n);
-    const y = yAt(point.units);
-    marker.setAttribute("cx", x);
-    marker.setAttribute("cy", y);
-    marker.setAttribute("visibility", "visible");
-    crossX.setAttribute("x1", x); crossX.setAttribute("x2", x);
-    crossX.setAttribute("y1", pad.t); crossX.setAttribute("y2", pad.t + plotH);
-    crossX.setAttribute("visibility", "visible");
-    crossY.setAttribute("y1", y); crossY.setAttribute("y2", y);
-    crossY.setAttribute("x1", pad.l); crossY.setAttribute("x2", pad.l + plotW);
-    crossY.setAttribute("visibility", "visible");
-    const hover = document.getElementById("dropHover");
-    hover.hidden = false;
-    hover.style.left = `${event.offsetX + 12}px`;
-    hover.style.top = `${event.offsetY + 12}px`;
-    hover.textContent = [
-      `N ${point.kills}`,
-      monster,
-      name,
-      `chance ${formatExact(point.chance * 100)}%`,
-      `expected successes ${formatExact(point.successes)}`,
-      `expected units ${formatExact(point.units)}`,
-    ].join("\n");
-  };
-  svg.onmouseleave = () => {
-    document.getElementById("dropHover").hidden = true;
-    ["dropMarker", "dropCrossX", "dropCrossY"].forEach((id) => {
-      document.getElementById(id)?.setAttribute("visibility", "hidden");
-    });
-  };
 }
 
 function renderMonsterDrops() {

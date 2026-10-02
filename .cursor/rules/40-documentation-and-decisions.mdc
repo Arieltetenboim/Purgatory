@@ -16,6 +16,7 @@ Repository documentation is part of the implementation contract. Update a docume
 - `docs/TEST_GATES.md` — recorded gates and how they were verified
 - `docs/PERFORMANCE_BUDGETS.md` — living budgets and measurements (values may be TBD)
 - `docs/CONTENT_PIPELINE.md` — authoring, IDs, validation
+- `docs/PERSISTENCE_AND_AUTHORING_CONTRACT.md` — entry point for authored and durable saves
 - `docs/DIAGNOSTICS_ARCHITECTURE.md` — client debug vs diagnostics split (D-track)
 - `docs/DIAGNOSTICS_ROADMAP.md` — D-track slice order
 - `README.md` — orientation and current status
@@ -23,6 +24,10 @@ Repository documentation is part of the implementation contract. Update a docume
 - root `PHASE` — current phase marker
 
 Keep these consistent with their intended roles. Avoid copying the same fact into many documents. Prefer one authoritative location for each durable truth. Volatile numbers belong in code and the document that owns them (often `PERFORMANCE_BUDGETS.md` or `PROTOCOL.md`), not in Cursor rules.
+
+## Saving
+
+Work that writes authored content or durable gameplay state reads `docs/PERSISTENCE_AND_AUTHORING_CONTRACT.md` first. Do not copy it into this rule. The change report includes a Persistence Impact note: data class, owner and commit boundary, what remains pending, stale state and retries, disconnect and restart, whether a content, database, or protocol migration is needed, and which tests prove it.
 
 ## ADRs
 

@@ -6,6 +6,7 @@
 .vscode/
 __pycache__/
 content/.authoring-catalog.lock
+content/.authoring-recovery/
 *.pyc
 *.swp
 *~

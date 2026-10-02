@@ -3374,6 +3374,68 @@
         });
     }
 
+    #[test]
+    #[ignore]
+    fn postgres_monster_death_pickup_survives_restart() {
+        with_db(|pg| {
+            let hero = pg.enter("Mira");
+            let batch = pg
+                .owner
+                .begin_id_replenish()
+                .expect("the live channel asks for a reserved range");
+            let ids = pg.service.reserve_item_ids(batch).unwrap();
+            let visible = ids[0];
+            pg.owner.install_reserved_ids(ids);
+            pg.owner.apply_input(InputUpdate::DevSpawnMonster {
+                connection_id: hero.connection,
+                monster_content_id: purgatory_common::MONSTER_DEV_GUARANTEED_DROP,
+            });
+            let creature = *pg.owner.dev_spawned_monsters.last().unwrap();
+            let mut health = pg.owner.world().health_of(creature).unwrap();
+            health.current = 1.0;
+            assert!(pg.owner.world_mut().set_health(creature, health));
+            assert!(pg.owner.world_mut().apply_player_damage(hero.actor, creature, 5.0));
+            pg.owner
+                .simulate_tick(purgatory_simulation::TICK_DURATION.as_secs_f32());
+            let record = pg.owner.world().item_record(visible).expect("manifested scrap");
+            assert_eq!(record.definition, purgatory_common::ITEM_DEV_SAMPLE_SCRAP);
+            assert_eq!(record.quantity, 2);
+            assert_eq!(
+                pg.owner.monster_loot_killer(visible),
+                Some(hero.character)
+            );
+            let drop = pg.owner.world().world_drop_entity_for_item(visible).unwrap();
+            let x = pg.owner.world().transform_of(drop).unwrap().position[0];
+            assert!(pg.owner.set_player_x(hero.connection, x));
+            pg.owner.apply_input(InputUpdate::Pickup {
+                connection_id: hero.connection,
+                request: PickupRequest {
+                    seq: 1,
+                    target: wire_id(drop),
+                },
+            });
+            let committed = pg.settle_next();
+            assert_eq!(committed.minted_item_ids, vec![visible]);
+            let stored = pg.service.read_item(visible).unwrap().unwrap();
+            assert_eq!(stored.definition_content_id, purgatory_common::ITEM_DEV_SAMPLE_SCRAP);
+            assert_eq!(stored.quantity, 2);
+            assert_eq!(
+                stored.owner,
+                ItemOwner::Character {
+                    character_id: hero.character,
+                    location: CharacterItemLocation::Inventory { slot: 0 },
+                }
+            );
+            let character = hero.character;
+            commit_logout(pg, &hero);
+            let returned = restart(pg, character);
+            assert!(pg.owner.world().inventory_contains(returned.actor, visible));
+            assert_eq!(pg.owner.world().item_record(visible).unwrap().quantity, 2);
+            assert!(pg.owner.world().world_drop_entity_for_item(visible).is_none());
+            assert_eq!(pg.service.read_item(visible).unwrap().unwrap().quantity, 2);
+        });
+    }
+
     fn commit_logout(pg: &mut Pg, entered: &Entered) {
         let Some((authority, snapshot)) = pg.owner.prepare_logout(entered.connection).unwrap()
         else {

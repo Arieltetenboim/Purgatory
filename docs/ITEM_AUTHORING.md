@@ -1,6 +1,6 @@
 # Item authoring
 
-Item Lab writes the same files the content loader reads. `ContentId` is the authored type. `ItemInstanceId` is the server identity of one instance or stack. `EntityId` is the temporary world manifestation.
+Item Lab writes the same files the content loader reads. Saves follow [`PERSISTENCE_AND_AUTHORING_CONTRACT.md`](PERSISTENCE_AND_AUTHORING_CONTRACT.md). Success is `AuthoringOperation.finish` after validation, not the first file rename. A stale source revision, which covers gameplay, presentation, equipment, and notes, returns HTTP 409 and keeps the draft. `ContentId` is the authored type. `ItemInstanceId` is the server identity of one instance or stack. `EntityId` is the temporary world manifestation.
 
 Display name and description live on item presentation and are shown by the inventory tooltip. They are not protocol fields. An empty display name falls back to the technical label. The ground icon uses the existing `ReplicationRecord::Enter` `content_id` plus the presentation icon. Public quantity is not replicated; the owner inventory entry carries quantity.
 

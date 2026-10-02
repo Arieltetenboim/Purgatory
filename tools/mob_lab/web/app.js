@@ -1,5 +1,5 @@
 const state = window.mobLabState = {
-  items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",dirty:false,
+  items:[],sprites:[],selectedPath:null,doc:null,contentId:null,original:"",sourceRevision:"",dirty:false,
   presentation:null,previewImage:null,previewFrame:0,previewTimer:null,previewTime:0,previewStarted:false,previewFinished:false,markerFeedback:"",
   manifestDoc:null,manifestOriginal:"",manifestPath:null,manifestDirty:false,previewClip:"idle",activeTab:"atlas",
   selectedFrame:0,selectedSocket:null,socketPlacement:false,previewPlaying:false,showSprite:true,showHitbox:true,showGuides:false,newTemplatePath:null
@@ -1128,6 +1128,7 @@ async function openMonster(path){
   if((state.dirty||state.manifestDirty)&&!confirm("Discard unsaved Monster or sprite-manifest changes?"))return;
   const data=await api("/api/monster?path="+encodeURIComponent(path));
   state.selectedPath=data.path;state.doc=data.document;state.contentId=data.content_id??null;
+  state.sourceRevision=data.revision||"";
   state.original=canonical(state.doc);
   els.duplicateButton.disabled=false;
   els.emptyState.classList.add("hidden");els.editor.classList.remove("hidden");
@@ -1157,10 +1158,13 @@ async function saveMonsterDocument(){
     throw new Error("Monster JSON has validation errors. Fix them before save.");
   }
   const data=await api("/api/monster?path="+encodeURIComponent(state.selectedPath),{
-    method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(state.doc)
+    method:"POST",
+    headers:{"Content-Type":"application/json","X-Source-Revision":state.sourceRevision},
+    body:JSON.stringify(state.doc)
   });
   if(data.document){
     state.doc=data.document;
+    state.sourceRevision=data.revision||state.sourceRevision;
     state.original=canonical(data.document);
     renderForm();
   }
