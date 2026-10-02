@@ -20,11 +20,14 @@ struct GateStep {
     state: StepState,
 }
 
-const STEPS: [(&str, &str); 5] = [
+const STEPS: [(&str, &str); 8] = [
     ("fmt", "Format"),
     ("check", "Cargo Check"),
     ("clippy", "Clippy"),
     ("tests", "Workspace Tests"),
+    ("mob-lab", "Mob Lab Tests"),
+    ("item-lab", "Item Lab Tests"),
+    ("authoring-chart", "Shared drop chart"),
     ("content", "Content Validation"),
 ];
 

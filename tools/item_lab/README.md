@@ -24,7 +24,7 @@ Python 3 on `PATH` (`py -3` or `python`). No database credentials and no migrati
 | `crates/common/src/content_catalog.rs` | Permanent numeric ID |
 | `content/CONTENT_ID_CATALOG.md` | Ledger, including retired rows that are never reused |
 
-Editable fields: display name, description, category (only while creating), stack limit (increases only), drop-confirmation flag, icon key, notes, and tags. Category, stack-limit reduction, and equipment-slot changes after creation are rejected.
+Editable fields: display name, description, category (only while creating), stack limit (increases only), drop-confirmation flag, icon key, notes, and tags. The technical label stays read-only after creation. A new item must use an `item.*` label. Saving an existing item also accepts an `equipment.*` label, which is the identity already used by equipment definitions. Category, stack-limit reduction, and equipment-slot changes after creation are rejected.
 
 A new ID is compiled into the catalog. Rebuild the client and server before the game can load it. A JSON-only edit needs a restart of processes that already loaded content.
 

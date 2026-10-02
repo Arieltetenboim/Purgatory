@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -24,6 +26,24 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             server.insert_catalog(updated, "item.dev.sample_scrap", 30017)
 
+    def test_save_accepts_an_existing_equipment_label(self):
+        sword = {
+            "label": "equipment.debug.practice_sword",
+            "category": "equipment",
+            "stack_limit": 1,
+            "icon": "item.placeholder",
+            "equipment_slot": "weapon",
+            "display_name": "Practice sword",
+            "description": "A practice blade.",
+        }
+        saved = server.validate_payload(sword, creating=False)
+        self.assertFalse(any("label" in error for error in saved))
+        created = server.validate_payload(sword, creating=True)
+        self.assertIn("label must match item.*", created)
+        item = dict(sword, label="item.debug.practice_sword", category="material", stack_limit=20)
+        item.pop("equipment_slot")
+        self.assertFalse(any("label" in error for error in server.validate_payload(item, creating=False)))
+
     def test_invalid_icon_and_stack_are_rejected(self):
         errors = server.validate_payload(
             {
@@ -44,21 +64,30 @@ class CatalogTests(unittest.TestCase):
 
 
 class ExpectationTests(unittest.TestCase):
-    def expectation(self, bps, low, high, kills):
-        p = bps / 10000
-        mean = (low + high) / 2
-        return kills * p, kills * p * mean
+    def test_shared_chart_behavior(self):
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "node is required to run the shared chart behavior test")
+        completed = subprocess.run(
+            [node, "tools/test_authoring_chart.mjs"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        self.assertIn("authoring chart ok", completed.stdout)
 
-    def test_required_examples(self):
-        self.assertEqual(self.expectation(1000, 1, 1, 1000), (100, 100))
-        self.assertEqual(self.expectation(1000, 1, 3, 1000), (100, 200))
-        self.assertEqual(self.expectation(10000, 2, 2, 100), (100, 200))
-        self.assertEqual(self.expectation(0, 1, 1, 1000), (0, 0))
-
-    def test_javascript_uses_the_same_formula(self):
-        source = (ROOT / "tools/mob_lab/web/drops.js").read_text(encoding="utf-8")
-        self.assertIn("successes: n * p", source)
-        self.assertIn("units: n * p * mean", source)
+    def test_both_labs_use_the_shared_chart(self):
+        item_html = (ROOT / "tools/item_lab/web/index.html").read_text(encoding="utf-8")
+        mob_html = (ROOT / "tools/mob_lab/web/index.html").read_text(encoding="utf-8")
+        item_js = (ROOT / "tools/item_lab/web/app.js").read_text(encoding="utf-8")
+        drops = (ROOT / "tools/mob_lab/web/drops.js").read_text(encoding="utf-8")
+        self.assertIn('src="/authoring_chart.js"', item_html)
+        self.assertIn('src="/authoring_chart.js', mob_html)
+        self.assertIn("window.filterItems", item_js)
+        self.assertIn("window.renderExpectationChart", item_js)
+        self.assertIn("window.dropExpectation", drops)
+        self.assertIn("window.renderExpectationChart", drops)
 
 
 if __name__ == "__main__":

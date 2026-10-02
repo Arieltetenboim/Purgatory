@@ -15,6 +15,8 @@ import threading
 import time
 import types
 import unittest
+import urllib.error
+import urllib.request
 import zlib
 from pathlib import Path
 
@@ -88,6 +90,297 @@ class SaveTests(unittest.TestCase):
         LAB.validate_pack = self._validate
         LAB.format_rust = self._format
         self._tmpdir.cleanup()
+
+    def _install_real_item(self, label: str) -> None:
+        for folder in ("items", "item_presentation", "equipment"):
+            source = ROOT / "content" / "shared" / folder / f"{label}.json"
+            if not source.is_file():
+                continue
+            destination = self.root / "content" / "shared" / folder / f"{label}.json"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+
+    def _equipment_save(self, label: str, content_id: int, **extra) -> dict:
+        current = LAB.load_item(self.root, LAB.items_dir(self.root) / f"{label}.json")
+        body = payload(
+            label,
+            category="equipment",
+            stack_limit=1,
+            equipment_slot=current["equipment_slot"],
+            display_name=extra.pop("display_name", current["display_name"]),
+            description=extra.pop("description", current["description"]),
+            icon=current["icon"] or "item.placeholder",
+            content_id=content_id,
+            revision=current["revision"],
+        )
+        body.update(extra)
+        return LAB.commit_item_save(self.root, body)
+
+    def test_existing_equipment_save_keeps_its_label(self) -> None:
+        self._copy_catalog()
+        catalog = (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_bytes()
+        ledger = (self.root / "content" / "CONTENT_ID_CATALOG.md").read_bytes()
+        self._install_real_item("equipment.debug.practice_sword")
+        saved = self._equipment_save(
+            "equipment.debug.practice_sword",
+            30006,
+            display_name="Practice blade",
+            description="A blunted practice blade.",
+        )
+        self.assertEqual("equipment.debug.practice_sword", saved["item"]["label"])
+        self.assertEqual(30006, saved["item"]["content_id"])
+        self.assertEqual("Practice blade", saved["item"]["display_name"])
+        self.assertEqual("A blunted practice blade.", saved["item"]["description"])
+        reloaded = LAB.load_item(
+            self.root, LAB.items_dir(self.root) / "equipment.debug.practice_sword.json"
+        )
+        self.assertEqual("Practice blade", reloaded["display_name"])
+        self.assertEqual("A blunted practice blade.", reloaded["description"])
+        self.assertEqual(30006, reloaded["content_id"])
+        self.assertEqual("equipment.debug.practice_sword", reloaded["label"])
+        self.assertEqual(catalog, (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_bytes())
+        self.assertEqual(ledger, (self.root / "content" / "CONTENT_ID_CATALOG.md").read_bytes())
+
+    def test_every_authored_equipment_identity_saves_in_place(self) -> None:
+        self._copy_catalog()
+        catalog = (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_bytes()
+        labels = sorted(path.stem for path in (ROOT / "content" / "shared" / "items").glob("equipment.*.json"))
+        self.assertIn("equipment.debug.practice_sword", labels)
+        self.assertIn("equipment.debug.cloth_cap", labels)
+        self.assertGreaterEqual(len(labels), 2)
+        for label in labels:
+            self._install_real_item(label)
+            current = LAB.load_item(self.root, LAB.items_dir(self.root) / f"{label}.json")
+            saved = self._equipment_save(
+                label,
+                int(current["content_id"]),
+                description=f"Saved {label}",
+            )
+            self.assertEqual(label, saved["item"]["label"])
+            self.assertEqual(int(current["content_id"]), saved["item"]["content_id"])
+            reloaded = LAB.load_item(self.root, LAB.items_dir(self.root) / f"{label}.json")
+            self.assertEqual(f"Saved {label}", reloaded["description"])
+            self.assertEqual(label, reloaded["label"])
+        self.assertEqual(catalog, (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_bytes())
+
+    def test_existing_item_labels_save_without_a_new_id(self) -> None:
+        self._copy_catalog()
+        catalog = (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_bytes()
+        for label, content_id, category, stack in (
+            ("item.debug.iron_scrap", 30009, "material", 20),
+            ("item.debug.small_potion", 30011, "consumable", 20),
+        ):
+            self._install_real_item(label)
+            current = LAB.load_item(self.root, LAB.items_dir(self.root) / f"{label}.json")
+            self.assertEqual(category, current["category"])
+            self.assertEqual(stack, int(current["stack_limit"]))
+            saved = LAB.commit_item_save(
+                self.root,
+                payload(
+                    label,
+                    category=category,
+                    stack_limit=stack,
+                    display_name=f"Edited {label}",
+                    description=f"Saved {label}",
+                    icon=current["icon"] or "item.placeholder",
+                    content_id=content_id,
+                    revision=current["revision"],
+                ),
+            )
+            self.assertEqual(content_id, saved["item"]["content_id"])
+            self.assertEqual(label, saved["item"]["label"])
+            reloaded = LAB.load_item(self.root, LAB.items_dir(self.root) / f"{label}.json")
+            self.assertEqual(f"Saved {label}", reloaded["description"])
+        self.assertEqual(catalog, (self.root / "crates" / "common" / "src" / "content_catalog.rs").read_bytes())
+
+    def test_equipment_save_rejects_identity_and_immutable_edits(self) -> None:
+        self._copy_catalog()
+        self._install_real_item("equipment.debug.practice_sword")
+        gameplay = LAB.items_dir(self.root) / "equipment.debug.practice_sword.json"
+        equipment = LAB.equipment_dir(self.root) / "equipment.debug.practice_sword.json"
+        catalog = self.root / "crates" / "common" / "src" / "content_catalog.rs"
+        document = json.loads(equipment.read_text(encoding="utf-8"))
+        document["future_field"] = "kept"
+        equipment.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        current = LAB.load_item(self.root, gameplay)
+        gameplay_before = gameplay.read_bytes()
+        equipment_before = equipment.read_bytes()
+        catalog_before = catalog.read_bytes()
+
+        def rejected(changes: dict, text: str, status: int = 400) -> None:
+            body = payload(
+                "equipment.debug.practice_sword",
+                category="equipment",
+                stack_limit=1,
+                equipment_slot="weapon",
+                icon=current["icon"] or "item.placeholder",
+                content_id=30006,
+                revision=current["revision"],
+            )
+            body.update(changes)
+            with self.assertRaises(LAB.AuthoringRejected) as caught:
+                LAB.commit_item_save(self.root, body)
+            self.assertEqual(status, caught.exception.status)
+            self.assertIn(text, str(caught.exception))
+
+        rejected({"content_id": 30001}, "cannot replace")
+        rejected({"category": "material", "stack_limit": 20}, "category")
+        rejected({"equipment_slot": "boots"}, "slot")
+        rejected({"stack_limit": 5}, "stack")
+        for label in ("../secret", "equipment.debug.x/../../y", "item.foo\\..\\bar"):
+            rejected({"label": label, "content_id": None}, "label")
+        rejected(
+            {"label": "equipment.debug.not_real", "content_id": None, "revision": None},
+            "not found",
+            404,
+        )
+        self.assertFalse((LAB.items_dir(self.root) / "equipment.debug.not_real.json").exists())
+        self.assertEqual(gameplay_before, gameplay.read_bytes())
+        self.assertEqual(equipment_before, equipment.read_bytes())
+        self.assertEqual(catalog_before, catalog.read_bytes())
+
+        broken = json.loads(gameplay.read_text(encoding="utf-8"))
+        broken["id"] = 30999
+        gameplay.write_text(json.dumps(broken, indent=2) + "\n", encoding="utf-8")
+        mismatched = LAB.load_item(self.root, gameplay)
+        with self.assertRaises(LAB.AuthoringRejected) as caught:
+            LAB.commit_item_save(
+                self.root,
+                payload(
+                    "equipment.debug.practice_sword",
+                    category="equipment",
+                    stack_limit=1,
+                    equipment_slot="weapon",
+                    icon=mismatched["icon"] or "item.placeholder",
+                    revision=mismatched["revision"],
+                ),
+            )
+        self.assertIn("does not match the catalog", str(caught.exception))
+        self.assertEqual(30999, json.loads(gameplay.read_text(encoding="utf-8"))["id"])
+        self.assertEqual(catalog_before, catalog.read_bytes())
+
+        broken["id"] = 30006
+        broken["label"] = "item.renamed"
+        gameplay.write_text(json.dumps(broken, indent=2) + "\n", encoding="utf-8")
+        renamed = LAB.load_item(self.root, gameplay)
+        with self.assertRaises(LAB.AuthoringRejected) as caught:
+            LAB.commit_item_save(
+                self.root,
+                payload(
+                    "equipment.debug.practice_sword",
+                    category="equipment",
+                    stack_limit=1,
+                    equipment_slot="weapon",
+                    icon=renamed["icon"] or "item.placeholder",
+                    revision=renamed["revision"],
+                ),
+            )
+        self.assertIn("stored label", str(caught.exception))
+        self.assertEqual("item.renamed", json.loads(gameplay.read_text(encoding="utf-8"))["label"])
+
+        broken["label"] = "equipment.debug.practice_sword"
+        gameplay.write_text(json.dumps(broken, indent=2) + "\n", encoding="utf-8")
+        restored = LAB.load_item(self.root, gameplay)
+        saved = LAB.commit_item_save(
+            self.root,
+            payload(
+                "equipment.debug.practice_sword",
+                category="equipment",
+                stack_limit=1,
+                equipment_slot="weapon",
+                display_name="Still the sword",
+                icon=restored["icon"] or "item.placeholder",
+                revision=restored["revision"],
+            ),
+        )
+        self.assertEqual(30006, saved["item"]["content_id"])
+        kept = json.loads(equipment.read_text(encoding="utf-8"))
+        self.assertEqual("kept", kept["future_field"])
+        self.assertEqual("weapon", kept["equipment_slot"])
+
+    def test_stale_equipment_draft_returns_http_409(self) -> None:
+        self._copy_catalog()
+        self._install_real_item("equipment.debug.practice_sword")
+        path = LAB.items_dir(self.root) / "equipment.debug.practice_sword.json"
+        original_root = LAB.repo_root
+        LAB.repo_root = lambda: self.root
+        server = LAB.ThreadingHTTPServer(("127.0.0.1", 0), LAB.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            current = LAB.load_item(self.root, path)
+            status, body = self._post_save(
+                port,
+                payload(
+                    "equipment.debug.practice_sword",
+                    category="equipment",
+                    stack_limit=1,
+                    equipment_slot="weapon",
+                    display_name="First blade",
+                    description="First text",
+                    icon=current["icon"] or "item.placeholder",
+                    content_id=30006,
+                    revision=current["revision"],
+                ),
+            )
+            self.assertEqual(200, status)
+            self.assertEqual("First blade", body["item"]["display_name"])
+            status, body = self._post_save(
+                port,
+                payload(
+                    "equipment.debug.practice_sword",
+                    category="equipment",
+                    stack_limit=1,
+                    equipment_slot="weapon",
+                    display_name="Second blade",
+                    description="Second text",
+                    icon=current["icon"] or "item.placeholder",
+                    content_id=30006,
+                    revision=current["revision"],
+                ),
+            )
+            self.assertEqual(409, status)
+            self.assertTrue(body.get("conflict"))
+            self.assertNotIn("item", body)
+            reloaded = LAB.load_item(self.root, path)
+            self.assertEqual("First blade", reloaded["display_name"])
+            self.assertEqual("First text", reloaded["description"])
+            self.assertEqual(30006, reloaded["content_id"])
+            self.assertEqual("equipment.debug.practice_sword", reloaded["label"])
+        finally:
+            server.shutdown()
+            thread.join(3)
+            server.server_close()
+            LAB.repo_root = original_root
+
+    def _post_save(self, port: int, body: dict) -> tuple[int, dict]:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/items/save",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+
+    def test_create_still_rejects_an_equipment_label(self) -> None:
+        with self.assertRaises(LAB.AuthoringRejected) as caught:
+            LAB.commit_item_create(
+                self.root,
+                payload(
+                    "equipment.debug.new_blade",
+                    category="equipment",
+                    stack_limit=1,
+                    equipment_slot="weapon",
+                ),
+            )
+        self.assertEqual(400, caught.exception.status)
+        self.assertIn("label must match item.*", caught.exception.payload["errors"])
+        self.assertFalse((self.root / "content" / ".authoring-recovery").exists())
 
     def test_concurrent_saves_from_one_revision_conflict(self) -> None:
         current = seed_item(self.root, "item.sample", 30000)

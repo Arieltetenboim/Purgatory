@@ -32,7 +32,9 @@ PRESENTATION_SCHEMA = 2
 EQUIPMENT_SCHEMA = 2
 CATEGORIES = ("equipment", "consumable", "material", "tool", "misc")
 SLOTS = ("headwear", "bodywear", "pants", "gloves", "boots", "weapon")
-LABEL_RE = re.compile(r"^item\.[a-z0-9][a-z0-9._-]*$")
+_LABEL_BODY = r"[a-z0-9][a-z0-9._-]*"
+LABEL_RE = re.compile(rf"^item\.{_LABEL_BODY}$")
+SAVED_LABEL_RE = re.compile(rf"^(?:item|equipment)\.{_LABEL_BODY}$")
 VISUAL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 ITEM_MIN = 30_000
 ITEM_MAX = 39_999
@@ -315,8 +317,13 @@ def where_used(root: Path, content_id: int, label: str) -> dict:
 def validate_payload(payload: dict, *, creating: bool) -> list[str]:
     errors = []
     label = str(payload.get("label", ""))
-    if not LABEL_RE.fullmatch(label):
-        errors.append("label must match item.*")
+    allowed = LABEL_RE if creating else SAVED_LABEL_RE
+    if not allowed.fullmatch(label):
+        errors.append(
+            "label must match item.*"
+            if creating
+            else "label must match an existing item.* or equipment.* identity"
+        )
     if payload.get("category") not in CATEGORIES:
         errors.append("category must be one of the five inventory categories")
     try:
@@ -335,6 +342,21 @@ def validate_payload(payload: dict, *, creating: bool) -> list[str]:
     if creating and payload.get("category") != "equipment" and payload.get("equipment_slot"):
         errors.append("only equipment has an equipment slot")
     return errors
+
+
+def catalog_content_id(catalog: str, label: str) -> int | None:
+    """Return the catalog ContentId for a label, when that label is registered."""
+    match = re.search(rf'"{re.escape(label)}" => (ITEM_[A-Z0-9_]+),', catalog)
+    if not match:
+        return None
+    const = match.group(1)
+    raw = re.search(
+        rf"pub const {const}: ContentId = ContentId::from_raw\(([0-9_]+)\);",
+        catalog,
+    )
+    if not raw:
+        raise AuthoringRejected(400, {"error": f"catalog constant {const} is missing"})
+    return int(raw.group(1).replace("_", ""))
 
 
 def next_item_id(catalog: str, ledger: str) -> int:
@@ -634,6 +656,25 @@ def commit_item_save(root: Path, payload: dict) -> dict:
         if not path.is_file():
             raise AuthoringRejected(404, {"error": "item was not found"})
         current = snapshot_item(root, path)
+        if current.get("label") != label:
+            raise AuthoringRejected(400, {"error": "The stored label does not match this item file."})
+        catalog_file = catalog_rs(root)
+        if catalog_file.is_file():
+            mapped = catalog_content_id(catalog_file.read_text(encoding="utf-8"), label)
+            if mapped is not None and mapped != int(current["content_id"]):
+                raise AuthoringRejected(
+                    400, {"error": "The stored ContentId does not match the catalog."}
+                )
+        supplied = payload.get("content_id", None)
+        if supplied is not None and supplied != "":
+            try:
+                supplied_id = int(supplied)
+            except (TypeError, ValueError):
+                raise AuthoringRejected(400, {"error": "content_id must be the stored ContentId"}) from None
+            if supplied_id != int(current["content_id"]):
+                raise AuthoringRejected(
+                    400, {"error": "A supplied ContentId cannot replace the stored id."}
+                )
         if payload.get("revision") != current["revision"]:
             raise AuthoringConflict("The item changed on disk. Reload before saving.")
         if payload.get("category") != current["category"]:
