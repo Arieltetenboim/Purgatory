@@ -49,6 +49,7 @@ gameplay save path, but current CI is not green and Item Lab is not fully closed
 ### PR #127 repair
 
 - Client: the hover/click mapping test no longer reads the editable practice-sword presentation. It uses an isolated synthetic/unknown item for hit-region and click mapping. A separate synthetic `ItemDefinition` / `ItemPresentation` test verifies display name, description, quantity, category, and stack tooltip semantics.
+- Quality follow-up: once the client failure was removed, the canonical gate exposed a second masked server unit test, `authored_death_reserves_one_id_and_pickup_keeps_it`, with the same old scrap ×2 assumption. It now pins the same test-only drop fixture rather than reading the owner's current guaranteed-drop content. The original audit therefore correctly identified two failing CI jobs, but not every content-coupled assertion hidden behind the first Quality failure.
 - Server/PostgreSQL: `GameplayOwner` accepts a monster-drop override only in test builds. The PostgreSQL restart proof pins its scrap ×2 fixture there, while production still resolves monster drops from the authored registry. The test still performs a real lethal player hit, production loot planning/roll, reserved ID manifestation, pickup, durable commit, logout, restart, and same-instance verification.
 - No production content, catalog ID, database migration, protocol, phase marker, or gameplay rule is changed by this repair.
 - Validation is recorded in `TEST_GATES.md`; do not infer PASS until both final PR #127 CI jobs are green.
