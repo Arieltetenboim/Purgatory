@@ -4,7 +4,7 @@ Custom-built native 2D side-scrolling MMORPG in Rust.
 
 Built from scratch around a server-authoritative simulation, native desktop client, QUIC networking, shared content, persistence, animation, and development tooling.
 
-This README is intentionally small. It is the project entry point, not the project history.
+This README is intentionally small. It is the project entry point, not the project history. The documentation authority/index is [`docs/README.md`](docs/README.md), and the compact project orientation is [`docs/WIKI.md`](docs/WIKI.md).
 
 ## Current
 
@@ -15,7 +15,7 @@ This README is intentionally small. It is the project entry point, not the proje
 - **Character Lab:** integrated on `master`; Hub launch, Humanoid v0 contract export, Template V1 (2048×2048) import/validation/conversion, and the current visual-pack/atlas path are present
 - **Production client UI:** Inventory foundation, player-facing Settings, and the Glyphon production-text foundation are merged
 - **Main gameplay:** Phase 12 — Character Continuity; accepted [lifecycle](docs/PHASE_12B_LIFECYCLE.md) and [gameplay commands](docs/PHASE_12C_GAMEPLAY.md), under the [PostgreSQL contract](docs/PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md). Continuity, isolation, recovery, and measured-load exit gates remain open.
-- **Item Lab V1:** merged with Mob Lab drop authoring and runtime loot. The owner's practice-sword smoke works after icon import; full acceptance remains open, including two content-dependent CI tests. See [the current audit](docs/ITEM_LAB_CLOSEOUT_2026-10-03.md).
+- **Item Lab V1:** merged with Mob Lab drop authoring and runtime loot. The owner's practice-sword smoke works after icon import. The two 2026-10-03 CI regressions were traced to tests that depended on editable authored content; PR #127 isolates those fixtures without changing gameplay/content. Full acceptance still follows the current CI and the remaining recorded manual smoke. See [the current audit](docs/ITEM_LAB_CLOSEOUT_2026-10-03.md).
 - **Dash / learned ability:** authoritative Dash + NPC `GrantAbility` integration restored on `master`; Shift activates Dash after it has been granted
 - **Protocol:** v34
 - **Simulation:** server authoritative
