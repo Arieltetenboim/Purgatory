@@ -1,6 +1,6 @@
 # Item Lab V1 closeout audit — 2026-10-03
 
-Status: **functional owner smoke reported; full acceptance open**. This audit
+Status: **functional owner smoke reported; full acceptance open**. The two content-coupled CI regressions identified below have an isolated-fixture repair in PR #127; current PR checks and the remaining manual evidence govern closure. This audit
 reviews master `8b3ccd5ee6440062f98e599fb987dfb1f20d39db` (`ITEM DONE?`).
 PR #125 and the existing-equipment save fix in PR #126 are already merged.
 This audit consolidates assets and documentation; it does not change gameplay,
@@ -32,7 +32,7 @@ save code, test assertions, protocol, or the phase marker.
 - The runtime-based in-editor drop simulator remains deferred outside V1.
   The expectation chart and RNG tests do not implement that simulator.
 
-## Current CI blockers
+## CI blocker history and repair
 
 Both jobs failed in [run 37131696094](https://github.com/Arieltetenboim/Purgatory/actions/runs/37131696094)
 on `8b3ccd5`. Their causes are authored-content assumptions in tests:
@@ -45,6 +45,13 @@ on `8b3ccd5`. Their causes are authored-content assumptions in tests:
 The 12A/12B PostgreSQL step passed. The failed 12C step prevented later
 startup verification in that run. These failures do not establish a broken
 gameplay save path, but current CI is not green and Item Lab is not fully closed.
+
+### PR #127 repair
+
+- Client: the hover/click mapping test no longer reads the editable practice-sword presentation. It uses an isolated synthetic/unknown item for hit-region and click mapping. A separate synthetic `ItemDefinition` / `ItemPresentation` test verifies display name, description, quantity, category, and stack tooltip semantics.
+- Server/PostgreSQL: `GameplayOwner` accepts a monster-drop override only in test builds. The PostgreSQL restart proof pins its scrap ×2 fixture there, while production still resolves monster drops from the authored registry. The test still performs a real lethal player hit, production loot planning/roll, reserved ID manifestation, pickup, durable commit, logout, restart, and same-instance verification.
+- No production content, catalog ID, database migration, protocol, phase marker, or gameplay rule is changed by this repair.
+- Validation is recorded in `TEST_GATES.md`; do not infer PASS until both final PR #127 CI jobs are green.
 
 This audit ran `./scripts/check.sh`; it stopped at its first command because
 `cargo` is not installed in this audit environment. That is **not** a local
