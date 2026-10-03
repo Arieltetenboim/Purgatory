@@ -1,6 +1,6 @@
 # Developer Tools architecture
 
-Developer Tools is one product concept. The current operational shell is PowerShell + Windows Forms. The target shell is the Rust Developer Hub (ADR-0052). PowerShell is not a requirement that every future tool be written in PowerShell.
+Developer Tools is one product concept. The Rust Developer Hub is the normal development shell (`DEV_HUB.BAT`; ADR-0052). PowerShell + Windows Forms (`DEV.BAT`) remains the operational fallback. PowerShell is not a requirement that every future tool be written in PowerShell.
 
 ## Technology boundary
 
@@ -30,7 +30,7 @@ apps/dev_hub/src/
 
 The GUI may only invoke and present `purgatory-dev-runtime`. eframe is revisitable; do not freeze it. The game protocol stays in Rust (`purgatory-protocol`, Quinn in `apps/server` and `tools/bot_client`). Neither PowerShell nor the Hub reimplements Quinn or Hello/Welcome. Ready is `purgatory-load --probe`.
 
-A future visual Map Editor may be a dedicated native tool. Do not build that editor in Slice 1.
+The standalone Rust/eframe Map Lab now provides the current visual/compiler map-authoring path and is launched from the Hub. A dedicated in-Hub Maps editor/page and broader gameplay editors remain separate future scopes.
 
 ## PowerShell module layout
 

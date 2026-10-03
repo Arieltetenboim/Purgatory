@@ -14,7 +14,7 @@ Do not treat every old Phase report as a statement about current `master`.
 - The separate **Phase 12 exit remains open**.
 - PostgreSQL is the only game database.
 - Item Lab V1, Mob Lab drop authoring, and runtime monster loot are integrated.
-- The two CI jobs that regressed on 2026-10-03 were traced to tests depending on editable authored content. PR #127 isolated those fixtures; both canonical Quality and PostgreSQL jobs passed in run `37142280327`. The remaining Item Lab closure evidence is manual and stays explicit in [the Item Lab closeout audit](ITEM_LAB_CLOSEOUT_2026-10-03.md).
+- The two CI jobs that regressed on 2026-10-03 were traced to tests depending on editable authored content. PR #127 isolated those fixtures; both canonical Quality and PostgreSQL jobs passed in run `37142280327`. The owner-reported native kill/drop/pickup/reconnect smoke is recorded; the dedicated Hub-button observation and browser file-chooser path remain unproven and stay explicit in [the Item Lab closeout audit](ITEM_LAB_CLOSEOUT_2026-10-03.md).
 
 ## Read these for “what is true now”
 

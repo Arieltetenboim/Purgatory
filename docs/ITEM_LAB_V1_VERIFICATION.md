@@ -106,9 +106,9 @@ The page writes below were development checks on this worktree. Before the imple
 | Select iron scrap, reopen the sword, then reload the page and select it again. | PASS. Name and description were still `Practice blade` and `A blunted practice blade.`. Identity unchanged. |
 | Select cloth cap 30001. Set display name `Cloth cap` and description `A plain cloth cap.`. SAVE. Select another item, reopen the cap, reload, and select it again. | PASS. No label error. ContentId stayed 30001. Technical label stayed read-only `equipment.debug.cloth_cap`. Slot stayed headwear. The cap had no presentation file, so the icon key was set to `item.placeholder` to satisfy the existing icon field. The missing PNG is a separate content condition. It was not the label failure. |
 | Two editor sessions on the sword. Session A saves description `Session A text`. Session B, still on the older revision, saves description `Session B text`. | PASS. Session B banner: `The item changed on disk. Reload before saving. The unsaved draft is still here. Reload to see the saved item, then reconcile.` The description field stayed `Session B text`. Disk description stayed `Session A text`. ContentId 30006 and label `equipment.debug.practice_sword` were unchanged, and the label stayed read-only. |
-| New 32×32 RGBA icon through the file chooser | NOT RUN. Optional for this label fix. |
-| Hub buttons open Item Lab and Mob Lab | NOT RUN. Unchanged from the V1 matrix. This follow-up does not close that row. |
-| Native client kill, ground drop, pickup, and reconnect | NOT RUN. Unchanged from the V1 matrix. This follow-up does not close that row. |
+| New 32×32 RGBA icon through the file chooser | NOT RUN / NOT PROVEN. The owner later reported that icon upload worked, but the recorded evidence does not prove the browser file-chooser path specifically. Keep this distinct from direct/API upload success. |
+| Hub buttons open Item Lab and Mob Lab | NOT RUN / NOT PROVEN as a dedicated acceptance observation. Source wiring and tool launch paths are present, but this row requires the actual Hub buttons. |
+| Native client kill, ground drop, pickup, and reconnect | OWNER-REPORTED PASS on 2026-10-03. The owner reported the five-step practice-sword smoke worked through guaranteed drop, kill/pickup, and reconnect. This is manual owner evidence, not an agent-driven graphical session. |
 
 ## Limits
 
