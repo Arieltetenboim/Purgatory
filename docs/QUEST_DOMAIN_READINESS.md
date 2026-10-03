@@ -1,13 +1,14 @@
 # Quest domain readiness before Phase 12
 
-Status: **research and design proposal**, 2026-09-29. This document does not
-implement quests, allocate a new content ID block, or make NPC rewards durable.
-Draft PR #116 remains the unmerged file-journal branch and must not merge.
-The PostgreSQL 12A foundation is a separate review. The revised
-[`PostgreSQL continuity contract`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md)
-reconciles the newly chosen rule that ordinary ground drops disappear on clean
-shutdown and crash with the database cutover. The original Issue #10 file
-contract remains historical.
+Status: **research and design proposal**, originally recorded 2026-09-29.
+This document does not implement quests or allocate a Quest content-ID block.
+Its implementation-status references below are historical context. Current
+project status comes from [`README.md`](README.md) and [`ROADMAP.md`](ROADMAP.md):
+12A–12C are accepted, the separate Phase 12 exit remains open, and the old
+file-journal PR #116 is archived/superseded rather than a branch to merge.
+The current persistence boundary is the
+[`PostgreSQL continuity contract`](PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md).
+The original Issue #10 file contract remains historical.
 
 ## What the reference servers establish
 
