@@ -1,6 +1,6 @@
 # Item Lab V1 closeout audit — 2026-10-03
 
-Status: **functional owner smoke reported; full acceptance open**. The two content-coupled CI regressions identified below have an isolated-fixture repair in PR #127; current PR checks and the remaining manual evidence govern closure. This audit
+Status: **automated CI repair green; full acceptance still open for remaining manual evidence**. The content-coupled regressions identified below were repaired with isolated fixtures in PR #127. GitHub Actions run `37142280327` passed both required jobs on repair head `5afdc30389742a5c839ac54051c69585421d9720`. This audit
 reviews master `8b3ccd5ee6440062f98e599fb987dfb1f20d39db` (`ITEM DONE?`).
 PR #125 and the existing-equipment save fix in PR #126 are already merged.
 This audit consolidates assets and documentation; it does not change gameplay,
@@ -52,7 +52,7 @@ gameplay save path, but current CI is not green and Item Lab is not fully closed
 - Quality follow-up: once the client failure was removed, the canonical gate exposed a second masked server unit test, `authored_death_reserves_one_id_and_pickup_keeps_it`, with the same old scrap ×2 assumption. It now pins the same test-only drop fixture rather than reading the owner's current guaranteed-drop content. The original audit therefore correctly identified two failing CI jobs, but not every content-coupled assertion hidden behind the first Quality failure.
 - Server/PostgreSQL: `GameplayOwner` accepts a monster-drop override only in test builds. The PostgreSQL restart proof pins its scrap ×2 fixture there, while production still resolves monster drops from the authored registry. The test still performs a real lethal player hit, production loot planning/roll, reserved ID manifestation, pickup, durable commit, logout, restart, and same-instance verification.
 - No production content, catalog ID, database migration, protocol, phase marker, or gameplay rule is changed by this repair.
-- Validation is recorded in `TEST_GATES.md`; do not infer PASS until both final PR #127 CI jobs are green.
+- Validation is recorded in `TEST_GATES.md`: the canonical Quality gate and PostgreSQL 12A/12B/12C job both passed in run `37142280327`. This closes the automated CI blockers. It does **not** replace the remaining concise Hub → Item Lab → Mob Lab → native kill/pickup/reconnect smoke or the separate icon-chooser check.
 
 This audit ran `./scripts/check.sh`; it stopped at its first command because
 `cargo` is not installed in this audit environment. That is **not** a local
