@@ -3386,6 +3386,15 @@
             let ids = pg.service.reserve_item_ids(batch).unwrap();
             let visible = ids[0];
             pg.owner.install_reserved_ids(ids);
+            pg.owner.set_monster_drops_for_test(
+                purgatory_common::MONSTER_DEV_GUARANTEED_DROP,
+                vec![purgatory_content::MonsterDropEntry {
+                    item: purgatory_common::ITEM_DEV_SAMPLE_SCRAP,
+                    chance_bps: purgatory_content::DROP_CHANCE_BPS_MAX,
+                    quantity_min: 2,
+                    quantity_max: 2,
+                }],
+            );
             pg.owner.apply_input(InputUpdate::DevSpawnMonster {
                 connection_id: hero.connection,
                 monster_content_id: purgatory_common::MONSTER_DEV_GUARANTEED_DROP,

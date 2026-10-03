@@ -1,6 +1,8 @@
 # PURGATORY — MASTER EXECUTION PLAN
 ## Custom 2D MMORPG Engine From Zero
 
+> **Historical bootstrap plan.** This file records the original execution sequence and is not the current roadmap. For current status and ordering, use `PHASE`, `docs/README.md`, and `docs/ROADMAP.md`. Later accepted ADRs and contracts override conflicting instructions below.
+
 **Purpose of this file:**  
 This is the master execution specification for Cursor. Treat it as an instruction file, not as a design essay.
 

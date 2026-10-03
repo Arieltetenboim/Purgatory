@@ -1,6 +1,6 @@
 # Phase 12B — Save/Load and lifecycle
 
-Status: **accepted** as the Phase 12B save/load lifecycle (2026-09-30). Not a Phase 12 exit. Root `PHASE` stays `12.12B`. 12C is not started.
+Status: **accepted** as the Phase 12B save/load lifecycle (2026-09-30). Not a Phase 12 exit. The `12.12B` / “12C not started” statements below are the historical state at 12B acceptance; current status is indexed in [`README.md`](README.md) and [`ROADMAP.md`](ROADMAP.md), where 12C is accepted and the Phase 12 exit remains open.
 
 PostgreSQL remains the only durable authority. Database work stays on the persistence worker. ADR-0073 removes the file writer; unit tests use an in-memory fixture that does not grant leases. Server startup requires an already initialized `PURGATORY_DATABASE_URL`.
 

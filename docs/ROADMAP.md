@@ -1,6 +1,6 @@
 # PURGATORY Roadmap
 
-This is the current development map for PURGATORY.
+This is the current development map for PURGATORY. Documentation authority and historical-vs-current rules are indexed in [`README.md`](README.md).
 
 The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel tooling / presentation tracks do **not** change `PHASE` unless explicitly promoted into the main gameplay sequence.
 
@@ -13,6 +13,7 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
 - **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
 - **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
+- **Item Lab / loot:** Item Lab V1, Mob Lab drop authoring, and runtime monster loot are integrated; PR #127 isolates two CI fixtures that had coupled runtime tests to editable sword/drop content. The dated Item Lab closeout audit owns the remaining acceptance evidence.
 - **Main gameplay:** 12A–12C are accepted; PR #121 merged at `19f19c2`; Phase 12 exit remains open; the superseded file-writer PR #116 is archived and unmerged
 - **Dash / learned abilities:** authoritative Dash + NPC `GrantAbility` restored to current `master`; presentation polish remains tracked separately
 - **Protocol: v34**
@@ -83,7 +84,7 @@ Inventory window without reopening Phase 11 or starting Phase 12. Currency
 authority, item interaction, bags/capacity policy, and persistence remain
 deferred.
 
-## 12 — Character Continuity — entry active
+## 12 — Character Continuity — 12A–12C accepted, exit open
 
 Phase 11 remains closed. Issue #10 accepted the original file-backed design,
 preserved in [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md).

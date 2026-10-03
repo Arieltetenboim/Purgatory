@@ -4,10 +4,10 @@ This is the development runbook for the **one** game database. PostgreSQL 18
 currently runs on the development PC; `pgAdmin` is a graphical administration
 client, not the database server. Channels share this database. The game server
 connects through the persistence worker; the native client connects to the
-game server, never to PostgreSQL. These instructions describe the current
-`phase12/12c-gameplay-durable` branch, while Phase 12C is in review. A checkout
-that does not contain migration `0004_current_health.sql` will not show
-version 4 or stored current HP.
+game server, never to PostgreSQL. These instructions describe current
+`master`: Phase 12A, 12B, and 12C are accepted, while the separate Phase 12
+exit remains open. A checkout that does not contain migration
+`0004_current_health.sql` will not show version 4 or stored current HP.
 
 The database in the examples is the existing `Purgatory_dev` on `127.0.0.1:5432`.
 Use the actual role and database names shown in pgAdmin: PostgreSQL preserves

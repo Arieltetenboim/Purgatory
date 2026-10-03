@@ -661,6 +661,8 @@ pub struct GameplayOwner {
     pending_loot: VecDeque<PendingMonsterLoot>,
     closed_loot_addresses: HashSet<WorldAddress>,
     loot_rng: LootRng,
+    #[cfg(test)]
+    monster_drop_overrides: HashMap<ContentId, Vec<purgatory_content::MonsterDropEntry>>,
     loot_manifested: u64,
     loot_allocation_deferred: u64,
     loot_abandoned: u64,
@@ -1607,6 +1609,8 @@ impl GameplayOwner {
             pending_loot: VecDeque::new(),
             closed_loot_addresses: HashSet::new(),
             loot_rng: LootRng::from_entropy(),
+            #[cfg(test)]
+            monster_drop_overrides: HashMap::new(),
             loot_manifested: 0,
             loot_allocation_deferred: 0,
             loot_abandoned: 0,

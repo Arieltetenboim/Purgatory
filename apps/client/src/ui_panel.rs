@@ -2630,6 +2630,39 @@ fn drag_preview_icon(
     })
 }
 
+fn inventory_tooltip_content(
+    definition: Option<&purgatory_content::ItemDefinition>,
+    presentation: Option<&purgatory_content::ItemPresentation>,
+    entry: &InventoryEntry,
+) -> (String, String, String) {
+    if let Some(definition) = definition {
+        let title = presentation
+            .map(|item| item.display_name.trim())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| definition.authored_id.clone());
+        let description = presentation
+            .map(|item| item.description.trim().to_string())
+            .unwrap_or_default();
+        (
+            title,
+            format!(
+                "{} | Qty {} | Stack {}",
+                definition.category.as_str(),
+                entry.quantity,
+                definition.stack_limit
+            ),
+            description,
+        )
+    } else {
+        (
+            "Unknown item".to_string(),
+            format!("misc | Qty {} | definition unavailable", entry.quantity),
+            String::new(),
+        )
+    }
+}
+
 fn inventory_tooltip_frame(
     window_assets: UiWindowAssets,
     registry: &ContentRegistry,
@@ -2640,34 +2673,11 @@ fn inventory_tooltip_frame(
 ) -> Result<UiInventoryTooltipFrame, String> {
     validate_pixels_per_unit(pixels_per_unit)?;
     let width = INVENTORY_TOOLTIP_WIDTH_UNITS * pixels_per_unit;
-    let (title, detail, description) =
-        if let Some(definition) = registry.item_by_id(entry.definition) {
-            let presentation = registry.item_presentation_by_id(entry.definition);
-            let title = presentation
-                .map(|item| item.display_name.trim())
-                .filter(|name| !name.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| definition.authored_id.clone());
-            let description = presentation
-                .map(|item| item.description.trim().to_string())
-                .unwrap_or_default();
-            (
-                title,
-                format!(
-                    "{} | Qty {} | Stack {}",
-                    definition.category.as_str(),
-                    entry.quantity,
-                    definition.stack_limit
-                ),
-                description,
-            )
-        } else {
-            (
-                "Unknown item".to_string(),
-                format!("misc | Qty {} | definition unavailable", entry.quantity),
-                String::new(),
-            )
-        };
+    let (title, detail, description) = inventory_tooltip_content(
+        registry.item_by_id(entry.definition),
+        registry.item_presentation_by_id(entry.definition),
+        entry,
+    );
     let line_count = if description.is_empty() { 2.0 } else { 3.0 };
     let height = (INVENTORY_TOOLTIP_FONT_SIZE_UNITS * line_count
         + INVENTORY_TOOLTIP_LINE_GAP_UNITS * (line_count - 1.0)
@@ -4370,14 +4380,14 @@ mod tests {
         let window_assets = embedded_assets();
         let tab_assets = embedded_tab_assets();
         let slot_assets = embedded_slot_assets();
-        let registry = inventory_registry();
+        let registry = ContentRegistry::new();
         let item_icons = placeholder_item_icons(&registry);
-        let sword = purgatory_common::ITEM_PRACTICE_SWORD;
-        let sword_item = ItemInstanceId::from_raw(41);
+        let definition = ContentId::from_authored("item.unknown.client_mapping").unwrap();
+        let item = ItemInstanceId::from_raw(41);
         let entries = [InventoryEntry {
             slot: 7,
-            item_instance_id: sword_item,
-            definition: sword,
+            item_instance_id: item,
+            definition,
             quantity: 1,
         }];
         let mut inventory = InventoryWindow::default();
@@ -4386,6 +4396,7 @@ mod tests {
             ElementState::Pressed,
             false
         ));
+        inventory.tabs.selected_index = 4;
         inventory
             .frame(InventoryWindowFrameInput {
                 window_assets,
@@ -4422,8 +4433,8 @@ mod tests {
             viewport(),
             1.0,
         ));
-        assert_eq!(inventory.selected_item, Some(sword_item));
-        assert_eq!(inventory.take_completed_click(), Some(sword_item));
+        assert_eq!(inventory.selected_item, Some(item));
+        assert_eq!(inventory.take_completed_click(), Some(item));
         assert_eq!(inventory.take_completed_drag(), None);
 
         let frame = inventory
@@ -4444,24 +4455,50 @@ mod tests {
         assert_eq!(
             frame.textured_rects.len(),
             64,
-            "one icon + tooltip background"
-        );
-        assert_eq!(
-            frame.texts.len(),
-            15,
-            "title/tabs/currency + two tooltip lines"
+            "one fallback icon + tooltip background"
         );
         assert!(
             frame
                 .texts
                 .iter()
-                .any(|text| text.content.0 == "equipment.debug.practice_sword")
+                .any(|text| text.content.0 == "Unknown item")
         );
         assert!(frame.texts.iter().any(|text| {
-            text.content.0.contains("equipment")
+            text.content.0.contains("misc")
                 && text.content.0.contains("Qty 1")
-                && text.content.0.contains("Stack 1")
+                && text.content.0.contains("definition unavailable")
         }));
+    }
+
+    #[test]
+    fn inventory_tooltip_content_uses_isolated_item_presentation_fixture() {
+        let definition = purgatory_content::ItemDefinition {
+            content_id: ContentId::from_raw(30_006),
+            authored_id: "item.synthetic.tooltip".into(),
+            domain: purgatory_content::ContentDomain::Shared,
+            category: ItemCategory::Equipment,
+            stack_limit: 9,
+            drop_requires_confirmation: false,
+        };
+        let presentation = purgatory_content::ItemPresentation {
+            content_id: definition.content_id,
+            authored_id: definition.authored_id.clone(),
+            icon: "item.synthetic.tooltip".into(),
+            display_name: "Synthetic Blade".into(),
+            description: "Synthetic tooltip description.".into(),
+        };
+        let entry = InventoryEntry {
+            slot: 0,
+            item_instance_id: ItemInstanceId::from_raw(99),
+            definition: definition.content_id,
+            quantity: 3,
+        };
+
+        let (title, detail, description) =
+            inventory_tooltip_content(Some(&definition), Some(&presentation), &entry);
+        assert_eq!(title, "Synthetic Blade");
+        assert_eq!(detail, "equipment | Qty 3 | Stack 9");
+        assert_eq!(description, "Synthetic tooltip description.");
     }
 
     #[test]

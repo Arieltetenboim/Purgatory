@@ -62,6 +62,15 @@ fn authored_death_reserves_one_id_and_pickup_keeps_it() {
     let second = ConnectionId::from_raw(2);
     let _attacker = session(&mut owner, 1, 11);
     let killer = session(&mut owner, 2, 22);
+    owner.set_monster_drops_for_test(
+        MONSTER_DEV_GUARANTEED_DROP,
+        vec![purgatory_content::MonsterDropEntry {
+            item: ITEM_DEV_SAMPLE_SCRAP,
+            chance_bps: purgatory_content::DROP_CHANCE_BPS_MAX,
+            quantity_min: 2,
+            quantity_max: 2,
+        }],
+    );
     let creature = spawn_monster(&mut owner, first, MONSTER_DEV_GUARANTEED_DROP);
     let id = reserved(880_001);
     owner.install_reserved_ids_for_test(vec![id]);
