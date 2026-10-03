@@ -5,7 +5,7 @@ This is the checked first-party allocation ledger for stable global content IDs.
 Rules:
 - an allocated ID is permanent;
 - retired IDs remain recorded and are never reused;
-- broad domain blocks are defined by `docs/STABLE_NUMERIC_CONTENT_IDS.md` and `purgatory-common::ContentKind`;
+- broad domain blocks are defined by [Content and Authoring](https://github.com/Arieltetenboim/Purgatory/wiki/Content-and-Authoring) and `purgatory-common::ContentKind`;
 - filenames and labels are metadata, not identity;
 - item/equipment/equipment-presentation facets share one Item ID.
 

@@ -25,14 +25,14 @@ This task writes planning docs only. It does **not** implement Phase 7, does **n
 
 | Source                                                                                                                                            | What “Phase 7” means                                              |
 | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| [PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md](PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md) §14 and [docs/ROADMAP.md](docs/ROADMAP.md) **table** row 7 | Client prediction/reconciliation — **already shipped as 5.3–5.5** |
-| 6G notes, [docs/PHASE_6G_REPORT.md](docs/PHASE_6G_REPORT.md), [docs/PHASE_6_EXIT_REVIEW.md](docs/PHASE_6_EXIT_REVIEW.md), ADR-0051                | Next gameplay phase = **MOB / combat AI** — **not started**       |
+| [PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md](https://github.com/Arieltetenboim/Purgatory/wiki/Archive-Bootstrap-Execution-Plan) §14 and [docs/ROADMAP.md](https://github.com/Arieltetenboim/Purgatory/wiki/Source-Roadmap) **table** row 7 | Client prediction/reconciliation — **already shipped as 5.3–5.5** |
+| 6G notes, [docs/PHASE_6G_REPORT.md](https://github.com/Arieltetenboim/Purgatory/wiki/Archive-Phase-6G-Report), [docs/PHASE_6_EXIT_REVIEW.md](https://github.com/Arieltetenboim/Purgatory/wiki/Archive-Phase-6-Exit-Review), ADR-0051                | Next gameplay phase = **MOB / combat AI** — **not started**       |
 | Master plan §15–16 / ROADMAP rows 8–9                                                                                                             | Content foundation, then combat core                              |
 
 
 Living post-6G docs are the intended next-phase pointer. The ROADMAP **table** and master-plan numbering are historical and now wrong: Phase 6 already delivered maps/content (6C), persistence (6E), AOI/interest (6D), and scale harness (5.7/6G). Rows 8–17 must not be treated as the next implementation order.
 
-**No `PHASE_7_*.md` exists.** Closest sketch: [docs/PURGATORY_PHASE_6_CORE_GAME_RUNTIME_FOUNDATIONS.md](docs/PURGATORY_PHASE_6_CORE_GAME_RUNTIME_FOUNDATIONS.md) §4 (ADD MobDefinition/Health/MobSystem). That sketch assumed WindowManager/mouse/selection already existed; 6B closed **without** those.
+**No `PHASE_7_*.md` exists.** Closest sketch: [docs/PURGATORY_PHASE_6_CORE_GAME_RUNTIME_FOUNDATIONS.md](https://github.com/Arieltetenboim/Purgatory/wiki/Archive-Purgatory-Phase-6-Core-Game-Runtime-Foundations) §4 (ADD MobDefinition/Health/MobSystem). That sketch assumed WindowManager/mouse/selection already existed; 6B closed **without** those.
 
 ### What is genuinely ready to consume
 
@@ -40,13 +40,13 @@ Phase 6 grammar (do **not** duplicate):
 
 - Composition `World`, `EntityId` generations, `WorldAddress`, `EntityKind::{Player,Platform,Generic}`
 - Scheduler (Critical/Deferred, owner cancel, `CompleteAction` / `ExpireEffect` / `SpawnDue` / `DespawnEntity`)
-- Lean Action table + `evaluate_action_gate` + `validate_command_preamble` (`[crates/simulation/src/action.rs](crates/simulation/src/action.rs)`, `[action_gate.rs](crates/simulation/src/action_gate.rs)`, `[command.rs](crates/simulation/src/command.rs)`)
+- Lean Action table + `evaluate_action_gate` + `validate_command_preamble` (`[crates/simulation/src/action.rs](https://github.com/Arieltetenboim/Purgatory/blob/174c28a46c6b5946cea8cdca2a0a5d68e7183389/crates/simulation/src/action.rs)`, `[action_gate.rs](https://github.com/Arieltetenboim/Purgatory/blob/174c28a46c6b5946cea8cdca2a0a5d68e7183389/crates/simulation/src/action_gate.rs)`, `[command.rs](https://github.com/Arieltetenboim/Purgatory/blob/174c28a46c6b5946cea8cdca2a0a5d68e7183389/crates/simulation/src/command.rs)`)
 - Staged `RuntimeEvent` (not a bus)
 - Effect **lifetime** only (`EffectKind::Test`)
 - Spatial queries + AOI + `ReplicationFrame` + `DomainRevs`
 - InteractionSession (6B) — distinct from Action (ADR-0046)
-- Content maps/placements (`[crates/content/src/schema.rs](crates/content/src/schema.rs)`: maps, entities, portals — **no** actor/stat/action defs)
-- Character persist = restore map/point only (`[crates/persistence/src/character.rs](crates/persistence/src/character.rs)`)
+- Content maps/placements (`[crates/content/src/schema.rs](https://github.com/Arieltetenboim/Purgatory/blob/174c28a46c6b5946cea8cdca2a0a5d68e7183389/crates/content/src/schema.rs)`: maps, entities, portals — **no** actor/stat/action defs)
+- Character persist = restore map/point only (`[crates/persistence/src/character.rs](https://github.com/Arieltetenboim/Purgatory/blob/174c28a46c6b5946cea8cdca2a0a5d68e7183389/crates/persistence/src/character.rs)`)
 - Cadence, spawn schedule, dirty/delta, per-tick budgets, load validation (ADR-0051)
 
 ### Unfinished / manual 6G boundaries (do not fix here)
@@ -58,11 +58,11 @@ Phase 6 grammar (do **not** duplicate):
 
 ### Architectural smells / contradictions vs code
 
-1. **Generic entities are not on the wire.** `[snapshot_entity](apps/server/src/network/replication.rs)` emits only `PlayerState` → `ReplicatedKind::Player` or `Interactable` → Interactable/Portal. A Transform+visible Generic (6F probe, load spawn churn) **cannot Enter**. Unknown `ReplicatedKind` values are rejected. First visible actor **requires a protocol kind**, not a fake Interactable.
+1. **Generic entities are not on the wire.** `[snapshot_entity](https://github.com/Arieltetenboim/Purgatory/blob/174c28a46c6b5946cea8cdca2a0a5d68e7183389/apps/server/src/network/replication.rs)` emits only `PlayerState` → `ReplicatedKind::Player` or `Interactable` → Interactable/Portal. A Transform+visible Generic (6F probe, load spawn churn) **cannot Enter**. Unknown `ReplicatedKind` values are rejected. First visible actor **requires a protocol kind**, not a fake Interactable.
 2. **FOOTNOTE locomotion is `PlayerState`.** A walking MOB that reuses `PlayerState` would mix player identity with actors. Phase 7 actor should **not** become a second player body.
-3. **Health is a container + wire domain proof, not combat** (`[crates/simulation/src/health.rs](crates/simulation/src/health.rs)`, ADR-0039).
+3. **Health is a container + wire domain proof, not combat** (`[crates/simulation/src/health.rs](https://github.com/Arieltetenboim/Purgatory/blob/174c28a46c6b5946cea8cdca2a0a5d68e7183389/crates/simulation/src/health.rs)`, ADR-0039).
 4. **Action/Effect kinds are Test-only.** Production must not depend on them (ADR-0051).
-5. **No production UI.** egui overlay + `UIRuntimeState` only (ADR-0016). Mouse is gated and discarded (`[apps/client/src/debug/capture.rs](apps/client/src/debug/capture.rs)`).
+5. **No production UI.** egui overlay + `UIRuntimeState` only (ADR-0016). Mouse is gated and discarded (`[apps/client/src/debug/capture.rs](https://github.com/Arieltetenboim/Purgatory/blob/174c28a46c6b5946cea8cdca2a0a5d68e7183389/apps/client/src/debug/capture.rs)`).
 6. **ADR-0031:** skills must **not** ride `InputCommand` late-collapse / `jump_pressed` OR.
 7. Foundations doc listed WindowManager as a Phase 7 MOB reuse item; it was **never built**. Do not treat that as a missing Phase 6 rewrite — treat it as deferred client work.
 
@@ -343,7 +343,7 @@ Authored vs derived vs runtime vs persistent:
 - Self vitals ≠ AOI broadcast.
 - Spatial queries stay address-scoped grid (`SPATIAL_CELL_SIZE_WU`); no O(N²) scans for “nearby MOB.”
 - ActionRequest is reliable discrete, not 30 Hz.
-- Respect existing scheduler caps (4096 / critical 1024 / deferred 32) and replication frame budget (4096). Queue inventory before new caps ([docs/PHASE_6G_QUEUE_INVENTORY.md](docs/PHASE_6G_QUEUE_INVENTORY.md)).
+- Respect existing scheduler caps (4096 / critical 1024 / deferred 32) and replication frame budget (4096). Queue inventory before new caps ([docs/PHASE_6G_QUEUE_INVENTORY.md](https://github.com/Arieltetenboim/Purgatory/wiki/Archive-Phase-6G-Queue-Inventory)).
 - Load: extend Mixed with authored actor placements; do **not** make every sub-stage a 30-min soak. Reuse Runtime Validation; keep Test kinds load-only.
 
 ## 9. Phase 6G blockers before implementation
@@ -366,10 +366,10 @@ Also close or consciously waive: 6B E-interact, 6C portal, 6E login manuals if 7
 
 ## 11. Documentation this prep task will write (after plan approval)
 
-- **Create** [docs/PHASE_7_PLAN.md](docs/PHASE_7_PLAN.md) — canonical Phase 7 design (this document’s substance). Status: **planned, not started**.
-- **Update** [docs/ROADMAP.md](docs/ROADMAP.md) table: replace “Phase 7 client reconciliation complete” with the new purpose + `planned (blocked on 6G GREEN)`; add a note that rows 8–17 are stale vs Phase 6 work; keep 6G notes historically intact including “do not begin Phase 7” until 6G closes.
-- **Update** [docs/TEST_GATES.md](docs/TEST_GATES.md) later-gates line to point at `PHASE_7_PLAN.md` and keep “do not begin until 6G GREEN.”
-- **Do not** change root `PHASE`, [docs/PHASE_6G_REPORT.md](docs/PHASE_6G_REPORT.md), [docs/PHASE_6_EXIT_REVIEW.md](docs/PHASE_6_EXIT_REVIEW.md), prediction/AOI source, or master-plan historical §14.
+- **Create** [docs/PHASE_7_PLAN.md](https://github.com/Arieltetenboim/Purgatory/wiki/Archive-Phase-7-Plan) — canonical Phase 7 design (this document’s substance). Status: **planned, not started**.
+- **Update** [docs/ROADMAP.md](https://github.com/Arieltetenboim/Purgatory/wiki/Source-Roadmap) table: replace “Phase 7 client reconciliation complete” with the new purpose + `planned (blocked on 6G GREEN)`; add a note that rows 8–17 are stale vs Phase 6 work; keep 6G notes historically intact including “do not begin Phase 7” until 6G closes.
+- **Update** [docs/TEST_GATES.md](https://github.com/Arieltetenboim/Purgatory/wiki/Source-Test-Gates) later-gates line to point at `PHASE_7_PLAN.md` and keep “do not begin until 6G GREEN.”
+- **Do not** change root `PHASE`, [docs/PHASE_6G_REPORT.md](https://github.com/Arieltetenboim/Purgatory/wiki/Archive-Phase-6G-Report), [docs/PHASE_6_EXIT_REVIEW.md](https://github.com/Arieltetenboim/Purgatory/wiki/Archive-Phase-6-Exit-Review), prediction/AOI source, or master-plan historical §14.
 
 No Phase 7 ADRs until implementation chooses a protocol bump.
 

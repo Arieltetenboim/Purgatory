@@ -1,177 +1,47 @@
 # PURGATORY
 
-Custom-built native 2D side-scrolling MMORPG in Rust.
+Custom native two-dimensional massively multiplayer online role-playing game (2D MMORPG), written in Rust. Dedicated server authority, native desktop client, shared authored content, and PostgreSQL durable storage.
 
-Built from scratch around a server-authoritative simulation, native desktop client, QUIC networking, shared content, persistence, animation, and development tooling.
+**[Project documentation → GitHub Wiki](https://github.com/Arieltetenboim/Purgatory/wiki/Home)**
 
-This README is intentionally small. It is the project entry point, not the project history. The documentation authority/index is [`docs/README.md`](docs/README.md), and the compact project orientation is [`docs/WIKI.md`](docs/WIKI.md).
+| Baseline | Value |
+|---|---|
+| Release label (`VERSION`) | `0.12.A` |
+| Execution marker (`PHASE`) | `12.12C` |
+| Network protocol (`PROTOCOL_VERSION`) | `34` |
 
-## Current
-
-- **Master version:** `0.12.A`
-- **Phase:** `12.12C` — 12A, 12B, and 12C are accepted; the separate Phase 12 exit remains open
-- **FORGE M:** M4 implementation is merged to `master`; GitHub Issue #75 remains open for the recorded manual two-Monster visual smoke and final M4/M5 closeout evidence
-- **FORGE N:** NPC authoring/runtime N10a-N10f complete and merged
-- **Character Lab:** integrated on `master`; Hub launch, Humanoid v0 contract export, Template V1 (2048×2048) import/validation/conversion, and the current visual-pack/atlas path are present
-- **Production client UI:** Inventory foundation, player-facing Settings, and the Glyphon production-text foundation are merged
-- **Main gameplay:** Phase 12 — Character Continuity; accepted [lifecycle](docs/PHASE_12B_LIFECYCLE.md) and [gameplay commands](docs/PHASE_12C_GAMEPLAY.md), under the [PostgreSQL contract](docs/PHASE_12_POSTGRESQL_CONTINUITY_CONTRACT.md). Continuity, isolation, recovery, and measured-load exit gates remain open.
-- **Item Lab V1:** merged with Mob Lab drop authoring and runtime loot. The owner's practice-sword smoke works after icon import. PR #127 isolated the editable-content test fixtures; both the canonical Quality and PostgreSQL CI jobs passed on the repair. Full Item Lab acceptance remains open only for the remaining recorded manual smoke/chooser evidence. See [the current audit](docs/ITEM_LAB_CLOSEOUT_2026-10-03.md).
-- **Dash / learned ability:** authoritative Dash + NPC `GrantAbility` integration restored on `master`; Shift activates Dash after it has been granted
-- **Protocol:** v34
-- **Simulation:** server authoritative
-- **Client:** native `winit` + `wgpu`
-- **Networking:** QUIC via Quinn
-- **Language:** Rust stable, edition 2024
-
-The root [`PHASE`](PHASE) file is the exact gameplay-phase marker. Parallel FORGE/tooling work does not move it unless explicitly promoted into the main gameplay sequence.
+Phase 12A–12C are accepted; the separate Phase 12 exit remains open. [Current State](https://github.com/Arieltetenboim/Purgatory/wiki/Current-State) owns the capability overview. [Phase 12](https://github.com/Arieltetenboim/Purgatory/wiki/Phase-12) owns acceptance and remaining exit requirements.
 
 ## Run
 
-### Normal development
+Windows is the primary development host. Install stable Rust, rustfmt, and Clippy as specified in [`rust-toolchain.toml`](rust-toolchain.toml).
 
 ```text
 DEV_HUB.BAT
 ```
 
-The Developer Hub is the normal development entry point for server/client lifecycle, validation, load tools, rebuilds, and standalone authoring-tool launch.
+The Developer Hub is the normal entry point for server/client lifecycle, validation, logs, and standalone Labs. `DEV.BAT` is the PowerShell fallback. Follow [PostgreSQL Operations](https://github.com/Arieltetenboim/Purgatory/wiki/PostgreSQL-Operations) to create the development database and provision a username first. Normal server startup opens an initialized database; it does not create or migrate it.
 
-Fallback developer shell:
+Direct entry points:
 
 ```text
-DEV.BAT
-```
-
-### Direct client
-
-```powershell
-cargo run -p purgatory-client
-```
-
-### Direct server
-
-```powershell
 cargo run -p purgatory-server
-```
-
-The server listens on `127.0.0.1:5001` by default. Bootstrap the empty database once before the first start.
-
-To run the current Phase 12 gameplay with the local PostgreSQL database,
-follow [the Windows database runbook](docs/POSTGRESQL_LOCAL_RUN.md). It covers
-the chosen fresh development start, role permissions, connection settings,
-Developer Hub, and pgAdmin verification. [Moving the database to a dedicated
-host](docs/POSTGRESQL_HOST_MOVE.md) has a separate procedure.
-
-FORGE W1.3A Map Lab can be launched directly with:
-
-```powershell
+cargo run -p purgatory-client
 cargo run -p purgatory-map-lab
 ```
 
-It previews the shared compiler's canonical Tiled map output; the game client
-does not parse TMX/TSX at runtime.
+The local server defaults to `127.0.0.1:5001`. See [Developer Tools](https://github.com/Arieltetenboim/Purgatory/wiki/Developer-Tools) and [Content & Authoring](https://github.com/Arieltetenboim/Purgatory/wiki/Content-and-Authoring).
 
-## Project map
+## Build and verify
 
-| Path | Role |
-|---|---|
-| `apps/client` | Native game client |
-| `apps/server` | Headless authoritative server |
-| `apps/dev_hub` | Developer Hub |
-| `crates/common` | Shared primitives |
-| `crates/simulation` | Authoritative gameplay simulation |
-| `crates/protocol` | Client/server protocol |
-| `crates/content` | Content definitions |
-| `crates/persistence` | Character persistence |
-| `crates/skeleton` | Character skeleton and pose math |
-| `crates/animation` | Animation runtime |
-| `crates/dev_runtime` | Developer Hub orchestration |
-| `tools/animation_lab` | Animation authoring/debug tool |
-| `tools/map_lab` | Visual map compilation/calibration tool |
-| `tools/Character part lab` | Character Lab authoring/conversion tool |
-| `tools/mob_lab` | Monster authoring / creature-manifest tool |
-| `tools/item_lab` | Item presentation, metadata, icons, and drop-source inspection |
-| `tools/npc_lab` | NPC authoring/test tool |
-| `tools/bot_client` | Headless load-testing client |
-| `tools/content_validator` | Content validation |
-
-## Development notes
-
-- Default client builds include development diagnostics and the in-window debug overlay.
-- **Backquote / `~`** toggles the debug overlay.
-- The client starts on the Connection Frontend and does not auto-connect in normal development builds.
-- Default local server address: `127.0.0.1:5001`.
-- Game persistence is PostgreSQL only. There is no file-backed character database and no import of old `identity.json` or `char_*.json` saves. The Windows procedure is [`docs/POSTGRESQL_LOCAL_RUN.md`](docs/POSTGRESQL_LOCAL_RUN.md).
-- Developer Hub creates the local `Purgatory_dev` database, asks for the first development username, then Start Server. The normal client enters that username and reaches an empty character roster. An unknown username is rejected before a session is admitted. This username is a development allowlist, not a password.
-- Normal server startup only connects to an already initialized database. It does not create, reset, or migrate it. A missing URL, missing database, wrong deployment identity, or failed connection stops startup.
-- Moving the database to another host keeps the committed rows when that database is already initialized. See [`docs/POSTGRESQL_HOST_MOVE.md`](docs/POSTGRESQL_HOST_MOVE.md). Do not copy development characters into a released database.
-- `Graphic/` is not a general runtime asset scan. Visual assets are integrated deliberately through the relevant runtime paths.
-
-### Core controls
-
-| Input | Action |
-|---|---|
-| `A` / Left | Move left |
-| `D` / Right | Move right |
-| `S` / Down | Hold down |
-| Space | Jump |
-| Down + Jump | Drop through OneWay platform |
-| `E` | Generic interact |
-| Up Arrow | Activate portal |
-| `J` | Basic Strike |
-| Left / Right Shift | Dash (when granted) |
-| `~` | Toggle debug overlay |
-
-## Branch & version policy
-
-- `master` is the canonical current development/release branch.
-- Root `VERSION` is the human-facing master version label (currently `0.12.A`).
-- `DEVELOPMENT` is a deliberate stable checkpoint/rollback branch. It is **not** a parallel development line and is advanced only after selected stable master versions.
-- Feature/fix/salvage branches are temporary. Once their useful work is integrated or explicitly superseded, delete them instead of keeping long-lived stale branches.
-- Cargo package versioning remains valid Semantic Versioning (SemVer); the master label may use the project's `0.12.A` scheme independently.
-
-
-Main local quality gate:
-
-```powershell
-./scripts/check.ps1
+```text
+cargo build --workspace
 ```
 
-Linux / macOS:
+Canonical quality gate: `./scripts/check.ps1` on Windows or `./scripts/check.sh` on Linux/macOS. [Testing & Quality](https://github.com/Arieltetenboim/Purgatory/wiki/Testing-and-Quality) explains separate PostgreSQL integration suites and manual proof.
 
-```bash
-./scripts/check.sh
-```
+## Repository
 
-The detailed validation policy and extended network/load gates live in the docs rather than here.
+`apps/` contains the server, client, and Hub. `crates/` contains shared runtime libraries. `tools/` contains Labs, authoring utilities, and the load harness. `content/` contains authored definitions and checked runtime projections; `Graphic/` contains deliberately integrated artwork.
 
-## Important docs
-
-| Document | Purpose |
-|---|---|
-| [`PHASE`](PHASE) | Exact current gameplay phase |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Development roadmap and active parallel tracks |
-| [`docs/PURGATORY_PROJECT_CONTEXT.md`](docs/PURGATORY_PROJECT_CONTEXT.md) | Durable AI/development reasoning doctrine; never a substitute for current repo evidence |
-| [`docs/PROJECT_ENGINEERING_NOTES.md`](docs/PROJECT_ENGINEERING_NOTES.md) | Engineering context, manual observations, rejected hypotheses, tool constraints and deferred polish |
-| [`docs/QUALITY.md`](docs/QUALITY.md) | Repository quality, ownership and refactoring policy |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Architecture Decision Records (ADRs) and frozen decisions |
-| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Network protocol contract |
-| [`docs/TEST_GATES.md`](docs/TEST_GATES.md) | Validation and test gates |
-| [`docs/PERFORMANCE_BUDGETS.md`](docs/PERFORMANCE_BUDGETS.md) | Performance budgets |
-| [`docs/CONTENT_PIPELINE.md`](docs/CONTENT_PIPELINE.md) | Content pipeline |
-| [`docs/POSTGRESQL_LOCAL_RUN.md`](docs/POSTGRESQL_LOCAL_RUN.md) | Local PostgreSQL setup, first run, and pgAdmin checks |
-| [`docs/POSTGRESQL_HOST_MOVE.md`](docs/POSTGRESQL_HOST_MOVE.md) | Planned move to a dedicated or managed database host |
-| [`docs/NPC_DIALOGUE_RUNTIME.md`](docs/NPC_DIALOGUE_RUNTIME.md) | Current NPC dialogue runtime, ownership and operation |
-| [`docs/CHARACTER_ANIMATION_ARCHITECTURE.md`](docs/CHARACTER_ANIMATION_ARCHITECTURE.md) | Character animation architecture |
-| [`docs/dev-tools/README.md`](docs/dev-tools/README.md) | Developer tooling details |
-
-## Requirements
-
-- Rust stable via `rustup` — see [`rust-toolchain.toml`](rust-toolchain.toml)
-- `rustfmt`
-- `clippy`
-- Windows is the primary development host
-
----
-
-**Rule of thumb:** if information is historical, phase-specific, architectural, or operationally detailed, it belongs in `docs/`, not in this README.
+`master` is canonical. `DEVELOPMENT` is a deliberate stable checkpoint, not a parallel development line. Root `VERSION` is independent of Cargo package versions. Historical documentation is explicitly marked in [the Wiki archive](https://github.com/Arieltetenboim/Purgatory/wiki/Historical-Archive).

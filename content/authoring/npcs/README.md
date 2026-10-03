@@ -40,9 +40,9 @@ Area subdirectories are organizational only. Runtime world identity must not be 
 
 ## Contract
 
-See [`docs/NPC_AUTHORING_CONTRACT.md`](../../../docs/NPC_AUTHORING_CONTRACT.md).
+See [NPC Dialogue](https://github.com/Arieltetenboim/Purgatory/wiki/NPC-Dialogue).
 The complete runtime projection and ownership contract is
-[`docs/NPC_DIALOGUE_RUNTIME.md`](../../../docs/NPC_DIALOGUE_RUNTIME.md).
+[NPC Dialogue](https://github.com/Arieltetenboim/Purgatory/wiki/NPC-Dialogue).
 
 Do not add generic scripting, quest ownership, or final behavior-tree semantics
 merely because an authoring field exists here. Runtime-relevant fields must be

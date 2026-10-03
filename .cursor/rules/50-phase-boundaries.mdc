@@ -20,7 +20,7 @@ Do not use `sub-phase` as a roadmap level when `STAGE` or `STEP` is the intended
 
 GitHub Issues are execution tracking, not a roadmap hierarchy level. One Step may map to one or more Issues, and bugs or investigations may exist outside a Step when appropriate.
 
-Current phase marker: root `PHASE`. Status and notes: `docs/ROADMAP.md`, `README.md`, `docs/TEST_GATES.md`. The master execution specification is `PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md`.
+Current phase marker: root `PHASE`. Status and notes: [Roadmap](https://github.com/Arieltetenboim/Purgatory/wiki/Roadmap), `README.md`, [Testing and Quality](https://github.com/Arieltetenboim/Purgatory/wiki/Testing-and-Quality). The original bootstrap execution plan is historical; use the current Wiki roadmap.
 
 Do not start the next Phase, Stage, or Step until instructed. Do not treat a future roadmap entry as authorization to begin it.
 

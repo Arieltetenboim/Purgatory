@@ -41,7 +41,7 @@ They cover 1000 sequential cycles, 10×100 multi-client churn, 200 malformed han
 
 `cargo test -p purgatory-protocol --test wire_golden` asserts fixed Protocol v1 byte arrays in both directions: expected message → exact bytes, and exact bytes → expected message. They cover `Hello`, `Welcome`, `DisconnectReason`, the Ping and Pong datagrams, and the complete framed form of two control messages, and they pin little-endian integers, `u8`-length + UTF-8 strings, and field order.
 
-The fixtures cannot update themselves and there is no snapshot file. A failure means the wire format moved: review compatibility and `PROTOCOL_VERSION` before touching a vector (see `docs/PROTOCOL.md`).
+The fixtures cannot update themselves and there is no snapshot file. A failure means the wire format moved: review compatibility and `PROTOCOL_VERSION` before touching a vector (see [Protocol](https://github.com/Arieltetenboim/Purgatory/wiki/Protocol)).
 
 ## Handshake shutdown and bind failure
 

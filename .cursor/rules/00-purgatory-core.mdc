@@ -25,7 +25,7 @@ PURGATORY is a custom-built native 2D side-scrolling MMORPG. This repository is 
 | `crates/simulation` | `purgatory-simulation` | Authoritative simulation |
 | `crates/protocol` | `purgatory-protocol` | Client/server protocol types and version semantics |
 | `crates/content` | `purgatory-content` | Content definition loading and validation boundary |
-| `crates/persistence` | `purgatory-persistence` | File-backed character identity and persistent character state |
+| `crates/persistence` | `purgatory-persistence` | PostgreSQL character identity and durable state via the off-tick worker |
 | `crates/skeleton` | `purgatory-skeleton` | Presentation skeleton math (Definition + local Pose → world Pose). No GPU, simulation, or network. |
 | `crates/animation` | `purgatory-animation` | Presentation clip sampling (AnimationClip + sample → LocalPose). Depends only on `purgatory-skeleton`. |
 | `crates/dev_runtime` | `purgatory-dev-runtime` | Headless Developer Hub orchestration (no GUI) |
@@ -37,20 +37,20 @@ Do not nest another `PURGATORY/` directory. Do not treat a parent folder as the 
 
 ## Source of truth
 
-Repository code and documentation are the durable source of truth. Do not invent project facts.
+Current runtime behavior, automated tests, and code take precedence. The GitHub Wiki is the human documentation authority; accepted decisions and historical reports are subordinate evidence. Do not invent project facts.
 
 Consult, do not duplicate volatile numbers from:
 
-- `PURGATORY_CURSOR_MASTER_EXECUTION_PLAN.md` — master execution specification
+- [Historical Archive](https://github.com/Arieltetenboim/Purgatory/wiki/Historical-Archive) — original bootstrap execution plan (historical)
 - `README.md` — workspace map, current status, how to run
-- `docs/ARCHITECTURE.md` — structural rules and ownership
-- `docs/DECISIONS.md` — Architecture Decision Records (ADRs)
-- `docs/PROTOCOL.md` — wire protocol and trust boundary
-- `docs/ROADMAP.md` — phase order and status
-- `docs/TEST_GATES.md` — recorded verification gates
-- `docs/PERFORMANCE_BUDGETS.md` — living performance budgets
-- `docs/CONTENT_PIPELINE.md` — content authoring boundary
-- `docs/DIAGNOSTICS_ARCHITECTURE.md` — client debug/diagnostics split (D-track)
+- [Architecture](https://github.com/Arieltetenboim/Purgatory/wiki/Architecture) — structural rules and ownership
+- [Decisions and ADRs](https://github.com/Arieltetenboim/Purgatory/wiki/Decisions-and-ADRs) — Architecture Decision Records (ADRs)
+- [Protocol](https://github.com/Arieltetenboim/Purgatory/wiki/Protocol) — wire protocol and trust boundary
+- [Roadmap](https://github.com/Arieltetenboim/Purgatory/wiki/Roadmap) — phase order and status
+- [Testing and Quality](https://github.com/Arieltetenboim/Purgatory/wiki/Testing-and-Quality) — recorded verification gates
+- [Diagnostics and Presentation](https://github.com/Arieltetenboim/Purgatory/wiki/Diagnostics-and-Presentation) — living performance budgets
+- [Content and Authoring](https://github.com/Arieltetenboim/Purgatory/wiki/Content-and-Authoring) — content authoring boundary
+- [Diagnostics and Presentation](https://github.com/Arieltetenboim/Purgatory/wiki/Diagnostics-and-Presentation) — client debug/diagnostics split (D-track)
 - root `PHASE` — current phase marker
 
 `.cursor/rules/` constrain agent behavior. They do not replace the documents above.

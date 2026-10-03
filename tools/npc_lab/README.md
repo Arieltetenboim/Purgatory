@@ -2,7 +2,7 @@
 
 Status: current local NPC authoring/test tool. N10 consumes its canonical JSON
 through the separate typed runtime projection documented in
-[`docs/NPC_DIALOGUE_RUNTIME.md`](../../docs/NPC_DIALOGUE_RUNTIME.md).
+[NPC Dialogue](https://github.com/Arieltetenboim/Purgatory/wiki/NPC-Dialogue).
 
 NPC Lab is a local Web authoring tool for PURGATORY NPC content. Repository JSON remains the source of truth.
 
