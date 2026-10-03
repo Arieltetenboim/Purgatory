@@ -39,7 +39,7 @@ Implemented in this pass:
 | Logging | Colored activity box (green server, cyan client) plus `logs/dev-tools/`. Server/client/probe stdout is shown live. The ACTIVITY expand control opens a separate resizable log window. Routine log/status/portal lines are silent. Windows dialog sounds still play only for blocking `MessageBox` calls (refusals, failures, already-running). |
 | Identity | Workspace Cargo version, root `PHASE`, git short hash (`*` if dirty). |
 | Environment | Log level combo applies to **new** processes: `RUST_BACKTRACE=1`, optional `RUST_LOG`, `PURGATORY_NET_LOG`, `PURGATORY_NET_VERBOSE`. |
-| Autostart | Starts the server on first show unless a server is already present or `PURGATORY_LAUNCHER_NO_AUTOSTART` is set. |
+| Autostart | Disabled. On first show, an existing workspace server is adopted/verified; otherwise the Hub waits for explicit **START**. |
 | Kill All | Workspace-scoped cargo (command line contains this repo root) plus owned server/client/load. |
 | Authoring tools | Content launches Animation Lab, Character Lab, NPC Lab, Mob Lab, Item Lab, Map Lab, and Asset Slicer as standalone tools. Character Lab exports/refreshes the live Humanoid v0 authoring contract and Template V1 before opening. Mob Lab and Item Lab use their own local authoring servers; Map Lab uses the shared canonical map compiler. |
 | Server Commands | DEV-only selected-player commands use the typed loopback admin path and bounded gameplay handoff. Current authored spawn controls include NPC, Monster, and Item; simulation/server authority remains the owner. |
