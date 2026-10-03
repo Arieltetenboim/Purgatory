@@ -1627,11 +1627,7 @@ impl GameplayOwner {
         let Some(content_id) = self.world.content_id_of(entity) else {
             return;
         };
-        let Some(drops) = self
-            .registry
-            .monster_by_id(content_id)
-            .map(|monster| monster.drops.clone())
-        else {
+        let Some(drops) = self.monster_drop_entries(content_id) else {
             return;
         };
         if drops.is_empty() {
@@ -1654,6 +1650,28 @@ impl GameplayOwner {
             position,
             remaining: rolled,
         });
+    }
+
+    fn monster_drop_entries(
+        &self,
+        content_id: ContentId,
+    ) -> Option<Vec<purgatory_content::MonsterDropEntry>> {
+        #[cfg(test)]
+        if let Some(drops) = self.monster_drop_overrides.get(&content_id) {
+            return Some(drops.clone());
+        }
+        self.registry
+            .monster_by_id(content_id)
+            .map(|monster| monster.drops.clone())
+    }
+
+    #[cfg(test)]
+    pub fn set_monster_drops_for_test(
+        &mut self,
+        content_id: ContentId,
+        drops: Vec<purgatory_content::MonsterDropEntry>,
+    ) {
+        self.monster_drop_overrides.insert(content_id, drops);
     }
 
     fn enqueue_monster_loot(&mut self, plan: PendingMonsterLoot) {
