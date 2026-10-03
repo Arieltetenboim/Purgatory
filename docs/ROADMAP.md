@@ -13,7 +13,7 @@ The root [`PHASE`](../PHASE) file is the exact gameplay-phase marker. Parallel t
 - **FORGE M:** M4 implementation merged to `master`; #75 remains open for manual two-Monster visual/runtime acceptance evidence before final M4/M5 closeout
 - **Character Lab:** current Hub-launched Template V1 / visual-pack authoring path is integrated on `master`
 - **Production client UI:** Inventory foundation + player-facing Settings + production Glyphon text foundation are merged
-- **Main gameplay:** 12A–12C are accepted; PR #121 merged at `19f19c2`; Phase 12 exit remains open; draft PR #116 stays unmerged
+- **Main gameplay:** 12A–12C are accepted; PR #121 merged at `19f19c2`; Phase 12 exit remains open; the superseded file-writer PR #116 is archived and unmerged
 - **Dash / learned abilities:** authoritative Dash + NPC `GrantAbility` restored to current `master`; presentation polish remains tracked separately
 - **Protocol: v34**
 

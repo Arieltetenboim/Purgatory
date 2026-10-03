@@ -4,7 +4,7 @@ Branch `forge/item-lab-v1` in `C:\Users\Ariel\OneDrive\Desktop\Purgatory\item-la
 
 Saving rules stay in [`PERSISTENCE_AND_AUTHORING_CONTRACT.md`](PERSISTENCE_AND_AUTHORING_CONTRACT.md). This file is the acceptance record. It does not replace that contract.
 
-The existing-equipment save follow-up is recorded below under that heading. It does not close the Hub-button or native-client rows in the V1 matrix. Those rows stay **NOT RUN**.
+The existing-equipment save follow-up is recorded below under that heading. Historical matrix results below remain results for their named commits. The later [2026-10-03 closeout audit](ITEM_LAB_CLOSEOUT_2026-10-03.md) records the owner's practice-sword smoke and icon repair separately; it does not turn earlier NOT RUN rows into agent-executed tests. Current full acceptance remains open.
 
 ## History, commit `3f2cb13` only
 
