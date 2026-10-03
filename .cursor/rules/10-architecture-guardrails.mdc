@@ -23,7 +23,7 @@ If a requested implementation exposes a genuine architectural conflict that proj
 
 ## Verified boundaries
 
-Crate graph (from `docs/ARCHITECTURE.md` and crate manifests):
+Crate graph (from [Architecture](https://github.com/Arieltetenboim/Purgatory/wiki/Architecture) and crate manifests):
 
 ```text
 common → simulation → server
@@ -57,7 +57,7 @@ The client also depends on `purgatory-simulation` for local simulation/presentat
 
 - `ConnectionId` — server-allocated network session
 - `EntityId` — temporary runtime instance `{ index, generation }`
-- Content / author IDs — stable authored definitions (see `docs/CONTENT_PIPELINE.md`)
+- Content / author IDs — stable authored definitions (see [Content and Authoring](https://github.com/Arieltetenboim/Purgatory/wiki/Content-and-Authoring))
 - `CharacterId` — server-minted persistent character identity (Phase 6E). Not `PersistentId`.
 - Future `MapInstanceId` — distinct, server-owned; not implemented as a substitute for the above
 

@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Testing and quality
 
-`docs/TEST_GATES.md` and repository scripts define the official verification requirements. Do not invent replacement quality gates.
+[Testing and Quality](https://github.com/Arieltetenboim/Purgatory/wiki/Testing-and-Quality) and repository scripts define the official verification requirements. Do not invent replacement quality gates.
 
 ## Automated quality gate
 
@@ -23,7 +23,7 @@ cargo test --workspace
 
 Clippy warnings are denied. Never claim a task is complete merely because the code compiles.
 
-Extended network soaks are `#[ignore]` and are **not** part of the default gate. Run them only when the task or `docs/TEST_GATES.md` requires them (`./scripts/network_soak.ps1` / `./scripts/network_soak.sh`). Localhost soaks are not player-capacity claims.
+Extended network soaks are `#[ignore]` and are **not** part of the default gate. Run them only when the task or [Testing and Quality](https://github.com/Arieltetenboim/Purgatory/wiki/Testing-and-Quality) requires them (`./scripts/network_soak.ps1` / `./scripts/network_soak.sh`). Localhost soaks are not player-capacity claims.
 
 ## Verification kinds
 
@@ -44,6 +44,6 @@ When a test fails, determine whether:
 - the test exposes a regression,
 - or the intended contract legitimately changed.
 
-Protocol golden vectors in `crates/protocol/tests/wire_golden.rs` freeze historical wire bytes. A failure means the wire format moved. Do not regenerate fixtures to make a test pass. Review compatibility, update `PROTOCOL_VERSION` if the change is incompatible, then update affected vectors deliberately (`docs/PROTOCOL.md`).
+Protocol golden vectors in `crates/protocol/tests/wire_golden.rs` freeze historical wire bytes. A failure means the wire format moved. Do not regenerate fixtures to make a test pass. Review compatibility, update `PROTOCOL_VERSION` if the change is incompatible, then update affected vectors deliberately ([Protocol](https://github.com/Arieltetenboim/Purgatory/wiki/Protocol)).
 
 Report which commands were actually executed and their results.
