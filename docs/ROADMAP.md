@@ -84,7 +84,7 @@ Inventory window without reopening Phase 11 or starting Phase 12. Currency
 authority, item interaction, bags/capacity policy, and persistence remain
 deferred.
 
-## 12 — Character Continuity — entry active
+## 12 — Character Continuity — 12A–12C accepted, exit open
 
 Phase 11 remains closed. Issue #10 accepted the original file-backed design,
 preserved in [`PHASE_12_DURABILITY_CONTRACT.md`](PHASE_12_DURABILITY_CONTRACT.md).
