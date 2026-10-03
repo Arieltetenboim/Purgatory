@@ -3,5 +3,6 @@
   "id": 30006,
   "label": "equipment.debug.practice_sword",
   "category": "equipment",
-  "stack_limit": 1
+  "stack_limit": 1,
+  "drop_requires_confirmation": false
 }

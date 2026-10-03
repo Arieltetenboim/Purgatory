@@ -2,7 +2,7 @@
   "schema_version": 4,
   "id": "monster.dev.guaranteed_drop",
   "debug_name": "Guaranteed Drop",
-  "sprite": "creature.moss_crab",
+  "sprite": "creature.shroom",
   "health_max": 5,
   "collision_bounds": {
     "left": 0.4,
@@ -18,10 +18,10 @@
   },
   "drops": [
     {
-      "item": 30015,
+      "item": 30006,
       "chance_bps": 10000,
-      "quantity_min": 2,
-      "quantity_max": 2
+      "quantity_min": 1,
+      "quantity_max": 1
     }
   ]
 }

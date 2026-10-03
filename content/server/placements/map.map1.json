@@ -41,6 +41,15 @@
         14.555908,
         1.0
       ]
+    },
+    {
+      "id": "placement.mob_003",
+      "kind": "monster",
+      "content": "monster.dev.guaranteed_drop",
+      "position": [
+        8.957482,
+        1.729167
+      ]
     }
   ]
 }

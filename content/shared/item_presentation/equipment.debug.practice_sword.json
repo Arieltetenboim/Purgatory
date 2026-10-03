@@ -2,5 +2,7 @@
   "schema_version": 2,
   "id": 30006,
   "label": "equipment.debug.practice_sword",
-  "icon": "item.placeholder"
+  "icon": "item.training_sword",
+  "display_name": "Practice Sword",
+  "description": "NOTE NOTE"
 }
