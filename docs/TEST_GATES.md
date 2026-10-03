@@ -4,11 +4,11 @@ Current-status reading rule: this file preserves historical gate entries with th
 
 ## 2026-10-03 — editable-content fixture regression repair
 
-- Status: **pending current PR validation** on PR #127.
+- Status: **pass** for the automated repair on PR #127. GitHub Actions run `37142280327` passed both required jobs on repair head `5afdc30389742a5c839ac54051c69585421d9720`.
 - Quality regression root cause: the inventory hover/click test loaded the real practice-sword presentation and froze its old text count/name. After that first failure was removed, the same Quality job exposed `authored_death_reserves_one_id_and_pickup_keeps_it`, which also froze the old guaranteed-drop scrap/quantity. Both Quality tests now use isolated fixtures instead of the editable owner content.
 - PostgreSQL regression root cause: the restart proof killed `monster.dev.guaranteed_drop` but assumed its old scrap/quantity authored drop. The repair adds a test-only drop override and keeps the real lethal-hit → loot roll → reserved `ItemInstanceId` → ground → pickup → durable commit → logout/restart path.
 - Production behavior/content impact: none intended. The loot override exists only under `cfg(test)`; no content, database migration, protocol, or `PHASE` change.
-- Final PASS requires both the `PURGATORY quality gate` and `PostgreSQL 12A, 12B, and 12C tests` checks on the final PR #127 head.
+- `PURGATORY quality gate`: **PASS**. `PostgreSQL 12A, 12B, and 12C tests`: **PASS**. This status-recording change is documentation-only; PR merge still requires its final head checks to remain green.
 
 Historical gate vocabulary below: `pending`, `pass`, `fail`, `skipped`.
 
