@@ -1,8 +1,16 @@
 # Test gates
 
-Record every gate from the master execution plan.
+Current-status reading rule: this file preserves historical gate entries with the status that was true when they were recorded. For current project sequencing use [`README.md`](README.md), [`ROADMAP.md`](ROADMAP.md), and root `PHASE`.
 
-Status: `pending`, `pass`, `fail`, `skipped`.
+## 2026-10-03 — editable-content fixture regression repair
+
+- Status: **pending current PR validation** on PR #127.
+- Quality regression root cause: the inventory hover/click test loaded the real practice-sword presentation and froze its old text count/name. The repair keeps slot/click behavior on a synthetic registry and tests name/description tooltip semantics with a synthetic `ItemDefinition` + `ItemPresentation`.
+- PostgreSQL regression root cause: the restart proof killed `monster.dev.guaranteed_drop` but assumed its old scrap/quantity authored drop. The repair adds a test-only drop override and keeps the real lethal-hit → loot roll → reserved `ItemInstanceId` → ground → pickup → durable commit → logout/restart path.
+- Production behavior/content impact: none intended. The loot override exists only under `cfg(test)`; no content, database migration, protocol, or `PHASE` change.
+- Final PASS requires both the `PURGATORY quality gate` and `PostgreSQL 12A, 12B, and 12C tests` checks on the final PR #127 head.
+
+Historical gate vocabulary below: `pending`, `pass`, `fail`, `skipped`.
 
 Owner Phase 0 clarifications:
 
