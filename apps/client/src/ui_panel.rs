@@ -4457,7 +4457,12 @@ mod tests {
             64,
             "one fallback icon + tooltip background"
         );
-        assert!(frame.texts.iter().any(|text| text.content.0 == "Unknown item"));
+        assert!(
+            frame
+                .texts
+                .iter()
+                .any(|text| text.content.0 == "Unknown item")
+        );
         assert!(frame.texts.iter().any(|text| {
             text.content.0.contains("misc")
                 && text.content.0.contains("Qty 1")
