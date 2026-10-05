@@ -3550,7 +3550,7 @@
 
     #[test]
     #[ignore]
-    fn postgres_12c_respawn_commits_full_health_after_a_dead_login() {
+    fn postgres_12c_respawn_commits_half_health_after_a_dead_login() {
         with_db(|pg| {
             let first = pg.enter("Mira");
             let max = pg.owner.world().health_of(first.actor).unwrap().max;
@@ -3569,11 +3569,12 @@
             pg.owner.apply_input(InputUpdate::Respawn {
                 connection_id: dead.connection,
             });
-            assert!((live_hp(&pg.owner, dead.actor) - max).abs() < 1e-3);
+            let half = Health::respawn_current(max);
+            assert!((live_hp(&pg.owner, dead.actor) - half).abs() < 1e-3);
             commit_logout(pg, &dead);
 
             let revived = restart(pg, character);
-            assert!((live_hp(&pg.owner, revived.actor) - max).abs() < 1e-3);
+            assert!((live_hp(&pg.owner, revived.actor) - half).abs() < 1e-3);
             let stored = pg
                 .service
                 .load_owned_character(&pg.login, character)
@@ -3581,7 +3582,7 @@
                 .unwrap();
             assert_eq!(
                 stored.current_health_milli,
-                Some(purgatory_persistence::health_milli(max, max))
+                Some(purgatory_persistence::health_milli(half, max))
             );
         });
     }
@@ -3954,4 +3955,141 @@
         let next = owner.take_durable_commits();
         assert_eq!(next[0].command.expected_revisions, vec![(character, 3)]);
         assert_eq!(owner.bindings[&id].committed_revision, 3);
+    }
+
+    #[test]
+    fn logout_while_dead_snapshots_zero_health() {
+        let (mut owner, id, _character, _item) = revision_owner();
+        let actor = owner.entity_of(id).unwrap();
+        let max = owner.world().health_of(actor).unwrap().max;
+        assert!(owner.world_mut().set_health(
+            actor,
+            Health {
+                current: 0.0,
+                max,
+            },
+        ));
+        let (_, snapshot) = owner
+            .prepare_logout(id)
+            .unwrap()
+            .expect("leased logout snapshot");
+        assert_eq!(
+            snapshot.current_health_milli,
+            Some(purgatory_persistence::health_milli(0.0, max))
+        );
+        assert!(snapshot.health_revision >= 1);
+    }
+
+    #[test]
+    fn enter_restored_applies_stored_dead_health() {
+        use purgatory_persistence::{CharacterNarrativeState, OwnedRestore, PersistentCharacter};
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(2);
+        let mut character = PersistentCharacter::new_default(CharacterId::from_raw(22));
+        let max = purgatory_simulation::PLAYER_HEALTH_MAX;
+        character.current_health_milli = Some(purgatory_persistence::health_milli(0.0, max));
+        character.health_revision = 4;
+        owner
+            .enter_restored(
+                connection,
+                OwnedRestore {
+                    character: character.clone(),
+                    items: Vec::new(),
+                    narrative: CharacterNarrativeState::default(),
+                },
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let actor = owner.entity_of(connection).unwrap();
+        assert_eq!(owner.world().health_of(actor).unwrap().current, 0.0);
+        assert!(owner.world().health_of(actor).unwrap().is_dead());
+        assert_eq!(
+            owner.bindings[&connection].health_revision,
+            character.health_revision
+        );
+    }
+
+    #[test]
+    fn respawn_tick_queues_half_health_snapshot() {
+        let (mut owner, id, _character, _item) = revision_owner();
+        let persist = super::super::persist::PersistenceHandle::queue_only_for_test(8);
+        owner.set_persist(persist);
+        let actor = owner.entity_of(id).unwrap();
+        let max = owner.world().health_of(actor).unwrap().max;
+        assert!(owner.world_mut().set_health(
+            actor,
+            Health {
+                current: 0.0,
+                max,
+            },
+        ));
+        owner.handle_respawn(id);
+        let half = Health::respawn_current(max);
+        assert!((owner.world().health_of(actor).unwrap().current - half).abs() < 1e-3);
+        let revision_before = owner.bindings[&id].health_revision;
+        owner.simulate_tick(1.0 / 30.0);
+        assert_eq!(
+            owner.bindings[&id].stored_health_milli,
+            Some(purgatory_persistence::health_milli(half, max))
+        );
+        assert!(
+            owner.bindings[&id].health_revision > revision_before,
+            "respawn HP must bump health_revision"
+        );
+        let (_, logout) = owner
+            .prepare_logout(id)
+            .unwrap()
+            .expect("logout snapshot");
+        assert_eq!(
+            logout.current_health_milli,
+            Some(purgatory_persistence::health_milli(half, max))
+        );
+    }
+
+    #[test]
+    fn stale_health_revision_does_not_overwrite_newer_respawn_hp() {
+        use purgatory_common::RestoreIntent;
+        use purgatory_persistence::PersistentCharacterSnapshot;
+        let mut service = PersistenceService::unit_fixture();
+        let login = DevLogin::parse("dev.local").unwrap();
+        assert!(service.provision_dev_user(&login).unwrap());
+        let entry = service.create_character(&login, "Mira").unwrap();
+        let max = purgatory_simulation::PLAYER_HEALTH_MAX;
+        let max_milli = purgatory_persistence::health_milli(max, max);
+        let half = Health::respawn_current(max);
+        let half_milli = purgatory_persistence::health_milli(half, max);
+        let restore = RestoreIntent {
+            map_authored: "map.map1".into(),
+            point_id: "default".into(),
+            checkpoint_id: None,
+        };
+        service
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 2,
+                restore: restore.clone(),
+                instance_exit: None,
+                current_health_milli: Some(half_milli),
+                health_revision: 3,
+            })
+            .unwrap();
+        service
+            .save_snapshot(PersistentCharacterSnapshot {
+                character_id: entry.character_id,
+                persistence_revision: 3,
+                restore: restore.clone(),
+                instance_exit: None,
+                current_health_milli: Some(max_milli),
+                health_revision: 2,
+            })
+            .unwrap();
+        let loaded = service
+            .load_owned_character(&login, entry.character_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.current_health_milli, Some(half_milli));
+        assert_eq!(loaded.health_revision, 3);
     }
