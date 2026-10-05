@@ -13,7 +13,7 @@ use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
 use crate::renderer::SpriteTextureId;
 #[cfg(feature = "dev-diagnostics")]
-use crate::renderer::{PixelViewport, UiTexturedRect};
+use crate::renderer::{PixelViewport, UiTexturedQuad};
 #[cfg(feature = "dev-diagnostics")]
 use crate::ui_panel::compose_standalone_nine_slice;
 
@@ -232,7 +232,7 @@ impl UiDevProof {
         &self,
         viewport: PixelViewport,
         pixels_per_unit: f32,
-    ) -> Result<Vec<UiTexturedRect>, String> {
+    ) -> Result<Vec<UiTexturedQuad>, String> {
         if !self.visible {
             return Ok(Vec::new());
         }
@@ -245,7 +245,7 @@ fn layout_ui_dev_proof(
     asset: &UiV2NineSlice,
     viewport: PixelViewport,
     pixels_per_unit: f32,
-) -> Result<Vec<UiTexturedRect>, String> {
+) -> Result<Vec<UiTexturedQuad>, String> {
     let native = [asset.size_px[0] as f32, asset.size_px[1] as f32];
     let examples = [
         ([PROOF_MARGIN_UNITS, PROOF_MARGIN_UNITS], native),
@@ -411,6 +411,22 @@ mod tests {
         assert_eq!(runtime.texture_for_key(PROOF_ASSET), Some(asset.texture));
     }
 
+    #[cfg(feature = "dev-diagnostics")]
+    fn piece_size(piece: &UiTexturedQuad) -> [f32; 2] {
+        [
+            piece.corners[2][0] - piece.corners[0][0],
+            piece.corners[2][1] - piece.corners[0][1],
+        ]
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn assert_stretch_quad(piece: &UiTexturedQuad) {
+        assert_eq!(piece.uvs[1], [piece.uvs[2][0], piece.uvs[0][1]]);
+        assert_eq!(piece.uvs[3], [piece.uvs[0][0], piece.uvs[2][1]]);
+        assert!(piece.uvs[2][0] > piece.uvs[0][0]);
+        assert!(piece.uvs[2][1] > piece.uvs[0][1]);
+    }
+
     fn unique_fixture() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -437,31 +453,38 @@ mod tests {
         };
         assert!(proof.frame(viewport, 1.0).unwrap().is_empty());
         proof.toggle();
-        let rects = proof.frame(viewport, 1.0).unwrap();
-        assert_eq!(rects.len(), 27);
-        assert!(rects.iter().all(|rect| rect.texture == asset.texture));
-        assert_eq!(rects[0].size(), [5.0, 7.0]);
-        assert_eq!(rects[9].size(), rects[0].size());
-        assert_eq!(rects[18].size(), rects[0].size());
-        assert_eq!(rects[0].uv_min, rects[9].uv_min);
-        assert_eq!(rects[0].uv_max, rects[18].uv_max);
-        assert!(rects[10].size()[0] > rects[1].size()[0]);
-        assert_eq!(rects[10].size()[1], rects[1].size()[1]);
-        assert!(rects[21].size()[1] > rects[3].size()[1]);
-        assert_eq!(rects[21].size()[0], rects[3].size()[0]);
-        let native_width = rects[0].size()[0] + rects[1].size()[0] + rects[2].size()[0];
-        let native_height = rects[0].size()[1] + rects[3].size()[1] + rects[6].size()[1];
+        let pieces = proof.frame(viewport, 1.0).unwrap();
+        assert_eq!(pieces.len(), 27);
+        assert!(pieces.iter().all(|piece| piece.texture == asset.texture));
+        pieces.iter().for_each(assert_stretch_quad);
+        assert_eq!(piece_size(&pieces[0]), [5.0, 7.0]);
+        assert_eq!(piece_size(&pieces[9]), piece_size(&pieces[0]));
+        assert_eq!(piece_size(&pieces[18]), piece_size(&pieces[0]));
+        assert_eq!(pieces[0].uvs, pieces[9].uvs);
+        assert_eq!(pieces[0].uvs, pieces[18].uvs);
+        assert!(piece_size(&pieces[10])[0] > piece_size(&pieces[1])[0]);
+        assert_eq!(piece_size(&pieces[10])[1], piece_size(&pieces[1])[1]);
+        assert!(piece_size(&pieces[21])[1] > piece_size(&pieces[3])[1]);
+        assert_eq!(piece_size(&pieces[21])[0], piece_size(&pieces[3])[0]);
+        let native_width =
+            piece_size(&pieces[0])[0] + piece_size(&pieces[1])[0] + piece_size(&pieces[2])[0];
+        let native_height =
+            piece_size(&pieces[0])[1] + piece_size(&pieces[3])[1] + piece_size(&pieces[6])[1];
         assert!((native_width - 80.0).abs() < 0.001);
         assert!((native_height - 50.0).abs() < 0.001);
-        let wide_width = rects[9].size()[0] + rects[10].size()[0] + rects[11].size()[0];
-        let tall_height = rects[18].size()[1] + rects[21].size()[1] + rects[24].size()[1];
+        let wide_width =
+            piece_size(&pieces[9])[0] + piece_size(&pieces[10])[0] + piece_size(&pieces[11])[0];
+        let tall_height =
+            piece_size(&pieces[18])[1] + piece_size(&pieces[21])[1] + piece_size(&pieces[24])[1];
         assert!((wide_width - PROOF_WIDE_UNITS).abs() < 0.001);
         assert!((tall_height - PROOF_TALL_UNITS).abs() < 0.001);
 
         let scaled = proof.frame(viewport, 1.5).unwrap();
-        assert!((scaled[0].size()[0] - 7.5).abs() < 0.001);
-        assert!((scaled[0].size()[1] - 10.5).abs() < 0.001);
-        let scaled_native = scaled[0].size()[0] + scaled[1].size()[0] + scaled[2].size()[0];
+        assert!((piece_size(&scaled[0])[0] - 7.5).abs() < 0.001);
+        assert!((piece_size(&scaled[0])[1] - 10.5).abs() < 0.001);
+        assert_eq!(scaled[0].uvs, pieces[0].uvs);
+        let scaled_native =
+            piece_size(&scaled[0])[0] + piece_size(&scaled[1])[0] + piece_size(&scaled[2])[0];
         assert!((scaled_native - 120.0).abs() < 0.001);
         proof.toggle();
         assert!(proof.frame(viewport, 1.5).unwrap().is_empty());

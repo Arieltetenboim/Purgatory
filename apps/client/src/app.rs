@@ -3392,7 +3392,7 @@ impl ClientApp {
         let mut settings_launcher_frame: Option<SettingsLauncherFrame> = None;
         let mut message_frame: Option<MessageDialogFrame> = None;
         #[cfg(feature = "dev-diagnostics")]
-        let mut ui_dev_rects = Vec::new();
+        let mut ui_dev_quads = Vec::new();
         if !on_connection && let Some(viewport) = viewport {
             let pixels_per_unit = effective_pixels_per_point(
                 window.scale_factor() as f32,
@@ -3474,7 +3474,7 @@ impl ClientApp {
                 .flatten();
             #[cfg(feature = "dev-diagnostics")]
             {
-                ui_dev_rects = self
+                ui_dev_quads = self
                     .ui_dev_proof
                     .frame(viewport, pixels_per_unit)
                     .unwrap_or_default();
@@ -3571,8 +3571,10 @@ impl ClientApp {
             ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
         }
         #[cfg(feature = "dev-diagnostics")]
-        if !ui_dev_rects.is_empty() {
-            ui_compositions.push(UiComposition::new(&ui_dev_rects, &[], &[]));
+        if !ui_dev_quads.is_empty() {
+            let mut composition = UiComposition::new(&[], &[], &[]);
+            composition.textured_quads = &ui_dev_quads;
+            ui_compositions.push(composition);
         }
         let enter_overlay: Vec<UiRect> = viewport
             .filter(|_| self.frontend_runtime.enter_alpha() > 0.0)

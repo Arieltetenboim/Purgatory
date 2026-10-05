@@ -17,7 +17,7 @@ use crate::display::{
 };
 use crate::renderer::{
     PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle,
-    UiTexturedRect,
+    UiTexturedQuad, UiTexturedRect,
 };
 
 const ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
@@ -3442,6 +3442,9 @@ fn clamp_top_left(position: [f32; 2], window_size: [f32; 2], viewport_size: [f32
 /// `size_units` is the destination in logical UI units. Borders are the source
 /// slice insets scaled once by `pixels_per_unit`, the same scale as the
 /// destination. Borders shrink only when the destination cannot hold them.
+///
+/// Pieces are [`UiTexturedQuad`]s. [`UiTexturedRect`] repeats its source when
+/// the destination is larger than that source, which nine-slice stretch must not do.
 #[cfg_attr(not(any(test, feature = "dev-diagnostics")), allow(dead_code))]
 pub(crate) fn compose_standalone_nine_slice(
     origin_px: [f32; 2],
@@ -3450,7 +3453,7 @@ pub(crate) fn compose_standalone_nine_slice(
     texture: SpriteTextureId,
     source_size_px: [u32; 2],
     slice_ltrb: [u32; 4],
-) -> Result<Vec<UiTexturedRect>, String> {
+) -> Result<Vec<UiTexturedQuad>, String> {
     validate_pixels_per_unit(pixels_per_unit)?;
     if !origin_px.into_iter().all(f32::is_finite) {
         return Err("UI nine-slice origin is invalid".to_string());
@@ -3518,7 +3521,28 @@ pub(crate) fn compose_standalone_nine_slice(
             && rect.uv_max[0] > rect.uv_min[0]
             && rect.uv_max[1] > rect.uv_min[1]
     });
-    Ok(regions)
+    Ok(regions.into_iter().map(stretch_nine_slice_piece).collect())
+}
+
+/// Map one source UV rectangle across the whole destination. Quad submission
+/// leaves `rect_size` at zero, so the UI texture shader samples `uv` directly.
+fn stretch_nine_slice_piece(rect: UiTexturedRect) -> UiTexturedQuad {
+    UiTexturedQuad {
+        corners: [
+            rect.min,
+            [rect.max[0], rect.min[1]],
+            rect.max,
+            [rect.min[0], rect.max[1]],
+        ],
+        uvs: [
+            rect.uv_min,
+            [rect.uv_max[0], rect.uv_min[1]],
+            rect.uv_max,
+            [rect.uv_min[0], rect.uv_max[1]],
+        ],
+        texture: rect.texture,
+        tint: rect.tint,
+    }
 }
 
 fn fit_nine_slice_axis(start: f32, end: f32, span: f32) -> Result<(f32, f32), String> {
@@ -5023,10 +5047,7 @@ mod tests {
         assert_eq!(dialog_frame.textured_rects[8].size(), [9.0, 9.0]);
     }
 
-    fn synthetic_nine_slice(
-        size_units: [f32; 2],
-        pixels_per_unit: f32,
-    ) -> Vec<crate::renderer::UiTexturedRect> {
+    fn synthetic_nine_slice(size_units: [f32; 2], pixels_per_unit: f32) -> Vec<UiTexturedQuad> {
         compose_standalone_nine_slice(
             [10.0, 20.0],
             size_units,
@@ -5038,56 +5059,87 @@ mod tests {
         .unwrap()
     }
 
+    fn piece_size(piece: &UiTexturedQuad) -> [f32; 2] {
+        [
+            piece.corners[2][0] - piece.corners[0][0],
+            piece.corners[2][1] - piece.corners[0][1],
+        ]
+    }
+
+    fn assert_stretch_piece(piece: &UiTexturedQuad) {
+        let size = piece_size(piece);
+        assert!(size[0] > 0.0 && size[1] > 0.0);
+        assert_eq!(piece.uvs[1], [piece.uvs[2][0], piece.uvs[0][1]]);
+        assert_eq!(piece.uvs[3], [piece.uvs[0][0], piece.uvs[2][1]]);
+        assert!(piece.uvs[2][0] > piece.uvs[0][0]);
+        assert!(piece.uvs[2][1] > piece.uvs[0][1]);
+    }
+
     #[test]
     fn standalone_nine_slice_keeps_corners_fixed_and_stretches_center() {
         let native = synthetic_nine_slice([100.0, 80.0], 1.0);
         assert_eq!(native.len(), 9);
-        assert_eq!(native[0].size(), [10.0, 20.0]);
-        assert_eq!(native[2].size(), [12.0, 20.0]);
-        assert_eq!(native[6].size(), [10.0, 8.0]);
-        assert_eq!(native[1].size(), [78.0, 20.0]);
-        assert_eq!(native[4].size(), [78.0, 52.0]);
-        assert_eq!(native[3].size(), [10.0, 52.0]);
+        native.iter().for_each(assert_stretch_piece);
+        assert_eq!(piece_size(&native[0]), [10.0, 20.0]);
+        assert_eq!(piece_size(&native[2]), [12.0, 20.0]);
+        assert_eq!(piece_size(&native[6]), [10.0, 8.0]);
+        assert_eq!(piece_size(&native[1]), [78.0, 20.0]);
+        assert_eq!(piece_size(&native[4]), [78.0, 52.0]);
+        assert_eq!(piece_size(&native[3]), [10.0, 52.0]);
+        assert_ne!(native[0].uvs, native[4].uvs);
 
         let wide = synthetic_nine_slice([160.0, 80.0], 1.0);
-        assert_eq!(wide[0].size(), native[0].size());
-        assert_eq!(wide[0].uv_min, native[0].uv_min);
-        assert_eq!(wide[0].uv_max, native[0].uv_max);
-        assert_eq!(wide[2].uv_min, native[2].uv_min);
-        assert_eq!(wide[1].size(), [138.0, 20.0]);
-        assert_eq!(wide[4].size(), [138.0, 52.0]);
-        assert_eq!(wide[3].size(), native[3].size());
+        assert_eq!(piece_size(&wide[0]), piece_size(&native[0]));
+        assert_eq!(wide[0].uvs, native[0].uvs);
+        assert_eq!(wide[2].uvs, native[2].uvs);
+        assert_eq!(wide[4].uvs, native[4].uvs);
+        assert_eq!(piece_size(&wide[1]), [138.0, 20.0]);
+        assert_eq!(piece_size(&wide[4]), [138.0, 52.0]);
+        assert_eq!(piece_size(&wide[3]), piece_size(&native[3]));
+
+        let tall = synthetic_nine_slice([100.0, 140.0], 1.0);
+        assert_eq!(tall[0].uvs, native[0].uvs);
+        assert_eq!(tall[6].uvs, native[6].uvs);
+        assert_eq!(piece_size(&tall[0]), piece_size(&native[0]));
+        assert_eq!(piece_size(&tall[3]), [10.0, 112.0]);
+        assert_eq!(piece_size(&tall[4]), [78.0, 112.0]);
+        assert_eq!(piece_size(&tall[6]), piece_size(&native[6]));
     }
 
     #[test]
     fn standalone_nine_slice_scales_borders_with_pixels_per_unit() {
         let scaled = synthetic_nine_slice([100.0, 80.0], 2.0);
-        assert_eq!(scaled[0].size(), [20.0, 40.0]);
-        assert_eq!(scaled[2].size(), [24.0, 40.0]);
-        assert_eq!(scaled[6].size(), [20.0, 16.0]);
-        assert_eq!(scaled[4].size(), [156.0, 104.0]);
-        let width = scaled[0].size()[0] + scaled[1].size()[0] + scaled[2].size()[0];
-        let height = scaled[0].size()[1] + scaled[3].size()[1] + scaled[6].size()[1];
+        assert_eq!(piece_size(&scaled[0]), [20.0, 40.0]);
+        assert_eq!(piece_size(&scaled[2]), [24.0, 40.0]);
+        assert_eq!(piece_size(&scaled[6]), [20.0, 16.0]);
+        assert_eq!(piece_size(&scaled[4]), [156.0, 104.0]);
+        let width =
+            piece_size(&scaled[0])[0] + piece_size(&scaled[1])[0] + piece_size(&scaled[2])[0];
+        let height =
+            piece_size(&scaled[0])[1] + piece_size(&scaled[3])[1] + piece_size(&scaled[6])[1];
         assert!((width - 200.0).abs() < 0.001);
         assert!((height - 160.0).abs() < 0.001);
+        assert_eq!(
+            scaled[0].uvs,
+            synthetic_nine_slice([100.0, 80.0], 1.0)[0].uvs
+        );
     }
 
     #[test]
     fn standalone_nine_slice_too_small_destination_stays_positive() {
-        let rects = synthetic_nine_slice([8.0, 6.0], 1.0);
-        assert_eq!(rects.len(), 9);
+        let pieces = synthetic_nine_slice([8.0, 6.0], 1.0);
+        assert_eq!(pieces.len(), 9);
         let mut width = 0.0;
         let mut height = 0.0;
-        for (index, rect) in rects.iter().enumerate() {
-            let size = rect.size();
-            assert!(size[0] > 0.0, "column {index}");
-            assert!(size[1] > 0.0, "row {index}");
-            assert!(rect.max[0] > rect.min[0]);
-            assert!(rect.max[1] > rect.min[1]);
-            assert!(rect.min[0] >= 10.0 - f32::EPSILON);
-            assert!(rect.max[0] <= 18.0 + f32::EPSILON);
-            assert!(rect.min[1] >= 20.0 - f32::EPSILON);
-            assert!(rect.max[1] <= 26.0 + f32::EPSILON);
+        for (index, piece) in pieces.iter().enumerate() {
+            assert_stretch_piece(piece);
+            let size = piece_size(piece);
+            assert!(piece.corners[2][0] > piece.corners[0][0]);
+            assert!(piece.corners[2][1] > piece.corners[0][1]);
+            assert!(piece.corners[0][0] >= 10.0 - f32::EPSILON);
+            assert!(piece.corners[2][0] <= 18.0 + f32::EPSILON);
+            assert!(piece.corners[0][1] >= 20.0 - f32::EPSILON);
+            assert!(piece.corners[2][1] <= 26.0 + f32::EPSILON);
             if index < 3 {
                 width += size[0];
             }
@@ -5097,8 +5149,8 @@ mod tests {
         }
         assert!((width - 8.0).abs() < 0.05);
         assert!((height - 6.0).abs() < 0.05);
-        assert!(rects[0].size()[0] < 10.0);
-        assert!(rects[0].size()[1] < 20.0);
+        assert!(piece_size(&pieces[0])[0] < 10.0);
+        assert!(piece_size(&pieces[0])[1] < 20.0);
     }
 
     #[test]
