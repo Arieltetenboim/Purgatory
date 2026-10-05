@@ -103,6 +103,8 @@ use crate::ui_panel::{
     UiButtonAssets, UiItemIconAssets, UiSlotAssets, UiTabAssets, UiWindowAssets, resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
+#[cfg(feature = "dev-diagnostics")]
+use crate::ui_v2::UiDevProof;
 
 const REMOTE_PLAYER_COLOR: [f32; 4] = [0.72, 0.32, 0.38, 1.0];
 const COLLISION_AABB_COLOR: [f32; 4] = [1.0, 0.12, 0.12, 1.0];
@@ -280,6 +282,8 @@ struct ClientApp {
     ui_tab_assets: UiTabAssets,
     ui_slot_assets: UiSlotAssets,
     ui_item_icon_assets: UiItemIconAssets,
+    #[cfg(feature = "dev-diagnostics")]
+    ui_dev_proof: UiDevProof,
     inventory_window: InventoryWindow,
     equipment_window: EquipmentWindow,
     settings_window: SettingsWindow,
@@ -435,6 +439,9 @@ impl ClientApp {
             .map_err(|error| format!("PURGATORY UI slot asset error: {error}"))?;
         let ui_item_icon_assets = UiItemIconAssets::load_placeholder(&mut asset_runtime, &registry)
             .map_err(|error| format!("PURGATORY UI item icon error: {error}"))?;
+        #[cfg(feature = "dev-diagnostics")]
+        let ui_dev_proof = UiDevProof::load(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI V2 asset error: {error}"))?;
         Ok(Self {
             window: None,
             renderer: None,
@@ -480,6 +487,8 @@ impl ClientApp {
             ui_tab_assets,
             ui_slot_assets,
             ui_item_icon_assets,
+            #[cfg(feature = "dev-diagnostics")]
+            ui_dev_proof,
             inventory_window: InventoryWindow::default(),
             equipment_window: EquipmentWindow::default(),
             settings_window: SettingsWindow::default(),
@@ -3382,6 +3391,8 @@ impl ClientApp {
         let mut settings_frame: Option<SettingsWindowFrame> = None;
         let mut settings_launcher_frame: Option<SettingsLauncherFrame> = None;
         let mut message_frame: Option<MessageDialogFrame> = None;
+        #[cfg(feature = "dev-diagnostics")]
+        let mut ui_dev_rects = Vec::new();
         if !on_connection && let Some(viewport) = viewport {
             let pixels_per_unit = effective_pixels_per_point(
                 window.scale_factor() as f32,
@@ -3461,6 +3472,13 @@ impl ClientApp {
                 )
                 .ok()
                 .flatten();
+            #[cfg(feature = "dev-diagnostics")]
+            {
+                ui_dev_rects = self
+                    .ui_dev_proof
+                    .frame(viewport, pixels_per_unit)
+                    .unwrap_or_default();
+            }
         }
         let scene_rects: Vec<_> = viewport
             .filter(|_| on_connection)
@@ -3551,6 +3569,10 @@ impl ClientApp {
         if let Some(frame) = message_frame.as_ref() {
             // Message is outside normal focus order and always occupies the top group.
             ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
+        }
+        #[cfg(feature = "dev-diagnostics")]
+        if !ui_dev_rects.is_empty() {
+            ui_compositions.push(UiComposition::new(&ui_dev_rects, &[], &[]));
         }
         let enter_overlay: Vec<UiRect> = viewport
             .filter(|_| self.frontend_runtime.enter_alpha() > 0.0)
@@ -5302,6 +5324,15 @@ impl ApplicationHandler for ClientApp {
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let receives = true;
                 if self.lifecycle.gameplay_actions_allowed() && receives {
+                    #[cfg(feature = "dev-diagnostics")]
+                    if event.state == ElementState::Pressed
+                        && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyU)
+                    {
+                        self.ui_dev_proof.toggle();
+                        window.request_redraw();
+                        return;
+                    }
                     let inventory_key = self.inventory_window.apply_key(
                         event.physical_key,
                         event.state,

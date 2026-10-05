@@ -3437,7 +3437,112 @@ fn clamp_top_left(position: [f32; 2], window_size: [f32; 2], viewport_size: [f32
     ]
 }
 
-#[allow(dead_code)]
+/// Standalone nine-slice for a full V2 texture.
+///
+/// `size_units` is the destination in logical UI units. Borders are the source
+/// slice insets scaled once by `pixels_per_unit`, the same scale as the
+/// destination. Borders shrink only when the destination cannot hold them.
+#[cfg_attr(not(any(test, feature = "dev-diagnostics")), allow(dead_code))]
+pub(crate) fn compose_standalone_nine_slice(
+    origin_px: [f32; 2],
+    size_units: [f32; 2],
+    pixels_per_unit: f32,
+    texture: SpriteTextureId,
+    source_size_px: [u32; 2],
+    slice_ltrb: [u32; 4],
+) -> Result<Vec<UiTexturedRect>, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    if !origin_px.into_iter().all(f32::is_finite) {
+        return Err("UI nine-slice origin is invalid".to_string());
+    }
+    if !size_units.into_iter().all(finite_positive) {
+        return Err("UI nine-slice destination is invalid".to_string());
+    }
+    let [left, top, right, bottom] = slice_ltrb;
+    if left.saturating_add(right) >= source_size_px[0]
+        || top.saturating_add(bottom) >= source_size_px[1]
+        || source_size_px[0] == 0
+        || source_size_px[1] == 0
+    {
+        return Err(format!(
+            "UI nine-slice insets {slice_ltrb:?} do not fit {}x{}",
+            source_size_px[0], source_size_px[1]
+        ));
+    }
+
+    let destination_px = [
+        size_units[0] * pixels_per_unit,
+        size_units[1] * pixels_per_unit,
+    ];
+    let (border_left, border_right) = fit_nine_slice_axis(
+        left as f32 * pixels_per_unit,
+        right as f32 * pixels_per_unit,
+        destination_px[0],
+    )?;
+    let (border_top, border_bottom) = fit_nine_slice_axis(
+        top as f32 * pixels_per_unit,
+        bottom as f32 * pixels_per_unit,
+        destination_px[1],
+    )?;
+    let mut regions = assemble_nine_slice(
+        ScreenRect {
+            min: origin_px,
+            max: [
+                origin_px[0] + destination_px[0],
+                origin_px[1] + destination_px[1],
+            ],
+        },
+        texture,
+        source_size_px,
+        SourceInsets {
+            left,
+            right,
+            top,
+            bottom,
+        },
+        DestinationBorders {
+            left: border_left,
+            right: border_right,
+            top: border_top,
+            bottom: border_bottom,
+        },
+        [1.0, 1.0, 1.0, 1.0],
+    )?;
+    regions.retain(|rect| {
+        rect.min
+            .iter()
+            .chain(rect.max.iter())
+            .all(|value| value.is_finite())
+            && rect.max[0] > rect.min[0]
+            && rect.max[1] > rect.min[1]
+            && rect.uv_max[0] > rect.uv_min[0]
+            && rect.uv_max[1] > rect.uv_min[1]
+    });
+    Ok(regions)
+}
+
+fn fit_nine_slice_axis(start: f32, end: f32, span: f32) -> Result<(f32, f32), String> {
+    if !start.is_finite() || !end.is_finite() || start < 0.0 || end < 0.0 || !span.is_finite() {
+        return Err("UI nine-slice destination is invalid".to_string());
+    }
+    if span <= 0.0 {
+        return Err("UI nine-slice destination is invalid".to_string());
+    }
+    let sum = start + end;
+    if sum < span {
+        return Ok((start, end));
+    }
+    let center = (span * 0.01).clamp(f32::EPSILON, span * 0.5);
+    let scale = (span - center) / sum;
+    let fitted_start = start * scale;
+    let fitted_end = end * scale;
+    if fitted_start + fitted_end >= span {
+        let scale = span * (1.0 - f32::EPSILON) / sum;
+        return Ok((start * scale, end * scale));
+    }
+    Ok((fitted_start, fitted_end))
+}
+
 fn assemble_nine_slice(
     destination: ScreenRect,
     texture: SpriteTextureId,
@@ -4916,6 +5021,84 @@ mod tests {
         assert_eq!(dialog_frame.textured_rects[4].size(), [382.0, 147.0]);
         assert_eq!(equipment_frame.textured_rects[8].size(), [9.0, 9.0]);
         assert_eq!(dialog_frame.textured_rects[8].size(), [9.0, 9.0]);
+    }
+
+    fn synthetic_nine_slice(
+        size_units: [f32; 2],
+        pixels_per_unit: f32,
+    ) -> Vec<crate::renderer::UiTexturedRect> {
+        compose_standalone_nine_slice(
+            [10.0, 20.0],
+            size_units,
+            pixels_per_unit,
+            crate::renderer::SpriteTextureId::from_raw(4),
+            [100, 80],
+            [10, 20, 12, 8],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn standalone_nine_slice_keeps_corners_fixed_and_stretches_center() {
+        let native = synthetic_nine_slice([100.0, 80.0], 1.0);
+        assert_eq!(native.len(), 9);
+        assert_eq!(native[0].size(), [10.0, 20.0]);
+        assert_eq!(native[2].size(), [12.0, 20.0]);
+        assert_eq!(native[6].size(), [10.0, 8.0]);
+        assert_eq!(native[1].size(), [78.0, 20.0]);
+        assert_eq!(native[4].size(), [78.0, 52.0]);
+        assert_eq!(native[3].size(), [10.0, 52.0]);
+
+        let wide = synthetic_nine_slice([160.0, 80.0], 1.0);
+        assert_eq!(wide[0].size(), native[0].size());
+        assert_eq!(wide[0].uv_min, native[0].uv_min);
+        assert_eq!(wide[0].uv_max, native[0].uv_max);
+        assert_eq!(wide[2].uv_min, native[2].uv_min);
+        assert_eq!(wide[1].size(), [138.0, 20.0]);
+        assert_eq!(wide[4].size(), [138.0, 52.0]);
+        assert_eq!(wide[3].size(), native[3].size());
+    }
+
+    #[test]
+    fn standalone_nine_slice_scales_borders_with_pixels_per_unit() {
+        let scaled = synthetic_nine_slice([100.0, 80.0], 2.0);
+        assert_eq!(scaled[0].size(), [20.0, 40.0]);
+        assert_eq!(scaled[2].size(), [24.0, 40.0]);
+        assert_eq!(scaled[6].size(), [20.0, 16.0]);
+        assert_eq!(scaled[4].size(), [156.0, 104.0]);
+        let width = scaled[0].size()[0] + scaled[1].size()[0] + scaled[2].size()[0];
+        let height = scaled[0].size()[1] + scaled[3].size()[1] + scaled[6].size()[1];
+        assert!((width - 200.0).abs() < 0.001);
+        assert!((height - 160.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn standalone_nine_slice_too_small_destination_stays_positive() {
+        let rects = synthetic_nine_slice([8.0, 6.0], 1.0);
+        assert_eq!(rects.len(), 9);
+        let mut width = 0.0;
+        let mut height = 0.0;
+        for (index, rect) in rects.iter().enumerate() {
+            let size = rect.size();
+            assert!(size[0] > 0.0, "column {index}");
+            assert!(size[1] > 0.0, "row {index}");
+            assert!(rect.max[0] > rect.min[0]);
+            assert!(rect.max[1] > rect.min[1]);
+            assert!(rect.min[0] >= 10.0 - f32::EPSILON);
+            assert!(rect.max[0] <= 18.0 + f32::EPSILON);
+            assert!(rect.min[1] >= 20.0 - f32::EPSILON);
+            assert!(rect.max[1] <= 26.0 + f32::EPSILON);
+            if index < 3 {
+                width += size[0];
+            }
+            if index % 3 == 0 {
+                height += size[1];
+            }
+        }
+        assert!((width - 8.0).abs() < 0.05);
+        assert!((height - 6.0).abs() < 0.05);
+        assert!(rects[0].size()[0] < 10.0);
+        assert!(rects[0].size()[1] < 20.0);
     }
 
     #[test]

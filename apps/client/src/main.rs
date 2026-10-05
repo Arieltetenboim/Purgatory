@@ -37,6 +37,7 @@ mod speech_bubble;
 mod ui_dialog;
 mod ui_panel;
 mod ui_runtime;
+mod ui_v2;
 
 use tracing_subscriber::EnvFilter;
 

@@ -75,8 +75,31 @@ impl<'a> ClientAssetLoader<'a> {
         self.runtime.register_image(key, image)
     }
 
+    /// Reads a non-PNG source relative to Graphic/. Path rules match [`Self::load_png`].
+    pub(crate) fn read_relative(&self, path: impl AsRef<Path>) -> Result<Vec<u8>, String> {
+        let relative = path.as_ref();
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        {
+            return Err(format!("invalid asset path: {}", relative.display()));
+        }
+        let path = self.root.join(relative);
+        std::fs::read(&path)
+            .map_err(|error| format!("read asset source at {}: {error}", path.display()))
+    }
+
     pub(crate) fn runtime(&self) -> &AssetRuntime {
         self.runtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_root(runtime: &'a mut AssetRuntime, root: impl AsRef<Path>) -> Self {
+        Self {
+            runtime,
+            root: root.as_ref().to_path_buf(),
+        }
     }
 }
 
