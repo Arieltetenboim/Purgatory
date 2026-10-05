@@ -1098,7 +1098,14 @@ pub fn publish_observer_frame_with_budget(
         let restoring_health = dirty.health
             && world.health_of(id).is_some_and(|health| health.is_alive())
             && state.knows_dead_health(id);
-        if lethal_health || restoring_health {
+        // Immunity is authoritative presentation state carried inside Health.
+        // Once an observer has seen immunity=true, the expiry must be delivered
+        // even when selective stranger policy would suppress an ordinary
+        // positive-Health update. Silent catch-up here would leave that client
+        // blinking forever with stale immunity=true.
+        let immunity_ended =
+            last.damage_immunity_active && !world.damage_immunity_active(id);
+        if lethal_health || restoring_health || immunity_ended {
             decision.eligibility.health = true;
             decision.cadence_interval = 1;
             decision.suppress_emit = false;
@@ -1768,6 +1775,67 @@ mod tests {
         assert!(!world.damage_immunity_active(remote));
         publish(&mut state, &pipe, &mut world, &mut fanout, observer, 2, 62);
         let expired = decode_replication_frame(&pipe.pop().unwrap().payload).unwrap();
+        assert!(expired.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Update {
+                entity_id,
+                domains,
+                health: Some(health),
+                ..
+            } if *entity_id == to_wire_id(remote)
+                && domains.health
+                && !health.damage_immunity_active
+        )));
+    }
+
+    #[test]
+    fn selective_stranger_receives_immunity_expiry_after_true_was_delivered() {
+        let (mut world, observer, remote) = two_players();
+        let (pipe, _rx) = ReplicationPipe::new();
+        let mut state = ObserverReplicationState::new();
+        let mut fanout = InterestFanoutIndex::new();
+
+        assert!(world.set_health(remote, Health::full(20.0)));
+        assert!(world.apply_damage(remote, 1.0));
+        assert!(world.damage_immunity_active(remote));
+
+        publish_mode(
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            1,
+            1,
+            PolicyMode::Selective,
+        );
+        let active = decode_replication_frame(&pipe.pop().expect("active frame").payload).unwrap();
+        assert!(active.records.iter().any(|record| matches!(
+            record,
+            ReplicationRecord::Enter {
+                entity,
+                health: Some(health),
+                ..
+            } if entity.entity_id == to_wire_id(remote) && health.damage_immunity_active
+        )));
+
+        world.begin_tick(SimulationTick::from_count(
+            purgatory_simulation::DAMAGE_IMMUNITY_TICKS + 1,
+        ));
+        assert!(!world.damage_immunity_active(remote));
+
+        publish_mode(
+            &mut state,
+            &pipe,
+            &mut world,
+            &mut fanout,
+            observer,
+            2,
+            62,
+            PolicyMode::Selective,
+        );
+        let expired =
+            decode_replication_frame(&pipe.pop().expect("expiry frame").payload).unwrap();
         assert!(expired.records.iter().any(|record| matches!(
             record,
             ReplicationRecord::Update {
