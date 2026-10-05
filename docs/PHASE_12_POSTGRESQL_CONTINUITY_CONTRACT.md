@@ -189,9 +189,14 @@ the durable transaction foundation.
 - Current HP is stored on the character. Logout, disconnect, server stop, and
   the next login restore the last committed value, clamped to the live maximum.
   A row whose `current_health` is still NULL has never stored HP and loads at
-  full maximum. Death followed by respawn still restores full HP. Revival HP
-  stays whatever the revival ability applies. Long cooldowns are still an open
-  policy and still block a full Phase 12 exit claim.
+  full maximum. Death is not a separate persisted flag: `current_health` at
+  zero means Dead on login. Ordinary player Respawn restores half of max HP in
+  simulation and commits that value through `health_revision` (stale lower
+  revisions cannot overwrite a newer respawn). Revival HP stays whatever the
+  revival ability applies. Ordinary Respawn preserves ability cooldowns
+  (simulation `clear_respawn_restoration_runtime`; see Death/Respawn acceptance
+  checklist). Long cooldowns are still an open policy and still block a full
+  Phase 12 exit claim.
 - Measure connection limits, transaction latency, restart cleanup and restore
   time on the intended development workload; do not infer international
   production capacity from a local PostgreSQL installation.

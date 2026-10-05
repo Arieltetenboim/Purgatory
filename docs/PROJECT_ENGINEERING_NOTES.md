@@ -143,9 +143,13 @@ These are authoring-tool constraints gathered while planning C1–C8.
   normal client/server runtime proof. The local Health HUD reads replicated
   Health directly; it does not maintain a second client value.
 - Player death remains authoritative Dead until an explicit Respawn intent is
-  validated by the server. Respawn restores the same entity without a fixture
-  coordinate, places it at the current map's authored default spawn, and
-  rebases the input epoch.
+  validated by the server. Dead is derived from replicated `Health.current <= 0`;
+  persistence stores current HP only (no separate Dead flag). Logout while at
+  zero HP restores Dead on the next session. Respawn restores the same entity,
+  sets current HP to half of max (`Health::respawn_current`), places the player
+  at the current map's authored default spawn, and rebases the input epoch.
+  Ordinary Respawn does not reset ability cooldowns
+  (`World::clear_respawn_restoration_runtime` in `crates/simulation/src/runtime.rs`).
 - The live combat creature uses 2 damage against 20 Health, giving roughly
   ten successful hits before death.
 - NPC activity currently owns free 2D movement rather than FOOTNOTE platform

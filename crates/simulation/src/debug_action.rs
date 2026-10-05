@@ -6,11 +6,26 @@
 use crate::body::PLAYER_HALF_EXTENTS;
 use crate::entity::EntityId;
 use crate::footnote::ContactEvent;
-use crate::health::Health;
+use crate::health::{DAMAGE_IMMUNITY_TICKS, Health};
 use crate::platform::{FLOOR, FLOOR_POSITION};
+use crate::presentation_oneshot::PresentationOneShotKind;
 use crate::stage::{FOOTNOTE_SPAWN_X, P0, P0_POSITION};
 use crate::transform::Transform;
 use crate::world::World;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlayerRestoreHealth {
+    Full,
+    HalfMax,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlayerRestoreRuntime {
+    /// DEV/full reset: clears ability cooldowns with other restoration runtime.
+    DevReset,
+    /// Ordinary respawn: cancel in-flight actions but preserve cooldowns.
+    Respawn,
+}
 
 /// Development command emitted by client debug tooling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,14 +54,26 @@ impl World {
     /// Connected DEV reset must not use this placement. It resolves the
     /// authored map spawn, then [`Self::restore_player_for_placement`].
     pub fn reset_player_entity(&mut self, id: EntityId) {
-        let _ = self.restore_player_entity(id, true, false);
+        let _ = self.restore_player_entity(
+            id,
+            true,
+            false,
+            PlayerRestoreHealth::Full,
+            PlayerRestoreRuntime::DevReset,
+        );
     }
 
     /// Restore a dead player without changing its runtime identity.
     ///
     /// Revive does not move the player.
     pub fn revive_player_entity(&mut self, id: EntityId) -> bool {
-        self.restore_player_entity(id, false, true)
+        self.restore_player_entity(
+            id,
+            false,
+            true,
+            PlayerRestoreHealth::Full,
+            PlayerRestoreRuntime::DevReset,
+        )
     }
 
     /// Local development respawn. Places a dead player on the stage fixture entry.
@@ -54,14 +81,25 @@ impl World {
     /// Connected respawn must not use this placement. It resolves the authored
     /// map spawn, then [`Self::restore_player_for_placement`].
     pub fn respawn_player_entity(&mut self, id: EntityId) -> bool {
-        self.restore_player_entity(id, true, true)
+        self.restore_player_entity(
+            id,
+            true,
+            true,
+            PlayerRestoreHealth::HalfMax,
+            PlayerRestoreRuntime::Respawn,
+        )
     }
 
     /// Restore velocity, contact, health, and presentation without a coordinate.
     ///
     /// `require_dead` is respawn admission. The caller owns placement.
     pub fn restore_player_for_placement(&mut self, id: EntityId, require_dead: bool) -> bool {
-        self.restore_player_entity(id, false, require_dead)
+        let (health_mode, runtime_mode) = if require_dead {
+            (PlayerRestoreHealth::HalfMax, PlayerRestoreRuntime::Respawn)
+        } else {
+            (PlayerRestoreHealth::Full, PlayerRestoreRuntime::DevReset)
+        };
+        self.restore_player_entity(id, false, require_dead, health_mode, runtime_mode)
     }
 
     fn restore_player_entity(
@@ -69,12 +107,17 @@ impl World {
         id: EntityId,
         place_at_entry: bool,
         require_dead: bool,
+        health_mode: PlayerRestoreHealth,
+        runtime_mode: PlayerRestoreRuntime,
     ) -> bool {
         let health = self.health_of(id);
         if (require_dead && !health.is_some_and(Health::is_dead)) || self.get_player(id).is_none() {
             return false;
         }
-        self.clear_restoration_runtime(id);
+        match runtime_mode {
+            PlayerRestoreRuntime::DevReset => self.clear_restoration_runtime(id),
+            PlayerRestoreRuntime::Respawn => self.clear_respawn_restoration_runtime(id),
+        }
         let previous = self.transform_of(id).map(|transform| transform.position);
         if place_at_entry {
             let (position, grounded, grounded_on) = self.development_fixture_entry();
@@ -96,12 +139,27 @@ impl World {
             return false;
         }
         if let Some(health) = health.filter(|health| health.is_dead()) {
+            let immunity_until = match runtime_mode {
+                PlayerRestoreRuntime::Respawn => {
+                    Some(self.tick.saturating_add_ticks(DAMAGE_IMMUNITY_TICKS))
+                }
+                PlayerRestoreRuntime::DevReset => None,
+            };
             if let Some(data) = self.slot_live_mut(id) {
-                data.damage_immunity_until = None;
+                data.damage_immunity_until = immunity_until;
             }
-            self.set_health(id, Health::full(health.max));
+            let restored = match health_mode {
+                PlayerRestoreHealth::Full => Health::full(health.max),
+                PlayerRestoreHealth::HalfMax => health.after_respawn(),
+            };
+            self.set_health(id, restored);
         }
-        self.clear_presentation_oneshot(id);
+        if runtime_mode == PlayerRestoreRuntime::Respawn {
+            let _ =
+                self.try_start_presentation_oneshot(id, PresentationOneShotKind::RespawnRecovery);
+        } else {
+            self.clear_presentation_oneshot(id);
+        }
         if let Some(previous) = previous {
             self.refresh_spatial(id, previous);
         }
@@ -257,7 +315,27 @@ mod tests {
 
         assert_eq!(world.transform_of(id).unwrap().position, moved);
         assert!((moved[0] - FOOTNOTE_SPAWN_X).abs() > 1.0);
-        assert_eq!(world.health_of(id).unwrap(), Health::full(20.0));
+        assert_eq!(
+            world.health_of(id).unwrap().current,
+            Health::respawn_current(20.0)
+        );
         assert!(!world.restore_player_for_placement(id, true));
+    }
+
+    #[test]
+    fn dev_reset_restore_for_placement_keeps_full_health() {
+        let mut world = World::dev_stage();
+        let id = world.player_id().expect("player");
+        world.set_health(
+            id,
+            Health {
+                current: 0.0,
+                max: 20.0,
+            },
+        );
+
+        assert!(world.restore_player_for_placement(id, false));
+
+        assert_eq!(world.health_of(id).unwrap(), Health::full(20.0));
     }
 }

@@ -68,9 +68,12 @@ fn respawn_restores_all_player_runtime_state_and_keeps_entity_id() {
 
     assert!(world.respawn_player_entity(player));
     assert_eq!(world.player_id(), Some(player));
-    assert_eq!(world.health_of(player), Some(Health::full(20.0)));
+    assert_eq!(
+        world.health_of(player).unwrap().current,
+        Health::respawn_current(20.0)
+    );
     assert!(world.active_action(player).is_none());
-    assert!(world.ability_cooldown_ready(player, definition.id));
+    assert!(!world.ability_cooldown_ready(player, definition.id));
     let body = world.player_body_of(player).expect("restored body");
     assert_eq!(body.velocity, [0.0, 0.0]);
     assert!(body.grounded);
@@ -79,4 +82,6 @@ fn respawn_restores_all_player_runtime_state_and_keeps_entity_id() {
     assert_eq!(body.last_contact, crate::footnote::ContactEvent::None);
     assert_ne!(body.position, moved);
     assert!(!world.respawn_player_entity(player));
+    assert!(world.respawn_recovery_active(player));
+    assert!(world.damage_immunity_active(player));
 }

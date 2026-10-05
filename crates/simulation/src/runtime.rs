@@ -487,6 +487,9 @@ impl World {
         if self.ability_combatant_dead(request.actor) {
             return Err(AbilityRejectReason::ActorDead);
         }
+        if self.respawn_recovery_active(request.actor) {
+            return Err(AbilityRejectReason::Busy);
+        }
         // Ability-driven movement is an exclusive movement/action window even
         // if the Action table is changed later. In particular, Basic Strike
         // cannot start while Dash movement is active.
@@ -895,7 +898,7 @@ impl World {
             }
         }
         if health.current <= 0.0 {
-            self.interrupt_player_dash(target);
+            self.interrupt_player_action_runtime(target);
             let _ = self.clear_presentation_oneshot(target);
             self.handle_zero_health(target, source);
         } else if health.current < before
@@ -917,6 +920,18 @@ impl World {
         });
         if let Some(action_id) = dash_action {
             let _ = self.end_action(action_id, ActionEnd::Interrupted);
+        } else if self.player_dash_of(target).is_some() {
+            let _ = self.clear_player_dash(target);
+        }
+    }
+
+    /// Cancel any in-flight player action runtime (lethal damage path).
+    fn interrupt_player_action_runtime(&mut self, target: EntityId) {
+        if self.get_player(target).is_none() {
+            return;
+        }
+        if let Some(action) = self.active_action(target) {
+            let _ = self.end_action(action.id, ActionEnd::Interrupted);
         } else if self.player_dash_of(target).is_some() {
             let _ = self.clear_player_dash(target);
         }
@@ -1633,6 +1648,17 @@ impl World {
     /// its ability grants. A restored player starts with no live action,
     /// ability execution, cooldown, or target effect.
     pub(crate) fn clear_restoration_runtime(&mut self, id: EntityId) {
+        self.clear_player_restoration_runtime(id, true);
+    }
+
+    /// Respawn restoration: cancel in-flight actions/effects but keep ability cooldowns.
+    ///
+    /// Ordinary player respawn must not reset ability cooldowns (product default).
+    pub(crate) fn clear_respawn_restoration_runtime(&mut self, id: EntityId) {
+        self.clear_player_restoration_runtime(id, false);
+    }
+
+    fn clear_player_restoration_runtime(&mut self, id: EntityId, clear_cooldowns: bool) {
         self.scheduler.cancel_owner(id);
         if let Some(action) = self.actions.drop_owner(id) {
             self.ability_runtime.remove(action.id);
@@ -1643,7 +1669,9 @@ impl World {
             });
         }
         self.ability_runtime.drop_owner(id);
-        self.cooldowns.drop_owner(id);
+        if clear_cooldowns {
+            self.cooldowns.drop_owner(id);
+        }
         for effect in self.effects.drop_target(id) {
             self.scheduler.cancel(effect.timer);
             self.events.push(RuntimeEvent::EffectRemoved {

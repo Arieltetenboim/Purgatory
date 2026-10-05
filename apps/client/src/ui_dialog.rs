@@ -45,6 +45,8 @@ pub(crate) struct MessageDialogRequest {
     pub(crate) buttons: Vec<DialogButton>,
     pub(crate) default_action: Option<DialogAction>,
     pub(crate) cancel_action: Option<DialogAction>,
+    /// When false, Escape and the title-bar close control do not dismiss the dialog.
+    pub(crate) dismissible: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,6 +83,21 @@ impl MessageDialog {
         self.active.is_some()
     }
 
+    pub(crate) fn active_id(&self) -> Option<u64> {
+        self.active.as_ref().map(|request| request.id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_body(&self) -> Option<&str> {
+        self.active.as_ref().map(|request| request.body.as_str())
+    }
+
+    pub(crate) fn is_dismissible(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_none_or(|request| request.dismissible)
+    }
+
     pub(crate) fn close(&mut self) {
         self.active = None;
         self.pressed_button = None;
@@ -91,6 +108,9 @@ impl MessageDialog {
     pub(crate) fn cancel(&mut self) -> bool {
         if !self.is_active() {
             return false;
+        }
+        if !self.is_dismissible() {
+            return true;
         }
         if let Some(action) = self
             .active
@@ -129,7 +149,9 @@ impl MessageDialog {
                 })
             }
             PhysicalKey::Code(KeyCode::Escape) => {
-                self.cancel();
+                if self.is_dismissible() {
+                    self.cancel();
+                }
                 None
             }
             _ => None,
@@ -185,9 +207,10 @@ impl MessageDialog {
                         .map(|button| button.action)
                 {
                     self.finish(action);
-                } else if self
-                    .close_button
-                    .is_some_and(|bounds| bounds.contains(cursor))
+                } else if self.is_dismissible()
+                    && self
+                        .close_button
+                        .is_some_and(|bounds| bounds.contains(cursor))
                 {
                     self.cancel();
                 }
@@ -243,7 +266,7 @@ impl MessageDialog {
                 }
             })
             .collect();
-        self.close_button = Some(close_button);
+        self.close_button = request.dismissible.then_some(close_button);
         let mut textured_rects = chrome.textured_rects;
         let mut texts = vec![
             chrome.title,
@@ -322,6 +345,7 @@ mod tests {
             ],
             default_action: Some(DialogAction::Ok),
             cancel_action: Some(DialogAction::Cancel),
+            dismissible: true,
         }
     }
 
@@ -414,6 +438,28 @@ mod tests {
             false
         ));
         assert_eq!(dialog.take_result().map(|r| r.id), Some(7));
+    }
+
+    #[test]
+    fn non_dismissible_dialog_ignores_escape() {
+        let mut dialog = MessageDialog::default();
+        let request = MessageDialogRequest {
+            id: 99,
+            title: "Notice".into(),
+            body: "You have died.".into(),
+            buttons: vec![DialogButton::new("OK", DialogAction::Confirm)],
+            default_action: Some(DialogAction::Confirm),
+            cancel_action: None,
+            dismissible: false,
+        };
+        assert!(dialog.open(request));
+        assert!(dialog.apply_key(
+            PhysicalKey::Code(KeyCode::Escape),
+            ElementState::Pressed,
+            false
+        ));
+        assert!(dialog.is_active());
+        assert!(dialog.take_result().is_none());
     }
 
     #[test]

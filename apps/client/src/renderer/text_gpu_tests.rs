@@ -468,6 +468,7 @@ fn renderer_repeated_text_consumer_calibration() {
             ],
             default_action: Some(DialogAction::Ok),
             cancel_action: Some(DialogAction::Cancel),
+            dismissible: true,
         });
         let dialog = dialog
             .frame(windows, buttons, viewport, scale, None)

@@ -149,7 +149,7 @@ pub fn apply_climb_back_overlay(
 /// Precedence (Character Presentation owns this policy):
 /// ```text
 /// Dead  → overrides Attack, Hurt, Dash, and locomotion
-/// Hurt / Attack / Dash oneshot → replaces Idle/Move/Jump/Fall/ClimbBack
+/// Hurt / Attack / Dash / RespawnRecovery oneshot → replaces Idle/Move/Jump/Fall/ClimbBack
 /// locomotion otherwise
 /// ```
 /// Locomotion never clears an active oneshot (server duration owns that).
@@ -163,6 +163,7 @@ pub fn apply_oneshot_overlay(
         Some(PresentationActivity::Attack) => PresentationActivity::Attack,
         Some(PresentationActivity::Hurt) => PresentationActivity::Hurt,
         Some(PresentationActivity::Dash) => PresentationActivity::Dash,
+        Some(PresentationActivity::RespawnRecovery) => PresentationActivity::RespawnRecovery,
         Some(_) | None => locomotion,
     }
 }
@@ -408,6 +409,13 @@ mod resolve_tests {
         assert_eq!(
             apply_oneshot_overlay(PresentationActivity::Idle, Some(PresentationActivity::Dash)),
             PresentationActivity::Dash
+        );
+        assert_eq!(
+            apply_oneshot_overlay(
+                PresentationActivity::Move,
+                Some(PresentationActivity::RespawnRecovery)
+            ),
+            PresentationActivity::RespawnRecovery
         );
         assert_eq!(
             apply_oneshot_overlay(PresentationActivity::Fall, None),

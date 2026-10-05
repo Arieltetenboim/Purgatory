@@ -10251,8 +10251,8 @@ mod tests {
         assert!(owner.world().health_of(player).unwrap().is_dead());
         owner.handle_respawn(connection);
         assert_eq!(
-            owner.world().health_of(player),
-            Some(purgatory_simulation::Health::full(PLAYER_HEALTH_MAX))
+            owner.world().health_of(player).unwrap().current,
+            purgatory_simulation::Health::respawn_current(PLAYER_HEALTH_MAX)
         );
         assert!(owner.world().health_of(player).unwrap().is_alive());
     }
@@ -10719,7 +10719,7 @@ mod tests {
         assert_eq!(owner.world().transform_of(actor).unwrap().position, spawn);
         assert_eq!(
             owner.world().health_of(actor).unwrap().current,
-            PLAYER_HEALTH_MAX
+            Health::respawn_current(PLAYER_HEALTH_MAX)
         );
         assert_eq!(owner.bindings[&connection].input.input_epoch, 1);
         assert_eq!(owner.bindings[&connection].input.queued_len(), 0);
@@ -10842,9 +10842,86 @@ mod tests {
         assert_authored_default(&owner, actor, MAP2_AUTHORED);
         assert_eq!(
             owner.world().health_of(actor).unwrap().current,
-            PLAYER_HEALTH_MAX
+            Health::respawn_current(PLAYER_HEALTH_MAX)
         );
         assert_eq!(owner.bindings[&id].input.input_epoch, epoch + 1);
+    }
+
+    #[test]
+    fn alive_respawn_is_no_op() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        let before_pos = owner.world().transform_of(actor).unwrap().position;
+        let before_health = owner.world().health_of(actor).unwrap();
+        let epoch = owner.bindings[&id].input.input_epoch;
+
+        owner.handle_respawn(id);
+
+        assert_eq!(
+            owner.world().transform_of(actor).unwrap().position,
+            before_pos
+        );
+        assert_eq!(owner.world().health_of(actor), Some(before_health));
+        assert_eq!(owner.bindings[&id].input.input_epoch, epoch);
+    }
+
+    #[test]
+    fn dev_reset_restores_full_health_when_dead() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        owner.attach(id);
+        let actor = owner.entity_of(id).unwrap();
+        assert!(owner.world_mut().set_health(
+            actor,
+            Health {
+                current: 0.0,
+                max: PLAYER_HEALTH_MAX,
+            },
+        ));
+
+        owner.apply_input(InputUpdate::DevResetPlayer { connection_id: id });
+
+        assert_eq!(
+            owner.world().health_of(actor),
+            Some(Health::full(PLAYER_HEALTH_MAX))
+        );
+    }
+
+    #[test]
+    fn respawn_preserves_ability_cooldowns() {
+        let mut owner = GameplayOwner::new();
+        let id = ConnectionId::from_raw(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        owner.attach(id);
+        owner.bindings.get_mut(&id).unwrap().interact = Some(tx);
+        let actor = owner.entity_of(id).unwrap();
+        activate_strike(&mut owner, id, 1, None);
+        assert_eq!(recv_ability(&mut rx), ServerAbility::Accepted { seq: 1 });
+        activate_strike(&mut owner, id, 2, None);
+        assert_eq!(
+            recv_ability(&mut rx),
+            ServerAbility::Rejected {
+                seq: 2,
+                reason: AbilityCommandReject::OnCooldown,
+            }
+        );
+        assert!(owner.world_mut().set_health(
+            actor,
+            Health {
+                current: 0.0,
+                max: PLAYER_HEALTH_MAX,
+            },
+        ));
+
+        owner.handle_respawn(id);
+
+        assert!(
+            !owner
+                .world()
+                .ability_cooldown_ready(actor, basic_strike_id())
+        );
     }
 
     #[test]

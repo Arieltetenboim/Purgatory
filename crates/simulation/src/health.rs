@@ -29,6 +29,21 @@ impl Health {
         Self { current: max, max }
     }
 
+    /// Authoritative post-respawn current HP: half of max, clamped to `[0, max]`.
+    #[must_use]
+    pub fn respawn_current(max: f32) -> f32 {
+        (max * 0.5).clamp(0.0, max)
+    }
+
+    /// Restore a dead combatant to respawn HP without changing max.
+    #[must_use]
+    pub fn after_respawn(self) -> Self {
+        Self {
+            current: Self::respawn_current(self.max),
+            max: self.max,
+        }
+    }
+
     /// Combat-alive. Entities without Health are non-participants, not dead.
     #[must_use]
     pub fn is_alive(self) -> bool {
@@ -57,5 +72,17 @@ mod tests {
             max: 10.0,
         };
         assert!(dead.is_dead());
+    }
+
+    #[test]
+    fn respawn_current_is_half_max_clamped() {
+        assert_eq!(Health::respawn_current(20.0), 10.0);
+        let restored = Health {
+            current: 0.0,
+            max: 21.0,
+        }
+        .after_respawn();
+        assert_eq!(restored.current, 10.5);
+        assert_eq!(restored.max, 21.0);
     }
 }

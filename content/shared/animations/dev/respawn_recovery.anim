@@ -1,0 +1,102 @@
+schema_version 1
+duration 1.20
+loop Once
+
+# Post-respawn recovery: kneel → push up → stand → brief exhausted hold.
+# Gameplay recovery window is authoritative in simulation ticks, not this duration.
+
+track pelvis
+rot 0.00 1.20 Linear
+rot 0.25 0.85 Linear
+rot 0.55 0.35 Linear
+rot 0.85 0.05 Linear
+rot 1.20 0.00 Linear
+ty 0.00 0.18 Linear
+ty 0.25 0.22 Linear
+ty 0.55 0.38 Linear
+ty 0.85 0.42 Linear
+ty 1.20 0.40 Linear
+endtrack
+
+track torso
+rot 0.00 1.05 Linear
+rot 0.25 0.75 Linear
+rot 0.55 0.35 Linear
+rot 0.85 0.12 Linear
+rot 1.20 0.05 Linear
+endtrack
+
+track head
+rot 0.00 0.65 Linear
+rot 0.25 0.45 Linear
+rot 0.55 0.15 Linear
+rot 0.85 -0.05 Linear
+rot 1.20 0.00 Linear
+endtrack
+
+track upper_arm_front
+rot 0.00 1.40 Linear
+rot 0.30 0.90 Linear
+rot 0.60 0.35 Linear
+rot 0.90 0.10 Linear
+rot 1.20 0.00 Linear
+endtrack
+
+track lower_arm_front
+rot 0.00 1.60 Linear
+rot 0.35 1.10 Linear
+rot 0.65 0.45 Linear
+rot 0.95 0.15 Linear
+rot 1.20 0.05 Linear
+endtrack
+
+track upper_arm_back
+rot 0.00 -1.20 Linear
+rot 0.30 -0.80 Linear
+rot 0.60 -0.30 Linear
+rot 0.90 -0.08 Linear
+rot 1.20 0.00 Linear
+endtrack
+
+track lower_arm_back
+rot 0.00 -1.35 Linear
+rot 0.35 -0.95 Linear
+rot 0.65 -0.40 Linear
+rot 0.95 -0.12 Linear
+rot 1.20 0.00 Linear
+endtrack
+
+track upper_leg_front
+rot 0.00 1.25 Linear
+rot 0.30 0.85 Linear
+rot 0.60 0.25 Linear
+rot 0.90 0.05 Linear
+rot 1.20 0.00 Linear
+endtrack
+
+track lower_leg_front
+rot 0.00 -1.10 Linear
+rot 0.35 -0.70 Linear
+rot 0.65 -0.20 Linear
+rot 0.95 -0.05 Linear
+rot 1.20 0.00 Linear
+endtrack
+
+track upper_leg_back
+rot 0.00 0.95 Linear
+rot 0.30 0.55 Linear
+rot 0.60 0.15 Linear
+rot 0.90 0.00 Linear
+rot 1.20 0.00 Linear
+endtrack
+
+track lower_leg_back
+rot 0.00 -0.85 Linear
+rot 0.35 -0.45 Linear
+rot 0.65 -0.10 Linear
+rot 0.95 0.00 Linear
+rot 1.20 0.00 Linear
+endtrack
+
+markers
+endmarkers

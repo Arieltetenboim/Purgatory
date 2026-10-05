@@ -52,7 +52,8 @@
 /// Protocol v33 adds explicit owned-character entry on the live pre-game session.
 /// Protocol v34 rejects an unregistered development username before
 /// `FrontendSessionReady`. The username is a development allowlist, not a password.
-pub const PROTOCOL_VERSION: u32 = 34;
+/// Protocol v35 adds semantic `RespawnRecovery` presentation oneshot kind `4`.
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// `Hello` includes `dev_login` from this version onward. Older goldens omit it.
 pub const HELLO_DEV_LOGIN_SINCE: u32 = 10;

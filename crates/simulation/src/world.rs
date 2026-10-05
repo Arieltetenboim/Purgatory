@@ -867,6 +867,9 @@ impl World {
         {
             return Err(ItemRuntimeError::InvalidPickupActor);
         }
+        if actor_data.health.is_some_and(Health::is_dead) {
+            return Err(ItemRuntimeError::InvalidPickupActor);
+        }
         let Some(item) = self.item_runtime.world_drop_item(target) else {
             return Err(ItemRuntimeError::PickupTargetMissing(target));
         };
@@ -920,6 +923,9 @@ impl World {
             || actor_data.lifecycle != EntityLifecycle::Active
             || actor_data.transform.is_none()
         {
+            return Err(ItemRuntimeError::InvalidPickupActor);
+        }
+        if actor_data.health.is_some_and(Health::is_dead) {
             return Err(ItemRuntimeError::InvalidPickupActor);
         }
         // Validate ownership before spawning anything.
@@ -1188,6 +1194,13 @@ impl World {
         self.slot_live(id)
             .and_then(|data| data.damage_immunity_until)
             .is_some_and(|until| self.tick < until)
+    }
+
+    /// Authoritative post-respawn recovery gate (movement + abilities).
+    #[must_use]
+    pub fn respawn_recovery_active(&self, id: EntityId) -> bool {
+        self.presentation_oneshot_of(id)
+            .is_some_and(|o| o.kind == PresentationOneShotKind::RespawnRecovery)
     }
 
     pub(crate) fn expire_damage_immunity(&mut self) {
@@ -1653,6 +1666,9 @@ impl World {
     ) -> Result<(), InteractionReject> {
         let actor_data = self.slot_live(actor).ok_or(self.classify_missing(actor))?;
         if actor_data.player.is_none() || actor_data.lifecycle != EntityLifecycle::Active {
+            return Err(InteractionReject::Unavailable);
+        }
+        if actor_data.health.is_some_and(Health::is_dead) {
             return Err(InteractionReject::Unavailable);
         }
         let actor_pos = actor_data

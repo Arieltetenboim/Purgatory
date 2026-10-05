@@ -4,8 +4,8 @@ use crate::EntityId;
 use crate::equipment::EquipmentSlot;
 use crate::item_runtime::ItemRuntimeState;
 use crate::{
-    ContentId, INVENTORY_CAPACITY, ItemLocation, ItemRuntimeError, RuntimeSpawnRequest, Transform,
-    World, WorldAddress,
+    ContentId, Health, INVENTORY_CAPACITY, ItemLocation, ItemRuntimeError, RuntimeSpawnRequest,
+    Transform, World, WorldAddress,
 };
 use purgatory_common::ItemInstanceId;
 
@@ -200,6 +200,30 @@ fn spawn_path_mints_authoritative_item_instance_ids() {
     assert_ne!(a, b);
     assert_ne!(a.raw(), 0);
     assert_ne!(b.raw(), 0);
+}
+
+#[test]
+fn pickup_rejects_dead_actor() {
+    let mut world = World::dev_stage();
+    let actor = world.player_id().expect("player");
+    let position = world
+        .transform_of(actor)
+        .expect("player transform")
+        .position;
+    let (_, entity) = spawn_drop_for_player(&mut world, position);
+    world.set_health(
+        actor,
+        Health {
+            current: 0.0,
+            max: 20.0,
+        },
+    );
+
+    assert_eq!(
+        world.pickup_world_drop(actor, entity),
+        Err(ItemRuntimeError::InvalidPickupActor)
+    );
+    assert_eq!(world.inventory_count(actor), 0);
 }
 
 #[test]

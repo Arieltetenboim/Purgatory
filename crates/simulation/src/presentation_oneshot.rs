@@ -11,6 +11,8 @@ pub enum PresentationOneShotKind {
     Attack,
     Hurt,
     Dash,
+    /// Post-respawn recovery presentation. Duration is gameplay-owned.
+    RespawnRecovery,
 }
 
 impl PresentationOneShotKind {
@@ -20,6 +22,7 @@ impl PresentationOneShotKind {
             Self::Attack => 1,
             Self::Hurt => 2,
             Self::Dash => 3,
+            Self::RespawnRecovery => 4,
         }
     }
 
@@ -29,6 +32,7 @@ impl PresentationOneShotKind {
             1 => Some(Self::Attack),
             2 => Some(Self::Hurt),
             3 => Some(Self::Dash),
+            4 => Some(Self::RespawnRecovery),
             _ => None,
         }
     }
@@ -54,6 +58,8 @@ pub const ATTACK_DURATION_TICKS: u64 = 18; // 0.60 s (> 0.40 s clip)
 pub const HURT_DURATION_TICKS: u64 = 17; // 0.566… s (> 0.35 s clip)
 /// Dash v1 active movement plus recovery presentation window.
 pub const DASH_DURATION_TICKS: u64 = 8;
+/// Authoritative post-respawn recovery (~1.4 s at 30 Hz). Art fits this window.
+pub const RESPAWN_RECOVERY_TICKS: u64 = 42;
 
 #[must_use]
 pub const fn duration_ticks(kind: PresentationOneShotKind) -> u64 {
@@ -61,6 +67,7 @@ pub const fn duration_ticks(kind: PresentationOneShotKind) -> u64 {
         PresentationOneShotKind::Attack => ATTACK_DURATION_TICKS,
         PresentationOneShotKind::Hurt => HURT_DURATION_TICKS,
         PresentationOneShotKind::Dash => DASH_DURATION_TICKS,
+        PresentationOneShotKind::RespawnRecovery => RESPAWN_RECOVERY_TICKS,
     }
 }
 

@@ -26,6 +26,8 @@ mod collision;
 mod combat_presentation_behavior_tests;
 mod command;
 mod contact;
+#[cfg(test)]
+mod death_respawn_presentation_tests;
 mod debug_action;
 mod dirty;
 mod domain;
