@@ -28,6 +28,8 @@ pub enum PresentationActivity {
     /// Persistent dead presentation from replicated Health (`current <= 0`).
     /// Not a oneshot. Overrides transient activities until Alive again.
     Dead,
+    /// Authoritative post-respawn recovery one-shot (semantic replication).
+    RespawnRecovery,
     /// Rear-facing climb presentation. Not inferred from velocity.
     ClimbBack,
 }
@@ -73,7 +75,8 @@ pub const fn view_for_activity(activity: PresentationActivity) -> PresentationVi
         | PresentationActivity::Attack
         | PresentationActivity::Hurt
         | PresentationActivity::Dash
-        | PresentationActivity::Dead => PresentationView::Side,
+        | PresentationActivity::Dead
+        | PresentationActivity::RespawnRecovery => PresentationView::Side,
     }
 }
 

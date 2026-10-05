@@ -1196,6 +1196,13 @@ impl World {
             .is_some_and(|until| self.tick < until)
     }
 
+    /// Authoritative post-respawn recovery gate (movement + abilities).
+    #[must_use]
+    pub fn respawn_recovery_active(&self, id: EntityId) -> bool {
+        self.presentation_oneshot_of(id)
+            .is_some_and(|o| o.kind == PresentationOneShotKind::RespawnRecovery)
+    }
+
     pub(crate) fn expire_damage_immunity(&mut self) {
         let expired: Vec<EntityId> = self
             .iter()

@@ -761,6 +761,16 @@ fn a5_hurt_clip_preserves_unkeyed_bones_at_bind() {
 }
 
 #[test]
+fn respawn_recovery_clip_loads_authored_duration_and_once_policy() {
+    use crate::RESPAWN_RECOVERY_CLIP_DURATION;
+    use crate::respawn_recovery_clip;
+
+    let clip = respawn_recovery_clip();
+    assert_eq!(clip.duration(), RESPAWN_RECOVERY_CLIP_DURATION);
+    assert_eq!(clip.loop_policy(), LoopPolicy::Once);
+}
+
+#[test]
 fn dead_clip_loads_authored_duration_and_once_policy() {
     let clip = dead_clip();
     assert_eq!(clip.duration(), DEAD_CLIP_DURATION);

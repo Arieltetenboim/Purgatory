@@ -487,6 +487,9 @@ impl World {
         if self.ability_combatant_dead(request.actor) {
             return Err(AbilityRejectReason::ActorDead);
         }
+        if self.respawn_recovery_active(request.actor) {
+            return Err(AbilityRejectReason::Busy);
+        }
         // Ability-driven movement is an exclusive movement/action window even
         // if the Action table is changed later. In particular, Basic Strike
         // cannot start while Dash movement is active.

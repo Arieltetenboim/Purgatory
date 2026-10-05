@@ -83,6 +83,7 @@ fn activity_from_kind(kind: u8) -> Option<PresentationActivity> {
         1 => Some(PresentationActivity::Attack),
         2 => Some(PresentationActivity::Hurt),
         3 => Some(PresentationActivity::Dash),
+        4 => Some(PresentationActivity::RespawnRecovery),
         _ => None,
     }
 }
@@ -131,6 +132,24 @@ mod tests {
         assert_eq!(
             table.activity_of(PresentationEntityKey::new(2, 1), 30),
             Some(PresentationActivity::Hurt)
+        );
+    }
+
+    #[test]
+    fn respawn_recovery_kind_maps_to_activity() {
+        let mut table = PresentationOneShotTable::new();
+        let entity = WireEntityId {
+            index: 9,
+            generation: 1,
+        };
+        table.apply_server_event(ServerPresentationOneShot {
+            entity,
+            kind: 4,
+            until_tick: 30,
+        });
+        assert_eq!(
+            table.activity_of(PresentationEntityKey::new(9, 1), 25),
+            Some(PresentationActivity::RespawnRecovery)
         );
     }
 

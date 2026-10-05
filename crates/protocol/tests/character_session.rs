@@ -12,7 +12,7 @@ fn roster(count: usize) -> Vec<CharacterSummary> {
 
 #[test]
 fn v32_rosters_preserve_empty_full_order_ids_and_names() {
-    assert_eq!(PROTOCOL_VERSION, 34);
+    assert_eq!(PROTOCOL_VERSION, 35);
     for count in 0..=3 {
         for msg in [
             ServerControl::FrontendSessionReady(FrontendSessionReady {
@@ -82,7 +82,7 @@ fn invalid_roster_boundaries_are_rejected() {
 
 #[test]
 fn character_enter_v33_carries_only_identity_and_typed_rejections() {
-    assert_eq!(PROTOCOL_VERSION, 34);
+    assert_eq!(PROTOCOL_VERSION, 35);
     let msg = ClientControl::EnterCharacter {
         character_id: CharacterId::from_raw(79),
     };

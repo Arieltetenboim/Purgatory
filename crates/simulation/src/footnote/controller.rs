@@ -98,6 +98,7 @@ impl World {
 
         self.clear_stale_footnote_ids_for(id);
         let dead = self.health_of(id).is_some_and(|health| health.is_dead());
+        let recovery = self.respawn_recovery_active(id);
 
         let (prev_pos, prev_half, prev_grounded, prev_grounded_on, prev_vel) = {
             let Some((transform, player)) = self.get_player(id) else {
@@ -161,7 +162,7 @@ impl World {
             } else {
                 player.dash
             };
-            let control_input = if dead {
+            let control_input = if dead || recovery {
                 player.velocity[0] = 0.0;
                 PlayerInput::idle()
             } else if active_dash.is_some() {

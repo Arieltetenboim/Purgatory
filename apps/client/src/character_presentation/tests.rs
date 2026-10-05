@@ -41,7 +41,7 @@ fn remote_idle(equipment: EquipmentView) -> RemoteMotion {
 
 #[test]
 fn protocol_version_is_current() {
-    assert_eq!(PROTOCOL_VERSION, 34);
+    assert_eq!(PROTOCOL_VERSION, 35);
 }
 
 #[test]
@@ -416,6 +416,41 @@ fn remote_dead_health_resolves_dead_activity_and_clip() {
     let restored = set.get(key).expect("restored remote entry");
     assert_ne!(restored.state().activity, PresentationActivity::Dead);
     assert_eq!(restored.state().activity, PresentationActivity::Idle);
+}
+
+#[test]
+fn respawn_recovery_selects_recovery_clip_and_holds_once() {
+    use purgatory_animation::{RESPAWN_RECOVERY_CLIP_DURATION, respawn_recovery_clip};
+
+    let key = PresentationEntityKey::new(8, 1);
+    let mut set = CharacterPresentationSet::new();
+    let recovering = from_local_with_presentation(
+        local_idle(EquipmentView::Absent),
+        Facing::Right,
+        Some(PresentationActivity::RespawnRecovery),
+        false,
+    );
+    set.sync([(key, recovering)], &ContentRegistry::new(), 0.1);
+    let entry = set.get(key).expect("recovery entry");
+    assert_eq!(
+        entry.state().activity,
+        PresentationActivity::RespawnRecovery
+    );
+    assert_eq!(
+        clip_for_playback_activity(PresentationActivity::RespawnRecovery) as *const _,
+        respawn_recovery_clip() as *const _
+    );
+    assert_eq!(
+        respawn_recovery_clip().duration(),
+        RESPAWN_RECOVERY_CLIP_DURATION
+    );
+
+    set.sync([(key, recovering)], &ContentRegistry::new(), 2.0);
+    let final_entry = set.get(key).expect("recovery entry");
+    assert_eq!(
+        final_entry.selected_sample_t(),
+        RESPAWN_RECOVERY_CLIP_DURATION
+    );
 }
 
 #[test]

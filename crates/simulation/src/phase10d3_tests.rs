@@ -82,4 +82,6 @@ fn respawn_restores_all_player_runtime_state_and_keeps_entity_id() {
     assert_eq!(body.last_contact, crate::footnote::ContactEvent::None);
     assert_ne!(body.position, moved);
     assert!(!world.respawn_player_entity(player));
+    assert!(world.respawn_recovery_active(player));
+    assert!(world.damage_immunity_active(player));
 }

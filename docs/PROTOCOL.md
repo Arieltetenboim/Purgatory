@@ -40,7 +40,9 @@ Permanent invariants:
 
 ## Version
 
-`PROTOCOL_VERSION: u32 = 34` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+`PROTOCOL_VERSION: u32 = 35` in `purgatory-protocol`. Independent from crate / game release version (`0.1.0`).
+
+Protocol v35 adds semantic `RespawnRecovery` to server `PresentationOneShot` kind (`4`). Post-respawn recovery duration remains simulation-owned via `until_tick`; no bones or clip timing on the wire.
 
 Protocol v34 adds `DisconnectReasonCode::UnknownUser` (discriminant 7). The server sends it when a development username is not in `dev_users`, before `FrontendSessionReady`. `CharacterCreateRejection::Unregistered` (discriminant 5) is the same fence on character creation. The username is a development allowlist, not authentication. The reserved login `dev.probe` is a readiness probe (`client_build` prefix `purgatory-probe`) and is not a playable account.
 

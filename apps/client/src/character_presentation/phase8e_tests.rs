@@ -65,7 +65,7 @@ fn bound_stub(coverage: CoverageMode, hide: &[BoneTarget]) -> BoundAttachment {
 
 #[test]
 fn protocol_version_is_current() {
-    assert_eq!(PROTOCOL_VERSION, 34);
+    assert_eq!(PROTOCOL_VERSION, 35);
 }
 
 #[test]

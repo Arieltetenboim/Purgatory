@@ -6,8 +6,9 @@
 use crate::body::PLAYER_HALF_EXTENTS;
 use crate::entity::EntityId;
 use crate::footnote::ContactEvent;
-use crate::health::Health;
+use crate::health::{DAMAGE_IMMUNITY_TICKS, Health};
 use crate::platform::{FLOOR, FLOOR_POSITION};
+use crate::presentation_oneshot::PresentationOneShotKind;
 use crate::stage::{FOOTNOTE_SPAWN_X, P0, P0_POSITION};
 use crate::transform::Transform;
 use crate::world::World;
@@ -138,8 +139,14 @@ impl World {
             return false;
         }
         if let Some(health) = health.filter(|health| health.is_dead()) {
+            let immunity_until = match runtime_mode {
+                PlayerRestoreRuntime::Respawn => {
+                    Some(self.tick.saturating_add_ticks(DAMAGE_IMMUNITY_TICKS))
+                }
+                PlayerRestoreRuntime::DevReset => None,
+            };
             if let Some(data) = self.slot_live_mut(id) {
-                data.damage_immunity_until = None;
+                data.damage_immunity_until = immunity_until;
             }
             let restored = match health_mode {
                 PlayerRestoreHealth::Full => Health::full(health.max),
@@ -147,7 +154,12 @@ impl World {
             };
             self.set_health(id, restored);
         }
-        self.clear_presentation_oneshot(id);
+        if runtime_mode == PlayerRestoreRuntime::Respawn {
+            let _ =
+                self.try_start_presentation_oneshot(id, PresentationOneShotKind::RespawnRecovery);
+        } else {
+            self.clear_presentation_oneshot(id);
+        }
         if let Some(previous) = previous {
             self.refresh_spatial(id, previous);
         }

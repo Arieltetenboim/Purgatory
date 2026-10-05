@@ -6,7 +6,7 @@ use purgatory_animation::{
     A4_TRANSITION_DURATION, AnimationClip, AnimationPlayer, DepthPose, a1_head_rotation_clip,
     a3_idle_clip, a3_move_clip, a4_fall_clip, a4_jump_clip, a5_attack_clip, a5_hurt_clip,
     apply_depth_projection, blend_depth_poses, blend_local_poses, climb_back_clip, dash_clip,
-    dead_clip, sample, sample_depth,
+    dead_clip, respawn_recovery_clip, sample, sample_depth,
 };
 use purgatory_content::ContentRegistry;
 use purgatory_skeleton::{LocalPose, ROOT, WorldPose, evaluate, humanoid_v0};
@@ -69,6 +69,7 @@ pub fn clip_for_playback_activity(activity: PresentationActivity) -> &'static An
         // Dead is persistent semantically, while its authored one-shot holds
         // the final pose after completion.
         PresentationActivity::Dead => dead_clip(),
+        PresentationActivity::RespawnRecovery => respawn_recovery_clip(),
         PresentationActivity::ClimbBack => climb_back_clip(),
         PresentationActivity::Idle => a3_idle_clip(),
     }

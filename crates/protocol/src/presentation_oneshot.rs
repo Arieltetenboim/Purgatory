@@ -20,7 +20,7 @@ pub struct DevPresentationOneShot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServerPresentationOneShot {
     pub entity: WireEntityId,
-    /// `0` = cleared. `1` = Attack. `2` = Hurt. `3` = Dash.
+    /// `0` = cleared. `1` = Attack. `2` = Hurt. `3` = Dash. `4` = RespawnRecovery.
     pub kind: u8,
     /// Exclusive end tick. Client treats `current_tick >= until_tick` as inactive.
     pub until_tick: u32,
@@ -36,7 +36,7 @@ impl DevPresentationOneShot {
 impl ServerPresentationOneShot {
     #[must_use]
     pub const fn kind_valid(kind: u8) -> bool {
-        matches!(kind, 0..=3)
+        matches!(kind, 0..=4)
     }
 }
 
@@ -120,8 +120,14 @@ mod tests {
             decode_server_presentation_oneshot(&bytes[1..]).unwrap(),
             dash
         );
+        let recovery = ServerPresentationOneShot { kind: 4, ..evt };
+        let bytes = encode_server_presentation_oneshot(&recovery);
+        assert_eq!(
+            decode_server_presentation_oneshot(&bytes[1..]).unwrap(),
+            recovery
+        );
         let mut invalid = bytes;
-        invalid[9] = 4;
+        invalid[9] = 5;
         assert_eq!(
             decode_server_presentation_oneshot(&invalid[1..]),
             Err(CodecError::InvalidValue)

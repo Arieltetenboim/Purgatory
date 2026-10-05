@@ -53,6 +53,10 @@ const DEAD_ASSET: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../content/shared/animations/dev/dead.anim"
 ));
+const RESPAWN_RECOVERY_ASSET: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../content/shared/animations/dev/respawn_recovery.anim"
+));
 const CLIMB_BACK_ASSET: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../content/shared/animations/dev/climb_back.anim"
@@ -76,7 +80,9 @@ pub const A5_HURT_CLIP_DURATION: f32 = 0.35;
 pub const DASH_CLIP_DURATION: f32 = 0.27;
 
 /// Duration of the debug Dead one-shot (seconds).
-pub const DEAD_CLIP_DURATION: f32 = 0.40;
+pub const DEAD_CLIP_DURATION: f32 = 0.55;
+/// Authored post-respawn recovery clip (seconds). Gameplay gate is tick-owned.
+pub const RESPAWN_RECOVERY_CLIP_DURATION: f32 = 1.20;
 
 /// Bind/no-animation fallback only. Authored ClimbBack duration lives on the parsed clip.
 const CLIMB_BACK_BIND_FALLBACK_DURATION: f32 = 1.0;
@@ -253,6 +259,23 @@ pub fn dead_clip() -> &'static AnimationClip {
             .unwrap_or_else(|err| {
                 eprintln!("Dead asset invalid: {err}; falling back to bind/no-animation");
                 bind_rotation_noop_clip(def, DEAD_CLIP_DURATION, LoopPolicy::Once)
+            })
+    })
+}
+
+/// Post-respawn recovery: kneel → stand → brief hold. Authored for Facing::Right.
+#[must_use]
+pub fn respawn_recovery_clip() -> &'static AnimationClip {
+    static CLIP: OnceLock<AnimationClip> = OnceLock::new();
+    CLIP.get_or_init(|| {
+        let def = humanoid_v0();
+        parse_animation_asset_v1("respawn_recovery.anim", RESPAWN_RECOVERY_ASSET, def)
+            .map(|asset| asset.clip)
+            .unwrap_or_else(|err| {
+                eprintln!(
+                    "respawn_recovery asset invalid: {err}; falling back to bind/no-animation"
+                );
+                bind_rotation_noop_clip(def, RESPAWN_RECOVERY_CLIP_DURATION, LoopPolicy::Once)
             })
     })
 }
