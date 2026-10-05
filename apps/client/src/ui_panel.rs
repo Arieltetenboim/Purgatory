@@ -11,6 +11,7 @@ use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::asset_runtime::{AssetRuntime, ResolvedVisual};
+use crate::assets::ClientAssetLoader;
 use crate::display::{
     DisplaySettings, RESOLUTION_PRESETS, RenderScale, Resolution, UI_SCALE_PRESETS, UiScale,
     WindowMode,
@@ -18,6 +19,9 @@ use crate::display::{
 use crate::renderer::{
     PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle,
     UiTexturedQuad, UiTexturedRect,
+};
+use crate::ui_v2::{
+    UiV2Image, UiV2NineSlice, load_ui_v2_catalog, load_ui_v2_nine_slice, load_ui_v2_state_family,
 };
 
 const ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
@@ -60,26 +64,21 @@ const SETTINGS_LAUNCHER_FONT_SIZE_UNITS: f32 = 9.5;
 const SETTINGS_TEXT_COLOR: [f32; 4] = [0.05, 0.07, 0.1, 1.0];
 const SETTINGS_DISABLED_TEXT_COLOR: [f32; 4] = [0.36, 0.39, 0.43, 1.0];
 const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 23.0;
-const INVENTORY_TAB_TOP_GAP_UNITS: f32 = 4.0;
-const INVENTORY_SLOT_TOP_GAP_UNITS: f32 = 4.0;
-const INVENTORY_TAB_SEPARATOR_HEIGHT_UNITS: f32 = 2.0;
-const INVENTORY_GRID_SIDE_PADDING_UNITS: f32 = 1.0;
-const INVENTORY_GRID_BOTTOM_PADDING_UNITS: f32 = 2.0;
-const INVENTORY_FOOTER_RESERVED_UNITS: f32 = 28.0;
-const INVENTORY_CURRENCY_VERTICAL_INSET_UNITS: f32 = 4.0;
+const INVENTORY_SECTION_GAP_UNITS: f32 = 8.0;
+const INVENTORY_CLOSE_INSET_UNITS: f32 = 8.0;
+const INVENTORY_TAB_FONT_SIZE_UNITS: f32 = 10.5;
+const INVENTORY_TAB_TEXT_PADDING_UNITS: f32 = 4.0;
 const CURRENCY_FONT_SIZE_UNITS: f32 = 10.5;
+#[cfg_attr(not(test), allow(dead_code))]
 const TAB_EMBOLDEN_OFFSET_UNITS: f32 = 0.35;
 const TAB_TEXT_COLOR: [f32; 4] = [0.03, 0.045, 0.07, 1.0];
 const GOLD_TEXT_COLOR: [f32; 4] = [0.48, 0.3, 0.035, 1.0];
 const SILVER_TEXT_COLOR: [f32; 4] = [0.2, 0.27, 0.36, 1.0];
-const INVENTORY_GRID_BACKGROUND_TINT: [f32; 4] = [0.88, 0.9, 0.92, 1.0];
-const INVENTORY_TAB_SEPARATOR_TINT: [f32; 4] = [0.73, 0.18, 0.17, 1.0];
 const INVENTORY_TAB_LABELS: [&str; 5] = ["Equip", "Cons.", "Mats", "Tools", "Misc"];
 const INVENTORY_SLOT_COLUMNS: usize = 5;
 const INVENTORY_SLOT_ROWS: usize = 7;
-const INVENTORY_SLOT_SIZE_UNITS: f32 = 44.0;
-const INVENTORY_SLOT_GAP_UNITS: f32 = 2.0;
-const INVENTORY_RIGHT_PADDING_UNITS: f32 = 2.0;
+const INVENTORY_SLOT_GAP_UNITS: f32 = 0.0;
+const INVENTORY_TAB_GAP_UNITS: f32 = 0.0;
 const INVENTORY_ICON_INSET_UNITS: f32 = 4.0;
 const INVENTORY_QUANTITY_FONT_SIZE_UNITS: f32 = 10.5;
 const INVENTORY_QUANTITY_INSET_UNITS: f32 = 3.0;
@@ -93,16 +92,14 @@ const EQUIPMENT_LABEL_COLOR: [f32; 4] = [0.08, 0.11, 0.16, 1.0];
 const EQUIPMENT_SLOT_LABELS: [&str; EquipmentSlot::COUNT] =
     ["Headwear", "Bodywear", "Pants", "Gloves", "Boots", "Weapon"];
 const INVENTORY_SLOT_HOVER_TINT: [f32; 4] = [0.9, 0.96, 1.0, 1.0];
-const INVENTORY_SLOT_SELECTED_TINT: [f32; 4] = [1.0, 0.9, 0.68, 1.0];
 const ITEM_DRAG_THRESHOLD_PX: f32 = 4.0;
 const INVENTORY_TOOLTIP_WIDTH_UNITS: f32 = 218.0;
 const INVENTORY_TOOLTIP_OFFSET_UNITS: f32 = 10.0;
 const INVENTORY_TOOLTIP_PADDING_UNITS: f32 = 7.0;
 const INVENTORY_TOOLTIP_FONT_SIZE_UNITS: f32 = 11.0;
 const INVENTORY_TOOLTIP_LINE_GAP_UNITS: f32 = 4.0;
-const INVENTORY_TOOLTIP_BACKGROUND_TINT: [f32; 4] = [0.93, 0.94, 0.95, 0.98];
-const INVENTORY_TOOLTIP_TITLE_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
-const INVENTORY_TOOLTIP_DETAIL_COLOR: [f32; 4] = [0.16, 0.21, 0.28, 1.0];
+const INVENTORY_TOOLTIP_TITLE_COLOR: [f32; 4] = [0.96, 0.94, 0.88, 1.0];
+const INVENTORY_TOOLTIP_DETAIL_COLOR: [f32; 4] = [0.78, 0.84, 0.86, 1.0];
 const INVENTORY_INITIAL_CENTER_OFFSET_UNITS: [f32; 2] = [-56.0, -24.0];
 const EQUIPMENT_INITIAL_CENTER_OFFSET_UNITS: [f32; 2] = [56.0, 24.0];
 const ITEM_PLACEHOLDER_VISUAL_KEY: &str = "item.placeholder";
@@ -278,6 +275,7 @@ struct CloseButtonStates {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct TabStates {
     normal: SourceRectPx,
     selected: SourceRectPx,
@@ -387,6 +385,7 @@ struct CloseButtonAsset {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct UiTabAssets {
     texture: SpriteTextureId,
     source_size_px: [u32; 2],
@@ -660,33 +659,9 @@ impl UiWindowAssets {
         viewport: PixelViewport,
         pixels_per_unit: f32,
     ) -> Result<Option<UiWindowLayout>, String> {
-        validate_pixels_per_unit(pixels_per_unit)?;
-        let Some(window_size_units) = window.mode.logical_size(window.size_units) else {
+        let Some(placed) = place_proof_window(window, viewport, pixels_per_unit)? else {
             return Ok(None);
         };
-        let viewport_size_units = [
-            viewport.width as f32 / pixels_per_unit,
-            viewport.height as f32 / pixels_per_unit,
-        ];
-        let centered = [
-            ((viewport_size_units[0] - window_size_units[0]) * 0.5).max(0.0),
-            ((viewport_size_units[1] - window_size_units[1]) * 0.5).max(0.0),
-        ];
-        let initial = [
-            centered[0] + window.initial_center_offset_units[0],
-            centered[1] + window.initial_center_offset_units[1],
-        ];
-        let top_left_units = window.top_left_units.get_or_insert(initial);
-        *top_left_units = clamp_top_left(*top_left_units, window_size_units, viewport_size_units);
-
-        let window_min = [
-            viewport.x as f32 + top_left_units[0] * pixels_per_unit,
-            viewport.y as f32 + top_left_units[1] * pixels_per_unit,
-        ];
-        let window_max = [
-            window_min[0] + window_size_units[0] * pixels_per_unit,
-            window_min[1] + window_size_units[1] * pixels_per_unit,
-        ];
         let panel = self.panel();
         let destination_borders = panel
             .border_units
@@ -696,12 +671,12 @@ impl UiWindowAssets {
             destination_borders.top / panel.border_units.top.max(f32::EPSILON);
         let header = ScreenRect {
             min: [
-                window_min[0] + panel.border_units.left * pixels_per_unit,
-                window_min[1],
+                placed.min[0] + panel.border_units.left * pixels_per_unit,
+                placed.min[1],
             ],
             max: [
-                window_max[0] - panel.border_units.right * pixels_per_unit,
-                window_min[1] + destination_borders.top,
+                placed.max[0] - panel.border_units.right * pixels_per_unit,
+                placed.min[1] + destination_borders.top,
             ],
         };
         let button_size = [
@@ -731,16 +706,14 @@ impl UiWindowAssets {
             max: [close_max_x, close_min_y + button_size[1]],
         };
         Ok(Some(UiWindowLayout {
-            window: ScreenRect {
-                min: window_min,
-                max: window_max,
-            },
+            window: placed,
             header,
             close_button,
         }))
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl UiTabAssets {
     pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
         let metadata: UiAtlasMetadata = serde_json::from_str(ATLAS_METADATA)
@@ -851,6 +824,7 @@ impl UiTabAssets {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn tab_text_block(
     label: &str,
     font_size: f32,
@@ -1677,6 +1651,7 @@ impl UiTabs {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct UiTabsFrame {
     pub(crate) textured_rects: Vec<UiTexturedRect>,
     pub(crate) texts: Vec<TextBlock>,
@@ -1765,11 +1740,333 @@ impl UiSlotGrid {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InventoryTabVisual {
+    Active,
+    Inactive,
+    Hover,
+    Pressed,
+}
+
+fn resolve_inventory_tab_visual(
+    selected: bool,
+    hovered: bool,
+    pressed: bool,
+) -> InventoryTabVisual {
+    if pressed {
+        InventoryTabVisual::Pressed
+    } else if selected {
+        InventoryTabVisual::Active
+    } else if hovered {
+        InventoryTabVisual::Hover
+    } else {
+        InventoryTabVisual::Inactive
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InventorySlotVisual {
+    Normal,
+    Hover,
+    Selected,
+}
+
+fn resolve_inventory_slot_visual(selected: bool, hovered: bool) -> InventorySlotVisual {
+    if selected {
+        InventorySlotVisual::Selected
+    } else if hovered {
+        InventorySlotVisual::Hover
+    } else {
+        InventorySlotVisual::Normal
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InventoryV2Metrics {
+    body_slice: [u32; 4],
+    tab_size: [f32; 2],
+    tab_overlap: f32,
+    slot_size: [f32; 2],
+    close_size: [f32; 2],
+    footer_height: f32,
+    footer_slice: [u32; 4],
+}
+
+impl InventoryV2Metrics {
+    fn validate(self) -> Result<(), String> {
+        let [left, top, right, bottom] = self.body_slice;
+        if left == 0
+            || right == 0
+            || bottom == 0
+            || top == 0
+            || !(self.tab_size[0] > 0.0
+                && self.tab_size[1] > 0.0
+                && self.tab_overlap >= 0.0
+                && self.tab_overlap < self.tab_size[1])
+            || !(self.slot_size[0] > 0.0 && self.slot_size[1] > 0.0)
+            || !(self.close_size[0] > 0.0 && self.close_size[1] > 0.0)
+            || self.footer_height <= 0.0
+        {
+            return Err("inventory V2 geometry is invalid".to_string());
+        }
+        let [_, footer_top, _, footer_bottom] = self.footer_slice;
+        if (footer_top.saturating_add(footer_bottom)) as f32 >= self.footer_height {
+            return Err("inventory footer slice does not fit its height".to_string());
+        }
+        let close_bottom = INVENTORY_CLOSE_INSET_UNITS + self.close_size[1];
+        let tab_top = top as f32 - self.tab_overlap;
+        if tab_top < close_bottom {
+            return Err("inventory close control does not fit in the header".to_string());
+        }
+        Ok(())
+    }
+
+    fn window_size(self) -> Result<[f32; 2], String> {
+        self.validate()?;
+        let [left, top, right, bottom] = self.body_slice;
+        let tab_count = INVENTORY_TAB_LABELS.len() as f32;
+        let tab_strip = tab_count * self.tab_size[0] + (tab_count - 1.0) * INVENTORY_TAB_GAP_UNITS;
+        let columns = INVENTORY_SLOT_COLUMNS as f32;
+        let rows = INVENTORY_SLOT_ROWS as f32;
+        let slot_width = columns * self.slot_size[0] + (columns - 1.0) * INVENTORY_SLOT_GAP_UNITS;
+        let slot_height = rows * self.slot_size[1] + (rows - 1.0) * INVENTORY_SLOT_GAP_UNITS;
+        let content_width = tab_strip.max(slot_width);
+        Ok([
+            left as f32 + content_width + right as f32,
+            top as f32
+                + (self.tab_size[1] - self.tab_overlap)
+                + INVENTORY_SECTION_GAP_UNITS
+                + slot_height
+                + INVENTORY_SECTION_GAP_UNITS
+                + self.footer_height
+                + bottom as f32,
+        ])
+    }
+}
+
+pub(crate) struct InventoryV2Assets {
+    metrics: InventoryV2Metrics,
+    body: UiV2NineSlice,
+    footer: UiV2NineSlice,
+    tooltip: UiV2NineSlice,
+    close: [UiV2Image; 3],
+    tabs: [UiV2Image; 4],
+    slots: [UiV2Image; 3],
+}
+
+impl InventoryV2Assets {
+    pub(crate) fn load(runtime: &mut AssetRuntime) -> Result<Self, String> {
+        let catalog = load_ui_v2_catalog(runtime)?;
+        let overlap = shared_tab_overlap(&catalog)?;
+        let mut loader = ClientAssetLoader::new(runtime);
+        let body = load_ui_v2_nine_slice(&mut loader, &catalog, "inventory_body_9slice")?;
+        let footer = load_ui_v2_nine_slice(&mut loader, &catalog, "inventory_footer_9slice")?;
+        let tooltip = load_ui_v2_nine_slice(&mut loader, &catalog, "tooltip_body_9slice")?;
+        let close = array3(load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &[
+                "close_button_normal",
+                "close_button_hover",
+                "close_button_pressed",
+            ],
+        )?)?;
+        let tabs = array4(load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &["tab_active", "tab_inactive", "tab_hover", "tab_pressed"],
+        )?)?;
+        let slots = array3(load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &["slot_normal", "slot_hover", "slot_selected"],
+        )?)?;
+        let metrics = InventoryV2Metrics {
+            body_slice: body.slice_ltrb,
+            tab_size: [tabs[0].size_px[0] as f32, tabs[0].size_px[1] as f32],
+            tab_overlap: overlap as f32,
+            slot_size: [slots[0].size_px[0] as f32, slots[0].size_px[1] as f32],
+            close_size: [close[0].size_px[0] as f32, close[0].size_px[1] as f32],
+            footer_height: footer.size_px[1] as f32,
+            footer_slice: footer.slice_ltrb,
+        };
+        metrics.validate()?;
+        Ok(Self {
+            metrics,
+            body,
+            footer,
+            tooltip,
+            close,
+            tabs,
+            slots,
+        })
+    }
+
+    pub(crate) fn metrics(&self) -> InventoryV2Metrics {
+        self.metrics
+    }
+}
+
+fn shared_tab_overlap(catalog: &crate::ui_v2::UiV2Catalog) -> Result<u32, String> {
+    let names = ["tab_active", "tab_inactive", "tab_hover", "tab_pressed"];
+    let mut overlap = None;
+    for name in names {
+        let info = catalog.get(name)?;
+        let Some(value) = info.content_overlap else {
+            return Err(format!("UI V2 asset {name} is missing contentOverlap"));
+        };
+        if let Some(previous) = overlap
+            && previous != value
+        {
+            return Err(format!(
+                "UI V2 asset {name} contentOverlap {value} does not match {previous}"
+            ));
+        }
+        overlap = Some(value);
+    }
+    overlap.ok_or_else(|| "UI V2 tab family is missing contentOverlap".to_string())
+}
+
+fn array3(images: Vec<UiV2Image>) -> Result<[UiV2Image; 3], String> {
+    images
+        .try_into()
+        .map_err(|_| "UI V2 state family length is not 3".to_string())
+}
+
+fn array4(images: Vec<UiV2Image>) -> Result<[UiV2Image; 4], String> {
+    images
+        .try_into()
+        .map_err(|_| "UI V2 state family length is not 4".to_string())
+}
+
+struct InventoryLayout {
+    window: ScreenRect,
+    header: ScreenRect,
+    close_button: ScreenRect,
+    tabs: [ScreenRect; INVENTORY_TAB_LABELS.len()],
+    slots: [ScreenRect; INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS],
+    footer: ScreenRect,
+    currency: ScreenRect,
+}
+
+fn layout_inventory(
+    metrics: InventoryV2Metrics,
+    window: ScreenRect,
+    pixels_per_unit: f32,
+) -> Result<InventoryLayout, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    metrics.validate()?;
+    let scale = pixels_per_unit;
+    let [left, top, right, bottom] = metrics.body_slice;
+    let header = ScreenRect {
+        min: window.min,
+        max: [window.max[0], window.min[1] + top as f32 * scale],
+    };
+    let close_size = [metrics.close_size[0] * scale, metrics.close_size[1] * scale];
+    let close_max_x = window.max[0] - (right as f32 + INVENTORY_CLOSE_INSET_UNITS) * scale;
+    let close_min_y = window.min[1] + INVENTORY_CLOSE_INSET_UNITS * scale;
+    let close_button = ScreenRect {
+        min: [close_max_x - close_size[0], close_min_y],
+        max: [close_max_x, close_min_y + close_size[1]],
+    };
+    let content_min_x = window.min[0] + left as f32 * scale;
+    let content_max_x = window.max[0] - right as f32 * scale;
+    let tab_size = [metrics.tab_size[0] * scale, metrics.tab_size[1] * scale];
+    let tab_gap = INVENTORY_TAB_GAP_UNITS * scale;
+    let tab_top = header.max[1] - metrics.tab_overlap * scale;
+    let mut tabs = [ScreenRect {
+        min: [0.0, 0.0],
+        max: [0.0, 0.0],
+    }; INVENTORY_TAB_LABELS.len()];
+    for (index, tab) in tabs.iter_mut().enumerate() {
+        let min_x = content_min_x + index as f32 * (tab_size[0] + tab_gap);
+        *tab = ScreenRect {
+            min: [min_x, tab_top],
+            max: [min_x + tab_size[0], tab_top + tab_size[1]],
+        };
+    }
+    let slot_size = [metrics.slot_size[0] * scale, metrics.slot_size[1] * scale];
+    let slot_gap = INVENTORY_SLOT_GAP_UNITS * scale;
+    let grid_width = INVENTORY_SLOT_COLUMNS as f32 * slot_size[0]
+        + INVENTORY_SLOT_COLUMNS.saturating_sub(1) as f32 * slot_gap;
+    let slot_origin_x = content_min_x + ((content_max_x - content_min_x) - grid_width) * 0.5;
+    let slot_origin_y = tabs[0].max[1] + INVENTORY_SECTION_GAP_UNITS * scale;
+    let mut slots = [ScreenRect {
+        min: [0.0, 0.0],
+        max: [0.0, 0.0],
+    }; INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS];
+    for row in 0..INVENTORY_SLOT_ROWS {
+        for column in 0..INVENTORY_SLOT_COLUMNS {
+            let min = [
+                slot_origin_x + column as f32 * (slot_size[0] + slot_gap),
+                slot_origin_y + row as f32 * (slot_size[1] + slot_gap),
+            ];
+            slots[row * INVENTORY_SLOT_COLUMNS + column] = ScreenRect {
+                min,
+                max: [min[0] + slot_size[0], min[1] + slot_size[1]],
+            };
+        }
+    }
+    let footer = ScreenRect {
+        min: [
+            content_min_x,
+            slots[slots.len() - 1].max[1] + INVENTORY_SECTION_GAP_UNITS * scale,
+        ],
+        max: [
+            content_max_x,
+            slots[slots.len() - 1].max[1]
+                + (INVENTORY_SECTION_GAP_UNITS + metrics.footer_height) * scale,
+        ],
+    };
+    let currency = ScreenRect {
+        min: [
+            footer.min[0] + metrics.footer_slice[0] as f32 * scale,
+            footer.min[1] + metrics.footer_slice[1] as f32 * scale,
+        ],
+        max: [
+            footer.max[0] - metrics.footer_slice[2] as f32 * scale,
+            footer.max[1] - metrics.footer_slice[3] as f32 * scale,
+        ],
+    };
+    let content_bottom = window.max[1] - bottom as f32 * scale;
+    let inside = close_button.max[1] <= tab_top + 0.01
+        && tabs[tabs.len() - 1].max[0] <= content_max_x + 0.01
+        && slots[0].min[0] >= content_min_x - 0.01
+        && footer.max[1] <= content_bottom + 0.01
+        && currency.width() > 0.0
+        && currency.height() + 0.01 >= CURRENCY_FONT_SIZE_UNITS * scale
+        && header.height() > 0.0;
+    if !inside {
+        return Err("inventory layout does not fit its window".to_string());
+    }
+    Ok(InventoryLayout {
+        window,
+        header,
+        close_button,
+        tabs,
+        slots,
+        footer,
+        currency,
+    })
+}
+
+fn fixture_inventory_metrics() -> InventoryV2Metrics {
+    InventoryV2Metrics {
+        body_slice: [8, 28, 8, 8],
+        tab_size: [36.0, 16.0],
+        tab_overlap: 2.0,
+        slot_size: [18.0, 18.0],
+        close_size: [10.0, 10.0],
+        footer_height: 16.0,
+        footer_slice: [2, 2, 2, 2],
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InventoryWindow {
     chrome: ProofPanelWindow,
+    metrics: InventoryV2Metrics,
     tabs: UiTabs,
-    slots: UiSlotGrid,
     currency: UiCurrencyDisplay,
     selected_item: Option<ItemInstanceId>,
     pressed_item: Option<ItemInstanceId>,
@@ -1783,24 +2080,41 @@ pub(crate) struct InventoryWindow {
 
 impl Default for InventoryWindow {
     fn default() -> Self {
+        Self::new(fixture_inventory_metrics())
+    }
+}
+
+pub(crate) struct InventoryWindowFrameInput<'a> {
+    pub(crate) assets: &'a InventoryV2Assets,
+    pub(crate) item_icon_assets: &'a UiItemIconAssets,
+    pub(crate) entries: &'a [InventoryEntry],
+    pub(crate) registry: &'a ContentRegistry,
+    pub(crate) viewport: PixelViewport,
+    pub(crate) pixels_per_unit: f32,
+    pub(crate) cursor: Option<[f32; 2]>,
+}
+
+pub(crate) struct InventoryWindowFrame {
+    pub(crate) skin_quads: Vec<UiTexturedQuad>,
+    pub(crate) item_rects: Vec<UiTexturedRect>,
+    pub(crate) texts: Vec<TextBlock>,
+    pub(crate) tooltip_quads: Vec<UiTexturedQuad>,
+    pub(crate) tooltip_texts: Vec<TextBlock>,
+    pub(crate) drag_preview: Vec<UiTexturedRect>,
+}
+
+impl InventoryWindow {
+    pub(crate) fn new(metrics: InventoryV2Metrics) -> Self {
+        let size = metrics
+            .window_size()
+            .expect("inventory metrics must describe a valid window");
         Self {
             chrome: ProofPanelWindow::with_size_and_center_offset(
-                [
-                    2.0 * INVENTORY_CONTENT_SIDE_INSET_UNITS
-                        + INVENTORY_SLOT_COLUMNS as f32 * INVENTORY_SLOT_SIZE_UNITS
-                        + INVENTORY_SLOT_COLUMNS.saturating_sub(1) as f32
-                            * INVENTORY_SLOT_GAP_UNITS
-                        + INVENTORY_RIGHT_PADDING_UNITS,
-                    440.0,
-                ],
+                size,
                 INVENTORY_INITIAL_CENTER_OFFSET_UNITS,
             ),
+            metrics,
             tabs: UiTabs::default(),
-            slots: UiSlotGrid::new(
-                INVENTORY_SLOT_COLUMNS,
-                INVENTORY_SLOT_ROWS,
-                INVENTORY_SLOT_GAP_UNITS,
-            ),
             currency: UiCurrencyDisplay::default(),
             selected_item: None,
             pressed_item: None,
@@ -1812,21 +2126,7 @@ impl Default for InventoryWindow {
             item_hit_regions: Vec::new(),
         }
     }
-}
 
-pub(crate) struct InventoryWindowFrameInput<'a> {
-    pub(crate) window_assets: UiWindowAssets,
-    pub(crate) tab_assets: UiTabAssets,
-    pub(crate) slot_assets: UiSlotAssets,
-    pub(crate) item_icon_assets: &'a UiItemIconAssets,
-    pub(crate) entries: &'a [InventoryEntry],
-    pub(crate) registry: &'a ContentRegistry,
-    pub(crate) viewport: PixelViewport,
-    pub(crate) pixels_per_unit: f32,
-    pub(crate) cursor: Option<[f32; 2]>,
-}
-
-impl InventoryWindow {
     pub(crate) fn is_visible(&self) -> bool {
         self.chrome.is_visible()
     }
@@ -1847,14 +2147,27 @@ impl InventoryWindow {
         self.chrome.apply_key(physical_key, state, repeat)
     }
 
+    fn layout(
+        &mut self,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> Result<Option<InventoryLayout>, String> {
+        let Some(window) = place_proof_window(&mut self.chrome, viewport, pixels_per_unit)? else {
+            return Ok(None);
+        };
+        Ok(Some(layout_inventory(
+            self.metrics,
+            window,
+            pixels_per_unit,
+        )?))
+    }
+
     pub(crate) fn frame(
         &mut self,
         input: InventoryWindowFrameInput<'_>,
     ) -> Result<Option<InventoryWindowFrame>, String> {
         let InventoryWindowFrameInput {
-            window_assets,
-            tab_assets,
-            slot_assets,
+            assets,
             item_icon_assets,
             entries,
             registry,
@@ -1862,50 +2175,14 @@ impl InventoryWindow {
             pixels_per_unit,
             cursor,
         } = input;
-        let Some(layout) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)?
-        else {
+        let Some(layout) = self.layout(viewport, pixels_per_unit)? else {
             self.slot_hit_regions.clear();
             self.item_hit_regions.clear();
             return Ok(None);
         };
-        let Some(window_frame) = window_assets.proof_frame(
-            &mut self.chrome,
-            "Item Inventory",
-            viewport,
-            pixels_per_unit,
-            cursor,
-        )?
-        else {
-            self.slot_hit_regions.clear();
-            self.item_hit_regions.clear();
-            return Ok(None);
-        };
-        let tab_bounds = inventory_tab_bounds(window_assets, tab_assets, layout, pixels_per_unit)?;
-        let tab_frame = tab_assets.frame(
-            &self.tabs,
-            &INVENTORY_TAB_LABELS,
-            tab_bounds,
-            pixels_per_unit,
-            cursor,
-        )?;
-        let slot_origin = inventory_slot_origin(
-            window_assets,
-            slot_assets,
-            self.slots,
-            layout,
-            tab_bounds,
-            pixels_per_unit,
-        )?;
-        let mut slot_rects = slot_assets.frame(self.slots, slot_origin, pixels_per_unit)?;
         let category = INVENTORY_TAB_CATEGORIES[self.tabs.selected_index()];
-        let visible = visible_inventory_entries(registry, entries, category, slot_rects.len());
-        self.slot_hit_regions = slot_rects
-            .iter()
-            .map(|slot| ScreenRect {
-                min: slot.min,
-                max: slot.max,
-            })
-            .collect();
+        let visible = visible_inventory_entries(registry, entries, category, layout.slots.len());
+        self.slot_hit_regions = layout.slots.to_vec();
         self.item_hit_regions = visible
             .iter()
             .zip(self.slot_hit_regions.iter().copied())
@@ -1919,88 +2196,108 @@ impl InventoryWindow {
             self.selected_item = None;
         }
         let hovered_item = cursor.and_then(|cursor| self.item_at(cursor));
-        for (index, slot) in slot_rects.iter_mut().enumerate() {
+        let mut skin_quads = compose_standalone_nine_slice(
+            layout.window.min,
+            self.chrome.size_units,
+            pixels_per_unit,
+            assets.body.texture,
+            assets.body.size_px,
+            assets.body.slice_ltrb,
+        )?;
+        let footer_size = [
+            layout.footer.width() / pixels_per_unit,
+            layout.footer.height() / pixels_per_unit,
+        ];
+        skin_quads.extend(compose_standalone_nine_slice(
+            layout.footer.min,
+            footer_size,
+            pixels_per_unit,
+            assets.footer.texture,
+            assets.footer.size_px,
+            assets.footer.slice_ltrb,
+        )?);
+        for (index, slot) in layout.slots.iter().copied().enumerate() {
             let item = self.item_hit_regions.get(index).map(|(_, item)| *item);
-            slot.tint = if item.is_some() && item == self.selected_item {
-                INVENTORY_SLOT_SELECTED_TINT
-            } else if item.is_some() && item == hovered_item {
-                INVENTORY_SLOT_HOVER_TINT
-            } else {
-                [1.0; 4]
+            let visual = resolve_inventory_slot_visual(
+                item.is_some() && item == self.selected_item,
+                item.is_some() && item == hovered_item,
+            );
+            let texture = match visual {
+                InventorySlotVisual::Normal => assets.slots[0].texture,
+                InventorySlotVisual::Hover => assets.slots[1].texture,
+                InventorySlotVisual::Selected => assets.slots[2].texture,
             };
+            skin_quads.push(compose_stretched_quad(slot, texture)?);
         }
+        for (index, tab) in layout.tabs.iter().copied().enumerate() {
+            let hovered = cursor.is_some_and(|cursor| tab.contains(cursor));
+            let pressed = hovered && self.tabs.pressed_index == Some(index);
+            let selected = self.tabs.selected_index() == index;
+            let visual = resolve_inventory_tab_visual(selected, hovered, pressed);
+            let texture = match visual {
+                InventoryTabVisual::Active => assets.tabs[0].texture,
+                InventoryTabVisual::Inactive => assets.tabs[1].texture,
+                InventoryTabVisual::Hover => assets.tabs[2].texture,
+                InventoryTabVisual::Pressed => assets.tabs[3].texture,
+            };
+            skin_quads.push(compose_stretched_quad(tab, texture)?);
+        }
+        let close_visual = self.chrome.close_button_visual(cursor, layout.close_button);
+        let close_texture = match close_visual {
+            CloseButtonVisual::Normal => assets.close[0].texture,
+            CloseButtonVisual::Hover => assets.close[1].texture,
+            CloseButtonVisual::Pressed => assets.close[2].texture,
+        };
+        skin_quads.push(compose_stretched_quad(layout.close_button, close_texture)?);
+
         let item_frame = inventory_items_frame(
             registry,
             item_icon_assets,
             entries,
             category,
-            &slot_rects,
+            &layout.slots,
             pixels_per_unit,
             self.dragging_item,
         )?;
-        let tooltip = hovered_item
-            .and_then(|item| entries.iter().find(|entry| entry.item_instance_id == item))
-            .map(|entry| {
-                inventory_tooltip_frame(
-                    window_assets,
-                    registry,
-                    entry,
-                    cursor.expect("hovered item requires cursor"),
-                    viewport,
-                    pixels_per_unit,
-                )
-            })
-            .transpose()?;
-        let grid_chrome = inventory_grid_chrome(
-            window_assets,
-            slot_assets,
-            self.slots,
-            layout,
-            tab_bounds,
-            slot_origin,
-            pixels_per_unit,
-        )?;
-        let currency_bounds = inventory_currency_bounds(
-            window_assets,
-            slot_assets,
-            self.slots,
-            layout,
-            slot_origin,
-            pixels_per_unit,
-        )?;
-        let currency_texts = self.currency.frame(currency_bounds, pixels_per_unit)?;
-        let mut textured_rects = window_frame.textured_rects;
-        textured_rects.extend(grid_chrome);
-        textured_rects.extend(tab_frame.textured_rects);
-        textured_rects.extend(slot_rects);
-        textured_rects.extend(item_frame.textured_rects);
-        let tooltip_text_count = tooltip.as_ref().map_or(0, |tooltip| tooltip.texts.len());
-        let mut texts = Vec::with_capacity(
-            1 + tab_frame.texts.len()
-                + currency_texts.len()
-                + item_frame.texts.len()
-                + tooltip_text_count,
-        );
-        texts.push(window_frame.title);
-        texts.extend(tab_frame.texts);
-        texts.extend(currency_texts);
+        let mut texts = Vec::new();
+        texts.push(inventory_title(&layout, pixels_per_unit));
+        texts.extend(inventory_tab_labels(&layout.tabs, pixels_per_unit)?);
+        texts.extend(self.currency.frame(layout.currency, pixels_per_unit)?);
         texts.extend(item_frame.texts);
-        if let Some(tooltip) = tooltip {
-            textured_rects.push(tooltip.background);
-            texts.extend(tooltip.texts);
+
+        let mut tooltip_quads = Vec::new();
+        let mut tooltip_texts = Vec::new();
+        if let Some(item) = hovered_item
+            && let Some(entry) = entries.iter().find(|entry| entry.item_instance_id == item)
+        {
+            let tooltip = inventory_tooltip_frame(
+                assets,
+                registry,
+                entry,
+                cursor.expect("hovered item requires cursor"),
+                viewport,
+                pixels_per_unit,
+            )?;
+            tooltip_quads = tooltip.quads;
+            tooltip_texts = tooltip.texts;
         }
+        let mut drag_preview = Vec::new();
         if let (Some(item), Some(cursor)) = (self.dragging_item, cursor)
             && let Some(entry) = entries.iter().find(|entry| entry.item_instance_id == item)
         {
-            textured_rects.push(drag_preview_icon(
+            drag_preview.push(drag_preview_icon(
                 item_icon_assets.resolve(entry.definition),
                 cursor,
                 pixels_per_unit,
             )?);
         }
         Ok(Some(InventoryWindowFrame {
-            textured_rects,
+            skin_quads,
+            item_rects: item_frame.textured_rects,
             texts,
+            tooltip_quads,
+            tooltip_texts,
+            drag_preview,
         }))
     }
 
@@ -2016,29 +2313,27 @@ impl InventoryWindow {
 
     pub(crate) fn apply_pointer_button(
         &mut self,
-        window_assets: UiWindowAssets,
-        tab_assets: UiTabAssets,
         state: ElementState,
         cursor: Option<[f32; 2]>,
         viewport: PixelViewport,
         pixels_per_unit: f32,
     ) -> bool {
-        let Ok(Some(layout)) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)
-        else {
+        let Ok(Some(layout)) = self.layout(viewport, pixels_per_unit) else {
             self.cancel_pointer_interaction();
             return false;
         };
         let selected_tab_before = self.tabs.selected_index();
-        if let Ok(tab_bounds) =
-            inventory_tab_bounds(window_assets, tab_assets, layout, pixels_per_unit)
-            && self.tabs.apply_pointer_button(
-                state,
-                cursor,
-                tab_bounds,
-                INVENTORY_TAB_LABELS.len(),
-                tab_assets.gap_units * pixels_per_unit,
-            )
-        {
+        let tab_bounds = ScreenRect {
+            min: layout.tabs[0].min,
+            max: layout.tabs[layout.tabs.len() - 1].max,
+        };
+        if self.tabs.apply_pointer_button(
+            state,
+            cursor,
+            tab_bounds,
+            INVENTORY_TAB_LABELS.len(),
+            INVENTORY_TAB_GAP_UNITS * pixels_per_unit,
+        ) {
             self.pressed_item = None;
             if state == ElementState::Released && self.tabs.selected_index() != selected_tab_before
             {
@@ -2083,8 +2378,16 @@ impl InventoryWindow {
             ElementState::Pressed => {}
         }
 
-        self.chrome
-            .apply_pointer_button(window_assets, state, cursor, viewport, pixels_per_unit)
+        self.chrome.apply_chrome_pointer(
+            Some(WindowChromeLayout {
+                window: layout.window,
+                header: layout.header,
+                close_button: layout.close_button,
+            }),
+            state,
+            cursor,
+            pixels_per_unit,
+        )
     }
 
     pub(crate) fn cancel_pointer_interaction(&mut self) {
@@ -2107,13 +2410,11 @@ impl InventoryWindow {
 
     pub(crate) fn contains_window(
         &mut self,
-        window_assets: UiWindowAssets,
         cursor: [f32; 2],
         viewport: PixelViewport,
         pixels_per_unit: f32,
     ) -> bool {
-        window_assets
-            .layout(&mut self.chrome, viewport, pixels_per_unit)
+        self.layout(viewport, pixels_per_unit)
             .ok()
             .flatten()
             .is_some_and(|layout| layout.window.contains(cursor))
@@ -2142,6 +2443,53 @@ impl InventoryWindow {
             .iter()
             .find_map(|(bounds, item)| bounds.contains(cursor).then_some(*item))
     }
+}
+
+fn inventory_title(layout: &InventoryLayout, pixels_per_unit: f32) -> TextBlock {
+    let font_px = TITLE_FONT_SIZE_UNITS * pixels_per_unit;
+    let title_anchor = [
+        layout.tabs[0].min[0] + TITLE_LEFT_INSET_UNITS * pixels_per_unit,
+        layout.close_button.min[1] + (layout.close_button.height() - font_px).max(0.0) * 0.5,
+    ];
+    let max_width =
+        (layout.close_button.min[0] - TITLE_CONTROL_GAP_UNITS * pixels_per_unit - title_anchor[0])
+            .max(1.0);
+    TextBlock {
+        content: TextContent("Item Inventory".to_owned()),
+        style: TextStyle::at_size(
+            TITLE_FONT_SIZE_UNITS,
+            [1.0, 1.0, 1.0, 1.0],
+            TextAlignment::Left,
+        ),
+        anchor: title_anchor,
+        max_width: Some(max_width),
+    }
+}
+
+fn inventory_tab_labels(
+    tabs: &[ScreenRect],
+    pixels_per_unit: f32,
+) -> Result<Vec<TextBlock>, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let font_px = INVENTORY_TAB_FONT_SIZE_UNITS * pixels_per_unit;
+    let padding = INVENTORY_TAB_TEXT_PADDING_UNITS * pixels_per_unit;
+    Ok(tabs
+        .iter()
+        .zip(INVENTORY_TAB_LABELS)
+        .map(|(tab, label)| TextBlock {
+            content: TextContent(label.to_string()),
+            style: TextStyle::at_size(
+                INVENTORY_TAB_FONT_SIZE_UNITS,
+                TAB_TEXT_COLOR,
+                TextAlignment::Center,
+            ),
+            anchor: [
+                (tab.min[0] + tab.max[0]) * 0.5,
+                tab.min[1] + ((tab.height() - font_px) * 0.5).max(0.0),
+            ],
+            max_width: Some((tab.width() - padding * 2.0).max(1.0)),
+        })
+        .collect())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2492,7 +2840,7 @@ struct UiInventoryItemsFrame {
 }
 
 struct UiInventoryTooltipFrame {
-    background: UiTexturedRect,
+    quads: Vec<UiTexturedQuad>,
     texts: Vec<TextBlock>,
 }
 
@@ -2522,7 +2870,7 @@ fn inventory_items_frame(
     item_icon_assets: &UiItemIconAssets,
     entries: &[InventoryEntry],
     category: ItemCategory,
-    slots: &[UiTexturedRect],
+    slots: &[ScreenRect],
     pixels_per_unit: f32,
     dragging_item: Option<ItemInstanceId>,
 ) -> Result<UiInventoryItemsFrame, String> {
@@ -2589,7 +2937,14 @@ fn equipment_items_frame(
             continue;
         };
         let icon = item_icon_assets.resolve(*definition);
-        let icon_bounds = fit_item_icon(slot, icon.dimensions_px, pixels_per_unit)?;
+        let icon_bounds = fit_item_icon(
+            ScreenRect {
+                min: slot.min,
+                max: slot.max,
+            },
+            icon.dimensions_px,
+            pixels_per_unit,
+        )?;
         textured_rects.push(UiTexturedRect {
             min: icon_bounds.min,
             max: icon_bounds.max,
@@ -2619,7 +2974,14 @@ fn drag_preview_icon(
         uv_max: icon.uv_max,
         tint: [1.0; 4],
     };
-    let bounds = fit_item_icon(slot, icon.dimensions_px, pixels_per_unit)?;
+    let bounds = fit_item_icon(
+        ScreenRect {
+            min: slot.min,
+            max: slot.max,
+        },
+        icon.dimensions_px,
+        pixels_per_unit,
+    )?;
     Ok(UiTexturedRect {
         min: bounds.min,
         max: bounds.max,
@@ -2663,22 +3025,15 @@ fn inventory_tooltip_content(
     }
 }
 
-fn inventory_tooltip_frame(
-    window_assets: UiWindowAssets,
-    registry: &ContentRegistry,
-    entry: &InventoryEntry,
+fn inventory_tooltip_bounds(
     cursor: [f32; 2],
     viewport: PixelViewport,
     pixels_per_unit: f32,
-) -> Result<UiInventoryTooltipFrame, String> {
+    description_present: bool,
+) -> Result<ScreenRect, String> {
     validate_pixels_per_unit(pixels_per_unit)?;
     let width = INVENTORY_TOOLTIP_WIDTH_UNITS * pixels_per_unit;
-    let (title, detail, description) = inventory_tooltip_content(
-        registry.item_by_id(entry.definition),
-        registry.item_presentation_by_id(entry.definition),
-        entry,
-    );
-    let line_count = if description.is_empty() { 2.0 } else { 3.0 };
+    let line_count = if description_present { 3.0 } else { 2.0 };
     let height = (INVENTORY_TOOLTIP_FONT_SIZE_UNITS * line_count
         + INVENTORY_TOOLTIP_LINE_GAP_UNITS * (line_count - 1.0)
         + INVENTORY_TOOLTIP_PADDING_UNITS * 2.0)
@@ -2704,10 +3059,28 @@ fn inventory_tooltip_frame(
         viewport_min[1],
         (viewport_max[1] - height).max(viewport_min[1]),
     );
-    let bounds = ScreenRect {
+    Ok(ScreenRect {
         min,
         max: [min[0] + width, min[1] + height],
-    };
+    })
+}
+
+fn inventory_tooltip_frame(
+    assets: &InventoryV2Assets,
+    registry: &ContentRegistry,
+    entry: &InventoryEntry,
+    cursor: [f32; 2],
+    viewport: PixelViewport,
+    pixels_per_unit: f32,
+) -> Result<UiInventoryTooltipFrame, String> {
+    let (title, detail, description) = inventory_tooltip_content(
+        registry.item_by_id(entry.definition),
+        registry.item_presentation_by_id(entry.definition),
+        entry,
+    );
+    let bounds =
+        inventory_tooltip_bounds(cursor, viewport, pixels_per_unit, !description.is_empty())?;
+    let width = bounds.width();
     let padding = INVENTORY_TOOLTIP_PADDING_UNITS * pixels_per_unit;
     let font_size = INVENTORY_TOOLTIP_FONT_SIZE_UNITS * pixels_per_unit;
     let line_gap = INVENTORY_TOOLTIP_LINE_GAP_UNITS * pixels_per_unit;
@@ -2748,18 +3121,22 @@ fn inventory_tooltip_frame(
             max_width: Some(text_width),
         });
     }
-    Ok(UiInventoryTooltipFrame {
-        background: panel_center_fill(
-            window_assets.panel(),
-            bounds,
-            INVENTORY_TOOLTIP_BACKGROUND_TINT,
-        ),
-        texts,
-    })
+    let quads = compose_standalone_nine_slice(
+        bounds.min,
+        [
+            bounds.width() / pixels_per_unit,
+            bounds.height() / pixels_per_unit,
+        ],
+        pixels_per_unit,
+        assets.tooltip.texture,
+        assets.tooltip.size_px,
+        assets.tooltip.slice_ltrb,
+    )?;
+    Ok(UiInventoryTooltipFrame { quads, texts })
 }
 
 fn fit_item_icon(
-    slot: UiTexturedRect,
+    slot: ScreenRect,
     dimensions_px: [u32; 2],
     pixels_per_unit: f32,
 ) -> Result<ScreenRect, String> {
@@ -2789,179 +3166,6 @@ fn fit_item_icon(
         min,
         max: [min[0] + size[0], min[1] + size[1]],
     })
-}
-
-fn inventory_grid_chrome(
-    window_assets: UiWindowAssets,
-    slot_assets: UiSlotAssets,
-    grid: UiSlotGrid,
-    layout: UiWindowLayout,
-    tab_bounds: ScreenRect,
-    slot_origin: [f32; 2],
-    pixels_per_unit: f32,
-) -> Result<[UiTexturedRect; 2], String> {
-    validate_pixels_per_unit(pixels_per_unit)?;
-    let grid_size = grid.logical_size(slot_assets)?;
-    let separator = ScreenRect {
-        min: [tab_bounds.min[0], tab_bounds.max[1]],
-        max: [
-            tab_bounds.max[0],
-            tab_bounds.max[1] + INVENTORY_TAB_SEPARATOR_HEIGHT_UNITS * pixels_per_unit,
-        ],
-    };
-    let background = ScreenRect {
-        min: [
-            slot_origin[0] - INVENTORY_GRID_SIDE_PADDING_UNITS * pixels_per_unit,
-            separator.max[1],
-        ],
-        max: [
-            slot_origin[0] + (grid_size[0] + INVENTORY_GRID_SIDE_PADDING_UNITS) * pixels_per_unit,
-            slot_origin[1] + (grid_size[1] + INVENTORY_GRID_BOTTOM_PADDING_UNITS) * pixels_per_unit,
-        ],
-    };
-    let content_max_y =
-        layout.window.max[1] - window_assets.panel().border_units.bottom * pixels_per_unit;
-    if separator.max[1] > slot_origin[1]
-        || background.min[0] < tab_bounds.min[0]
-        || background.max[0] > tab_bounds.max[0]
-        || background.width() <= 0.0
-        || background.height() <= 0.0
-        || background.max[1] > content_max_y
-    {
-        return Err("inventory grid chrome does not fit inside the panel content".to_string());
-    }
-    Ok([
-        panel_center_fill(
-            window_assets.panel(),
-            background,
-            INVENTORY_GRID_BACKGROUND_TINT,
-        ),
-        panel_center_fill(
-            window_assets.panel(),
-            separator,
-            INVENTORY_TAB_SEPARATOR_TINT,
-        ),
-    ])
-}
-
-fn panel_center_fill(panel: PanelAsset, bounds: ScreenRect, tint: [f32; 4]) -> UiTexturedRect {
-    let sample_size = [
-        panel.source_size_px[0].min(4),
-        panel.source_size_px[1].min(4),
-    ];
-    let source = SourceRectPx {
-        x: panel.source_rect.x + (panel.source_rect.width - sample_size[0]) / 2,
-        y: panel.source_rect.y + (panel.source_rect.height - sample_size[1]) / 2,
-        width: sample_size[0],
-        height: sample_size[1],
-    };
-    let (uv_min, uv_max) = source.uv_bounds(panel.source_size_px);
-    UiTexturedRect {
-        min: bounds.min,
-        max: bounds.max,
-        texture: panel.texture,
-        uv_min,
-        uv_max,
-        tint,
-    }
-}
-
-fn inventory_currency_bounds(
-    window_assets: UiWindowAssets,
-    slot_assets: UiSlotAssets,
-    grid: UiSlotGrid,
-    layout: UiWindowLayout,
-    slot_origin: [f32; 2],
-    pixels_per_unit: f32,
-) -> Result<ScreenRect, String> {
-    validate_pixels_per_unit(pixels_per_unit)?;
-    let grid_size = grid.logical_size(slot_assets)?;
-    let inset = INVENTORY_CURRENCY_VERTICAL_INSET_UNITS * pixels_per_unit;
-    let bounds = ScreenRect {
-        min: [
-            layout.window.min[0] + INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
-            slot_origin[1] + grid_size[1] * pixels_per_unit + inset,
-        ],
-        max: [
-            layout.window.max[0] - INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
-            layout.window.max[1]
-                - window_assets.panel().border_units.bottom * pixels_per_unit
-                - inset,
-        ],
-    };
-    if bounds.width() <= 0.0 || bounds.height() < CURRENCY_FONT_SIZE_UNITS * pixels_per_unit {
-        return Err("inventory window is too small for its currency row".to_string());
-    }
-    Ok(bounds)
-}
-
-pub(crate) struct InventoryWindowFrame {
-    pub(crate) textured_rects: Vec<UiTexturedRect>,
-    pub(crate) texts: Vec<TextBlock>,
-}
-
-fn inventory_tab_bounds(
-    window_assets: UiWindowAssets,
-    tab_assets: UiTabAssets,
-    layout: UiWindowLayout,
-    pixels_per_unit: f32,
-) -> Result<ScreenRect, String> {
-    validate_pixels_per_unit(pixels_per_unit)?;
-    let min_y = layout.header.max[1] + INVENTORY_TAB_TOP_GAP_UNITS * pixels_per_unit;
-    let bounds = ScreenRect {
-        min: [
-            layout.window.min[0] + INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
-            min_y,
-        ],
-        max: [
-            layout.window.max[0] - INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit,
-            min_y + tab_assets.height_units * pixels_per_unit,
-        ],
-    };
-    let tab_count = INVENTORY_TAB_LABELS.len();
-    let minimum_width = ((tab_assets.cap_units.left + tab_assets.cap_units.right)
-        * tab_count as f32
-        + tab_assets.gap_units * tab_count.saturating_sub(1) as f32)
-        * pixels_per_unit;
-    if bounds.width() <= minimum_width
-        || bounds.max[1]
-            >= layout.window.max[1] - window_assets.panel().border_units.bottom * pixels_per_unit
-    {
-        return Err("inventory window is too small for its tab strip".to_string());
-    }
-    Ok(bounds)
-}
-
-fn inventory_slot_origin(
-    window_assets: UiWindowAssets,
-    slot_assets: UiSlotAssets,
-    grid: UiSlotGrid,
-    layout: UiWindowLayout,
-    tab_bounds: ScreenRect,
-    pixels_per_unit: f32,
-) -> Result<[f32; 2], String> {
-    validate_pixels_per_unit(pixels_per_unit)?;
-    let grid_size = grid.logical_size(slot_assets)?;
-    let content_min_x = layout.window.min[0] + INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
-    let content_max_x = layout.window.max[0] - INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
-    let origin = [
-        content_min_x
-            + ((content_max_x - content_min_x) / pixels_per_unit - grid_size[0])
-                * 0.5
-                * pixels_per_unit,
-        tab_bounds.max[1] + INVENTORY_SLOT_TOP_GAP_UNITS * pixels_per_unit,
-    ];
-    let max = [
-        origin[0] + grid_size[0] * pixels_per_unit,
-        origin[1] + grid_size[1] * pixels_per_unit,
-    ];
-    let content_max_y =
-        layout.window.max[1] - window_assets.panel().border_units.bottom * pixels_per_unit;
-    let grid_max_y = content_max_y - INVENTORY_FOOTER_RESERVED_UNITS * pixels_per_unit;
-    if origin[0] < content_min_x || max[0] > content_max_x || max[1] > grid_max_y {
-        return Err("inventory window is too small for its slot grid".to_string());
-    }
-    Ok(origin)
 }
 
 fn equipment_slot_origin(
@@ -3324,7 +3528,26 @@ impl ProofPanelWindow {
         viewport: PixelViewport,
         pixels_per_unit: f32,
     ) -> bool {
-        let Ok(Some(layout)) = assets.layout(self, viewport, pixels_per_unit) else {
+        let chrome = assets
+            .layout(self, viewport, pixels_per_unit)
+            .ok()
+            .flatten()
+            .map(|layout| WindowChromeLayout {
+                window: layout.window,
+                header: layout.header,
+                close_button: layout.close_button,
+            });
+        self.apply_chrome_pointer(chrome, state, cursor, pixels_per_unit)
+    }
+
+    fn apply_chrome_pointer(
+        &mut self,
+        chrome: Option<WindowChromeLayout>,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        pixels_per_unit: f32,
+    ) -> bool {
+        let Some(layout) = chrome else {
             self.interaction = PointerInteraction::None;
             return false;
         };
@@ -3396,6 +3619,12 @@ pub(crate) struct UiMessageChrome {
     pub(crate) close_button: ScreenRect,
 }
 
+struct WindowChromeLayout {
+    window: ScreenRect,
+    header: ScreenRect,
+    close_button: ScreenRect,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct UiWindowLayout {
     window: ScreenRect,
@@ -3435,6 +3664,42 @@ fn clamp_top_left(position: [f32; 2], window_size: [f32; 2], viewport_size: [f32
         position[0].clamp(0.0, max[0]),
         position[1].clamp(0.0, max[1]),
     ]
+}
+
+fn place_proof_window(
+    window: &mut ProofPanelWindow,
+    viewport: PixelViewport,
+    pixels_per_unit: f32,
+) -> Result<Option<ScreenRect>, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let Some(window_size_units) = window.mode.logical_size(window.size_units) else {
+        return Ok(None);
+    };
+    let viewport_size_units = [
+        viewport.width as f32 / pixels_per_unit,
+        viewport.height as f32 / pixels_per_unit,
+    ];
+    let centered = [
+        ((viewport_size_units[0] - window_size_units[0]) * 0.5).max(0.0),
+        ((viewport_size_units[1] - window_size_units[1]) * 0.5).max(0.0),
+    ];
+    let initial = [
+        centered[0] + window.initial_center_offset_units[0],
+        centered[1] + window.initial_center_offset_units[1],
+    ];
+    let top_left_units = window.top_left_units.get_or_insert(initial);
+    *top_left_units = clamp_top_left(*top_left_units, window_size_units, viewport_size_units);
+    let window_min = [
+        viewport.x as f32 + top_left_units[0] * pixels_per_unit,
+        viewport.y as f32 + top_left_units[1] * pixels_per_unit,
+    ];
+    Ok(Some(ScreenRect {
+        min: window_min,
+        max: [
+            window_min[0] + window_size_units[0] * pixels_per_unit,
+            window_min[1] + window_size_units[1] * pixels_per_unit,
+        ],
+    }))
 }
 
 /// Standalone nine-slice for a full V2 texture.
@@ -3522,6 +3787,30 @@ pub(crate) fn compose_standalone_nine_slice(
             && rect.uv_max[1] > rect.uv_min[1]
     });
     Ok(regions.into_iter().map(stretch_nine_slice_piece).collect())
+}
+
+/// Map one full source image across one destination. Quad submission does not tile.
+pub(crate) fn compose_stretched_quad(
+    bounds: ScreenRect,
+    texture: SpriteTextureId,
+) -> Result<UiTexturedQuad, String> {
+    if !bounds.min.into_iter().chain(bounds.max).all(f32::is_finite)
+        || bounds.width() <= 0.0
+        || bounds.height() <= 0.0
+    {
+        return Err("UI image destination is invalid".to_string());
+    }
+    Ok(UiTexturedQuad {
+        corners: [
+            bounds.min,
+            [bounds.max[0], bounds.min[1]],
+            bounds.max,
+            [bounds.min[0], bounds.max[1]],
+        ],
+        uvs: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        texture,
+        tint: [1.0, 1.0, 1.0, 1.0],
+    })
 }
 
 /// Map one source UV rectangle across the whole destination. Quad submission
@@ -3778,6 +4067,66 @@ mod tests {
 
     fn embedded_slot_assets() -> UiSlotAssets {
         UiSlotAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
+    }
+
+    fn synthetic_inventory_assets() -> InventoryV2Assets {
+        let metrics = fixture_inventory_metrics();
+        let image = |id: u32, size: [u32; 2]| UiV2Image {
+            texture: SpriteTextureId::from_raw(id),
+            size_px: size,
+        };
+        InventoryV2Assets {
+            metrics,
+            body: UiV2NineSlice {
+                texture: SpriteTextureId::from_raw(11),
+                size_px: [80, 80],
+                slice_ltrb: metrics.body_slice,
+            },
+            footer: UiV2NineSlice {
+                texture: SpriteTextureId::from_raw(12),
+                size_px: [40, metrics.footer_height as u32],
+                slice_ltrb: metrics.footer_slice,
+            },
+            tooltip: UiV2NineSlice {
+                texture: SpriteTextureId::from_raw(13),
+                size_px: [48, 32],
+                slice_ltrb: [4, 4, 4, 4],
+            },
+            close: [
+                image(21, [10, 10]),
+                image(22, [10, 10]),
+                image(23, [10, 10]),
+            ],
+            tabs: [
+                image(31, [36, 16]),
+                image(32, [36, 16]),
+                image(33, [36, 16]),
+                image(34, [36, 16]),
+            ],
+            slots: [
+                image(41, [18, 18]),
+                image(42, [18, 18]),
+                image(43, [18, 18]),
+            ],
+        }
+    }
+
+    fn inventory_frame_input<'a>(
+        assets: &'a InventoryV2Assets,
+        icons: &'a UiItemIconAssets,
+        registry: &'a ContentRegistry,
+        entries: &'a [InventoryEntry],
+        cursor: Option<[f32; 2]>,
+    ) -> InventoryWindowFrameInput<'a> {
+        InventoryWindowFrameInput {
+            assets,
+            item_icon_assets: icons,
+            entries,
+            registry,
+            viewport: viewport(),
+            pixels_per_unit: 1.0,
+            cursor,
+        }
     }
 
     fn viewport() -> PixelViewport {
@@ -4181,16 +4530,14 @@ mod tests {
             ElementState::Pressed,
             false,
         );
-        let inventory_layout = assets
-            .layout(&mut inventory.chrome, viewport(), 1.0)
-            .unwrap()
-            .unwrap();
+        let inventory_layout = inventory.layout(viewport(), 1.0).unwrap().unwrap();
+        let expected = inventory.metrics.window_size().unwrap();
         assert_eq!(
             [
                 inventory_layout.window.width(),
                 inventory_layout.window.height()
             ],
-            [276.0, 440.0]
+            expected
         );
         let equipment_layout = assets
             .layout(&mut equipment.chrome, viewport(), 1.0)
@@ -4288,116 +4635,55 @@ mod tests {
 
     #[test]
     fn inventory_window_composes_five_tabs_and_changes_selection_on_click_release() {
-        let window_assets = embedded_assets();
-        let tab_assets = embedded_tab_assets();
-        let slot_assets = embedded_slot_assets();
+        let assets = synthetic_inventory_assets();
         let registry = inventory_registry();
         let item_icons = placeholder_item_icons(&registry);
-        let mut inventory = InventoryWindow::default();
+        let mut inventory = InventoryWindow::new(assets.metrics);
         assert!(inventory.apply_key(
             PhysicalKey::Code(KeyCode::KeyI),
             ElementState::Pressed,
             false
         ));
         let frame = inventory
-            .frame(InventoryWindowFrameInput {
-                window_assets,
-                tab_assets,
-                slot_assets,
-                item_icon_assets: &item_icons,
-                entries: &[],
-                registry: &registry,
-                viewport: viewport(),
-                pixels_per_unit: 1.0,
-                cursor: None,
-            })
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &[],
+                None,
+            ))
             .unwrap()
             .unwrap();
-        assert_eq!(frame.textured_rects.len(), 62);
-        assert_eq!(frame.texts.len(), 13);
+        assert_eq!(frame.skin_quads.len(), 9 + 9 + 35 + 5 + 1);
+        assert!(frame.item_rects.is_empty());
+        assert_eq!(frame.texts.len(), 8);
         assert_eq!(frame.texts[0].content.0, "Item Inventory");
         assert_eq!(frame.texts[1].content.0, "Equip");
         assert_eq!(frame.texts[2].content.0, "Cons.");
         assert_eq!(frame.texts[3].content.0, "Mats");
         assert_eq!(frame.texts[4].content.0, "Tools");
         assert_eq!(frame.texts[5].content.0, "Misc");
-        assert_eq!(frame.texts[6].content.0, "Equip");
-        assert_eq!(frame.texts[10].content.0, "Misc");
-        assert_eq!(frame.texts[11].content.0, "Gold: 0");
-        assert_eq!(frame.texts[12].content.0, "Silver: 0");
+        assert_eq!(frame.texts[6].content.0, "Gold: 0");
+        assert_eq!(frame.texts[7].content.0, "Silver: 0");
+        assert_eq!(frame.skin_quads[18].texture, assets.slots[0].texture);
+        assert_eq!(frame.skin_quads[18].uvs[0], [0.0, 0.0]);
+        assert_eq!(frame.skin_quads[18].uvs[2], [1.0, 1.0]);
+        assert_eq!(frame.skin_quads[53].texture, assets.tabs[0].texture);
+        assert_eq!(frame.skin_quads[54].texture, assets.tabs[1].texture);
 
-        let slot_count = INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS;
-        let slots = &frame.textured_rects[frame.textured_rects.len() - slot_count..];
-        assert_eq!(slots.len(), INVENTORY_SLOT_COLUMNS * INVENTORY_SLOT_ROWS);
-        assert!(slots.iter().all(|slot| slot.size() == [44.0, 44.0]));
-        assert_eq!(slots[1].min[0] - slots[0].max[0], 2.0);
-        assert_eq!(slots[INVENTORY_SLOT_COLUMNS].min[1] - slots[0].max[1], 2.0);
-
-        let layout = window_assets
-            .layout(&mut inventory.chrome, viewport(), 1.0)
-            .unwrap()
-            .unwrap();
-        let content_max_y = layout.window.max[1] - window_assets.panel().border_units.bottom;
-        assert_eq!(content_max_y - slots.last().unwrap().max[1], 61.0);
-        let currency_bounds = inventory_currency_bounds(
-            window_assets,
-            slot_assets,
-            inventory.slots,
-            layout,
-            slots[0].min,
-            1.0,
-        )
-        .unwrap();
-        assert_eq!(currency_bounds.min[1] - slots.last().unwrap().max[1], 4.0);
-        assert_eq!(content_max_y - currency_bounds.max[1], 4.0);
-
-        let layout = window_assets
-            .layout(&mut inventory.chrome, viewport(), 1.0)
-            .unwrap()
-            .unwrap();
-        let bounds = inventory_tab_bounds(window_assets, tab_assets, layout, 1.0).unwrap();
-        assert_eq!(layout.window.width(), 276.0);
-        assert_eq!(bounds.width(), 230.0);
-        assert_eq!(bounds.min[0] - layout.window.min[0], 23.0);
-        assert_eq!(layout.window.max[0] - bounds.max[0], 23.0);
-        let background = frame.textured_rects[10];
-        let separator = frame.textured_rects[11];
-        assert_eq!(background.texture, window_assets.panel().texture);
-        assert_eq!(separator.texture, window_assets.panel().texture);
-        assert_eq!(background.tint, INVENTORY_GRID_BACKGROUND_TINT);
-        assert_eq!(separator.tint, INVENTORY_TAB_SEPARATOR_TINT);
-        assert_eq!(separator.min, [bounds.min[0], bounds.max[1]]);
-        assert_eq!(separator.size(), [bounds.width(), 2.0]);
-        assert_eq!(background.min[1], separator.max[1]);
-        assert_eq!(slots[0].min[0] - background.min[0], 1.0);
-        assert_eq!(
-            background.max[0] - slots[INVENTORY_SLOT_COLUMNS - 1].max[0],
-            1.0
-        );
-        assert_eq!(slots[0].min[1] - background.min[1], 2.0);
-        assert_eq!(background.max[1] - slots.last().unwrap().max[1], 2.0);
-        assert_eq!(slots[0].min[0] - bounds.min[0], 1.0);
-        assert_eq!(
-            bounds.max[0] - slots[INVENTORY_SLOT_COLUMNS - 1].max[0],
-            1.0
-        );
-        let tab_gap = tab_assets.gap_units;
-        let materials = tab_rect(bounds, 2, INVENTORY_TAB_LABELS.len(), tab_gap);
+        let layout = inventory.layout(viewport(), 1.0).unwrap().unwrap();
+        let materials = layout.tabs[2];
         let cursor = [
             (materials.min[0] + materials.max[0]) * 0.5,
             (materials.min[1] + materials.max[1]) * 0.5,
         ];
         assert!(inventory.apply_pointer_button(
-            window_assets,
-            tab_assets,
             ElementState::Pressed,
             Some(cursor),
             viewport(),
             1.0
         ));
         assert!(inventory.apply_pointer_button(
-            window_assets,
-            tab_assets,
             ElementState::Released,
             Some(cursor),
             viewport(),
@@ -4405,21 +4691,10 @@ mod tests {
         ));
         assert_eq!(inventory.tabs.selected_index, 2);
 
-        let equip = tab_rect(bounds, 0, INVENTORY_TAB_LABELS.len(), tab_gap);
-        let consumables = tab_rect(bounds, 1, INVENTORY_TAB_LABELS.len(), tab_gap);
-        let gap_cursor = [
-            (equip.max[0] + consumables.min[0]) * 0.5,
-            (bounds.min[1] + bounds.max[1]) * 0.5,
-        ];
-        assert_eq!(
-            tab_at(bounds, INVENTORY_TAB_LABELS.len(), tab_gap, gap_cursor),
-            None
-        );
-        assert!(inventory.apply_pointer_button(
-            window_assets,
-            tab_assets,
+        let outside = [layout.window.min[0] - 4.0, layout.window.min[1] - 4.0];
+        assert!(!inventory.apply_pointer_button(
             ElementState::Pressed,
-            Some(gap_cursor),
+            Some(outside),
             viewport(),
             1.0
         ));
@@ -4429,9 +4704,7 @@ mod tests {
 
     #[test]
     fn inventory_items_filter_by_tab_and_stack_quantity_overlays_the_first_slot() {
-        let window_assets = embedded_assets();
-        let tab_assets = embedded_tab_assets();
-        let slot_assets = embedded_slot_assets();
+        let assets = synthetic_inventory_assets();
         let registry = inventory_registry();
         let item_icons = placeholder_item_icons(&registry);
         let sword = purgatory_common::ITEM_PRACTICE_SWORD;
@@ -4450,7 +4723,7 @@ mod tests {
                 quantity: 1,
             },
         ];
-        let mut inventory = InventoryWindow::default();
+        let mut inventory = InventoryWindow::new(assets.metrics);
         assert!(inventory.apply_key(
             PhysicalKey::Code(KeyCode::KeyI),
             ElementState::Pressed,
@@ -4458,57 +4731,46 @@ mod tests {
         ));
 
         let equip = inventory
-            .frame(InventoryWindowFrameInput {
-                window_assets,
-                tab_assets,
-                slot_assets,
-                item_icon_assets: &item_icons,
-                entries: &entries,
-                registry: &registry,
-                viewport: viewport(),
-                pixels_per_unit: 1.0,
-                cursor: None,
-            })
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &entries,
+                None,
+            ))
             .unwrap()
             .unwrap();
-        assert_eq!(equip.textured_rects.len(), 63);
-        assert_eq!(equip.texts.len(), 13);
-        let first_slot = equip.textured_rects[27];
-        let sword_icon = equip.textured_rects[62];
+        assert_eq!(equip.item_rects.len(), 1);
+        assert_eq!(equip.texts.len(), 8);
+        let first_slot = inventory.layout(viewport(), 1.0).unwrap().unwrap().slots[0];
+        let sword_icon = &equip.item_rects[0];
         assert_eq!(sword_icon.texture, item_icons.resolve(sword).texture);
         assert_eq!(sword_icon.min[0] - first_slot.min[0], 4.0);
         assert_eq!(first_slot.max[0] - sword_icon.max[0], 4.0);
 
         inventory.tabs.selected_index = 1;
         let consumables = inventory
-            .frame(InventoryWindowFrameInput {
-                window_assets,
-                tab_assets,
-                slot_assets,
-                item_icon_assets: &item_icons,
-                entries: &entries,
-                registry: &registry,
-                viewport: viewport(),
-                pixels_per_unit: 1.0,
-                cursor: None,
-            })
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &entries,
+                None,
+            ))
             .unwrap()
             .unwrap();
-        assert_eq!(consumables.textured_rects.len(), 63);
         assert_eq!(
-            consumables.textured_rects[62].texture,
+            consumables.item_rects[0].texture,
             item_icons.resolve(potion).texture
         );
-        assert_eq!(consumables.texts.len(), 14);
-        assert_eq!(consumables.texts[13].content.0, "12");
-        assert_eq!(consumables.texts[13].style.alignment, TextAlignment::Right);
+        assert_eq!(consumables.texts.len(), 9);
+        assert_eq!(consumables.texts[8].content.0, "12");
+        assert_eq!(consumables.texts[8].style.alignment, TextAlignment::Right);
     }
 
     #[test]
     fn inventory_item_hover_tooltip_and_click_selection_share_visible_slot_mapping() {
-        let window_assets = embedded_assets();
-        let tab_assets = embedded_tab_assets();
-        let slot_assets = embedded_slot_assets();
+        let assets = synthetic_inventory_assets();
         let registry = ContentRegistry::new();
         let item_icons = placeholder_item_icons(&registry);
         let definition = ContentId::from_authored("item.unknown.client_mapping").unwrap();
@@ -4519,7 +4781,7 @@ mod tests {
             definition,
             quantity: 1,
         }];
-        let mut inventory = InventoryWindow::default();
+        let mut inventory = InventoryWindow::new(assets.metrics);
         assert!(inventory.apply_key(
             PhysicalKey::Code(KeyCode::KeyI),
             ElementState::Pressed,
@@ -4527,17 +4789,13 @@ mod tests {
         ));
         inventory.tabs.selected_index = 4;
         inventory
-            .frame(InventoryWindowFrameInput {
-                window_assets,
-                tab_assets,
-                slot_assets,
-                item_icon_assets: &item_icons,
-                entries: &entries,
-                registry: &registry,
-                viewport: viewport(),
-                pixels_per_unit: 1.0,
-                cursor: None,
-            })
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &entries,
+                None,
+            ))
             .unwrap()
             .unwrap();
         let first_hit = inventory.item_hit_regions[0].0;
@@ -4546,8 +4804,6 @@ mod tests {
             (first_hit.min[1] + first_hit.max[1]) * 0.5,
         ];
         assert!(inventory.apply_pointer_button(
-            window_assets,
-            tab_assets,
             ElementState::Pressed,
             Some(cursor),
             viewport(),
@@ -4555,8 +4811,6 @@ mod tests {
         ));
         assert_eq!(inventory.selected_item, None);
         assert!(inventory.apply_pointer_button(
-            window_assets,
-            tab_assets,
             ElementState::Released,
             Some(cursor),
             viewport(),
@@ -4567,32 +4821,26 @@ mod tests {
         assert_eq!(inventory.take_completed_drag(), None);
 
         let frame = inventory
-            .frame(InventoryWindowFrameInput {
-                window_assets,
-                tab_assets,
-                slot_assets,
-                item_icon_assets: &item_icons,
-                entries: &entries,
-                registry: &registry,
-                viewport: viewport(),
-                pixels_per_unit: 1.0,
-                cursor: Some(cursor),
-            })
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &entries,
+                Some(cursor),
+            ))
             .unwrap()
             .unwrap();
-        assert_eq!(frame.textured_rects[27].tint, INVENTORY_SLOT_SELECTED_TINT);
-        assert_eq!(
-            frame.textured_rects.len(),
-            64,
-            "one fallback icon + tooltip background"
-        );
+        assert_eq!(frame.skin_quads[18].texture, assets.slots[2].texture);
+        assert_eq!(frame.item_rects.len(), 1);
+        assert_eq!(frame.tooltip_quads.len(), 9);
+        assert_eq!(frame.tooltip_quads[0].texture, assets.tooltip.texture);
         assert!(
             frame
-                .texts
+                .tooltip_texts
                 .iter()
                 .any(|text| text.content.0 == "Unknown item")
         );
-        assert!(frame.texts.iter().any(|text| {
+        assert!(frame.tooltip_texts.iter().any(|text| {
             text.content.0.contains("misc")
                 && text.content.0.contains("Qty 1")
                 && text.content.0.contains("definition unavailable")
@@ -4641,9 +4889,10 @@ mod tests {
             definition: unknown,
             quantity: 1,
         }];
-        let slots = embedded_slot_assets()
-            .frame(UiSlotGrid::new(1, 1, 0.0), [10.0, 20.0], 1.0)
-            .unwrap();
+        let slots = [ScreenRect {
+            min: [10.0, 20.0],
+            max: [54.0, 64.0],
+        }];
         let frame = inventory_items_frame(
             &registry,
             &item_icons,
@@ -4754,23 +5003,19 @@ mod tests {
             false
         ));
 
-        let inventory_close = assets
-            .layout(&mut inventory.chrome, viewport(), 1.0)
+        let inventory_close = inventory
+            .layout(viewport(), 1.0)
             .unwrap()
             .unwrap()
             .close_button
             .min;
         assert!(inventory.apply_pointer_button(
-            assets,
-            embedded_tab_assets(),
             ElementState::Pressed,
             Some(inventory_close),
             viewport(),
             1.0,
         ));
         assert!(inventory.apply_pointer_button(
-            assets,
-            embedded_tab_assets(),
             ElementState::Released,
             Some(inventory_close),
             viewport(),
@@ -5002,10 +5247,7 @@ mod tests {
         let assets = embedded_assets();
         let mut inventory = InventoryWindow::default();
         inventory.chrome.mode = ProofPanelMode::Normal;
-        let inventory_layout = assets
-            .layout(&mut inventory.chrome, viewport(), 1.0)
-            .unwrap()
-            .unwrap();
+        let inventory_layout = inventory.layout(viewport(), 1.0).unwrap().unwrap();
         let mut equipment = EquipmentWindow::default();
         equipment.chrome.mode = ProofPanelMode::Normal;
         let equipment_layout = assets
@@ -5019,7 +5261,26 @@ mod tests {
             ]
         };
 
-        assert_eq!(center(inventory_layout.window), [584.0, 336.0]);
+        let size = inventory.metrics.window_size().unwrap();
+        let centered = [
+            ((1280.0 - size[0]) * 0.5).max(0.0),
+            ((720.0 - size[1]) * 0.5).max(0.0),
+        ];
+        let expected_top_left = clamp_top_left(
+            [
+                centered[0] + INVENTORY_INITIAL_CENTER_OFFSET_UNITS[0],
+                centered[1] + INVENTORY_INITIAL_CENTER_OFFSET_UNITS[1],
+            ],
+            size,
+            [1280.0, 720.0],
+        );
+        assert_eq!(
+            center(inventory_layout.window),
+            [
+                expected_top_left[0] + size[0] * 0.5,
+                expected_top_left[1] + size[1] * 0.5,
+            ]
+        );
         assert_eq!(center(equipment_layout.window), [696.0, 384.0]);
         assert_ne!(inventory_layout.window.min, equipment_layout.window.min);
     }
@@ -5177,30 +5438,26 @@ mod tests {
     }
 
     #[test]
-    fn inventory_and_equipment_headers_use_atlas_chrome_icons() {
+    fn inventory_presentation_is_independent_of_atlas_chrome() {
         let window_assets = embedded_assets();
-        let tab_assets = embedded_tab_assets();
         let slot_assets = embedded_slot_assets();
         let registry = inventory_registry();
         let item_icons = placeholder_item_icons(&registry);
-        let mut inventory = InventoryWindow::default();
+        let assets = synthetic_inventory_assets();
+        let mut inventory = InventoryWindow::new(assets.metrics);
         inventory.apply_key(
             PhysicalKey::Code(KeyCode::KeyI),
             ElementState::Pressed,
             false,
         );
         let inventory_frame = inventory
-            .frame(InventoryWindowFrameInput {
-                window_assets,
-                tab_assets,
-                slot_assets,
-                item_icon_assets: &item_icons,
-                entries: &[],
-                registry: &registry,
-                viewport: viewport(),
-                pixels_per_unit: 1.0,
-                cursor: None,
-            })
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &[],
+                None,
+            ))
             .unwrap()
             .unwrap();
         let mut equipment = EquipmentWindow::default();
@@ -5222,7 +5479,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let atlas = window_assets.panel().texture;
-        assert_eq!(inventory_frame.textured_rects[10].texture, atlas);
+        assert!(
+            inventory_frame
+                .skin_quads
+                .iter()
+                .all(|quad| quad.texture != atlas)
+        );
         assert_eq!(equipment_frame.textured_rects[10].texture, atlas);
     }
 
@@ -5418,5 +5680,200 @@ mod tests {
         ));
         assert!(window.is_visible());
         assert_eq!(window.chrome.top_left_units, Some([31.0, 17.0]));
+    }
+
+    #[test]
+    fn stretched_quad_maps_one_source_image_without_tiling() {
+        let bounds = ScreenRect {
+            min: [10.0, 20.0],
+            max: [70.0, 50.0],
+        };
+        let quad = compose_stretched_quad(bounds, SpriteTextureId::from_raw(7)).unwrap();
+        assert_eq!(quad.corners[0], bounds.min);
+        assert_eq!(quad.corners[2], bounds.max);
+        assert_eq!(quad.uvs, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        assert_eq!(quad.texture, SpriteTextureId::from_raw(7));
+    }
+
+    #[test]
+    fn inventory_tab_visual_resolver_uses_authored_states() {
+        assert_eq!(
+            resolve_inventory_tab_visual(true, false, false),
+            InventoryTabVisual::Active
+        );
+        assert_eq!(
+            resolve_inventory_tab_visual(false, false, false),
+            InventoryTabVisual::Inactive
+        );
+        assert_eq!(
+            resolve_inventory_tab_visual(false, true, false),
+            InventoryTabVisual::Hover
+        );
+        assert_eq!(
+            resolve_inventory_tab_visual(true, true, false),
+            InventoryTabVisual::Active
+        );
+        assert_eq!(
+            resolve_inventory_tab_visual(false, true, true),
+            InventoryTabVisual::Pressed
+        );
+        assert_eq!(
+            resolve_inventory_tab_visual(true, true, true),
+            InventoryTabVisual::Pressed
+        );
+    }
+
+    #[test]
+    fn inventory_slot_visual_resolver_uses_authored_states() {
+        assert_eq!(
+            resolve_inventory_slot_visual(false, false),
+            InventorySlotVisual::Normal
+        );
+        assert_eq!(
+            resolve_inventory_slot_visual(false, true),
+            InventorySlotVisual::Hover
+        );
+        assert_eq!(
+            resolve_inventory_slot_visual(true, true),
+            InventorySlotVisual::Selected
+        );
+        assert_eq!(
+            resolve_inventory_slot_visual(true, false),
+            InventorySlotVisual::Selected
+        );
+    }
+
+    #[test]
+    fn inventory_layout_fits_header_tabs_slots_footer_and_scales() {
+        let metrics = fixture_inventory_metrics();
+        let size = metrics.window_size().unwrap();
+        let window = ScreenRect {
+            min: [100.0, 40.0],
+            max: [100.0 + size[0], 40.0 + size[1]],
+        };
+        let layout = layout_inventory(metrics, window, 1.0).unwrap();
+        assert!(layout.close_button.max[1] <= layout.tabs[0].min[1]);
+        assert!(layout.header.contains(layout.close_button.min));
+        assert_eq!(layout.tabs.len(), 5);
+        assert_eq!(layout.slots.len(), 35);
+        assert!(layout.slots[0].min[1] >= layout.tabs[0].max[1]);
+        assert!(layout.footer.min[1] >= layout.slots[34].max[1]);
+        assert!(layout.currency.min[0] > layout.footer.min[0]);
+        assert!(layout.window.contains(layout.footer.max));
+        for index in 0..4 {
+            assert!(layout.tabs[index].max[0] <= layout.tabs[index + 1].min[0] + 0.01);
+            assert!(layout.slots[index].max[0] <= layout.slots[index + 1].min[0] + 0.01);
+        }
+
+        let scaled_window = ScreenRect {
+            min: [0.0, 0.0],
+            max: [size[0] * 1.25, size[1] * 1.25],
+        };
+        let scaled = layout_inventory(metrics, scaled_window, 1.25).unwrap();
+        assert!((scaled.window.width() - layout.window.width() * 1.25).abs() < 0.05);
+        assert!((scaled.slots[0].width() - layout.slots[0].width() * 1.25).abs() < 0.05);
+        assert!((scaled.tabs[0].height() - layout.tabs[0].height() * 1.25).abs() < 0.05);
+        assert!((scaled.close_button.width() - layout.close_button.width() * 1.25).abs() < 0.05);
+    }
+
+    #[test]
+    fn inventory_item_drag_crosses_the_existing_threshold() {
+        let assets = synthetic_inventory_assets();
+        let registry = inventory_registry();
+        let item_icons = placeholder_item_icons(&registry);
+        let item = purgatory_common::ItemInstanceId::from_raw(1);
+        let entries = [InventoryEntry {
+            slot: 0,
+            item_instance_id: item,
+            definition: purgatory_common::ITEM_PRACTICE_SWORD,
+            quantity: 1,
+        }];
+        let mut inventory = InventoryWindow::new(assets.metrics);
+        inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false,
+        );
+        inventory
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &entries,
+                None,
+            ))
+            .unwrap()
+            .unwrap();
+        let hit = inventory.item_hit_regions[0].0;
+        let cursor = [
+            (hit.min[0] + hit.max[0]) * 0.5,
+            (hit.min[1] + hit.max[1]) * 0.5,
+        ];
+        assert!(inventory.apply_pointer_button(
+            ElementState::Pressed,
+            Some(cursor),
+            viewport(),
+            1.0
+        ));
+        inventory.pointer_moved(
+            [cursor[0] + ITEM_DRAG_THRESHOLD_PX - 1.0, cursor[1]],
+            viewport(),
+            1.0,
+        );
+        assert!(!inventory.is_dragging());
+        assert!(inventory.pointer_moved(
+            [cursor[0] + ITEM_DRAG_THRESHOLD_PX + 1.0, cursor[1]],
+            viewport(),
+            1.0
+        ));
+        assert!(inventory.is_dragging());
+        let frame = inventory
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &entries,
+                Some([cursor[0] + 20.0, cursor[1]]),
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(frame.item_rects.is_empty());
+        assert_eq!(frame.drag_preview.len(), 1);
+        assert!(inventory.apply_pointer_button(
+            ElementState::Released,
+            Some([cursor[0] + 30.0, cursor[1]]),
+            viewport(),
+            1.0
+        ));
+        assert_eq!(inventory.take_completed_drag(), Some(item));
+        assert_eq!(inventory.take_completed_click(), None);
+    }
+
+    #[test]
+    fn inventory_tooltip_clamps_to_the_viewport() {
+        let viewport = viewport();
+        let cursor = [viewport.width as f32 - 4.0, viewport.height as f32 - 4.0];
+        let bounds = inventory_tooltip_bounds(cursor, viewport, 1.0, true).unwrap();
+        assert!(bounds.max[0] <= viewport.width as f32 + 0.01);
+        assert!(bounds.max[1] <= viewport.height as f32 + 0.01);
+        assert!(bounds.min[0] >= 0.0);
+        assert!(bounds.width() > bounds.height());
+        let short = inventory_tooltip_bounds([20.0, 20.0], viewport, 1.0, false).unwrap();
+        let tall = inventory_tooltip_bounds([20.0, 20.0], viewport, 1.0, true).unwrap();
+        assert!(tall.height() > short.height());
+        let scaled = inventory_tooltip_bounds([20.0, 20.0], viewport, 1.25, false).unwrap();
+        assert!((scaled.width() - short.width() * 1.25).abs() < 0.05);
+    }
+
+    #[test]
+    fn inventory_v2_assets_load_compatible_state_families() {
+        let mut runtime = AssetRuntime::new();
+        let assets = InventoryV2Assets::load(&mut runtime).unwrap();
+        assert_eq!(assets.slots[0].size_px, assets.slots[1].size_px);
+        assert_eq!(assets.slots[1].size_px, assets.slots[2].size_px);
+        assert_eq!(assets.tabs[0].size_px, assets.tabs[3].size_px);
+        assert_eq!(assets.close[0].size_px, assets.close[2].size_px);
+        assert!(assets.metrics.tab_overlap > 0.0);
+        assert!(assets.metrics.window_size().is_ok());
     }
 }

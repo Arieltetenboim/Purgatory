@@ -98,9 +98,10 @@ use crate::ui_dialog::{
 };
 use crate::ui_panel::{
     DragDestination, DragResolution, DragSource, EquipmentWindow, EquipmentWindowFrame,
-    EquipmentWindowFrameInput, InventoryWindow, InventoryWindowFrame, InventoryWindowFrameInput,
-    SettingsAction, SettingsLauncher, SettingsLauncherFrame, SettingsWindow, SettingsWindowFrame,
-    UiButtonAssets, UiItemIconAssets, UiSlotAssets, UiTabAssets, UiWindowAssets, resolve_drag,
+    EquipmentWindowFrameInput, InventoryV2Assets, InventoryWindow, InventoryWindowFrame,
+    InventoryWindowFrameInput, SettingsAction, SettingsLauncher, SettingsLauncherFrame,
+    SettingsWindow, SettingsWindowFrame, UiButtonAssets, UiItemIconAssets, UiSlotAssets,
+    UiWindowAssets, resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
 #[cfg(feature = "dev-diagnostics")]
@@ -279,9 +280,9 @@ struct ClientApp {
     ui_runtime: UIRuntimeState,
     ui_window_assets: UiWindowAssets,
     ui_button_assets: UiButtonAssets,
-    ui_tab_assets: UiTabAssets,
     ui_slot_assets: UiSlotAssets,
     ui_item_icon_assets: UiItemIconAssets,
+    inventory_v2: InventoryV2Assets,
     #[cfg(feature = "dev-diagnostics")]
     ui_dev_proof: UiDevProof,
     inventory_window: InventoryWindow,
@@ -433,10 +434,11 @@ impl ClientApp {
             logo_aspect: image.width() as f32 / image.height() as f32,
         };
 
-        let ui_tab_assets = UiTabAssets::load_embedded(&mut asset_runtime)
-            .map_err(|error| format!("PURGATORY UI tab asset error: {error}"))?;
         let ui_slot_assets = UiSlotAssets::load_embedded(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI slot asset error: {error}"))?;
+        let inventory_v2 = InventoryV2Assets::load(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI V2 inventory asset error: {error}"))?;
+        let inventory_window = InventoryWindow::new(inventory_v2.metrics());
         let ui_item_icon_assets = UiItemIconAssets::load_placeholder(&mut asset_runtime, &registry)
             .map_err(|error| format!("PURGATORY UI item icon error: {error}"))?;
         #[cfg(feature = "dev-diagnostics")]
@@ -484,12 +486,12 @@ impl ClientApp {
             ui_runtime: UIRuntimeState::Idle,
             ui_window_assets,
             ui_button_assets,
-            ui_tab_assets,
             ui_slot_assets,
             ui_item_icon_assets,
+            inventory_v2,
             #[cfg(feature = "dev-diagnostics")]
             ui_dev_proof,
-            inventory_window: InventoryWindow::default(),
+            inventory_window,
             equipment_window: EquipmentWindow::default(),
             settings_window: SettingsWindow::default(),
             settings_launcher: SettingsLauncher::default(),
@@ -606,12 +608,10 @@ impl ClientApp {
         pixels_per_unit: f32,
     ) -> bool {
         match kind {
-            NormalWindowKind::Inventory => self.inventory_window.contains_window(
-                self.ui_window_assets,
-                cursor,
-                viewport,
-                pixels_per_unit,
-            ),
+            NormalWindowKind::Inventory => {
+                self.inventory_window
+                    .contains_window(cursor, viewport, pixels_per_unit)
+            }
             NormalWindowKind::Equipment => self.equipment_window.contains_window(
                 self.ui_window_assets,
                 cursor,
@@ -662,14 +662,10 @@ impl ClientApp {
         pixels_per_unit: f32,
     ) -> bool {
         match kind {
-            NormalWindowKind::Inventory => self.inventory_window.apply_pointer_button(
-                self.ui_window_assets,
-                self.ui_tab_assets,
-                state,
-                cursor,
-                viewport,
-                pixels_per_unit,
-            ),
+            NormalWindowKind::Inventory => {
+                self.inventory_window
+                    .apply_pointer_button(state, cursor, viewport, pixels_per_unit)
+            }
             NormalWindowKind::Equipment => self.equipment_window.apply_pointer_button(
                 self.ui_window_assets,
                 state,
@@ -1246,12 +1242,9 @@ impl ClientApp {
             {
                 DragDestination::EquipmentWindow
             }
-            None if self.inventory_window.contains_window(
-                self.ui_window_assets,
-                cursor,
-                viewport,
-                pixels_per_unit,
-            ) =>
+            None if self
+                .inventory_window
+                .contains_window(cursor, viewport, pixels_per_unit) =>
             {
                 DragDestination::Inventory
             }
@@ -3410,9 +3403,7 @@ impl ClientApp {
             inventory_frame = self
                 .inventory_window
                 .frame(InventoryWindowFrameInput {
-                    window_assets,
-                    tab_assets: self.ui_tab_assets,
-                    slot_assets: self.ui_slot_assets,
+                    assets: &self.inventory_v2,
                     item_icon_assets: &self.ui_item_icon_assets,
                     entries: &self.lifecycle.view().inventory,
                     registry: &self.registry,
@@ -3539,11 +3530,22 @@ impl ClientApp {
             match kind {
                 NormalWindowKind::Inventory => {
                     if let Some(frame) = inventory_frame.as_ref() {
+                        let mut skins = UiComposition::new(&[], &[], &[]);
+                        skins.textured_quads = &frame.skin_quads;
+                        ui_compositions.push(skins);
                         ui_compositions.push(UiComposition::new(
-                            &frame.textured_rects,
+                            &frame.item_rects,
                             &[],
                             &frame.texts,
                         ));
+                        if !frame.tooltip_quads.is_empty() || !frame.tooltip_texts.is_empty() {
+                            let mut tooltip = UiComposition::new(&[], &[], &frame.tooltip_texts);
+                            tooltip.textured_quads = &frame.tooltip_quads;
+                            ui_compositions.push(tooltip);
+                        }
+                        if !frame.drag_preview.is_empty() {
+                            ui_compositions.push(UiComposition::new(&frame.drag_preview, &[], &[]));
+                        }
                     }
                 }
                 NormalWindowKind::Equipment => {

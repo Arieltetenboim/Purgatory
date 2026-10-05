@@ -8,7 +8,6 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
-#[cfg(feature = "dev-diagnostics")]
 use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
 use crate::renderer::SpriteTextureId;
@@ -43,6 +42,8 @@ struct RawAsset {
     height: u32,
     #[serde(default, rename = "sliceLTRB")]
     slice_ltrb: Option<[u32; 4]>,
+    #[serde(default, rename = "contentOverlap")]
+    content_overlap: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -50,6 +51,7 @@ struct UiV2AssetRecord {
     width: u32,
     height: u32,
     slice_ltrb: Option<[u32; 4]>,
+    content_overlap: Option<u32>,
     graphic_relative: PathBuf,
 }
 
@@ -64,6 +66,7 @@ pub(crate) struct UiV2AssetInfo {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) slice_ltrb: Option<[u32; 4]>,
+    pub(crate) content_overlap: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -71,6 +74,13 @@ pub(crate) struct UiV2NineSlice {
     pub(crate) texture: SpriteTextureId,
     pub(crate) size_px: [u32; 2],
     pub(crate) slice_ltrb: [u32; 4],
+}
+
+/// One standalone V2 image. Callers address it by logical name.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UiV2Image {
+    pub(crate) texture: SpriteTextureId,
+    pub(crate) size_px: [u32; 2],
 }
 
 impl UiV2Catalog {
@@ -81,6 +91,7 @@ impl UiV2Catalog {
             width: record.width,
             height: record.height,
             slice_ltrb: record.slice_ltrb,
+            content_overlap: record.content_overlap,
         })
     }
 
@@ -142,6 +153,7 @@ pub(crate) fn parse_ui_v2_catalog(json: &str) -> Result<UiV2Catalog, String> {
                 width: asset.width,
                 height: asset.height,
                 slice_ltrb: asset.slice_ltrb,
+                content_overlap: asset.content_overlap,
                 graphic_relative,
             },
         );
@@ -184,6 +196,72 @@ pub(crate) fn load_ui_v2_nine_slice(
     })
 }
 
+pub(crate) fn load_ui_v2_catalog(runtime: &mut AssetRuntime) -> Result<UiV2Catalog, String> {
+    let manifest = {
+        let loader = ClientAssetLoader::new(runtime);
+        loader
+            .read_relative(MANIFEST_RELATIVE)
+            .map_err(|error| format!("UI V2 manifest: {error}"))?
+    };
+    let text = String::from_utf8(manifest)
+        .map_err(|error| format!("UI V2 manifest {MANIFEST_RELATIVE} is not UTF-8: {error}"))?;
+    parse_ui_v2_catalog(&text)
+}
+
+/// Load one standalone image by logical manifest name.
+pub(crate) fn load_ui_v2_image(
+    loader: &mut ClientAssetLoader<'_>,
+    catalog: &UiV2Catalog,
+    name: &str,
+) -> Result<UiV2Image, String> {
+    let record = catalog.record(name)?;
+    let texture = loader.load_png(name, &record.graphic_relative)?;
+    let image = &loader
+        .runtime()
+        .resource(texture)
+        .ok_or_else(|| format!("UI V2 asset {name}: registered texture missing"))?
+        .image;
+    if image.width() != record.width || image.height() != record.height {
+        return Err(format!(
+            "UI V2 asset {name} PNG is {}x{}, manifest says {}x{} ({})",
+            image.width(),
+            image.height(),
+            record.width,
+            record.height,
+            record.graphic_relative.display()
+        ));
+    }
+    Ok(UiV2Image {
+        texture,
+        size_px: [record.width, record.height],
+    })
+}
+
+/// Load a visual state family and reject members that do not share dimensions.
+pub(crate) fn load_ui_v2_state_family(
+    loader: &mut ClientAssetLoader<'_>,
+    catalog: &UiV2Catalog,
+    names: &[&str],
+) -> Result<Vec<UiV2Image>, String> {
+    if names.is_empty() {
+        return Err("UI V2 state family is empty".to_string());
+    }
+    let mut loaded: Vec<UiV2Image> = Vec::with_capacity(names.len());
+    for name in names {
+        let image = load_ui_v2_image(loader, catalog, name)?;
+        if let Some(first) = loaded.first()
+            && image.size_px != first.size_px
+        {
+            return Err(format!(
+                "UI V2 state {name} is {}x{}, incompatible with {}x{} ({})",
+                image.size_px[0], image.size_px[1], first.size_px[0], first.size_px[1], names[0]
+            ));
+        }
+        loaded.push(image);
+    }
+    Ok(loaded)
+}
+
 fn ui_graphic_relative(name: &str, file: &str) -> Result<PathBuf, String> {
     let relative = Path::new(file);
     if relative.as_os_str().is_empty()
@@ -207,15 +285,7 @@ pub(crate) struct UiDevProof {
 #[cfg(feature = "dev-diagnostics")]
 impl UiDevProof {
     pub(crate) fn load(runtime: &mut AssetRuntime) -> Result<Self, String> {
-        let manifest = {
-            let loader = ClientAssetLoader::new(runtime);
-            loader
-                .read_relative(MANIFEST_RELATIVE)
-                .map_err(|error| format!("UI V2 manifest: {error}"))?
-        };
-        let text = String::from_utf8(manifest)
-            .map_err(|error| format!("UI V2 manifest {MANIFEST_RELATIVE} is not UTF-8: {error}"))?;
-        let catalog = parse_ui_v2_catalog(&text)?;
+        let catalog = load_ui_v2_catalog(runtime)?;
         let mut loader = ClientAssetLoader::new(runtime);
         let asset = load_ui_v2_nine_slice(&mut loader, &catalog, PROOF_ASSET)?;
         Ok(Self {
@@ -391,6 +461,82 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("widget"), "{error}");
         assert!(error.contains("missing sliceLTRB"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn standalone_image_loads_by_logical_name() {
+        let root = std::env::temp_dir().join(format!(
+            "purgatory-ui-v2-image-{}-{}",
+            std::process::id(),
+            unique_fixture()
+        ));
+        std::fs::create_dir_all(root.join("ui/PNG")).unwrap();
+        image::RgbaImage::from_pixel(4, 6, image::Rgba([9, 8, 7, 255]))
+            .save(root.join("ui/PNG/slot_normal.png"))
+            .unwrap();
+        let catalog = parse_ui_v2_catalog(&manifest(
+            r#""slot_normal":{"file":"PNG/slot_normal.png","width":4,"height":6,"contentOverlap":3}"#,
+        ))
+        .unwrap();
+        assert_eq!(catalog.get("slot_normal").unwrap().content_overlap, Some(3));
+        let mut runtime = AssetRuntime::new();
+        let image = load_ui_v2_image(
+            &mut ClientAssetLoader::with_root(&mut runtime, &root),
+            &catalog,
+            "slot_normal",
+        )
+        .unwrap();
+        assert_eq!(image.size_px, [4, 6]);
+        assert_eq!(runtime.texture_for_key("slot_normal"), Some(image.texture));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_family_rejects_incompatible_dimensions() {
+        let root = std::env::temp_dir().join(format!(
+            "purgatory-ui-v2-family-{}-{}",
+            std::process::id(),
+            unique_fixture()
+        ));
+        std::fs::create_dir_all(root.join("ui/PNG")).unwrap();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([1, 1, 1, 255]))
+            .save(root.join("ui/PNG/slot_normal.png"))
+            .unwrap();
+        image::RgbaImage::from_pixel(5, 4, image::Rgba([2, 2, 2, 255]))
+            .save(root.join("ui/PNG/slot_hover.png"))
+            .unwrap();
+        let catalog = parse_ui_v2_catalog(&manifest(
+            r#""slot_normal":{"file":"PNG/slot_normal.png","width":4,"height":4},"slot_hover":{"file":"PNG/slot_hover.png","width":5,"height":4}"#,
+        ))
+        .unwrap();
+        let mut runtime = AssetRuntime::new();
+        let error = load_ui_v2_state_family(
+            &mut ClientAssetLoader::with_root(&mut runtime, &root),
+            &catalog,
+            &["slot_normal", "slot_hover"],
+        )
+        .unwrap_err();
+        assert!(error.contains("slot_hover"), "{error}");
+        assert!(error.contains("incompatible"), "{error}");
+        assert!(error.contains("slot_normal"), "{error}");
+
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([3, 3, 3, 255]))
+            .save(root.join("ui/PNG/slot_hover.png"))
+            .unwrap();
+        let catalog = parse_ui_v2_catalog(&manifest(
+            r#""slot_normal":{"file":"PNG/slot_normal.png","width":4,"height":4},"slot_hover":{"file":"PNG/slot_hover.png","width":4,"height":4}"#,
+        ))
+        .unwrap();
+        let mut runtime = AssetRuntime::new();
+        let family = load_ui_v2_state_family(
+            &mut ClientAssetLoader::with_root(&mut runtime, &root),
+            &catalog,
+            &["slot_normal", "slot_hover"],
+        )
+        .unwrap();
+        assert_eq!(family.len(), 2);
+        assert_eq!(family[0].size_px, family[1].size_px);
         let _ = std::fs::remove_dir_all(&root);
     }
 
