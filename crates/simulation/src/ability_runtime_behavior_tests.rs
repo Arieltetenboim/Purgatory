@@ -443,6 +443,35 @@ fn actual_damage_interrupts_dash_action_and_movement() {
 }
 
 #[test]
+fn lethal_damage_interrupts_non_dash_ability_action() {
+    let mut world = World::new();
+    let floor = world.spawn_platform(
+        Transform::from_position([0.0, 0.0]),
+        Platform::solid([10.0, 0.5]),
+    );
+    let (transform, player) = PlayerState::standing_on_at(floor, 0.5, 0.0);
+    let actor = world.spawn_player(transform, player);
+    world.set_health(actor, Health::full(20.0));
+    let definition = sample_ability();
+    world.grant_ability(actor, definition.id);
+    world
+        .request_ability(
+            AbilityRequest {
+                actor,
+                selected: None,
+                definition: &definition,
+            },
+            ActionGateContext::in_world(),
+        )
+        .unwrap();
+    assert!(world.active_action(actor).is_some());
+
+    assert!(world.apply_damage(actor, 20.0));
+    assert!(world.health_of(actor).unwrap().is_dead());
+    assert!(world.active_action(actor).is_none());
+}
+
+#[test]
 fn actual_damage_interrupts_dash_recovery_after_movement_ends() {
     let (mut world, actor) = dash_stage(false);
     let definition = dash_ability();

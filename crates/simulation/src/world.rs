@@ -867,6 +867,9 @@ impl World {
         {
             return Err(ItemRuntimeError::InvalidPickupActor);
         }
+        if actor_data.health.is_some_and(Health::is_dead) {
+            return Err(ItemRuntimeError::InvalidPickupActor);
+        }
         let Some(item) = self.item_runtime.world_drop_item(target) else {
             return Err(ItemRuntimeError::PickupTargetMissing(target));
         };
@@ -920,6 +923,9 @@ impl World {
             || actor_data.lifecycle != EntityLifecycle::Active
             || actor_data.transform.is_none()
         {
+            return Err(ItemRuntimeError::InvalidPickupActor);
+        }
+        if actor_data.health.is_some_and(Health::is_dead) {
             return Err(ItemRuntimeError::InvalidPickupActor);
         }
         // Validate ownership before spawning anything.
@@ -1653,6 +1659,9 @@ impl World {
     ) -> Result<(), InteractionReject> {
         let actor_data = self.slot_live(actor).ok_or(self.classify_missing(actor))?;
         if actor_data.player.is_none() || actor_data.lifecycle != EntityLifecycle::Active {
+            return Err(InteractionReject::Unavailable);
+        }
+        if actor_data.health.is_some_and(Health::is_dead) {
             return Err(InteractionReject::Unavailable);
         }
         let actor_pos = actor_data

@@ -312,6 +312,25 @@ fn spawn_portal_at(world: &mut World, position: [f32; 2]) -> crate::EntityId {
 }
 
 #[test]
+fn portal_activate_rejects_dead_actor() {
+    let mut world = World::new();
+    let actor = RuntimeFixtures::test_player(&mut world);
+    let actor_pos = world.transform_of(actor).unwrap().position;
+    let portal = spawn_portal_at(&mut world, actor_pos);
+    world.set_health(
+        actor,
+        Health {
+            current: 0.0,
+            max: 20.0,
+        },
+    );
+    assert_eq!(
+        world.validate_portal_activate(actor, portal),
+        Err(InteractionReject::Unavailable)
+    );
+}
+
+#[test]
 fn e_open_rejects_portal() {
     let mut world = World::new();
     let actor = RuntimeFixtures::test_player(&mut world);
