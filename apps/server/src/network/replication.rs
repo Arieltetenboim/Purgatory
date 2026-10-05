@@ -1103,8 +1103,7 @@ pub fn publish_observer_frame_with_budget(
         // even when selective stranger policy would suppress an ordinary
         // positive-Health update. Silent catch-up here would leave that client
         // blinking forever with stale immunity=true.
-        let immunity_ended =
-            last.damage_immunity_active && !world.damage_immunity_active(id);
+        let immunity_ended = last.damage_immunity_active && !world.damage_immunity_active(id);
         if lethal_health || restoring_health || immunity_ended {
             decision.eligibility.health = true;
             decision.cadence_interval = 1;
@@ -1834,8 +1833,7 @@ mod tests {
             62,
             PolicyMode::Selective,
         );
-        let expired =
-            decode_replication_frame(&pipe.pop().expect("expiry frame").payload).unwrap();
+        let expired = decode_replication_frame(&pipe.pop().expect("expiry frame").payload).unwrap();
         assert!(expired.records.iter().any(|record| matches!(
             record,
             ReplicationRecord::Update {
