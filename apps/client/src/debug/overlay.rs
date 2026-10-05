@@ -325,9 +325,8 @@ impl DebugOverlay {
 fn draw_gameplay_hud(
     ctx: &Context,
     health: purgatory_protocol::ReplicatedHealth,
-    actions: &mut Vec<DebugCommand>,
+    _actions: &mut Vec<DebugCommand>,
 ) {
-    let dead = health.current <= 0.0;
     egui::Area::new(egui::Id::new("purgatory-gameplay-hud"))
         .anchor(egui::Align2::LEFT_TOP, [16.0, 16.0])
         .order(egui::Order::Foreground)
@@ -351,9 +350,6 @@ fn draw_gameplay_hud(
                             .desired_width(180.0)
                             .fill(egui::Color32::from_rgb(70, 190, 95)),
                     );
-                    if dead && ui.button("Respawn").clicked() {
-                        actions.push(DebugCommand::Respawn);
-                    }
                 });
         });
 }

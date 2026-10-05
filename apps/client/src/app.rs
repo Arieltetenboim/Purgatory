@@ -287,6 +287,7 @@ struct ClientApp {
     normal_window_order: Vec<NormalWindowKind>,
     pointer_window: Option<NormalWindowKind>,
     message_dialog: MessageDialog,
+    death_respawn_ui: crate::death_respawn_ui::DeathRespawnUi,
     pending_drop: Option<purgatory_common::ItemInstanceId>,
     dialogue_runtime: DialogueRuntime,
     cursor_position: Option<[f32; 2]>,
@@ -490,6 +491,7 @@ impl ClientApp {
             ],
             pointer_window: None,
             message_dialog: MessageDialog::default(),
+            death_respawn_ui: crate::death_respawn_ui::DeathRespawnUi::default(),
             pending_drop: None,
             dialogue_runtime: DialogueRuntime::default(),
             cursor_position: None,
@@ -635,8 +637,11 @@ impl ClientApp {
         if !self.message_dialog.is_active() {
             return;
         }
+        if !self.message_dialog.is_dismissible() {
+            return;
+        }
         self.message_dialog.cancel();
-        self.resolve_drop_dialog();
+        self.resolve_modal_dialogs();
     }
 
     fn apply_normal_pointer_button(
@@ -1154,20 +1159,64 @@ impl ClientApp {
             ],
             default_action: Some(DialogAction::Confirm),
             cancel_action: Some(DialogAction::Cancel),
+            dismissible: true,
         });
         if opened {
             self.pending_drop = Some(item_instance_id);
         }
     }
 
-    fn resolve_drop_dialog(&mut self) {
+    fn local_authoritative_dead(&self) -> bool {
+        crate::death_respawn_ui::authoritative_dead(
+            self.replica.local_entity().and_then(|entity| entity.health),
+        )
+    }
+
+    fn sync_death_respawn_modal(&mut self) {
+        if self.lifecycle.screen() != ClientScreen::Game {
+            self.death_respawn_ui.clear();
+            return;
+        }
+        let dead = self.local_authoritative_dead();
+        self.death_respawn_ui
+            .sync_modal(&mut self.message_dialog, dead);
+    }
+
+    fn resolve_modal_dialogs(&mut self) {
         let Some(result) = self.message_dialog.take_result() else {
             return;
         };
-        if let Some(item_instance_id) = resolve_pending_drop(&mut self.pending_drop, result.action)
-        {
-            self.send_drop(item_instance_id);
+        let action = result.action;
+        match crate::death_respawn_ui::DeathRespawnUi::interpret_result(
+            result,
+            self.death_respawn_ui.respawn_pending(),
+        ) {
+            crate::death_respawn_ui::DeathRespawnConfirm::NotDeathDialog => {
+                if let Some(item_instance_id) = resolve_pending_drop(&mut self.pending_drop, action)
+                {
+                    self.send_drop(item_instance_id);
+                }
+            }
+            crate::death_respawn_ui::DeathRespawnConfirm::SendRespawn => {
+                let sent = self
+                    .network
+                    .as_ref()
+                    .is_some_and(|network| network.try_send_respawn());
+                if sent {
+                    self.death_respawn_ui.note_respawn_sent();
+                } else {
+                    self.death_respawn_ui.note_respawn_send_failed();
+                }
+                self.sync_death_respawn_modal();
+            }
+            crate::death_respawn_ui::DeathRespawnConfirm::IgnoredPending => {
+                self.sync_death_respawn_modal();
+            }
         }
+    }
+
+    fn resolve_drop_dialog(&mut self) {
+        self.resolve_modal_dialogs();
     }
 
     fn resolve_equipment_drag(&mut self, source: DragSource, cursor: Option<[f32; 2]>) {
@@ -1831,6 +1880,7 @@ impl ClientApp {
                 self.replica.observer_address(),
                 self.replica.last_sequence().is_some(),
             )
+            || (self.lifecycle.screen() == ClientScreen::Game && self.local_authoritative_dead())
     }
 
     fn sample_tick_input(&mut self) -> PlayerInput {
@@ -2782,6 +2832,7 @@ impl ClientApp {
         self.last_ticks_executed = 0;
         self.poll_network();
         self.resolve_drop_dialog();
+        self.sync_death_respawn_modal();
         // Canonical client frame wall delta (same span historically used as fade_dt).
         // Prefer this over fade-named values for animation; do not pre-multiply speed.
         let frame_dt = Instant::now()
@@ -4090,21 +4141,6 @@ impl ClientApp {
                         println!("PURGATORY debug: Reset to Spawn Point -> local spawn reset");
                         if let Some(debug) = self.debug.as_mut() {
                             debug.ui.note_dev_action_flash(RESET_TO_SPAWN_FLASH);
-                        }
-                    }
-                }
-                DebugCommand::Respawn => {
-                    if self.lifecycle.screen() == ClientScreen::Game
-                        && self
-                            .replica
-                            .local_entity()
-                            .and_then(|entity| entity.health)
-                            .is_some_and(|health| health.current <= 0.0)
-                        && let Some(network) = &self.network
-                    {
-                        println!("RESPAWN send");
-                        if !network.try_send_respawn() {
-                            eprintln!("RESPAWN send failed (input channel full or closed)");
                         }
                     }
                 }
@@ -5734,6 +5770,7 @@ mod tests {
             ],
             default_action: Some(super::DialogAction::Confirm),
             cancel_action: Some(super::DialogAction::Cancel),
+            dismissible: true,
         }));
         let mut pending = Some(item);
 
