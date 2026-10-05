@@ -1,0 +1,19 @@
+{
+  "pack": "PURGATORY Animation Pack V1",
+  "target": "Humanoid v0 / .anim schema_version 1",
+  "count": 12,
+  "files": [
+    "crouch_idle.anim",
+    "crouch_walk.anim",
+    "land.anim",
+    "pickup.anim",
+    "interact.anim",
+    "wave.anim",
+    "sit_idle.anim",
+    "use_item.anim",
+    "cast.anim",
+    "heavy_attack.anim",
+    "knockback.anim",
+    "celebrate.anim"
+  ]
+}

@@ -1,0 +1,840 @@
+{
+  "version": 2,
+  "assetCount": 108,
+  "units": "pixels",
+  "sliceOrder": "left,top,right,bottom",
+  "panelAssembly": {
+    "body": "panel_body_9slice",
+    "header": "panel_header_9slice",
+    "headerPosition": [
+      9,
+      9
+    ],
+    "headerHeight": 40,
+    "headerWidth": "bodyWidth - 18",
+    "singleTextureAlternative": "panel_window_9slice",
+    "fixedTopRegion": 64
+  },
+  "assets": {
+    "panel_body_9slice": {
+      "file": "PNG/panel_body_9slice.png",
+      "width": 288,
+      "height": 192,
+      "vectorLayers": 6,
+      "sliceLTRB": [
+        14,
+        14,
+        14,
+        18
+      ]
+    },
+    "panel_dark_9slice": {
+      "file": "PNG/panel_dark_9slice.png",
+      "width": 288,
+      "height": 160,
+      "vectorLayers": 6,
+      "sliceLTRB": [
+        14,
+        14,
+        14,
+        18
+      ]
+    },
+    "panel_window_9slice": {
+      "file": "PNG/panel_window_9slice.png",
+      "width": 288,
+      "height": 224,
+      "vectorLayers": 12,
+      "sliceLTRB": [
+        14,
+        64,
+        14,
+        18
+      ]
+    },
+    "window_large": {
+      "file": "PNG/window_large.png",
+      "width": 320,
+      "height": 224,
+      "vectorLayers": 12
+    },
+    "window_small": {
+      "file": "PNG/window_small.png",
+      "width": 192,
+      "height": 192,
+      "vectorLayers": 12
+    },
+    "window_hud": {
+      "file": "PNG/window_hud.png",
+      "width": 176,
+      "height": 144,
+      "vectorLayers": 12
+    },
+    "panel_header_9slice": {
+      "file": "PNG/panel_header_9slice.png",
+      "width": 270,
+      "height": 40,
+      "vectorLayers": 3,
+      "sliceLTRB": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    "panel_header_disabled_9slice": {
+      "file": "PNG/panel_header_disabled_9slice.png",
+      "width": 270,
+      "height": 40,
+      "vectorLayers": 3,
+      "sliceLTRB": [
+        8,
+        8,
+        8,
+        8
+      ]
+    },
+    "button_normal": {
+      "file": "PNG/button_normal.png",
+      "width": 112,
+      "height": 44,
+      "vectorLayers": 7
+    },
+    "button_hover": {
+      "file": "PNG/button_hover.png",
+      "width": 112,
+      "height": 44,
+      "vectorLayers": 7
+    },
+    "button_pressed": {
+      "file": "PNG/button_pressed.png",
+      "width": 112,
+      "height": 44,
+      "vectorLayers": 7
+    },
+    "button_disabled": {
+      "file": "PNG/button_disabled.png",
+      "width": 112,
+      "height": 44,
+      "vectorLayers": 7
+    },
+    "tab_active": {
+      "file": "PNG/tab_active.png",
+      "width": 120,
+      "height": 48,
+      "vectorLayers": 7,
+      "contentOverlap": 4,
+      "openBottom": true
+    },
+    "tab_inactive": {
+      "file": "PNG/tab_inactive.png",
+      "width": 120,
+      "height": 48,
+      "vectorLayers": 5,
+      "contentOverlap": 4,
+      "openBottom": false
+    },
+    "tab_hover": {
+      "file": "PNG/tab_hover.png",
+      "width": 120,
+      "height": 48,
+      "vectorLayers": 5,
+      "contentOverlap": 4,
+      "openBottom": false
+    },
+    "tab_pressed": {
+      "file": "PNG/tab_pressed.png",
+      "width": 120,
+      "height": 48,
+      "vectorLayers": 7,
+      "contentOverlap": 4,
+      "openBottom": true
+    },
+    "tab_disabled": {
+      "file": "PNG/tab_disabled.png",
+      "width": 120,
+      "height": 48,
+      "vectorLayers": 5,
+      "contentOverlap": 4,
+      "openBottom": false
+    },
+    "slot_normal": {
+      "file": "PNG/slot_normal.png",
+      "width": 72,
+      "height": 72,
+      "vectorLayers": 5
+    },
+    "slot_hover": {
+      "file": "PNG/slot_hover.png",
+      "width": 72,
+      "height": 72,
+      "vectorLayers": 5
+    },
+    "slot_selected": {
+      "file": "PNG/slot_selected.png",
+      "width": 72,
+      "height": 72,
+      "vectorLayers": 6
+    },
+    "slot_disabled": {
+      "file": "PNG/slot_disabled.png",
+      "width": 72,
+      "height": 72,
+      "vectorLayers": 7
+    },
+    "hotbar_slot_normal": {
+      "file": "PNG/hotbar_slot_normal.png",
+      "width": 64,
+      "height": 64,
+      "vectorLayers": 5
+    },
+    "hotbar_slot_hover": {
+      "file": "PNG/hotbar_slot_hover.png",
+      "width": 64,
+      "height": 64,
+      "vectorLayers": 5
+    },
+    "hotbar_slot_selected": {
+      "file": "PNG/hotbar_slot_selected.png",
+      "width": 64,
+      "height": 64,
+      "vectorLayers": 6
+    },
+    "hotbar_slot_disabled": {
+      "file": "PNG/hotbar_slot_disabled.png",
+      "width": 64,
+      "height": 64,
+      "vectorLayers": 7
+    },
+    "close_button_normal": {
+      "file": "PNG/close_button_normal.png",
+      "width": 36,
+      "height": 36,
+      "vectorLayers": 9
+    },
+    "close_button_hover": {
+      "file": "PNG/close_button_hover.png",
+      "width": 36,
+      "height": 36,
+      "vectorLayers": 9
+    },
+    "close_button_pressed": {
+      "file": "PNG/close_button_pressed.png",
+      "width": 36,
+      "height": 36,
+      "vectorLayers": 9
+    },
+    "close_button_disabled": {
+      "file": "PNG/close_button_disabled.png",
+      "width": 36,
+      "height": 36,
+      "vectorLayers": 9
+    },
+    "checkbox_unchecked": {
+      "file": "PNG/checkbox_unchecked.png",
+      "width": 28,
+      "height": 28,
+      "vectorLayers": 3
+    },
+    "checkbox_hover": {
+      "file": "PNG/checkbox_hover.png",
+      "width": 28,
+      "height": 28,
+      "vectorLayers": 3
+    },
+    "checkbox_checked": {
+      "file": "PNG/checkbox_checked.png",
+      "width": 28,
+      "height": 28,
+      "vectorLayers": 7
+    },
+    "checkbox_disabled": {
+      "file": "PNG/checkbox_disabled.png",
+      "width": 28,
+      "height": 28,
+      "vectorLayers": 3
+    },
+    "radio_off": {
+      "file": "PNG/radio_off.png",
+      "width": 28,
+      "height": 28,
+      "vectorLayers": 3
+    },
+    "radio_hover": {
+      "file": "PNG/radio_hover.png",
+      "width": 28,
+      "height": 28,
+      "vectorLayers": 3
+    },
+    "radio_on": {
+      "file": "PNG/radio_on.png",
+      "width": 28,
+      "height": 28,
+      "vectorLayers": 5
+    },
+    "radio_disabled": {
+      "file": "PNG/radio_disabled.png",
+      "width": 28,
+      "height": 28,
+      "vectorLayers": 3
+    },
+    "scrollbar_track_vertical_9slice": {
+      "file": "PNG/scrollbar_track_vertical_9slice.png",
+      "width": 28,
+      "height": 160,
+      "vectorLayers": 3,
+      "sliceLTRB": [
+        8,
+        10,
+        8,
+        10
+      ]
+    },
+    "scrollbar_thumb_normal": {
+      "file": "PNG/scrollbar_thumb_normal.png",
+      "width": 22,
+      "height": 40,
+      "vectorLayers": 10
+    },
+    "scrollbar_thumb_hover": {
+      "file": "PNG/scrollbar_thumb_hover.png",
+      "width": 22,
+      "height": 40,
+      "vectorLayers": 10
+    },
+    "scrollbar_thumb_pressed": {
+      "file": "PNG/scrollbar_thumb_pressed.png",
+      "width": 22,
+      "height": 40,
+      "vectorLayers": 10
+    },
+    "scrollbar_thumb_disabled": {
+      "file": "PNG/scrollbar_thumb_disabled.png",
+      "width": 22,
+      "height": 40,
+      "vectorLayers": 10
+    },
+    "scroll_arrow_up_normal": {
+      "file": "PNG/scroll_arrow_up_normal.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_up_hover": {
+      "file": "PNG/scroll_arrow_up_hover.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_up_pressed": {
+      "file": "PNG/scroll_arrow_up_pressed.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_down_normal": {
+      "file": "PNG/scroll_arrow_down_normal.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_down_hover": {
+      "file": "PNG/scroll_arrow_down_hover.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_down_pressed": {
+      "file": "PNG/scroll_arrow_down_pressed.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_left_normal": {
+      "file": "PNG/scroll_arrow_left_normal.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_left_hover": {
+      "file": "PNG/scroll_arrow_left_hover.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_left_pressed": {
+      "file": "PNG/scroll_arrow_left_pressed.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_right_normal": {
+      "file": "PNG/scroll_arrow_right_normal.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_right_hover": {
+      "file": "PNG/scroll_arrow_right_hover.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "scroll_arrow_right_pressed": {
+      "file": "PNG/scroll_arrow_right_pressed.png",
+      "width": 30,
+      "height": 30,
+      "vectorLayers": 9
+    },
+    "divider_plain_9slice": {
+      "file": "PNG/divider_plain_9slice.png",
+      "width": 240,
+      "height": 8,
+      "vectorLayers": 2,
+      "sliceLTRB": [
+        6,
+        0,
+        6,
+        0
+      ]
+    },
+    "divider_ornament_9slice": {
+      "file": "PNG/divider_ornament_9slice.png",
+      "width": 240,
+      "height": 12,
+      "vectorLayers": 4,
+      "sliceLTRB": [
+        6,
+        0,
+        6,
+        0
+      ]
+    },
+    "slider_track_9slice": {
+      "file": "PNG/slider_track_9slice.png",
+      "width": 240,
+      "height": 12,
+      "vectorLayers": 2,
+      "sliceLTRB": [
+        6,
+        0,
+        6,
+        0
+      ]
+    },
+    "slider_handle_normal": {
+      "file": "PNG/slider_handle_normal.png",
+      "width": 24,
+      "height": 24,
+      "vectorLayers": 4
+    },
+    "slider_handle_hover": {
+      "file": "PNG/slider_handle_hover.png",
+      "width": 24,
+      "height": 24,
+      "vectorLayers": 4
+    },
+    "slider_handle_pressed": {
+      "file": "PNG/slider_handle_pressed.png",
+      "width": 24,
+      "height": 24,
+      "vectorLayers": 4
+    },
+    "tooltip_body_9slice": {
+      "file": "PNG/tooltip_body_9slice.png",
+      "width": 224,
+      "height": 112,
+      "vectorLayers": 4,
+      "sliceLTRB": [
+        14,
+        14,
+        14,
+        18
+      ]
+    },
+    "tooltip_pointer": {
+      "file": "PNG/tooltip_pointer.png",
+      "width": 20,
+      "height": 12,
+      "vectorLayers": 2
+    },
+    "status_track_9slice": {
+      "file": "PNG/status_track_9slice.png",
+      "width": 288,
+      "height": 28,
+      "vectorLayers": 5,
+      "sliceLTRB": [
+        10,
+        10,
+        10,
+        10
+      ]
+    },
+    "status_hp_fill_9slice": {
+      "file": "PNG/status_hp_fill_9slice.png",
+      "width": 270,
+      "height": 18,
+      "vectorLayers": 3,
+      "sliceLTRB": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    "status_mp_fill_9slice": {
+      "file": "PNG/status_mp_fill_9slice.png",
+      "width": 270,
+      "height": 18,
+      "vectorLayers": 3,
+      "sliceLTRB": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    "status_exp_fill_9slice": {
+      "file": "PNG/status_exp_fill_9slice.png",
+      "width": 270,
+      "height": 18,
+      "vectorLayers": 3,
+      "sliceLTRB": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    "status_hp_partial": {
+      "file": "PNG/status_hp_partial.png",
+      "width": 104,
+      "height": 18,
+      "vectorLayers": 3
+    },
+    "status_hp_full": {
+      "file": "PNG/status_hp_full.png",
+      "width": 270,
+      "height": 18,
+      "vectorLayers": 3
+    },
+    "status_bar_empty": {
+      "file": "PNG/status_bar_empty.png",
+      "width": 288,
+      "height": 28,
+      "vectorLayers": 5
+    },
+    "menu_icon_button_normal": {
+      "file": "PNG/menu_icon_button_normal.png",
+      "width": 64,
+      "height": 64,
+      "vectorLayers": 7
+    },
+    "menu_icon_button_hover": {
+      "file": "PNG/menu_icon_button_hover.png",
+      "width": 64,
+      "height": 64,
+      "vectorLayers": 7
+    },
+    "menu_icon_button_pressed": {
+      "file": "PNG/menu_icon_button_pressed.png",
+      "width": 64,
+      "height": 64,
+      "vectorLayers": 7
+    },
+    "menu_icon_button_disabled": {
+      "file": "PNG/menu_icon_button_disabled.png",
+      "width": 64,
+      "height": 64,
+      "vectorLayers": 7
+    },
+    "icon_helmet": {
+      "file": "PNG/icon_helmet.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 8
+    },
+    "icon_bag": {
+      "file": "PNG/icon_bag.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 10
+    },
+    "icon_sword_shield": {
+      "file": "PNG/icon_sword_shield.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 11
+    },
+    "icon_scroll": {
+      "file": "PNG/icon_scroll.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 9
+    },
+    "icon_gear": {
+      "file": "PNG/icon_gear.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 5
+    },
+    "icon_coin": {
+      "file": "PNG/icon_coin.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 6
+    },
+    "icon_quest_available": {
+      "file": "PNG/icon_quest_available.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 5
+    },
+    "icon_quest_progress": {
+      "file": "PNG/icon_quest_progress.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 5
+    },
+    "icon_chat": {
+      "file": "PNG/icon_chat.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 6
+    },
+    "icon_potion": {
+      "file": "PNG/icon_potion.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 7
+    },
+    "icon_fire": {
+      "file": "PNG/icon_fire.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 4
+    },
+    "icon_ice": {
+      "file": "PNG/icon_ice.png",
+      "width": 48,
+      "height": 48,
+      "vectorLayers": 5
+    },
+    "minimize_button_normal": {
+      "file": "PNG/minimize_button_normal.png",
+      "width": 32,
+      "height": 32,
+      "vectorLayers": 8
+    },
+    "minimize_button_hover": {
+      "file": "PNG/minimize_button_hover.png",
+      "width": 32,
+      "height": 32,
+      "vectorLayers": 8
+    },
+    "minimize_button_pressed": {
+      "file": "PNG/minimize_button_pressed.png",
+      "width": 32,
+      "height": 32,
+      "vectorLayers": 8
+    },
+    "zoom_in_button_normal": {
+      "file": "PNG/zoom_in_button_normal.png",
+      "width": 32,
+      "height": 32,
+      "vectorLayers": 9
+    },
+    "zoom_in_button_hover": {
+      "file": "PNG/zoom_in_button_hover.png",
+      "width": 32,
+      "height": 32,
+      "vectorLayers": 9
+    },
+    "zoom_in_button_pressed": {
+      "file": "PNG/zoom_in_button_pressed.png",
+      "width": 32,
+      "height": 32,
+      "vectorLayers": 9
+    },
+    "menu_list_button_normal": {
+      "file": "PNG/menu_list_button_normal.png",
+      "width": 36,
+      "height": 36,
+      "vectorLayers": 10
+    },
+    "menu_list_button_hover": {
+      "file": "PNG/menu_list_button_hover.png",
+      "width": 36,
+      "height": 36,
+      "vectorLayers": 10
+    },
+    "menu_list_button_pressed": {
+      "file": "PNG/menu_list_button_pressed.png",
+      "width": 36,
+      "height": 36,
+      "vectorLayers": 10
+    },
+    "avatar_frame_9slice": {
+      "file": "PNG/avatar_frame_9slice.png",
+      "width": 92,
+      "height": 104,
+      "vectorLayers": 8,
+      "sliceLTRB": [
+        14,
+        14,
+        14,
+        18
+      ]
+    },
+    "player_status_body_9slice": {
+      "file": "PNG/player_status_body_9slice.png",
+      "width": 432,
+      "height": 112,
+      "vectorLayers": 6,
+      "sliceLTRB": [
+        14,
+        14,
+        14,
+        18
+      ]
+    },
+    "quest_tracker_body_9slice": {
+      "file": "PNG/quest_tracker_body_9slice.png",
+      "width": 360,
+      "height": 192,
+      "vectorLayers": 12,
+      "sliceLTRB": [
+        14,
+        64,
+        14,
+        18
+      ]
+    },
+    "quest_row_divider_9slice": {
+      "file": "PNG/quest_row_divider_9slice.png",
+      "width": 312,
+      "height": 4,
+      "vectorLayers": 2,
+      "sliceLTRB": [
+        6,
+        0,
+        6,
+        0
+      ]
+    },
+    "chat_body_9slice": {
+      "file": "PNG/chat_body_9slice.png",
+      "width": 432,
+      "height": 200,
+      "vectorLayers": 6,
+      "sliceLTRB": [
+        14,
+        14,
+        14,
+        18
+      ]
+    },
+    "chat_input_9slice": {
+      "file": "PNG/chat_input_9slice.png",
+      "width": 400,
+      "height": 40,
+      "vectorLayers": 3,
+      "sliceLTRB": [
+        10,
+        10,
+        10,
+        10
+      ]
+    },
+    "chat_log_body_9slice": {
+      "file": "PNG/chat_log_body_9slice.png",
+      "width": 400,
+      "height": 112,
+      "vectorLayers": 6,
+      "sliceLTRB": [
+        14,
+        14,
+        14,
+        18
+      ]
+    },
+    "minimap_body_9slice": {
+      "file": "PNG/minimap_body_9slice.png",
+      "width": 304,
+      "height": 224,
+      "vectorLayers": 12,
+      "sliceLTRB": [
+        14,
+        64,
+        14,
+        18
+      ]
+    },
+    "minimap_viewport_9slice": {
+      "file": "PNG/minimap_viewport_9slice.png",
+      "width": 272,
+      "height": 144,
+      "vectorLayers": 6,
+      "sliceLTRB": [
+        14,
+        14,
+        14,
+        18
+      ]
+    },
+    "inventory_body_9slice": {
+      "file": "PNG/inventory_body_9slice.png",
+      "width": 320,
+      "height": 416,
+      "vectorLayers": 12,
+      "sliceLTRB": [
+        14,
+        64,
+        14,
+        18
+      ]
+    },
+    "inventory_footer_9slice": {
+      "file": "PNG/inventory_footer_9slice.png",
+      "width": 288,
+      "height": 40,
+      "vectorLayers": 2,
+      "sliceLTRB": [
+        10,
+        10,
+        10,
+        10
+      ]
+    },
+    "hotbar_body_9slice": {
+      "file": "PNG/hotbar_body_9slice.png",
+      "width": 704,
+      "height": 80,
+      "vectorLayers": 6,
+      "sliceLTRB": [
+        14,
+        14,
+        14,
+        18
+      ]
+    },
+    "hotbar_counter_badge_9slice": {
+      "file": "PNG/hotbar_counter_badge_9slice.png",
+      "width": 28,
+      "height": 22,
+      "vectorLayers": 2,
+      "sliceLTRB": [
+        6,
+        6,
+        6,
+        6
+      ]
+    },
+    "notification_badge": {
+      "file": "PNG/notification_badge.png",
+      "width": 20,
+      "height": 20,
+      "vectorLayers": 3
+    }
+  }
+}
