@@ -325,6 +325,23 @@ impl TextRenderer {
     }
 }
 
+/// CPU layout metrics for the same wrap path `TextRenderer` draws.
+///
+/// `block.max_width` and the returned size are framebuffer pixels. `scale` is
+/// the UI pixels-per-unit applied to the logical font size.
+pub(crate) fn measure_text(block: &TextBlock, scale: f32) -> Option<TextMetrics> {
+    let mut fonts = measure_fonts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    TextLayout::new(&mut fonts, block.clone(), scale).map(|layout| layout.metrics)
+}
+
+fn measure_fonts() -> &'static std::sync::Mutex<FontSystem> {
+    static FONTS: std::sync::LazyLock<std::sync::Mutex<FontSystem>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(font_system()));
+    &FONTS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +477,23 @@ mod tests {
             assert!(block.anchor[1] + layout.metrics.height <= hit.max[1]);
             assert_eq!(layout.buffer.metrics().font_size, 14.0 * scale);
         }
+    }
+
+    #[test]
+    fn measure_text_shrinks_short_copy_and_grows_wrapped_copy() {
+        let mut short = block("Hi", 16.0);
+        short.max_width = Some(120.0);
+        let mut long = block(
+            "A longer tooltip sentence that cannot stay on one line.",
+            16.0,
+        );
+        long.max_width = Some(120.0);
+        let short_metrics = measure_text(&short, 1.0).unwrap();
+        let long_metrics = measure_text(&long, 1.0).unwrap();
+        assert!(short_metrics.width < 80.0);
+        assert!(short_metrics.width < long_metrics.width);
+        assert!(long_metrics.line_count > 1);
+        assert!(long_metrics.height > short_metrics.height * 1.5);
+        assert!(long_metrics.width <= 120.01);
     }
 }

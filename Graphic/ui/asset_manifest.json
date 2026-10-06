@@ -125,25 +125,49 @@
       "file": "PNG/button_normal.png",
       "width": 112,
       "height": 44,
-      "vectorLayers": 7
+      "vectorLayers": 7,
+      "sliceLTRB": [
+        10,
+        0,
+        10,
+        0
+      ]
     },
     "button_hover": {
       "file": "PNG/button_hover.png",
       "width": 112,
       "height": 44,
-      "vectorLayers": 7
+      "vectorLayers": 7,
+      "sliceLTRB": [
+        10,
+        0,
+        10,
+        0
+      ]
     },
     "button_pressed": {
       "file": "PNG/button_pressed.png",
       "width": 112,
       "height": 44,
-      "vectorLayers": 7
+      "vectorLayers": 7,
+      "sliceLTRB": [
+        10,
+        0,
+        10,
+        0
+      ]
     },
     "button_disabled": {
       "file": "PNG/button_disabled.png",
       "width": 112,
       "height": 44,
-      "vectorLayers": 7
+      "vectorLayers": 7,
+      "sliceLTRB": [
+        10,
+        0,
+        10,
+        0
+      ]
     },
     "tab_active": {
       "file": "PNG/tab_active.png",

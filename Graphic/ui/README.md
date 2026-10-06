@@ -16,7 +16,7 @@ The integrated window's top 64 px are fixed in vertical nine-slice resizing. Thi
 
 ## States
 
-- Standard buttons: normal, hover, pressed, disabled.
+- Standard buttons: normal, hover, pressed, disabled. Each state is 112 × 44. Columns 0–9 and 102–111 are the rounded end caps; columns 10–101 are identical, so only that center may stretch. The face is a continuous vertical gradient with no stretchable row, so `sliceLTRB` is `[10, 0, 10, 0]` (horizontal 3-slice). Draw the full 44 px height with the rest of the UI scale. Do not reuse the legacy atlas cap of 8 px.
 - Tabs: active, inactive, hover, pressed, disabled.
 - Close: normal, hover, pressed, disabled; the white X is approximately 14 px across inside a 36 px control.
 - Slots and hotbar slots: normal, hover, selected, disabled.

@@ -21,8 +21,8 @@ use crate::renderer::{
     UiTexturedQuad, UiTexturedRect,
 };
 use crate::ui_v2::{
-    UiV2Image, UiV2NineSlice, load_ui_v2_catalog, load_ui_v2_image, load_ui_v2_nine_slice,
-    load_ui_v2_state_family,
+    UiV2Catalog, UiV2Image, UiV2NineSlice, load_ui_v2_catalog, load_ui_v2_image,
+    load_ui_v2_nine_slice, load_ui_v2_state_family,
 };
 
 const ATLAS_PNG: &[u8] = include_bytes!("../../../Graphic/ui/ATLAS.png");
@@ -39,7 +39,8 @@ const SETTINGS_SECTION_FONT_SIZE_UNITS: f32 = 12.0;
 const SETTINGS_ROW_FONT_SIZE_UNITS: f32 = 10.5;
 const SETTINGS_VALUE_FONT_SIZE_UNITS: f32 = 9.5;
 const SETTINGS_BUTTON_WIDTH_UNITS: f32 = 112.0;
-const SETTINGS_BUTTON_HEIGHT_UNITS: f32 = 22.0;
+/// Authored V2 button face. A shorter destination squashes the vertical gradient.
+const SETTINGS_BUTTON_HEIGHT_UNITS: f32 = 44.0;
 const SETTINGS_LABEL_COLUMN_UNITS: f32 = 132.0;
 const SETTINGS_CONTROL_GAP_UNITS: f32 = 8.0;
 const SETTINGS_CONTENT_PAD_UNITS: f32 = 16.0;
@@ -992,7 +993,7 @@ pub(crate) struct SettingsV2Assets {
     panel: UiV2NineSlice,
     header: UiV2NineSlice,
     close: [UiV2Image; 3],
-    buttons: [UiV2Image; 4],
+    buttons: [UiV2NineSlice; 4],
     gear: UiV2Image,
 }
 
@@ -1011,7 +1012,7 @@ impl SettingsV2Assets {
                 "close_button_pressed",
             ],
         )?)?;
-        let buttons = array4(load_ui_v2_state_family(
+        let buttons = load_v2_text_buttons(
             &mut loader,
             &catalog,
             &[
@@ -1020,7 +1021,9 @@ impl SettingsV2Assets {
                 "button_pressed",
                 "button_disabled",
             ],
-        )?)?;
+        )?
+        .try_into()
+        .map_err(|_| "V2 text button family length is not 4".to_string())?;
         let gear = load_ui_v2_image(&mut loader, &catalog, "icon_gear")?;
         Ok(Self {
             panel,
@@ -1217,20 +1220,20 @@ fn layout_settings(window: ScreenRect, pixels_per_unit: f32) -> Result<SettingsL
     })
 }
 
-fn settings_v2_button_texture(
-    buttons: &[UiV2Image; 4],
+fn settings_v2_button(
+    buttons: &[UiV2NineSlice; 4],
     enabled: bool,
     hovered: bool,
     pressed: bool,
-) -> SpriteTextureId {
+) -> &UiV2NineSlice {
     if !enabled {
-        buttons[3].texture
+        &buttons[3]
     } else if hovered && pressed {
-        buttons[2].texture
+        &buttons[2]
     } else if hovered {
-        buttons[1].texture
+        &buttons[1]
     } else {
-        buttons[0].texture
+        &buttons[0]
     }
 }
 
@@ -1345,9 +1348,10 @@ impl SettingsWindow {
             let enabled = settings_control_enabled(control, settings);
             let hovered = enabled && cursor.is_some_and(|cursor| bounds.contains(cursor));
             let pressed = hovered && self.pressed_control == Some(control);
-            skin_quads.push(compose_stretched_quad(
+            skin_quads.extend(compose_v2_text_button(
                 bounds,
-                settings_v2_button_texture(&assets.buttons, enabled, hovered, pressed),
+                settings_v2_button(&assets.buttons, enabled, hovered, pressed),
+                pixels_per_unit,
             )?);
             let row_font = SETTINGS_ROW_FONT_SIZE_UNITS * pixels_per_unit;
             let color = if enabled {
@@ -1483,10 +1487,11 @@ impl SettingsLauncher {
     ) -> Result<SettingsLauncherFrame, String> {
         let bounds = settings_launcher_bounds(viewport, pixels_per_unit)?;
         let hovered = cursor.is_some_and(|cursor| bounds.contains(cursor));
-        let mut skin_quads = vec![compose_stretched_quad(
+        let mut skin_quads = compose_v2_text_button(
             bounds,
-            settings_v2_button_texture(&assets.buttons, true, hovered, hovered && self.pressed),
-        )?];
+            settings_v2_button(&assets.buttons, true, hovered, hovered && self.pressed),
+            pixels_per_unit,
+        )?;
         let icon_size = SETTINGS_LAUNCHER_ICON_SIZE_UNITS * pixels_per_unit;
         let icon_min = [
             bounds.min[0] + SETTINGS_LAUNCHER_ICON_INSET_UNITS * pixels_per_unit,
@@ -2185,6 +2190,36 @@ fn array4(images: Vec<UiV2Image>) -> Result<[UiV2Image; 4], String> {
     images
         .try_into()
         .map_err(|_| "UI V2 state family length is not 4".to_string())
+}
+
+/// Load a textual V2 button family. Every state must share one horizontal slice.
+pub(crate) fn load_v2_text_buttons(
+    loader: &mut ClientAssetLoader<'_>,
+    catalog: &UiV2Catalog,
+    names: &[&str],
+) -> Result<Vec<UiV2NineSlice>, String> {
+    if names.is_empty() {
+        return Err("V2 text button family is empty".to_string());
+    }
+    let mut loaded: Vec<UiV2NineSlice> = Vec::with_capacity(names.len());
+    for name in names {
+        let image = load_ui_v2_nine_slice(loader, catalog, name)?;
+        if let Some(first) = loaded.first()
+            && (image.size_px != first.size_px || image.slice_ltrb != first.slice_ltrb)
+        {
+            return Err(format!(
+                "V2 text button {name} does not share the family slice"
+            ));
+        }
+        if image.slice_ltrb[1] != 0 || image.slice_ltrb[3] != 0 {
+            return Err(format!(
+                "V2 text button {name} slice {:?} is not a horizontal 3-slice",
+                image.slice_ltrb
+            ));
+        }
+        loaded.push(image);
+    }
+    Ok(loaded)
 }
 
 struct InventoryLayout {
@@ -4425,6 +4460,66 @@ pub(crate) fn compose_nine_slice_with_borders(
     Ok(regions.into_iter().map(stretch_nine_slice_piece).collect())
 }
 
+/// Horizontal 3-slice for a textual V2 button.
+///
+/// Left and right caps stay at the manifest inset scaled by UI scale. Only the
+/// center changes width. The full source height maps uniformly into `bounds`,
+/// so callers should size that height to the authored button height.
+pub(crate) fn compose_v2_text_button(
+    bounds: ScreenRect,
+    asset: &UiV2NineSlice,
+    pixels_per_unit: f32,
+) -> Result<Vec<UiTexturedQuad>, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let [left, top, right, bottom] = asset.slice_ltrb;
+    if top != 0 || bottom != 0 || left == 0 || right == 0 {
+        return Err(format!(
+            "V2 text button slice {:?} is not a horizontal 3-slice",
+            asset.slice_ltrb
+        ));
+    }
+    if left.saturating_add(right) >= asset.size_px[0] || asset.size_px[1] == 0 {
+        return Err("V2 text button slice does not fit the artwork".to_string());
+    }
+    let (cap_left, cap_right) = fit_nine_slice_axis(
+        left as f32 * pixels_per_unit,
+        right as f32 * pixels_per_unit,
+        bounds.width(),
+    )?;
+    let source_width = asset.size_px[0] as f32;
+    let u = [
+        0.0,
+        left as f32 / source_width,
+        (asset.size_px[0] - right) as f32 / source_width,
+        1.0,
+    ];
+    let x = [
+        bounds.min[0],
+        bounds.min[0] + cap_left,
+        bounds.max[0] - cap_right,
+        bounds.max[0],
+    ];
+    let mut quads = Vec::with_capacity(3);
+    for column in 0..3 {
+        if x[column + 1] <= x[column] {
+            continue;
+        }
+        quads.push(compose_uv_quad(
+            ScreenRect {
+                min: [x[column], bounds.min[1]],
+                max: [x[column + 1], bounds.max[1]],
+            },
+            asset.texture,
+            [u[column], 0.0],
+            [u[column + 1], 1.0],
+        )?);
+    }
+    if quads.len() != 3 {
+        return Err("V2 text button slice produced no center".to_string());
+    }
+    Ok(quads)
+}
+
 /// Map one full source image across one destination. Quad submission does not tile.
 pub(crate) fn compose_stretched_quad(
     bounds: ScreenRect,
@@ -5076,10 +5171,10 @@ mod tests {
                 image(85, [36, 36]),
             ],
             buttons: [
-                image(86, [112, 44]),
-                image(87, [112, 44]),
-                image(88, [112, 44]),
-                image(89, [112, 44]),
+                slice(86, [112, 44], [10, 0, 10, 0]),
+                slice(87, [112, 44], [10, 0, 10, 0]),
+                slice(88, [112, 44], [10, 0, 10, 0]),
+                slice(89, [112, 44], [10, 0, 10, 0]),
             ],
             gear: image(90, [48, 48]),
         }
@@ -5096,6 +5191,22 @@ mod tests {
             (bounds.min[0] + bounds.max[0]) * 0.5,
             (bounds.min[1] + bounds.max[1]) * 0.5,
         ]
+    }
+
+    fn assert_sliced_button(pieces: &[&UiTexturedQuad], bounds: ScreenRect, scale: f32) {
+        assert_eq!(pieces.len(), 3);
+        let cap = 10.0 * scale;
+        assert!((pieces[0].corners[0][0] - bounds.min[0]).abs() < 0.05);
+        assert!((pieces[0].corners[0][1] - bounds.min[1]).abs() < 0.05);
+        assert!((pieces[0].corners[2][0] - (bounds.min[0] + cap)).abs() < 0.05);
+        assert!((pieces[0].corners[2][1] - bounds.max[1]).abs() < 0.05);
+        assert!((pieces[2].corners[2][0] - bounds.max[0]).abs() < 0.05);
+        assert!((pieces[2].corners[0][0] - (bounds.max[0] - cap)).abs() < 0.05);
+        assert!(pieces[1].corners[0][0] + 0.05 >= pieces[0].corners[2][0]);
+        assert!(pieces[1].corners[2][0] <= pieces[2].corners[0][0] + 0.05);
+        assert!(pieces[0].uvs[1][0] <= pieces[1].uvs[0][0] + 0.0001);
+        assert!(pieces[1].uvs[1][0] <= pieces[2].uvs[0][0] + 0.0001);
+        assert!((pieces[0].uvs[2][1] - 1.0).abs() < 0.001);
     }
 
     fn settings_button_quads<'a>(
@@ -5272,7 +5383,9 @@ mod tests {
         assert!(assets.header.slice_ltrb.iter().all(|inset| *inset > 0));
         let size = settings_window_size();
         assert!((300.0..=340.0).contains(&size[0]));
-        assert!((260.0..=300.0).contains(&size[1]));
+        // Height follows the 44 px button face, so the window is taller than the
+        // previous 22 px row and still inside a 720 px viewport at 125%.
+        assert!((400.0..=450.0).contains(&size[1]));
         assert_ne!(size, [360.0, 290.0]);
         assert_ne!(size, [360.0, 261.0]);
     }
@@ -5379,6 +5492,7 @@ mod tests {
         let quad = settings_button_quads(&pressed, &assets)[0];
         assert_eq!(quad.texture, assets.buttons[2].texture);
         assert_eq!(quad.tint, [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(quad.corners[0], fullscreen.min);
     }
 
     #[test]
@@ -5398,12 +5512,15 @@ mod tests {
             .frame(&assets, settings, viewport(), 1.0, Some(cursor))
             .unwrap()
             .unwrap();
-        let quad = settings_button_quads(&frame, &assets)[1];
-        assert_eq!(quad.texture, assets.buttons[3].texture);
-        assert_ne!(quad.texture, assets.buttons[0].texture);
-        assert_eq!(quad.tint, [1.0, 1.0, 1.0, 1.0]);
-        assert_eq!(quad.corners[0], resolution.min);
-        assert_eq!(quad.corners[2], resolution.max);
+        let pieces = settings_button_quads(&frame, &assets);
+        let resolution_pieces = &pieces[3..6];
+        assert!(
+            resolution_pieces
+                .iter()
+                .all(|quad| quad.texture == assets.buttons[3].texture)
+        );
+        assert_ne!(resolution_pieces[0].texture, assets.buttons[0].texture);
+        assert_sliced_button(resolution_pieces, resolution, 1.0);
         assert!(window.apply_pointer_button(
             ElementState::Pressed,
             Some(cursor),
@@ -5438,10 +5555,9 @@ mod tests {
             .unwrap();
         let layout = window.layout(viewport(), 1.0).unwrap().unwrap();
         let buttons = settings_button_quads(&frame, &assets);
-        assert_eq!(buttons.len(), layout.controls.len());
-        for (quad, (_, bounds)) in buttons.iter().zip(&layout.controls) {
-            assert_eq!(quad.corners[0], bounds.min);
-            assert_eq!(quad.corners[2], bounds.max);
+        assert_eq!(buttons.len(), layout.controls.len() * 3);
+        for (pieces, (_, bounds)) in buttons.chunks(3).zip(&layout.controls) {
+            assert_sliced_button(pieces, *bounds, 1.0);
         }
         let close = frame.skin_quads.last().unwrap();
         assert_eq!(close.corners[0], layout.close_button.min);
@@ -5457,9 +5573,12 @@ mod tests {
         let cursor = rect_center(bounds);
         let normal = launcher.frame(&assets, viewport(), 1.0, None).unwrap();
         assert_eq!(normal.skin_quads[0].texture, assets.buttons[0].texture);
-        assert_eq!(normal.skin_quads[1].texture, assets.gear.texture);
-        assert_eq!(normal.skin_quads[0].corners[0], bounds.min);
-        assert_eq!(normal.skin_quads[0].corners[2], bounds.max);
+        assert_eq!(normal.skin_quads[3].texture, assets.gear.texture);
+        assert_sliced_button(
+            &normal.skin_quads[..3].iter().collect::<Vec<_>>(),
+            bounds,
+            1.0,
+        );
         let hover = launcher
             .frame(&assets, viewport(), 1.0, Some(cursor))
             .unwrap();
@@ -5474,11 +5593,14 @@ mod tests {
             .frame(&assets, viewport(), 1.0, Some(cursor))
             .unwrap();
         assert_eq!(pressed.skin_quads[0].texture, assets.buttons[2].texture);
-        assert_eq!(pressed.skin_quads[0].corners[0], bounds.min);
-        assert_eq!(pressed.skin_quads[0].corners[2], bounds.max);
-        assert!(pressed.skin_quads[1].corners[0][0] >= bounds.min[0]);
-        assert!(pressed.skin_quads[1].corners[2][0] <= bounds.max[0]);
-        assert!(pressed.skin_quads[1].corners[2][1] <= bounds.max[1]);
+        assert_sliced_button(
+            &pressed.skin_quads[..3].iter().collect::<Vec<_>>(),
+            bounds,
+            1.0,
+        );
+        assert!(pressed.skin_quads[3].corners[0][0] >= bounds.min[0]);
+        assert!(pressed.skin_quads[3].corners[2][0] <= bounds.max[0]);
+        assert!(pressed.skin_quads[3].corners[2][1] <= bounds.max[1]);
     }
 
     #[test]
@@ -5508,12 +5630,11 @@ mod tests {
             assert!(layout.close_button.max[0] <= layout.header.max[0]);
             assert!(layout.close_button.max[1] <= layout.header.max[1]);
             let buttons = settings_button_quads(&frame, &assets);
-            assert_eq!(buttons.len(), layout.controls.len());
-            for (quad, (_, bounds)) in buttons.iter().zip(&layout.controls) {
+            assert_eq!(buttons.len(), layout.controls.len() * 3);
+            for (pieces, (_, bounds)) in buttons.chunks(3).zip(&layout.controls) {
                 assert!((bounds.width() / scale - SETTINGS_BUTTON_WIDTH_UNITS).abs() < 0.01);
                 assert!((bounds.height() / scale - SETTINGS_BUTTON_HEIGHT_UNITS).abs() < 0.01);
-                assert_eq!(quad.corners[0], bounds.min);
-                assert_eq!(quad.corners[2], bounds.max);
+                assert_sliced_button(pieces, *bounds, scale);
             }
             let close = frame.skin_quads.last().unwrap();
             assert_eq!(close.corners[0], layout.close_button.min);
@@ -5522,8 +5643,11 @@ mod tests {
             let launcher = SettingsLauncher::default()
                 .frame(&assets, viewport(), scale, None)
                 .unwrap();
-            assert_eq!(launcher.skin_quads[0].corners[0], launcher_bounds.min);
-            assert_eq!(launcher.skin_quads[0].corners[2], launcher_bounds.max);
+            assert_sliced_button(
+                &launcher.skin_quads[..3].iter().collect::<Vec<_>>(),
+                launcher_bounds,
+                scale,
+            );
             assert!((launcher_bounds.width() / scale - SETTINGS_LAUNCHER_WIDTH_UNITS).abs() < 0.01);
             assert!((launcher_bounds.height() / scale - SETTINGS_BUTTON_HEIGHT_UNITS).abs() < 0.01);
             let launcher_text = launcher

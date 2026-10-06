@@ -11,6 +11,7 @@ use crate::renderer::{
 };
 use crate::ui_panel::{
     ScreenRect, button_label_text, compose_nine_slice_with_borders, compose_stretched_quad,
+    compose_v2_text_button, load_v2_text_buttons,
 };
 use crate::ui_v2::{
     UiV2Image, UiV2NineSlice, load_ui_v2_catalog, load_ui_v2_nine_slice, load_ui_v2_state_family,
@@ -22,7 +23,9 @@ const TITLE_FONT_SIZE: f32 = 13.0;
 const SIDE_INSET_UNITS: f32 = 24.0;
 const BUTTON_BOTTOM_UNITS: f32 = 12.0;
 const BUTTON_GAP_UNITS: f32 = 8.0;
-const BUTTON_HEIGHT_UNITS: f32 = 22.0;
+/// Authored V2 button height. Width stays capped at 112; height stays 44 so the
+/// face is not squashed.
+const BUTTON_HEIGHT_UNITS: f32 = 44.0;
 const BUTTON_ROW_GAP_UNITS: f32 = 8.0;
 /// Authored V2 button width. Dialog buttons never stretch past this.
 const BUTTON_MAX_WIDTH_UNITS: f32 = 112.0;
@@ -116,7 +119,7 @@ pub(crate) struct MessageDialogV2Assets {
     panel: UiV2NineSlice,
     header: UiV2NineSlice,
     close: [UiV2Image; 3],
-    buttons: [UiV2Image; 3],
+    buttons: [UiV2NineSlice; 3],
 }
 
 impl MessageDialogV2Assets {
@@ -130,11 +133,9 @@ impl MessageDialogV2Assets {
             &catalog,
             &CLOSE_ASSETS,
         )?)?;
-        let buttons = array3(load_ui_v2_state_family(
-            &mut loader,
-            &catalog,
-            &BUTTON_ASSETS,
-        )?)?;
+        let buttons = load_v2_text_buttons(&mut loader, &catalog, &BUTTON_ASSETS)?
+            .try_into()
+            .map_err(|_| "V2 text button family length is not 3".to_string())?;
         Ok(Self {
             panel,
             header,
@@ -360,9 +361,8 @@ impl MessageDialog {
         ];
         for (index, button) in request.buttons.iter().enumerate() {
             let bounds = layout.buttons[index];
-            let texture =
-                button_texture(assets, bounds, cursor, self.pressed_button == Some(index));
-            skin_quads.push(compose_stretched_quad(bounds, texture)?);
+            let skin = button_asset(assets, bounds, cursor, self.pressed_button == Some(index));
+            skin_quads.extend(compose_v2_text_button(bounds, skin, pixels_per_unit)?);
             texts.push(button_label_text(
                 &button.label,
                 bounds,
@@ -543,19 +543,19 @@ fn title_text(layout: &MessageDialogLayout, title: &str, pixels_per_unit: f32) -
     }
 }
 
-fn button_texture(
+fn button_asset(
     assets: &MessageDialogV2Assets,
     bounds: ScreenRect,
     cursor: Option<[f32; 2]>,
     pressed: bool,
-) -> SpriteTextureId {
+) -> &UiV2NineSlice {
     let hovered = cursor.is_some_and(|point| bounds.contains(point));
     if hovered && pressed {
-        assets.buttons[2].texture
+        &assets.buttons[2]
     } else if hovered {
-        assets.buttons[1].texture
+        &assets.buttons[1]
     } else {
-        assets.buttons[0].texture
+        &assets.buttons[0]
     }
 }
 
@@ -612,6 +612,20 @@ fn quad_covers(quad: &UiTexturedQuad, bounds: ScreenRect) -> bool {
 fn full_image_uv(quad: &UiTexturedQuad) -> bool {
     quad.uvs == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
         && quad.tint == [1.0, 1.0, 1.0, 1.0]
+}
+
+#[cfg(test)]
+fn assert_sliced_button(pieces: &[&UiTexturedQuad], bounds: ScreenRect, scale: f32) {
+    assert_eq!(pieces.len(), 3);
+    let cap = 10.0 * scale;
+    assert!((pieces[0].corners[0][0] - bounds.min[0]).abs() < 0.05);
+    assert!((pieces[0].corners[2][0] - (bounds.min[0] + cap)).abs() < 0.05);
+    assert!((pieces[2].corners[2][0] - bounds.max[0]).abs() < 0.05);
+    assert!((pieces[2].corners[0][0] - (bounds.max[0] - cap)).abs() < 0.05);
+    assert!((pieces[0].corners[0][1] - bounds.min[1]).abs() < 0.05);
+    assert!((pieces[0].corners[2][1] - bounds.max[1]).abs() < 0.05);
+    assert!(pieces[1].uvs[0][0] > 0.0);
+    assert!(pieces[1].uvs[2][0] < 1.0);
 }
 
 #[cfg(test)]
@@ -903,10 +917,9 @@ mod tests {
             .unwrap()
             .unwrap();
         let buttons = button_quads(&frame, &assets);
-        assert_eq!(buttons.len(), dialog.button_bounds.len());
-        for (quad, bounds) in buttons.iter().zip(dialog.button_bounds.iter()) {
-            assert!(quad_covers(quad, *bounds));
-            assert!(full_image_uv(quad));
+        assert_eq!(buttons.len(), dialog.button_bounds.len() * 3);
+        for (pieces, bounds) in buttons.chunks(3).zip(dialog.button_bounds.iter()) {
+            assert_sliced_button(pieces, *bounds, 1.0);
         }
         let close = dialog.close_button.expect("dismissible close");
         let close_quads = close_quads(&frame, &assets);

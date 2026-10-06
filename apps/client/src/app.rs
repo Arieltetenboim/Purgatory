@@ -3625,18 +3625,6 @@ impl ClientApp {
                 }
             }
         }
-        if let Some(frame) = message_frame.as_ref() {
-            // Message is outside normal focus order and always occupies the top group.
-            let mut composition = UiComposition::new(&[], &[], &frame.texts);
-            composition.textured_quads = &frame.skin_quads;
-            ui_compositions.push(composition);
-        }
-        #[cfg(feature = "dev-diagnostics")]
-        if let Some(frame) = ui_debug_frame.as_ref() {
-            let mut composition = UiComposition::new(&[], &[], &frame.texts);
-            composition.textured_quads = &frame.skin_quads;
-            ui_compositions.push(composition);
-        }
         let enter_overlay: Vec<UiRect> = viewport
             .filter(|_| self.frontend_runtime.enter_alpha() > 0.0)
             .map(|v| UiRect {
@@ -3646,7 +3634,30 @@ impl ClientApp {
             })
             .into_iter()
             .collect();
-        ui_compositions.push(UiComposition::new(&[], &enter_overlay, &[]));
+        for layer in ui_stack_order() {
+            match layer {
+                UiStackLayer::GameUi | UiStackLayer::NormalWindows => {}
+                UiStackLayer::UiDebug =>
+                {
+                    #[cfg(feature = "dev-diagnostics")]
+                    if let Some(frame) = ui_debug_frame.as_ref() {
+                        let mut composition = UiComposition::new(&[], &frame.rects, &frame.texts);
+                        composition.textured_quads = &frame.skin_quads;
+                        ui_compositions.push(composition);
+                    }
+                }
+                UiStackLayer::MessageDialog => {
+                    if let Some(frame) = message_frame.as_ref() {
+                        let mut composition = UiComposition::new(&[], &[], &frame.texts);
+                        composition.textured_quads = &frame.skin_quads;
+                        ui_compositions.push(composition);
+                    }
+                }
+                UiStackLayer::ScreenFade => {
+                    ui_compositions.push(UiComposition::new(&[], &enter_overlay, &[]));
+                }
+            }
+        }
         #[cfg(feature = "dev-diagnostics")]
         let demand = self.diagnostics_demand();
         #[cfg(feature = "dev-diagnostics")]
@@ -5490,13 +5501,6 @@ impl ApplicationHandler for ClientApp {
                 if self.message_dialog.is_active() {
                     let cursor = [position.x as f32, position.y as f32];
                     self.cursor_position = Some(cursor);
-                    #[cfg(feature = "dev-diagnostics")]
-                    if gameplay_receives_pointer(
-                        self.debug_overlay_visible(),
-                        self.debug.as_ref().is_some_and(DebugOverlay::wants_pointer),
-                    ) {
-                        self.move_ui_debug_pointer(cursor);
-                    }
                     self.message_dialog.pointer_moved(cursor);
                     window.request_redraw();
                     return;
@@ -5573,6 +5577,19 @@ impl ApplicationHandler for ClientApp {
                 );
                 #[cfg(not(feature = "dev-diagnostics"))]
                 let gameplay_mouse = true;
+                if message_dialog_owns_pointer(self.message_dialog.is_active()) {
+                    if button == MouseButton::Left {
+                        #[cfg(feature = "dev-diagnostics")]
+                        {
+                            self.ui_debug.cancel_pointer_interaction();
+                            self.ui_debug_pointer = false;
+                        }
+                        self.message_dialog
+                            .apply_pointer_button(state, self.cursor_position);
+                    }
+                    window.request_redraw();
+                    return;
+                }
                 #[cfg(feature = "dev-diagnostics")]
                 if self.lifecycle.gameplay_actions_allowed()
                     && gameplay_mouse
@@ -5580,14 +5597,6 @@ impl ApplicationHandler for ClientApp {
                     && self.route_ui_debug_pointer(state)
                 {
                     self.open_ui_debug_message_dialog();
-                    window.request_redraw();
-                    return;
-                }
-                if self.message_dialog.is_active() {
-                    if button == MouseButton::Left {
-                        self.message_dialog
-                            .apply_pointer_button(state, self.cursor_position);
-                    }
                     window.request_redraw();
                     return;
                 }
@@ -5771,6 +5780,34 @@ fn rebase_wall_clock(last_instant: &mut Instant, now: Instant) {
     *last_instant = now;
 }
 
+/// Draw order for window-level UI. MessageDialog stays above every movable
+/// window, including dev UI DEBUG. The enter fade remains the final overlay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UiStackLayer {
+    GameUi,
+    NormalWindows,
+    UiDebug,
+    MessageDialog,
+    ScreenFade,
+}
+
+/// An active MessageDialog owns the pointer, including when the cursor is also
+/// inside UI DEBUG. The dialog is drawn above that window, so the click must
+/// not be delivered to the window underneath.
+fn message_dialog_owns_pointer(dialog_active: bool) -> bool {
+    dialog_active
+}
+
+fn ui_stack_order() -> &'static [UiStackLayer] {
+    &[
+        UiStackLayer::GameUi,
+        UiStackLayer::NormalWindows,
+        UiStackLayer::UiDebug,
+        UiStackLayer::MessageDialog,
+        UiStackLayer::ScreenFade,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use crate::platform::{DEV_WINDOW_HEIGHT, DEV_WINDOW_WIDTH};
@@ -5781,6 +5818,24 @@ mod tests {
         FootnoteConfig, PlayerInput, SimulationClock, TICK_DURATION, World,
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn message_dialog_draws_above_ui_debug_and_below_the_screen_fade() {
+        let order = super::ui_stack_order();
+        let index = |layer: super::UiStackLayer| {
+            order.iter().position(|item| *item == layer).expect("layer")
+        };
+        assert!(index(super::UiStackLayer::GameUi) < index(super::UiStackLayer::NormalWindows));
+        assert!(index(super::UiStackLayer::NormalWindows) < index(super::UiStackLayer::UiDebug));
+        assert!(index(super::UiStackLayer::UiDebug) < index(super::UiStackLayer::MessageDialog));
+        assert!(index(super::UiStackLayer::MessageDialog) < index(super::UiStackLayer::ScreenFade));
+    }
+
+    #[test]
+    fn active_message_dialog_takes_the_pointer_before_ui_debug() {
+        assert!(super::message_dialog_owns_pointer(true));
+        assert!(!super::message_dialog_owns_pointer(false));
+    }
 
     #[test]
     fn map1_npc_uses_humanoid_facet_and_monsters_use_sprite_path() {

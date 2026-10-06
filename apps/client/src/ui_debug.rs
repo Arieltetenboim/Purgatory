@@ -5,8 +5,9 @@ use winit::keyboard::Key;
 
 use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
+use crate::renderer::text::measure_text;
 use crate::renderer::{
-    PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle,
+    PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle, UiRect,
     UiTexturedQuad,
 };
 use crate::ui_controls::{
@@ -19,14 +20,15 @@ use crate::ui_controls::{
 };
 use crate::ui_panel::{
     CloseButtonVisual, ProofPanelWindow, ScreenRect, UiTabs, WindowChromeLayout, button_label_text,
-    compose_nine_slice_with_borders, compose_stretched_quad,
+    compose_nine_slice_with_borders, compose_stretched_quad, compose_v2_text_button,
+    load_v2_text_buttons,
 };
 use crate::ui_v2::{
     UiV2Catalog, UiV2Image, UiV2NineSlice, load_ui_v2_catalog, load_ui_v2_image,
     load_ui_v2_nine_slice, load_ui_v2_state_family,
 };
 
-const UI_DEBUG_WINDOW_UNITS: [f32; 2] = [560.0, 420.0];
+const UI_DEBUG_WINDOW_UNITS: [f32; 2] = [560.0, 460.0];
 const HEADER_INSET_X: f32 = 10.0;
 const HEADER_TOP: f32 = 6.0;
 const HEADER_HEIGHT: f32 = 32.0;
@@ -43,7 +45,8 @@ const HEADER_BORDER: [f32; 4] = [6.0, 6.0, 6.0, 6.0];
 const TABBED_BORDER: [f32; 4] = [4.0, 4.0, 4.0, 4.0];
 const RAIL_HEIGHT: f32 = 4.0;
 const BUTTON_WIDTH: f32 = 136.0;
-const BUTTON_HEIGHT: f32 = 26.0;
+/// Authored V2 button face. Shorter destinations squash the vertical gradient.
+const BUTTON_HEIGHT: f32 = 44.0;
 const ICON_BUTTON_SIZE: f32 = 30.0;
 const ICON_GLYPH_SIZE: f32 = 16.0;
 const MARK_SIZE: f32 = 16.0;
@@ -80,8 +83,10 @@ const HP_INITIAL: f32 = 0.67;
 const MP_SAMPLE: f32 = 0.40;
 const EXP_SAMPLE: f32 = 0.82;
 const INPUT_WIDTH: f32 = 320.0;
-const INPUT_HEIGHT: f32 = 24.0;
-const INPUT_TEXT_PAD: f32 = 8.0;
+/// Authored chat-field height. The white edit surface sits inside its 10 px border.
+const INPUT_HEIGHT: f32 = 40.0;
+const INPUT_TEXT_PAD: f32 = 6.0;
+const INPUT_FILL: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const SCROLL_ITEMS: usize = 24;
 const SCROLL_VISIBLE: usize = 6;
 const SCROLL_ROW: f32 = 18.0;
@@ -92,14 +97,26 @@ const SECTION_BUTTON_WIDTH: f32 = 200.0;
 const SLOT_SIZE: f32 = 36.0;
 const SLOT_GAP: f32 = 6.0;
 const HOTBAR_COUNT: usize = 5;
-const HOTBAR_SLOT: f32 = 28.0;
-const HOTBAR_PAD: f32 = 6.0;
+const HOTBAR_SLOT: f32 = 40.0;
+const HOTBAR_GAP: f32 = 6.0;
 const HOTBAR_COUNTER_SLOT: usize = 1;
 const HOTBAR_COUNTER_VALUE: u32 = 12;
+const HOTBAR_COUNTER_SIZE: [f32; 2] = [28.0, 22.0];
 const BADGE_SIZE: f32 = 14.0;
-const TOOLTIP_WIDTH: f32 = 168.0;
-const TOOLTIP_HEIGHT: f32 = 46.0;
+const TOOLTIP_INNER_PAD_X: f32 = 8.0;
+const TOOLTIP_INNER_PAD_Y: f32 = 6.0;
+const TOOLTIP_LINE_GAP: f32 = 4.0;
+const TOOLTIP_MAX_WIDTH: f32 = 220.0;
 const TOOLTIP_POINTER: [f32; 2] = [10.0, 6.0];
+const TOOLTIP_TITLE: [f32; 4] = [0.96, 0.94, 0.88, 1.0];
+const TOOLTIP_BODY: [f32; 4] = [0.74, 0.78, 0.82, 1.0];
+const TOOLTIP_LINES: [(&str, [f32; 4]); 2] = [
+    ("Training Sword", TOOLTIP_TITLE),
+    (
+        "Example UI DEBUG tooltip that wraps once the copy is wider than the tooltip.",
+        TOOLTIP_BODY,
+    ),
+];
 const CHAT_BORDER: [f32; 4] = [10.0, 10.0, 10.0, 10.0];
 const SCROLL_TRACK_BORDER: [f32; 4] = [8.0, 10.0, 8.0, 10.0];
 const TOOLTIP_BORDER: [f32; 4] = [14.0, 14.0, 14.0, 18.0];
@@ -191,6 +208,26 @@ impl Default for UiDebugState {
     }
 }
 
+struct TextButtons {
+    states: [UiV2NineSlice; 4],
+}
+
+impl TextButtons {
+    fn asset(&self, visual: UiButtonVisual) -> &UiV2NineSlice {
+        &self.states[match visual {
+            UiButtonVisual::Normal => 0,
+            UiButtonVisual::Hover => 1,
+            UiButtonVisual::Pressed => 2,
+            UiButtonVisual::Disabled => 3,
+        }]
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn texture(&self, visual: UiButtonVisual) -> SpriteTextureId {
+        self.asset(visual).texture
+    }
+}
+
 pub(crate) struct UiDebugAssets {
     panel: UiV2NineSlice,
     header: UiV2NineSlice,
@@ -198,7 +235,7 @@ pub(crate) struct UiDebugAssets {
     tabbed_rail: SpriteTextureId,
     close: [SpriteTextureId; 3],
     tabs: UiTabSkin,
-    buttons: UiButtonSkin,
+    buttons: TextButtons,
     icon_buttons: UiButtonSkin,
     checkboxes: UiCheckboxSkin,
     radios: UiRadioSkin,
@@ -248,16 +285,20 @@ impl UiDebugAssets {
             &catalog,
             &["tab_active", "tab_inactive", "tab_hover", "tab_pressed"],
         )?);
-        let buttons = UiButtonSkin::from_family(family(
-            &mut loader,
-            &catalog,
-            &[
-                "button_normal",
-                "button_hover",
-                "button_pressed",
-                "button_disabled",
-            ],
-        )?);
+        let buttons = TextButtons {
+            states: load_v2_text_buttons(
+                &mut loader,
+                &catalog,
+                &[
+                    "button_normal",
+                    "button_hover",
+                    "button_pressed",
+                    "button_disabled",
+                ],
+            )?
+            .try_into()
+            .map_err(|_| "V2 text button family length is not 4".to_string())?,
+        };
         let icon_buttons = UiButtonSkin::from_family(family(
             &mut loader,
             &catalog,
@@ -392,6 +433,7 @@ impl UiDebugAssets {
 }
 
 pub(crate) struct UiDebugFrame {
+    pub(crate) rects: Vec<UiRect>,
     pub(crate) skin_quads: Vec<UiTexturedQuad>,
     pub(crate) texts: Vec<TextBlock>,
 }
@@ -1642,16 +1684,22 @@ fn place_composite(origin: [f32; 2], scale: f32) -> CompositePlaces {
         );
     }
     y += SLOT_SIZE * 2.0 + SLOT_GAP + SECTION_GAP + HEADING_HEIGHT;
-    let hotbar_width =
-        HOTBAR_PAD * 2.0 + HOTBAR_COUNT as f32 * HOTBAR_SLOT + (HOTBAR_COUNT - 1) as f32 * SLOT_GAP;
-    let hotbar_height = HOTBAR_PAD * 2.0 + HOTBAR_SLOT;
+    let inset_l = HOTBAR_BORDER[0];
+    let inset_t = HOTBAR_BORDER[1];
+    let inset_r = HOTBAR_BORDER[2];
+    let inset_b = HOTBAR_BORDER[3];
+    let hotbar_width = inset_l
+        + HOTBAR_COUNT as f32 * HOTBAR_SLOT
+        + (HOTBAR_COUNT - 1) as f32 * HOTBAR_GAP
+        + inset_r;
+    let hotbar_height = inset_t + HOTBAR_SLOT + inset_b;
     let hotbar = unit_rect(origin, 0.0, y, hotbar_width, hotbar_height, scale);
     let mut hotbar_slots = [hotbar; HOTBAR_COUNT];
     for (index, slot) in hotbar_slots.iter_mut().enumerate() {
         *slot = unit_rect(
             origin,
-            HOTBAR_PAD + index as f32 * (HOTBAR_SLOT + SLOT_GAP),
-            y + HOTBAR_PAD,
+            inset_l + index as f32 * (HOTBAR_SLOT + HOTBAR_GAP),
+            y + inset_t,
             HOTBAR_SLOT,
             HOTBAR_SLOT,
             scale,
@@ -1660,13 +1708,10 @@ fn place_composite(origin: [f32; 2], scale: f32) -> CompositePlaces {
     let counter_slot = hotbar_slots[HOTBAR_COUNTER_SLOT];
     let counter = ScreenRect {
         min: [
-            counter_slot.max[0] - 18.0 * scale,
-            counter_slot.max[1] - 12.0 * scale,
+            counter_slot.max[0] - HOTBAR_COUNTER_SIZE[0] * scale,
+            counter_slot.max[1] - HOTBAR_COUNTER_SIZE[1] * scale,
         ],
-        max: [
-            counter_slot.max[0] - 2.0 * scale,
-            counter_slot.max[1] - 2.0 * scale,
-        ],
+        max: counter_slot.max,
     };
     y += hotbar_height + SECTION_GAP + HEADING_HEIGHT;
     let badge_button = unit_rect(origin, 0.0, y, ICON_BUTTON_SIZE, ICON_BUTTON_SIZE, scale);
@@ -1724,6 +1769,7 @@ fn compose(
     cursor: Option<[f32; 2]>,
     scale: f32,
 ) -> Result<UiDebugFrame, String> {
+    let mut rects = Vec::new();
     let mut skin_quads = Vec::new();
     let mut texts = Vec::new();
     push_slice(
@@ -1778,7 +1824,14 @@ fn compose(
     } else if window.tabs.selected_index() == VALUES {
         push_values(&mut skin_quads, &mut texts, window, layout, cursor, scale)?;
     } else if window.tabs.selected_index() == INPUT_PAGE {
-        push_input(&mut skin_quads, &mut texts, window, layout, scale)?;
+        push_input(
+            &mut rects,
+            &mut skin_quads,
+            &mut texts,
+            window,
+            layout,
+            scale,
+        )?;
     } else if window.tabs.selected_index() == CONTAINERS_PAGE {
         push_containers(&mut skin_quads, &mut texts, window, layout, cursor, scale)?;
     } else if window.tabs.selected_index() == COMPOSITE_PAGE {
@@ -1795,7 +1848,11 @@ fn compose(
     };
     skin_quads.push(compose_stretched_quad(layout.close_button, close_texture)?);
     texts.push(title_text(layout, scale));
-    Ok(UiDebugFrame { skin_quads, texts })
+    Ok(UiDebugFrame {
+        rects,
+        skin_quads,
+        texts,
+    })
 }
 
 fn push_basics(
@@ -1808,14 +1865,15 @@ fn push_basics(
 ) -> Result<(), String> {
     let origin = content_origin(layout.inner, scale);
     texts.push(heading("BUTTONS", [layout.click_button.min[0], origin[1]]));
-    push_button(
+    push_text_button(
         quads,
         layout.click_button,
-        window.assets.buttons.texture(window.click_button.visual(
-            cursor,
-            layout.click_button,
-            true,
-        )),
+        window.assets.buttons.asset(
+            window
+                .click_button
+                .visual(cursor, layout.click_button, true),
+        ),
+        scale,
     )?;
     texts.push(button_label_text(
         "Click Me",
@@ -1843,14 +1901,15 @@ fn push_basics(
         layout.icon_button,
         scale,
     ));
-    push_button(
+    push_text_button(
         quads,
         layout.disabled_button,
-        window.assets.buttons.texture(window.disabled_button.visual(
+        window.assets.buttons.asset(window.disabled_button.visual(
             cursor,
             layout.disabled_button,
             false,
         )),
+        scale,
     )?;
     texts.push(button_label_text(
         "Disabled",
@@ -2134,6 +2193,16 @@ fn push_button(
     Ok(())
 }
 
+fn push_text_button(
+    quads: &mut Vec<UiTexturedQuad>,
+    bounds: ScreenRect,
+    asset: &UiV2NineSlice,
+    scale: f32,
+) -> Result<(), String> {
+    quads.extend(compose_v2_text_button(bounds, asset, scale)?);
+    Ok(())
+}
+
 fn heading(label: &str, anchor: [f32; 2]) -> TextBlock {
     TextBlock {
         content: TextContent(label.to_owned()),
@@ -2153,6 +2222,7 @@ fn body_text(label: &str, anchor: [f32; 2], max_width: f32, color: [f32; 4]) -> 
 }
 
 fn push_input(
+    rects: &mut Vec<UiRect>,
     quads: &mut Vec<UiTexturedQuad>,
     texts: &mut Vec<TextBlock>,
     window: &UiDebugWindow,
@@ -2180,9 +2250,16 @@ fn push_input(
         CHAT_BORDER,
         scale,
     )?;
+    let interior = field_interior(layout.input.field, scale);
+    rects.push(UiRect {
+        min: interior.min,
+        max: interior.max,
+        color: INPUT_FILL,
+    });
     texts.push(field_text(
         &window.text_input.display_text(&window.state.input_text),
         layout.input.field,
+        INK,
         scale,
     ));
     let count = window.state.input_text.chars().count();
@@ -2225,7 +2302,12 @@ fn push_input(
         CHAT_BORDER,
         scale,
     )?;
-    texts.push(field_text("Sample", layout.input.static_field, scale));
+    texts.push(field_text(
+        "Sample",
+        layout.input.static_field,
+        TITLE_COLOR,
+        scale,
+    ));
     Ok(())
 }
 
@@ -2302,14 +2384,15 @@ fn push_containers(
     } else {
         "Open Advanced Section"
     };
-    push_button(
+    push_text_button(
         quads,
         layout.containers.section_button,
-        window.assets.buttons.texture(window.section_button.visual(
+        window.assets.buttons.asset(window.section_button.visual(
             cursor,
             layout.containers.section_button,
             true,
         )),
+        scale,
     )?;
     texts.push(button_label_text(
         section_label,
@@ -2455,28 +2538,21 @@ fn push_composite(
         scale,
     )?;
     if inside(layout.composite.slots[1], cursor) {
-        let (body, pointer) = place_tooltip(layout.composite.slots[1], layout.window, scale);
+        let placed = place_tooltip(
+            &TOOLTIP_LINES,
+            layout.composite.slots[1],
+            layout.window,
+            scale,
+        )?;
         push_slice(
             quads,
-            body,
+            placed.body,
             &window.assets.tooltip_body,
             TOOLTIP_BORDER,
             scale,
         )?;
-        push_button(quads, pointer, window.assets.tooltip_pointer)?;
-        let pad = 8.0 * scale;
-        texts.push(body_text(
-            "Training Sword",
-            [body.min[0] + pad, body.min[1] + pad],
-            (body.width() - pad * 2.0).max(1.0),
-            INK,
-        ));
-        texts.push(body_text(
-            "Example UI DEBUG tooltip",
-            [body.min[0] + pad, body.min[1] + pad + LINE_HEIGHT * scale],
-            (body.width() - pad * 2.0).max(1.0),
-            MUTED,
-        ));
+        push_button(quads, placed.pointer, window.assets.tooltip_pointer)?;
+        texts.extend(placed.lines);
     }
     Ok(())
 }
@@ -2490,22 +2566,36 @@ fn push_labeled_button(
     window: &UiDebugWindow,
     scale: f32,
 ) -> Result<(), String> {
-    push_button(quads, bounds, window.assets.buttons.texture(visual))?;
+    push_text_button(quads, bounds, window.assets.buttons.asset(visual), scale)?;
     texts.push(button_label_text(label, bounds, BODY_FONT, INK, scale));
     Ok(())
 }
 
-fn field_text(value: &str, bounds: ScreenRect, scale: f32) -> TextBlock {
+fn field_interior(bounds: ScreenRect, scale: f32) -> ScreenRect {
+    ScreenRect {
+        min: [
+            bounds.min[0] + CHAT_BORDER[0] * scale,
+            bounds.min[1] + CHAT_BORDER[1] * scale,
+        ],
+        max: [
+            bounds.max[0] - CHAT_BORDER[2] * scale,
+            bounds.max[1] - CHAT_BORDER[3] * scale,
+        ],
+    }
+}
+
+fn field_text(value: &str, bounds: ScreenRect, color: [f32; 4], scale: f32) -> TextBlock {
+    let interior = field_interior(bounds, scale);
     let pad = INPUT_TEXT_PAD * scale;
     let font_px = BODY_FONT * scale;
     body_text(
         value,
         [
-            bounds.min[0] + pad,
-            bounds.min[1] + ((bounds.height() - font_px) * 0.5).max(0.0),
+            interior.min[0] + pad,
+            interior.min[1] + ((interior.height() - font_px) * 0.5).max(0.0),
         ],
-        (bounds.width() - pad * 2.0).max(1.0),
-        INK,
+        (interior.width() - pad * 2.0).max(1.0),
+        color,
     )
 }
 
@@ -2526,17 +2616,78 @@ fn slot_texture(textures: [SpriteTextureId; 4], visual: UiSlotVisual) -> SpriteT
     }
 }
 
-fn place_tooltip(target: ScreenRect, window: ScreenRect, scale: f32) -> (ScreenRect, ScreenRect) {
+struct PlacedTooltip {
+    body: ScreenRect,
+    pointer: ScreenRect,
+    lines: Vec<TextBlock>,
+}
+
+fn measure_tooltip_lines(
+    lines: &[(&str, [f32; 4])],
+    max_width: f32,
+    scale: f32,
+) -> Result<Vec<(TextBlock, crate::renderer::text::TextMetrics)>, String> {
+    let mut measured = Vec::with_capacity(lines.len());
+    for (text, color) in lines {
+        let block = body_text(text, [0.0, 0.0], max_width, *color);
+        let metrics = measure_text(&block, scale)
+            .ok_or_else(|| format!("UI DEBUG tooltip cannot measure {text:?}"))?;
+        measured.push((block, metrics));
+    }
+    Ok(measured)
+}
+
+fn place_tooltip(
+    lines: &[(&str, [f32; 4])],
+    target: ScreenRect,
+    window: ScreenRect,
+    scale: f32,
+) -> Result<PlacedTooltip, String> {
+    let border = [
+        TOOLTIP_BORDER[0] * scale,
+        TOOLTIP_BORDER[1] * scale,
+        TOOLTIP_BORDER[2] * scale,
+        TOOLTIP_BORDER[3] * scale,
+    ];
+    let pad_x = TOOLTIP_INNER_PAD_X * scale;
+    let pad_y = TOOLTIP_INNER_PAD_Y * scale;
+    let gap = TOOLTIP_LINE_GAP * scale;
+    let content_limit = (TOOLTIP_MAX_WIDTH * scale - border[0] - border[2] - pad_x * 2.0).max(1.0);
+    let probe = measure_tooltip_lines(lines, content_limit, scale)?;
+    let tightened = probe
+        .iter()
+        .map(|(_, metrics)| metrics.width)
+        .fold(1.0_f32, f32::max)
+        .min(content_limit);
+    let measured = if (tightened - content_limit).abs() < 0.5 {
+        probe
+    } else {
+        measure_tooltip_lines(lines, tightened, scale)?
+    };
+    let content_width = measured
+        .iter()
+        .map(|(_, metrics)| metrics.width)
+        .fold(tightened, f32::max)
+        .min(content_limit);
+    let content_height = measured
+        .iter()
+        .map(|(_, metrics)| metrics.height)
+        .sum::<f32>()
+        + gap * measured.len().saturating_sub(1) as f32;
+    let width = (content_width + border[0] + border[2] + pad_x * 2.0).clamp(
+        border[0] + border[2] + 2.0 * scale,
+        TOOLTIP_MAX_WIDTH * scale,
+    );
+    let height = (content_height + border[1] + border[3] + pad_y * 2.0)
+        .max(border[1] + border[3] + 2.0 * scale);
     let margin = 4.0 * scale;
-    let width = TOOLTIP_WIDTH * scale;
-    let height = TOOLTIP_HEIGHT * scale;
     let pointer = [TOOLTIP_POINTER[0] * scale, TOOLTIP_POINTER[1] * scale];
     let limit_min = [window.min[0] + margin, window.min[1] + margin];
     let limit_max = [window.max[0] - margin, window.max[1] - margin];
-    let mut x = target.max[0] + pointer[0] + 2.0 * scale;
+    let mut x = target.max[0] + pointer[0];
     let mut y = target.min[1];
     if x + width > limit_max[0] {
-        x = target.min[0] - pointer[0] - 2.0 * scale - width;
+        x = target.min[0] - pointer[0] - width;
     }
     x = x.clamp(limit_min[0], (limit_max[0] - width).max(limit_min[0]));
     y = y.clamp(limit_min[1], (limit_max[1] - height).max(limit_min[1]));
@@ -2544,20 +2695,31 @@ fn place_tooltip(target: ScreenRect, window: ScreenRect, scale: f32) -> (ScreenR
         min: [x, y],
         max: [x + width, y + height],
     };
-    let pointing_right = body.min[0] >= (target.min[0] + target.max[0]) * 0.5;
-    let pointer_x = if pointing_right {
+    let pointing_left = body.min[0] >= target.max[0] - 0.5;
+    let pointer_x = if pointing_left {
         body.min[0] - pointer[0]
     } else {
         body.max[0]
     };
     let pointer_y = (target.min[1] + target.height() * 0.5 - pointer[1] * 0.5)
-        .clamp(limit_min[1], (limit_max[1] - pointer[1]).max(limit_min[1]));
-    let pointer_x = pointer_x.clamp(limit_min[0], (limit_max[0] - pointer[0]).max(limit_min[0]));
+        .clamp(body.min[1], (body.max[1] - pointer[1]).max(body.min[1]));
     let pointer_rect = ScreenRect {
         min: [pointer_x, pointer_y],
         max: [pointer_x + pointer[0], pointer_y + pointer[1]],
     };
-    (body, pointer_rect)
+    let mut cursor_y = body.min[1] + border[1] + pad_y;
+    let mut text_blocks = Vec::with_capacity(measured.len());
+    for (mut block, metrics) in measured {
+        block.anchor = [body.min[0] + border[0] + pad_x, cursor_y];
+        block.max_width = Some(content_width);
+        text_blocks.push(block);
+        cursor_y += metrics.height + gap;
+    }
+    Ok(PlacedTooltip {
+        body,
+        pointer: pointer_rect,
+        lines: text_blocks,
+    })
 }
 
 fn centered_label(
@@ -2670,7 +2832,14 @@ mod tests {
             tabbed_rail: image(4).texture,
             close: [image(5).texture, image(6).texture, image(7).texture],
             tabs: UiTabSkin::from_family(family(10)),
-            buttons: UiButtonSkin::from_family(family(20)),
+            buttons: TextButtons {
+                states: [
+                    slice(20, [112, 44], [10, 0, 10, 0]),
+                    slice(21, [112, 44], [10, 0, 10, 0]),
+                    slice(22, [112, 44], [10, 0, 10, 0]),
+                    slice(23, [112, 44], [10, 0, 10, 0]),
+                ],
+            },
             icon_buttons: UiButtonSkin::from_family(family(30)),
             checkboxes: UiCheckboxSkin::from_family(family(40)),
             radios: UiRadioSkin::from_family(family(50)),
@@ -2739,6 +2908,30 @@ mod tests {
     fn click(window: &mut UiDebugWindow, point: [f32; 2]) {
         assert!(window.apply_pointer_button(ElementState::Pressed, Some(point), viewport(), 1.0));
         assert!(window.apply_pointer_button(ElementState::Released, Some(point), viewport(), 1.0));
+    }
+
+    fn union_rect(quads: &[&UiTexturedQuad]) -> ScreenRect {
+        let mut min = [f32::MAX, f32::MAX];
+        let mut max = [f32::MIN, f32::MIN];
+        for quad in quads {
+            for corner in quad.corners {
+                min[0] = min[0].min(corner[0]);
+                min[1] = min[1].min(corner[1]);
+                max[0] = max[0].max(corner[0]);
+                max[1] = max[1].max(corner[1]);
+            }
+        }
+        ScreenRect { min, max }
+    }
+
+    fn assert_sliced_text_button(pieces: &[&UiTexturedQuad], bounds: ScreenRect, scale: f32) {
+        assert_eq!(pieces.len(), 3);
+        let cap = 10.0 * scale;
+        assert!((pieces[0].corners[0][0] - bounds.min[0]).abs() < 0.05);
+        assert!((pieces[0].corners[2][0] - (bounds.min[0] + cap)).abs() < 0.05);
+        assert!((pieces[2].corners[2][0] - bounds.max[0]).abs() < 0.05);
+        assert!((pieces[0].corners[0][1] - bounds.min[1]).abs() < 0.05);
+        assert!((pieces[0].corners[2][1] - bounds.max[1]).abs() < 0.05);
     }
 
     fn text_has(frame: &UiDebugFrame, expected: &str) -> bool {
@@ -2990,15 +3183,15 @@ mod tests {
         let click = frame
             .skin_quads
             .iter()
-            .find(|quad| quad.texture == window.assets.buttons.texture(UiButtonVisual::Normal))
-            .unwrap();
-        assert_eq!(quad_rect(click), layout.click_button);
+            .filter(|quad| quad.texture == window.assets.buttons.texture(UiButtonVisual::Normal))
+            .collect::<Vec<_>>();
+        assert_sliced_text_button(&click, layout.click_button, 1.0);
         let disabled = frame
             .skin_quads
             .iter()
-            .find(|quad| quad.texture == window.assets.buttons.texture(UiButtonVisual::Disabled))
-            .unwrap();
-        assert_eq!(quad_rect(disabled), layout.disabled_button);
+            .filter(|quad| quad.texture == window.assets.buttons.texture(UiButtonVisual::Disabled))
+            .collect::<Vec<_>>();
+        assert_sliced_text_button(&disabled, layout.disabled_button, 1.0);
         let icon = frame
             .skin_quads
             .iter()
@@ -3580,6 +3773,12 @@ mod tests {
         let mut window = synthetic();
         let layout = open_page(&mut window, INPUT_PAGE);
         let frame = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert_eq!(frame.rects.len(), 1);
+        assert_eq!(frame.rects[0].color, INPUT_FILL);
+        let interior = field_interior(layout.input.field, 1.0);
+        assert_eq!(frame.rects[0].min, interior.min);
+        assert_eq!(frame.rects[0].max, interior.max);
+        assert!(interior.width() > 40.0 && interior.height() > BODY_FONT);
         assert!(text_has(&frame, "Hello world"));
         assert!(text_has(&frame, "Characters: 11"));
         assert!(text_has(&frame, "Focused: No"));
@@ -3791,6 +3990,57 @@ mod tests {
     }
 
     #[test]
+    fn tooltip_size_follows_content_and_wraps_inside_the_window() {
+        let window = ScreenRect {
+            min: [0.0, 0.0],
+            max: [560.0, 420.0],
+        };
+        let target = ScreenRect {
+            min: [40.0, 80.0],
+            max: [76.0, 116.0],
+        };
+        let short = place_tooltip(&[("Hi", INK)], target, window, 1.0).unwrap();
+        let long = place_tooltip(
+            &[(
+                "This tooltip sentence is long enough that it must wrap inside the maximum width.",
+                INK,
+            )],
+            target,
+            window,
+            1.0,
+        )
+        .unwrap();
+        assert!(short.body.width() < TOOLTIP_MAX_WIDTH - 20.0);
+        assert!(long.body.width() <= TOOLTIP_MAX_WIDTH + 0.05);
+        assert!(long.body.width() > short.body.width());
+        assert!(long.body.height() > short.body.height() + TOOLTIP_LINE_GAP);
+        let content_limit =
+            TOOLTIP_MAX_WIDTH - TOOLTIP_BORDER[0] - TOOLTIP_BORDER[2] - TOOLTIP_INNER_PAD_X * 2.0;
+        assert!(long.lines[0].max_width.unwrap() <= content_limit + 0.05);
+        let inset = [
+            TOOLTIP_BORDER[0] + TOOLTIP_INNER_PAD_X,
+            TOOLTIP_BORDER[1] + TOOLTIP_INNER_PAD_Y,
+            TOOLTIP_BORDER[2] + TOOLTIP_INNER_PAD_X,
+            TOOLTIP_BORDER[3] + TOOLTIP_INNER_PAD_Y,
+        ];
+        assert!(long.lines[0].anchor[0] >= long.body.min[0] + inset[0] - 0.05);
+        assert!(long.lines[0].anchor[1] >= long.body.min[1] + inset[1] - 0.05);
+        assert!(
+            long.lines[0].anchor[0] + long.lines[0].max_width.unwrap()
+                <= long.body.max[0] - inset[2] + 0.05
+        );
+        assert!((short.pointer.max[0] - short.body.min[0]).abs() < 0.05);
+        for scale in [0.9_f32, 1.25] {
+            let placed = place_tooltip(&TOOLTIP_LINES, target, window, scale).unwrap();
+            assert!(placed.body.max[0] <= window.max[0]);
+            assert!(placed.body.max[1] <= window.max[1]);
+            assert!(placed.body.min[0] >= window.min[0]);
+            assert!(placed.pointer.max[1] <= placed.body.max[1] + 0.05);
+            assert!(placed.lines.len() == TOOLTIP_LINES.len());
+        }
+    }
+
+    #[test]
     fn composite_tooltip_slots_hotbar_badge_and_dialog_event() {
         let mut window = synthetic();
         let layout = open_page(&mut window, COMPOSITE_PAGE);
@@ -3810,11 +4060,25 @@ mod tests {
             .filter(|quad| quad.texture == window.assets.tooltip_body.texture)
             .collect::<Vec<_>>();
         assert!(!tooltip.is_empty());
-        for quad in tooltip {
+        for quad in &tooltip {
             for corner in quad.corners {
                 assert!(layout.window.contains(corner));
             }
         }
+        let pointer = hover
+            .skin_quads
+            .iter()
+            .find(|quad| quad.texture == window.assets.tooltip_pointer)
+            .unwrap();
+        for corner in pointer.corners {
+            assert!(layout.window.contains(corner));
+        }
+        let body = union_rect(&tooltip);
+        let attached = (pointer.corners[1][0] - body.min[0]).abs() < 0.05
+            || (pointer.corners[0][0] - body.max[0]).abs() < 0.05;
+        assert!(attached);
+        assert!(pointer.corners[0][1] >= body.min[1] - 0.05);
+        assert!(pointer.corners[2][1] <= body.max[1] + 0.05);
         click(&mut window, center(layout.composite.slots[1]));
         assert_eq!(window.state.selected_slot, 1);
         let disabled_slot = center(layout.composite.slots[3]);

@@ -1,0 +1,128 @@
+schema_version 1
+duration 2.00
+loop Loop
+
+track pelvis
+rot 0.00 -1.214363 Linear
+rot 0.50 -1.214363 Linear
+rot 0.97 -1.214363 Linear
+tx 0.50 0.0 Linear
+tx 0.97 0.0 Linear
+ty 0.00 0.15 Linear
+ty 0.50 0.14 Linear
+ty 0.97 0.15 Linear
+endtrack
+
+track lower_leg_back
+rot 0.00 -0.627691 Linear
+rot 0.50 -0.627691 Linear
+rot 0.97 -0.627691 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track lower_leg_front
+rot 0.00 -0.741128 Linear
+rot 0.50 -0.741128 Linear
+rot 0.97 -0.741128 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track torso
+rot 0.00 -0.105281 Linear
+rot 0.50 -0.047792 Linear
+rot 0.97 -0.105281 Linear
+tx 0.50 0.0 Linear
+tx 0.97 0.0 Linear
+ty 0.50 0.3 Linear
+ty 0.97 0.3 Linear
+endtrack
+
+track upper_arm_front
+rot 0.00 0.912376 Linear
+rot 0.50 0.893026 Linear
+rot 0.97 0.912376 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track lower_arm_back
+rot 0.00 1.245311 Linear
+rot 0.50 1.245311 Linear
+rot 0.97 1.245311 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track head
+rot 0.00 0.582259 Linear
+rot 0.50 0.542593 Linear
+rot 0.81 0.512303 Linear
+rot 0.97 0.582259 Linear
+tx 0.50 0.07 Linear
+tx 0.97 0.07 Linear
+ty 0.50 0.24 Linear
+ty 0.97 0.24 Linear
+endtrack
+
+track upper_leg_front
+rot 0.00 0.174765 Linear
+rot 0.50 0.100031 Linear
+rot 0.97 0.174765 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track lower_arm_front
+rot 0.00 0.588393 Linear
+rot 0.50 0.588393 Linear
+rot 0.97 0.588393 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track hand_front
+rot 0.50 0.0 Linear
+rot 0.97 0.0 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track upper_arm_back
+rot 0.50 -0.13447 Linear
+rot 0.97 -0.13447 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track hand_back
+rot 0.50 0.0 Linear
+rot 0.97 0.0 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track foot_front
+rot 0.50 0.0 Linear
+rot 0.97 0.0 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track upper_leg_back
+rot 0.50 -0.16571 Linear
+rot 0.97 -0.16571 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+track foot_back
+rot 0.50 0.0 Linear
+rot 0.97 0.0 Linear
+depth 0.50 0.0 Linear
+depth 0.97 0.0 Linear
+endtrack
+
+markers
+endmarkers
