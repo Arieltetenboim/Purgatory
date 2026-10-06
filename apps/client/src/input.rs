@@ -159,6 +159,15 @@ impl ActionState {
         self.jump_edge
     }
 
+    /// Drop latched walk/crouch holds. Used while the local player is dead so a
+    /// key-up swallowed by the death modal cannot resume after respawn. A later
+    /// press is a new hold. Does not clear discrete edges or non-movement keys.
+    pub fn clear_held_locomotion(&mut self) {
+        self.move_left = false;
+        self.move_right = false;
+        self.move_down = false;
+    }
+
     /// Drop held gameplay buttons (screen transitions / focus loss).
     pub fn clear(&mut self) {
         self.move_left = false;
@@ -605,6 +614,19 @@ mod tests {
         assert_eq!(input.move_axis, 0);
         assert!(!input.jump_pressed);
         assert!(!input.down_held);
+    }
+
+    #[test]
+    fn death_clears_latched_movement_without_a_key_up() {
+        let mut state = ActionState::default();
+        state.set_action(Action::MoveRight, true, false);
+        state.set_action(Action::MoveDown, true, false);
+        state.clear_held_locomotion();
+        let idle = state.consume_tick_input();
+        assert_eq!(idle.move_axis, 0);
+        assert!(!idle.down_held);
+        state.set_action(Action::MoveLeft, true, false);
+        assert_eq!(state.consume_tick_input().move_axis, -1);
     }
 
     #[test]

@@ -442,8 +442,8 @@ fn humanoid_v0_hip_bind_x_is_widened_neutral_stance() {
 fn humanoid_v0_shoulder_bind_x_is_three_quarter_right() {
     assert!((BIND_UPPER_ARM_FRONT.translation[0] + 0.10).abs() < EPS);
     assert!((BIND_UPPER_ARM_BACK.translation[0] - 0.08).abs() < EPS);
-    assert!((BIND_UPPER_ARM_FRONT.translation[1] - 0.14).abs() < EPS);
-    assert!((BIND_UPPER_ARM_BACK.translation[1] - 0.14).abs() < EPS);
+    assert!((BIND_UPPER_ARM_FRONT.translation[1] - 0.11).abs() < EPS);
+    assert!((BIND_UPPER_ARM_BACK.translation[1] - 0.11).abs() < EPS);
     assert!(BIND_UPPER_ARM_FRONT.rotation.abs() < EPS);
     assert!(BIND_UPPER_ARM_BACK.rotation.abs() < EPS);
     assert!(BIND_LOWER_ARM_FRONT.translation[0].abs() < EPS);
@@ -523,7 +523,13 @@ fn torso_placeholder_is_authored_in_torso_bone_local() {
 #[test]
 fn humanoid_v0_head_bind_leads_slightly_right() {
     assert!((BIND_HEAD.translation[0] - 0.07).abs() < EPS);
-    assert!((BIND_HEAD.translation[1] - 0.24).abs() < EPS);
+    assert!((BIND_HEAD.translation[1] - 0.20).abs() < EPS);
+    let central = BIND_TORSO.translation[1] + BIND_HEAD.translation[1];
+    assert!(
+        (central - 0.43).abs() < EPS,
+        "pelvis→head span must stay on the shortened rescue chain"
+    );
+    assert!((BIND_PELVIS.translation[1] - 0.42).abs() < EPS);
     assert!(BIND_HEAD.rotation.abs() < EPS);
 }
 

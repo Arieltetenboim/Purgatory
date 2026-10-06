@@ -2217,7 +2217,7 @@ mod tests {
         assert!(tr_eq(attach, head_xf.translation));
         assert!(c[2][0] - head_xf.translation[0] > head_xf.translation[0] - c[3][0]);
         assert!((BIND_HEAD.translation[0] - 0.07).abs() < EPS);
-        assert!((BIND_HEAD.translation[1] - 0.24).abs() < EPS);
+        assert!((BIND_HEAD.translation[1] - 0.20).abs() < EPS);
         assert!(head_xf.translation[0] > rig.world().get(TORSO).unwrap().translation[0]);
     }
 

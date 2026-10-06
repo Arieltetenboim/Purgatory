@@ -129,10 +129,10 @@ Current S1 bind locals (parent-relative, rotation 0 unless noted):
 
 - `root` `(0, 0)`
 - `pelvis` `(0, 0.42)`
-- `torso` `(0, 0.30)`
-- `head` `(0.07, 0.24)` — P4.2 +X lead (RIGHT-facing 3/4)
-- `upper_arm_front` `(-0.10, 0.14)` / `lower_arm_front` `(0, -0.22)` / `hand_front` `(0, -0.10)` — Front chain at the former Back shoulder X; Front identity unchanged
-- `upper_arm_back` `(0.08, 0.14)` / `lower_arm_back` `(0, -0.22)` rotation `+0.50` (~29°, peeks +X) / `hand_back` `(0, -0.10)` — Back chain at the former Front shoulder X; Back identity unchanged
+- `torso` `(0, 0.23)` — rescue V1 central-chain shortening; pelvis and legs unchanged
+- `head` `(0.07, 0.20)` — P4.2 +X lead (RIGHT-facing 3/4); Y follows the shortened torso sprite
+- `upper_arm_front` `(-0.10, 0.11)` / `lower_arm_front` `(0, -0.22)` / `hand_front` `(0, -0.10)` — Front chain at the former Back shoulder X; shoulder Y sits on the shortened chest; Front identity unchanged
+- `upper_arm_back` `(0.08, 0.11)` / `lower_arm_back` `(0, -0.22)` rotation `+0.50` (~29°, peeks +X) / `hand_back` `(0, -0.10)` — Back chain at the former Front shoulder X; shoulder Y matches the front; Back identity unchanged
 - `upper_leg_front` `(-0.06, -0.04)` / `lower_leg_front` `(0, -0.20)` / `foot_front` `(0, -0.18)`
 - `upper_leg_back` `(0.04, -0.04)` / `lower_leg_back` `(0, -0.20)` / `foot_back` `(0, -0.18)`
 

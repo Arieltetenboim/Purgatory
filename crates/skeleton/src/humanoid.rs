@@ -55,15 +55,20 @@ const fn tr(x: f32, y: f32) -> BoneTransform {
 /// before art integration without changing bone topology.
 pub const BIND_ROOT: BoneTransform = tr(0.0, 0.0);
 pub const BIND_PELVIS: BoneTransform = tr(0.0, 0.42);
-pub const BIND_TORSO: BoneTransform = tr(0.0, 0.30);
+/// Rescue V1: pelvis→torso is 0.23 wu. With `BIND_HEAD` that is a 0.43 wu
+/// pelvis→head span, about 20% shorter than the previous 0.54 wu chain.
+/// Pelvis and leg binds are unchanged so the feet stay planted.
+pub const BIND_TORSO: BoneTransform = tr(0.0, 0.23);
 /// P4.2: +X lead so the head reads RIGHT-facing 3/4, not camera-front.
-pub const BIND_HEAD: BoneTransform = tr(0.07, 0.24);
+/// Y matches the shortened torso sprite (same neck gap above the chest art).
+pub const BIND_HEAD: BoneTransform = tr(0.07, 0.20);
 /// Near arm chain (Front). Bind X is the former Back shoulder X; Front identity is unchanged.
-pub const BIND_UPPER_ARM_FRONT: BoneTransform = tr(-0.10, 0.14);
+/// Y sits on the shortened chest (same fraction of the torso sprite as before).
+pub const BIND_UPPER_ARM_FRONT: BoneTransform = tr(-0.10, 0.11);
 pub const BIND_LOWER_ARM_FRONT: BoneTransform = tr(0.0, -0.22);
 pub const BIND_HAND_FRONT: BoneTransform = tr(0.0, -0.10);
 /// Far arm chain (Back). Bind X is the former Front shoulder X; Back identity is unchanged.
-pub const BIND_UPPER_ARM_BACK: BoneTransform = tr(0.08, 0.14);
+pub const BIND_UPPER_ARM_BACK: BoneTransform = tr(0.08, 0.11);
 /// Mild +CCW elbow bend (~29°) so the far forearm peeks toward +X (RIGHT). Length unchanged.
 pub const BIND_LOWER_ARM_BACK: BoneTransform =
     BoneTransform::from_translation_rotation([0.0, -0.22], 0.50);

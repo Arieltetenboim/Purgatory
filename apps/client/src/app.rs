@@ -1887,6 +1887,9 @@ impl ClientApp {
 
     fn sample_tick_input(&mut self) -> PlayerInput {
         if self.gameplay_input_locked() {
+            if self.local_authoritative_dead() {
+                self.actions.clear_held_locomotion();
+            }
             self.actions.discard_locked_edges();
             if let Some((_, player)) = self.world.player_parts_mut() {
                 player.velocity = [0.0, 0.0];
