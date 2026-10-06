@@ -2367,18 +2367,8 @@ impl InventoryWindow {
             INVENTORY_HEADER_BORDER_UNITS,
             pixels_per_unit,
         )?;
-        push_inventory_nine_slice(
-            &mut skin_quads,
-            layout.inner,
-            &assets.tabbed_body,
-            INVENTORY_TABBED_BORDER_UNITS,
-            pixels_per_unit,
-        )?;
-        let active_tab = layout.tabs[self.tabs.selected_index()];
-        for rail in inventory_content_rails(layout.inner, active_tab, pixels_per_unit) {
-            skin_quads.push(compose_stretched_quad(rail, assets.tabbed_rail.texture)?);
-        }
-        let mut selected_tab = None;
+        let mut background_tabs = Vec::new();
+        let mut foreground_tab = None;
         for (index, tab) in layout.tabs.iter().copied().enumerate() {
             let hovered = cursor.is_some_and(|cursor| tab.contains(cursor));
             let pressed = hovered && self.tabs.pressed_index == Some(index);
@@ -2395,12 +2385,24 @@ impl InventoryWindow {
                 visual,
                 InventoryTabVisual::Active | InventoryTabVisual::Pressed
             ) {
-                selected_tab = Some(quad);
+                foreground_tab = Some(quad);
             } else {
-                skin_quads.push(quad);
+                background_tabs.push(quad);
             }
         }
-        if let Some(quad) = selected_tab {
+        skin_quads.extend(background_tabs);
+        push_inventory_nine_slice(
+            &mut skin_quads,
+            layout.inner,
+            &assets.tabbed_body,
+            INVENTORY_TABBED_BORDER_UNITS,
+            pixels_per_unit,
+        )?;
+        let active_tab = layout.tabs[self.tabs.selected_index()];
+        for rail in inventory_content_rails(layout.inner, active_tab, pixels_per_unit) {
+            skin_quads.push(compose_stretched_quad(rail, assets.tabbed_rail.texture)?);
+        }
+        if let Some(quad) = foreground_tab {
             skin_quads.push(quad);
         }
         for (index, slot) in layout.slots.iter().copied().enumerate() {
@@ -6409,30 +6411,30 @@ mod tests {
                         "inactive tab {other} opened another rail gap while {selected} is active"
                     );
                 }
-                let body_last = frame
+                let body_first = frame
                     .skin_quads
                     .iter()
-                    .rposition(|quad| quad.texture == assets.tabbed_body.texture)
+                    .position(|quad| quad.texture == assets.tabbed_body.texture)
                     .unwrap();
-                let rail_first = frame
+                let rail_last = frame
                     .skin_quads
                     .iter()
-                    .position(|quad| quad.texture == assets.tabbed_rail.texture)
+                    .rposition(|quad| quad.texture == assets.tabbed_rail.texture)
                     .unwrap();
-                let tab_first = frame
+                let inactive_last = frame
                     .skin_quads
                     .iter()
-                    .position(|quad| assets.tabs.iter().any(|tab| tab.texture == quad.texture))
+                    .rposition(|quad| quad.texture == assets.tabs[1].texture)
                     .unwrap();
-                let tab_last = frame
+                let active_at = frame
                     .skin_quads
                     .iter()
-                    .rposition(|quad| assets.tabs.iter().any(|tab| tab.texture == quad.texture))
+                    .rposition(|quad| quad.texture == assets.tabs[0].texture)
                     .unwrap();
-                assert!(body_last < rail_first);
-                assert!(rail_first < tab_first);
+                assert!(inactive_last < body_first);
+                assert!(rail_last < active_at);
                 assert!(
-                    frame.skin_quads[tab_last + 1..]
+                    frame.skin_quads[active_at + 1..]
                         .iter()
                         .all(|quad| quad.texture != assets.tabbed_rail.texture)
                 );
@@ -6483,6 +6485,65 @@ mod tests {
                 .count(),
             9
         );
+        let pressed_body = pressed
+            .skin_quads
+            .iter()
+            .position(|quad| quad.texture == assets.tabbed_body.texture)
+            .unwrap();
+        let pressed_rail = pressed
+            .skin_quads
+            .iter()
+            .rposition(|quad| quad.texture == assets.tabbed_rail.texture)
+            .unwrap();
+        let pressed_tab = pressed
+            .skin_quads
+            .iter()
+            .rposition(|quad| quad.texture == assets.tabs[3].texture)
+            .unwrap();
+        let inactive_tab = pressed
+            .skin_quads
+            .iter()
+            .rposition(|quad| quad.texture == assets.tabs[1].texture)
+            .unwrap();
+        assert!(inactive_tab < pressed_body);
+        assert!(pressed_rail < pressed_tab);
+
+        let hover_cursor = [
+            (layout.tabs[2].min[0] + layout.tabs[2].max[0]) * 0.5,
+            (layout.tabs[2].min[1] + layout.tabs[2].max[1]) * 0.5,
+        ];
+        let hover = inventory
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &[],
+                Some(hover_cursor),
+            ))
+            .unwrap()
+            .unwrap();
+        let hover_body = hover
+            .skin_quads
+            .iter()
+            .position(|quad| quad.texture == assets.tabbed_body.texture)
+            .unwrap();
+        let hover_tab = hover
+            .skin_quads
+            .iter()
+            .position(|quad| quad.texture == assets.tabs[2].texture)
+            .unwrap();
+        let hover_active = hover
+            .skin_quads
+            .iter()
+            .rposition(|quad| quad.texture == assets.tabs[0].texture)
+            .unwrap();
+        let hover_rail = hover
+            .skin_quads
+            .iter()
+            .rposition(|quad| quad.texture == assets.tabbed_rail.texture)
+            .unwrap();
+        assert!(hover_tab < hover_body);
+        assert!(hover_rail < hover_active);
     }
 
     #[test]
