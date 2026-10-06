@@ -86,6 +86,13 @@ const INVENTORY_COIN_SIZE_UNITS: f32 = 16.0;
 const INVENTORY_MENU_SIZE_UNITS: f32 = 18.0;
 const INVENTORY_CONTROL_GAP_UNITS: f32 = 6.0;
 const INVENTORY_PANEL_BORDER_UNITS: [f32; 4] = [10.0, 10.0, 10.0, 12.0];
+/// Destination corners for `tabbed_content_body_9slice`. Source slices are 8 px;
+/// compact Inventory samples that artwork at the same half density as the tabs.
+const INVENTORY_TABBED_BORDER_UNITS: [f32; 4] = [4.0, 4.0, 4.0, 4.0];
+/// Logical height of `tabbed_content_top_edge`. Its source is 8 px tall.
+const INVENTORY_TABBED_RAIL_HEIGHT_UNITS: f32 = 4.0;
+/// Straight shoulder kept between each body corner and the tab strip.
+const INVENTORY_TAB_SHOULDER_UNITS: f32 = 4.0;
 const INVENTORY_HEADER_BORDER_UNITS: [f32; 4] = [6.0, 6.0, 6.0, 6.0];
 const INVENTORY_FOOTER_BORDER_UNITS: [f32; 4] = [6.0, 6.0, 6.0, 6.0];
 const INVENTORY_TOOLTIP_BORDER_UNITS: [f32; 4] = [8.0, 8.0, 8.0, 10.0];
@@ -1844,8 +1851,19 @@ impl InventoryV2Metrics {
             || INVENTORY_FOOTER_HEIGHT_UNITS < CURRENCY_FONT_SIZE_UNITS
             || INVENTORY_HEADER_HEIGHT_UNITS < INVENTORY_BAG_SIZE_UNITS
             || INVENTORY_HEADER_HEIGHT_UNITS < INVENTORY_CLOSE_SIZE_UNITS
+            || INVENTORY_TABBED_BORDER_UNITS
+                .iter()
+                .any(|border| *border <= 0.0)
+            || INVENTORY_TABBED_RAIL_HEIGHT_UNITS <= 0.0
+            || INVENTORY_TAB_SHOULDER_UNITS <= 0.0
         {
             return Err("inventory V2 geometry is invalid".to_string());
+        }
+        let [tab_left, _, tab_right, _] = INVENTORY_TABBED_BORDER_UNITS;
+        let strip =
+            inventory_inner_size()[0] - tab_left - tab_right - INVENTORY_TAB_SHOULDER_UNITS * 2.0;
+        if strip <= INVENTORY_TAB_LABELS.len() as f32 {
+            return Err("inventory tab strip does not fit inside the content corners".to_string());
         }
         Ok(())
     }
@@ -1889,6 +1907,8 @@ fn inventory_inner_size() -> [f32; 2] {
 pub(crate) struct InventoryV2Assets {
     metrics: InventoryV2Metrics,
     panel: UiV2NineSlice,
+    tabbed_body: UiV2NineSlice,
+    tabbed_rail: UiV2Image,
     header: UiV2NineSlice,
     footer: UiV2NineSlice,
     tooltip: UiV2NineSlice,
@@ -1906,6 +1926,9 @@ impl InventoryV2Assets {
         let overlap_px = shared_tab_overlap(&catalog)? as f32;
         let mut loader = ClientAssetLoader::new(runtime);
         let panel = load_ui_v2_nine_slice(&mut loader, &catalog, "panel_body_9slice")?;
+        let tabbed_body =
+            load_ui_v2_nine_slice(&mut loader, &catalog, "tabbed_content_body_9slice")?;
+        let tabbed_rail = load_ui_v2_image(&mut loader, &catalog, "tabbed_content_top_edge")?;
         let header = load_ui_v2_nine_slice(&mut loader, &catalog, "panel_header_9slice")?;
         let footer = load_ui_v2_nine_slice(&mut loader, &catalog, "inventory_footer_9slice")?;
         let tooltip = load_ui_v2_nine_slice(&mut loader, &catalog, "tooltip_body_9slice")?;
@@ -1949,6 +1972,8 @@ impl InventoryV2Assets {
         Ok(Self {
             metrics,
             panel,
+            tabbed_body,
+            tabbed_rail,
             header,
             footer,
             tooltip,
@@ -2068,13 +2093,17 @@ fn layout_inventory(
     };
     let tab_height = INVENTORY_TAB_HEIGHT_UNITS * scale;
     let tab_top = header.max[1] + INVENTORY_TAB_HEADER_GAP_UNITS * scale;
-    let tab_width = inner.width() / INVENTORY_TAB_LABELS.len() as f32;
+    let strip_min =
+        inner.min[0] + (INVENTORY_TABBED_BORDER_UNITS[0] + INVENTORY_TAB_SHOULDER_UNITS) * scale;
+    let strip_max =
+        inner.max[0] - (INVENTORY_TABBED_BORDER_UNITS[2] + INVENTORY_TAB_SHOULDER_UNITS) * scale;
+    let tab_width = (strip_max - strip_min) / INVENTORY_TAB_LABELS.len() as f32;
     let mut tabs = [ScreenRect {
         min: [0.0, 0.0],
         max: [0.0, 0.0],
     }; INVENTORY_TAB_LABELS.len()];
     for (index, tab) in tabs.iter_mut().enumerate() {
-        let min_x = inner.min[0] + index as f32 * tab_width;
+        let min_x = strip_min + index as f32 * tab_width;
         *tab = ScreenRect {
             min: [min_x, tab_top],
             max: [min_x + tab_width, tab_top + tab_height],
@@ -2338,34 +2367,16 @@ impl InventoryWindow {
             INVENTORY_HEADER_BORDER_UNITS,
             pixels_per_unit,
         )?;
-        let open_tab_spans = inventory_open_tab_spans(&layout.tabs, &self.tabs, cursor);
-        push_inventory_nine_slice_with_top_gaps(
-            &mut skin_quads,
-            layout.inner,
-            &assets.panel,
-            INVENTORY_PANEL_BORDER_UNITS,
-            pixels_per_unit,
-            &open_tab_spans,
-        )?;
         push_inventory_nine_slice(
             &mut skin_quads,
-            layout.footer,
-            &assets.footer,
-            INVENTORY_FOOTER_BORDER_UNITS,
+            layout.inner,
+            &assets.tabbed_body,
+            INVENTORY_TABBED_BORDER_UNITS,
             pixels_per_unit,
         )?;
-        for (index, slot) in layout.slots.iter().copied().enumerate() {
-            let item = self.item_hit_regions.get(index).map(|(_, item)| *item);
-            let visual = resolve_inventory_slot_visual(
-                item.is_some() && item == self.selected_item,
-                item.is_some() && item == hovered_item,
-            );
-            let texture = match visual {
-                InventorySlotVisual::Normal => assets.slots[0].texture,
-                InventorySlotVisual::Hover => assets.slots[1].texture,
-                InventorySlotVisual::Selected => assets.slots[2].texture,
-            };
-            skin_quads.push(compose_stretched_quad(slot, texture)?);
+        let active_tab = layout.tabs[self.tabs.selected_index()];
+        for rail in inventory_content_rails(layout.inner, active_tab, pixels_per_unit) {
+            skin_quads.push(compose_stretched_quad(rail, assets.tabbed_rail.texture)?);
         }
         let mut selected_tab = None;
         for (index, tab) in layout.tabs.iter().copied().enumerate() {
@@ -2392,6 +2403,26 @@ impl InventoryWindow {
         if let Some(quad) = selected_tab {
             skin_quads.push(quad);
         }
+        for (index, slot) in layout.slots.iter().copied().enumerate() {
+            let item = self.item_hit_regions.get(index).map(|(_, item)| *item);
+            let visual = resolve_inventory_slot_visual(
+                item.is_some() && item == self.selected_item,
+                item.is_some() && item == hovered_item,
+            );
+            let texture = match visual {
+                InventorySlotVisual::Normal => assets.slots[0].texture,
+                InventorySlotVisual::Hover => assets.slots[1].texture,
+                InventorySlotVisual::Selected => assets.slots[2].texture,
+            };
+            skin_quads.push(compose_stretched_quad(slot, texture)?);
+        }
+        push_inventory_nine_slice(
+            &mut skin_quads,
+            layout.footer,
+            &assets.footer,
+            INVENTORY_FOOTER_BORDER_UNITS,
+            pixels_per_unit,
+        )?;
         skin_quads.push(compose_stretched_quad(layout.bag, assets.bag.texture)?);
         let close_visual = self.chrome.close_button_visual(cursor, layout.close_button);
         let close_texture = match close_visual {
@@ -2624,24 +2655,26 @@ impl InventoryWindow {
     }
 }
 
-fn inventory_open_tab_spans(
-    tabs: &[ScreenRect],
-    state: &UiTabs,
-    cursor: Option<[f32; 2]>,
-) -> Vec<[f32; 2]> {
-    tabs.iter()
-        .enumerate()
-        .filter_map(|(index, tab)| {
-            let hovered = cursor.is_some_and(|cursor| tab.contains(cursor));
-            let pressed = hovered && state.pressed_index == Some(index);
-            let selected = state.selected_index() == index;
-            matches!(
-                resolve_inventory_tab_visual(selected, hovered, pressed),
-                InventoryTabVisual::Active | InventoryTabVisual::Pressed
-            )
-            .then_some([tab.min[0], tab.max[0]])
-        })
-        .collect()
+fn inventory_content_rails(
+    inner: ScreenRect,
+    active_tab: ScreenRect,
+    pixels_per_unit: f32,
+) -> [ScreenRect; 2] {
+    let corner_left = INVENTORY_TABBED_BORDER_UNITS[0] * pixels_per_unit;
+    let corner_right = INVENTORY_TABBED_BORDER_UNITS[2] * pixels_per_unit;
+    let rail_height = INVENTORY_TABBED_RAIL_HEIGHT_UNITS * pixels_per_unit;
+    let top = inner.min[1];
+    let bottom = top + rail_height;
+    [
+        ScreenRect {
+            min: [inner.min[0] + corner_left, top],
+            max: [active_tab.min[0], bottom],
+        },
+        ScreenRect {
+            min: [active_tab.max[0], top],
+            max: [inner.max[0] - corner_right, bottom],
+        },
+    ]
 }
 
 fn inventory_title(layout: &InventoryLayout, pixels_per_unit: f32) -> TextBlock {
@@ -3956,35 +3989,6 @@ pub(crate) fn compose_nine_slice_with_borders(
     slice_ltrb: [u32; 4],
     border_units: [f32; 4],
 ) -> Result<Vec<UiTexturedQuad>, String> {
-    compose_nine_slice_with_top_gaps(
-        origin_px,
-        size_units,
-        pixels_per_unit,
-        texture,
-        source_size_px,
-        slice_ltrb,
-        border_units,
-        &[],
-    )
-}
-
-/// Nine-slice with one or more openings cut from the top border.
-///
-/// Each gap is a destination x-range in framebuffer pixels. The top chrome
-/// inside a gap is omitted and the panel center continues up through that
-/// span. Side, bottom, and center pieces stay in place. Source UVs stay on
-/// the slice boundaries; a split top edge samples only its own portion.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compose_nine_slice_with_top_gaps(
-    origin_px: [f32; 2],
-    size_units: [f32; 2],
-    pixels_per_unit: f32,
-    texture: SpriteTextureId,
-    source_size_px: [u32; 2],
-    slice_ltrb: [u32; 4],
-    border_units: [f32; 4],
-    top_gaps_px: &[[f32; 2]],
-) -> Result<Vec<UiTexturedQuad>, String> {
     validate_pixels_per_unit(pixels_per_unit)?;
     if !origin_px.into_iter().all(f32::is_finite) {
         return Err("UI nine-slice origin is invalid".to_string());
@@ -4027,7 +4031,7 @@ pub(crate) fn compose_nine_slice_with_top_gaps(
         border_bottom_units * pixels_per_unit,
         destination_px[1],
     )?;
-    let regions = assemble_nine_slice(
+    let mut regions = assemble_nine_slice(
         ScreenRect {
             min: origin_px,
             max: [
@@ -4051,7 +4055,6 @@ pub(crate) fn compose_nine_slice_with_top_gaps(
         },
         [1.0, 1.0, 1.0, 1.0],
     )?;
-    let mut regions = interrupt_nine_slice_top_border(regions, top_gaps_px);
     regions.retain(|rect| {
         rect.min
             .iter()
@@ -4119,25 +4122,7 @@ fn push_inventory_nine_slice(
     border_units: [f32; 4],
     pixels_per_unit: f32,
 ) -> Result<(), String> {
-    push_inventory_nine_slice_with_top_gaps(
-        quads,
-        bounds,
-        asset,
-        border_units,
-        pixels_per_unit,
-        &[],
-    )
-}
-
-fn push_inventory_nine_slice_with_top_gaps(
-    quads: &mut Vec<UiTexturedQuad>,
-    bounds: ScreenRect,
-    asset: &UiV2NineSlice,
-    border_units: [f32; 4],
-    pixels_per_unit: f32,
-    top_gaps_px: &[[f32; 2]],
-) -> Result<(), String> {
-    quads.extend(compose_nine_slice_with_top_gaps(
+    quads.extend(compose_nine_slice_with_borders(
         bounds.min,
         [
             bounds.width() / pixels_per_unit,
@@ -4148,129 +4133,8 @@ fn push_inventory_nine_slice_with_top_gaps(
         asset.size_px,
         asset.slice_ltrb,
         border_units,
-        top_gaps_px,
     )?);
     Ok(())
-}
-
-/// Drop top-border chrome inside each gap and continue the center surface up
-/// through that span. A gap that covers a top corner removes that corner
-/// instead of leaving a cap. Vertical side pieces are not part of the top row.
-fn interrupt_nine_slice_top_border(
-    regions: Vec<UiTexturedRect>,
-    gaps_px: &[[f32; 2]],
-) -> Vec<UiTexturedRect> {
-    if gaps_px.is_empty() || regions.len() < 9 {
-        return regions;
-    }
-    let top_y = regions[0].min[1];
-    let border_bottom = regions[0].max[1];
-    let center = regions[4];
-    let mut output = Vec::with_capacity(regions.len() + gaps_px.len());
-    for (index, rect) in regions.into_iter().enumerate() {
-        if index >= 3 {
-            output.push(rect);
-            continue;
-        }
-        for segment in x_segments_outside_gaps(rect.min[0], rect.max[0], gaps_px) {
-            output.push(slice_rect_x(rect, segment[0], segment[1]));
-        }
-    }
-    let panel_left = output
-        .iter()
-        .map(|rect| rect.min[0])
-        .fold(f32::MAX, f32::min);
-    let panel_right = output
-        .iter()
-        .map(|rect| rect.max[0])
-        .fold(f32::MIN, f32::max);
-    for gap in gaps_px {
-        let x0 = gap[0].clamp(panel_left, panel_right);
-        let x1 = gap[1].clamp(panel_left, panel_right);
-        if x1 <= x0 + TOP_BORDER_FRAGMENT_PX {
-            continue;
-        }
-        output.push(center_fill_for_top_gap(
-            center,
-            x0,
-            x1,
-            top_y,
-            border_bottom,
-        ));
-    }
-    output
-}
-
-const TOP_BORDER_FRAGMENT_PX: f32 = 0.5;
-
-fn x_segments_outside_gaps(min_x: f32, max_x: f32, gaps_px: &[[f32; 2]]) -> Vec<[f32; 2]> {
-    let mut segments = vec![[min_x, max_x]];
-    for gap in gaps_px {
-        let mut next = Vec::new();
-        for segment in segments {
-            let start = gap[0].max(segment[0]);
-            let end = gap[1].min(segment[1]);
-            if end <= start {
-                next.push(segment);
-                continue;
-            }
-            if start > segment[0] + TOP_BORDER_FRAGMENT_PX {
-                next.push([segment[0], start]);
-            }
-            if segment[1] > end + TOP_BORDER_FRAGMENT_PX {
-                next.push([end, segment[1]]);
-            }
-        }
-        segments = next;
-    }
-    segments
-}
-
-fn slice_rect_x(rect: UiTexturedRect, x0: f32, x1: f32) -> UiTexturedRect {
-    let width = rect.max[0] - rect.min[0];
-    let uv_span = rect.uv_max[0] - rect.uv_min[0];
-    let t0 = (x0 - rect.min[0]) / width;
-    let t1 = (x1 - rect.min[0]) / width;
-    UiTexturedRect {
-        min: [x0, rect.min[1]],
-        max: [x1, rect.max[1]],
-        texture: rect.texture,
-        uv_min: [rect.uv_min[0] + uv_span * t0, rect.uv_min[1]],
-        uv_max: [rect.uv_min[0] + uv_span * t1, rect.uv_max[1]],
-        tint: rect.tint,
-    }
-}
-
-fn center_fill_for_top_gap(
-    center: UiTexturedRect,
-    x0: f32,
-    x1: f32,
-    y0: f32,
-    y1: f32,
-) -> UiTexturedRect {
-    let span = (center.max[0] - center.min[0]).max(f32::EPSILON);
-    let uv_span = center.uv_max[0] - center.uv_min[0];
-    let map_u = |x: f32| {
-        let t = ((x - center.min[0]) / span).clamp(0.0, 1.0);
-        center.uv_min[0] + uv_span * t
-    };
-    let mut u0 = map_u(x0);
-    let mut u1 = map_u(x1);
-    if u1 <= u0 {
-        let nudge = (uv_span * 0.02).max(1.0e-4);
-        u0 = center.uv_min[0];
-        u1 = (center.uv_min[0] + nudge).min(center.uv_max[0]);
-    }
-    let v_span = center.uv_max[1] - center.uv_min[1];
-    let v_mid = (center.uv_min[1] + center.uv_max[1]) * 0.5;
-    UiTexturedRect {
-        min: [x0, y0],
-        max: [x1, y1],
-        texture: center.texture,
-        uv_min: [u0, v_mid - v_span * 0.02],
-        uv_max: [u1, v_mid + v_span * 0.02],
-        tint: center.tint,
-    }
 }
 
 /// Map one source UV rectangle across the whole destination. Quad submission
@@ -4543,6 +4407,8 @@ mod tests {
         InventoryV2Assets {
             metrics,
             panel: slice(11, [288, 192], [14, 14, 14, 18]),
+            tabbed_body: slice(15, [288, 192], [8, 8, 8, 8]),
+            tabbed_rail: image(16, [64, 8]),
             header: slice(14, [270, 40], [8, 8, 8, 8]),
             footer: slice(12, [288, 40], [10, 10, 10, 10]),
             tooltip: slice(13, [224, 112], [14, 14, 14, 18]),
@@ -5115,7 +4981,10 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
-        assert_eq!(frame.skin_quads.len(), 9 * 4 + INVENTORY_SLOT_COUNT + 5 + 4);
+        assert_eq!(
+            frame.skin_quads.len(),
+            9 * 4 + 2 + INVENTORY_SLOT_COUNT + 5 + 4
+        );
         assert!(frame.item_quads.is_empty());
         assert_eq!(frame.texts.len(), 8);
         assert_eq!(frame.texts[0].content.0, "Item Inventory");
@@ -5126,14 +4995,17 @@ mod tests {
         assert_eq!(frame.texts[5].content.0, "Misc");
         assert_eq!(frame.texts[6].content.0, "Gold: 0");
         assert_eq!(frame.texts[7].content.0, "Silver: 0");
-        assert_eq!(frame.skin_quads[36].texture, assets.slots[0].texture);
-        assert_eq!(frame.skin_quads[36].uvs[0], [0.0, 0.0]);
-        assert_eq!(frame.skin_quads[36].uvs[2], [1.0, 1.0]);
+        let layout = inventory.layout(viewport(), 1.0).unwrap().unwrap();
+        let first_slot = frame
+            .skin_quads
+            .iter()
+            .find(|quad| quad.corners[0] == layout.slots[0].min)
+            .expect("first slot");
+        assert_eq!(first_slot.texture, assets.slots[0].texture);
+        assert_eq!(first_slot.uvs[0], [0.0, 0.0]);
+        assert_eq!(first_slot.uvs[2], [1.0, 1.0]);
         assert!(
-            (frame.skin_quads[36].corners[2][0]
-                - frame.skin_quads[36].corners[0][0]
-                - INVENTORY_SLOT_SIZE_UNITS)
-                .abs()
+            (first_slot.corners[2][0] - first_slot.corners[0][0] - INVENTORY_SLOT_SIZE_UNITS).abs()
                 < 0.01
         );
         let tab_quads: Vec<_> = frame
@@ -5149,7 +5021,6 @@ mod tests {
                 .all(|quad| quad.texture == assets.tabs[1].texture)
         );
 
-        let layout = inventory.layout(viewport(), 1.0).unwrap().unwrap();
         let close = frame
             .skin_quads
             .iter()
@@ -5317,7 +5188,13 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
-        assert_eq!(frame.skin_quads[36].texture, assets.slots[2].texture);
+        let layout = inventory.layout(viewport(), 1.0).unwrap().unwrap();
+        let selected_slot = frame
+            .skin_quads
+            .iter()
+            .find(|quad| quad.corners[0] == layout.slots[0].min)
+            .expect("selected slot");
+        assert_eq!(selected_slot.texture, assets.slots[2].texture);
         assert_eq!(frame.item_quads.len(), 1);
         assert_eq!(frame.tooltip_quads.len(), 9);
         assert_eq!(frame.tooltip_quads[0].texture, assets.tooltip.texture);
@@ -6256,6 +6133,10 @@ mod tests {
         let overlap = layout.tabs[0].max[1] - layout.inner.min[1];
         assert!((overlap - metrics.tab_overlap).abs() < 0.01);
         assert!(layout.tabs[0].min[1] < layout.inner.min[1]);
+        let corner = INVENTORY_TABBED_BORDER_UNITS[0];
+        let shoulder = INVENTORY_TAB_SHOULDER_UNITS;
+        assert!((layout.tabs[0].min[0] - (layout.inner.min[0] + corner + shoulder)).abs() < 0.01);
+        assert!((layout.tabs[4].max[0] - (layout.inner.max[0] - corner - shoulder)).abs() < 0.01);
         for tab in &layout.tabs[1..] {
             assert!((tab.max[1] - layout.inner.min[1] - overlap).abs() < 0.01);
             assert!(tab.max[1] <= layout.slots[0].min[1]);
@@ -6417,140 +6298,191 @@ mod tests {
         assert!((pieces[8].uvs[0][1] - (192.0 - 18.0 + 0.5) / 192.0).abs() < 0.0001);
     }
 
-    fn top_chrome_covers(pieces: &[UiTexturedQuad], x0: f32, x1: f32) -> bool {
-        pieces.iter().any(|quad| {
-            quad.corners[0][1] <= 0.05
-                && quad.uvs[2][1] <= 14.5 / 192.0
-                && quad.corners[1][0].min(x1) - quad.corners[0][0].max(x0) > 0.5
-        })
-    }
-
-    fn assert_open_top(pieces: &[UiTexturedQuad], gap: [f32; 2], border_top: f32) {
-        assert!(
-            !top_chrome_covers(pieces, gap[0], gap[1]),
-            "top border still covers {gap:?}"
-        );
-        let fill = pieces.iter().find(|quad| {
-            (quad.corners[0][1]).abs() < 0.05
-                && (quad.corners[2][1] - border_top).abs() < 0.05
-                && (quad.corners[0][0] - gap[0]).abs() < 0.6
-                && (quad.corners[1][0] - gap[1]).abs() < 0.6
-                && quad.uvs[0][1] > 14.5 / 192.0
-        });
-        assert!(fill.is_some(), "center fill missing under {gap:?}");
-        assert!(
-            pieces.iter().any(|quad| {
-                quad.corners[0][1] <= 0.05
-                    && quad.uvs[2][1] <= 14.5 / 192.0
-                    && (quad.corners[1][0] <= gap[0] + 0.05 || quad.corners[0][0] >= gap[1] - 0.05)
-                    && quad.corners[1][0] - quad.corners[0][0] > 0.5
-            }),
-            "top border missing beside {gap:?}"
-        );
-    }
-
     #[test]
-    fn tabbed_panel_interrupts_only_the_active_top_border() {
-        let compose = |gap: [f32; 2]| {
-            compose_nine_slice_with_top_gaps(
-                [0.0, 0.0],
-                [200.0, 120.0],
-                1.0,
-                SpriteTextureId::from_raw(8),
-                [288, 192],
-                [14, 14, 14, 18],
-                [10.0, 10.0, 10.0, 12.0],
-                &[gap],
-            )
-            .unwrap()
-        };
-        let middle = compose([70.0, 130.0]);
-        assert_open_top(&middle, [70.0, 130.0], 10.0);
-        assert!(top_chrome_covers(&middle, 10.0, 70.0));
-        assert!(top_chrome_covers(&middle, 130.0, 190.0));
-        let closed = compose_nine_slice_with_borders(
-            [0.0, 0.0],
-            [200.0, 120.0],
-            1.0,
-            SpriteTextureId::from_raw(8),
-            [288, 192],
-            [14, 14, 14, 18],
-            [10.0, 10.0, 10.0, 12.0],
-        )
-        .unwrap();
-        let full_top = closed
-            .iter()
-            .find(|quad| (quad.corners[0][0] - 10.0).abs() < 0.01 && quad.corners[0][1] <= 0.05)
-            .unwrap();
-        let left_top = middle
-            .iter()
-            .find(|quad| (quad.corners[0][0] - 10.0).abs() < 0.01 && quad.corners[0][1] <= 0.05)
-            .unwrap();
-        assert!((left_top.uvs[0][0] - full_top.uvs[0][0]).abs() < 0.0001);
-        assert!(left_top.uvs[2][0] < full_top.uvs[2][0]);
-
-        let first = compose([0.0, 55.0]);
-        assert_open_top(&first, [0.0, 55.0], 10.0);
-        assert!(
-            !first.iter().any(|quad| {
-                quad.corners[0][1] <= 0.05
-                    && quad.uvs[2][1] <= 14.5 / 192.0
-                    && quad.corners[0][0] < 1.0
-                    && quad.corners[1][0] < 55.0
-            }),
-            "first-tab corner fragment remains"
+    fn inventory_tabbed_content_rails_follow_the_active_tab() {
+        let assets = synthetic_inventory_assets();
+        let registry = inventory_registry();
+        let item_icons = placeholder_item_icons(&registry);
+        let mut inventory = InventoryWindow::new(assets.metrics);
+        inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false,
         );
-        assert!(first.iter().any(|quad| {
-            (quad.corners[0][0]).abs() < 0.05
-                && (quad.corners[0][1] - 10.0).abs() < 0.05
-                && quad.corners[1][0] <= 10.5
-                && quad.corners[2][1] > 20.0
-        }));
-
-        let last = compose([145.0, 200.0]);
-        assert_open_top(&last, [145.0, 200.0], 10.0);
-        assert!(
-            !last.iter().any(|quad| {
-                quad.corners[0][1] <= 0.05
-                    && quad.uvs[2][1] <= 14.5 / 192.0
-                    && quad.corners[1][0] > 199.0
-                    && quad.corners[0][0] > 145.0
-            }),
-            "last-tab corner fragment remains"
-        );
-        assert!(last.iter().any(|quad| {
-            (quad.corners[1][0] - 200.0).abs() < 0.05
-                && (quad.corners[0][1] - 10.0).abs() < 0.05
-                && quad.corners[0][0] >= 189.0
-                && quad.corners[2][1] > 20.0
-        }));
-
-        for pixels_per_unit in [0.9_f32, 1.0, 1.25] {
-            let gap = [70.0 * pixels_per_unit, 130.0 * pixels_per_unit];
-            let scaled = compose_nine_slice_with_top_gaps(
-                [0.0, 0.0],
-                [200.0, 120.0],
-                pixels_per_unit,
-                SpriteTextureId::from_raw(8),
-                [288, 192],
-                [14, 14, 14, 18],
-                [10.0, 10.0, 10.0, 12.0],
-                &[gap],
-            )
-            .unwrap();
-            let border = 10.0 * pixels_per_unit;
-            let fill = scaled
-                .iter()
-                .find(|quad| {
-                    quad.corners[0][1] <= 0.05
-                        && (quad.corners[2][1] - border).abs() < 0.6
-                        && quad.uvs[0][1] > 14.5 / 192.0
-                })
-                .unwrap();
-            assert!((fill.corners[0][0] - gap[0]).abs() < 0.6);
-            assert!((fill.corners[1][0] - gap[1]).abs() < 0.6);
-            assert!(!top_chrome_covers(&scaled, gap[0], gap[1]));
+        let mut body_by_scale: Vec<(u32, Vec<[[f32; 2]; 4]>)> = Vec::new();
+        for selected in [0_usize, 2, 4] {
+            inventory.tabs.selected_index = selected;
+            for (scale_key, pixels_per_unit) in [(90_u32, 0.9_f32), (100, 1.0), (125, 1.25)] {
+                let frame = inventory
+                    .frame(InventoryWindowFrameInput {
+                        assets: &assets,
+                        item_icon_assets: &item_icons,
+                        entries: &[],
+                        registry: &registry,
+                        viewport: viewport(),
+                        pixels_per_unit,
+                        cursor: None,
+                    })
+                    .unwrap()
+                    .unwrap();
+                let layout = inventory
+                    .layout(viewport(), pixels_per_unit)
+                    .unwrap()
+                    .unwrap();
+                let body: Vec<_> = frame
+                    .skin_quads
+                    .iter()
+                    .filter(|quad| quad.texture == assets.tabbed_body.texture)
+                    .collect();
+                assert_eq!(body.len(), 9, "inner body must stay a complete nine-slice");
+                let corners: Vec<_> = body.iter().map(|quad| quad.corners).collect();
+                if let Some((_, previous)) = body_by_scale.iter().find(|(key, _)| *key == scale_key)
+                {
+                    assert_eq!(&corners, previous);
+                } else {
+                    body_by_scale.push((scale_key, corners));
+                }
+                let border = INVENTORY_TABBED_BORDER_UNITS[0] * pixels_per_unit;
+                let shoulder = INVENTORY_TAB_SHOULDER_UNITS * pixels_per_unit;
+                let active = layout.tabs[selected];
+                assert!(active.min[0] >= layout.inner.min[0] + border + shoulder - 0.6);
+                assert!(active.max[0] <= layout.inner.max[0] - border - shoulder + 0.6);
+                if selected == 0 {
+                    assert!(
+                        (active.min[0] - (layout.inner.min[0] + border + shoulder)).abs() < 0.6
+                    );
+                }
+                if selected == 4 {
+                    assert!(
+                        (active.max[0] - (layout.inner.max[0] - border - shoulder)).abs() < 0.6
+                    );
+                }
+                assert!(body.iter().any(|quad| {
+                    (quad.corners[0][0] - layout.inner.min[0]).abs() < 0.6
+                        && (quad.corners[0][1] - layout.inner.min[1]).abs() < 0.6
+                        && (quad.corners[1][0] - quad.corners[0][0] - border).abs() < 0.6
+                }));
+                assert!(body.iter().any(|quad| {
+                    (quad.corners[1][0] - layout.inner.max[0]).abs() < 0.6
+                        && (quad.corners[0][1] - layout.inner.min[1]).abs() < 0.6
+                        && (quad.corners[1][0] - quad.corners[0][0] - border).abs() < 0.6
+                }));
+                assert!(body.iter().any(|quad| {
+                    (quad.corners[0][1] - layout.inner.min[1]).abs() < 0.6
+                        && quad.corners[0][0] <= active.min[0] + 0.6
+                        && quad.corners[1][0] >= active.max[0] - 0.6
+                }));
+                let rails: Vec<_> = frame
+                    .skin_quads
+                    .iter()
+                    .filter(|quad| quad.texture == assets.tabbed_rail.texture)
+                    .collect();
+                assert_eq!(rails.len(), 2);
+                let left = rails
+                    .iter()
+                    .find(|quad| (quad.corners[1][0] - active.min[0]).abs() < 0.6)
+                    .expect("left rail");
+                let right = rails
+                    .iter()
+                    .find(|quad| (quad.corners[0][0] - active.max[0]).abs() < 0.6)
+                    .expect("right rail");
+                assert!((left.corners[0][0] - (layout.inner.min[0] + border)).abs() < 0.6);
+                assert!((right.corners[1][0] - (layout.inner.max[0] - border)).abs() < 0.6);
+                let rail_height = INVENTORY_TABBED_RAIL_HEIGHT_UNITS * pixels_per_unit;
+                assert!((left.corners[2][1] - left.corners[0][1] - rail_height).abs() < 0.6);
+                assert!((right.corners[2][1] - right.corners[0][1] - rail_height).abs() < 0.6);
+                assert!(left.corners[1][0] - left.corners[0][0] > 0.5);
+                assert!(right.corners[1][0] - right.corners[0][0] > 0.5);
+                assert!(left.corners[1][0] <= active.min[0] + 0.6);
+                assert!(right.corners[0][0] >= active.max[0] - 0.6);
+                for other in 0..layout.tabs.len() {
+                    if other == selected {
+                        continue;
+                    }
+                    let tab = layout.tabs[other];
+                    let overlaps_rail = rails.iter().any(|quad| {
+                        quad.corners[1][0].min(tab.max[0]) - quad.corners[0][0].max(tab.min[0])
+                            > 0.5
+                    });
+                    assert!(
+                        overlaps_rail,
+                        "inactive tab {other} opened another rail gap while {selected} is active"
+                    );
+                }
+                let body_last = frame
+                    .skin_quads
+                    .iter()
+                    .rposition(|quad| quad.texture == assets.tabbed_body.texture)
+                    .unwrap();
+                let rail_first = frame
+                    .skin_quads
+                    .iter()
+                    .position(|quad| quad.texture == assets.tabbed_rail.texture)
+                    .unwrap();
+                let tab_first = frame
+                    .skin_quads
+                    .iter()
+                    .position(|quad| assets.tabs.iter().any(|tab| tab.texture == quad.texture))
+                    .unwrap();
+                let tab_last = frame
+                    .skin_quads
+                    .iter()
+                    .rposition(|quad| assets.tabs.iter().any(|tab| tab.texture == quad.texture))
+                    .unwrap();
+                assert!(body_last < rail_first);
+                assert!(rail_first < tab_first);
+                assert!(
+                    frame.skin_quads[tab_last + 1..]
+                        .iter()
+                        .all(|quad| quad.texture != assets.tabbed_rail.texture)
+                );
+            }
         }
+
+        inventory.tabs.selected_index = 0;
+        let layout = inventory.layout(viewport(), 1.0).unwrap().unwrap();
+        let cursor = [
+            (layout.tabs[0].min[0] + layout.tabs[0].max[0]) * 0.5,
+            (layout.tabs[0].min[1] + layout.tabs[0].max[1]) * 0.5,
+        ];
+        assert!(inventory.apply_pointer_button(
+            ElementState::Pressed,
+            Some(cursor),
+            viewport(),
+            1.0
+        ));
+        let pressed = inventory
+            .frame(inventory_frame_input(
+                &assets,
+                &item_icons,
+                &registry,
+                &[],
+                Some(cursor),
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(
+            pressed
+                .skin_quads
+                .iter()
+                .any(|quad| quad.texture == assets.tabs[3].texture)
+        );
+        let rails: Vec<_> = pressed
+            .skin_quads
+            .iter()
+            .filter(|quad| quad.texture == assets.tabbed_rail.texture)
+            .collect();
+        assert_eq!(rails.len(), 2);
+        assert!((rails[0].corners[1][0] - layout.tabs[0].min[0]).abs() < 0.6);
+        assert!((rails[1].corners[0][0] - layout.tabs[0].max[0]).abs() < 0.6);
+        assert_eq!(
+            pressed
+                .skin_quads
+                .iter()
+                .filter(|quad| quad.texture == assets.tabbed_body.texture)
+                .count(),
+            9
+        );
     }
 
     #[test]
@@ -6571,91 +6503,6 @@ mod tests {
         );
         assert_eq!(quad.corners[0], [2.0, 3.0]);
         assert_eq!(quad.corners[2], [42.0, 33.0]);
-    }
-
-    #[test]
-    fn inventory_active_tab_opening_follows_the_selected_tab() {
-        let assets = synthetic_inventory_assets();
-        let registry = inventory_registry();
-        let item_icons = placeholder_item_icons(&registry);
-        let mut inventory = InventoryWindow::new(assets.metrics);
-        inventory.apply_key(
-            PhysicalKey::Code(KeyCode::KeyI),
-            ElementState::Pressed,
-            false,
-        );
-        for selected in [0_usize, 2, 4] {
-            inventory.tabs.selected_index = selected;
-            for pixels_per_unit in [0.9_f32, 1.0, 1.25] {
-                let frame = inventory
-                    .frame(InventoryWindowFrameInput {
-                        assets: &assets,
-                        item_icon_assets: &item_icons,
-                        entries: &[],
-                        registry: &registry,
-                        viewport: viewport(),
-                        pixels_per_unit,
-                        cursor: None,
-                    })
-                    .unwrap()
-                    .unwrap();
-                let layout = inventory
-                    .layout(viewport(), pixels_per_unit)
-                    .unwrap()
-                    .unwrap();
-                let border = INVENTORY_PANEL_BORDER_UNITS[1] * pixels_per_unit;
-                let top_band = |quad: &UiTexturedQuad| {
-                    (quad.corners[0][1] - layout.inner.min[1]).abs() < 0.6
-                        && (quad.corners[2][1] - (layout.inner.min[1] + border)).abs() < 0.6
-                        && quad.texture == assets.panel.texture
-                };
-                let chrome =
-                    |quad: &UiTexturedQuad| top_band(quad) && quad.uvs[2][1] <= 14.5 / 192.0;
-                let overlaps = |quad: &UiTexturedQuad, tab: ScreenRect| {
-                    quad.corners[1][0].min(tab.max[0]) - quad.corners[0][0].max(tab.min[0]) > 0.5
-                };
-                let active = layout.tabs[selected];
-                assert!(
-                    frame
-                        .skin_quads
-                        .iter()
-                        .filter(|quad| chrome(quad))
-                        .all(|quad| !overlaps(quad, active)),
-                    "selected tab {selected} still has a top border"
-                );
-                let fills: Vec<_> = frame
-                    .skin_quads
-                    .iter()
-                    .filter(|quad| top_band(quad) && quad.uvs[0][1] > 14.5 / 192.0)
-                    .collect();
-                assert_eq!(fills.len(), 1);
-                assert!((fills[0].corners[0][0] - active.min[0]).abs() < 0.6);
-                assert!((fills[0].corners[1][0] - active.max[0]).abs() < 0.6);
-                assert!(
-                    frame.skin_quads.iter().any(|quad| {
-                        quad.texture == assets.panel.texture
-                            && (quad.corners[0][1] - (layout.inner.min[1] + border)).abs() < 0.6
-                            && overlaps(quad, active)
-                            && quad.uvs[0][1] >= 14.5 / 192.0
-                            && quad.uvs[2][0] > 14.5 / 288.0
-                    }),
-                    "content surface is missing under selected tab {selected}"
-                );
-                for other in 0..layout.tabs.len() {
-                    if other == selected {
-                        continue;
-                    }
-                    assert!(
-                        frame
-                            .skin_quads
-                            .iter()
-                            .filter(|quad| chrome(quad))
-                            .any(|quad| overlaps(quad, layout.tabs[other])),
-                        "inactive tab {other} opened the panel while {selected} is active"
-                    );
-                }
-            }
-        }
     }
 
     #[test]
@@ -6759,6 +6606,10 @@ mod tests {
         assert_eq!(assets.close[0].size_px, assets.close[2].size_px);
         assert_eq!(assets.menu[0].size_px, assets.menu[1].size_px);
         assert_eq!(assets.menu[1].size_px, assets.menu[2].size_px);
+        assert_eq!(assets.tabbed_body.size_px, [288, 192]);
+        assert_eq!(assets.tabbed_body.slice_ltrb, [8, 8, 8, 8]);
+        assert_eq!(assets.tabbed_rail.size_px, [64, 8]);
+        assert_ne!(assets.tabbed_body.texture, assets.panel.texture);
         assert!(assets.metrics.tab_overlap > 0.0);
         let size = assets.metrics.window_size().unwrap();
         assert!((280.0..=310.0).contains(&size[0]));
