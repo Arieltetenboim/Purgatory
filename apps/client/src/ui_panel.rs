@@ -64,7 +64,6 @@ const SETTINGS_LAUNCHER_ICON_SIZE_UNITS: f32 = 13.0;
 const SETTINGS_LAUNCHER_FONT_SIZE_UNITS: f32 = 9.5;
 const SETTINGS_TEXT_COLOR: [f32; 4] = [0.05, 0.07, 0.1, 1.0];
 const SETTINGS_DISABLED_TEXT_COLOR: [f32; 4] = [0.36, 0.39, 0.43, 1.0];
-const INVENTORY_CONTENT_SIDE_INSET_UNITS: f32 = 23.0;
 /// Logical Inventory geometry. V2 PNGs are source artwork and are not these sizes.
 const INVENTORY_SLOT_SIZE_UNITS: f32 = 44.0;
 const INVENTORY_SLOT_GAP_UNITS: f32 = 4.0;
@@ -115,13 +114,21 @@ const INVENTORY_QUANTITY_INSET_UNITS: f32 = 3.0;
 const INVENTORY_QUANTITY_COLOR: [f32; 4] = [0.04, 0.055, 0.08, 1.0];
 const EQUIPMENT_SLOT_COLUMNS: usize = 2;
 const EQUIPMENT_SLOT_ROWS: usize = 3;
-const EQUIPMENT_SLOT_GAP_UNITS: f32 = 20.0;
+const EQUIPMENT_SLOT_COUNT: usize = EQUIPMENT_SLOT_COLUMNS * EQUIPMENT_SLOT_ROWS;
+const EQUIPMENT_SLOT_SIZE_UNITS: f32 = INVENTORY_SLOT_SIZE_UNITS;
+const EQUIPMENT_COLUMN_GAP_UNITS: f32 = 10.0;
+const EQUIPMENT_ROW_GAP_UNITS: f32 = 4.0;
 const EQUIPMENT_LABEL_FONT_SIZE_UNITS: f32 = 7.0;
 const EQUIPMENT_LABEL_GAP_UNITS: f32 = 2.0;
+/// Inset from the header's side edges to the slot columns.
+const EQUIPMENT_CONTENT_INSET_UNITS: f32 = 20.0;
+/// Gap between the header bottom and the first equipment slot.
+const EQUIPMENT_HEADER_GAP_UNITS: f32 = 6.0;
+/// Cream margin under the last slot label.
+const EQUIPMENT_BOTTOM_INSET_UNITS: f32 = 20.0;
 const EQUIPMENT_LABEL_COLOR: [f32; 4] = [0.08, 0.11, 0.16, 1.0];
 const EQUIPMENT_SLOT_LABELS: [&str; EquipmentSlot::COUNT] =
     ["Headwear", "Bodywear", "Pants", "Gloves", "Boots", "Weapon"];
-const INVENTORY_SLOT_HOVER_TINT: [f32; 4] = [0.9, 0.96, 1.0, 1.0];
 const ITEM_DRAG_THRESHOLD_PX: f32 = 4.0;
 const INVENTORY_TOOLTIP_WIDTH_UNITS: f32 = 218.0;
 const INVENTORY_TOOLTIP_OFFSET_UNITS: f32 = 10.0;
@@ -429,6 +436,7 @@ pub(crate) struct UiTabAssets {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct UiSlotAssets {
     texture: SpriteTextureId,
     source_size_px: [u32; 2],
@@ -869,6 +877,7 @@ fn tab_text_block(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl UiSlotAssets {
     pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
         let metadata: UiAtlasMetadata = serde_json::from_str(ATLAS_METADATA)
@@ -888,43 +897,6 @@ impl UiSlotAssets {
             source_rect: metadata.slot,
             size_units: [44.0, 44.0],
         })
-    }
-
-    fn frame(
-        self,
-        grid: UiSlotGrid,
-        origin: [f32; 2],
-        pixels_per_unit: f32,
-    ) -> Result<Vec<UiTexturedRect>, String> {
-        validate_pixels_per_unit(pixels_per_unit)?;
-        grid.validate()?;
-        if !origin.into_iter().all(f32::is_finite) {
-            return Err("UI slot-grid origin must be finite".to_string());
-        }
-
-        let slot_size = [
-            self.size_units[0] * pixels_per_unit,
-            self.size_units[1] * pixels_per_unit,
-        ];
-        let gap = grid.gap_units * pixels_per_unit;
-        let mut textured_rects = Vec::with_capacity(grid.slot_count());
-        for row in 0..grid.rows {
-            for column in 0..grid.columns {
-                let min = [
-                    origin[0] + column as f32 * (slot_size[0] + gap),
-                    origin[1] + row as f32 * (slot_size[1] + gap),
-                ];
-                textured_rects.push(UiTexturedRect {
-                    min,
-                    max: [min[0] + slot_size[0], min[1] + slot_size[1]],
-                    texture: self.texture,
-                    uv_min: self.source_rect.uv_bounds(self.source_size_px).0,
-                    uv_max: self.source_rect.uv_bounds(self.source_size_px).1,
-                    tint: [1.0; 4],
-                });
-            }
-        }
-        Ok(textured_rects)
     }
 }
 
@@ -1730,46 +1702,6 @@ impl UiCurrencyDisplay {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct UiSlotGrid {
-    columns: usize,
-    rows: usize,
-    gap_units: f32,
-}
-
-impl UiSlotGrid {
-    const fn new(columns: usize, rows: usize, gap_units: f32) -> Self {
-        Self {
-            columns,
-            rows,
-            gap_units,
-        }
-    }
-
-    fn validate(self) -> Result<(), String> {
-        if self.columns == 0 || self.rows == 0 || !finite_non_negative(self.gap_units) {
-            return Err(
-                "UI slot grid requires rows/columns and a finite non-negative gap".to_string(),
-            );
-        }
-        Ok(())
-    }
-
-    fn slot_count(self) -> usize {
-        self.columns.saturating_mul(self.rows)
-    }
-
-    fn logical_size(self, assets: UiSlotAssets) -> Result<[f32; 2], String> {
-        self.validate()?;
-        Ok([
-            self.columns as f32 * assets.size_units[0]
-                + self.columns.saturating_sub(1) as f32 * self.gap_units,
-            self.rows as f32 * assets.size_units[1]
-                + self.rows.saturating_sub(1) as f32 * self.gap_units,
-        ])
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InventoryTabVisual {
     Active,
@@ -2009,6 +1941,12 @@ fn shared_tab_overlap(catalog: &crate::ui_v2::UiV2Catalog) -> Result<u32, String
         overlap = Some(value);
     }
     overlap.ok_or_else(|| "UI V2 tab family is missing contentOverlap".to_string())
+}
+
+fn array2(images: Vec<UiV2Image>) -> Result<[UiV2Image; 2], String> {
+    images
+        .try_into()
+        .map_err(|_| "UI V2 state family length is not 2".to_string())
 }
 
 fn array3(images: Vec<UiV2Image>) -> Result<[UiV2Image; 3], String> {
@@ -2779,10 +2717,219 @@ pub(crate) fn resolve_drag(
     }
 }
 
+const _: () = assert!(EQUIPMENT_SLOT_COUNT == EquipmentSlot::COUNT);
+
+pub(crate) struct EquipmentV2Assets {
+    panel: UiV2NineSlice,
+    header: UiV2NineSlice,
+    close: [UiV2Image; 3],
+    slots: [UiV2Image; 2],
+    helmet: UiV2Image,
+}
+
+impl EquipmentV2Assets {
+    pub(crate) fn load(runtime: &mut AssetRuntime) -> Result<Self, String> {
+        let catalog = load_ui_v2_catalog(runtime)?;
+        let mut loader = ClientAssetLoader::new(runtime);
+        let panel = load_ui_v2_nine_slice(&mut loader, &catalog, "panel_body_9slice")?;
+        let header = load_ui_v2_nine_slice(&mut loader, &catalog, "panel_header_9slice")?;
+        let close = array3(load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &[
+                "close_button_normal",
+                "close_button_hover",
+                "close_button_pressed",
+            ],
+        )?)?;
+        let slots = array2(load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &["slot_normal", "slot_hover"],
+        )?)?;
+        let helmet = load_ui_v2_image(&mut loader, &catalog, "icon_helmet")?;
+        Ok(Self {
+            panel,
+            header,
+            close,
+            slots,
+            helmet,
+        })
+    }
+}
+
+fn equipment_label_block_units() -> f32 {
+    EQUIPMENT_LABEL_GAP_UNITS + EQUIPMENT_LABEL_FONT_SIZE_UNITS
+}
+
+fn equipment_grid_size() -> [f32; 2] {
+    let columns = EQUIPMENT_SLOT_COLUMNS as f32;
+    let rows = EQUIPMENT_SLOT_ROWS as f32;
+    let label = equipment_label_block_units();
+    [
+        columns * EQUIPMENT_SLOT_SIZE_UNITS + (columns - 1.0) * EQUIPMENT_COLUMN_GAP_UNITS,
+        rows * (EQUIPMENT_SLOT_SIZE_UNITS + label) + (rows - 1.0) * EQUIPMENT_ROW_GAP_UNITS,
+    ]
+}
+
+fn equipment_window_size() -> [f32; 2] {
+    let grid = equipment_grid_size();
+    [
+        INVENTORY_HEADER_INSET_UNITS * 2.0 + EQUIPMENT_CONTENT_INSET_UNITS * 2.0 + grid[0],
+        INVENTORY_HEADER_TOP_INSET_UNITS
+            + INVENTORY_HEADER_HEIGHT_UNITS
+            + EQUIPMENT_HEADER_GAP_UNITS
+            + grid[1]
+            + EQUIPMENT_BOTTOM_INSET_UNITS,
+    ]
+}
+
+struct EquipmentLayout {
+    window: ScreenRect,
+    header: ScreenRect,
+    close_button: ScreenRect,
+    helmet: ScreenRect,
+    slots: [ScreenRect; EQUIPMENT_SLOT_COUNT],
+    labels: [ScreenRect; EQUIPMENT_SLOT_COUNT],
+}
+
+fn layout_equipment(window: ScreenRect, pixels_per_unit: f32) -> Result<EquipmentLayout, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    let scale = pixels_per_unit;
+    let header = ScreenRect {
+        min: [
+            window.min[0] + INVENTORY_HEADER_INSET_UNITS * scale,
+            window.min[1] + INVENTORY_HEADER_TOP_INSET_UNITS * scale,
+        ],
+        max: [
+            window.max[0] - INVENTORY_HEADER_INSET_UNITS * scale,
+            window.min[1]
+                + (INVENTORY_HEADER_TOP_INSET_UNITS + INVENTORY_HEADER_HEIGHT_UNITS) * scale,
+        ],
+    };
+    let close_size = INVENTORY_CLOSE_SIZE_UNITS * scale;
+    let close_max_x = header.max[0] - INVENTORY_CLOSE_RIGHT_INSET_UNITS * scale;
+    let close_min_y = header.min[1] + INVENTORY_CLOSE_INSET_UNITS * scale;
+    let close_button = ScreenRect {
+        min: [close_max_x - close_size, close_min_y],
+        max: [close_max_x, close_min_y + close_size],
+    };
+    let helmet_size = INVENTORY_BAG_SIZE_UNITS * scale;
+    let helmet_min_x = header.min[0] + INVENTORY_BAG_INSET_UNITS * scale;
+    let helmet_min_y = header.min[1] + (header.height() - helmet_size) * 0.5;
+    let helmet = ScreenRect {
+        min: [helmet_min_x, helmet_min_y],
+        max: [helmet_min_x + helmet_size, helmet_min_y + helmet_size],
+    };
+    let slot_size = EQUIPMENT_SLOT_SIZE_UNITS * scale;
+    let column_gap = EQUIPMENT_COLUMN_GAP_UNITS * scale;
+    let row_gap = EQUIPMENT_ROW_GAP_UNITS * scale;
+    let label_gap = EQUIPMENT_LABEL_GAP_UNITS * scale;
+    let label_height = EQUIPMENT_LABEL_FONT_SIZE_UNITS * scale;
+    let row_stride = slot_size + label_gap + label_height + row_gap;
+    let origin = [
+        header.min[0] + EQUIPMENT_CONTENT_INSET_UNITS * scale,
+        header.max[1] + EQUIPMENT_HEADER_GAP_UNITS * scale,
+    ];
+    let mut slots = [ScreenRect {
+        min: [0.0, 0.0],
+        max: [0.0, 0.0],
+    }; EQUIPMENT_SLOT_COUNT];
+    let mut labels = slots;
+    for row in 0..EQUIPMENT_SLOT_ROWS {
+        for column in 0..EQUIPMENT_SLOT_COLUMNS {
+            let index = row * EQUIPMENT_SLOT_COLUMNS + column;
+            let min = [
+                origin[0] + column as f32 * (slot_size + column_gap),
+                origin[1] + row as f32 * row_stride,
+            ];
+            let slot = ScreenRect {
+                min,
+                max: [min[0] + slot_size, min[1] + slot_size],
+            };
+            let label_min_y = slot.max[1] + label_gap;
+            labels[index] = ScreenRect {
+                min: [slot.min[0], label_min_y],
+                max: [slot.max[0], label_min_y + label_height],
+            };
+            slots[index] = slot;
+        }
+    }
+    let content_fits = slots.iter().zip(labels.iter()).all(|(slot, label)| {
+        slot.min[0] >= window.min[0]
+            && slot.max[0] <= window.max[0]
+            && slot.min[1] >= header.max[1]
+            && label.max[1] <= window.max[1]
+            && label.min[1] + 0.01 >= slot.max[1]
+            && label.max[0] <= window.max[0]
+    });
+    let inside = header.min[0] >= window.min[0]
+        && header.max[0] <= window.max[0]
+        && close_button.min[0] >= header.min[0]
+        && close_button.max[1] <= header.max[1]
+        && helmet.max[0] < close_button.min[0]
+        && helmet.min[1] >= header.min[1]
+        && helmet.max[1] <= header.max[1]
+        && content_fits;
+    if !inside {
+        return Err("equipment layout does not fit its window".to_string());
+    }
+    Ok(EquipmentLayout {
+        window,
+        header,
+        close_button,
+        helmet,
+        slots,
+        labels,
+    })
+}
+
+fn equipment_title(layout: &EquipmentLayout, pixels_per_unit: f32) -> TextBlock {
+    let font_px = TITLE_FONT_SIZE_UNITS * pixels_per_unit;
+    let title_anchor = [
+        layout.helmet.max[0] + TITLE_CONTROL_GAP_UNITS * pixels_per_unit,
+        layout.header.min[1] + (layout.header.height() - font_px).max(0.0) * 0.5,
+    ];
+    let max_width =
+        (layout.close_button.min[0] - TITLE_CONTROL_GAP_UNITS * pixels_per_unit - title_anchor[0])
+            .max(1.0);
+    TextBlock {
+        content: TextContent("Equipment".to_owned()),
+        style: TextStyle::at_size(
+            TITLE_FONT_SIZE_UNITS,
+            [1.0, 1.0, 1.0, 1.0],
+            TextAlignment::Left,
+        ),
+        anchor: title_anchor,
+        max_width: Some(max_width),
+    }
+}
+
+fn equipment_labels(
+    layout: &EquipmentLayout,
+    pixels_per_unit: f32,
+) -> Result<Vec<TextBlock>, String> {
+    validate_pixels_per_unit(pixels_per_unit)?;
+    Ok(layout
+        .labels
+        .iter()
+        .zip(EQUIPMENT_SLOT_LABELS)
+        .map(|(label, text)| TextBlock {
+            content: TextContent(text.to_string()),
+            style: TextStyle::at_size(
+                EQUIPMENT_LABEL_FONT_SIZE_UNITS,
+                EQUIPMENT_LABEL_COLOR,
+                TextAlignment::Center,
+            ),
+            anchor: [(label.min[0] + label.max[0]) * 0.5, label.min[1]],
+            max_width: Some(label.width().max(1.0)),
+        })
+        .collect())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct EquipmentWindow {
     chrome: ProofPanelWindow,
-    slots: UiSlotGrid,
     slot_hit_regions: Vec<ScreenRect>,
     occupied_slots: [Option<ContentId>; EquipmentSlot::COUNT],
     pressed_slot: Option<u8>,
@@ -2793,8 +2940,7 @@ pub(crate) struct EquipmentWindow {
 }
 
 pub(crate) struct EquipmentWindowFrameInput<'a> {
-    pub(crate) window_assets: UiWindowAssets,
-    pub(crate) slot_assets: UiSlotAssets,
+    pub(crate) assets: &'a EquipmentV2Assets,
     pub(crate) item_icon_assets: &'a UiItemIconAssets,
     pub(crate) equipment: Option<ReplicatedEquipment>,
     pub(crate) viewport: PixelViewport,
@@ -2806,13 +2952,8 @@ impl Default for EquipmentWindow {
     fn default() -> Self {
         Self {
             chrome: ProofPanelWindow::with_size_and_center_offset(
-                [250.0, 300.0],
+                equipment_window_size(),
                 EQUIPMENT_INITIAL_CENTER_OFFSET_UNITS,
-            ),
-            slots: UiSlotGrid::new(
-                EQUIPMENT_SLOT_COLUMNS,
-                EQUIPMENT_SLOT_ROWS,
-                EQUIPMENT_SLOT_GAP_UNITS,
             ),
             slot_hit_regions: Vec::new(),
             occupied_slots: [None; EquipmentSlot::COUNT],
@@ -2847,121 +2988,105 @@ impl EquipmentWindow {
             .apply_key(PhysicalKey::Code(KeyCode::KeyI), state, repeat)
     }
 
+    fn layout(
+        &mut self,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> Result<Option<EquipmentLayout>, String> {
+        let Some(window) = place_proof_window(&mut self.chrome, viewport, pixels_per_unit)? else {
+            return Ok(None);
+        };
+        Ok(Some(layout_equipment(window, pixels_per_unit)?))
+    }
+
     pub(crate) fn frame(
         &mut self,
         input: EquipmentWindowFrameInput<'_>,
     ) -> Result<Option<EquipmentWindowFrame>, String> {
         let EquipmentWindowFrameInput {
-            window_assets,
-            slot_assets,
+            assets,
             item_icon_assets,
             equipment,
             viewport,
             pixels_per_unit,
             cursor,
         } = input;
-        let Some(layout) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)?
-        else {
+        let Some(layout) = self.layout(viewport, pixels_per_unit)? else {
             self.slot_hit_regions.clear();
             return Ok(None);
         };
-        let Some(window_frame) = window_assets.proof_frame(
-            &mut self.chrome,
-            "Equipment",
-            viewport,
-            pixels_per_unit,
-            cursor,
-        )?
-        else {
-            self.slot_hit_regions.clear();
-            return Ok(None);
-        };
-        let origin = equipment_slot_origin(
-            window_assets,
-            slot_assets,
-            self.slots,
-            layout,
-            pixels_per_unit,
-        )?;
-        let mut slot_rects = slot_assets.frame(self.slots, origin, pixels_per_unit)?;
-        self.slot_hit_regions = slot_rects
-            .iter()
-            .map(|slot| ScreenRect {
-                min: slot.min,
-                max: slot.max,
-            })
-            .collect();
+        self.slot_hit_regions = layout.slots.to_vec();
         self.occupied_slots =
             std::array::from_fn(|index| equipment.and_then(|state| state.get(index as u8)));
-        for (index, slot) in slot_rects.iter_mut().enumerate() {
-            slot.tint = if cursor.is_some_and(|point| {
-                self.slot_hit_regions
-                    .get(index)
-                    .is_some_and(|bounds| bounds.contains(point))
-            }) {
-                INVENTORY_SLOT_HOVER_TINT
+        let mut skin_quads = Vec::new();
+        push_inventory_nine_slice(
+            &mut skin_quads,
+            layout.window,
+            &assets.panel,
+            INVENTORY_PANEL_BORDER_UNITS,
+            pixels_per_unit,
+        )?;
+        push_inventory_nine_slice(
+            &mut skin_quads,
+            layout.header,
+            &assets.header,
+            INVENTORY_HEADER_BORDER_UNITS,
+            pixels_per_unit,
+        )?;
+        for slot in layout.slots {
+            let hovered = cursor.is_some_and(|point| slot.contains(point));
+            let texture = if hovered {
+                assets.slots[1].texture
             } else {
-                [1.0; 4]
+                assets.slots[0].texture
             };
+            skin_quads.push(compose_stretched_quad(slot, texture)?);
         }
-        let item_frame = equipment_items_frame(
+        skin_quads.push(compose_stretched_quad(
+            layout.helmet,
+            assets.helmet.texture,
+        )?);
+        let close_texture = match self.chrome.close_button_visual(cursor, layout.close_button) {
+            CloseButtonVisual::Normal => assets.close[0].texture,
+            CloseButtonVisual::Hover => assets.close[1].texture,
+            CloseButtonVisual::Pressed => assets.close[2].texture,
+        };
+        skin_quads.push(compose_stretched_quad(layout.close_button, close_texture)?);
+        let item_quads = equipment_items_frame(
             item_icon_assets,
             &self.occupied_slots,
-            &slot_rects,
+            &layout.slots,
             pixels_per_unit,
             self.dragging_slot,
         )?;
-
-        let labels: Vec<_> = slot_rects
-            .iter()
-            .zip(EQUIPMENT_SLOT_LABELS)
-            .map(|(slot, label)| TextBlock {
-                content: TextContent(label.to_string()),
-                style: TextStyle::at_size(
-                    EQUIPMENT_LABEL_FONT_SIZE_UNITS,
-                    EQUIPMENT_LABEL_COLOR,
-                    TextAlignment::Center,
-                ),
-                anchor: [
-                    (slot.min[0] + slot.max[0]) * 0.5,
-                    slot.max[1]
-                        - (EQUIPMENT_LABEL_FONT_SIZE_UNITS + EQUIPMENT_LABEL_GAP_UNITS)
-                            * pixels_per_unit,
-                ],
-                max_width: Some((slot.max[0] - slot.min[0] - 4.0 * pixels_per_unit).max(1.0)),
-            })
-            .collect();
-        let mut textured_rects = window_frame.textured_rects;
-        textured_rects.extend(slot_rects);
-        textured_rects.extend(item_frame.textured_rects);
-        let mut texts = vec![window_frame.title];
-        texts.extend(labels);
-        texts.extend(item_frame.texts);
+        let mut texts = vec![equipment_title(&layout, pixels_per_unit)];
+        texts.extend(equipment_labels(&layout, pixels_per_unit)?);
+        let mut drag_preview = Vec::new();
         if let (Some(slot), Some(cursor)) = (self.dragging_slot, cursor)
             && let Some(definition) = self.occupied_slots[usize::from(slot)]
         {
-            textured_rects.push(drag_preview_icon(
+            drag_preview.push(inventory_drag_preview(
                 item_icon_assets.resolve(definition),
                 cursor,
                 pixels_per_unit,
             )?);
         }
         Ok(Some(EquipmentWindowFrame {
-            textured_rects,
+            skin_quads,
+            item_quads,
             texts,
+            drag_preview,
         }))
     }
 
     pub(crate) fn apply_pointer_button(
         &mut self,
-        window_assets: UiWindowAssets,
         state: ElementState,
         cursor: Option<[f32; 2]>,
         viewport: PixelViewport,
         pixels_per_unit: f32,
     ) -> bool {
-        let Ok(Some(layout)) = window_assets.layout(&mut self.chrome, viewport, pixels_per_unit)
-        else {
+        let Ok(Some(layout)) = self.layout(viewport, pixels_per_unit) else {
             self.cancel_pointer_interaction();
             return false;
         };
@@ -2991,9 +3116,16 @@ impl EquipmentWindow {
             }
             ElementState::Pressed => {}
         }
-        self.chrome
-            .apply_pointer_button(window_assets, state, cursor, viewport, pixels_per_unit)
-            || layout.window.contains(cursor.unwrap_or([-1.0, -1.0]))
+        self.chrome.apply_chrome_pointer(
+            Some(WindowChromeLayout {
+                window: layout.window,
+                header: layout.header,
+                close_button: layout.close_button,
+            }),
+            state,
+            cursor,
+            pixels_per_unit,
+        )
     }
 
     pub(crate) fn pointer_moved(
@@ -3032,13 +3164,11 @@ impl EquipmentWindow {
 
     pub(crate) fn contains_window(
         &mut self,
-        window_assets: UiWindowAssets,
         cursor: [f32; 2],
         viewport: PixelViewport,
         pixels_per_unit: f32,
     ) -> bool {
-        window_assets
-            .layout(&mut self.chrome, viewport, pixels_per_unit)
+        self.layout(viewport, pixels_per_unit)
             .ok()
             .flatten()
             .is_some_and(|layout| layout.window.contains(cursor))
@@ -3064,8 +3194,10 @@ impl EquipmentWindow {
 }
 
 pub(crate) struct EquipmentWindowFrame {
-    pub(crate) textured_rects: Vec<UiTexturedRect>,
+    pub(crate) skin_quads: Vec<UiTexturedQuad>,
+    pub(crate) item_quads: Vec<UiTexturedQuad>,
     pub(crate) texts: Vec<TextBlock>,
+    pub(crate) drag_preview: Vec<UiTexturedQuad>,
 }
 
 struct UiInventoryItemsFrame {
@@ -3160,20 +3292,15 @@ fn inventory_drag_preview(
     )
 }
 
-struct UiEquipmentItemsFrame {
-    textured_rects: Vec<UiTexturedRect>,
-    texts: Vec<TextBlock>,
-}
-
 fn equipment_items_frame(
     item_icon_assets: &UiItemIconAssets,
     occupied_slots: &[Option<ContentId>; EquipmentSlot::COUNT],
-    slots: &[UiTexturedRect],
+    slots: &[ScreenRect],
     pixels_per_unit: f32,
     dragging_slot: Option<u8>,
-) -> Result<UiEquipmentItemsFrame, String> {
+) -> Result<Vec<UiTexturedQuad>, String> {
     validate_pixels_per_unit(pixels_per_unit)?;
-    let mut textured_rects = Vec::new();
+    let mut quads = Vec::new();
     for (index, (definition, slot)) in occupied_slots.iter().zip(slots.iter().copied()).enumerate()
     {
         if dragging_slot == u8::try_from(index).ok() {
@@ -3183,27 +3310,15 @@ fn equipment_items_frame(
             continue;
         };
         let icon = item_icon_assets.resolve(*definition);
-        let icon_bounds = fit_item_icon(
-            ScreenRect {
-                min: slot.min,
-                max: slot.max,
-            },
-            icon.dimensions_px,
-            pixels_per_unit,
-        )?;
-        textured_rects.push(UiTexturedRect {
-            min: icon_bounds.min,
-            max: icon_bounds.max,
-            texture: icon.texture,
-            uv_min: icon.uv_min,
-            uv_max: icon.uv_max,
-            tint: [1.0; 4],
-        });
+        let icon_bounds = fit_item_icon(slot, icon.dimensions_px, pixels_per_unit)?;
+        quads.push(compose_uv_quad(
+            icon_bounds,
+            icon.texture,
+            icon.uv_min,
+            icon.uv_max,
+        )?);
     }
-    Ok(UiEquipmentItemsFrame {
-        textured_rects,
-        texts: Vec::new(),
-    })
+    Ok(quads)
 }
 
 fn drag_preview_icon(
@@ -3413,41 +3528,6 @@ fn fit_item_icon(
         min,
         max: [min[0] + size[0], min[1] + size[1]],
     })
-}
-
-fn equipment_slot_origin(
-    window_assets: UiWindowAssets,
-    slot_assets: UiSlotAssets,
-    grid: UiSlotGrid,
-    layout: UiWindowLayout,
-    pixels_per_unit: f32,
-) -> Result<[f32; 2], String> {
-    validate_pixels_per_unit(pixels_per_unit)?;
-    let grid_size = grid.logical_size(slot_assets)?;
-    let content_min_x = layout.window.min[0] + INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
-    let content_max_x = layout.window.max[0] - INVENTORY_CONTENT_SIDE_INSET_UNITS * pixels_per_unit;
-    let content_min_y = layout.header.max[1] + 8.0 * pixels_per_unit;
-    let content_max_y =
-        layout.window.max[1] - window_assets.panel().border_units.bottom * pixels_per_unit;
-    let group_height = (grid_size[1] + EQUIPMENT_LABEL_GAP_UNITS + EQUIPMENT_LABEL_FONT_SIZE_UNITS)
-        * pixels_per_unit;
-    let origin = [
-        content_min_x
-            + ((content_max_x - content_min_x) / pixels_per_unit - grid_size[0])
-                * 0.5
-                * pixels_per_unit,
-        content_min_y + (content_max_y - content_min_y - group_height).max(0.0) * 0.5,
-    ];
-    let max_y = origin[1]
-        + (grid_size[1] + EQUIPMENT_LABEL_GAP_UNITS + EQUIPMENT_LABEL_FONT_SIZE_UNITS)
-            * pixels_per_unit;
-    if origin[0] < content_min_x
-        || origin[0] + grid_size[0] * pixels_per_unit > content_max_x
-        || max_y > content_max_y
-    {
-        return Err("equipment slots do not fit inside the panel content".to_string());
-    }
-    Ok(origin)
 }
 
 fn tab_rect(bounds: ScreenRect, index: usize, count: usize, gap: f32) -> ScreenRect {
@@ -4391,10 +4471,6 @@ mod tests {
         UiTabAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
     }
 
-    fn embedded_slot_assets() -> UiSlotAssets {
-        UiSlotAssets::load_embedded(&mut AssetRuntime::new()).unwrap()
-    }
-
     fn synthetic_inventory_assets() -> InventoryV2Assets {
         let metrics = fixture_inventory_metrics();
         let image = |id: u32, size: [u32; 2]| UiV2Image {
@@ -4437,6 +4513,46 @@ mod tests {
                 image(62, [36, 36]),
                 image(63, [36, 36]),
             ],
+        }
+    }
+
+    fn synthetic_equipment_assets() -> EquipmentV2Assets {
+        let image = |id: u32, size: [u32; 2]| UiV2Image {
+            texture: SpriteTextureId::from_raw(id),
+            size_px: size,
+        };
+        let slice = |id: u32, size: [u32; 2], slice_ltrb: [u32; 4]| UiV2NineSlice {
+            texture: SpriteTextureId::from_raw(id),
+            size_px: size,
+            slice_ltrb,
+        };
+        EquipmentV2Assets {
+            panel: slice(71, [288, 192], [14, 14, 14, 18]),
+            header: slice(72, [270, 40], [8, 8, 8, 8]),
+            close: [
+                image(73, [36, 36]),
+                image(74, [36, 36]),
+                image(75, [36, 36]),
+            ],
+            slots: [image(76, [72, 72]), image(77, [72, 72])],
+            helmet: image(78, [48, 48]),
+        }
+    }
+
+    fn equipment_frame_input<'a>(
+        assets: &'a EquipmentV2Assets,
+        icons: &'a UiItemIconAssets,
+        equipment: Option<ReplicatedEquipment>,
+        cursor: Option<[f32; 2]>,
+        pixels_per_unit: f32,
+    ) -> EquipmentWindowFrameInput<'a> {
+        EquipmentWindowFrameInput {
+            assets,
+            item_icon_assets: icons,
+            equipment,
+            viewport: viewport(),
+            pixels_per_unit,
+            cursor,
         }
     }
 
@@ -4868,16 +4984,13 @@ mod tests {
             ],
             expected
         );
-        let equipment_layout = assets
-            .layout(&mut equipment.chrome, viewport(), 1.0)
-            .unwrap()
-            .unwrap();
+        let equipment_layout = equipment.layout(viewport(), 1.0).unwrap().unwrap();
         assert_eq!(
             [
                 equipment_layout.window.width(),
                 equipment_layout.window.height()
             ],
-            [250.0, 300.0]
+            equipment_window_size()
         );
         let message = assets
             .message_chrome("Message", viewport(), 1.0, None)
@@ -4923,6 +5036,8 @@ mod tests {
         assert_eq!(image.width(), image.height());
         assert!(image.width() > 0);
         assert_eq!(assets.size_units, [44.0, 44.0]);
+        assert_eq!(assets.source_size_px, [image.width(), image.height()]);
+        assert!(assets.source_rect.width > 0 && assets.source_rect.height > 0);
         assert_eq!(runtime.resource_count(), 1);
         assert_eq!(image.get_pixel(0, 0).0[3], 0);
         assert!(image.get_pixel(image.width() / 2, image.height() / 2).0[3] > 0);
@@ -5317,7 +5432,6 @@ mod tests {
 
     #[test]
     fn inventory_and_equipment_hotkeys_and_close_buttons_are_independent() {
-        let assets = embedded_assets();
         let mut inventory = InventoryWindow::default();
         let mut equipment = EquipmentWindow::default();
 
@@ -5337,13 +5451,13 @@ mod tests {
         assert_eq!(inventory.chrome.mode, ProofPanelMode::Normal);
         assert_eq!(equipment.chrome.mode, ProofPanelMode::Normal);
         assert_eq!(
-            assets
-                .layout(&mut equipment.chrome, viewport(), 1.0)
+            equipment
+                .layout(viewport(), 1.0)
                 .unwrap()
                 .unwrap()
                 .window
                 .width(),
-            250.0
+            equipment_window_size()[0]
         );
 
         assert!(inventory.apply_key(
@@ -5397,21 +5511,19 @@ mod tests {
             ElementState::Pressed,
             false
         ));
-        let equipment_close = assets
-            .layout(&mut equipment.chrome, viewport(), 1.0)
+        let equipment_close = equipment
+            .layout(viewport(), 1.0)
             .unwrap()
             .unwrap()
             .close_button
             .min;
         assert!(equipment.apply_pointer_button(
-            assets,
             ElementState::Pressed,
             Some(equipment_close),
             viewport(),
             1.0,
         ));
         assert!(equipment.apply_pointer_button(
-            assets,
             ElementState::Released,
             Some(equipment_close),
             viewport(),
@@ -5423,15 +5535,11 @@ mod tests {
 
     #[test]
     fn equipment_same_slot_release_is_click_and_elsewhere_is_drag() {
-        let window_assets = embedded_assets();
         let mut equipment = EquipmentWindow {
             chrome: normal_window(),
             ..EquipmentWindow::default()
         };
-        let layout = window_assets
-            .layout(&mut equipment.chrome, viewport(), 1.0)
-            .unwrap()
-            .unwrap();
+        let layout = equipment.layout(viewport(), 1.0).unwrap().unwrap();
         let bounds = ScreenRect {
             min: [layout.window.min[0] + 30.0, layout.window.min[1] + 60.0],
             max: [layout.window.min[0] + 70.0, layout.window.min[1] + 100.0],
@@ -5443,7 +5551,6 @@ mod tests {
             (bounds.min[1] + bounds.max[1]) * 0.5,
         ];
         assert!(equipment.apply_pointer_button(
-            window_assets,
             ElementState::Pressed,
             Some(cursor),
             viewport(),
@@ -5456,7 +5563,6 @@ mod tests {
         );
         assert!(!equipment.is_dragging());
         assert!(equipment.apply_pointer_button(
-            window_assets,
             ElementState::Released,
             Some(cursor),
             viewport(),
@@ -5466,7 +5572,6 @@ mod tests {
         assert_eq!(equipment.take_completed_drag(), None);
 
         assert!(equipment.apply_pointer_button(
-            window_assets,
             ElementState::Pressed,
             Some(cursor),
             viewport(),
@@ -5479,7 +5584,6 @@ mod tests {
         ));
         assert!(equipment.is_dragging());
         assert!(equipment.apply_pointer_button(
-            window_assets,
             ElementState::Released,
             Some([bounds.max[0] + 20.0, bounds.max[1] + 20.0]),
             viewport(),
@@ -5612,16 +5716,12 @@ mod tests {
 
     #[test]
     fn normal_windows_start_staggered_around_viewport_center() {
-        let assets = embedded_assets();
         let mut inventory = InventoryWindow::default();
         inventory.chrome.mode = ProofPanelMode::Normal;
         let inventory_layout = inventory.layout(viewport(), 1.0).unwrap().unwrap();
         let mut equipment = EquipmentWindow::default();
         equipment.chrome.mode = ProofPanelMode::Normal;
-        let equipment_layout = assets
-            .layout(&mut equipment.chrome, viewport(), 1.0)
-            .unwrap()
-            .unwrap();
+        let equipment_layout = equipment.layout(viewport(), 1.0).unwrap().unwrap();
         let center = |rect: ScreenRect| {
             [
                 (rect.min[0] + rect.max[0]) * 0.5,
@@ -5649,7 +5749,26 @@ mod tests {
                 expected_top_left[1] + size[1] * 0.5,
             ]
         );
-        assert_eq!(center(equipment_layout.window), [696.0, 384.0]);
+        let equipment_size = equipment_window_size();
+        let equipment_centered = [
+            ((1280.0 - equipment_size[0]) * 0.5).max(0.0),
+            ((720.0 - equipment_size[1]) * 0.5).max(0.0),
+        ];
+        let equipment_top_left = clamp_top_left(
+            [
+                equipment_centered[0] + EQUIPMENT_INITIAL_CENTER_OFFSET_UNITS[0],
+                equipment_centered[1] + EQUIPMENT_INITIAL_CENTER_OFFSET_UNITS[1],
+            ],
+            equipment_size,
+            [1280.0, 720.0],
+        );
+        assert_eq!(
+            center(equipment_layout.window),
+            [
+                equipment_top_left[0] + equipment_size[0] * 0.5,
+                equipment_top_left[1] + equipment_size[1] * 0.5,
+            ]
+        );
         assert_ne!(inventory_layout.window.min, equipment_layout.window.min);
     }
 
@@ -5808,10 +5927,10 @@ mod tests {
     #[test]
     fn inventory_presentation_is_independent_of_atlas_chrome() {
         let window_assets = embedded_assets();
-        let slot_assets = embedded_slot_assets();
         let registry = inventory_registry();
         let item_icons = placeholder_item_icons(&registry);
         let assets = synthetic_inventory_assets();
+        let equipment_assets = synthetic_equipment_assets();
         let mut inventory = InventoryWindow::new(assets.metrics);
         inventory.apply_key(
             PhysicalKey::Code(KeyCode::KeyI),
@@ -5835,15 +5954,13 @@ mod tests {
             false,
         );
         let equipment_frame = equipment
-            .frame(EquipmentWindowFrameInput {
-                window_assets,
-                slot_assets,
-                item_icon_assets: &item_icons,
-                equipment: None,
-                viewport: viewport(),
-                pixels_per_unit: 1.0,
-                cursor: None,
-            })
+            .frame(equipment_frame_input(
+                &equipment_assets,
+                &item_icons,
+                None,
+                None,
+                1.0,
+            ))
             .unwrap()
             .unwrap();
         let atlas = window_assets.panel().texture;
@@ -5853,7 +5970,13 @@ mod tests {
                 .iter()
                 .all(|quad| quad.texture != atlas)
         );
-        assert_eq!(equipment_frame.textured_rects[10].texture, atlas);
+        assert!(
+            equipment_frame
+                .skin_quads
+                .iter()
+                .all(|quad| { quad.texture != atlas && quad.tint == [1.0, 1.0, 1.0, 1.0] })
+        );
+        assert!(equipment_frame.item_quads.is_empty());
     }
 
     #[test]
@@ -6676,5 +6799,308 @@ mod tests {
         assert!((280.0..=310.0).contains(&size[0]));
         assert!((300.0..=330.0).contains(&size[1]));
         assert!(assets.metrics.window_size().is_ok());
+    }
+
+    #[test]
+    fn equipment_v2_assets_resolve_by_logical_name() {
+        let mut runtime = AssetRuntime::new();
+        let assets = EquipmentV2Assets::load(&mut runtime).unwrap();
+        assert_eq!(assets.slots[0].size_px, [72, 72]);
+        assert_eq!(assets.slots[1].size_px, [72, 72]);
+        assert_ne!(assets.slots[0].texture, assets.slots[1].texture);
+        assert_eq!(assets.helmet.size_px, [48, 48]);
+        assert_eq!(assets.close[0].size_px, assets.close[1].size_px);
+        assert_eq!(assets.close[1].size_px, assets.close[2].size_px);
+        assert_ne!(assets.close[0].texture, assets.close[2].texture);
+        assert_ne!(assets.panel.texture, assets.header.texture);
+        assert!(assets.panel.slice_ltrb.iter().all(|inset| *inset > 0));
+        assert!(assets.header.slice_ltrb.iter().all(|inset| *inset > 0));
+        let size = equipment_window_size();
+        assert!((145.0..=175.0).contains(&size[0]));
+        assert!((205.0..=235.0).contains(&size[1]));
+        assert_ne!(size, [250.0, 300.0]);
+    }
+
+    #[test]
+    fn equipment_layout_keeps_six_ordered_slots_and_matching_hits() {
+        let assets = synthetic_equipment_assets();
+        let registry = inventory_registry();
+        let icons = placeholder_item_icons(&registry);
+        let mut equipment = EquipmentWindow::default();
+        assert!(equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false
+        ));
+        let frame = equipment
+            .frame(equipment_frame_input(&assets, &icons, None, None, 1.0))
+            .unwrap()
+            .unwrap();
+        let layout = equipment.layout(viewport(), 1.0).unwrap().unwrap();
+        assert_eq!(layout.slots.len(), EquipmentSlot::COUNT);
+        assert_eq!(equipment.slot_hit_regions, layout.slots.to_vec());
+        let slot_quads: Vec<_> = frame
+            .skin_quads
+            .iter()
+            .filter(|quad| {
+                quad.texture == assets.slots[0].texture || quad.texture == assets.slots[1].texture
+            })
+            .collect();
+        assert_eq!(slot_quads.len(), EquipmentSlot::COUNT);
+        for (quad, hit) in slot_quads.iter().zip(equipment.slot_hit_regions.iter()) {
+            assert_eq!(quad.corners[0], hit.min);
+            assert_eq!(quad.corners[2], hit.max);
+            assert_eq!(quad.tint, [1.0, 1.0, 1.0, 1.0]);
+        }
+        assert!(layout.slots[1].min[0] > layout.slots[0].max[0]);
+        assert!((layout.slots[0].min[1] - layout.slots[1].min[1]).abs() < 0.01);
+        assert!(layout.slots[2].min[1] > layout.labels[0].max[1]);
+        assert!(layout.labels[0].min[1] + 0.01 >= layout.slots[0].max[1]);
+        for (index, slot) in EquipmentSlot::ALL.iter().enumerate() {
+            assert_eq!(*slot as u8 as usize, index);
+            assert_eq!(
+                frame.texts[index + 1].content.0,
+                EQUIPMENT_SLOT_LABELS[index]
+            );
+            assert!(layout.window.contains(layout.slots[index].min));
+            assert!(layout.window.contains(layout.slots[index].max));
+            assert!(layout.slots[index].min[1] >= layout.header.max[1]);
+        }
+        assert_eq!(frame.texts[0].content.0, "Equipment");
+        assert!(
+            frame
+                .skin_quads
+                .iter()
+                .any(|quad| quad.texture == assets.helmet.texture)
+        );
+        assert!(
+            frame
+                .skin_quads
+                .iter()
+                .any(|quad| quad.texture == assets.close[0].texture)
+        );
+        assert!((layout.slots[0].width() - EQUIPMENT_SLOT_SIZE_UNITS).abs() < 0.01);
+        assert!(layout.close_button.max[0] <= layout.header.max[0] + 0.01);
+        assert!(layout.close_button.max[1] <= layout.header.max[1] + 0.01);
+        assert!(layout.helmet.max[0] < layout.close_button.min[0]);
+        assert!(layout.header.contains(layout.close_button.min));
+    }
+
+    #[test]
+    fn equipment_slot_hover_uses_v2_artwork_without_tint() {
+        let assets = synthetic_equipment_assets();
+        let registry = inventory_registry();
+        let icons = placeholder_item_icons(&registry);
+        let mut equipment = EquipmentWindow::default();
+        equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false,
+        );
+        let layout = equipment.layout(viewport(), 1.0).unwrap().unwrap();
+        let slot = layout.slots[EquipmentSlot::Gloves as usize];
+        let cursor = [
+            (slot.min[0] + slot.max[0]) * 0.5,
+            (slot.min[1] + slot.max[1]) * 0.5,
+        ];
+        let frame = equipment
+            .frame(equipment_frame_input(
+                &assets,
+                &icons,
+                None,
+                Some(cursor),
+                1.0,
+            ))
+            .unwrap()
+            .unwrap();
+        let slot_quads: Vec<_> = frame
+            .skin_quads
+            .iter()
+            .filter(|quad| {
+                quad.texture == assets.slots[0].texture || quad.texture == assets.slots[1].texture
+            })
+            .collect();
+        assert_eq!(slot_quads.len(), EquipmentSlot::COUNT);
+        for (index, quad) in slot_quads.iter().enumerate() {
+            let expected = if index == EquipmentSlot::Gloves as usize {
+                assets.slots[1].texture
+            } else {
+                assets.slots[0].texture
+            };
+            assert_eq!(quad.texture, expected);
+            assert_eq!(quad.tint, [1.0, 1.0, 1.0, 1.0]);
+        }
+    }
+
+    #[test]
+    fn equipment_item_and_drag_preview_sample_uvs_once() {
+        let assets = synthetic_equipment_assets();
+        let registry = inventory_registry();
+        let icons = placeholder_item_icons(&registry);
+        let sword = ContentId::from_authored("equipment.debug.practice_sword").expect("sword id");
+        let mut replicated = ReplicatedEquipment::empty();
+        assert!(replicated.set(EquipmentSlot::Weapon as u8, Some(sword)));
+        let mut equipment = EquipmentWindow::default();
+        equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false,
+        );
+        let resting = equipment
+            .frame(equipment_frame_input(
+                &assets,
+                &icons,
+                Some(replicated),
+                None,
+                1.0,
+            ))
+            .unwrap()
+            .unwrap();
+        assert_eq!(resting.item_quads.len(), 1);
+        assert!(resting.drag_preview.is_empty());
+        let icon = icons.resolve(sword);
+        let slot = equipment.layout(viewport(), 1.0).unwrap().unwrap().slots
+            [EquipmentSlot::Weapon as usize];
+        let bounds = fit_item_icon(slot, icon.dimensions_px, 1.0).unwrap();
+        let expected = compose_uv_quad(bounds, icon.texture, icon.uv_min, icon.uv_max).unwrap();
+        assert_eq!(resting.item_quads[0].corners, expected.corners);
+        assert_eq!(resting.item_quads[0].uvs, expected.uvs);
+        assert_eq!(resting.item_quads[0].uvs[0], icon.uv_min);
+        assert_eq!(resting.item_quads[0].uvs[2], icon.uv_max);
+        assert!(slot.contains(resting.item_quads[0].corners[0]));
+        assert!(slot.contains(resting.item_quads[0].corners[2]));
+
+        let cursor = [
+            (slot.min[0] + slot.max[0]) * 0.5,
+            (slot.min[1] + slot.max[1]) * 0.5,
+        ];
+        assert!(equipment.apply_pointer_button(
+            ElementState::Pressed,
+            Some(cursor),
+            viewport(),
+            1.0
+        ));
+        assert!(equipment.pointer_moved(
+            [cursor[0] + ITEM_DRAG_THRESHOLD_PX + 2.0, cursor[1]],
+            viewport(),
+            1.0
+        ));
+        let drag_cursor = [cursor[0] + 28.0, cursor[1] + 10.0];
+        let dragging = equipment
+            .frame(equipment_frame_input(
+                &assets,
+                &icons,
+                Some(replicated),
+                Some(drag_cursor),
+                1.0,
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(dragging.item_quads.is_empty());
+        assert_eq!(dragging.drag_preview.len(), 1);
+        let expected_drag = inventory_drag_preview(icon, drag_cursor, 1.0).unwrap();
+        assert_eq!(dragging.drag_preview[0].corners, expected_drag.corners);
+        assert_eq!(dragging.drag_preview[0].uvs, expected_drag.uvs);
+        assert_eq!(dragging.drag_preview[0].uvs[0], icon.uv_min);
+        assert_eq!(dragging.drag_preview[0].uvs[2], icon.uv_max);
+    }
+
+    #[test]
+    fn equipment_header_and_close_scale_with_ui_scale() {
+        let mut equipment = EquipmentWindow::default();
+        equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false,
+        );
+        let mut reference: Option<([f32; 2], [f32; 2])> = None;
+        for scale in [0.9_f32, 1.0, 1.25] {
+            let layout = equipment.layout(viewport(), scale).unwrap().unwrap();
+            assert!((layout.header.height() - INVENTORY_HEADER_HEIGHT_UNITS * scale).abs() < 0.05);
+            assert!(
+                (layout.close_button.width() - INVENTORY_CLOSE_SIZE_UNITS * scale).abs() < 0.05
+            );
+            assert!((layout.close_button.height() - layout.close_button.width()).abs() < 0.05);
+            assert!((layout.slots[0].width() - EQUIPMENT_SLOT_SIZE_UNITS * scale).abs() < 0.05);
+            assert!((layout.window.width() - equipment_window_size()[0] * scale).abs() < 0.05);
+            assert!((layout.window.height() - equipment_window_size()[1] * scale).abs() < 0.05);
+            assert!(layout.header.contains(layout.close_button.min));
+            assert!(layout.close_button.max[0] <= layout.header.max[0] + 0.01);
+            assert!(layout.close_button.max[1] <= layout.header.max[1] + 0.01);
+            let close_offset = [
+                (layout.close_button.min[0] - layout.window.min[0]) / scale,
+                (layout.close_button.min[1] - layout.window.min[1]) / scale,
+            ];
+            let header_offset = [
+                (layout.header.min[0] - layout.window.min[0]) / scale,
+                (layout.header.min[1] - layout.window.min[1]) / scale,
+            ];
+            if let Some((previous_close, previous_header)) = reference {
+                assert!((close_offset[0] - previous_close[0]).abs() < 0.05);
+                assert!((close_offset[1] - previous_close[1]).abs() < 0.05);
+                assert!((header_offset[0] - previous_header[0]).abs() < 0.05);
+                assert!((header_offset[1] - previous_header[1]).abs() < 0.05);
+            }
+            reference = Some((close_offset, header_offset));
+        }
+    }
+
+    #[test]
+    fn equipment_header_drag_moves_the_window_and_close_hides_it() {
+        let mut equipment = EquipmentWindow::default();
+        equipment.apply_key(
+            PhysicalKey::Code(KeyCode::KeyO),
+            ElementState::Pressed,
+            false,
+        );
+        let layout = equipment.layout(viewport(), 1.0).unwrap().unwrap();
+        let header_point = [
+            (layout.helmet.max[0] + layout.close_button.min[0]) * 0.5,
+            (layout.header.min[1] + layout.header.max[1]) * 0.5,
+        ];
+        assert!(layout.header.contains(header_point));
+        assert!(!layout.close_button.contains(header_point));
+        assert!(layout.slots.iter().all(|slot| !slot.contains(header_point)));
+        let before = layout.window.min;
+        assert!(equipment.apply_pointer_button(
+            ElementState::Pressed,
+            Some(header_point),
+            viewport(),
+            1.0
+        ));
+        assert!(equipment.pointer_moved(
+            [header_point[0] + 36.0, header_point[1] + 18.0],
+            viewport(),
+            1.0
+        ));
+        let moved = equipment.layout(viewport(), 1.0).unwrap().unwrap();
+        assert!(moved.window.min[0] > before[0] + 10.0);
+        assert!(moved.window.min[1] > before[1] + 5.0);
+        assert!(equipment.is_visible());
+        assert!(equipment.apply_pointer_button(
+            ElementState::Released,
+            Some([header_point[0] + 36.0, header_point[1] + 18.0]),
+            viewport(),
+            1.0
+        ));
+        let close = equipment
+            .layout(viewport(), 1.0)
+            .unwrap()
+            .unwrap()
+            .close_button
+            .min;
+        assert!(equipment.apply_pointer_button(
+            ElementState::Pressed,
+            Some(close),
+            viewport(),
+            1.0
+        ));
+        assert!(equipment.apply_pointer_button(
+            ElementState::Released,
+            Some(close),
+            viewport(),
+            1.0
+        ));
+        assert!(!equipment.is_visible());
     }
 }
