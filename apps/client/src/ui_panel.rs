@@ -2338,12 +2338,14 @@ impl InventoryWindow {
             INVENTORY_HEADER_BORDER_UNITS,
             pixels_per_unit,
         )?;
-        push_inventory_nine_slice(
+        let open_tab_spans = inventory_open_tab_spans(&layout.tabs, &self.tabs, cursor);
+        push_inventory_nine_slice_with_top_gaps(
             &mut skin_quads,
             layout.inner,
             &assets.panel,
             INVENTORY_PANEL_BORDER_UNITS,
             pixels_per_unit,
+            &open_tab_spans,
         )?;
         push_inventory_nine_slice(
             &mut skin_quads,
@@ -2620,6 +2622,26 @@ impl InventoryWindow {
             .iter()
             .find_map(|(bounds, item)| bounds.contains(cursor).then_some(*item))
     }
+}
+
+fn inventory_open_tab_spans(
+    tabs: &[ScreenRect],
+    state: &UiTabs,
+    cursor: Option<[f32; 2]>,
+) -> Vec<[f32; 2]> {
+    tabs.iter()
+        .enumerate()
+        .filter_map(|(index, tab)| {
+            let hovered = cursor.is_some_and(|cursor| tab.contains(cursor));
+            let pressed = hovered && state.pressed_index == Some(index);
+            let selected = state.selected_index() == index;
+            matches!(
+                resolve_inventory_tab_visual(selected, hovered, pressed),
+                InventoryTabVisual::Active | InventoryTabVisual::Pressed
+            )
+            .then_some([tab.min[0], tab.max[0]])
+        })
+        .collect()
 }
 
 fn inventory_title(layout: &InventoryLayout, pixels_per_unit: f32) -> TextBlock {
@@ -3934,6 +3956,35 @@ pub(crate) fn compose_nine_slice_with_borders(
     slice_ltrb: [u32; 4],
     border_units: [f32; 4],
 ) -> Result<Vec<UiTexturedQuad>, String> {
+    compose_nine_slice_with_top_gaps(
+        origin_px,
+        size_units,
+        pixels_per_unit,
+        texture,
+        source_size_px,
+        slice_ltrb,
+        border_units,
+        &[],
+    )
+}
+
+/// Nine-slice with one or more openings cut from the top border.
+///
+/// Each gap is a destination x-range in framebuffer pixels. The top chrome
+/// inside a gap is omitted and the panel center continues up through that
+/// span. Side, bottom, and center pieces stay in place. Source UVs stay on
+/// the slice boundaries; a split top edge samples only its own portion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compose_nine_slice_with_top_gaps(
+    origin_px: [f32; 2],
+    size_units: [f32; 2],
+    pixels_per_unit: f32,
+    texture: SpriteTextureId,
+    source_size_px: [u32; 2],
+    slice_ltrb: [u32; 4],
+    border_units: [f32; 4],
+    top_gaps_px: &[[f32; 2]],
+) -> Result<Vec<UiTexturedQuad>, String> {
     validate_pixels_per_unit(pixels_per_unit)?;
     if !origin_px.into_iter().all(f32::is_finite) {
         return Err("UI nine-slice origin is invalid".to_string());
@@ -3976,7 +4027,7 @@ pub(crate) fn compose_nine_slice_with_borders(
         border_bottom_units * pixels_per_unit,
         destination_px[1],
     )?;
-    let mut regions = assemble_nine_slice(
+    let regions = assemble_nine_slice(
         ScreenRect {
             min: origin_px,
             max: [
@@ -4000,6 +4051,7 @@ pub(crate) fn compose_nine_slice_with_borders(
         },
         [1.0, 1.0, 1.0, 1.0],
     )?;
+    let mut regions = interrupt_nine_slice_top_border(regions, top_gaps_px);
     regions.retain(|rect| {
         rect.min
             .iter()
@@ -4067,7 +4119,25 @@ fn push_inventory_nine_slice(
     border_units: [f32; 4],
     pixels_per_unit: f32,
 ) -> Result<(), String> {
-    quads.extend(compose_nine_slice_with_borders(
+    push_inventory_nine_slice_with_top_gaps(
+        quads,
+        bounds,
+        asset,
+        border_units,
+        pixels_per_unit,
+        &[],
+    )
+}
+
+fn push_inventory_nine_slice_with_top_gaps(
+    quads: &mut Vec<UiTexturedQuad>,
+    bounds: ScreenRect,
+    asset: &UiV2NineSlice,
+    border_units: [f32; 4],
+    pixels_per_unit: f32,
+    top_gaps_px: &[[f32; 2]],
+) -> Result<(), String> {
+    quads.extend(compose_nine_slice_with_top_gaps(
         bounds.min,
         [
             bounds.width() / pixels_per_unit,
@@ -4078,8 +4148,129 @@ fn push_inventory_nine_slice(
         asset.size_px,
         asset.slice_ltrb,
         border_units,
+        top_gaps_px,
     )?);
     Ok(())
+}
+
+/// Drop top-border chrome inside each gap and continue the center surface up
+/// through that span. A gap that covers a top corner removes that corner
+/// instead of leaving a cap. Vertical side pieces are not part of the top row.
+fn interrupt_nine_slice_top_border(
+    regions: Vec<UiTexturedRect>,
+    gaps_px: &[[f32; 2]],
+) -> Vec<UiTexturedRect> {
+    if gaps_px.is_empty() || regions.len() < 9 {
+        return regions;
+    }
+    let top_y = regions[0].min[1];
+    let border_bottom = regions[0].max[1];
+    let center = regions[4];
+    let mut output = Vec::with_capacity(regions.len() + gaps_px.len());
+    for (index, rect) in regions.into_iter().enumerate() {
+        if index >= 3 {
+            output.push(rect);
+            continue;
+        }
+        for segment in x_segments_outside_gaps(rect.min[0], rect.max[0], gaps_px) {
+            output.push(slice_rect_x(rect, segment[0], segment[1]));
+        }
+    }
+    let panel_left = output
+        .iter()
+        .map(|rect| rect.min[0])
+        .fold(f32::MAX, f32::min);
+    let panel_right = output
+        .iter()
+        .map(|rect| rect.max[0])
+        .fold(f32::MIN, f32::max);
+    for gap in gaps_px {
+        let x0 = gap[0].clamp(panel_left, panel_right);
+        let x1 = gap[1].clamp(panel_left, panel_right);
+        if x1 <= x0 + TOP_BORDER_FRAGMENT_PX {
+            continue;
+        }
+        output.push(center_fill_for_top_gap(
+            center,
+            x0,
+            x1,
+            top_y,
+            border_bottom,
+        ));
+    }
+    output
+}
+
+const TOP_BORDER_FRAGMENT_PX: f32 = 0.5;
+
+fn x_segments_outside_gaps(min_x: f32, max_x: f32, gaps_px: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut segments = vec![[min_x, max_x]];
+    for gap in gaps_px {
+        let mut next = Vec::new();
+        for segment in segments {
+            let start = gap[0].max(segment[0]);
+            let end = gap[1].min(segment[1]);
+            if end <= start {
+                next.push(segment);
+                continue;
+            }
+            if start > segment[0] + TOP_BORDER_FRAGMENT_PX {
+                next.push([segment[0], start]);
+            }
+            if segment[1] > end + TOP_BORDER_FRAGMENT_PX {
+                next.push([end, segment[1]]);
+            }
+        }
+        segments = next;
+    }
+    segments
+}
+
+fn slice_rect_x(rect: UiTexturedRect, x0: f32, x1: f32) -> UiTexturedRect {
+    let width = rect.max[0] - rect.min[0];
+    let uv_span = rect.uv_max[0] - rect.uv_min[0];
+    let t0 = (x0 - rect.min[0]) / width;
+    let t1 = (x1 - rect.min[0]) / width;
+    UiTexturedRect {
+        min: [x0, rect.min[1]],
+        max: [x1, rect.max[1]],
+        texture: rect.texture,
+        uv_min: [rect.uv_min[0] + uv_span * t0, rect.uv_min[1]],
+        uv_max: [rect.uv_min[0] + uv_span * t1, rect.uv_max[1]],
+        tint: rect.tint,
+    }
+}
+
+fn center_fill_for_top_gap(
+    center: UiTexturedRect,
+    x0: f32,
+    x1: f32,
+    y0: f32,
+    y1: f32,
+) -> UiTexturedRect {
+    let span = (center.max[0] - center.min[0]).max(f32::EPSILON);
+    let uv_span = center.uv_max[0] - center.uv_min[0];
+    let map_u = |x: f32| {
+        let t = ((x - center.min[0]) / span).clamp(0.0, 1.0);
+        center.uv_min[0] + uv_span * t
+    };
+    let mut u0 = map_u(x0);
+    let mut u1 = map_u(x1);
+    if u1 <= u0 {
+        let nudge = (uv_span * 0.02).max(1.0e-4);
+        u0 = center.uv_min[0];
+        u1 = (center.uv_min[0] + nudge).min(center.uv_max[0]);
+    }
+    let v_span = center.uv_max[1] - center.uv_min[1];
+    let v_mid = (center.uv_min[1] + center.uv_max[1]) * 0.5;
+    UiTexturedRect {
+        min: [x0, y0],
+        max: [x1, y1],
+        texture: center.texture,
+        uv_min: [u0, v_mid - v_span * 0.02],
+        uv_max: [u1, v_mid + v_span * 0.02],
+        tint: center.tint,
+    }
 }
 
 /// Map one source UV rectangle across the whole destination. Quad submission
@@ -6226,6 +6417,142 @@ mod tests {
         assert!((pieces[8].uvs[0][1] - (192.0 - 18.0 + 0.5) / 192.0).abs() < 0.0001);
     }
 
+    fn top_chrome_covers(pieces: &[UiTexturedQuad], x0: f32, x1: f32) -> bool {
+        pieces.iter().any(|quad| {
+            quad.corners[0][1] <= 0.05
+                && quad.uvs[2][1] <= 14.5 / 192.0
+                && quad.corners[1][0].min(x1) - quad.corners[0][0].max(x0) > 0.5
+        })
+    }
+
+    fn assert_open_top(pieces: &[UiTexturedQuad], gap: [f32; 2], border_top: f32) {
+        assert!(
+            !top_chrome_covers(pieces, gap[0], gap[1]),
+            "top border still covers {gap:?}"
+        );
+        let fill = pieces.iter().find(|quad| {
+            (quad.corners[0][1]).abs() < 0.05
+                && (quad.corners[2][1] - border_top).abs() < 0.05
+                && (quad.corners[0][0] - gap[0]).abs() < 0.6
+                && (quad.corners[1][0] - gap[1]).abs() < 0.6
+                && quad.uvs[0][1] > 14.5 / 192.0
+        });
+        assert!(fill.is_some(), "center fill missing under {gap:?}");
+        assert!(
+            pieces.iter().any(|quad| {
+                quad.corners[0][1] <= 0.05
+                    && quad.uvs[2][1] <= 14.5 / 192.0
+                    && (quad.corners[1][0] <= gap[0] + 0.05 || quad.corners[0][0] >= gap[1] - 0.05)
+                    && quad.corners[1][0] - quad.corners[0][0] > 0.5
+            }),
+            "top border missing beside {gap:?}"
+        );
+    }
+
+    #[test]
+    fn tabbed_panel_interrupts_only_the_active_top_border() {
+        let compose = |gap: [f32; 2]| {
+            compose_nine_slice_with_top_gaps(
+                [0.0, 0.0],
+                [200.0, 120.0],
+                1.0,
+                SpriteTextureId::from_raw(8),
+                [288, 192],
+                [14, 14, 14, 18],
+                [10.0, 10.0, 10.0, 12.0],
+                &[gap],
+            )
+            .unwrap()
+        };
+        let middle = compose([70.0, 130.0]);
+        assert_open_top(&middle, [70.0, 130.0], 10.0);
+        assert!(top_chrome_covers(&middle, 10.0, 70.0));
+        assert!(top_chrome_covers(&middle, 130.0, 190.0));
+        let closed = compose_nine_slice_with_borders(
+            [0.0, 0.0],
+            [200.0, 120.0],
+            1.0,
+            SpriteTextureId::from_raw(8),
+            [288, 192],
+            [14, 14, 14, 18],
+            [10.0, 10.0, 10.0, 12.0],
+        )
+        .unwrap();
+        let full_top = closed
+            .iter()
+            .find(|quad| (quad.corners[0][0] - 10.0).abs() < 0.01 && quad.corners[0][1] <= 0.05)
+            .unwrap();
+        let left_top = middle
+            .iter()
+            .find(|quad| (quad.corners[0][0] - 10.0).abs() < 0.01 && quad.corners[0][1] <= 0.05)
+            .unwrap();
+        assert!((left_top.uvs[0][0] - full_top.uvs[0][0]).abs() < 0.0001);
+        assert!(left_top.uvs[2][0] < full_top.uvs[2][0]);
+
+        let first = compose([0.0, 55.0]);
+        assert_open_top(&first, [0.0, 55.0], 10.0);
+        assert!(
+            !first.iter().any(|quad| {
+                quad.corners[0][1] <= 0.05
+                    && quad.uvs[2][1] <= 14.5 / 192.0
+                    && quad.corners[0][0] < 1.0
+                    && quad.corners[1][0] < 55.0
+            }),
+            "first-tab corner fragment remains"
+        );
+        assert!(first.iter().any(|quad| {
+            (quad.corners[0][0]).abs() < 0.05
+                && (quad.corners[0][1] - 10.0).abs() < 0.05
+                && quad.corners[1][0] <= 10.5
+                && quad.corners[2][1] > 20.0
+        }));
+
+        let last = compose([145.0, 200.0]);
+        assert_open_top(&last, [145.0, 200.0], 10.0);
+        assert!(
+            !last.iter().any(|quad| {
+                quad.corners[0][1] <= 0.05
+                    && quad.uvs[2][1] <= 14.5 / 192.0
+                    && quad.corners[1][0] > 199.0
+                    && quad.corners[0][0] > 145.0
+            }),
+            "last-tab corner fragment remains"
+        );
+        assert!(last.iter().any(|quad| {
+            (quad.corners[1][0] - 200.0).abs() < 0.05
+                && (quad.corners[0][1] - 10.0).abs() < 0.05
+                && quad.corners[0][0] >= 189.0
+                && quad.corners[2][1] > 20.0
+        }));
+
+        for pixels_per_unit in [0.9_f32, 1.0, 1.25] {
+            let gap = [70.0 * pixels_per_unit, 130.0 * pixels_per_unit];
+            let scaled = compose_nine_slice_with_top_gaps(
+                [0.0, 0.0],
+                [200.0, 120.0],
+                pixels_per_unit,
+                SpriteTextureId::from_raw(8),
+                [288, 192],
+                [14, 14, 14, 18],
+                [10.0, 10.0, 10.0, 12.0],
+                &[gap],
+            )
+            .unwrap();
+            let border = 10.0 * pixels_per_unit;
+            let fill = scaled
+                .iter()
+                .find(|quad| {
+                    quad.corners[0][1] <= 0.05
+                        && (quad.corners[2][1] - border).abs() < 0.6
+                        && quad.uvs[0][1] > 14.5 / 192.0
+                })
+                .unwrap();
+            assert!((fill.corners[0][0] - gap[0]).abs() < 0.6);
+            assert!((fill.corners[1][0] - gap[1]).abs() < 0.6);
+            assert!(!top_chrome_covers(&scaled, gap[0], gap[1]));
+        }
+    }
+
     #[test]
     fn inventory_item_uv_quad_maps_an_arbitrary_region_once() {
         let quad = compose_uv_quad(
@@ -6244,6 +6571,91 @@ mod tests {
         );
         assert_eq!(quad.corners[0], [2.0, 3.0]);
         assert_eq!(quad.corners[2], [42.0, 33.0]);
+    }
+
+    #[test]
+    fn inventory_active_tab_opening_follows_the_selected_tab() {
+        let assets = synthetic_inventory_assets();
+        let registry = inventory_registry();
+        let item_icons = placeholder_item_icons(&registry);
+        let mut inventory = InventoryWindow::new(assets.metrics);
+        inventory.apply_key(
+            PhysicalKey::Code(KeyCode::KeyI),
+            ElementState::Pressed,
+            false,
+        );
+        for selected in [0_usize, 2, 4] {
+            inventory.tabs.selected_index = selected;
+            for pixels_per_unit in [0.9_f32, 1.0, 1.25] {
+                let frame = inventory
+                    .frame(InventoryWindowFrameInput {
+                        assets: &assets,
+                        item_icon_assets: &item_icons,
+                        entries: &[],
+                        registry: &registry,
+                        viewport: viewport(),
+                        pixels_per_unit,
+                        cursor: None,
+                    })
+                    .unwrap()
+                    .unwrap();
+                let layout = inventory
+                    .layout(viewport(), pixels_per_unit)
+                    .unwrap()
+                    .unwrap();
+                let border = INVENTORY_PANEL_BORDER_UNITS[1] * pixels_per_unit;
+                let top_band = |quad: &UiTexturedQuad| {
+                    (quad.corners[0][1] - layout.inner.min[1]).abs() < 0.6
+                        && (quad.corners[2][1] - (layout.inner.min[1] + border)).abs() < 0.6
+                        && quad.texture == assets.panel.texture
+                };
+                let chrome =
+                    |quad: &UiTexturedQuad| top_band(quad) && quad.uvs[2][1] <= 14.5 / 192.0;
+                let overlaps = |quad: &UiTexturedQuad, tab: ScreenRect| {
+                    quad.corners[1][0].min(tab.max[0]) - quad.corners[0][0].max(tab.min[0]) > 0.5
+                };
+                let active = layout.tabs[selected];
+                assert!(
+                    frame
+                        .skin_quads
+                        .iter()
+                        .filter(|quad| chrome(quad))
+                        .all(|quad| !overlaps(quad, active)),
+                    "selected tab {selected} still has a top border"
+                );
+                let fills: Vec<_> = frame
+                    .skin_quads
+                    .iter()
+                    .filter(|quad| top_band(quad) && quad.uvs[0][1] > 14.5 / 192.0)
+                    .collect();
+                assert_eq!(fills.len(), 1);
+                assert!((fills[0].corners[0][0] - active.min[0]).abs() < 0.6);
+                assert!((fills[0].corners[1][0] - active.max[0]).abs() < 0.6);
+                assert!(
+                    frame.skin_quads.iter().any(|quad| {
+                        quad.texture == assets.panel.texture
+                            && (quad.corners[0][1] - (layout.inner.min[1] + border)).abs() < 0.6
+                            && overlaps(quad, active)
+                            && quad.uvs[0][1] >= 14.5 / 192.0
+                            && quad.uvs[2][0] > 14.5 / 288.0
+                    }),
+                    "content surface is missing under selected tab {selected}"
+                );
+                for other in 0..layout.tabs.len() {
+                    if other == selected {
+                        continue;
+                    }
+                    assert!(
+                        frame
+                            .skin_quads
+                            .iter()
+                            .filter(|quad| chrome(quad))
+                            .any(|quad| overlaps(quad, layout.tabs[other])),
+                        "inactive tab {other} opened the panel while {selected} is active"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
