@@ -3533,18 +3533,18 @@ impl ClientApp {
                         let mut skins = UiComposition::new(&[], &[], &[]);
                         skins.textured_quads = &frame.skin_quads;
                         ui_compositions.push(skins);
-                        ui_compositions.push(UiComposition::new(
-                            &frame.item_rects,
-                            &[],
-                            &frame.texts,
-                        ));
+                        let mut items = UiComposition::new(&[], &[], &frame.texts);
+                        items.textured_quads = &frame.item_quads;
+                        ui_compositions.push(items);
                         if !frame.tooltip_quads.is_empty() || !frame.tooltip_texts.is_empty() {
                             let mut tooltip = UiComposition::new(&[], &[], &frame.tooltip_texts);
                             tooltip.textured_quads = &frame.tooltip_quads;
                             ui_compositions.push(tooltip);
                         }
                         if !frame.drag_preview.is_empty() {
-                            ui_compositions.push(UiComposition::new(&frame.drag_preview, &[], &[]));
+                            let mut drag = UiComposition::new(&[], &[], &[]);
+                            drag.textured_quads = &frame.drag_preview;
+                            ui_compositions.push(drag);
                         }
                     }
                 }
