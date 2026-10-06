@@ -11,20 +11,11 @@ use serde::Deserialize;
 use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
 use crate::renderer::SpriteTextureId;
-#[cfg(feature = "dev-diagnostics")]
-use crate::renderer::{PixelViewport, UiTexturedQuad};
-#[cfg(feature = "dev-diagnostics")]
-use crate::ui_panel::compose_standalone_nine_slice;
 
 const MANIFEST_VERSION: u32 = 2;
 const MANIFEST_UNITS: &str = "pixels";
 const MANIFEST_SLICE_ORDER: &str = "left,top,right,bottom";
 const MANIFEST_RELATIVE: &str = "ui/asset_manifest.json";
-const PROOF_ASSET: &str = "panel_window_9slice";
-const PROOF_MARGIN_UNITS: f32 = 24.0;
-const PROOF_GAP_UNITS: f32 = 20.0;
-const PROOF_WIDE_UNITS: f32 = 420.0;
-const PROOF_TALL_UNITS: f32 = 340.0;
 
 #[derive(Debug, Deserialize)]
 struct RawManifest {
@@ -274,84 +265,6 @@ fn ui_graphic_relative(name: &str, file: &str) -> Result<PathBuf, String> {
     Ok(Path::new("ui").join(relative))
 }
 
-/// Temporary gameplay UI DEV proof. Delete with the later V2 gallery.
-#[cfg(feature = "dev-diagnostics")]
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct UiDevProof {
-    visible: bool,
-    asset: UiV2NineSlice,
-}
-
-#[cfg(feature = "dev-diagnostics")]
-impl UiDevProof {
-    pub(crate) fn load(runtime: &mut AssetRuntime) -> Result<Self, String> {
-        let catalog = load_ui_v2_catalog(runtime)?;
-        let mut loader = ClientAssetLoader::new(runtime);
-        let asset = load_ui_v2_nine_slice(&mut loader, &catalog, PROOF_ASSET)?;
-        Ok(Self {
-            visible: false,
-            asset,
-        })
-    }
-
-    pub(crate) fn toggle(&mut self) {
-        self.visible = !self.visible;
-    }
-
-    pub(crate) fn frame(
-        &self,
-        viewport: PixelViewport,
-        pixels_per_unit: f32,
-    ) -> Result<Vec<UiTexturedQuad>, String> {
-        if !self.visible {
-            return Ok(Vec::new());
-        }
-        layout_ui_dev_proof(&self.asset, viewport, pixels_per_unit)
-    }
-}
-
-#[cfg(feature = "dev-diagnostics")]
-fn layout_ui_dev_proof(
-    asset: &UiV2NineSlice,
-    viewport: PixelViewport,
-    pixels_per_unit: f32,
-) -> Result<Vec<UiTexturedQuad>, String> {
-    let native = [asset.size_px[0] as f32, asset.size_px[1] as f32];
-    let examples = [
-        ([PROOF_MARGIN_UNITS, PROOF_MARGIN_UNITS], native),
-        (
-            [
-                PROOF_MARGIN_UNITS + native[0] + PROOF_GAP_UNITS,
-                PROOF_MARGIN_UNITS,
-            ],
-            [PROOF_WIDE_UNITS.max(native[0] + 32.0), native[1]],
-        ),
-        (
-            [
-                PROOF_MARGIN_UNITS,
-                PROOF_MARGIN_UNITS + native[1] + PROOF_GAP_UNITS,
-            ],
-            [native[0], PROOF_TALL_UNITS.max(native[1] + 32.0)],
-        ),
-    ];
-    let mut rects = Vec::with_capacity(examples.len() * 9);
-    for (origin_units, size_units) in examples {
-        let origin_px = [
-            viewport.x as f32 + origin_units[0] * pixels_per_unit,
-            viewport.y as f32 + origin_units[1] * pixels_per_unit,
-        ];
-        rects.extend(compose_standalone_nine_slice(
-            origin_px,
-            size_units,
-            pixels_per_unit,
-            asset.texture,
-            asset.size_px,
-            asset.slice_ltrb,
-        )?);
-    }
-    Ok(rects)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,7 +459,7 @@ mod tests {
         let mut loader = ClientAssetLoader::new(&mut runtime);
         let bytes = loader.read_relative(MANIFEST_RELATIVE).unwrap();
         let catalog = parse_ui_v2_catalog(std::str::from_utf8(&bytes).unwrap()).unwrap();
-        let asset = load_ui_v2_nine_slice(&mut loader, &catalog, PROOF_ASSET).unwrap();
+        let asset = load_ui_v2_nine_slice(&mut loader, &catalog, "panel_window_9slice").unwrap();
         let image = runtime.resource(asset.texture).unwrap();
         assert_eq!(
             image.image.dimensions(),
@@ -554,85 +467,15 @@ mod tests {
         );
         assert!(asset.slice_ltrb[0] + asset.slice_ltrb[2] < asset.size_px[0]);
         assert!(asset.slice_ltrb[1] + asset.slice_ltrb[3] < asset.size_px[1]);
-        assert_eq!(runtime.texture_for_key(PROOF_ASSET), Some(asset.texture));
-    }
-
-    #[cfg(feature = "dev-diagnostics")]
-    fn piece_size(piece: &UiTexturedQuad) -> [f32; 2] {
-        [
-            piece.corners[2][0] - piece.corners[0][0],
-            piece.corners[2][1] - piece.corners[0][1],
-        ]
-    }
-
-    #[cfg(feature = "dev-diagnostics")]
-    fn assert_stretch_quad(piece: &UiTexturedQuad) {
-        assert_eq!(piece.uvs[1], [piece.uvs[2][0], piece.uvs[0][1]]);
-        assert_eq!(piece.uvs[3], [piece.uvs[0][0], piece.uvs[2][1]]);
-        assert!(piece.uvs[2][0] > piece.uvs[0][0]);
-        assert!(piece.uvs[2][1] > piece.uvs[0][1]);
+        assert_eq!(
+            runtime.texture_for_key("panel_window_9slice"),
+            Some(asset.texture)
+        );
     }
 
     fn unique_fixture() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
         NEXT.fetch_add(1, Ordering::Relaxed)
-    }
-
-    #[cfg(feature = "dev-diagnostics")]
-    #[test]
-    fn ui_dev_proof_draws_three_sizes_from_asset_metadata_and_toggles() {
-        let asset = UiV2NineSlice {
-            texture: SpriteTextureId::from_raw(9),
-            size_px: [80, 50],
-            slice_ltrb: [5, 7, 6, 4],
-        };
-        let mut proof = UiDevProof {
-            visible: false,
-            asset,
-        };
-        let viewport = PixelViewport {
-            x: 3,
-            y: 4,
-            width: 1280,
-            height: 720,
-        };
-        assert!(proof.frame(viewport, 1.0).unwrap().is_empty());
-        proof.toggle();
-        let pieces = proof.frame(viewport, 1.0).unwrap();
-        assert_eq!(pieces.len(), 27);
-        assert!(pieces.iter().all(|piece| piece.texture == asset.texture));
-        pieces.iter().for_each(assert_stretch_quad);
-        assert_eq!(piece_size(&pieces[0]), [5.0, 7.0]);
-        assert_eq!(piece_size(&pieces[9]), piece_size(&pieces[0]));
-        assert_eq!(piece_size(&pieces[18]), piece_size(&pieces[0]));
-        assert_eq!(pieces[0].uvs, pieces[9].uvs);
-        assert_eq!(pieces[0].uvs, pieces[18].uvs);
-        assert!(piece_size(&pieces[10])[0] > piece_size(&pieces[1])[0]);
-        assert_eq!(piece_size(&pieces[10])[1], piece_size(&pieces[1])[1]);
-        assert!(piece_size(&pieces[21])[1] > piece_size(&pieces[3])[1]);
-        assert_eq!(piece_size(&pieces[21])[0], piece_size(&pieces[3])[0]);
-        let native_width =
-            piece_size(&pieces[0])[0] + piece_size(&pieces[1])[0] + piece_size(&pieces[2])[0];
-        let native_height =
-            piece_size(&pieces[0])[1] + piece_size(&pieces[3])[1] + piece_size(&pieces[6])[1];
-        assert!((native_width - 80.0).abs() < 0.001);
-        assert!((native_height - 50.0).abs() < 0.001);
-        let wide_width =
-            piece_size(&pieces[9])[0] + piece_size(&pieces[10])[0] + piece_size(&pieces[11])[0];
-        let tall_height =
-            piece_size(&pieces[18])[1] + piece_size(&pieces[21])[1] + piece_size(&pieces[24])[1];
-        assert!((wide_width - PROOF_WIDE_UNITS).abs() < 0.001);
-        assert!((tall_height - PROOF_TALL_UNITS).abs() < 0.001);
-
-        let scaled = proof.frame(viewport, 1.5).unwrap();
-        assert!((piece_size(&scaled[0])[0] - 7.5).abs() < 0.001);
-        assert!((piece_size(&scaled[0])[1] - 10.5).abs() < 0.001);
-        assert_eq!(scaled[0].uvs, pieces[0].uvs);
-        let scaled_native =
-            piece_size(&scaled[0])[0] + piece_size(&scaled[1])[0] + piece_size(&scaled[2])[0];
-        assert!((scaled_native - 120.0).abs() < 0.001);
-        proof.toggle();
-        assert!(proof.frame(viewport, 1.5).unwrap().is_empty());
     }
 }

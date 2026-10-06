@@ -93,6 +93,8 @@ use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
+#[cfg(feature = "dev-diagnostics")]
+use crate::ui_debug::UiDebugWindow;
 use crate::ui_dialog::{
     DialogAction, DialogButton, MessageDialog, MessageDialogFrame, MessageDialogRequest,
     MessageDialogV2Assets,
@@ -105,8 +107,6 @@ use crate::ui_panel::{
     resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
-#[cfg(feature = "dev-diagnostics")]
-use crate::ui_v2::UiDevProof;
 
 const REMOTE_PLAYER_COLOR: [f32; 4] = [0.72, 0.32, 0.38, 1.0];
 const COLLISION_AABB_COLOR: [f32; 4] = [1.0, 0.12, 0.12, 1.0];
@@ -285,7 +285,9 @@ struct ClientApp {
     settings_v2: SettingsV2Assets,
     message_dialog_v2: MessageDialogV2Assets,
     #[cfg(feature = "dev-diagnostics")]
-    ui_dev_proof: UiDevProof,
+    ui_debug: UiDebugWindow,
+    #[cfg(feature = "dev-diagnostics")]
+    ui_debug_pointer: bool,
     inventory_window: InventoryWindow,
     equipment_window: EquipmentWindow,
     settings_window: SettingsWindow,
@@ -443,8 +445,8 @@ impl ClientApp {
         let ui_item_icon_assets = UiItemIconAssets::load_placeholder(&mut asset_runtime, &registry)
             .map_err(|error| format!("PURGATORY UI item icon error: {error}"))?;
         #[cfg(feature = "dev-diagnostics")]
-        let ui_dev_proof = UiDevProof::load(&mut asset_runtime)
-            .map_err(|error| format!("PURGATORY UI V2 asset error: {error}"))?;
+        let ui_debug = UiDebugWindow::load(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI DEBUG asset error: {error}"))?;
         Ok(Self {
             window: None,
             renderer: None,
@@ -491,7 +493,9 @@ impl ClientApp {
             settings_v2,
             message_dialog_v2,
             #[cfg(feature = "dev-diagnostics")]
-            ui_dev_proof,
+            ui_debug,
+            #[cfg(feature = "dev-diagnostics")]
+            ui_debug_pointer: false,
             inventory_window,
             equipment_window: EquipmentWindow::default(),
             settings_window: SettingsWindow::default(),
@@ -2783,6 +2787,50 @@ impl ClientApp {
         Some((viewport, pixels_per_unit))
     }
 
+    #[cfg(feature = "dev-diagnostics")]
+    fn move_ui_debug_pointer(&mut self, cursor: [f32; 2]) -> bool {
+        if !self.ui_debug.is_visible() {
+            return false;
+        }
+        let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() else {
+            return false;
+        };
+        self.ui_debug
+            .pointer_moved(cursor, viewport, pixels_per_unit)
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn route_ui_debug_pointer(&mut self, state: ElementState) -> bool {
+        if !self.ui_debug.is_visible() {
+            self.ui_debug_pointer = false;
+            return false;
+        }
+        let Some((viewport, pixels_per_unit)) = self.production_ui_metrics() else {
+            return false;
+        };
+        let inside = self.cursor_position.is_some_and(|cursor| {
+            self.ui_debug
+                .contains_window(cursor, viewport, pixels_per_unit)
+        });
+        let capture = self.ui_debug_pointer || (state == ElementState::Pressed && inside);
+        if !capture {
+            return false;
+        }
+        if state == ElementState::Pressed {
+            self.ui_debug_pointer = true;
+        }
+        let _ = self.ui_debug.apply_pointer_button(
+            state,
+            self.cursor_position,
+            viewport,
+            pixels_per_unit,
+        );
+        if state == ElementState::Released {
+            self.ui_debug_pointer = false;
+        }
+        true
+    }
+
     fn flush_display_requests(&mut self) {
         let Some(window) = self.window.clone() else {
             return;
@@ -3375,7 +3423,7 @@ impl ClientApp {
         let mut settings_launcher_frame: Option<SettingsLauncherFrame> = None;
         let mut message_frame: Option<MessageDialogFrame> = None;
         #[cfg(feature = "dev-diagnostics")]
-        let mut ui_dev_quads = Vec::new();
+        let mut ui_debug_frame = None;
         if !on_connection && let Some(viewport) = viewport {
             let pixels_per_unit = effective_pixels_per_point(
                 window.scale_factor() as f32,
@@ -3442,10 +3490,11 @@ impl ClientApp {
                 .flatten();
             #[cfg(feature = "dev-diagnostics")]
             {
-                ui_dev_quads = self
-                    .ui_dev_proof
-                    .frame(viewport, pixels_per_unit)
-                    .unwrap_or_default();
+                ui_debug_frame = self
+                    .ui_debug
+                    .frame(viewport, pixels_per_unit, self.cursor_position)
+                    .ok()
+                    .flatten();
             }
         }
         let scene_rects: Vec<_> = viewport
@@ -3558,9 +3607,9 @@ impl ClientApp {
             ui_compositions.push(composition);
         }
         #[cfg(feature = "dev-diagnostics")]
-        if !ui_dev_quads.is_empty() {
-            let mut composition = UiComposition::new(&[], &[], &[]);
-            composition.textured_quads = &ui_dev_quads;
+        if let Some(frame) = ui_debug_frame.as_ref() {
+            let mut composition = UiComposition::new(&[], &[], &frame.texts);
+            composition.textured_quads = &frame.skin_quads;
             ui_compositions.push(composition);
         }
         let enter_overlay: Vec<UiRect> = viewport
@@ -5318,7 +5367,8 @@ impl ApplicationHandler for ClientApp {
                         && !event.repeat
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyU)
                     {
-                        self.ui_dev_proof.toggle();
+                        self.ui_debug.toggle();
+                        self.ui_debug_pointer = false;
                         window.request_redraw();
                         return;
                     }
@@ -5378,6 +5428,11 @@ impl ApplicationHandler for ClientApp {
                     self.equipment_window.cancel_pointer_interaction();
                     self.settings_window.cancel_pointer_interaction();
                     self.settings_launcher.cancel_pointer_interaction();
+                    #[cfg(feature = "dev-diagnostics")]
+                    {
+                        self.ui_debug.cancel_pointer_interaction();
+                        self.ui_debug_pointer = false;
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -5387,9 +5442,16 @@ impl ApplicationHandler for ClientApp {
                     return;
                 }
                 if self.message_dialog.is_active() {
-                    self.cursor_position = Some([position.x as f32, position.y as f32]);
-                    self.message_dialog
-                        .pointer_moved([position.x as f32, position.y as f32]);
+                    let cursor = [position.x as f32, position.y as f32];
+                    self.cursor_position = Some(cursor);
+                    #[cfg(feature = "dev-diagnostics")]
+                    if gameplay_receives_pointer(
+                        self.debug_overlay_visible(),
+                        self.debug.as_ref().is_some_and(DebugOverlay::wants_pointer),
+                    ) {
+                        self.move_ui_debug_pointer(cursor);
+                    }
+                    self.message_dialog.pointer_moved(cursor);
                     window.request_redraw();
                     return;
                 }
@@ -5403,10 +5465,17 @@ impl ApplicationHandler for ClientApp {
                 if self.lifecycle.gameplay_actions_allowed() && gameplay_mouse {
                     let cursor = [position.x as f32, position.y as f32];
                     self.cursor_position = Some(cursor);
+                    #[cfg(feature = "dev-diagnostics")]
+                    let debug_moved = self.move_ui_debug_pointer(cursor);
+                    #[cfg(not(feature = "dev-diagnostics"))]
+                    let debug_moved = false;
                     if let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
-                        && (self
-                            .inventory_window
-                            .pointer_moved(cursor, viewport, pixels_per_unit)
+                        && (debug_moved
+                            || self.inventory_window.pointer_moved(
+                                cursor,
+                                viewport,
+                                pixels_per_unit,
+                            )
                             || self.equipment_window.pointer_moved(
                                 cursor,
                                 viewport,
@@ -5451,6 +5520,22 @@ impl ApplicationHandler for ClientApp {
                     window.request_redraw();
                     return;
                 }
+                #[cfg(feature = "dev-diagnostics")]
+                let gameplay_mouse = gameplay_receives_pointer(
+                    self.debug_overlay_visible(),
+                    self.debug.as_ref().is_some_and(DebugOverlay::wants_pointer),
+                );
+                #[cfg(not(feature = "dev-diagnostics"))]
+                let gameplay_mouse = true;
+                #[cfg(feature = "dev-diagnostics")]
+                if self.lifecycle.gameplay_actions_allowed()
+                    && gameplay_mouse
+                    && button == MouseButton::Left
+                    && self.route_ui_debug_pointer(state)
+                {
+                    window.request_redraw();
+                    return;
+                }
                 if self.message_dialog.is_active() {
                     if button == MouseButton::Left {
                         self.message_dialog
@@ -5459,13 +5544,6 @@ impl ApplicationHandler for ClientApp {
                     window.request_redraw();
                     return;
                 }
-                #[cfg(feature = "dev-diagnostics")]
-                let gameplay_mouse = gameplay_receives_pointer(
-                    self.debug_overlay_visible(),
-                    self.debug.as_ref().is_some_and(DebugOverlay::wants_pointer),
-                );
-                #[cfg(not(feature = "dev-diagnostics"))]
-                let gameplay_mouse = true;
                 if (!self.lifecycle.gameplay_actions_allowed() || !gameplay_mouse)
                     && button == MouseButton::Left
                 {
@@ -5473,6 +5551,11 @@ impl ApplicationHandler for ClientApp {
                     self.equipment_window.cancel_pointer_interaction();
                     self.settings_window.cancel_pointer_interaction();
                     self.settings_launcher.cancel_pointer_interaction();
+                    #[cfg(feature = "dev-diagnostics")]
+                    {
+                        self.ui_debug.cancel_pointer_interaction();
+                        self.ui_debug_pointer = false;
+                    }
                 }
                 if self.lifecycle.gameplay_actions_allowed()
                     && gameplay_mouse

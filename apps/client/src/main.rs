@@ -34,6 +34,9 @@ mod renderer;
 mod replica;
 mod skeleton_debug;
 mod speech_bubble;
+mod ui_controls;
+#[cfg(feature = "dev-diagnostics")]
+mod ui_debug;
 mod ui_dialog;
 mod ui_panel;
 mod ui_runtime;

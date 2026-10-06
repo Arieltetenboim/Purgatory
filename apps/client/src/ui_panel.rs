@@ -1841,6 +1841,10 @@ impl UiTabs {
         self.selected_index
     }
 
+    pub(crate) fn pressed_index(&self) -> Option<usize> {
+        self.pressed_index
+    }
+
     pub(crate) fn apply_pointer_button(
         &mut self,
         state: ElementState,
@@ -3957,7 +3961,7 @@ enum PointerInteraction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CloseButtonVisual {
+pub(crate) enum CloseButtonVisual {
     Normal,
     Hover,
     Pressed,
@@ -3981,7 +3985,7 @@ impl Default for ProofPanelWindow {
 }
 
 impl ProofPanelWindow {
-    fn with_size(size_units: [f32; 2]) -> Self {
+    pub(crate) fn with_size(size_units: [f32; 2]) -> Self {
         Self::with_size_and_center_offset(size_units, [0.0, 0.0])
     }
 
@@ -4092,7 +4096,15 @@ impl ProofPanelWindow {
         self.apply_chrome_pointer(chrome, state, cursor, pixels_per_unit)
     }
 
-    fn apply_chrome_pointer(
+    pub(crate) fn placed_bounds(
+        &mut self,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> Result<Option<ScreenRect>, String> {
+        place_proof_window(self, viewport, pixels_per_unit)
+    }
+
+    pub(crate) fn apply_chrome_pointer(
         &mut self,
         chrome: Option<WindowChromeLayout>,
         state: ElementState,
@@ -4144,7 +4156,7 @@ impl ProofPanelWindow {
         self.interaction = PointerInteraction::None;
     }
 
-    fn close_button_visual(
+    pub(crate) fn close_button_visual(
         self,
         cursor: Option<[f32; 2]>,
         close_button: ScreenRect,
@@ -4175,10 +4187,10 @@ pub(crate) struct UiMessageChrome {
     pub(crate) close_button: ScreenRect,
 }
 
-struct WindowChromeLayout {
-    window: ScreenRect,
-    header: ScreenRect,
-    close_button: ScreenRect,
+pub(crate) struct WindowChromeLayout {
+    pub(crate) window: ScreenRect,
+    pub(crate) header: ScreenRect,
+    pub(crate) close_button: ScreenRect,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -4266,7 +4278,7 @@ fn place_proof_window(
 ///
 /// Pieces are [`UiTexturedQuad`]s. [`UiTexturedRect`] repeats its source when
 /// the destination is larger than that source, which nine-slice stretch must not do.
-#[cfg_attr(not(any(test, feature = "dev-diagnostics")), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn compose_standalone_nine_slice(
     origin_px: [f32; 2],
     size_units: [f32; 2],
