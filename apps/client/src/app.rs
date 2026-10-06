@@ -95,13 +95,14 @@ use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
 use crate::ui_dialog::{
     DialogAction, DialogButton, MessageDialog, MessageDialogFrame, MessageDialogRequest,
+    MessageDialogV2Assets,
 };
 use crate::ui_panel::{
     DragDestination, DragResolution, DragSource, EquipmentV2Assets, EquipmentWindow,
     EquipmentWindowFrame, EquipmentWindowFrameInput, InventoryV2Assets, InventoryWindow,
     InventoryWindowFrame, InventoryWindowFrameInput, SettingsAction, SettingsLauncher,
-    SettingsLauncherFrame, SettingsV2Assets, SettingsWindow, SettingsWindowFrame, UiButtonAssets,
-    UiItemIconAssets, UiWindowAssets, resolve_drag,
+    SettingsLauncherFrame, SettingsV2Assets, SettingsWindow, SettingsWindowFrame, UiItemIconAssets,
+    resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
 #[cfg(feature = "dev-diagnostics")]
@@ -278,12 +279,11 @@ struct ClientApp {
     #[cfg(feature = "dev-diagnostics")]
     impairment_seed: u64,
     ui_runtime: UIRuntimeState,
-    ui_window_assets: UiWindowAssets,
-    ui_button_assets: UiButtonAssets,
     ui_item_icon_assets: UiItemIconAssets,
     inventory_v2: InventoryV2Assets,
     equipment_v2: EquipmentV2Assets,
     settings_v2: SettingsV2Assets,
+    message_dialog_v2: MessageDialogV2Assets,
     #[cfg(feature = "dev-diagnostics")]
     ui_dev_proof: UiDevProof,
     inventory_window: InventoryWindow,
@@ -420,10 +420,6 @@ impl ClientApp {
             .map_err(|error| format!("PURGATORY accept animation error: {error}"))?;
         let turn_sheet = OverheadSheet::turn(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY turn animation error: {error}"))?;
-        let ui_window_assets = UiWindowAssets::load_embedded(&mut asset_runtime)
-            .map_err(|error| format!("PURGATORY UI window asset error: {error}"))?;
-        let ui_button_assets = UiButtonAssets::load_embedded(&mut asset_runtime)
-            .map_err(|error| format!("PURGATORY UI button asset error: {error}"))?;
         let logo = crate::assets::ClientAssetLoader::new(&mut asset_runtime)
             .load_png("frontend.logo", "frontend/LOGO.png")?;
         let image = &asset_runtime
@@ -441,6 +437,8 @@ impl ClientApp {
             .map_err(|error| format!("PURGATORY UI V2 equipment asset error: {error}"))?;
         let settings_v2 = SettingsV2Assets::load(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI V2 settings asset error: {error}"))?;
+        let message_dialog_v2 = MessageDialogV2Assets::load(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI V2 message dialog asset error: {error}"))?;
         let inventory_window = InventoryWindow::new(inventory_v2.metrics());
         let ui_item_icon_assets = UiItemIconAssets::load_placeholder(&mut asset_runtime, &registry)
             .map_err(|error| format!("PURGATORY UI item icon error: {error}"))?;
@@ -487,12 +485,11 @@ impl ClientApp {
             #[cfg(feature = "dev-diagnostics")]
             impairment_seed: NetworkImpairmentConfig::from_env().seed,
             ui_runtime: UIRuntimeState::Idle,
-            ui_window_assets,
-            ui_button_assets,
             ui_item_icon_assets,
             inventory_v2,
             equipment_v2,
             settings_v2,
+            message_dialog_v2,
             #[cfg(feature = "dev-diagnostics")]
             ui_dev_proof,
             inventory_window,
@@ -3384,15 +3381,6 @@ impl ClientApp {
                 window.scale_factor() as f32,
                 self.display.settings().ui_scale,
             );
-            #[cfg(feature = "dev-diagnostics")]
-            let panel_style = self
-                .debug
-                .as_ref()
-                .map(|debug| debug.ui.panel_style)
-                .unwrap_or_default();
-            #[cfg(not(feature = "dev-diagnostics"))]
-            let panel_style = crate::ui_panel::PanelStyle::default();
-            let window_assets = self.ui_window_assets.with_panel_style(panel_style);
             inventory_frame = self
                 .inventory_window
                 .frame(InventoryWindowFrameInput {
@@ -3445,8 +3433,7 @@ impl ClientApp {
             message_frame = self
                 .message_dialog
                 .frame(
-                    window_assets,
-                    self.ui_button_assets,
+                    &self.message_dialog_v2,
                     viewport,
                     pixels_per_unit,
                     self.cursor_position,
@@ -3566,7 +3553,9 @@ impl ClientApp {
         }
         if let Some(frame) = message_frame.as_ref() {
             // Message is outside normal focus order and always occupies the top group.
-            ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
+            let mut composition = UiComposition::new(&[], &[], &frame.texts);
+            composition.textured_quads = &frame.skin_quads;
+            ui_compositions.push(composition);
         }
         #[cfg(feature = "dev-diagnostics")]
         if !ui_dev_quads.is_empty() {

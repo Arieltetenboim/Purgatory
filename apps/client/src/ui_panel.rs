@@ -436,6 +436,7 @@ pub(crate) struct UiSlotAssets {
     size_units: [f32; 2],
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UiButtonState {
     Normal,
@@ -443,6 +444,7 @@ pub(crate) enum UiButtonState {
     Pressed,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UiButtonAssets {
     texture: SpriteTextureId,
@@ -468,6 +470,7 @@ pub(crate) struct UiItemIconAssets {
     by_definition: HashMap<ContentId, UiItemIconVisual>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UiWindowAssets {
     panels: PanelVariants,
@@ -479,6 +482,7 @@ pub(crate) struct UiWindowAssets {
     panel_style: PanelStyle,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl UiWindowAssets {
     pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
         let metadata: UiAtlasMetadata = serde_json::from_str(ATLAS_METADATA)
@@ -892,6 +896,7 @@ impl UiSlotAssets {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl UiButtonAssets {
     pub(crate) fn load_embedded(assets: &mut AssetRuntime) -> Result<Self, String> {
         let metadata: UiAtlasMetadata = serde_json::from_str(ATLAS_METADATA)
@@ -4155,14 +4160,18 @@ impl ProofPanelWindow {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct UiWindowFrame {
     pub(crate) textured_rects: Vec<UiTexturedRect>,
     pub(crate) title: TextBlock,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct UiMessageChrome {
+    #[allow(dead_code)]
     pub(crate) frame: UiWindowFrame,
     pub(crate) window: ScreenRect,
+    #[allow(dead_code)]
     pub(crate) close_button: ScreenRect,
 }
 

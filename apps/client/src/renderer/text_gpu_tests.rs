@@ -392,9 +392,11 @@ fn renderer_repeated_text_visual_specimen() {
 #[ignore = "GPU typography calibration: exports direct-consumer geometry with neutral panel fills"]
 fn renderer_repeated_text_consumer_calibration() {
     use crate::asset_runtime::AssetRuntime;
-    use crate::renderer::{Camera, PixelViewport, UiTexturedRect};
-    use crate::ui_dialog::{DialogAction, DialogButton, MessageDialog, MessageDialogRequest};
-    use crate::ui_panel::{SettingsV2Assets, SettingsWindow, UiButtonAssets, UiWindowAssets};
+    use crate::renderer::{Camera, PixelViewport};
+    use crate::ui_dialog::{
+        DialogAction, DialogButton, MessageDialog, MessageDialogRequest, MessageDialogV2Assets,
+    };
+    use crate::ui_panel::{SettingsV2Assets, SettingsWindow};
     let Some(directory) = std::env::var_os("PURGATORY_TEXT_SPECIMEN_DIR") else {
         return;
     };
@@ -406,22 +408,11 @@ fn renderer_repeated_text_consumer_calibration() {
         height: SIZE[1],
     };
     let mut runtime = AssetRuntime::new();
-    let windows = UiWindowAssets::load_embedded(&mut runtime).unwrap();
-    let buttons = UiButtonAssets::load_embedded(&mut runtime).unwrap();
     let settings_v2 = SettingsV2Assets::load(&mut runtime).unwrap();
+    let dialog_v2 = MessageDialogV2Assets::load(&mut runtime).unwrap();
     let (device, queue) = gpu();
     let mut text = TextRenderer::new(&device, &queue, FORMAT);
     let mut panels = panel_renderer(&device);
-    let neutral = |rects: Vec<UiTexturedRect>| {
-        rects
-            .into_iter()
-            .map(|r| UiRect {
-                min: r.min,
-                max: r.max,
-                color: [0.12, 0.10, 0.08, 1.0],
-            })
-            .collect::<Vec<_>>()
-    };
     for scale in [1.0, 1.25, 1.875] {
         let choice = crate::choice_bubble::layout_choice_bubble_in_column(
             &[
@@ -471,7 +462,7 @@ fn renderer_repeated_text_consumer_calibration() {
             dismissible: true,
         });
         let dialog = dialog
-            .frame(windows, buttons, viewport, scale, None)
+            .frame(&dialog_v2, viewport, scale, None)
             .unwrap()
             .unwrap();
         let settings_rects = settings
@@ -487,7 +478,19 @@ fn renderer_repeated_text_consumer_calibration() {
             ("choice", choice.rects, choice.texts),
             ("speech", speech.rects, vec![speech.text]),
             ("settings", settings_rects, settings.texts),
-            ("dialog", neutral(dialog.textured_rects), dialog.texts),
+            (
+                "dialog",
+                dialog
+                    .skin_quads
+                    .into_iter()
+                    .map(|quad| UiRect {
+                        min: quad.corners[0],
+                        max: quad.corners[2],
+                        color: [0.12, 0.10, 0.08, 1.0],
+                    })
+                    .collect::<Vec<_>>(),
+                dialog.texts,
+            ),
         ] {
             text.begin_frame(&queue, SIZE);
             panels.clear();
