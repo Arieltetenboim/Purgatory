@@ -5,7 +5,8 @@
 //! inside those bounds. A slider captures a drag from its handle or track and reports a
 //! normalized value. Progress bars are display-only.
 
-use winit::event::ElementState;
+use winit::event::{ElementState, MouseScrollDelta};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::renderer::{SpriteTextureId, UiTexturedQuad};
 use crate::ui_panel::{ScreenRect, compose_nine_slice_with_borders};
@@ -703,6 +704,377 @@ impl UiRadioGroup {
     }
 }
 
+/// Single-line text field. The caller owns the string. The control owns focus and caret.
+pub(crate) const UI_TEXT_INPUT_LIMIT: usize = 32;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct UiTextInput {
+    focused: bool,
+    caret: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UiSlotVisual {
+    Normal,
+    Hover,
+    Selected,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct UiScrollGeometry {
+    pub(crate) list: ScreenRect,
+    pub(crate) up: ScreenRect,
+    pub(crate) down: ScreenRect,
+    pub(crate) track: ScreenRect,
+    pub(crate) thumb: ScreenRect,
+    pub(crate) region: ScreenRect,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct UiScrollbar {
+    dragging: bool,
+    grab: f32,
+}
+
+impl UiTextInput {
+    pub(crate) fn is_focused(self) -> bool {
+        self.focused
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn caret(self) -> usize {
+        self.caret
+    }
+
+    pub(crate) fn blur(&mut self) {
+        self.focused = false;
+    }
+
+    /// Press inside focuses the field. Press outside blurs it and does not capture.
+    pub(crate) fn apply_press(&mut self, inside: bool, value: &str) -> bool {
+        if inside {
+            if !self.focused {
+                self.focused = true;
+                self.caret = value.chars().count();
+            }
+            self.caret = self.caret.min(value.chars().count());
+            true
+        } else {
+            self.focused = false;
+            false
+        }
+    }
+
+    pub(crate) fn apply_key(
+        &mut self,
+        value: &mut String,
+        key: &Key,
+        text: Option<&str>,
+        _repeat: bool,
+    ) -> bool {
+        if !self.focused {
+            return false;
+        }
+        self.caret = self.caret.min(value.chars().count());
+        match key {
+            Key::Named(NamedKey::Backspace) => delete_before(value, &mut self.caret),
+            Key::Named(NamedKey::Delete) => delete_after(value, &mut self.caret),
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.caret = self.caret.saturating_sub(1);
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.caret = (self.caret + 1).min(value.chars().count());
+            }
+            Key::Named(NamedKey::Home) => self.caret = 0,
+            Key::Named(NamedKey::End) => self.caret = value.chars().count(),
+            Key::Named(NamedKey::Enter) => self.focused = false,
+            _ => {
+                if let Some(text) = text {
+                    insert_text(value, &mut self.caret, text, UI_TEXT_INPUT_LIMIT);
+                }
+            }
+        }
+        true
+    }
+
+    pub(crate) fn display_text(self, value: &str) -> String {
+        if !self.focused {
+            return value.to_owned();
+        }
+        let caret = self.caret.min(value.chars().count());
+        let byte = byte_at_char(value, caret);
+        let mut shown = String::with_capacity(value.len() + 1);
+        shown.push_str(&value[..byte]);
+        shown.push('|');
+        shown.push_str(&value[byte..]);
+        shown
+    }
+}
+
+pub(crate) fn slot_visual(enabled: bool, selected: bool, hovered: bool) -> UiSlotVisual {
+    if !enabled {
+        UiSlotVisual::Disabled
+    } else if selected {
+        UiSlotVisual::Selected
+    } else if hovered {
+        UiSlotVisual::Hover
+    } else {
+        UiSlotVisual::Normal
+    }
+}
+
+impl UiScrollbar {
+    pub(crate) fn is_dragging(self) -> bool {
+        self.dragging
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        self.dragging = false;
+        self.grab = 0.0;
+    }
+
+    pub(crate) fn apply_thumb(
+        &mut self,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        geometry: &UiScrollGeometry,
+        max_offset: usize,
+    ) -> bool {
+        if max_offset == 0 {
+            self.cancel();
+            return false;
+        }
+        match state {
+            ElementState::Pressed => {
+                let Some(point) = cursor else {
+                    return false;
+                };
+                if !geometry.thumb.contains(point) {
+                    return false;
+                }
+                self.dragging = true;
+                self.grab = (point[1] - geometry.thumb.min[1]).clamp(0.0, geometry.thumb.height());
+                true
+            }
+            ElementState::Released => {
+                if !self.dragging {
+                    return false;
+                }
+                self.dragging = false;
+                self.grab = 0.0;
+                true
+            }
+        }
+    }
+
+    pub(crate) fn pointer_moved(
+        &mut self,
+        cursor_y: f32,
+        geometry: &UiScrollGeometry,
+        max_offset: usize,
+    ) -> Option<usize> {
+        if !self.dragging || max_offset == 0 || !cursor_y.is_finite() {
+            return None;
+        }
+        Some(scroll_offset_from_thumb_top(
+            geometry.track,
+            geometry.thumb.height(),
+            cursor_y - self.grab,
+            max_offset,
+        ))
+    }
+}
+
+pub(crate) fn scroll_max_offset(total: usize, visible: usize) -> usize {
+    total.saturating_sub(visible)
+}
+
+pub(crate) fn visible_row_indices(
+    offset: usize,
+    total: usize,
+    visible: usize,
+) -> std::ops::Range<usize> {
+    let start = offset.min(total);
+    let end = start.saturating_add(visible).min(total);
+    start..end
+}
+
+pub(crate) fn scroll_geometry(
+    list: ScreenRect,
+    gap: f32,
+    arrow: f32,
+    offset: usize,
+    total: usize,
+    visible: usize,
+) -> Result<UiScrollGeometry, String> {
+    if !rect_is_positive(list)
+        || !gap.is_finite()
+        || gap < 0.0
+        || !arrow.is_finite()
+        || arrow <= 0.0
+    {
+        return Err("UI scroll geometry is invalid".to_string());
+    }
+    if list.height() <= arrow * 2.0 {
+        return Err("UI scroll list is shorter than its arrows".to_string());
+    }
+    let column_x = list.max[0] + gap;
+    let up = ScreenRect {
+        min: [column_x, list.min[1]],
+        max: [column_x + arrow, list.min[1] + arrow],
+    };
+    let down = ScreenRect {
+        min: [column_x, list.max[1] - arrow],
+        max: [column_x + arrow, list.max[1]],
+    };
+    let track = ScreenRect {
+        min: [column_x, up.max[1]],
+        max: [column_x + arrow, down.min[1]],
+    };
+    if !rect_is_positive(track) {
+        return Err("UI scroll track is invalid".to_string());
+    }
+    let min_thumb = (arrow * 0.75).min(track.height());
+    let thumb_height = thumb_height(track.height(), visible, total, min_thumb);
+    let max_offset = scroll_max_offset(total, visible);
+    let travel = (track.height() - thumb_height).max(0.0);
+    let top = thumb_top(track.min[1], travel, offset, max_offset);
+    let inset = (arrow * 0.12).min(track.width() * 0.2);
+    let thumb = ScreenRect {
+        min: [track.min[0] + inset, top],
+        max: [track.max[0] - inset, top + thumb_height],
+    };
+    let region = ScreenRect {
+        min: list.min,
+        max: [down.max[0], list.max[1]],
+    };
+    Ok(UiScrollGeometry {
+        list,
+        up,
+        down,
+        track,
+        thumb,
+        region,
+    })
+}
+
+pub(crate) fn scroll_rows_from_wheel(delta: MouseScrollDelta) -> i32 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, y) => finite_rows(f64::from(y)),
+        MouseScrollDelta::PixelDelta(position) => finite_rows(position.y / 48.0),
+    }
+}
+
+/// Positive rows move toward the start of the list.
+pub(crate) fn scroll_offset_after_wheel(offset: usize, max_offset: usize, rows: i32) -> usize {
+    let offset = offset.min(max_offset);
+    if rows > 0 {
+        offset.saturating_sub(rows as usize)
+    } else if rows < 0 {
+        offset
+            .saturating_add(rows.unsigned_abs() as usize)
+            .min(max_offset)
+    } else {
+        offset
+    }
+}
+
+pub(crate) fn scroll_offset_from_thumb_top(
+    track: ScreenRect,
+    thumb_height: f32,
+    thumb_top: f32,
+    max_offset: usize,
+) -> usize {
+    if max_offset == 0 || !thumb_height.is_finite() || !thumb_top.is_finite() {
+        return 0;
+    }
+    let travel = (track.height() - thumb_height).max(0.0);
+    if travel <= 0.0 {
+        return 0;
+    }
+    let top = thumb_top.clamp(track.min[1], track.min[1] + travel);
+    let fraction = (top - track.min[1]) / travel;
+    let scaled = fraction * max_offset as f32;
+    if !scaled.is_finite() {
+        return 0;
+    }
+    (scaled.round() as usize).min(max_offset)
+}
+
+fn thumb_height(track_height: f32, visible: usize, total: usize, min_thumb: f32) -> f32 {
+    if total == 0 {
+        return track_height;
+    }
+    let fraction = visible.min(total) as f32 / total as f32;
+    (track_height * fraction).clamp(min_thumb.min(track_height), track_height)
+}
+
+fn thumb_top(track_min: f32, travel: f32, offset: usize, max_offset: usize) -> f32 {
+    if max_offset == 0 || travel <= 0.0 {
+        track_min
+    } else {
+        track_min + travel * (offset.min(max_offset) as f32) / max_offset as f32
+    }
+}
+
+fn finite_rows(value: f64) -> i32 {
+    if !value.is_finite() {
+        return 0;
+    }
+    let rounded = value.round();
+    if rounded > 64.0 {
+        64
+    } else if rounded < -64.0 {
+        -64
+    } else {
+        rounded as i32
+    }
+}
+
+fn byte_at_char(value: &str, char_index: usize) -> usize {
+    value
+        .char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len())
+}
+
+fn delete_before(value: &mut String, caret: &mut usize) {
+    if *caret == 0 {
+        return;
+    }
+    let end = byte_at_char(value, *caret);
+    let start = byte_at_char(value, *caret - 1);
+    value.replace_range(start..end, "");
+    *caret -= 1;
+}
+
+fn delete_after(value: &mut String, caret: &mut usize) {
+    let count = value.chars().count();
+    if *caret >= count {
+        return;
+    }
+    let start = byte_at_char(value, *caret);
+    let end = byte_at_char(value, *caret + 1);
+    value.replace_range(start..end, "");
+}
+
+fn insert_text(value: &mut String, caret: &mut usize, text: &str, limit: usize) {
+    let incoming: String = text.chars().filter(|ch| !ch.is_control()).collect();
+    if incoming.is_empty() {
+        return;
+    }
+    let room = limit.saturating_sub(value.chars().count());
+    let accepted: String = incoming.chars().take(room).collect();
+    if accepted.is_empty() {
+        return;
+    }
+    let byte = byte_at_char(value, *caret);
+    value.insert_str(byte, &accepted);
+    *caret += accepted.chars().count();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1341,5 +1713,171 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn key_named(named: NamedKey) -> Key {
+        Key::Named(named)
+    }
+
+    #[test]
+    fn text_input_focus_blur_and_caret_edits() {
+        let bounds = bounds();
+        let mut input = UiTextInput::default();
+        let mut value = "Hello world".to_string();
+        assert!(!input.apply_press(false, &value));
+        assert!(!input.is_focused());
+        assert_eq!(input.display_text(&value), "Hello world");
+        assert!(input.apply_press(true, &value));
+        assert!(input.is_focused());
+        assert_eq!(input.caret(), 11);
+        assert_eq!(input.display_text(&value), "Hello world|");
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::ArrowLeft), None, false));
+        assert_eq!(input.caret(), 10);
+        assert!(input.apply_key(&mut value, &Key::Character("!".into()), Some("!"), false));
+        assert_eq!(value, "Hello worl!d");
+        assert_eq!(input.caret(), 11);
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::Backspace), None, true));
+        assert_eq!(value, "Hello world");
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::Delete), None, true));
+        assert_eq!(value, "Hello worl");
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::Home), None, false));
+        assert_eq!(input.caret(), 0);
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::Delete), None, false));
+        assert_eq!(value, "ello worl");
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::End), None, false));
+        assert_eq!(input.caret(), value.chars().count());
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::ArrowRight), None, true));
+        assert_eq!(input.caret(), value.chars().count());
+        assert!(!input.apply_press(bounds.contains(inside_point()), &value) || input.is_focused());
+        input.blur();
+        assert!(!input.is_focused());
+        assert!(!input.display_text(&value).contains('|'));
+        assert!(!input.apply_key(
+            &mut value,
+            &key_named(NamedKey::Backspace),
+            Some("u"),
+            false
+        ));
+        assert_eq!(value, "ello worl");
+    }
+
+    #[test]
+    fn text_input_is_unicode_safe_and_length_limited() {
+        let mut input = UiTextInput::default();
+        let mut value = "a😀b".to_string();
+        assert!(input.apply_press(true, &value));
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::ArrowLeft), None, false));
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::Backspace), None, false));
+        assert_eq!(value, "ab");
+        value = "é".to_string();
+        input.blur();
+        assert!(input.apply_press(true, &value));
+        assert!(input.apply_key(&mut value, &key_named(NamedKey::ArrowLeft), None, false));
+        assert!(input.apply_key(&mut value, &Key::Character("x".into()), Some("x"), false));
+        assert_eq!(value, "xé");
+        assert!(input.apply_key(
+            &mut value,
+            &Key::Character("\u{0007}".into()),
+            Some("\u{0007}"),
+            false
+        ));
+        assert_eq!(value, "xé");
+        let mut full = "a".repeat(UI_TEXT_INPUT_LIMIT);
+        input.blur();
+        assert!(input.apply_press(true, &full));
+        assert!(input.apply_key(&mut full, &Key::Character("z".into()), Some("z"), false));
+        assert_eq!(full.chars().count(), UI_TEXT_INPUT_LIMIT);
+        assert!(!full.contains('z'));
+        assert!(input.apply_key(&mut full, &key_named(NamedKey::Enter), Some("\n"), false));
+        assert!(!input.is_focused());
+        assert!(!input.display_text(&full).contains('|'));
+    }
+
+    fn list_rect() -> ScreenRect {
+        ScreenRect {
+            min: [0.0, 0.0],
+            max: [200.0, 120.0],
+        }
+    }
+
+    #[test]
+    fn scroll_wheel_arrows_and_thumb_follow_offset() {
+        let total = 24;
+        let visible = 6;
+        let max_offset = scroll_max_offset(total, visible);
+        assert_eq!(max_offset, 18);
+        assert_eq!(visible_row_indices(0, total, visible), 0..6);
+        assert_eq!(visible_row_indices(4, total, visible), 4..10);
+        assert_eq!(visible_row_indices(20, total, visible), 20..24);
+        assert_eq!(
+            scroll_offset_after_wheel(
+                0,
+                max_offset,
+                scroll_rows_from_wheel(MouseScrollDelta::LineDelta(0.0, 1.0))
+            ),
+            0
+        );
+        assert_eq!(
+            scroll_offset_after_wheel(
+                4,
+                max_offset,
+                scroll_rows_from_wheel(MouseScrollDelta::LineDelta(0.0, -1.0))
+            ),
+            5
+        );
+        assert_eq!(
+            scroll_offset_after_wheel(
+                4,
+                max_offset,
+                scroll_rows_from_wheel(MouseScrollDelta::PixelDelta(
+                    winit::dpi::PhysicalPosition { x: 0.0, y: -96.0 }
+                ))
+            ),
+            6
+        );
+        assert_eq!(scroll_offset_after_wheel(18, max_offset, -5), 18);
+        let top = scroll_geometry(list_rect(), 4.0, 16.0, 0, total, visible).unwrap();
+        let mid = scroll_geometry(list_rect(), 4.0, 16.0, 9, total, visible).unwrap();
+        let bottom = scroll_geometry(list_rect(), 4.0, 16.0, 18, total, visible).unwrap();
+        assert!(top.thumb.height() < top.track.height());
+        assert!(
+            (top.thumb.height() - top.track.height() * (visible as f32 / total as f32)).abs() < 1.0
+                || top.thumb.height() >= 16.0 * 0.75 - 0.1
+        );
+        assert!(top.thumb.min[1] <= mid.thumb.min[1]);
+        assert!(mid.thumb.min[1] <= bottom.thumb.min[1]);
+        assert!((bottom.thumb.max[1] - bottom.track.max[1]).abs() < 0.6);
+        assert!(top.thumb.min[1] >= top.track.min[1] - 0.01);
+        let mut bar = UiScrollbar::default();
+        assert!(bar.apply_thumb(
+            ElementState::Pressed,
+            Some(center_of(top.thumb)),
+            &top,
+            max_offset
+        ));
+        assert!(bar.is_dragging());
+        let dragged = bar
+            .pointer_moved(bottom.thumb.min[1] + bar.grab, &top, max_offset)
+            .unwrap();
+        assert!(dragged > 0);
+        assert!(bar.apply_thumb(ElementState::Released, None, &top, max_offset));
+        assert!(!bar.is_dragging());
+        bar.cancel();
+        assert!(bar.pointer_moved(40.0, &top, max_offset).is_none());
+    }
+
+    fn center_of(bounds: ScreenRect) -> [f32; 2] {
+        [
+            (bounds.min[0] + bounds.max[0]) * 0.5,
+            (bounds.min[1] + bounds.max[1]) * 0.5,
+        ]
+    }
+
+    #[test]
+    fn slot_visual_disables_and_selects_one_state() {
+        assert_eq!(slot_visual(false, true, true), UiSlotVisual::Disabled);
+        assert_eq!(slot_visual(true, true, false), UiSlotVisual::Selected);
+        assert_eq!(slot_visual(true, false, true), UiSlotVisual::Hover);
+        assert_eq!(slot_visual(true, false, false), UiSlotVisual::Normal);
     }
 }

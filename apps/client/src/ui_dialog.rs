@@ -9,7 +9,9 @@ use crate::renderer::{
     PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle,
     UiTexturedQuad,
 };
-use crate::ui_panel::{ScreenRect, compose_nine_slice_with_borders, compose_stretched_quad};
+use crate::ui_panel::{
+    ScreenRect, button_label_text, compose_nine_slice_with_borders, compose_stretched_quad,
+};
 use crate::ui_v2::{
     UiV2Image, UiV2NineSlice, load_ui_v2_catalog, load_ui_v2_nine_slice, load_ui_v2_state_family,
 };
@@ -22,6 +24,8 @@ const BUTTON_BOTTOM_UNITS: f32 = 12.0;
 const BUTTON_GAP_UNITS: f32 = 8.0;
 const BUTTON_HEIGHT_UNITS: f32 = 22.0;
 const BUTTON_ROW_GAP_UNITS: f32 = 8.0;
+/// Authored V2 button width. Dialog buttons never stretch past this.
+const BUTTON_MAX_WIDTH_UNITS: f32 = 112.0;
 /// Vertical room under the header before the button row. Matches the previous
 /// message-chrome body span so existing copy keeps the same max-width idea.
 const BODY_REGION_UNITS: f32 = 98.0;
@@ -359,19 +363,13 @@ impl MessageDialog {
             let texture =
                 button_texture(assets, bounds, cursor, self.pressed_button == Some(index));
             skin_quads.push(compose_stretched_quad(bounds, texture)?);
-            texts.push(TextBlock {
-                content: TextContent(button.label.clone()),
-                style: TextStyle::at_size(
-                    BUTTON_FONT_SIZE,
-                    BUTTON_LABEL_COLOR,
-                    TextAlignment::Center,
-                ),
-                anchor: [
-                    (bounds.min[0] + bounds.max[0]) * 0.5,
-                    bounds.min[1] + (bounds.height() - BUTTON_FONT_SIZE * pixels_per_unit) * 0.5,
-                ],
-                max_width: Some(bounds.width()),
-            });
+            texts.push(button_label_text(
+                &button.label,
+                bounds,
+                BUTTON_FONT_SIZE,
+                BUTTON_LABEL_COLOR,
+                pixels_per_unit,
+            ));
         }
         if let Some(bounds) = layout.close_button {
             let texture = close_texture(assets, bounds, cursor, self.close_pressed);
@@ -442,18 +440,7 @@ fn layout_message_dialog(
     };
     let button_height = BUTTON_HEIGHT_UNITS * scale;
     let button_y = window.max[1] - BUTTON_BOTTOM_UNITS * scale - button_height;
-    let gap = BUTTON_GAP_UNITS * scale;
-    let button_width =
-        ((body_bounds.width() - gap * (button_count - 1) as f32) / button_count as f32).max(1.0);
-    let buttons = (0..button_count)
-        .map(|index| {
-            let x = body_bounds.min[0] + index as f32 * (button_width + gap);
-            ScreenRect {
-                min: [x, button_y],
-                max: [x + button_width, button_y + button_height],
-            }
-        })
-        .collect::<Vec<_>>();
+    let buttons = place_dialog_buttons(body_bounds, button_count, button_y, button_height, scale);
     let stacked_button_y = body_bounds.max[1] + BUTTON_ROW_GAP_UNITS * scale;
     let buttons_fit = buttons.iter().all(|button| {
         button.min[0] >= body_bounds.min[0]
@@ -484,6 +471,35 @@ fn layout_message_dialog(
         body_bounds,
         buttons,
     })
+}
+
+fn place_dialog_buttons(
+    body: ScreenRect,
+    count: usize,
+    button_y: f32,
+    button_height: f32,
+    scale: f32,
+) -> Vec<ScreenRect> {
+    let gap = BUTTON_GAP_UNITS * scale;
+    let available = (body.width() - gap * count.saturating_sub(1) as f32).max(1.0);
+    let equal = available / count as f32;
+    let button_width = equal.min(BUTTON_MAX_WIDTH_UNITS * scale).max(1.0);
+    let row_width = count as f32 * button_width + gap * count.saturating_sub(1) as f32;
+    let slack = body.width() - row_width;
+    let row_start = if slack >= 0.0 {
+        body.min[0] + slack * 0.5
+    } else {
+        body.min[0]
+    };
+    (0..count)
+        .map(|index| {
+            let x = row_start + index as f32 * (button_width + gap);
+            ScreenRect {
+                min: [x, button_y],
+                max: [x + button_width, button_y + button_height],
+            }
+        })
+        .collect()
 }
 
 fn place_dialog_window(viewport: PixelViewport, pixels_per_unit: f32) -> ScreenRect {
@@ -857,6 +873,19 @@ mod tests {
                 assert!((pair[1].min[0] - pair[0].max[0] - BUTTON_GAP_UNITS).abs() < 0.01);
                 assert!(pair[0].min[0] < pair[1].min[0]);
             }
+            let body_center = (layout.body_bounds.min[0] + layout.body_bounds.max[0]) * 0.5;
+            let row_start = layout.buttons[0].min[0];
+            let row_end = layout.buttons[count - 1].max[0];
+            assert!((body_center - (row_start + row_end) * 0.5).abs() < 0.05);
+            assert!(width <= BUTTON_MAX_WIDTH_UNITS + 0.05);
+            let expected = if count == 3 {
+                (layout.body_bounds.width() - BUTTON_GAP_UNITS * 2.0) / 3.0
+            } else {
+                BUTTON_MAX_WIDTH_UNITS
+            };
+            assert!((width - expected).abs() < 0.05);
+            assert!(row_start >= layout.body_bounds.min[0] - 0.05);
+            assert!(row_end <= layout.body_bounds.max[0] + 0.05);
             if let Some(close) = layout.close_button {
                 assert!(close.max[0] <= layout.header.max[0]);
                 assert!(close.max[1] <= layout.header.max[1]);
@@ -888,6 +917,14 @@ mod tests {
         assert_eq!(frame.texts[1].content.0, "Body");
         assert_eq!(frame.texts[2].content.0, "Cancel");
         assert_eq!(frame.texts[3].content.0, "OK");
+        for (text, bounds) in frame.texts.iter().skip(2).zip(dialog.button_bounds.iter()) {
+            let max_width = text.max_width.expect("button label width");
+            assert!(max_width < bounds.width() - 1.0);
+            let content_top = bounds.min[1] + crate::ui_panel::BUTTON_TEXT_PAD_Y;
+            let content_bottom = bounds.max[1] - crate::ui_panel::BUTTON_TEXT_PAD_Y;
+            assert!(text.anchor[1] >= content_top - 0.01);
+            assert!(text.anchor[1] + BUTTON_FONT_SIZE <= content_bottom + 0.01);
+        }
     }
 
     #[test]

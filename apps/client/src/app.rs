@@ -94,7 +94,9 @@ use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
 #[cfg(feature = "dev-diagnostics")]
-use crate::ui_debug::UiDebugWindow;
+use crate::ui_debug::{
+    UI_DEBUG_MESSAGE_DIALOG_ID, UiDebugEvent, UiDebugWindow, u_key_toggles_ui_debug,
+};
 use crate::ui_dialog::{
     DialogAction, DialogButton, MessageDialog, MessageDialogFrame, MessageDialogRequest,
     MessageDialogV2Assets,
@@ -1188,6 +1190,10 @@ impl ClientApp {
         let Some(result) = self.message_dialog.take_result() else {
             return;
         };
+        #[cfg(feature = "dev-diagnostics")]
+        if result.id == UI_DEBUG_MESSAGE_DIALOG_ID {
+            return;
+        }
         let action = result.action;
         match crate::death_respawn_ui::DeathRespawnUi::interpret_result(
             result,
@@ -2829,6 +2835,25 @@ impl ClientApp {
             self.ui_debug_pointer = false;
         }
         true
+    }
+
+    #[cfg(feature = "dev-diagnostics")]
+    fn open_ui_debug_message_dialog(&mut self) {
+        if self.ui_debug.take_event() != Some(UiDebugEvent::OpenMessageDialog) {
+            return;
+        }
+        let _ = self.message_dialog.open(MessageDialogRequest {
+            id: UI_DEBUG_MESSAGE_DIALOG_ID,
+            title: "UI DEBUG".into(),
+            body: "This is a MessageDialog opened by UI DEBUG.".into(),
+            buttons: vec![
+                DialogButton::new("Cancel", DialogAction::Cancel),
+                DialogButton::new("OK", DialogAction::Ok),
+            ],
+            default_action: Some(DialogAction::Ok),
+            cancel_action: Some(DialogAction::Cancel),
+            dismissible: true,
+        });
     }
 
     fn flush_display_requests(&mut self) {
@@ -5330,6 +5355,26 @@ impl ApplicationHandler for ClientApp {
                     window.request_redraw();
                     return;
                 }
+                #[cfg(feature = "dev-diagnostics")]
+                if !self.message_dialog.is_active() && self.ui_debug.wants_text_keyboard() {
+                    if event.state == ElementState::Pressed
+                        && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                    {
+                        self.ui_debug.blur_text_input();
+                        window.request_redraw();
+                        return;
+                    }
+                    if event.state == ElementState::Pressed {
+                        self.ui_debug.apply_text_key(
+                            &event.logical_key,
+                            event.text.as_deref(),
+                            event.repeat,
+                        );
+                    }
+                    window.request_redraw();
+                    return;
+                }
                 if event.state == ElementState::Pressed
                     && !event.repeat
                     && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
@@ -5366,6 +5411,7 @@ impl ApplicationHandler for ClientApp {
                     if event.state == ElementState::Pressed
                         && !event.repeat
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyU)
+                        && u_key_toggles_ui_debug(self.ui_debug.wants_text_keyboard())
                     {
                         self.ui_debug.toggle();
                         self.ui_debug_pointer = false;
@@ -5533,6 +5579,7 @@ impl ApplicationHandler for ClientApp {
                     && button == MouseButton::Left
                     && self.route_ui_debug_pointer(state)
                 {
+                    self.open_ui_debug_message_dialog();
                     window.request_redraw();
                     return;
                 }
@@ -5663,7 +5710,30 @@ impl ApplicationHandler for ClientApp {
                     window.request_redraw();
                 }
             }
-            WindowEvent::MouseWheel { .. } => {}
+            WindowEvent::MouseWheel { delta, .. } => {
+                #[cfg(not(feature = "dev-diagnostics"))]
+                {
+                    let _ = delta;
+                }
+                #[cfg(feature = "dev-diagnostics")]
+                if !self.message_dialog.is_active() && self.lifecycle.gameplay_actions_allowed() {
+                    let gameplay_mouse = gameplay_receives_pointer(
+                        self.debug_overlay_visible(),
+                        self.debug.as_ref().is_some_and(DebugOverlay::wants_pointer),
+                    );
+                    if gameplay_mouse
+                        && let Some((viewport, pixels_per_unit)) = self.production_ui_metrics()
+                        && self.ui_debug.apply_wheel(
+                            delta,
+                            self.cursor_position,
+                            viewport,
+                            pixels_per_unit,
+                        )
+                    {
+                        window.request_redraw();
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => {
                 self.handle_frame(event_loop);
             }

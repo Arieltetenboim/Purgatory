@@ -1369,17 +1369,12 @@ impl SettingsWindow {
                         .max(1.0),
                 ),
             ));
-            let value_font = SETTINGS_VALUE_FONT_SIZE_UNITS * pixels_per_unit;
-            texts.push(settings_text(
+            texts.push(button_label_text(
                 &settings_control_value(control, settings),
+                bounds,
                 SETTINGS_VALUE_FONT_SIZE_UNITS,
                 color,
-                [
-                    (bounds.min[0] + bounds.max[0]) * 0.5,
-                    bounds.min[1] + ((bounds.height() - value_font) * 0.5).max(0.0),
-                ],
-                TextAlignment::Center,
-                Some((bounds.width() - 8.0 * pixels_per_unit).max(1.0)),
+                pixels_per_unit,
             ));
         }
         skin_quads.push(compose_stretched_quad(layout.gear, assets.gear.texture)?);
@@ -1502,18 +1497,21 @@ impl SettingsLauncher {
             max: [icon_min[0] + icon_size, icon_min[1] + icon_size],
         };
         skin_quads.push(compose_stretched_quad(icon, assets.gear.texture)?);
+        let content = button_content_bounds(bounds, pixels_per_unit);
         let font_size = SETTINGS_LAUNCHER_FONT_SIZE_UNITS * pixels_per_unit;
-        let text_anchor_x = icon.max[0] + SETTINGS_CONTROL_GAP_UNITS * pixels_per_unit;
+        let text_left =
+            (icon.max[0] + SETTINGS_CONTROL_GAP_UNITS * pixels_per_unit).max(content.min[0]);
+        let text_right = content.max[0];
         let text = settings_text(
             "SETTINGS",
             SETTINGS_LAUNCHER_FONT_SIZE_UNITS,
             SETTINGS_TEXT_COLOR,
             [
-                (text_anchor_x + bounds.max[0]) * 0.5,
-                bounds.min[1] + ((bounds.height() - font_size) * 0.5).max(0.0),
+                (text_left + text_right) * 0.5,
+                content.min[1] + ((content.height() - font_size) * 0.5).max(0.0),
             ],
             TextAlignment::Center,
-            Some((bounds.max[0] - text_anchor_x).max(1.0)),
+            Some((text_right - text_left).max(1.0)),
         );
         Ok(SettingsLauncherFrame {
             skin_quads,
@@ -4223,6 +4221,42 @@ impl ScreenRect {
     }
 }
 
+/// Internal padding for V2 textual buttons. Logical units, scaled with the UI.
+pub(crate) const BUTTON_TEXT_PAD_X: f32 = 5.0;
+pub(crate) const BUTTON_TEXT_PAD_Y: f32 = 2.0;
+
+pub(crate) fn button_content_bounds(bounds: ScreenRect, pixels_per_unit: f32) -> ScreenRect {
+    let pad_x = BUTTON_TEXT_PAD_X * pixels_per_unit;
+    let pad_y = BUTTON_TEXT_PAD_Y * pixels_per_unit;
+    ScreenRect {
+        min: [bounds.min[0] + pad_x, bounds.min[1] + pad_y],
+        max: [
+            (bounds.max[0] - pad_x).max(bounds.min[0] + pad_x),
+            (bounds.max[1] - pad_y).max(bounds.min[1] + pad_y),
+        ],
+    }
+}
+
+pub(crate) fn button_label_text(
+    label: &str,
+    bounds: ScreenRect,
+    font_units: f32,
+    color: [f32; 4],
+    pixels_per_unit: f32,
+) -> TextBlock {
+    let content = button_content_bounds(bounds, pixels_per_unit);
+    let font_px = font_units * pixels_per_unit;
+    TextBlock {
+        content: TextContent(label.to_owned()),
+        style: TextStyle::at_size(font_units, color, TextAlignment::Center),
+        anchor: [
+            (content.min[0] + content.max[0]) * 0.5,
+            content.min[1] + ((content.height() - font_px) * 0.5).max(0.0),
+        ],
+        max_width: Some(content.width().max(1.0)),
+    }
+}
+
 fn clamp_top_left(position: [f32; 2], window_size: [f32; 2], viewport_size: [f32; 2]) -> [f32; 2] {
     let max = [
         (viewport_size[0] - window_size[0]).max(0.0),
@@ -4687,6 +4721,33 @@ fn assemble_horizontal_three_slice_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn button_label_padding_stays_inside_at_each_ui_scale() {
+        let bounds = ScreenRect {
+            min: [10.0, 20.0],
+            max: [122.0, 42.0],
+        };
+        for scale in [0.9_f32, 1.0, 1.25] {
+            let scaled = ScreenRect {
+                min: [bounds.min[0] * scale, bounds.min[1] * scale],
+                max: [bounds.max[0] * scale, bounds.max[1] * scale],
+            };
+            let content = button_content_bounds(scaled, scale);
+            assert!(content.width() < scaled.width() - 1.0);
+            assert!((content.min[0] - scaled.min[0] - BUTTON_TEXT_PAD_X * scale).abs() < 0.01);
+            assert!((scaled.max[0] - content.max[0] - BUTTON_TEXT_PAD_X * scale).abs() < 0.01);
+            assert!((content.min[1] - scaled.min[1] - BUTTON_TEXT_PAD_Y * scale).abs() < 0.01);
+            assert!((scaled.max[1] - content.max[1] - BUTTON_TEXT_PAD_Y * scale).abs() < 0.01);
+            let label = button_label_text("OK", scaled, 11.0, [0.0, 0.0, 0.0, 1.0], scale);
+            let max_width = label.max_width.expect("label width");
+            assert!(max_width < scaled.width());
+            assert!((max_width - content.width()).abs() < 0.01);
+            let font_px = 11.0 * scale;
+            assert!(label.anchor[1] >= content.min[1] - 0.01);
+            assert!(label.anchor[1] + font_px <= content.max[1] + 0.01);
+        }
+    }
 
     fn inventory_registry() -> ContentRegistry {
         purgatory_content::load_registry(
@@ -5258,6 +5319,22 @@ mod tests {
             let name = settings_control_name(*control);
             assert!(frame.texts.iter().any(|text| text.content.0 == name));
         }
+        for (_, bounds) in &layout.controls {
+            let label = frame
+                .texts
+                .iter()
+                .find(|text| {
+                    text.anchor[0] >= bounds.min[0]
+                        && text.anchor[0] <= bounds.max[0]
+                        && text.anchor[1] >= bounds.min[1]
+                        && text.anchor[1] <= bounds.max[1]
+                })
+                .expect("settings value label");
+            assert!(label.max_width.is_some_and(|width| width < bounds.width()));
+            let content = button_content_bounds(*bounds, 1.0);
+            assert!(label.anchor[1] >= content.min[1] - 0.01);
+            assert!(label.anchor[1] + SETTINGS_VALUE_FONT_SIZE_UNITS <= content.max[1] + 0.01);
+        }
     }
 
     #[test]
@@ -5449,6 +5526,23 @@ mod tests {
             assert_eq!(launcher.skin_quads[0].corners[2], launcher_bounds.max);
             assert!((launcher_bounds.width() / scale - SETTINGS_LAUNCHER_WIDTH_UNITS).abs() < 0.01);
             assert!((launcher_bounds.height() / scale - SETTINGS_BUTTON_HEIGHT_UNITS).abs() < 0.01);
+            let launcher_text = launcher
+                .texts
+                .iter()
+                .find(|text| text.content.0 == "SETTINGS")
+                .expect("launcher label");
+            let content = button_content_bounds(launcher_bounds, scale);
+            assert!(
+                launcher_text
+                    .max_width
+                    .is_some_and(|width| width < launcher_bounds.width())
+            );
+            assert!(launcher_text.anchor[1] >= content.min[1] - 0.01);
+            assert!(
+                launcher_text.anchor[1] + SETTINGS_LAUNCHER_FONT_SIZE_UNITS * scale
+                    <= content.max[1] + 0.01
+            );
+            assert!(launcher_text.anchor[0] <= content.max[0] + 0.01);
         }
     }
 

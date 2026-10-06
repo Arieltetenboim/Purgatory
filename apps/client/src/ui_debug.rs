@@ -1,6 +1,7 @@
 //! Dev-only UI DEBUG window. It consumes reusable controls; it does not invent them.
 
-use winit::event::ElementState;
+use winit::event::{ElementState, MouseScrollDelta};
+use winit::keyboard::Key;
 
 use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
@@ -9,12 +10,15 @@ use crate::renderer::{
     UiTexturedQuad,
 };
 use crate::ui_controls::{
-    PROGRESS_FILL_INSET, UiButton, UiButtonSkin, UiCheckbox, UiCheckboxSkin, UiPointerOutcome,
-    UiRadioGroup, UiRadioOutcome, UiRadioSkin, UiSlider, UiSliderGeometry, UiSliderOutcome,
-    UiSliderSkin, UiTabSkin, UiTabVisual, compose_progress_bar, slider_geometry, tab_visual,
+    PROGRESS_FILL_INSET, UiButton, UiButtonSkin, UiButtonVisual, UiCheckbox, UiCheckboxSkin,
+    UiPointerOutcome, UiRadioGroup, UiRadioOutcome, UiRadioSkin, UiScrollGeometry, UiScrollbar,
+    UiSlider, UiSliderGeometry, UiSliderOutcome, UiSliderSkin, UiSlotVisual, UiTabSkin,
+    UiTabVisual, UiTextInput, compose_progress_bar, scroll_geometry, scroll_max_offset,
+    scroll_offset_after_wheel, scroll_rows_from_wheel, slider_geometry, slot_visual, tab_visual,
+    visible_row_indices,
 };
 use crate::ui_panel::{
-    CloseButtonVisual, ProofPanelWindow, ScreenRect, UiTabs, WindowChromeLayout,
+    CloseButtonVisual, ProofPanelWindow, ScreenRect, UiTabs, WindowChromeLayout, button_label_text,
     compose_nine_slice_with_borders, compose_stretched_quad,
 };
 use crate::ui_v2::{
@@ -61,9 +65,11 @@ const MUTED: [f32; 4] = [0.36, 0.39, 0.43, 1.0];
 const TITLE_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const PAGES: [&str; 5] = ["Basics", "Values", "Input", "Containers", "Composite"];
 const RADIO_LABELS: [&str; 4] = ["Low", "Medium", "High", "Disabled"];
-const PLANNED: &str = "Planned for the next UI DEBUG slice.";
 const BASICS: usize = 0;
 const VALUES: usize = 1;
+const INPUT_PAGE: usize = 2;
+const CONTAINERS_PAGE: usize = 3;
+const COMPOSITE_PAGE: usize = 4;
 const VALUE_LABEL_HEIGHT: f32 = 16.0;
 const PROGRESS_TRACK_WIDTH: f32 = 320.0;
 const PROGRESS_TRACK_HEIGHT: f32 = 24.0;
@@ -73,6 +79,51 @@ const SLIDER_HANDLE_SIZE: f32 = 16.0;
 const HP_INITIAL: f32 = 0.67;
 const MP_SAMPLE: f32 = 0.40;
 const EXP_SAMPLE: f32 = 0.82;
+const INPUT_WIDTH: f32 = 320.0;
+const INPUT_HEIGHT: f32 = 24.0;
+const INPUT_TEXT_PAD: f32 = 8.0;
+const SCROLL_ITEMS: usize = 24;
+const SCROLL_VISIBLE: usize = 6;
+const SCROLL_ROW: f32 = 18.0;
+const SCROLL_LIST_WIDTH: f32 = 260.0;
+const SCROLL_GAP: f32 = 4.0;
+const SCROLL_ARROW: f32 = 16.0;
+const SECTION_BUTTON_WIDTH: f32 = 200.0;
+const SLOT_SIZE: f32 = 36.0;
+const SLOT_GAP: f32 = 6.0;
+const HOTBAR_COUNT: usize = 5;
+const HOTBAR_SLOT: f32 = 28.0;
+const HOTBAR_PAD: f32 = 6.0;
+const HOTBAR_COUNTER_SLOT: usize = 1;
+const HOTBAR_COUNTER_VALUE: u32 = 12;
+const BADGE_SIZE: f32 = 14.0;
+const TOOLTIP_WIDTH: f32 = 168.0;
+const TOOLTIP_HEIGHT: f32 = 46.0;
+const TOOLTIP_POINTER: [f32; 2] = [10.0, 6.0];
+const CHAT_BORDER: [f32; 4] = [10.0, 10.0, 10.0, 10.0];
+const SCROLL_TRACK_BORDER: [f32; 4] = [8.0, 10.0, 8.0, 10.0];
+const TOOLTIP_BORDER: [f32; 4] = [14.0, 14.0, 14.0, 18.0];
+const HOTBAR_BORDER: [f32; 4] = [14.0, 14.0, 14.0, 18.0];
+const COUNTER_BORDER: [f32; 4] = [6.0, 6.0, 6.0, 6.0];
+const SECTION_ROWS: [&str; 3] = ["Row A", "Row B", "Row C"];
+/// Dev-only dialog id. It does not overlap drop sequence ids or the death modal.
+pub(crate) const UI_DEBUG_MESSAGE_DIALOG_ID: u64 = 0xA11D_DB60;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UiDebugEvent {
+    OpenMessageDialog,
+}
+
+#[must_use]
+pub(crate) fn text_input_owns_keyboard(visible: bool, on_input_page: bool, focused: bool) -> bool {
+    visible && on_input_page && focused
+}
+
+/// Printable U toggles UI DEBUG only while the text field does not own the keyboard.
+#[must_use]
+pub(crate) fn u_key_toggles_ui_debug(text_input_owns_keyboard: bool) -> bool {
+    !text_input_owns_keyboard
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UiDebugRadio {
@@ -114,6 +165,12 @@ struct UiDebugState {
     checkbox: bool,
     radio: UiDebugRadio,
     hp_value: f32,
+    input_text: String,
+    scroll_offset: usize,
+    section_open: bool,
+    selected_slot: usize,
+    selected_hotbar_slot: usize,
+    notification_count: u32,
 }
 
 impl Default for UiDebugState {
@@ -124,6 +181,12 @@ impl Default for UiDebugState {
             checkbox: false,
             radio: UiDebugRadio::Medium,
             hp_value: HP_INITIAL,
+            input_text: "Hello world".to_owned(),
+            scroll_offset: 0,
+            section_open: false,
+            selected_slot: 2,
+            selected_hotbar_slot: 0,
+            notification_count: 0,
         }
     }
 }
@@ -146,6 +209,18 @@ pub(crate) struct UiDebugAssets {
     status_mp: UiV2NineSlice,
     status_exp: UiV2NineSlice,
     gear: SpriteTextureId,
+    chat_input: UiV2NineSlice,
+    scroll_track: UiV2NineSlice,
+    scroll_thumbs: [SpriteTextureId; 4],
+    scroll_up: [SpriteTextureId; 3],
+    scroll_down: [SpriteTextureId; 3],
+    tooltip_body: UiV2NineSlice,
+    tooltip_pointer: SpriteTextureId,
+    slots: [SpriteTextureId; 4],
+    hotbar_body: UiV2NineSlice,
+    hotbar_slots: [SpriteTextureId; 4],
+    hotbar_counter: UiV2NineSlice,
+    notification_badge: SpriteTextureId,
     tab_overlap: f32,
 }
 
@@ -223,6 +298,64 @@ impl UiDebugAssets {
         let status_mp = load_ui_v2_nine_slice(&mut loader, &catalog, "status_mp_fill_9slice")?;
         let status_exp = load_ui_v2_nine_slice(&mut loader, &catalog, "status_exp_fill_9slice")?;
         let gear = load_ui_v2_image(&mut loader, &catalog, "icon_gear")?.texture;
+        let chat_input = load_ui_v2_nine_slice(&mut loader, &catalog, "chat_input_9slice")?;
+        let scroll_track =
+            load_ui_v2_nine_slice(&mut loader, &catalog, "scrollbar_track_vertical_9slice")?;
+        let scroll_thumbs = image_textures(family(
+            &mut loader,
+            &catalog,
+            &[
+                "scrollbar_thumb_normal",
+                "scrollbar_thumb_hover",
+                "scrollbar_thumb_pressed",
+                "scrollbar_thumb_disabled",
+            ],
+        )?);
+        let scroll_up = textures(load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &[
+                "scroll_arrow_up_normal",
+                "scroll_arrow_up_hover",
+                "scroll_arrow_up_pressed",
+            ],
+        )?)?;
+        let scroll_down = textures(load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &[
+                "scroll_arrow_down_normal",
+                "scroll_arrow_down_hover",
+                "scroll_arrow_down_pressed",
+            ],
+        )?)?;
+        let tooltip_body = load_ui_v2_nine_slice(&mut loader, &catalog, "tooltip_body_9slice")?;
+        let tooltip_pointer = load_ui_v2_image(&mut loader, &catalog, "tooltip_pointer")?.texture;
+        let slots = image_textures(family(
+            &mut loader,
+            &catalog,
+            &[
+                "slot_normal",
+                "slot_hover",
+                "slot_selected",
+                "slot_disabled",
+            ],
+        )?);
+        let hotbar_body = load_ui_v2_nine_slice(&mut loader, &catalog, "hotbar_body_9slice")?;
+        let hotbar_slots = image_textures(family(
+            &mut loader,
+            &catalog,
+            &[
+                "hotbar_slot_normal",
+                "hotbar_slot_hover",
+                "hotbar_slot_selected",
+                "hotbar_slot_disabled",
+            ],
+        )?);
+        let hotbar_counter =
+            load_ui_v2_nine_slice(&mut loader, &catalog, "hotbar_counter_badge_9slice")?;
+        let notification_badge =
+            load_ui_v2_image(&mut loader, &catalog, "notification_badge")?.texture;
         Ok(Self {
             panel,
             header,
@@ -241,6 +374,18 @@ impl UiDebugAssets {
             status_mp,
             status_exp,
             gear,
+            chat_input,
+            scroll_track,
+            scroll_thumbs,
+            scroll_up,
+            scroll_down,
+            tooltip_body,
+            tooltip_pointer,
+            slots,
+            hotbar_body,
+            hotbar_slots,
+            hotbar_counter,
+            notification_badge,
             tab_overlap,
         })
     }
@@ -275,6 +420,9 @@ struct DebugLayout {
     mp_track: ScreenRect,
     exp_label: ScreenRect,
     exp_track: ScreenRect,
+    input: InputPlaces,
+    containers: ContainerPlaces,
+    composite: CompositePlaces,
 }
 
 pub(crate) struct UiDebugWindow {
@@ -288,6 +436,17 @@ pub(crate) struct UiDebugWindow {
     disabled_checkbox: UiCheckbox,
     radios: UiRadioGroup,
     hp_slider: UiSlider,
+    text_input: UiTextInput,
+    scrollbar: UiScrollbar,
+    scroll_up: UiButton,
+    scroll_down: UiButton,
+    section_button: UiButton,
+    slots: UiRadioGroup,
+    hotbar_slots: UiRadioGroup,
+    notify_button: UiButton,
+    clear_button: UiButton,
+    dialog_button: UiButton,
+    pending_event: Option<UiDebugEvent>,
     state: UiDebugState,
 }
 
@@ -308,6 +467,17 @@ impl UiDebugWindow {
             disabled_checkbox: UiCheckbox::default(),
             radios: UiRadioGroup::default(),
             hp_slider: UiSlider::default(),
+            text_input: UiTextInput::default(),
+            scrollbar: UiScrollbar::default(),
+            scroll_up: UiButton::default(),
+            scroll_down: UiButton::default(),
+            section_button: UiButton::default(),
+            slots: UiRadioGroup::default(),
+            hotbar_slots: UiRadioGroup::default(),
+            notify_button: UiButton::default(),
+            clear_button: UiButton::default(),
+            dialog_button: UiButton::default(),
+            pending_event: None,
             state: UiDebugState::default(),
         }
     }
@@ -325,14 +495,66 @@ impl UiDebugWindow {
         self.cancel_pointer_interaction();
     }
 
+    pub(crate) fn wants_text_keyboard(&self) -> bool {
+        text_input_owns_keyboard(
+            self.is_visible(),
+            self.tabs.selected_index() == INPUT_PAGE,
+            self.text_input.is_focused(),
+        )
+    }
+
+    pub(crate) fn blur_text_input(&mut self) {
+        self.text_input.blur();
+    }
+
+    pub(crate) fn apply_text_key(&mut self, key: &Key, text: Option<&str>, repeat: bool) -> bool {
+        if !self.wants_text_keyboard() {
+            return false;
+        }
+        self.text_input
+            .apply_key(&mut self.state.input_text, key, text, repeat)
+    }
+
+    pub(crate) fn take_event(&mut self) -> Option<UiDebugEvent> {
+        self.pending_event.take()
+    }
+
+    pub(crate) fn apply_wheel(
+        &mut self,
+        delta: MouseScrollDelta,
+        cursor: Option<[f32; 2]>,
+        viewport: PixelViewport,
+        pixels_per_unit: f32,
+    ) -> bool {
+        if !self.is_visible() || self.tabs.selected_index() != CONTAINERS_PAGE {
+            return false;
+        }
+        let Some(point) = cursor else {
+            return false;
+        };
+        let Ok(Some(layout)) = self.layout(viewport, pixels_per_unit) else {
+            return false;
+        };
+        if !layout.containers.scroll.region.contains(point) {
+            return false;
+        }
+        let max_offset = scroll_max_offset(SCROLL_ITEMS, SCROLL_VISIBLE);
+        self.state.scroll_offset = scroll_offset_after_wheel(
+            self.state.scroll_offset,
+            max_offset,
+            scroll_rows_from_wheel(delta),
+        );
+        true
+    }
+
     pub(crate) fn frame(
         &mut self,
         viewport: PixelViewport,
         pixels_per_unit: f32,
         cursor: Option<[f32; 2]>,
     ) -> Result<Option<UiDebugFrame>, String> {
-        if self.is_visible() && self.tabs.selected_index() != VALUES {
-            self.hp_slider.cancel();
+        if self.is_visible() {
+            self.sync_page_interaction();
         }
         let Some(layout) = self.layout(viewport, pixels_per_unit)? else {
             return Ok(None);
@@ -349,10 +571,7 @@ impl UiDebugWindow {
         if !self.is_visible() {
             return false;
         }
-        if self.tabs.selected_index() != VALUES {
-            self.hp_slider.cancel();
-            return self.chrome.pointer_moved(cursor, viewport, pixels_per_unit);
-        }
+        self.sync_page_interaction();
         if self.hp_slider.is_dragging() {
             let Ok(Some(layout)) = self.layout(viewport, pixels_per_unit) else {
                 self.hp_slider.cancel();
@@ -366,6 +585,21 @@ impl UiDebugWindow {
                 Ok(_) => false,
                 Err(_) => false,
             };
+        }
+        if self.scrollbar.is_dragging() {
+            let Ok(Some(layout)) = self.layout(viewport, pixels_per_unit) else {
+                self.scrollbar.cancel();
+                return false;
+            };
+            let max_offset = scroll_max_offset(SCROLL_ITEMS, SCROLL_VISIBLE);
+            if let Some(offset) =
+                self.scrollbar
+                    .pointer_moved(cursor[1], &layout.containers.scroll, max_offset)
+            {
+                self.state.scroll_offset = offset;
+                return true;
+            }
+            return false;
         }
         self.chrome.pointer_moved(cursor, viewport, pixels_per_unit)
     }
@@ -402,8 +636,17 @@ impl UiDebugWindow {
                 return true;
             }
         }
+        if self.scrollbar.is_dragging() && self.tabs.selected_index() != CONTAINERS_PAGE {
+            self.scrollbar.cancel();
+            if state == ElementState::Released {
+                return true;
+            }
+        }
         if self.hp_slider.is_dragging() {
             return self.route_slider_capture(state, cursor, &layout, pixels_per_unit);
+        }
+        if self.scrollbar.is_dragging() {
+            return self.route_scroll_capture(state, cursor, &layout);
         }
         match state {
             ElementState::Released => {
@@ -416,12 +659,7 @@ impl UiDebugWindow {
                 if self.press_tab(&layout, cursor) {
                     return true;
                 }
-                if self.tabs.selected_index() == BASICS && self.press_controls(&layout, cursor) {
-                    return true;
-                }
-                if self.tabs.selected_index() == VALUES
-                    && self.press_slider(&layout, cursor, pixels_per_unit)
-                {
+                if self.press_page(&layout, cursor, pixels_per_unit) {
                     return true;
                 }
                 self.apply_chrome(ElementState::Pressed, cursor, &layout, pixels_per_unit)
@@ -439,6 +677,47 @@ impl UiDebugWindow {
         self.disabled_checkbox.cancel();
         self.radios.cancel();
         self.hp_slider.cancel();
+        self.text_input.blur();
+        self.scrollbar.cancel();
+        self.scroll_up.cancel();
+        self.scroll_down.cancel();
+        self.section_button.cancel();
+        self.slots.cancel();
+        self.hotbar_slots.cancel();
+        self.notify_button.cancel();
+        self.clear_button.cancel();
+        self.dialog_button.cancel();
+    }
+
+    fn sync_page_interaction(&mut self) {
+        let page = self.tabs.selected_index();
+        if page != VALUES {
+            self.hp_slider.cancel();
+        }
+        if page != CONTAINERS_PAGE {
+            self.scrollbar.cancel();
+            self.scroll_up.cancel();
+            self.scroll_down.cancel();
+            self.section_button.cancel();
+        }
+        if page != INPUT_PAGE {
+            self.text_input.blur();
+        }
+        if page != COMPOSITE_PAGE {
+            self.slots.cancel();
+            self.hotbar_slots.cancel();
+            self.notify_button.cancel();
+            self.clear_button.cancel();
+            self.dialog_button.cancel();
+        }
+        if page != BASICS {
+            self.click_button.cancel();
+            self.icon_button.cancel();
+            self.disabled_button.cancel();
+            self.checkbox.cancel();
+            self.disabled_checkbox.cancel();
+            self.radios.cancel();
+        }
     }
 
     fn layout(
@@ -449,7 +728,13 @@ impl UiDebugWindow {
         let Some(window) = self.chrome.placed_bounds(viewport, pixels_per_unit)? else {
             return Ok(None);
         };
-        layout_debug(window, self.assets.tab_overlap, pixels_per_unit).map(Some)
+        layout_debug(
+            window,
+            self.assets.tab_overlap,
+            pixels_per_unit,
+            self.state.scroll_offset,
+        )
+        .map(Some)
     }
 
     fn apply_chrome(
@@ -638,7 +923,101 @@ impl UiDebugWindow {
             }
             return true;
         }
+        if self.scroll_up.is_pressed() {
+            if self.scroll_up.apply(
+                ElementState::Released,
+                cursor,
+                layout.containers.scroll.up,
+                true,
+            ) == UiPointerOutcome::Activated
+            {
+                self.state.scroll_offset = self.state.scroll_offset.saturating_sub(1);
+            }
+            return true;
+        }
+        if self.scroll_down.is_pressed() {
+            if self.scroll_down.apply(
+                ElementState::Released,
+                cursor,
+                layout.containers.scroll.down,
+                true,
+            ) == UiPointerOutcome::Activated
+            {
+                let max_offset = scroll_max_offset(SCROLL_ITEMS, SCROLL_VISIBLE);
+                self.state.scroll_offset = (self.state.scroll_offset + 1).min(max_offset);
+            }
+            return true;
+        }
+        if self.section_button.is_pressed() {
+            if self.section_button.apply(
+                ElementState::Released,
+                cursor,
+                layout.containers.section_button,
+                true,
+            ) == UiPointerOutcome::Activated
+            {
+                self.state.section_open = !self.state.section_open;
+            }
+            return true;
+        }
+        if self.slots.is_pressed() {
+            if let UiRadioOutcome::Selected(index) = self.slots.apply(
+                ElementState::Released,
+                cursor,
+                &slot_hits(&layout.composite.slots),
+            ) {
+                self.state.selected_slot = index;
+            }
+            return true;
+        }
+        if self.hotbar_slots.is_pressed() {
+            if let UiRadioOutcome::Selected(index) = self.hotbar_slots.apply(
+                ElementState::Released,
+                cursor,
+                &hotbar_hits(&layout.composite.hotbar_slots),
+            ) {
+                self.state.selected_hotbar_slot = index;
+            }
+            return true;
+        }
+        if self.notify_button.is_pressed() {
+            if self.notify_button.apply(
+                ElementState::Released,
+                cursor,
+                layout.composite.notify_button,
+                true,
+            ) == UiPointerOutcome::Activated
+            {
+                self.state.notification_count = self.state.notification_count.saturating_add(1);
+            }
+            return true;
+        }
+        if self.clear_button.is_pressed() {
+            if self.clear_button.apply(
+                ElementState::Released,
+                cursor,
+                layout.composite.clear_button,
+                true,
+            ) == UiPointerOutcome::Activated
+            {
+                self.state.notification_count = 0;
+            }
+            return true;
+        }
+        if self.dialog_button.is_pressed() {
+            if self.dialog_button.apply(
+                ElementState::Released,
+                cursor,
+                layout.composite.dialog_button,
+                true,
+            ) == UiPointerOutcome::Activated
+            {
+                self.pending_event = Some(UiDebugEvent::OpenMessageDialog);
+            }
+            return true;
+        }
         if self.tabs.pressed_index().is_some() {
+            let previous = self.tabs.selected_index();
             let handled = self.tabs.apply_pointer_button(
                 ElementState::Released,
                 cursor,
@@ -646,12 +1025,125 @@ impl UiDebugWindow {
                 PAGES.len(),
                 0.0,
             );
-            if self.tabs.selected_index() != VALUES {
-                self.hp_slider.cancel();
+            if self.tabs.selected_index() != previous {
+                self.sync_page_interaction();
             }
             return handled;
         }
         false
+    }
+
+    fn press_page(&mut self, layout: &DebugLayout, cursor: Option<[f32; 2]>, scale: f32) -> bool {
+        match self.tabs.selected_index() {
+            BASICS => self.press_controls(layout, cursor),
+            VALUES => self.press_slider(layout, cursor, scale),
+            INPUT_PAGE => self
+                .text_input
+                .apply_press(inside(layout.input.field, cursor), &self.state.input_text),
+            CONTAINERS_PAGE => self.press_containers(layout, cursor),
+            COMPOSITE_PAGE => self.press_composite(layout, cursor),
+            _ => false,
+        }
+    }
+
+    fn press_containers(&mut self, layout: &DebugLayout, cursor: Option<[f32; 2]>) -> bool {
+        let max_offset = scroll_max_offset(SCROLL_ITEMS, SCROLL_VISIBLE);
+        if self.scrollbar.apply_thumb(
+            ElementState::Pressed,
+            cursor,
+            &layout.containers.scroll,
+            max_offset,
+        ) {
+            return true;
+        }
+        if self.scroll_up.apply(
+            ElementState::Pressed,
+            cursor,
+            layout.containers.scroll.up,
+            true,
+        ) != UiPointerOutcome::Idle
+        {
+            return true;
+        }
+        if self.scroll_down.apply(
+            ElementState::Pressed,
+            cursor,
+            layout.containers.scroll.down,
+            true,
+        ) != UiPointerOutcome::Idle
+        {
+            return true;
+        }
+        self.section_button.apply(
+            ElementState::Pressed,
+            cursor,
+            layout.containers.section_button,
+            true,
+        ) != UiPointerOutcome::Idle
+    }
+
+    fn press_composite(&mut self, layout: &DebugLayout, cursor: Option<[f32; 2]>) -> bool {
+        if self.slots.apply(
+            ElementState::Pressed,
+            cursor,
+            &slot_hits(&layout.composite.slots),
+        ) != UiRadioOutcome::Idle
+        {
+            return true;
+        }
+        if self.hotbar_slots.apply(
+            ElementState::Pressed,
+            cursor,
+            &hotbar_hits(&layout.composite.hotbar_slots),
+        ) != UiRadioOutcome::Idle
+        {
+            return true;
+        }
+        if self.notify_button.apply(
+            ElementState::Pressed,
+            cursor,
+            layout.composite.notify_button,
+            true,
+        ) != UiPointerOutcome::Idle
+        {
+            return true;
+        }
+        if self.clear_button.apply(
+            ElementState::Pressed,
+            cursor,
+            layout.composite.clear_button,
+            true,
+        ) != UiPointerOutcome::Idle
+        {
+            return true;
+        }
+        self.dialog_button.apply(
+            ElementState::Pressed,
+            cursor,
+            layout.composite.dialog_button,
+            true,
+        ) != UiPointerOutcome::Idle
+    }
+
+    fn route_scroll_capture(
+        &mut self,
+        state: ElementState,
+        cursor: Option<[f32; 2]>,
+        layout: &DebugLayout,
+    ) -> bool {
+        if state == ElementState::Pressed {
+            return true;
+        }
+        let max_offset = scroll_max_offset(SCROLL_ITEMS, SCROLL_VISIBLE);
+        if let Some(point) = cursor
+            && let Some(offset) =
+                self.scrollbar
+                    .pointer_moved(point[1], &layout.containers.scroll, max_offset)
+        {
+            self.state.scroll_offset = offset;
+        }
+        self.scrollbar.cancel();
+        true
     }
 }
 
@@ -664,6 +1156,43 @@ fn family(
     loaded
         .try_into()
         .map_err(|_| "UI DEBUG state family length is not 4".to_string())
+}
+
+fn image_textures(images: [UiV2Image; 4]) -> [SpriteTextureId; 4] {
+    [
+        images[0].texture,
+        images[1].texture,
+        images[2].texture,
+        images[3].texture,
+    ]
+}
+
+fn inside(bounds: ScreenRect, cursor: Option<[f32; 2]>) -> bool {
+    cursor.is_some_and(|point| bounds.contains(point))
+}
+
+fn slot_enabled(index: usize) -> bool {
+    index != 3
+}
+
+fn hotbar_enabled(index: usize) -> bool {
+    index + 1 != HOTBAR_COUNT
+}
+
+fn slot_hits(slots: &[ScreenRect; 4]) -> [(ScreenRect, bool); 4] {
+    let mut hits = [(slots[0], false); 4];
+    for (index, bounds) in slots.iter().copied().enumerate() {
+        hits[index] = (bounds, slot_enabled(index));
+    }
+    hits
+}
+
+fn hotbar_hits(slots: &[ScreenRect; HOTBAR_COUNT]) -> [(ScreenRect, bool); HOTBAR_COUNT] {
+    let mut hits = [(slots[0], false); HOTBAR_COUNT];
+    for (index, bounds) in slots.iter().copied().enumerate() {
+        hits[index] = (bounds, hotbar_enabled(index));
+    }
+    hits
 }
 
 fn textures(images: Vec<UiV2Image>) -> Result<[SpriteTextureId; 3], String> {
@@ -777,7 +1306,12 @@ fn split_tabs(bounds: ScreenRect) -> [ScreenRect; PAGES.len()] {
     tabs
 }
 
-fn layout_debug(window: ScreenRect, tab_overlap: f32, scale: f32) -> Result<DebugLayout, String> {
+fn layout_debug(
+    window: ScreenRect,
+    tab_overlap: f32,
+    scale: f32,
+    scroll_offset: usize,
+) -> Result<DebugLayout, String> {
     if !scale.is_finite() || scale <= 0.0 || !tab_overlap.is_finite() || tab_overlap <= 0.0 {
         return Err("UI DEBUG scale is invalid".to_string());
     }
@@ -863,6 +1397,9 @@ fn layout_debug(window: ScreenRect, tab_overlap: f32, scale: f32) -> Result<Debu
     }
     let content_bottom = origin[1] + y * scale;
     let values = place_values(origin, scale);
+    let input = place_input(origin, scale);
+    let containers = place_containers(origin, scale, scroll_offset)?;
+    let composite = place_composite(origin, scale);
     let state_x = origin[0] + STATE_COLUMN_X * scale;
     let fits = gear.max[0] < close_button.min[0]
         && close_button.max[0] <= header.max[0]
@@ -876,7 +1413,13 @@ fn layout_debug(window: ScreenRect, tab_overlap: f32, scale: f32) -> Result<Debu
         && radio_rows[RADIO_LABELS.len() - 1].max[1] <= limit_y + 0.05
         && values.bottom <= limit_y + 0.05
         && values.hp_track.max[0] <= inner.max[0]
-        && values.slider_track.max[1] <= values.mp_label.min[1];
+        && values.slider_track.max[1] <= values.mp_label.min[1]
+        && input.bottom <= limit_y + 0.05
+        && containers.bottom <= limit_y + 0.05
+        && composite.bottom <= limit_y + 0.05
+        && containers.scroll.region.max[0] <= inner.max[0]
+        && composite.dialog_button.max[0] <= inner.max[0]
+        && composite.badge.max[1] > composite.badge_button.min[1];
     if !fits {
         return Err(format!(
             "UI DEBUG layout does not fit {UI_DEBUG_WINDOW_UNITS:?} at scale {scale}"
@@ -906,6 +1449,9 @@ fn layout_debug(window: ScreenRect, tab_overlap: f32, scale: f32) -> Result<Debu
         mp_track: values.mp_track,
         exp_label: values.exp_label,
         exp_track: values.exp_track,
+        input,
+        containers,
+        composite,
     })
 }
 
@@ -1003,6 +1549,158 @@ struct ValuesPlaces {
     bottom: f32,
 }
 
+struct InputPlaces {
+    field: ScreenRect,
+    static_field: ScreenRect,
+    bottom: f32,
+}
+
+struct ContainerPlaces {
+    scroll: UiScrollGeometry,
+    section_button: ScreenRect,
+    section_rows: [ScreenRect; 3],
+    bottom: f32,
+}
+
+struct CompositePlaces {
+    slots: [ScreenRect; 4],
+    hotbar: ScreenRect,
+    hotbar_slots: [ScreenRect; HOTBAR_COUNT],
+    counter: ScreenRect,
+    badge_button: ScreenRect,
+    badge: ScreenRect,
+    notify_button: ScreenRect,
+    clear_button: ScreenRect,
+    dialog_button: ScreenRect,
+    bottom: f32,
+}
+
+fn place_input(origin: [f32; 2], scale: f32) -> InputPlaces {
+    let mut y = HEADING_HEIGHT + LINE_HEIGHT;
+    let field = unit_rect(origin, 0.0, y, INPUT_WIDTH, INPUT_HEIGHT, scale);
+    y += INPUT_HEIGHT + ROW_GAP + LINE_HEIGHT * 2.0 + SECTION_GAP + LINE_HEIGHT;
+    let static_field = unit_rect(origin, 0.0, y, INPUT_WIDTH, INPUT_HEIGHT, scale);
+    y += INPUT_HEIGHT;
+    InputPlaces {
+        field,
+        static_field,
+        bottom: origin[1] + y * scale,
+    }
+}
+
+fn place_containers(
+    origin: [f32; 2],
+    scale: f32,
+    offset: usize,
+) -> Result<ContainerPlaces, String> {
+    let mut y = HEADING_HEIGHT;
+    let list = unit_rect(
+        origin,
+        0.0,
+        y,
+        SCROLL_LIST_WIDTH,
+        SCROLL_ROW * SCROLL_VISIBLE as f32,
+        scale,
+    );
+    let scroll = scroll_geometry(
+        list,
+        SCROLL_GAP * scale,
+        SCROLL_ARROW * scale,
+        offset,
+        SCROLL_ITEMS,
+        SCROLL_VISIBLE,
+    )?;
+    y += SCROLL_ROW * SCROLL_VISIBLE as f32 + ROW_GAP + LINE_HEIGHT + SECTION_GAP + HEADING_HEIGHT;
+    let section_button = unit_rect(origin, 0.0, y, SECTION_BUTTON_WIDTH, BUTTON_HEIGHT, scale);
+    y += BUTTON_HEIGHT + ROW_GAP + LINE_HEIGHT;
+    let mut section_rows = [section_button; 3];
+    for row in &mut section_rows {
+        *row = unit_rect(origin, 0.0, y, 180.0, LINE_HEIGHT, scale);
+        y += LINE_HEIGHT;
+    }
+    Ok(ContainerPlaces {
+        scroll,
+        section_button,
+        section_rows,
+        bottom: origin[1] + y * scale,
+    })
+}
+
+fn place_composite(origin: [f32; 2], scale: f32) -> CompositePlaces {
+    let mut y = HEADING_HEIGHT;
+    let mut slots = [unit_rect(origin, 0.0, y, SLOT_SIZE, SLOT_SIZE, scale); 4];
+    for (index, slot) in slots.iter_mut().enumerate() {
+        let column = (index % 2) as f32;
+        let row = (index / 2) as f32;
+        *slot = unit_rect(
+            origin,
+            column * (SLOT_SIZE + SLOT_GAP),
+            y + row * (SLOT_SIZE + SLOT_GAP),
+            SLOT_SIZE,
+            SLOT_SIZE,
+            scale,
+        );
+    }
+    y += SLOT_SIZE * 2.0 + SLOT_GAP + SECTION_GAP + HEADING_HEIGHT;
+    let hotbar_width =
+        HOTBAR_PAD * 2.0 + HOTBAR_COUNT as f32 * HOTBAR_SLOT + (HOTBAR_COUNT - 1) as f32 * SLOT_GAP;
+    let hotbar_height = HOTBAR_PAD * 2.0 + HOTBAR_SLOT;
+    let hotbar = unit_rect(origin, 0.0, y, hotbar_width, hotbar_height, scale);
+    let mut hotbar_slots = [hotbar; HOTBAR_COUNT];
+    for (index, slot) in hotbar_slots.iter_mut().enumerate() {
+        *slot = unit_rect(
+            origin,
+            HOTBAR_PAD + index as f32 * (HOTBAR_SLOT + SLOT_GAP),
+            y + HOTBAR_PAD,
+            HOTBAR_SLOT,
+            HOTBAR_SLOT,
+            scale,
+        );
+    }
+    let counter_slot = hotbar_slots[HOTBAR_COUNTER_SLOT];
+    let counter = ScreenRect {
+        min: [
+            counter_slot.max[0] - 18.0 * scale,
+            counter_slot.max[1] - 12.0 * scale,
+        ],
+        max: [
+            counter_slot.max[0] - 2.0 * scale,
+            counter_slot.max[1] - 2.0 * scale,
+        ],
+    };
+    y += hotbar_height + SECTION_GAP + HEADING_HEIGHT;
+    let badge_button = unit_rect(origin, 0.0, y, ICON_BUTTON_SIZE, ICON_BUTTON_SIZE, scale);
+    let badge_size = BADGE_SIZE * scale;
+    let badge = ScreenRect {
+        min: [
+            badge_button.max[0] - badge_size * 0.7,
+            badge_button.min[1] - badge_size * 0.25,
+        ],
+        max: [
+            badge_button.max[0] + badge_size * 0.3,
+            badge_button.min[1] + badge_size * 0.75,
+        ],
+    };
+    y += ICON_BUTTON_SIZE + ROW_GAP;
+    let notify_button = unit_rect(origin, 0.0, y, 150.0, BUTTON_HEIGHT, scale);
+    let clear_button = unit_rect(origin, 158.0, y, 72.0, BUTTON_HEIGHT, scale);
+    y += BUTTON_HEIGHT + ROW_GAP;
+    let dialog_button = unit_rect(origin, 0.0, y, BUTTON_WIDTH, BUTTON_HEIGHT, scale);
+    y += BUTTON_HEIGHT;
+    CompositePlaces {
+        slots,
+        hotbar,
+        hotbar_slots,
+        counter,
+        badge_button,
+        badge,
+        notify_button,
+        clear_button,
+        dialog_button,
+        bottom: origin[1] + y * scale,
+    }
+}
+
 fn content_rails(inner: ScreenRect, active: ScreenRect, scale: f32) -> [ScreenRect; 2] {
     let left = TABBED_BORDER[0] * scale;
     let right = TABBED_BORDER[2] * scale;
@@ -1079,13 +1777,12 @@ fn compose(
         push_basics(&mut skin_quads, &mut texts, window, layout, cursor, scale)?;
     } else if window.tabs.selected_index() == VALUES {
         push_values(&mut skin_quads, &mut texts, window, layout, cursor, scale)?;
-    } else {
-        texts.push(body_text(
-            PLANNED,
-            content_origin(layout.inner, scale),
-            layout.inner.width() - (TABBED_BORDER[0] + TABBED_BORDER[2] + PAGE_PAD * 2.0) * scale,
-            INK,
-        ));
+    } else if window.tabs.selected_index() == INPUT_PAGE {
+        push_input(&mut skin_quads, &mut texts, window, layout, scale)?;
+    } else if window.tabs.selected_index() == CONTAINERS_PAGE {
+        push_containers(&mut skin_quads, &mut texts, window, layout, cursor, scale)?;
+    } else if window.tabs.selected_index() == COMPOSITE_PAGE {
+        push_composite(&mut skin_quads, &mut texts, window, layout, cursor, scale)?;
     }
     skin_quads.push(compose_stretched_quad(layout.gear, window.assets.gear)?);
     let close_visual = window
@@ -1120,7 +1817,7 @@ fn push_basics(
             true,
         )),
     )?;
-    texts.push(centered_label(
+    texts.push(button_label_text(
         "Click Me",
         layout.click_button,
         BODY_FONT,
@@ -1155,7 +1852,7 @@ fn push_basics(
             false,
         )),
     )?;
-    texts.push(centered_label(
+    texts.push(button_label_text(
         "Disabled",
         layout.disabled_button,
         BODY_FONT,
@@ -1455,6 +2152,414 @@ fn body_text(label: &str, anchor: [f32; 2], max_width: f32, color: [f32; 4]) -> 
     }
 }
 
+fn push_input(
+    quads: &mut Vec<UiTexturedQuad>,
+    texts: &mut Vec<TextBlock>,
+    window: &UiDebugWindow,
+    layout: &DebugLayout,
+    scale: f32,
+) -> Result<(), String> {
+    let origin = content_origin(layout.inner, scale);
+    texts.push(heading(
+        "TEXT INPUT",
+        [layout.input.field.min[0], origin[1]],
+    ));
+    texts.push(body_text(
+        "Name:",
+        [
+            layout.input.field.min[0],
+            layout.input.field.min[1] - LINE_HEIGHT * scale,
+        ],
+        80.0 * scale,
+        INK,
+    ));
+    push_slice(
+        quads,
+        layout.input.field,
+        &window.assets.chat_input,
+        CHAT_BORDER,
+        scale,
+    )?;
+    texts.push(field_text(
+        &window.text_input.display_text(&window.state.input_text),
+        layout.input.field,
+        scale,
+    ));
+    let count = window.state.input_text.chars().count();
+    texts.push(body_text(
+        &format!("Characters: {count}"),
+        [
+            layout.input.field.min[0],
+            layout.input.field.max[1] + ROW_GAP * scale,
+        ],
+        layout.input.field.width(),
+        INK,
+    ));
+    let focused = if window.text_input.is_focused() {
+        "Yes"
+    } else {
+        "No"
+    };
+    texts.push(body_text(
+        &format!("Focused: {focused}"),
+        [
+            layout.input.field.min[0],
+            layout.input.field.max[1] + (ROW_GAP + LINE_HEIGHT) * scale,
+        ],
+        layout.input.field.width(),
+        INK,
+    ));
+    texts.push(body_text(
+        "Static",
+        [
+            layout.input.static_field.min[0],
+            layout.input.static_field.min[1] - LINE_HEIGHT * scale,
+        ],
+        80.0 * scale,
+        MUTED,
+    ));
+    push_slice(
+        quads,
+        layout.input.static_field,
+        &window.assets.chat_input,
+        CHAT_BORDER,
+        scale,
+    )?;
+    texts.push(field_text("Sample", layout.input.static_field, scale));
+    Ok(())
+}
+
+fn push_containers(
+    quads: &mut Vec<UiTexturedQuad>,
+    texts: &mut Vec<TextBlock>,
+    window: &UiDebugWindow,
+    layout: &DebugLayout,
+    cursor: Option<[f32; 2]>,
+    scale: f32,
+) -> Result<(), String> {
+    let origin = content_origin(layout.inner, scale);
+    let scroll = layout.containers.scroll;
+    texts.push(heading("SCROLL VIEW", [scroll.list.min[0], origin[1]]));
+    let max_offset = scroll_max_offset(SCROLL_ITEMS, SCROLL_VISIBLE);
+    for index in visible_row_indices(window.state.scroll_offset, SCROLL_ITEMS, SCROLL_VISIBLE) {
+        let row = index - window.state.scroll_offset.min(SCROLL_ITEMS);
+        let y = scroll.list.min[1] + row as f32 * SCROLL_ROW * scale;
+        texts.push(body_text(
+            &format!("Item {:02}", index + 1),
+            [scroll.list.min[0] + 6.0 * scale, y + 2.0 * scale],
+            scroll.list.width() - 12.0 * scale,
+            INK,
+        ));
+    }
+    push_slice(
+        quads,
+        scroll.track,
+        &window.assets.scroll_track,
+        SCROLL_TRACK_BORDER,
+        scale,
+    )?;
+    let thumb = if max_offset == 0 {
+        window.assets.scroll_thumbs[3]
+    } else if window.scrollbar.is_dragging() {
+        window.assets.scroll_thumbs[2]
+    } else if inside(scroll.thumb, cursor) {
+        window.assets.scroll_thumbs[1]
+    } else {
+        window.assets.scroll_thumbs[0]
+    };
+    push_button(quads, scroll.thumb, thumb)?;
+    push_button(
+        quads,
+        scroll.up,
+        arrow_texture(
+            window.assets.scroll_up,
+            window.scroll_up.visual(cursor, scroll.up, true),
+        ),
+    )?;
+    push_button(
+        quads,
+        scroll.down,
+        arrow_texture(
+            window.assets.scroll_down,
+            window.scroll_down.visual(cursor, scroll.down, true),
+        ),
+    )?;
+    texts.push(body_text(
+        &format!("Offset: {} / {max_offset}", window.state.scroll_offset),
+        [scroll.list.min[0], scroll.list.max[1] + ROW_GAP * scale],
+        scroll.list.width(),
+        INK,
+    ));
+    texts.push(heading(
+        "SECTION",
+        [
+            layout.containers.section_button.min[0],
+            layout.containers.section_button.min[1] - HEADING_HEIGHT * scale,
+        ],
+    ));
+    let section_label = if window.state.section_open {
+        "Close Advanced Section"
+    } else {
+        "Open Advanced Section"
+    };
+    push_button(
+        quads,
+        layout.containers.section_button,
+        window.assets.buttons.texture(window.section_button.visual(
+            cursor,
+            layout.containers.section_button,
+            true,
+        )),
+    )?;
+    texts.push(button_label_text(
+        section_label,
+        layout.containers.section_button,
+        BODY_FONT,
+        INK,
+        scale,
+    ));
+    if window.state.section_open {
+        texts.push(body_text(
+            "Advanced content:",
+            [
+                layout.containers.section_rows[0].min[0],
+                layout.containers.section_button.max[1] + ROW_GAP * scale,
+            ],
+            180.0 * scale,
+            INK,
+        ));
+        for (label, row) in SECTION_ROWS.iter().zip(layout.containers.section_rows) {
+            texts.push(body_text(label, [row.min[0], row.min[1]], row.width(), INK));
+        }
+    }
+    Ok(())
+}
+
+fn push_composite(
+    quads: &mut Vec<UiTexturedQuad>,
+    texts: &mut Vec<TextBlock>,
+    window: &UiDebugWindow,
+    layout: &DebugLayout,
+    cursor: Option<[f32; 2]>,
+    scale: f32,
+) -> Result<(), String> {
+    let origin = content_origin(layout.inner, scale);
+    texts.push(heading(
+        "SLOTS",
+        [layout.composite.slots[0].min[0], origin[1]],
+    ));
+    for (index, bounds) in layout.composite.slots.iter().copied().enumerate() {
+        let hovered = inside(bounds, cursor);
+        let visual = slot_visual(
+            slot_enabled(index),
+            window.state.selected_slot == index,
+            hovered,
+        );
+        push_button(quads, bounds, slot_texture(window.assets.slots, visual))?;
+    }
+    texts.push(heading(
+        "HOTBAR",
+        [
+            layout.composite.hotbar.min[0],
+            layout.composite.hotbar.min[1] - HEADING_HEIGHT * scale,
+        ],
+    ));
+    push_slice(
+        quads,
+        layout.composite.hotbar,
+        &window.assets.hotbar_body,
+        HOTBAR_BORDER,
+        scale,
+    )?;
+    for (index, bounds) in layout.composite.hotbar_slots.iter().copied().enumerate() {
+        let visual = slot_visual(
+            hotbar_enabled(index),
+            window.state.selected_hotbar_slot == index,
+            inside(bounds, cursor),
+        );
+        push_button(
+            quads,
+            bounds,
+            slot_texture(window.assets.hotbar_slots, visual),
+        )?;
+    }
+    push_slice(
+        quads,
+        layout.composite.counter,
+        &window.assets.hotbar_counter,
+        COUNTER_BORDER,
+        scale,
+    )?;
+    texts.push(centered_label(
+        &HOTBAR_COUNTER_VALUE.to_string(),
+        layout.composite.counter,
+        8.0,
+        INK,
+        scale,
+    ));
+    texts.push(heading(
+        "BADGE",
+        [
+            layout.composite.badge_button.min[0],
+            layout.composite.badge_button.min[1] - HEADING_HEIGHT * scale,
+        ],
+    ));
+    push_button(
+        quads,
+        layout.composite.badge_button,
+        window.assets.icon_buttons.texture(UiButtonVisual::Normal),
+    )?;
+    push_button(
+        quads,
+        layout.composite.badge,
+        window.assets.notification_badge,
+    )?;
+    texts.push(centered_label(
+        &window.state.notification_count.to_string(),
+        layout.composite.badge,
+        8.0,
+        TITLE_COLOR,
+        scale,
+    ));
+    push_labeled_button(
+        quads,
+        texts,
+        layout.composite.notify_button,
+        "+1 Notification",
+        window
+            .notify_button
+            .visual(cursor, layout.composite.notify_button, true),
+        window,
+        scale,
+    )?;
+    push_labeled_button(
+        quads,
+        texts,
+        layout.composite.clear_button,
+        "Clear",
+        window
+            .clear_button
+            .visual(cursor, layout.composite.clear_button, true),
+        window,
+        scale,
+    )?;
+    push_labeled_button(
+        quads,
+        texts,
+        layout.composite.dialog_button,
+        "Open Dialog",
+        window
+            .dialog_button
+            .visual(cursor, layout.composite.dialog_button, true),
+        window,
+        scale,
+    )?;
+    if inside(layout.composite.slots[1], cursor) {
+        let (body, pointer) = place_tooltip(layout.composite.slots[1], layout.window, scale);
+        push_slice(
+            quads,
+            body,
+            &window.assets.tooltip_body,
+            TOOLTIP_BORDER,
+            scale,
+        )?;
+        push_button(quads, pointer, window.assets.tooltip_pointer)?;
+        let pad = 8.0 * scale;
+        texts.push(body_text(
+            "Training Sword",
+            [body.min[0] + pad, body.min[1] + pad],
+            (body.width() - pad * 2.0).max(1.0),
+            INK,
+        ));
+        texts.push(body_text(
+            "Example UI DEBUG tooltip",
+            [body.min[0] + pad, body.min[1] + pad + LINE_HEIGHT * scale],
+            (body.width() - pad * 2.0).max(1.0),
+            MUTED,
+        ));
+    }
+    Ok(())
+}
+
+fn push_labeled_button(
+    quads: &mut Vec<UiTexturedQuad>,
+    texts: &mut Vec<TextBlock>,
+    bounds: ScreenRect,
+    label: &str,
+    visual: UiButtonVisual,
+    window: &UiDebugWindow,
+    scale: f32,
+) -> Result<(), String> {
+    push_button(quads, bounds, window.assets.buttons.texture(visual))?;
+    texts.push(button_label_text(label, bounds, BODY_FONT, INK, scale));
+    Ok(())
+}
+
+fn field_text(value: &str, bounds: ScreenRect, scale: f32) -> TextBlock {
+    let pad = INPUT_TEXT_PAD * scale;
+    let font_px = BODY_FONT * scale;
+    body_text(
+        value,
+        [
+            bounds.min[0] + pad,
+            bounds.min[1] + ((bounds.height() - font_px) * 0.5).max(0.0),
+        ],
+        (bounds.width() - pad * 2.0).max(1.0),
+        INK,
+    )
+}
+
+fn arrow_texture(textures: [SpriteTextureId; 3], visual: UiButtonVisual) -> SpriteTextureId {
+    match visual {
+        UiButtonVisual::Hover => textures[1],
+        UiButtonVisual::Pressed => textures[2],
+        UiButtonVisual::Normal | UiButtonVisual::Disabled => textures[0],
+    }
+}
+
+fn slot_texture(textures: [SpriteTextureId; 4], visual: UiSlotVisual) -> SpriteTextureId {
+    match visual {
+        UiSlotVisual::Normal => textures[0],
+        UiSlotVisual::Hover => textures[1],
+        UiSlotVisual::Selected => textures[2],
+        UiSlotVisual::Disabled => textures[3],
+    }
+}
+
+fn place_tooltip(target: ScreenRect, window: ScreenRect, scale: f32) -> (ScreenRect, ScreenRect) {
+    let margin = 4.0 * scale;
+    let width = TOOLTIP_WIDTH * scale;
+    let height = TOOLTIP_HEIGHT * scale;
+    let pointer = [TOOLTIP_POINTER[0] * scale, TOOLTIP_POINTER[1] * scale];
+    let limit_min = [window.min[0] + margin, window.min[1] + margin];
+    let limit_max = [window.max[0] - margin, window.max[1] - margin];
+    let mut x = target.max[0] + pointer[0] + 2.0 * scale;
+    let mut y = target.min[1];
+    if x + width > limit_max[0] {
+        x = target.min[0] - pointer[0] - 2.0 * scale - width;
+    }
+    x = x.clamp(limit_min[0], (limit_max[0] - width).max(limit_min[0]));
+    y = y.clamp(limit_min[1], (limit_max[1] - height).max(limit_min[1]));
+    let body = ScreenRect {
+        min: [x, y],
+        max: [x + width, y + height],
+    };
+    let pointing_right = body.min[0] >= (target.min[0] + target.max[0]) * 0.5;
+    let pointer_x = if pointing_right {
+        body.min[0] - pointer[0]
+    } else {
+        body.max[0]
+    };
+    let pointer_y = (target.min[1] + target.height() * 0.5 - pointer[1] * 0.5)
+        .clamp(limit_min[1], (limit_max[1] - pointer[1]).max(limit_min[1]));
+    let pointer_x = pointer_x.clamp(limit_min[0], (limit_max[0] - pointer[0]).max(limit_min[0]));
+    let pointer_rect = ScreenRect {
+        min: [pointer_x, pointer_y],
+        max: [pointer_x + pointer[0], pointer_y + pointer[1]],
+    };
+    (body, pointer_rect)
+}
+
 fn centered_label(
     label: &str,
     bounds: ScreenRect,
@@ -1580,6 +2685,33 @@ mod tests {
             status_mp: slice(82, [270, 18], [6, 6, 6, 6]),
             status_exp: slice(83, [270, 18], [6, 6, 6, 6]),
             gear: image(60).texture,
+            chat_input: slice(90, [400, 40], [10, 10, 10, 10]),
+            scroll_track: slice(91, [28, 160], [8, 10, 8, 10]),
+            scroll_thumbs: [
+                image(92).texture,
+                image(93).texture,
+                image(94).texture,
+                image(95).texture,
+            ],
+            scroll_up: [image(96).texture, image(97).texture, image(98).texture],
+            scroll_down: [image(99).texture, image(100).texture, image(101).texture],
+            tooltip_body: slice(102, [224, 112], [14, 14, 14, 18]),
+            tooltip_pointer: image(103).texture,
+            slots: [
+                image(110).texture,
+                image(111).texture,
+                image(112).texture,
+                image(113).texture,
+            ],
+            hotbar_body: slice(120, [704, 80], [14, 14, 14, 18]),
+            hotbar_slots: [
+                image(121).texture,
+                image(122).texture,
+                image(123).texture,
+                image(124).texture,
+            ],
+            hotbar_counter: slice(125, [28, 22], [6, 6, 6, 6]),
+            notification_badge: image(126).texture,
             tab_overlap: 2.0,
         })
     }
@@ -1656,6 +2788,31 @@ mod tests {
             "status_hp_fill_9slice",
             "status_mp_fill_9slice",
             "status_exp_fill_9slice",
+            "chat_input_9slice",
+            "scrollbar_track_vertical_9slice",
+            "scrollbar_thumb_normal",
+            "scrollbar_thumb_hover",
+            "scrollbar_thumb_pressed",
+            "scrollbar_thumb_disabled",
+            "scroll_arrow_up_normal",
+            "scroll_arrow_up_hover",
+            "scroll_arrow_up_pressed",
+            "scroll_arrow_down_normal",
+            "scroll_arrow_down_hover",
+            "scroll_arrow_down_pressed",
+            "tooltip_body_9slice",
+            "tooltip_pointer",
+            "slot_normal",
+            "slot_hover",
+            "slot_selected",
+            "slot_disabled",
+            "hotbar_body_9slice",
+            "hotbar_slot_normal",
+            "hotbar_slot_hover",
+            "hotbar_slot_selected",
+            "hotbar_slot_disabled",
+            "hotbar_counter_badge_9slice",
+            "notification_badge",
         ] {
             assert!(runtime.texture_for_key(name).is_some(), "{name}");
         }
@@ -1703,13 +2860,14 @@ mod tests {
         assert_eq!(window.tabs.selected_index(), 1);
         let frame = window.frame(viewport(), 1.0, None).unwrap().unwrap();
         assert!(text_has(&frame, "VALUES"));
-        assert!(!text_has(&frame, PLANNED));
+        assert!(!text_has(&frame, "TEXT INPUT"));
         assert!(!text_has(&frame, "Click Me"));
         let input = center(window.layout(viewport(), 1.0).unwrap().unwrap().tabs[2]);
         click(&mut window, input);
         assert_eq!(window.tabs.selected_index(), 2);
         let planned = window.frame(viewport(), 1.0, None).unwrap().unwrap();
-        assert!(text_has(&planned, PLANNED));
+        assert!(text_has(&planned, "TEXT INPUT"));
+        assert!(text_has(&planned, "Hello world"));
         assert!(!text_has(&planned, "Click Me"));
         let basics = center(window.layout(viewport(), 1.0).unwrap().unwrap().tabs[0]);
         click(&mut window, basics);
@@ -1959,6 +3117,14 @@ mod tests {
                 .find(|block| block.content.0 == "Click Me")
                 .unwrap();
             assert!((click.style.font_size - BODY_FONT).abs() < 0.001);
+            assert!(
+                click
+                    .max_width
+                    .is_some_and(|width| width < layout.click_button.width())
+            );
+            let content = crate::ui_panel::button_content_bounds(layout.click_button, scale);
+            assert!(click.anchor[1] >= content.min[1] - 0.05);
+            assert!(click.anchor[1] + BODY_FONT * scale <= content.max[1] + 0.05);
             let relative = |rect: ScreenRect| {
                 let quantize = |value: f32| (value / scale * 1000.0).round() as i32;
                 [
@@ -2117,7 +3283,7 @@ mod tests {
         assert!(text_has(&frame, "82%"));
         assert!(text_has(&frame, "Value: 0.670"));
         assert!(text_has(&frame, "Dragging: No"));
-        assert!(!text_has(&frame, PLANNED));
+        assert!(!text_has(&frame, "TEXT INPUT"));
         assert!(
             frame
                 .skin_quads
@@ -2312,11 +3478,11 @@ mod tests {
         assert!(text_has(&restored, "VALUES"));
         assert!(text_has(&restored, "Value:"));
         assert!((window.state.hp_value - kept).abs() < 1e-4);
-        for index in [2, 3, 4] {
+        for (index, heading) in [(2, "TEXT INPUT"), (3, "SCROLL VIEW"), (4, "SLOTS")] {
             let tab = center(window.layout(viewport(), 1.0).unwrap().unwrap().tabs[index]);
             click(&mut window, tab);
             let page = window.frame(viewport(), 1.0, None).unwrap().unwrap();
-            assert!(text_has(&page, PLANNED));
+            assert!(text_has(&page, heading));
             assert!(!window.hp_slider.is_dragging());
         }
     }
@@ -2399,5 +3565,306 @@ mod tests {
         }
         assert_eq!(boxes[0], boxes[1]);
         assert_eq!(boxes[1], boxes[2]);
+    }
+
+    fn open_page(window: &mut UiDebugWindow, index: usize) -> DebugLayout {
+        show(window);
+        let tab = center(window.layout(viewport(), 1.0).unwrap().unwrap().tabs[index]);
+        click(window, tab);
+        assert_eq!(window.tabs.selected_index(), index);
+        window.layout(viewport(), 1.0).unwrap().unwrap()
+    }
+
+    #[test]
+    fn text_input_edits_blur_and_keeps_u_for_the_field() {
+        let mut window = synthetic();
+        let layout = open_page(&mut window, INPUT_PAGE);
+        let frame = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(text_has(&frame, "Hello world"));
+        assert!(text_has(&frame, "Characters: 11"));
+        assert!(text_has(&frame, "Focused: No"));
+        assert!(!frame.texts.iter().any(|text| text.content.0.contains('|')));
+        assert!(window.apply_pointer_button(
+            ElementState::Pressed,
+            Some(center(layout.input.field)),
+            viewport(),
+            1.0,
+        ));
+        let _ = window.apply_pointer_button(
+            ElementState::Released,
+            Some(center(layout.input.field)),
+            viewport(),
+            1.0,
+        );
+        assert!(window.wants_text_keyboard());
+        assert!(!u_key_toggles_ui_debug(window.wants_text_keyboard()));
+        assert!(window.apply_text_key(
+            &Key::Named(winit::keyboard::NamedKey::ArrowLeft),
+            None,
+            false
+        ));
+        assert_eq!(window.text_input.caret(), 10);
+        assert!(window.apply_text_key(&Key::Character("u".into()), Some("u"), false));
+        assert_eq!(window.state.input_text, "Hello worlud");
+        assert!(window.wants_text_keyboard());
+        let focused = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(
+            focused
+                .texts
+                .iter()
+                .any(|text| text.content.0.contains('|'))
+        );
+        assert!(text_has(&focused, "Focused: Yes"));
+        window.apply_pointer_button(
+            ElementState::Pressed,
+            Some([layout.window.max[0] + 20.0, layout.window.min[1]]),
+            viewport(),
+            1.0,
+        );
+        assert!(!window.wants_text_keyboard());
+        assert!(u_key_toggles_ui_debug(window.wants_text_keyboard()));
+        assert!(window.apply_pointer_button(
+            ElementState::Pressed,
+            Some(center(layout.input.field)),
+            viewport(),
+            1.0,
+        ));
+        let _ = window.apply_pointer_button(
+            ElementState::Released,
+            Some(center(layout.input.field)),
+            viewport(),
+            1.0,
+        );
+        let before = window.state.input_text.clone();
+        let basics = center(window.layout(viewport(), 1.0).unwrap().unwrap().tabs[BASICS]);
+        click(&mut window, basics);
+        assert!(!window.wants_text_keyboard());
+        assert!(!window.apply_text_key(&Key::Character("z".into()), Some("z"), false));
+        assert_eq!(window.state.input_text, before);
+        window.toggle();
+        assert!(!window.wants_text_keyboard());
+        assert!(!window.apply_text_key(
+            &Key::Named(winit::keyboard::NamedKey::Backspace),
+            None,
+            true
+        ));
+    }
+
+    #[test]
+    fn scroll_view_wheel_arrows_thumb_and_visible_rows() {
+        let mut window = synthetic();
+        let layout = open_page(&mut window, CONTAINERS_PAGE);
+        let frame = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(text_has(&frame, "Item 01"));
+        assert!(text_has(&frame, "Item 06"));
+        assert!(!text_has(&frame, "Item 07"));
+        assert!(text_has(&frame, "Offset: 0 / 18"));
+        assert!(!window.apply_wheel(
+            MouseScrollDelta::LineDelta(0.0, -1.0),
+            Some([layout.window.min[0] - 8.0, layout.window.min[1]]),
+            viewport(),
+            1.0,
+        ));
+        assert_eq!(window.state.scroll_offset, 0);
+        assert!(window.apply_wheel(
+            MouseScrollDelta::LineDelta(0.0, -1.0),
+            Some(center(layout.containers.scroll.list)),
+            viewport(),
+            1.0,
+        ));
+        assert_eq!(window.state.scroll_offset, 1);
+        let up = center(layout.containers.scroll.up);
+        click(&mut window, up);
+        assert_eq!(window.state.scroll_offset, 0);
+        window.apply_pointer_button(ElementState::Pressed, Some(up), viewport(), 1.0);
+        window.apply_pointer_button(
+            ElementState::Released,
+            Some([layout.window.max[0] + 30.0, up[1]]),
+            viewport(),
+            1.0,
+        );
+        assert_eq!(window.state.scroll_offset, 0);
+        let down = center(
+            window
+                .layout(viewport(), 1.0)
+                .unwrap()
+                .unwrap()
+                .containers
+                .scroll
+                .down,
+        );
+        click(&mut window, down);
+        assert_eq!(window.state.scroll_offset, 1);
+        let thumb = center(
+            window
+                .layout(viewport(), 1.0)
+                .unwrap()
+                .unwrap()
+                .containers
+                .scroll
+                .thumb,
+        );
+        window.apply_pointer_button(ElementState::Pressed, Some(thumb), viewport(), 1.0);
+        assert!(window.scrollbar.is_dragging());
+        let moved = window.pointer_moved([thumb[0], thumb[1] + 40.0], viewport(), 1.0);
+        assert!(moved);
+        assert!(window.state.scroll_offset > 1);
+        let during = window.state.scroll_offset;
+        window.apply_pointer_button(
+            ElementState::Released,
+            Some([thumb[0], thumb[1] + 40.0]),
+            viewport(),
+            1.0,
+        );
+        assert!(!window.scrollbar.is_dragging());
+        assert_eq!(window.state.scroll_offset, during);
+        let shown = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        let first = window.state.scroll_offset + 1;
+        assert!(text_has(&shown, &format!("Item {first:02}")));
+        assert!(!text_has(&shown, "Item 01"));
+        for _ in 0..30 {
+            assert!(window.apply_wheel(
+                MouseScrollDelta::LineDelta(0.0, -1.0),
+                Some(center(layout.containers.scroll.list)),
+                viewport(),
+                1.0,
+            ));
+        }
+        assert_eq!(
+            window.state.scroll_offset,
+            scroll_max_offset(SCROLL_ITEMS, SCROLL_VISIBLE)
+        );
+        let layout = window.layout(viewport(), 1.0).unwrap().unwrap();
+        let thumb = center(layout.containers.scroll.thumb);
+        window.apply_pointer_button(ElementState::Pressed, Some(thumb), viewport(), 1.0);
+        assert!(window.scrollbar.is_dragging());
+        let basics = center(layout.tabs[BASICS]);
+        let strip = tab_strip(&layout.tabs);
+        window.tabs.apply_pointer_button(
+            ElementState::Pressed,
+            Some(basics),
+            strip,
+            PAGES.len(),
+            0.0,
+        );
+        window.tabs.apply_pointer_button(
+            ElementState::Released,
+            Some(basics),
+            strip,
+            PAGES.len(),
+            0.0,
+        );
+        assert_eq!(window.tabs.selected_index(), BASICS);
+        let _ = window.frame(viewport(), 1.0, None).unwrap();
+        assert!(!window.scrollbar.is_dragging());
+        window.cancel_pointer_interaction();
+        assert!(!window.text_input.is_focused());
+    }
+
+    #[test]
+    fn section_opens_and_closes_only_on_release_inside() {
+        let mut window = synthetic();
+        let layout = open_page(&mut window, CONTAINERS_PAGE);
+        assert!(!window.state.section_open);
+        let closed = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(text_has(&closed, "Open Advanced Section"));
+        assert!(!text_has(&closed, "Row A"));
+        let button = center(layout.containers.section_button);
+        window.apply_pointer_button(ElementState::Pressed, Some(button), viewport(), 1.0);
+        window.apply_pointer_button(
+            ElementState::Released,
+            Some([layout.window.max[0] + 20.0, button[1]]),
+            viewport(),
+            1.0,
+        );
+        assert!(!window.state.section_open);
+        click(&mut window, button);
+        assert!(window.state.section_open);
+        let open = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(text_has(&open, "Close Advanced Section"));
+        assert!(text_has(&open, "Row A"));
+        assert!(text_has(&open, "Row C"));
+        click(&mut window, button);
+        assert!(!window.state.section_open);
+        let hidden = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(!text_has(&hidden, "Row B"));
+    }
+
+    #[test]
+    fn composite_tooltip_slots_hotbar_badge_and_dialog_event() {
+        let mut window = synthetic();
+        let layout = open_page(&mut window, COMPOSITE_PAGE);
+        assert_eq!(window.state.selected_slot, 2);
+        assert_eq!(window.state.selected_hotbar_slot, 0);
+        let away = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(!text_has(&away, "Training Sword"));
+        let hover = window
+            .frame(viewport(), 1.0, Some(center(layout.composite.slots[1])))
+            .unwrap()
+            .unwrap();
+        assert!(text_has(&hover, "Training Sword"));
+        assert!(text_has(&hover, "Example UI DEBUG tooltip"));
+        let tooltip = hover
+            .skin_quads
+            .iter()
+            .filter(|quad| quad.texture == window.assets.tooltip_body.texture)
+            .collect::<Vec<_>>();
+        assert!(!tooltip.is_empty());
+        for quad in tooltip {
+            for corner in quad.corners {
+                assert!(layout.window.contains(corner));
+            }
+        }
+        click(&mut window, center(layout.composite.slots[1]));
+        assert_eq!(window.state.selected_slot, 1);
+        let disabled_slot = center(layout.composite.slots[3]);
+        window.apply_pointer_button(ElementState::Pressed, Some(disabled_slot), viewport(), 1.0);
+        window.apply_pointer_button(ElementState::Released, Some(disabled_slot), viewport(), 1.0);
+        assert_eq!(window.state.selected_slot, 1);
+        click(&mut window, center(layout.composite.hotbar_slots[2]));
+        assert_eq!(window.state.selected_hotbar_slot, 2);
+        let disabled_hotbar = center(layout.composite.hotbar_slots[HOTBAR_COUNT - 1]);
+        window.apply_pointer_button(
+            ElementState::Pressed,
+            Some(disabled_hotbar),
+            viewport(),
+            1.0,
+        );
+        window.apply_pointer_button(
+            ElementState::Released,
+            Some(disabled_hotbar),
+            viewport(),
+            1.0,
+        );
+        assert_eq!(window.state.selected_hotbar_slot, 2);
+        let counter = layout.composite.counter;
+        let slot = layout.composite.hotbar_slots[HOTBAR_COUNTER_SLOT];
+        assert!(counter.min[0] >= slot.min[0] && counter.max[0] <= slot.max[0]);
+        assert!(counter.min[1] >= slot.min[1] && counter.max[1] <= slot.max[1]);
+        let marked = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(marked.texts.iter().any(|text| text.content.0 == "12"));
+        assert!(marked.texts.iter().any(|text| text.content.0 == "0"));
+        click(&mut window, center(layout.composite.notify_button));
+        click(&mut window, center(layout.composite.notify_button));
+        assert_eq!(window.state.notification_count, 2);
+        let counted = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(counted.texts.iter().any(|text| text.content.0 == "2"));
+        assert!(counted.texts.iter().any(|text| text.content.0 == "12"));
+        click(&mut window, center(layout.composite.dialog_button));
+        assert_eq!(window.take_event(), Some(UiDebugEvent::OpenMessageDialog));
+        assert!(window.take_event().is_none());
+        window.apply_pointer_button(
+            ElementState::Pressed,
+            Some(center(layout.composite.dialog_button)),
+            viewport(),
+            1.0,
+        );
+        window.apply_pointer_button(
+            ElementState::Released,
+            Some([layout.window.max[0] + 12.0, layout.window.min[1]]),
+            viewport(),
+            1.0,
+        );
+        assert!(window.take_event().is_none());
     }
 }
