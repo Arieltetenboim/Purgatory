@@ -20,6 +20,8 @@ use purgatory_simulation::{TICK_DURATION, aoi_policy_rects};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+#[cfg(feature = "dev-diagnostics")]
+use winit::keyboard::ModifiersState;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
@@ -93,6 +95,8 @@ use crate::renderer::{PARALLAX_FAR, PARALLAX_MID, PARALLAX_NEAR, parallax_debug_
 use crate::replica::ReplicaLifecycleEvent;
 use crate::replica::{FrameDecision, ReplicatedEntity, ReplicatedWorld};
 use crate::speech_bubble::{SpeechBubbleSpeaker, layout_speech_bubble_in_column};
+#[cfg(feature = "dev-diagnostics")]
+use crate::ui_controls::UiTextNav;
 #[cfg(feature = "dev-diagnostics")]
 use crate::ui_debug::{
     UI_DEBUG_MESSAGE_DIALOG_ID, UiDebugEvent, UiDebugWindow, u_key_toggles_ui_debug,
@@ -290,6 +294,8 @@ struct ClientApp {
     ui_debug: UiDebugWindow,
     #[cfg(feature = "dev-diagnostics")]
     ui_debug_pointer: bool,
+    #[cfg(feature = "dev-diagnostics")]
+    text_modifiers: ModifiersState,
     inventory_window: InventoryWindow,
     equipment_window: EquipmentWindow,
     settings_window: SettingsWindow,
@@ -498,6 +504,8 @@ impl ClientApp {
             ui_debug,
             #[cfg(feature = "dev-diagnostics")]
             ui_debug_pointer: false,
+            #[cfg(feature = "dev-diagnostics")]
+            text_modifiers: ModifiersState::default(),
             inventory_window,
             equipment_window: EquipmentWindow::default(),
             settings_window: SettingsWindow::default(),
@@ -5380,10 +5388,19 @@ impl ApplicationHandler for ClientApp {
                         return;
                     }
                     if event.state == ElementState::Pressed {
+                        let scale = self
+                            .production_ui_metrics()
+                            .map(|(_, pixels_per_unit)| pixels_per_unit)
+                            .unwrap_or(1.0);
                         self.ui_debug.apply_text_key(
                             &event.logical_key,
                             event.text.as_deref(),
                             event.repeat,
+                            UiTextNav {
+                                shift: self.text_modifiers.shift_key(),
+                                word: self.text_modifiers.control_key(),
+                            },
+                            scale,
                         );
                     }
                     window.request_redraw();
@@ -5722,7 +5739,23 @@ impl ApplicationHandler for ClientApp {
                     window.request_redraw();
                 }
             }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                #[cfg(feature = "dev-diagnostics")]
+                {
+                    self.text_modifiers = modifiers.state();
+                }
+                #[cfg(not(feature = "dev-diagnostics"))]
+                {
+                    let _ = modifiers;
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
+                if self.message_dialog.is_active() {
+                    if self.message_dialog.apply_wheel(delta, self.cursor_position) {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 #[cfg(not(feature = "dev-diagnostics"))]
                 {
                     let _ = delta;

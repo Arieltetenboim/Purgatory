@@ -8,6 +8,9 @@
 use winit::event::{ElementState, MouseScrollDelta};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::renderer::text::{
+    TextBlock, TextCaretBoundaries, TextContent, TextStyle, measure_caret_boundaries,
+};
 use crate::renderer::{SpriteTextureId, UiTexturedQuad};
 use crate::ui_panel::{ScreenRect, compose_nine_slice_with_borders};
 use crate::ui_v2::{UiV2Image, UiV2NineSlice};
@@ -704,13 +707,39 @@ impl UiRadioGroup {
     }
 }
 
-/// Single-line text field. The caller owns the string. The control owns focus and caret.
+/// Single-line text field. The caller owns the string. The control owns focus, caret, and selection.
 pub(crate) const UI_TEXT_INPUT_LIMIT: usize = 32;
 
+/// Shift extends the selection. Word movement is Ctrl+Left / Ctrl+Right.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct UiTextNav {
+    pub shift: bool,
+    pub word: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct UiTextMetrics {
+    pub style: TextStyle,
+    pub scale: f32,
+    pub view_width: f32,
+}
+
+/// Title, caller color, and wrapping description. Later tooltip categories can append
+/// more measured blocks beside these three without renaming the fields.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TooltipContent {
+    pub title: String,
+    pub title_color: [f32; 4],
+    pub description: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct UiTextInput {
     focused: bool,
     caret: usize,
+    anchor: usize,
+    scroll: f32,
+    dragging: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -737,9 +766,25 @@ pub(crate) struct UiScrollbar {
     grab: f32,
 }
 
+impl Default for UiTextInput {
+    fn default() -> Self {
+        Self {
+            focused: false,
+            caret: 0,
+            anchor: 0,
+            scroll: 0.0,
+            dragging: false,
+        }
+    }
+}
+
 impl UiTextInput {
     pub(crate) fn is_focused(self) -> bool {
         self.focused
+    }
+
+    pub(crate) fn is_dragging(self) -> bool {
+        self.dragging
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -747,23 +792,59 @@ impl UiTextInput {
         self.caret
     }
 
-    pub(crate) fn blur(&mut self) {
-        self.focused = false;
+    pub(crate) fn scroll(self) -> f32 {
+        self.scroll
     }
 
-    /// Press inside focuses the field. Press outside blurs it and does not capture.
-    pub(crate) fn apply_press(&mut self, inside: bool, value: &str) -> bool {
-        if inside {
-            if !self.focused {
-                self.focused = true;
-                self.caret = value.chars().count();
-            }
-            self.caret = self.caret.min(value.chars().count());
-            true
+    /// Inclusive-exclusive character range when the caret and anchor differ.
+    pub(crate) fn selection(self) -> Option<(usize, usize)> {
+        if self.caret == self.anchor {
+            None
         } else {
-            self.focused = false;
-            false
+            Some((self.caret.min(self.anchor), self.caret.max(self.anchor)))
         }
+    }
+
+    pub(crate) fn blur(&mut self) {
+        self.focused = false;
+        self.dragging = false;
+        self.anchor = self.caret;
+    }
+
+    pub(crate) fn end_drag(&mut self) {
+        self.dragging = false;
+    }
+
+    /// Press inside focuses the field and moves the caret to the nearest glyph edge.
+    /// Press outside blurs it and does not capture.
+    pub(crate) fn apply_press(
+        &mut self,
+        inside: bool,
+        local_x: f32,
+        value: &str,
+        metrics: UiTextMetrics,
+    ) -> bool {
+        if !inside {
+            self.blur();
+            return false;
+        }
+        self.focused = true;
+        let bounds = caret_bounds(value, metrics);
+        self.caret = bounds.index_at_x(local_x).min(value.chars().count());
+        self.anchor = self.caret;
+        self.dragging = true;
+        self.follow_caret(value, metrics);
+        true
+    }
+
+    pub(crate) fn apply_drag(&mut self, local_x: f32, value: &str, metrics: UiTextMetrics) -> bool {
+        if !self.dragging || !self.focused {
+            return false;
+        }
+        let bounds = caret_bounds(value, metrics);
+        self.caret = bounds.index_at_x(local_x).min(value.chars().count());
+        self.follow_caret(value, metrics);
+        true
     }
 
     pub(crate) fn apply_key(
@@ -772,44 +853,170 @@ impl UiTextInput {
         key: &Key,
         text: Option<&str>,
         _repeat: bool,
+        nav: UiTextNav,
+        metrics: UiTextMetrics,
     ) -> bool {
         if !self.focused {
             return false;
         }
-        self.caret = self.caret.min(value.chars().count());
+        self.clamp_carets(value);
         match key {
-            Key::Named(NamedKey::Backspace) => delete_before(value, &mut self.caret),
-            Key::Named(NamedKey::Delete) => delete_after(value, &mut self.caret),
+            Key::Named(NamedKey::Backspace) => {
+                if !delete_selection(value, &mut self.caret, &mut self.anchor) {
+                    delete_before(value, &mut self.caret);
+                    self.anchor = self.caret;
+                }
+            }
+            Key::Named(NamedKey::Delete) => {
+                if !delete_selection(value, &mut self.caret, &mut self.anchor) {
+                    delete_after(value, &mut self.caret);
+                    self.anchor = self.caret;
+                }
+            }
             Key::Named(NamedKey::ArrowLeft) => {
-                self.caret = self.caret.saturating_sub(1);
+                self.move_caret(value, -1, nav);
             }
             Key::Named(NamedKey::ArrowRight) => {
-                self.caret = (self.caret + 1).min(value.chars().count());
+                self.move_caret(value, 1, nav);
             }
-            Key::Named(NamedKey::Home) => self.caret = 0,
-            Key::Named(NamedKey::End) => self.caret = value.chars().count(),
-            Key::Named(NamedKey::Enter) => self.focused = false,
+            Key::Named(NamedKey::Home) => {
+                self.set_caret(0, nav.shift);
+            }
+            Key::Named(NamedKey::End) => {
+                self.set_caret(value.chars().count(), nav.shift);
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.blur();
+            }
+            Key::Named(NamedKey::Control | NamedKey::Shift | NamedKey::Alt | NamedKey::Super) => {}
             _ => {
-                if let Some(text) = text {
+                if nav.word
+                    && matches!(key, Key::Character(label) if label.eq_ignore_ascii_case("a"))
+                {
+                    self.anchor = 0;
+                    self.caret = value.chars().count();
+                } else if !nav.word
+                    && let Some(text) = text
+                {
+                    delete_selection(value, &mut self.caret, &mut self.anchor);
                     insert_text(value, &mut self.caret, text, UI_TEXT_INPUT_LIMIT);
+                    self.anchor = self.caret;
                 }
             }
         }
+        self.clamp_carets(value);
+        self.follow_caret(value, metrics);
         true
     }
 
-    pub(crate) fn display_text(self, value: &str) -> String {
-        if !self.focused {
-            return value.to_owned();
-        }
-        let caret = self.caret.min(value.chars().count());
-        let byte = byte_at_char(value, caret);
-        let mut shown = String::with_capacity(value.len() + 1);
-        shown.push_str(&value[..byte]);
-        shown.push('|');
-        shown.push_str(&value[byte..]);
-        shown
+    fn clamp_carets(&mut self, value: &str) {
+        let count = value.chars().count();
+        self.caret = self.caret.min(count);
+        self.anchor = self.anchor.min(count);
     }
+
+    fn set_caret(&mut self, index: usize, extend: bool) {
+        self.caret = index;
+        if !extend {
+            self.anchor = self.caret;
+        }
+    }
+
+    fn move_caret(&mut self, value: &str, direction: i32, nav: UiTextNav) {
+        let count = value.chars().count();
+        if !nav.shift && self.caret != self.anchor && !nav.word {
+            let edge = if direction < 0 {
+                self.caret.min(self.anchor)
+            } else {
+                self.caret.max(self.anchor)
+            };
+            self.caret = edge;
+            self.anchor = edge;
+            return;
+        }
+        let next = if nav.word {
+            if direction < 0 {
+                word_left(value, self.caret)
+            } else {
+                word_right(value, self.caret)
+            }
+        } else if direction < 0 {
+            self.caret.saturating_sub(1)
+        } else {
+            (self.caret + 1).min(count)
+        };
+        self.set_caret(next, nav.shift);
+    }
+
+    fn follow_caret(&mut self, value: &str, metrics: UiTextMetrics) {
+        let bounds = caret_bounds(value, metrics);
+        let caret = self.caret.min(bounds.x.len().saturating_sub(1));
+        let caret_x = bounds.x.get(caret).copied().unwrap_or(0.0);
+        let content = bounds.x.last().copied().unwrap_or(0.0);
+        self.scroll = text_scroll_for_caret(self.scroll, caret_x, content, metrics.view_width);
+    }
+}
+
+pub(crate) fn text_scroll_for_caret(
+    scroll: f32,
+    caret_x: f32,
+    content_width: f32,
+    view_width: f32,
+) -> f32 {
+    if !scroll.is_finite()
+        || !caret_x.is_finite()
+        || !content_width.is_finite()
+        || !view_width.is_finite()
+        || view_width <= 0.0
+    {
+        return 0.0;
+    }
+    let max_scroll = (content_width - view_width).max(0.0);
+    let mut next = scroll.clamp(0.0, max_scroll);
+    let pad = 1.0_f32.min(view_width * 0.25);
+    if caret_x < next + pad {
+        next = (caret_x - pad).max(0.0);
+    } else if caret_x > next + view_width - pad {
+        next = caret_x + pad - view_width;
+    }
+    next.clamp(0.0, max_scroll)
+}
+
+/// 0–9 show the digit. 10 or more shows only `+`. The stored count is unchanged.
+pub(crate) fn notification_badge_label(count: u32) -> String {
+    if count >= 10 {
+        "+".to_owned()
+    } else {
+        count.to_string()
+    }
+}
+
+/// Scale of a notification pop. `elapsed_ms` 0 and the end of the pulse are both 1.
+/// The peak sits in the middle of the 180 ms curve.
+pub(crate) fn notification_badge_scale(elapsed_ms: u32) -> f32 {
+    const DURATION_MS: u32 = 180;
+    const PEAK: f32 = 1.22;
+    if elapsed_ms >= DURATION_MS {
+        return 1.0;
+    }
+    let t = elapsed_ms as f32 / DURATION_MS as f32;
+    let rise = if t < 0.5 {
+        t / 0.5
+    } else {
+        1.0 - (t - 0.5) / 0.5
+    };
+    1.0 + (PEAK - 1.0) * rise
+}
+
+fn caret_bounds(value: &str, metrics: UiTextMetrics) -> TextCaretBoundaries {
+    let block = TextBlock {
+        content: TextContent(value.to_owned()),
+        style: metrics.style,
+        anchor: [0.0, 0.0],
+        max_width: None,
+        clip: None,
+    };
+    measure_caret_boundaries(&block, metrics.scale).unwrap_or(TextCaretBoundaries { x: vec![0.0] })
 }
 
 pub(crate) fn slot_visual(enabled: bool, selected: bool, hovered: bool) -> UiSlotVisual {
@@ -1060,6 +1267,68 @@ fn delete_after(value: &mut String, caret: &mut usize) {
     value.replace_range(start..end, "");
 }
 
+fn delete_selection(value: &mut String, caret: &mut usize, anchor: &mut usize) -> bool {
+    if *caret == *anchor {
+        return false;
+    }
+    let start = (*caret).min(*anchor);
+    let end = (*caret).max(*anchor);
+    let byte_start = byte_at_char(value, start);
+    let byte_end = byte_at_char(value, end);
+    value.replace_range(byte_start..byte_end, "");
+    *caret = start;
+    *anchor = start;
+    true
+}
+
+fn word_right(value: &str, index: usize) -> usize {
+    let chars: Vec<char> = value.chars().collect();
+    let mut index = index.min(chars.len());
+    if index >= chars.len() {
+        return chars.len();
+    }
+    if chars[index].is_alphanumeric() {
+        while index < chars.len() && chars[index].is_alphanumeric() {
+            index += 1;
+        }
+    } else if !chars[index].is_whitespace() {
+        while index < chars.len()
+            && !chars[index].is_alphanumeric()
+            && !chars[index].is_whitespace()
+        {
+            index += 1;
+        }
+    }
+    while index < chars.len() && chars[index].is_whitespace() {
+        index += 1;
+    }
+    index
+}
+
+fn word_left(value: &str, index: usize) -> usize {
+    let chars: Vec<char> = value.chars().collect();
+    let mut index = index.min(chars.len());
+    if index == 0 {
+        return 0;
+    }
+    index -= 1;
+    while index > 0 && chars[index].is_whitespace() {
+        index -= 1;
+    }
+    if chars[index].is_whitespace() {
+        return 0;
+    }
+    let word = chars[index].is_alphanumeric();
+    while index > 0 {
+        let previous = chars[index - 1];
+        if previous.is_whitespace() || previous.is_alphanumeric() != word {
+            break;
+        }
+        index -= 1;
+    }
+    index
+}
+
 fn insert_text(value: &mut String, caret: &mut usize, text: &str, limit: usize) {
     let incoming: String = text.chars().filter(|ch| !ch.is_control()).collect();
     if incoming.is_empty() {
@@ -1078,6 +1347,7 @@ fn insert_text(value: &mut String, caret: &mut usize, text: &str, limit: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::renderer::TextAlignment;
 
     fn bounds() -> ScreenRect {
         ScreenRect {
@@ -1719,78 +1989,275 @@ mod tests {
         Key::Named(named)
     }
 
-    #[test]
-    fn text_input_focus_blur_and_caret_edits() {
-        let bounds = bounds();
-        let mut input = UiTextInput::default();
-        let mut value = "Hello world".to_string();
-        assert!(!input.apply_press(false, &value));
-        assert!(!input.is_focused());
-        assert_eq!(input.display_text(&value), "Hello world");
-        assert!(input.apply_press(true, &value));
-        assert!(input.is_focused());
-        assert_eq!(input.caret(), 11);
-        assert_eq!(input.display_text(&value), "Hello world|");
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::ArrowLeft), None, false));
-        assert_eq!(input.caret(), 10);
-        assert!(input.apply_key(&mut value, &Key::Character("!".into()), Some("!"), false));
-        assert_eq!(value, "Hello worl!d");
-        assert_eq!(input.caret(), 11);
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::Backspace), None, true));
-        assert_eq!(value, "Hello world");
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::Delete), None, true));
-        assert_eq!(value, "Hello worl");
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::Home), None, false));
-        assert_eq!(input.caret(), 0);
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::Delete), None, false));
-        assert_eq!(value, "ello worl");
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::End), None, false));
-        assert_eq!(input.caret(), value.chars().count());
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::ArrowRight), None, true));
-        assert_eq!(input.caret(), value.chars().count());
-        assert!(!input.apply_press(bounds.contains(inside_point()), &value) || input.is_focused());
-        input.blur();
-        assert!(!input.is_focused());
-        assert!(!input.display_text(&value).contains('|'));
-        assert!(!input.apply_key(
-            &mut value,
-            &key_named(NamedKey::Backspace),
-            Some("u"),
-            false
-        ));
-        assert_eq!(value, "ello worl");
+    fn edit_metrics() -> UiTextMetrics {
+        UiTextMetrics {
+            style: TextStyle::at_size(16.0, [0.0, 0.0, 0.0, 1.0], TextAlignment::Left),
+            scale: 1.0,
+            view_width: 4_000.0,
+        }
+    }
+
+    fn press_at(input: &mut UiTextInput, value: &str, local_x: f32) {
+        assert!(input.apply_press(true, local_x, value, edit_metrics()));
+    }
+
+    fn key(input: &mut UiTextInput, value: &mut String, named: NamedKey, nav: UiTextNav) {
+        assert!(input.apply_key(value, &key_named(named), None, false, nav, edit_metrics()));
+    }
+
+    fn bounds_of(value: &str) -> TextCaretBoundaries {
+        caret_bounds(value, edit_metrics())
     }
 
     #[test]
-    fn text_input_is_unicode_safe_and_length_limited() {
+    fn text_input_click_inserts_at_the_measured_caret() {
         let mut input = UiTextInput::default();
-        let mut value = "a😀b".to_string();
-        assert!(input.apply_press(true, &value));
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::ArrowLeft), None, false));
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::Backspace), None, false));
+        let mut value = "Hello".to_string();
+        let stops = bounds_of(&value);
+        assert!(!input.apply_press(false, 0.0, &value, edit_metrics()));
+        assert!(!input.is_focused());
+        press_at(&mut input, &value, stops.x[2]);
+        assert_eq!(input.caret(), 2);
+        assert!(input.apply_key(
+            &mut value,
+            &Key::Character("X".into()),
+            Some("X"),
+            false,
+            UiTextNav::default(),
+            edit_metrics(),
+        ));
+        assert_eq!(value, "HeXllo");
+        assert_eq!(input.caret(), 3);
+    }
+
+    #[test]
+    fn text_input_drag_and_shift_select_then_replace() {
+        let mut input = UiTextInput::default();
+        let mut value = "Hello".to_string();
+        let stops = bounds_of(&value);
+        press_at(&mut input, &value, stops.x[1]);
+        assert!(input.apply_drag(stops.x[4], &value, edit_metrics()));
+        assert_eq!(input.selection(), Some((1, 4)));
+        input.end_drag();
+        assert!(!input.is_dragging());
+        assert!(input.apply_key(
+            &mut value,
+            &Key::Character("Y".into()),
+            Some("Y"),
+            false,
+            UiTextNav::default(),
+            edit_metrics(),
+        ));
+        assert_eq!(value, "HYo");
+        input.blur();
+        press_at(
+            &mut input,
+            &value,
+            bounds_of(&value).x[value.chars().count()],
+        );
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::ArrowLeft,
+            UiTextNav {
+                shift: true,
+                word: false,
+            },
+        );
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::Home,
+            UiTextNav {
+                shift: true,
+                word: false,
+            },
+        );
+        assert_eq!(input.selection(), Some((0, value.chars().count())));
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::Backspace,
+            UiTextNav::default(),
+        );
+        assert_eq!(value, "");
+    }
+
+    #[test]
+    fn text_input_ctrl_a_word_movement_and_unicode_edges() {
+        let mut input = UiTextInput::default();
+        let mut value = "hello world".to_string();
+        press_at(&mut input, &value, bounds_of(&value).x[11]);
+        assert!(input.apply_key(
+            &mut value,
+            &Key::Character("a".into()),
+            Some("a"),
+            false,
+            UiTextNav {
+                shift: false,
+                word: true,
+            },
+            edit_metrics(),
+        ));
+        assert_eq!(input.selection(), Some((0, 11)));
+        assert_eq!(value, "hello world");
+        key(&mut input, &mut value, NamedKey::End, UiTextNav::default());
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::ArrowLeft,
+            UiTextNav {
+                shift: false,
+                word: true,
+            },
+        );
+        assert_eq!(input.caret(), 6);
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::ArrowLeft,
+            UiTextNav {
+                shift: false,
+                word: true,
+            },
+        );
+        assert_eq!(input.caret(), 0);
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::ArrowRight,
+            UiTextNav {
+                shift: true,
+                word: true,
+            },
+        );
+        assert_eq!(input.selection(), Some((0, 6)));
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::Delete,
+            UiTextNav::default(),
+        );
+        assert_eq!(value, "world");
+
+        value = "a😀b".to_string();
+        input.blur();
+        press_at(&mut input, &value, bounds_of(&value).x[3]);
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::ArrowLeft,
+            UiTextNav::default(),
+        );
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::Backspace,
+            UiTextNav::default(),
+        );
         assert_eq!(value, "ab");
         value = "é".to_string();
         input.blur();
-        assert!(input.apply_press(true, &value));
-        assert!(input.apply_key(&mut value, &key_named(NamedKey::ArrowLeft), None, false));
-        assert!(input.apply_key(&mut value, &Key::Character("x".into()), Some("x"), false));
+        press_at(&mut input, &value, bounds_of(&value).x[1]);
+        key(
+            &mut input,
+            &mut value,
+            NamedKey::ArrowLeft,
+            UiTextNav::default(),
+        );
+        assert!(input.apply_key(
+            &mut value,
+            &Key::Character("x".into()),
+            Some("x"),
+            false,
+            UiTextNav::default(),
+            edit_metrics(),
+        ));
         assert_eq!(value, "xé");
         assert!(input.apply_key(
             &mut value,
             &Key::Character("\u{0007}".into()),
             Some("\u{0007}"),
-            false
+            false,
+            UiTextNav::default(),
+            edit_metrics(),
         ));
         assert_eq!(value, "xé");
         let mut full = "a".repeat(UI_TEXT_INPUT_LIMIT);
         input.blur();
-        assert!(input.apply_press(true, &full));
-        assert!(input.apply_key(&mut full, &Key::Character("z".into()), Some("z"), false));
+        press_at(&mut input, &full, bounds_of(&full).x[full.chars().count()]);
+        assert!(input.apply_key(
+            &mut full,
+            &Key::Character("z".into()),
+            Some("z"),
+            false,
+            UiTextNav::default(),
+            edit_metrics(),
+        ));
         assert_eq!(full.chars().count(), UI_TEXT_INPUT_LIMIT);
         assert!(!full.contains('z'));
-        assert!(input.apply_key(&mut full, &key_named(NamedKey::Enter), Some("\n"), false));
+        assert!(input.apply_key(
+            &mut full,
+            &key_named(NamedKey::Enter),
+            Some("\n"),
+            false,
+            UiTextNav::default(),
+            edit_metrics(),
+        ));
         assert!(!input.is_focused());
-        assert!(!input.display_text(&full).contains('|'));
+        assert!(!input.apply_key(
+            &mut full,
+            &key_named(NamedKey::Backspace),
+            Some("u"),
+            false,
+            UiTextNav::default(),
+            edit_metrics(),
+        ));
+    }
+
+    #[test]
+    fn text_input_scroll_keeps_the_caret_inside_the_view() {
+        let mut input = UiTextInput::default();
+        let value = "W".repeat(12);
+        let narrow = UiTextMetrics {
+            view_width: 24.0,
+            ..edit_metrics()
+        };
+        let end = caret_bounds(&value, narrow).x.last().copied().unwrap();
+        assert!(end > narrow.view_width);
+        assert!(input.apply_press(true, end, &value, narrow));
+        assert_eq!(input.caret(), value.chars().count());
+        let caret_x = caret_bounds(&value, narrow).x[input.caret()];
+        assert!(caret_x <= input.scroll() + narrow.view_width + 0.05);
+        assert!(caret_x >= input.scroll() - 0.05);
+        assert!(input.scroll() > 0.0);
+    }
+
+    #[test]
+    fn notification_badge_shows_a_digit_then_plus_and_pulses_on_every_increment() {
+        for count in 0..10 {
+            assert_eq!(notification_badge_label(count), count.to_string());
+        }
+        assert_eq!(notification_badge_label(10), "+");
+        assert_eq!(notification_badge_label(42), "+");
+        assert!((notification_badge_scale(0) - 1.0).abs() < 0.001);
+        assert!(notification_badge_scale(90) > 1.2);
+        assert!((notification_badge_scale(180) - 1.0).abs() < 0.001);
+        assert!((notification_badge_scale(400) - 1.0).abs() < 0.001);
+        let mut elapsed = 180;
+        assert!((notification_badge_scale(elapsed) - 1.0).abs() < 0.001);
+        elapsed = 0;
+        assert!(notification_badge_scale(90) > notification_badge_scale(elapsed));
+        assert!((notification_badge_scale(180) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn horizontal_scroll_clamps_past_either_end() {
+        assert_eq!(text_scroll_for_caret(0.0, 0.0, 100.0, 40.0), 0.0);
+        let followed = text_scroll_for_caret(0.0, 90.0, 100.0, 40.0);
+        assert!(followed > 50.0);
+        assert!(followed <= 60.0);
+        assert_eq!(text_scroll_for_caret(80.0, 10.0, 100.0, 40.0), 9.0);
     }
 
     fn list_rect() -> ScreenRect {

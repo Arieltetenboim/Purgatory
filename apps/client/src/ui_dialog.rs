@@ -1,13 +1,18 @@
 //! Reusable modal message dialog UI.
 
-use winit::event::ElementState;
+use winit::event::{ElementState, MouseScrollDelta};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
+use crate::renderer::text::measure_text;
 use crate::renderer::{
     PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle,
     UiTexturedQuad,
+};
+use crate::ui_controls::{
+    UiButton, UiButtonVisual, UiPointerOutcome, UiScrollGeometry, UiScrollbar, scroll_geometry,
+    scroll_max_offset, scroll_offset_after_wheel, scroll_rows_from_wheel,
 };
 use crate::ui_panel::{
     ScreenRect, button_label_text, compose_nine_slice_with_borders, compose_stretched_quad,
@@ -29,10 +34,12 @@ const BUTTON_HEIGHT_UNITS: f32 = 44.0;
 const BUTTON_ROW_GAP_UNITS: f32 = 8.0;
 /// Authored V2 button width. Dialog buttons never stretch past this.
 const BUTTON_MAX_WIDTH_UNITS: f32 = 112.0;
-/// Vertical room under the header before the button row. Matches the previous
-/// message-chrome body span so existing copy keeps the same max-width idea.
-const BODY_REGION_UNITS: f32 = 98.0;
 const BODY_GAP_UNITS: f32 = 8.0;
+const SCROLL_GAP_UNITS: f32 = 4.0;
+const SCROLL_ARROW_UNITS: f32 = 16.0;
+const SCROLL_TRACK_BORDER: [f32; 4] = [8.0, 10.0, 8.0, 10.0];
+/// Long copy stops growing and scrolls the body once the window reaches this share of the viewport.
+const DIALOG_MAX_HEIGHT_FRACTION: f32 = 0.75;
 const HEADER_TOP_INSET_UNITS: f32 = 6.0;
 const HEADER_HEIGHT_UNITS: f32 = 34.0;
 const HEADER_SIDE_INSET_UNITS: f32 = 8.0;
@@ -42,13 +49,6 @@ const CLOSE_SIZE_UNITS: f32 = 18.0;
 const CLOSE_INSET_UNITS: f32 = 4.0;
 const CLOSE_RIGHT_INSET_UNITS: f32 = 6.0;
 const DIALOG_WIDTH_UNITS: f32 = 360.0;
-const DIALOG_HEIGHT_UNITS: f32 = HEADER_TOP_INSET_UNITS
-    + HEADER_HEIGHT_UNITS
-    + BODY_GAP_UNITS
-    + BODY_REGION_UNITS
-    + BUTTON_ROW_GAP_UNITS
-    + BUTTON_HEIGHT_UNITS
-    + BUTTON_BOTTOM_UNITS;
 const PANEL_BORDER_UNITS: [f32; 4] = [10.0, 10.0, 10.0, 12.0];
 const HEADER_BORDER_UNITS: [f32; 4] = [6.0, 6.0, 6.0, 6.0];
 const PANEL_ASSET: &str = "panel_body_9slice";
@@ -113,6 +113,13 @@ pub(crate) struct MessageDialog {
     close_pressed: bool,
     button_bounds: Vec<ScreenRect>,
     close_button: Option<ScreenRect>,
+    scroll_offset: usize,
+    max_scroll: usize,
+    scrollbar: UiScrollbar,
+    scroll_up: UiButton,
+    scroll_down: UiButton,
+    body_bounds: Option<ScreenRect>,
+    scroll_geom: Option<UiScrollGeometry>,
 }
 
 pub(crate) struct MessageDialogV2Assets {
@@ -120,6 +127,10 @@ pub(crate) struct MessageDialogV2Assets {
     header: UiV2NineSlice,
     close: [UiV2Image; 3],
     buttons: [UiV2NineSlice; 3],
+    scroll_track: UiV2NineSlice,
+    scroll_thumbs: [SpriteTextureId; 4],
+    scroll_up: [SpriteTextureId; 3],
+    scroll_down: [SpriteTextureId; 3],
 }
 
 impl MessageDialogV2Assets {
@@ -136,11 +147,51 @@ impl MessageDialogV2Assets {
         let buttons = load_v2_text_buttons(&mut loader, &catalog, &BUTTON_ASSETS)?
             .try_into()
             .map_err(|_| "V2 text button family length is not 3".to_string())?;
+        let scroll_track =
+            load_ui_v2_nine_slice(&mut loader, &catalog, "scrollbar_track_vertical_9slice")?;
+        let thumbs = load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &[
+                "scrollbar_thumb_normal",
+                "scrollbar_thumb_hover",
+                "scrollbar_thumb_pressed",
+                "scrollbar_thumb_disabled",
+            ],
+        )?;
+        let scroll_thumbs = thumbs
+            .iter()
+            .map(|image| image.texture)
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| "scrollbar thumb family length is not 4".to_string())?;
+        let scroll_up = textures3(load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &[
+                "scroll_arrow_up_normal",
+                "scroll_arrow_up_hover",
+                "scroll_arrow_up_pressed",
+            ],
+        )?)?;
+        let scroll_down = textures3(load_ui_v2_state_family(
+            &mut loader,
+            &catalog,
+            &[
+                "scroll_arrow_down_normal",
+                "scroll_arrow_down_hover",
+                "scroll_arrow_down_pressed",
+            ],
+        )?)?;
         Ok(Self {
             panel,
             header,
             close,
             buttons,
+            scroll_track,
+            scroll_thumbs,
+            scroll_up,
+            scroll_down,
         })
     }
 }
@@ -149,8 +200,16 @@ struct MessageDialogLayout {
     window: ScreenRect,
     header: ScreenRect,
     close_button: Option<ScreenRect>,
+    /// Text viewport. Narrower than the content row when a scrollbar is present.
     body_bounds: ScreenRect,
+    /// Full inner width used to center the button row.
+    #[cfg_attr(not(test), allow(dead_code))]
+    content_bounds: ScreenRect,
     buttons: Vec<ScreenRect>,
+    scroll: Option<UiScrollGeometry>,
+    line_height: f32,
+    scroll_offset: usize,
+    max_offset: usize,
 }
 
 impl MessageDialog {
@@ -162,10 +221,8 @@ impl MessageDialog {
             return false;
         }
         self.active = Some(request);
-        self.pressed_button = None;
-        self.close_pressed = false;
-        self.button_bounds.clear();
-        self.close_button = None;
+        self.reset_interaction();
+        self.scroll_offset = 0;
         true
     }
 
@@ -190,10 +247,8 @@ impl MessageDialog {
 
     pub(crate) fn close(&mut self) {
         self.active = None;
-        self.pressed_button = None;
-        self.close_pressed = false;
-        self.button_bounds.clear();
-        self.close_button = None;
+        self.reset_interaction();
+        self.scroll_offset = 0;
     }
 
     pub(crate) fn cancel(&mut self) -> bool {
@@ -254,9 +309,56 @@ impl MessageDialog {
     }
 
     pub(crate) fn pointer_moved(&mut self, cursor: [f32; 2]) -> bool {
-        self.is_active()
-            && (self.close_button.is_some()
-                || self.button_bounds.iter().any(|b| b.contains(cursor)))
+        if !self.is_active() {
+            return false;
+        }
+        if self.scrollbar.is_dragging()
+            && let Some(geometry) = self.scroll_geom
+            && let Some(offset) =
+                self.scrollbar
+                    .pointer_moved(cursor[1], &geometry, self.max_scroll)
+        {
+            self.scroll_offset = offset;
+        }
+        self.close_button.is_some()
+            || self
+                .button_bounds
+                .iter()
+                .any(|bounds| bounds.contains(cursor))
+            || self
+                .body_bounds
+                .is_some_and(|bounds| bounds.contains(cursor))
+            || self
+                .scroll_geom
+                .is_some_and(|geometry| geometry.region.contains(cursor))
+    }
+
+    /// Wheel scrolls the body only while the pointer is over that body.
+    pub(crate) fn apply_wheel(
+        &mut self,
+        delta: MouseScrollDelta,
+        cursor: Option<[f32; 2]>,
+    ) -> bool {
+        if !self.is_active() || self.max_scroll == 0 {
+            return false;
+        }
+        let Some(cursor) = cursor else {
+            return false;
+        };
+        if !self
+            .body_bounds
+            .is_some_and(|bounds| bounds.contains(cursor))
+        {
+            return false;
+        }
+        let next = scroll_offset_after_wheel(
+            self.scroll_offset,
+            self.max_scroll,
+            scroll_rows_from_wheel(delta),
+        );
+        let changed = next != self.scroll_offset;
+        self.scroll_offset = next;
+        changed
     }
 
     pub(crate) fn apply_pointer_button(
@@ -270,8 +372,72 @@ impl MessageDialog {
         let Some(cursor) = cursor else {
             self.pressed_button = None;
             self.close_pressed = false;
+            self.scrollbar.cancel();
+            self.scroll_up.cancel();
+            self.scroll_down.cancel();
             return true;
         };
+        if let Some(geometry) = self.scroll_geom {
+            if self.scrollbar.is_dragging() {
+                if state == ElementState::Released {
+                    let _ = self.scrollbar.apply_thumb(
+                        ElementState::Released,
+                        Some(cursor),
+                        &geometry,
+                        self.max_scroll,
+                    );
+                }
+                return true;
+            }
+            if self.scroll_up.is_pressed() || self.scroll_down.is_pressed() {
+                if state == ElementState::Released {
+                    if self
+                        .scroll_up
+                        .apply(ElementState::Released, Some(cursor), geometry.up, true)
+                        == UiPointerOutcome::Activated
+                    {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    }
+                    if self.scroll_down.apply(
+                        ElementState::Released,
+                        Some(cursor),
+                        geometry.down,
+                        true,
+                    ) == UiPointerOutcome::Activated
+                    {
+                        self.scroll_offset = (self.scroll_offset + 1).min(self.max_scroll);
+                    }
+                }
+                return true;
+            }
+            if state == ElementState::Pressed {
+                if self.scrollbar.apply_thumb(
+                    ElementState::Pressed,
+                    Some(cursor),
+                    &geometry,
+                    self.max_scroll,
+                ) {
+                    self.pressed_button = None;
+                    self.close_pressed = false;
+                    return true;
+                }
+                if self
+                    .scroll_up
+                    .apply(ElementState::Pressed, Some(cursor), geometry.up, true)
+                    != UiPointerOutcome::Idle
+                    || self.scroll_down.apply(
+                        ElementState::Pressed,
+                        Some(cursor),
+                        geometry.down,
+                        true,
+                    ) != UiPointerOutcome::Idle
+                {
+                    self.pressed_button = None;
+                    self.close_pressed = false;
+                    return true;
+                }
+            }
+        }
         match state {
             ElementState::Pressed => {
                 if self
@@ -321,18 +487,22 @@ impl MessageDialog {
         pixels_per_unit: f32,
         cursor: Option<[f32; 2]>,
     ) -> Result<Option<MessageDialogFrame>, String> {
-        let Some(request) = self.active.as_ref() else {
-            self.button_bounds.clear();
-            self.close_button = None;
-            self.close_pressed = false;
+        let Some(request) = self.active.clone() else {
+            self.reset_interaction();
             return Ok(None);
         };
         let layout = layout_message_dialog(
             viewport,
             pixels_per_unit,
+            &request.body,
             request.buttons.len(),
             request.dismissible,
+            self.scroll_offset,
         )?;
+        self.scroll_offset = layout.scroll_offset;
+        self.max_scroll = layout.max_offset;
+        self.body_bounds = Some(layout.body_bounds);
+        self.scroll_geom = layout.scroll;
         self.button_bounds.clone_from(&layout.buttons);
         self.close_button = layout.close_button;
         let mut skin_quads = Vec::new();
@@ -355,8 +525,17 @@ impl MessageDialog {
             TextBlock {
                 content: TextContent(request.body.clone()),
                 style: TextStyle::at_size(BODY_FONT_SIZE, BODY_COLOR, TextAlignment::Left),
-                anchor: layout.body_bounds.min,
+                anchor: [
+                    layout.body_bounds.min[0],
+                    layout.body_bounds.min[1] - layout.scroll_offset as f32 * layout.line_height,
+                ],
                 max_width: Some(layout.body_bounds.width()),
+                clip: Some([
+                    layout.body_bounds.min[0],
+                    layout.body_bounds.min[1],
+                    layout.body_bounds.max[0],
+                    layout.body_bounds.max[1],
+                ]),
             },
         ];
         for (index, button) in request.buttons.iter().enumerate() {
@@ -375,6 +554,20 @@ impl MessageDialog {
             let texture = close_texture(assets, bounds, cursor, self.close_pressed);
             skin_quads.push(compose_stretched_quad(bounds, texture)?);
         }
+        if let Some(geometry) = layout.scroll {
+            push_dialog_scroll(
+                &mut skin_quads,
+                assets,
+                geometry,
+                DialogScrollPointer {
+                    cursor,
+                    dragging: self.scrollbar.is_dragging(),
+                    up: &self.scroll_up,
+                    down: &self.scroll_down,
+                },
+                pixels_per_unit,
+            )?;
+        }
         Ok(Some(MessageDialogFrame { skin_quads, texts }))
     }
 
@@ -384,11 +577,22 @@ impl MessageDialog {
                 id: request.id,
                 action,
             });
-            self.pressed_button = None;
-            self.close_pressed = false;
-            self.button_bounds.clear();
-            self.close_button = None;
+            self.reset_interaction();
+            self.scroll_offset = 0;
         }
+    }
+
+    fn reset_interaction(&mut self) {
+        self.pressed_button = None;
+        self.close_pressed = false;
+        self.button_bounds.clear();
+        self.close_button = None;
+        self.max_scroll = 0;
+        self.scrollbar.cancel();
+        self.scroll_up.cancel();
+        self.scroll_down.cancel();
+        self.body_bounds = None;
+        self.scroll_geom = None;
     }
 }
 
@@ -400,8 +604,10 @@ pub(crate) struct MessageDialogFrame {
 fn layout_message_dialog(
     viewport: PixelViewport,
     pixels_per_unit: f32,
+    body: &str,
     button_count: usize,
     dismissible: bool,
+    scroll_offset: usize,
 ) -> Result<MessageDialogLayout, String> {
     if !pixels_per_unit.is_finite() || pixels_per_unit <= 0.0 {
         return Err("message dialog pixels-per-unit must be finite and positive".to_string());
@@ -410,7 +616,36 @@ fn layout_message_dialog(
         return Err("message dialog requires 1 to 3 buttons".to_string());
     }
     let scale = pixels_per_unit;
-    let window = place_dialog_window(viewport, scale);
+    let above = (HEADER_TOP_INSET_UNITS + HEADER_HEIGHT_UNITS + BODY_GAP_UNITS) * scale;
+    let below = (BUTTON_ROW_GAP_UNITS + BUTTON_HEIGHT_UNITS + BUTTON_BOTTOM_UNITS) * scale;
+    let content_width = (DIALOG_WIDTH_UNITS - SIDE_INSET_UNITS * 2.0) * scale;
+    let full = measure_dialog_body(body, content_width.max(1.0), scale);
+    let max_window = viewport.height as f32 * DIALOG_MAX_HEIGHT_FRACTION;
+    let natural = above + full.height + below;
+    let mut body_height = if natural <= max_window {
+        full.height
+    } else {
+        (max_window - above - below).max(full.line_height)
+    };
+    let scroll_column = (SCROLL_GAP_UNITS + SCROLL_ARROW_UNITS) * scale;
+    let min_scroll_body = SCROLL_ARROW_UNITS * scale * 2.0 + 1.0;
+    let mut text_width = content_width.max(1.0);
+    let mut measured = full;
+    let mut show_scroll = measured.height > body_height + 0.5;
+    if show_scroll {
+        if body_height < min_scroll_body {
+            body_height = min_scroll_body;
+        }
+        text_width = (content_width - scroll_column).max(1.0);
+        measured = measure_dialog_body(body, text_width, scale);
+        show_scroll = measured.height > body_height + 0.5;
+        if !show_scroll {
+            text_width = content_width.max(1.0);
+            measured = full;
+        }
+    }
+    let window_height = above + body_height + below;
+    let window = place_dialog_window(viewport, scale, window_height);
     let header = ScreenRect {
         min: [
             window.min[0] + HEADER_SIDE_INSET_UNITS * scale,
@@ -431,21 +666,45 @@ fn layout_message_dialog(
         }
     });
     let body_min_y = header.max[1] + BODY_GAP_UNITS * scale;
-    let body_bounds = ScreenRect {
+    let content_bounds = ScreenRect {
         min: [window.min[0] + SIDE_INSET_UNITS * scale, body_min_y],
         max: [
             window.max[0] - SIDE_INSET_UNITS * scale,
-            body_min_y + BODY_REGION_UNITS * scale,
+            body_min_y + body_height,
         ],
     };
+    let body_bounds = ScreenRect {
+        min: content_bounds.min,
+        max: [content_bounds.min[0] + text_width, content_bounds.max[1]],
+    };
+    let visible = visible_body_lines(body_height, measured.line_height, measured.line_count);
+    let max_offset = if show_scroll {
+        scroll_max_offset(measured.line_count, visible)
+    } else {
+        0
+    };
+    let scroll_offset = scroll_offset.min(max_offset);
+    let scroll = if max_offset > 0 {
+        Some(scroll_geometry(
+            body_bounds,
+            SCROLL_GAP_UNITS * scale,
+            SCROLL_ARROW_UNITS * scale,
+            scroll_offset,
+            measured.line_count,
+            visible,
+        )?)
+    } else {
+        None
+    };
     let button_height = BUTTON_HEIGHT_UNITS * scale;
-    let button_y = window.max[1] - BUTTON_BOTTOM_UNITS * scale - button_height;
-    let buttons = place_dialog_buttons(body_bounds, button_count, button_y, button_height, scale);
-    let stacked_button_y = body_bounds.max[1] + BUTTON_ROW_GAP_UNITS * scale;
+    let button_y = content_bounds.max[1] + BUTTON_ROW_GAP_UNITS * scale;
+    let buttons =
+        place_dialog_buttons(content_bounds, button_count, button_y, button_height, scale);
     let buttons_fit = buttons.iter().all(|button| {
-        button.min[0] >= body_bounds.min[0]
-            && button.max[0] <= body_bounds.max[0] + 0.05
-            && button.max[1] <= window.max[1]
+        button.min[0] >= content_bounds.min[0] - 0.05
+            && button.max[0] <= content_bounds.max[0] + 0.05
+            && button.max[1] <= window.max[1] + 0.05
+            && button.min[1] + 0.05 >= content_bounds.max[1]
             && button.width() > 0.0
             && button.height() > 0.0
     });
@@ -460,7 +719,7 @@ fn layout_message_dialog(
         || header.width() <= 0.0
         || header.height() <= 0.0
         || body_bounds.width() <= 0.0
-        || (button_y - stacked_button_y).abs() > 0.6
+        || body_bounds.height() <= 0.0
     {
         return Err("message dialog layout does not fit its window".to_string());
     }
@@ -469,7 +728,12 @@ fn layout_message_dialog(
         header,
         close_button,
         body_bounds,
+        content_bounds,
         buttons,
+        scroll,
+        line_height: measured.line_height,
+        scroll_offset,
+        max_offset,
     })
 }
 
@@ -502,26 +766,132 @@ fn place_dialog_buttons(
         .collect()
 }
 
-fn place_dialog_window(viewport: PixelViewport, pixels_per_unit: f32) -> ScreenRect {
-    let size = [DIALOG_WIDTH_UNITS, DIALOG_HEIGHT_UNITS];
-    let viewport_size = [
-        viewport.width as f32 / pixels_per_unit,
-        viewport.height as f32 / pixels_per_unit,
-    ];
+fn place_dialog_window(
+    viewport: PixelViewport,
+    pixels_per_unit: f32,
+    height_px: f32,
+) -> ScreenRect {
+    let width_px = DIALOG_WIDTH_UNITS * pixels_per_unit;
+    let viewport_size = [viewport.width as f32, viewport.height as f32];
     let top_left = [
-        ((viewport_size[0] - size[0]) * 0.5).max(0.0),
-        ((viewport_size[1] - size[1]) * 0.5).max(0.0),
+        ((viewport_size[0] - width_px) * 0.5).max(0.0),
+        ((viewport_size[1] - height_px) * 0.5).max(0.0),
     ];
     let min = [
-        viewport.x as f32 + top_left[0] * pixels_per_unit,
-        viewport.y as f32 + top_left[1] * pixels_per_unit,
+        viewport.x as f32 + top_left[0],
+        viewport.y as f32 + top_left[1],
     ];
     ScreenRect {
         min,
-        max: [
-            min[0] + size[0] * pixels_per_unit,
-            min[1] + size[1] * pixels_per_unit,
-        ],
+        max: [min[0] + width_px, min[1] + height_px],
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DialogBodyMeasure {
+    height: f32,
+    line_height: f32,
+    line_count: usize,
+}
+
+fn measure_dialog_body(text: &str, width: f32, scale: f32) -> DialogBodyMeasure {
+    let fallback = BODY_FONT_SIZE * 1.2 * scale;
+    if text.is_empty() || !width.is_finite() || width <= 0.0 {
+        return DialogBodyMeasure {
+            height: fallback,
+            line_height: fallback,
+            line_count: 1,
+        };
+    }
+    let block = TextBlock {
+        content: TextContent(text.to_owned()),
+        style: TextStyle::at_size(BODY_FONT_SIZE, BODY_COLOR, TextAlignment::Left),
+        anchor: [0.0, 0.0],
+        max_width: Some(width),
+        clip: None,
+    };
+    let Some(metrics) = measure_text(&block, scale) else {
+        return DialogBodyMeasure {
+            height: fallback,
+            line_height: fallback,
+            line_count: 1,
+        };
+    };
+    let line_count = metrics.line_count.max(1) as usize;
+    let height = if metrics.height.is_finite() && metrics.height > 0.0 {
+        metrics.height
+    } else {
+        fallback
+    };
+    DialogBodyMeasure {
+        height,
+        line_height: height / line_count as f32,
+        line_count,
+    }
+}
+
+fn visible_body_lines(body_height: f32, line_height: f32, line_count: usize) -> usize {
+    if line_height <= 0.0 || !line_height.is_finite() {
+        return line_count.max(1);
+    }
+    let fitted = (body_height / line_height).floor() as usize;
+    fitted.clamp(1, line_count.max(1))
+}
+
+struct DialogScrollPointer<'a> {
+    cursor: Option<[f32; 2]>,
+    dragging: bool,
+    up: &'a UiButton,
+    down: &'a UiButton,
+}
+
+fn push_dialog_scroll(
+    quads: &mut Vec<UiTexturedQuad>,
+    assets: &MessageDialogV2Assets,
+    geometry: UiScrollGeometry,
+    pointer: DialogScrollPointer<'_>,
+    scale: f32,
+) -> Result<(), String> {
+    push_nine_slice(
+        quads,
+        geometry.track,
+        &assets.scroll_track,
+        SCROLL_TRACK_BORDER,
+        scale,
+    )?;
+    let thumb = if pointer.dragging {
+        assets.scroll_thumbs[2]
+    } else if pointer
+        .cursor
+        .is_some_and(|point| geometry.thumb.contains(point))
+    {
+        assets.scroll_thumbs[1]
+    } else {
+        assets.scroll_thumbs[0]
+    };
+    quads.push(compose_stretched_quad(geometry.thumb, thumb)?);
+    quads.push(compose_stretched_quad(
+        geometry.up,
+        arrow_texture(
+            assets.scroll_up,
+            pointer.up.visual(pointer.cursor, geometry.up, true),
+        ),
+    )?);
+    quads.push(compose_stretched_quad(
+        geometry.down,
+        arrow_texture(
+            assets.scroll_down,
+            pointer.down.visual(pointer.cursor, geometry.down, true),
+        ),
+    )?);
+    Ok(())
+}
+
+fn arrow_texture(textures: [SpriteTextureId; 3], visual: UiButtonVisual) -> SpriteTextureId {
+    match visual {
+        UiButtonVisual::Hover => textures[1],
+        UiButtonVisual::Pressed => textures[2],
+        UiButtonVisual::Normal | UiButtonVisual::Disabled => textures[0],
     }
 }
 
@@ -540,6 +910,7 @@ fn title_text(layout: &MessageDialogLayout, title: &str, pixels_per_unit: f32) -
         style: TextStyle::at_size(TITLE_FONT_SIZE, TITLE_COLOR, TextAlignment::Left),
         anchor,
         max_width: Some((right - anchor[0]).max(1.0)),
+        clip: None,
     }
 }
 
@@ -595,6 +966,11 @@ fn push_nine_slice(
         border_units,
     )?);
     Ok(())
+}
+
+fn textures3(images: Vec<UiV2Image>) -> Result<[SpriteTextureId; 3], String> {
+    let images = array3(images)?;
+    Ok([images[0].texture, images[1].texture, images[2].texture])
 }
 
 fn array3(images: Vec<UiV2Image>) -> Result<[UiV2Image; 3], String> {
@@ -863,16 +1239,19 @@ mod tests {
             assets
                 .buttons
                 .iter()
-                .all(|image| image.size_px == [112, 44])
+                .all(|image| image.size_px == [112, 44] && image.slice_ltrb == [10, 0, 10, 0])
         );
     }
 
     #[test]
     fn layout_fits_one_two_and_three_buttons() {
         for (count, dismissible) in [(1, false), (2, true), (3, true)] {
-            let layout = layout_message_dialog(viewport(), 1.0, count, dismissible).unwrap();
+            let layout =
+                layout_message_dialog(viewport(), 1.0, "Body", count, dismissible, 0).unwrap();
             assert!((layout.window.width() - DIALOG_WIDTH_UNITS).abs() < 0.01);
-            assert!((layout.window.height() - DIALOG_HEIGHT_UNITS).abs() < 0.01);
+            assert!(layout.scroll.is_none());
+            assert!(layout.window.height() < viewport().height as f32 * DIALOG_MAX_HEIGHT_FRACTION);
+            assert!(layout.body_bounds.height() < 40.0);
             assert!((layout.header.height() - HEADER_HEIGHT_UNITS).abs() < 0.01);
             assert_eq!(layout.buttons.len(), count);
             assert_eq!(layout.close_button.is_some(), dismissible);
@@ -1033,7 +1412,7 @@ mod tests {
             .unwrap();
         assert!(dialog.close_button.is_none());
         assert!(close_quads(&frame, &assets).is_empty());
-        let header = layout_message_dialog(viewport(), 1.0, 1, false)
+        let header = layout_message_dialog(viewport(), 1.0, "Notice", 1, false, 0)
             .unwrap()
             .header;
         let point = [header.max[0] - 4.0, header.min[1] + 8.0];
@@ -1045,11 +1424,11 @@ mod tests {
 
     #[test]
     fn geometry_scales_together() {
-        let base = layout_message_dialog(viewport(), 1.0, 3, true).unwrap();
-        for scale in [0.9_f32, 1.25] {
-            let layout = layout_message_dialog(viewport(), scale, 3, true).unwrap();
+        let base = layout_message_dialog(viewport(), 1.0, "Body", 3, true, 0).unwrap();
+        for scale in [0.9_f32, 1.0, 1.25] {
+            let layout = layout_message_dialog(viewport(), scale, "Body", 3, true, 0).unwrap();
             assert!((layout.window.width() - base.window.width() * scale).abs() < 0.05);
-            assert!((layout.window.height() - base.window.height() * scale).abs() < 0.05);
+            assert!((layout.window.height() - base.window.height() * scale).abs() < 1.5);
             assert!((layout.header.height() - base.header.height() * scale).abs() < 0.05);
             assert!((layout.body_bounds.width() - base.body_bounds.width() * scale).abs() < 0.05);
             let close = layout.close_button.expect("close");
@@ -1066,7 +1445,143 @@ mod tests {
                 base.buttons[2].min[1] - base.window.min[1],
             ];
             assert!((offset[0] - base_offset[0] * scale).abs() < 0.05);
-            assert!((offset[1] - base_offset[1] * scale).abs() < 0.05);
+            assert!((offset[1] - base_offset[1] * scale).abs() < 1.5);
         }
+    }
+
+    fn medium_body() -> String {
+        "This notice wraps across several lines and should grow the dialog without reaching the viewport cap or showing a scrollbar.".to_owned()
+    }
+
+    fn long_body() -> String {
+        "The road through the message is long enough that the dialog must stop growing and scroll only the body. ".repeat(30)
+    }
+
+    #[test]
+    fn dialog_body_grows_then_caps_and_scrolls() {
+        let (_runtime, assets) = loaded_assets();
+        let short = layout_message_dialog(viewport(), 1.0, "Hi", 2, true, 0).unwrap();
+        let medium = layout_message_dialog(viewport(), 1.0, &medium_body(), 2, true, 0).unwrap();
+        let long = layout_message_dialog(viewport(), 1.0, &long_body(), 2, true, 4).unwrap();
+        assert!(short.window.height() < medium.window.height());
+        assert!(medium.window.height() < long.window.height());
+        assert!(short.scroll.is_none());
+        assert!(medium.scroll.is_none());
+        assert!(long.scroll.is_some());
+        assert!(long.max_offset > 0);
+        assert_eq!(long.scroll_offset, 4);
+        assert!(
+            long.window.height() <= viewport().height as f32 * DIALOG_MAX_HEIGHT_FRACTION + 0.6
+        );
+        assert!(long.body_bounds.width() < short.body_bounds.width() - 8.0);
+        assert!((short.body_bounds.width() - short.content_bounds.width()).abs() < 0.05);
+        assert!(long.header.max[1] <= long.body_bounds.min[1] + 0.05);
+        assert!(long.buttons[0].min[1] >= long.body_bounds.max[1] - 0.05);
+        assert!(long.buttons[0].max[1] <= long.window.max[1] + 0.05);
+
+        let mut dialog = MessageDialog::default();
+        let mut opened = request();
+        opened.body = long_body();
+        assert!(dialog.open(opened));
+        assert_eq!(dialog.scroll_offset, 0);
+        let frame = dialog
+            .frame(&assets, viewport(), 1.0, None)
+            .unwrap()
+            .unwrap();
+        let body = frame
+            .texts
+            .iter()
+            .find(|text| text.content.0.contains("road"))
+            .unwrap();
+        assert_eq!(
+            body.clip,
+            Some([
+                dialog.body_bounds.unwrap().min[0],
+                dialog.body_bounds.unwrap().min[1],
+                dialog.body_bounds.unwrap().max[0],
+                dialog.body_bounds.unwrap().max[1],
+            ])
+        );
+        assert!(frame.texts[0].clip.is_none());
+        let header_y = dialog_header_top(&frame, &assets);
+        let button_y = dialog.button_bounds[0].min[1];
+        assert!(dialog.apply_wheel(
+            MouseScrollDelta::LineDelta(0.0, -3.0),
+            Some(center_of(dialog.body_bounds.unwrap())),
+        ));
+        assert!(dialog.scroll_offset > 0);
+        assert!(!dialog.apply_wheel(MouseScrollDelta::LineDelta(0.0, -1.0), Some([0.0, 0.0]),));
+        let scrolled = dialog
+            .frame(&assets, viewport(), 1.0, None)
+            .unwrap()
+            .unwrap();
+        assert!((dialog_header_top(&scrolled, &assets) - header_y).abs() < 0.05);
+        assert!((dialog.button_bounds[0].min[1] - button_y).abs() < 0.05);
+        let scrolled_body = scrolled
+            .texts
+            .iter()
+            .find(|text| text.content.0.contains("road"))
+            .unwrap();
+        assert!(scrolled_body.anchor[1] < body.anchor[1]);
+        assert_eq!(scrolled_body.clip, body.clip);
+        let track = assets.scroll_track.texture;
+        assert!(scrolled.skin_quads.iter().any(|quad| quad.texture == track));
+        let short_frame = {
+            let mut compact = MessageDialog::default();
+            assert!(compact.open(request()));
+            compact
+                .frame(&assets, viewport(), 1.0, None)
+                .unwrap()
+                .unwrap()
+        };
+        assert!(
+            short_frame
+                .skin_quads
+                .iter()
+                .all(|quad| quad.texture != track)
+        );
+
+        let geometry = dialog.scroll_geom.expect("long dialog has a scrollbar");
+        let thumb = center_of(geometry.thumb);
+        assert!(dialog.apply_pointer_button(ElementState::Pressed, Some(thumb)));
+        assert!(dialog.scrollbar.is_dragging());
+        dialog.pointer_moved([thumb[0], geometry.track.max[1] + 400.0]);
+        assert_eq!(dialog.scroll_offset, dialog.max_scroll);
+        dialog.pointer_moved([thumb[0], geometry.track.min[1] - 400.0]);
+        assert_eq!(dialog.scroll_offset, 0);
+        assert!(dialog.apply_pointer_button(ElementState::Released, Some(thumb)));
+        assert!(!dialog.scrollbar.is_dragging());
+
+        dialog.close();
+        let mut again = request();
+        again.body = long_body();
+        assert!(dialog.open(again));
+        let _ = dialog.frame(&assets, viewport(), 1.0, None).unwrap();
+        assert_eq!(dialog.scroll_offset, 0);
+
+        for scale in [0.9_f32, 1.0, 1.25] {
+            let fitted =
+                layout_message_dialog(viewport(), scale, &long_body(), 1, false, 0).unwrap();
+            assert!(fitted.window.height() <= viewport().height as f32 * 0.8 + 1.0);
+            assert!(fitted.header.max[1] < fitted.body_bounds.min[1]);
+            assert!(fitted.buttons[0].min[1] > fitted.body_bounds.max[1] - 0.5);
+            assert!(fitted.scroll.is_some());
+        }
+    }
+
+    fn center_of(bounds: ScreenRect) -> [f32; 2] {
+        [
+            (bounds.min[0] + bounds.max[0]) * 0.5,
+            (bounds.min[1] + bounds.max[1]) * 0.5,
+        ]
+    }
+
+    fn dialog_header_top(frame: &MessageDialogFrame, assets: &MessageDialogV2Assets) -> f32 {
+        frame
+            .skin_quads
+            .iter()
+            .find(|quad| quad.texture == assets.header.texture)
+            .expect("header")
+            .corners[0][1]
     }
 }

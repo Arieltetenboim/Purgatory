@@ -110,6 +110,7 @@ pub(crate) fn layout_speech_bubble_in_column(
         style: TextStyle::at_size(14.5, palette.text, TextAlignment::Left),
         anchor: [panel_min[0] + PADDING_X_PX, panel_min[1] + PADDING_Y_PX],
         max_width: Some((width - PADDING_X_PX * 2.0).max(1.0)),
+        clip: None,
     };
     SpeechBubbleLayout {
         rects: vec![border, fill, tail_border, tail_fill],
