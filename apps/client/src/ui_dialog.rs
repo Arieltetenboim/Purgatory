@@ -28,8 +28,9 @@ const TITLE_FONT_SIZE: f32 = 13.0;
 const SIDE_INSET_UNITS: f32 = 24.0;
 const BUTTON_BOTTOM_UNITS: f32 = 12.0;
 const BUTTON_GAP_UNITS: f32 = 8.0;
-/// Authored V2 button height. Width stays capped at 112; height stays 44 so the
-/// face is not squashed.
+/// Authored V2 button height. The source slice is `[10, 0, 10, 0]`: top and
+/// bottom are zero, so a taller button would stretch the whole face. Height
+/// stays at the authored 44 until new artwork provides a real vertical slice.
 const BUTTON_HEIGHT_UNITS: f32 = 44.0;
 const BUTTON_ROW_GAP_UNITS: f32 = 8.0;
 /// Authored V2 button width. Dialog buttons never stretch past this.

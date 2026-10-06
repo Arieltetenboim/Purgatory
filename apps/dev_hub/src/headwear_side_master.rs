@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, RgbaImage, imageops};
 
+use purgatory_skeleton::{ANCHOR_CROWN, HEAD, LocalPose, WorldPose, evaluate, humanoid_v0};
+
 use crate::authoring_template::{PX_PER_WU, fmt_num};
 
 pub const SHEET_W: u32 = 512;
@@ -23,6 +25,10 @@ pub const CROWN_LOCAL_Y: u32 = 176;
 pub const SAFE_INSET_PX: u32 = 16;
 
 const OUTPUT_REL: &str = "Graphic/character/headwear_side/HEADWEAR_SIDE_MASTER_V1.svg";
+const VISUAL_PACK_REL: &str = "Graphic/character/base/character.base.dev_01.visual-pack.json";
+const ATLAS_REL: &str = "Graphic/character/base/character.base.dev_01.side.atlas.png";
+const HEAD_VISUAL_KEY: &str = "character.base.dev_01.head.side";
+const REFERENCE_GROUP: &str = "REFERENCE_HEAD_DO_NOT_EXPORT";
 
 pub const CELLS: [CellSpec; 4] = [
     CellSpec {
@@ -117,7 +123,8 @@ pub fn export_to(path: &Path) -> Result<PathBuf, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| format!("create dir: {err}"))?;
     }
-    std::fs::write(path, render_svg()).map_err(|err| format!("write {}: {err}", path.display()))?;
+    std::fs::write(path, render_svg()?)
+        .map_err(|err| format!("write {}: {err}", path.display()))?;
     Ok(path.to_path_buf())
 }
 
@@ -192,17 +199,155 @@ pub fn render_mapping_json() -> String {
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeadVisualGeometry {
+    pub rect_px: [u32; 4],
+    pub pivot_px: [f32; 2],
+    pub pixels_per_unit: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReferenceHeadPlacement {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+fn repo_path(relative: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../")
+        .join(relative)
+}
+
+/// Vector from the Crown attachment to the head bone, in world units, Y up.
+/// Same compose the runtime uses: head world ∘ [`ANCHOR_CROWN`].
 #[must_use]
-pub fn render_svg() -> String {
-    let mut out = String::with_capacity(8_000);
+pub fn crown_to_head_world() -> [f32; 2] {
+    let def = humanoid_v0();
+    let local = LocalPose::from_bind(def);
+    let mut world = WorldPose::new(def);
+    evaluate(def, &local, &mut world).expect("humanoid v0 bind pose");
+    let head = world.get(HEAD).expect("head bone");
+    let crown = head.compose(ANCHOR_CROWN);
+    [
+        head.translation[0] - crown.translation[0],
+        head.translation[1] - crown.translation[1],
+    ]
+}
+
+/// Place the head sprite's top-left inside one cell so its pivot sits on HEAD
+/// and Crown stays at [`CROWN_LOCAL_X`], [`CROWN_LOCAL_Y`].
+#[must_use]
+pub fn reference_head_placement(head: HeadVisualGeometry) -> ReferenceHeadPlacement {
+    let crown_to_head = crown_to_head_world();
+    let ppu = head.pixels_per_unit;
+    let dx = crown_to_head[0] - head.pivot_px[0] / ppu;
+    let dy = crown_to_head[1] + head.pivot_px[1] / ppu;
+    let scale = PX_PER_WU / ppu;
+    ReferenceHeadPlacement {
+        x: CROWN_LOCAL_X as f32 + dx * PX_PER_WU,
+        y: CROWN_LOCAL_Y as f32 - dy * PX_PER_WU,
+        width: head.rect_px[2] as f32 * scale,
+        height: head.rect_px[3] as f32 * scale,
+    }
+}
+
+pub fn load_canonical_head_geometry() -> Result<HeadVisualGeometry, String> {
+    let bytes = std::fs::read(repo_path(VISUAL_PACK_REL))
+        .map_err(|err| format!("read visual pack: {err}"))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|err| format!("visual pack JSON: {err}"))?;
+    let pixels_per_unit = value
+        .get("pixels_per_unit")
+        .and_then(serde_json::Value::as_f64)
+        .ok_or("visual pack is missing pixels_per_unit")?;
+    let visuals = value
+        .get("visuals")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("visual pack is missing visuals")?;
+    for visual in visuals {
+        if visual.get("visual_key").and_then(serde_json::Value::as_str) != Some(HEAD_VISUAL_KEY) {
+            continue;
+        }
+        let rect = visual
+            .get("rect_px")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("head visual is missing rect_px")?;
+        let pivot = visual
+            .get("pivot_px")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("head visual is missing pivot_px")?;
+        let component =
+            |values: &[serde_json::Value], index: usize, label: &str| -> Result<f64, String> {
+                values
+                    .get(index)
+                    .and_then(serde_json::Value::as_f64)
+                    .ok_or_else(|| format!("head visual {label}[{index}] is not a number"))
+            };
+        return Ok(HeadVisualGeometry {
+            rect_px: [
+                component(rect, 0, "rect_px")? as u32,
+                component(rect, 1, "rect_px")? as u32,
+                component(rect, 2, "rect_px")? as u32,
+                component(rect, 3, "rect_px")? as u32,
+            ],
+            pivot_px: [
+                component(pivot, 0, "pivot_px")? as f32,
+                component(pivot, 1, "pivot_px")? as f32,
+            ],
+            pixels_per_unit: pixels_per_unit as f32,
+        });
+    }
+    Err(format!("visual pack has no {HEAD_VISUAL_KEY}"))
+}
+
+fn reference_head_png(head: HeadVisualGeometry) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(repo_path(ATLAS_REL)).map_err(|err| format!("read atlas: {err}"))?;
+    let atlas = image::load_from_memory(&bytes)
+        .map_err(|err| format!("decode atlas: {err}"))?
+        .to_rgba8();
+    let [x, y, width, height] = head.rect_px;
+    if x.saturating_add(width) > atlas.width() || y.saturating_add(height) > atlas.height() {
+        return Err("head rect does not fit the side atlas".to_owned());
+    }
+    let crop = imageops::crop_imm(&atlas, x, y, width, height).to_image();
+    encode_png(&crop)
+}
+
+pub fn render_svg() -> Result<String, String> {
+    let head = load_canonical_head_geometry()?;
+    let placement = reference_head_placement(head);
+    let png = base64_encode(&reference_head_png(head)?);
+    let mut out = String::with_capacity(png.len() + 8_000);
     let _ = writeln!(
         out,
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{SHEET_W}\" height=\"{SHEET_H}\" viewBox=\"0 0 {SHEET_W} {SHEET_H}\">\n\
   <title>PURGATORY Headwear Side master v1</title>\n\
-  <desc>Fixed 2×2 empty grid. {SHEET_W}×{SHEET_H} px · {COLUMNS}×{ROWS} cells of {CELL_W}×{CELL_H} · Crown local ({CROWN_LOCAL_X}, {CROWN_LOCAL_Y}) · {px} px/wu. Align head-contact to Crown +. Crop by grid only. No example art.</desc>",
+  <desc>Fixed 2×2 grid. {SHEET_W}×{SHEET_H} px · {COLUMNS}×{ROWS} cells of {CELL_W}×{CELL_H} · Crown local ({CROWN_LOCAL_X}, {CROWN_LOCAL_Y}) · {px} px/wu. The {REFERENCE_GROUP} group is guide art from character.base.dev_01.head.side and must not be exported as headwear. Crop by grid only.</desc>",
         px = PX_PER_WU as u32,
     );
+    let _ = writeln!(
+        out,
+        "  <defs>\n\
+    <g id=\"{REFERENCE_GROUP}\">\n\
+      <image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" href=\"data:image/png;base64,{png}\"/>\n\
+    </g>\n\
+  </defs>",
+        fmt_num(placement.x),
+        fmt_num(placement.y),
+        fmt_num(placement.width),
+        fmt_num(placement.height),
+    );
+    for spec in CELLS {
+        let b = cell_bounds(spec);
+        let _ = writeln!(
+            out,
+            "  <use href=\"#{REFERENCE_GROUP}\" x=\"{}\" y=\"{}\"/>",
+            b.x, b.y
+        );
+    }
     let _ = writeln!(
         out,
         "  <g id=\"grid\" fill=\"none\" stroke=\"#a8a29e\" stroke-width=\"1\">"
@@ -234,20 +379,14 @@ pub fn render_svg() -> String {
     let _ = writeln!(out, "  </g>");
     let _ = writeln!(
         out,
-        "  <g id=\"crown\" stroke=\"#b91c1c\" stroke-width=\"1.75\" fill=\"none\">"
+        "  <g id=\"crown\" data-local-px=\"{CROWN_LOCAL_X},{CROWN_LOCAL_Y}\">"
     );
     for spec in CELLS {
         let [cx, cy] = crown_sheet_px(spec);
-        let x = fmt_num(cx as f32);
-        let y = fmt_num(cy as f32);
         let _ = writeln!(
             out,
-            "    <line x1=\"{}\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\"/>\n\
-    <line x1=\"{x}\" y1=\"{}\" x2=\"{x}\" y2=\"{}\"/>",
-            fmt_num(cx as f32 - 8.0),
-            fmt_num(cx as f32 + 8.0),
-            fmt_num(cy as f32 - 8.0),
-            fmt_num(cy as f32 + 8.0),
+            "    <g id=\"crown-{}\" data-sheet-px=\"{cx},{cy}\"></g>",
+            spec.id
         );
     }
     let _ = writeln!(out, "  </g>");
@@ -266,7 +405,75 @@ pub fn render_svg() -> String {
         );
     }
     let _ = writeln!(out, "  </g>\n</svg>");
+    Ok(out)
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    let mut index = 0;
+    while index + 3 <= data.len() {
+        let value = (u32::from(data[index]) << 16)
+            | (u32::from(data[index + 1]) << 8)
+            | u32::from(data[index + 2]);
+        out.push(TABLE[((value >> 18) & 63) as usize] as char);
+        out.push(TABLE[((value >> 12) & 63) as usize] as char);
+        out.push(TABLE[((value >> 6) & 63) as usize] as char);
+        out.push(TABLE[(value & 63) as usize] as char);
+        index += 3;
+    }
+    let rest = data.len() - index;
+    if rest == 1 {
+        let value = u32::from(data[index]) << 16;
+        out.push(TABLE[((value >> 18) & 63) as usize] as char);
+        out.push(TABLE[((value >> 12) & 63) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rest == 2 {
+        let value = (u32::from(data[index]) << 16) | (u32::from(data[index + 1]) << 8);
+        out.push(TABLE[((value >> 18) & 63) as usize] as char);
+        out.push(TABLE[((value >> 12) & 63) as usize] as char);
+        out.push(TABLE[((value >> 6) & 63) as usize] as char);
+        out.push('=');
+    }
     out
+}
+
+#[cfg(test)]
+fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    fn value(byte: u8) -> Result<u8, String> {
+        match byte {
+            b'A'..=b'Z' => Ok(byte - b'A'),
+            b'a'..=b'z' => Ok(byte - b'a' + 26),
+            b'0'..=b'9' => Ok(byte - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err("invalid base64".to_owned()),
+        }
+    }
+    let bytes = text.as_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return Err("base64 length is not a multiple of 4".to_owned());
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let pad = chunk.iter().filter(|byte| **byte == b'=').count();
+        let mut n = 0u32;
+        for (offset, byte) in chunk.iter().copied().enumerate() {
+            if byte == b'=' {
+                continue;
+            }
+            n |= u32::from(value(byte)?) << (18 - offset * 6);
+        }
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -287,20 +494,78 @@ mod tests {
     }
 
     #[test]
-    fn svg_has_no_example_art() {
-        let svg = render_svg();
+    fn svg_keeps_the_grid_and_marks_the_head_as_guide_art() {
+        let svg = render_svg().unwrap();
+        let structure = svg.split("base64,").next().unwrap();
         assert!(svg.contains(&format!("width=\"{SHEET_W}\"")));
         assert!(svg.contains(&format!("height=\"{SHEET_H}\"")));
         assert!(svg.contains("id=\"crown\""));
         assert!(svg.contains("id=\"grid\""));
-        assert!(!svg.contains("fill=\"#ffffff\""));
-        assert!(!svg.contains("<polygon"));
-        assert!(!svg.contains("<ellipse"));
+        assert!(svg.contains("id=\"safe\""));
+        assert!(structure.contains(&format!("id=\"{REFERENCE_GROUP}\"")));
+        assert!(!structure.contains("<line"));
+        assert!(!structure.contains("<polygon"));
+        assert!(!structure.contains("<ellipse"));
         assert!(!svg.contains("world_x"));
         for spec in CELLS {
             assert!(svg.contains(spec.id));
             assert!(svg.contains(spec.visual_key));
+            let b = cell_bounds(spec);
+            assert!(svg.contains(&format!(
+                "<use href=\"#{REFERENCE_GROUP}\" x=\"{}\" y=\"{}\"/>",
+                b.x, b.y
+            )));
         }
+    }
+
+    #[test]
+    fn reference_head_placement_follows_visual_pack_and_crown_compose() {
+        let head = load_canonical_head_geometry().unwrap();
+        assert_ne!(head.rect_px, [0, 0, 0, 0]);
+        assert!(head.pixels_per_unit > 0.0);
+        let placed = reference_head_placement(head);
+        let crown_to_head = crown_to_head_world();
+        let dx = crown_to_head[0] - head.pivot_px[0] / head.pixels_per_unit;
+        let dy = crown_to_head[1] + head.pivot_px[1] / head.pixels_per_unit;
+        assert!((placed.x - (CROWN_LOCAL_X as f32 + dx * PX_PER_WU)).abs() < 1e-3);
+        assert!((placed.y - (CROWN_LOCAL_Y as f32 - dy * PX_PER_WU)).abs() < 1e-3);
+        assert!(
+            (placed.width - head.rect_px[2] as f32 * PX_PER_WU / head.pixels_per_unit).abs() < 1e-3
+        );
+        let mut shifted = head;
+        shifted.pivot_px[0] += 17.0;
+        let moved = reference_head_placement(shifted);
+        let expected_shift = -17.0 / head.pixels_per_unit * PX_PER_WU;
+        assert!((moved.x - placed.x - expected_shift).abs() < 1e-3);
+        assert!((crown_to_head[0] + ANCHOR_CROWN.translation[0]).abs() < 1e-4);
+        assert!((crown_to_head[1] + ANCHOR_CROWN.translation[1]).abs() < 1e-4);
+
+        let svg = render_svg().unwrap();
+        assert!(svg.contains(&format!("x=\"{}\"", fmt_num(placed.x))));
+        assert!(svg.contains(&format!("y=\"{}\"", fmt_num(placed.y))));
+        assert!(svg.contains(&format!("width=\"{}\"", fmt_num(placed.width))));
+        assert!(svg.contains(&format!("height=\"{}\"", fmt_num(placed.height))));
+        let marker = "data:image/png;base64,";
+        let start = svg.find(marker).unwrap() + marker.len();
+        let end = svg[start..].find('"').unwrap() + start;
+        let decoded = base64_decode(&svg[start..end]).unwrap();
+        let png = image::load_from_memory(&decoded).unwrap().to_rgba8();
+        let atlas = image::load_from_memory(&std::fs::read(repo_path(ATLAS_REL)).unwrap())
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(png.width(), head.rect_px[2]);
+        assert_eq!(png.height(), head.rect_px[3]);
+        assert_eq!(
+            *png.get_pixel(0, 0),
+            *atlas.get_pixel(head.rect_px[0], head.rect_px[1])
+        );
+        assert_eq!(
+            *png.get_pixel(png.width() - 1, png.height() - 1),
+            *atlas.get_pixel(
+                head.rect_px[0] + head.rect_px[2] - 1,
+                head.rect_px[1] + head.rect_px[3] - 1
+            )
+        );
     }
 
     #[test]
@@ -333,7 +598,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("HEADWEAR_SIDE_MASTER_V1.svg");
         export_to(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), render_svg());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            render_svg().unwrap()
+        );
         let names: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -381,7 +649,7 @@ mod tests {
         let on_disk = std::fs::read_to_string(default_output_path()).unwrap_or_default();
         assert_eq!(
             on_disk.replace("\r\n", "\n"),
-            render_svg().replace("\r\n", "\n"),
+            render_svg().unwrap().replace("\r\n", "\n"),
             "re-export with PURGATORY_WRITE_HEADWEAR_SIDE_MASTER=1 cargo test -p purgatory-dev-hub --bin purgatory-dev-hub write_headwear_side_master_if_requested"
         );
     }

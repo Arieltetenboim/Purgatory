@@ -473,6 +473,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn text_buttons_have_horizontal_slices_and_no_vertical_slice() {
+        let mut runtime = AssetRuntime::new();
+        let mut loader = ClientAssetLoader::new(&mut runtime);
+        let bytes = loader.read_relative(MANIFEST_RELATIVE).unwrap();
+        let catalog = parse_ui_v2_catalog(std::str::from_utf8(&bytes).unwrap()).unwrap();
+        for name in [
+            "button_normal",
+            "button_hover",
+            "button_pressed",
+            "button_disabled",
+        ] {
+            let asset = load_ui_v2_nine_slice(&mut loader, &catalog, name).unwrap();
+            assert_eq!(asset.size_px, [112, 44], "{name}");
+            assert_eq!(asset.slice_ltrb, [10, 0, 10, 0], "{name}");
+        }
+    }
+
     fn unique_fixture() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);

@@ -84,12 +84,7 @@ pub fn presentation_debug_quads(
     draw_body: bool,
     view: PresentationView,
 ) -> Vec<DrawQuad> {
-    let mut assets = crate::asset_runtime::AssetRuntime::new();
-    if crate::headwear_proof::register_assets(&mut assets).is_err() {
-        return Vec::new();
-    }
-    let Ok(visual_pack) = crate::character_assets::embedded_character_visual_pack(&mut assets)
-    else {
+    let Some((assets, visual_pack)) = load_presentation_assets() else {
         return Vec::new();
     };
     presentation_debug_quads_with_assets(
@@ -114,12 +109,7 @@ pub fn presentation_debug_quads_with_headwear(
     view: PresentationView,
     headwear_cell: u8,
 ) -> Vec<DrawQuad> {
-    let mut assets = crate::asset_runtime::AssetRuntime::new();
-    if crate::headwear_proof::register_assets(&mut assets).is_err() {
-        return Vec::new();
-    }
-    let Ok(visual_pack) = crate::character_assets::embedded_character_visual_pack(&mut assets)
-    else {
+    let Some((assets, visual_pack)) = load_presentation_assets() else {
         return Vec::new();
     };
     presentation_debug_quads_with_assets(
@@ -132,6 +122,19 @@ pub fn presentation_debug_quads_with_headwear(
         view,
         headwear_cell,
     )
+}
+
+fn load_presentation_assets() -> Option<(AssetRuntime, CharacterVisualPack)> {
+    let mut assets = AssetRuntime::new();
+    if crate::headwear_proof::register_assets(&mut assets).is_err() {
+        return None;
+    }
+    let visual_pack = crate::character_assets::embedded_character_visual_pack(&mut assets).ok()?;
+    let hand = *visual_pack.visual("character.base.dev_01.hand_front.side")?;
+    if crate::practice_sword::register_assets(&mut assets, hand).is_err() {
+        return None;
+    }
+    Some((assets, visual_pack))
 }
 
 #[allow(clippy::too_many_arguments)]

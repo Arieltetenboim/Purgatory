@@ -29,6 +29,7 @@ mod map_presentation;
 mod network;
 mod npc_presentation;
 mod platform;
+mod practice_sword;
 mod prediction;
 mod renderer;
 mod replica;

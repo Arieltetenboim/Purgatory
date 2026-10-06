@@ -12,6 +12,7 @@ use super::debug_visual::{
     color_from_visual_key, presentation_debug_quads, presentation_debug_quads_with_headwear,
 };
 use super::draw_order::{layer_for_attachment, plan_character_draw};
+use super::presentation_debug_quads_with_assets;
 use super::resolve::resolve_equipment;
 use super::state::{EquipmentView, Facing, PresentationView};
 use super::{CharacterPresentationSet, LocalMotion, PresentationEntityKey, RemoteMotion};
@@ -478,4 +479,198 @@ fn headwear_debug_cell_selects_atlas_uvs() {
         crate::headwear_proof::gpu_uvs_for_cell(1)
     );
     assert_ne!(cell0[crown_i(&cell0)].uvs(), cell1[crown_i(&cell1)].uvs());
+}
+
+fn sword_entry(
+    registry: &ContentRegistry,
+    facing: Facing,
+) -> (CharacterPresentationSet, PresentationEntityKey) {
+    let equipment = present_slots(&[
+        (EquipmentSlot::Weapon, cid("equipment.debug.practice_sword")),
+        (EquipmentSlot::Boots, cid("equipment.debug.iron_boots")),
+    ]);
+    let mut set = CharacterPresentationSet::new();
+    let key = PresentationEntityKey::new(11, 1);
+    set.sync(
+        [(
+            key,
+            from_local(
+                LocalMotion {
+                    pose: [3.0, 1.0],
+                    velocity: [0.0, 0.0],
+                    grounded: true,
+                    equipment,
+                },
+                facing,
+            ),
+        )],
+        registry,
+        0.0,
+    );
+    (set, key)
+}
+
+fn recover_pivot(quad: crate::renderer::DrawQuad, local: [f32; 2], rotation: f32) -> [f32; 2] {
+    let world = quad.world_corners()[0];
+    let (sin, cos) = rotation.sin_cos();
+    let rotated = [
+        cos * local[0] - sin * local[1],
+        sin * local[0] + cos * local[1],
+    ];
+    [world[0] - rotated[0], world[1] - rotated[1]]
+}
+
+fn sprite_local_corner(visual: crate::asset_runtime::ResolvedVisual, scale: f32) -> [f32; 2] {
+    let height = visual.dimensions_px[1] as f32;
+    let sx = scale / visual.pixels_per_unit;
+    [-visual.pivot_px[0] * sx, (visual.pivot_px[1] - height) * sx]
+}
+
+#[test]
+fn practice_sword_uses_the_authored_visual_and_keeps_the_grip_on_the_hand() {
+    let registry = pack();
+    let (set, key) = sword_entry(&registry, Facing::Right);
+    let entry = set.get(key).unwrap();
+    let blade = entry
+        .bound()
+        .iter()
+        .find(|bound| bound.attachment_id == "blade")
+        .unwrap();
+    assert_eq!(
+        blade.visual_key_for_view(PresentationView::Side),
+        Some(crate::practice_sword::VISUAL_KEY)
+    );
+    let mut assets = crate::asset_runtime::AssetRuntime::new();
+    crate::headwear_proof::register_assets(&mut assets).unwrap();
+    let visual_pack = crate::character_assets::embedded_character_visual_pack(&mut assets).unwrap();
+    let unregistered = presentation_debug_quads_with_assets(
+        set.bone_map(),
+        entry,
+        &assets,
+        &visual_pack,
+        1.0,
+        true,
+        PresentationView::Side,
+        0,
+    );
+    assert_eq!(
+        unregistered
+            .iter()
+            .filter(|quad| quad.sprite_texture_id().is_none())
+            .count(),
+        3,
+        "sword plus both boots stay on the debug fallback until a visual is registered"
+    );
+
+    let hand = *visual_pack
+        .visual("character.base.dev_01.hand_front.side")
+        .unwrap();
+    crate::practice_sword::register_assets(&mut assets, hand).unwrap();
+    let visual = *assets.visual(crate::practice_sword::VISUAL_KEY).unwrap();
+    let quads = presentation_debug_quads_with_assets(
+        set.bone_map(),
+        entry,
+        &assets,
+        &visual_pack,
+        1.0,
+        true,
+        PresentationView::Side,
+        0,
+    );
+    let sword = quads
+        .iter()
+        .copied()
+        .find(|quad| quad.sprite_texture_id() == Some(visual.texture))
+        .expect("equipped sword resolved through AssetRuntime");
+    assert!(sword.is_textured());
+    let xf = compose_attachment(blade, entry.prepared().world).unwrap();
+    let root = entry
+        .prepared()
+        .world
+        .get(purgatory_skeleton::ROOT)
+        .unwrap()
+        .translation;
+    let grip = crate::skeleton_debug::scale_about_root(xf.translation, root, 1.0);
+    let recovered = recover_pivot(sword, sprite_local_corner(visual, 1.0), xf.rotation);
+    assert!((recovered[0] - grip[0]).abs() < 1e-3);
+    assert!((recovered[1] - grip[1]).abs() < 1e-3);
+    assert_eq!(
+        quads
+            .iter()
+            .filter(|quad| quad.sprite_texture_id().is_none())
+            .count(),
+        2,
+        "iron boots still fall back; the sword no longer uses DebugShape::Blade"
+    );
+}
+
+#[test]
+fn practice_sword_facing_left_mirrors_the_grip_about_root() {
+    let registry = pack();
+    let (right_set, right_key) = sword_entry(&registry, Facing::Right);
+    let (left_set, left_key) = sword_entry(&registry, Facing::Left);
+    let right = right_set.get(right_key).unwrap();
+    let left = left_set.get(left_key).unwrap();
+    let mut assets = crate::asset_runtime::AssetRuntime::new();
+    crate::headwear_proof::register_assets(&mut assets).unwrap();
+    let visual_pack = crate::character_assets::embedded_character_visual_pack(&mut assets).unwrap();
+    let hand = *visual_pack
+        .visual("character.base.dev_01.hand_front.side")
+        .unwrap();
+    crate::practice_sword::register_assets(&mut assets, hand).unwrap();
+    let visual = *assets.visual(crate::practice_sword::VISUAL_KEY).unwrap();
+    let draw = |set: &CharacterPresentationSet,
+                entry: &super::collection::CharacterPresentationEntry| {
+        presentation_debug_quads_with_assets(
+            set.bone_map(),
+            entry,
+            &assets,
+            &visual_pack,
+            1.0,
+            true,
+            PresentationView::Side,
+            0,
+        )
+    };
+    let right_quads = draw(&right_set, right);
+    let left_quads = draw(&left_set, left);
+    let right_sword = right_quads
+        .iter()
+        .copied()
+        .find(|quad| quad.sprite_texture_id() == Some(visual.texture))
+        .unwrap();
+    let left_sword = left_quads
+        .iter()
+        .copied()
+        .find(|quad| quad.sprite_texture_id() == Some(visual.texture))
+        .unwrap();
+    let root = right
+        .prepared()
+        .world
+        .get(purgatory_skeleton::ROOT)
+        .unwrap()
+        .translation;
+    assert_eq!(
+        left_sword.world_corners(),
+        right_sword.mirror_x_about(root).world_corners()
+    );
+    let blade = right
+        .bound()
+        .iter()
+        .find(|bound| bound.attachment_id == "blade")
+        .unwrap();
+    let xf = compose_attachment(blade, right.prepared().world).unwrap();
+    let grip = crate::skeleton_debug::scale_about_root(xf.translation, root, 1.0);
+    let mirrored = [root[0] * 2.0 - grip[0], grip[1]];
+    let (sin, cos) = (-xf.rotation).sin_cos();
+    let local = sprite_local_corner(visual, 1.0);
+    let mirrored_local = [-local[0], local[1]];
+    let rotated = [
+        cos * mirrored_local[0] - sin * mirrored_local[1],
+        sin * mirrored_local[0] + cos * mirrored_local[1],
+    ];
+    let left_corner = left_sword.world_corners()[1];
+    let left_grip = [left_corner[0] - rotated[0], left_corner[1] - rotated[1]];
+    assert!((left_grip[0] - mirrored[0]).abs() < 1e-3);
+    assert!((left_grip[1] - mirrored[1]).abs() < 1e-3);
 }
