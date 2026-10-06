@@ -79,6 +79,41 @@ pub(crate) struct TextBlock {
     pub style: TextStyle,
     pub anchor: [f32; 2],
     pub max_width: Option<f32>,
+    /// Framebuffer-pixel clip (`left`, `top`, `right`, `bottom`).
+    ///
+    /// `None` keeps glyphon's default unbounded visible area. This is the
+    /// existing `TextBounds` clip, not a new scissor system.
+    pub clip: Option<[f32; 4]>,
+}
+/// Horizontal caret stops for one unwrapped line, in framebuffer pixels from the layout origin.
+///
+/// Index `i` is the caret before character `i`. The last entry is the caret after the final character.
+/// Stops come from shaped glyph edges. A caret that falls inside a cluster keeps that cluster edge
+/// instead of splitting the glyph by an average character width.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TextCaretBoundaries {
+    pub x: Vec<f32>,
+}
+
+impl TextCaretBoundaries {
+    /// Nearest glyph-edge caret. An exact tie resolves to the later stop.
+    pub(crate) fn index_at_x(&self, local_x: f32) -> usize {
+        if !local_x.is_finite() || self.x.is_empty() {
+            return 0;
+        }
+        let mut best = 0usize;
+        let mut best_distance = f32::MAX;
+        for (index, stop) in self.x.iter().copied().enumerate() {
+            let distance = (stop - local_x).abs();
+            if distance < best_distance - 0.001
+                || ((distance - best_distance).abs() <= 0.001 && index > best)
+            {
+                best = index;
+                best_distance = distance;
+            }
+        }
+        best
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct TextMetrics {
@@ -187,7 +222,7 @@ impl TextLayout {
             left: self.left,
             top: self.request.anchor[1],
             scale: 1.0,
-            bounds: TextBounds::default(),
+            bounds: text_clip_bounds(self.request.clip),
             default_color: glyphon_color(self.request.style.color),
             custom_glyphs: &[],
         }
@@ -266,6 +301,7 @@ impl TextRenderer {
                 style: block.style,
                 anchor: block.anchor,
                 max_width: block.max_width,
+                clip: block.clip,
             };
             let previous = old.next();
             if let Some(previous) =
@@ -336,6 +372,75 @@ pub(crate) fn measure_text(block: &TextBlock, scale: f32) -> Option<TextMetrics>
     TextLayout::new(&mut fonts, block.clone(), scale).map(|layout| layout.metrics)
 }
 
+/// Shaped caret stops for a single unwrapped line.
+///
+/// `block.max_width` is ignored so the line cannot wrap. An empty string is a caret at x = 0.
+pub(crate) fn measure_caret_boundaries(
+    block: &TextBlock,
+    scale: f32,
+) -> Option<TextCaretBoundaries> {
+    let text = block.content.0.as_str();
+    let char_count = text.chars().count();
+    if text.is_empty() {
+        return Some(TextCaretBoundaries { x: vec![0.0] });
+    }
+    let mut request = block.clone();
+    request.max_width = None;
+    request.clip = None;
+    let mut fonts = measure_fonts()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let layout = TextLayout::new(&mut fonts, request, scale)?;
+    let mut stops = vec![f32::NAN; char_count + 1];
+    for run in layout.buffer.layout_runs() {
+        for glyph in run.glyphs.iter() {
+            let start = char_index_at_byte(text, glyph.start).min(char_count);
+            let end = char_index_at_byte(text, glyph.end).min(char_count);
+            let (start_x, end_x) = if glyph.level.is_rtl() {
+                (glyph.x + glyph.w, glyph.x)
+            } else {
+                (glyph.x, glyph.x + glyph.w)
+            };
+            if stops[start].is_nan() {
+                stops[start] = start_x;
+            }
+            stops[end] = end_x;
+        }
+    }
+    if stops[0].is_nan() {
+        stops[0] = 0.0;
+    }
+    let mut previous = stops[0];
+    for stop in &mut stops {
+        if stop.is_nan() {
+            *stop = previous;
+        } else {
+            previous = *stop;
+        }
+    }
+    Some(TextCaretBoundaries { x: stops })
+}
+
+fn char_index_at_byte(text: &str, byte: usize) -> usize {
+    text[..byte.min(text.len())].chars().count()
+}
+
+fn text_clip_bounds(clip: Option<[f32; 4]>) -> TextBounds {
+    let Some([left, top, right, bottom]) = clip else {
+        return TextBounds::default();
+    };
+    if ![left, top, right, bottom].into_iter().all(f32::is_finite) || right <= left || bottom <= top
+    {
+        return TextBounds::default();
+    }
+    TextBounds {
+        left: left.floor() as i32,
+        top: top.floor() as i32,
+        right: right.ceil() as i32,
+        bottom: bottom.ceil() as i32,
+    }
+}
+
 fn measure_fonts() -> &'static std::sync::Mutex<FontSystem> {
     static FONTS: std::sync::LazyLock<std::sync::Mutex<FontSystem>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(font_system()));
@@ -352,6 +457,7 @@ mod tests {
             style: TextStyle::at_size(size, [1.0; 4], Alignment::Left),
             anchor: [20.0, 20.0],
             max_width: None,
+            clip: None,
         }
     }
     fn layout(text: &str) -> TextLayout {
@@ -495,5 +601,36 @@ mod tests {
         assert!(long_metrics.line_count > 1);
         assert!(long_metrics.height > short_metrics.height * 1.5);
         assert!(long_metrics.width <= 120.01);
+    }
+
+    #[test]
+    fn caret_stops_follow_glyph_edges_not_an_average_width() {
+        let wide = measure_caret_boundaries(&block("W", 16.0), 1.0).unwrap();
+        let narrow = measure_caret_boundaries(&block("i", 16.0), 1.0).unwrap();
+        assert!(wide.x[1] > narrow.x[1] + 2.0);
+        let mixed = measure_caret_boundaries(&block("Wi", 16.0), 1.0).unwrap();
+        assert_eq!(mixed.x.len(), 3);
+        let first = mixed.x[1] - mixed.x[0];
+        let second = mixed.x[2] - mixed.x[1];
+        assert!(first > second * 1.4);
+        assert_eq!(mixed.index_at_x(mixed.x[0]), 0);
+        assert_eq!(mixed.index_at_x(mixed.x[2]), 2);
+        let midpoint = (mixed.x[0] + mixed.x[1]) * 0.5;
+        assert_eq!(mixed.index_at_x(midpoint), 1);
+        let emoji = measure_caret_boundaries(&block("a😀b", 16.0), 1.0).unwrap();
+        assert_eq!(emoji.x.len(), 4);
+        assert!(emoji.x.windows(2).all(|pair| pair[1] + 0.01 >= pair[0]));
+        let cluster = measure_caret_boundaries(&block("e\u{0301}", 16.0), 1.0).unwrap();
+        assert_eq!(cluster.x.len(), 3);
+        let midpoint = (cluster.x[0] + cluster.x[2]) * 0.5;
+        assert!(
+            (cluster.x[1] - cluster.x[0]).abs() < 0.05
+                || (cluster.x[1] - cluster.x[2]).abs() < 0.05
+                || (cluster.x[1] - midpoint).abs() > 0.5
+        );
+        assert_eq!(
+            measure_caret_boundaries(&block("", 16.0), 1.0).unwrap().x,
+            vec![0.0]
+        );
     }
 }

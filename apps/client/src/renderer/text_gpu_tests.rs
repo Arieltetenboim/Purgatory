@@ -176,6 +176,7 @@ fn block(text: &str, size: f32, anchor: [f32; 2], color: [f32; 4]) -> TextBlock 
         style: TextStyle::at_size(size, color, Alignment::Left),
         anchor,
         max_width: None,
+        clip: None,
     }
 }
 fn panel_renderer(device: &wgpu::Device) -> UiRenderer {

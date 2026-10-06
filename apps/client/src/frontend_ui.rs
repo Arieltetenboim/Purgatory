@@ -185,6 +185,7 @@ impl FrontendUi {
                 ),
                 anchor: layout.point([x, y]),
                 max_width: Some(width * layout.scale()),
+                clip: None,
             });
         };
         label(status, 640.0, 655.0, 340.0, 13.0);
@@ -450,6 +451,7 @@ impl FrontendUi {
                 ),
                 anchor: layout.point([x + width / 2.0, y + (height - 19.2) / 2.0]),
                 max_width: Some((width - 16.0) * layout.scale()),
+                clip: None,
             });
         }
         frame

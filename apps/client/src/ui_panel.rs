@@ -657,6 +657,7 @@ impl UiWindowAssets {
                 ),
                 anchor: title_anchor,
                 max_width: Some(title_max_width),
+                clip: None,
             },
         }))
     }
@@ -871,6 +872,7 @@ fn tab_text_block(
         style: TextStyle::at_size(font_size, TAB_TEXT_COLOR, TextAlignment::Center),
         anchor,
         max_width,
+        clip: None,
     }
 }
 
@@ -1255,6 +1257,7 @@ fn settings_title(layout: &SettingsLayout, pixels_per_unit: f32) -> TextBlock {
         ),
         anchor: title_anchor,
         max_width: Some(max_width),
+        clip: None,
     }
 }
 
@@ -1692,6 +1695,7 @@ fn settings_text(
         style: TextStyle::at_size(font_size, color, alignment),
         anchor,
         max_width,
+        clip: None,
     }
 }
 
@@ -1918,6 +1922,7 @@ impl UiCurrencyDisplay {
                 ),
                 anchor: [bounds.min[0] + column_width * 0.5, anchor_y],
                 max_width: Some(column_width),
+                clip: None,
             },
             TextBlock {
                 content: TextContent(format!("Silver: {}", self.silver)),
@@ -1928,6 +1933,7 @@ impl UiCurrencyDisplay {
                 ),
                 anchor: [bounds.min[0] + column_width * 1.5, anchor_y],
                 max_width: Some(column_width),
+                clip: None,
             },
         ])
     }
@@ -2896,6 +2902,7 @@ fn inventory_title(layout: &InventoryLayout, pixels_per_unit: f32) -> TextBlock 
         ),
         anchor: title_anchor,
         max_width: Some(max_width),
+        clip: None,
     }
 }
 
@@ -2921,6 +2928,7 @@ fn inventory_tab_labels(
                 tab.min[1] + ((tab.height() - font_px) * 0.5).max(0.0),
             ],
             max_width: Some((tab.width() - padding * 2.0).max(1.0)),
+            clip: None,
         })
         .collect())
 }
@@ -3163,6 +3171,7 @@ fn equipment_title(layout: &EquipmentLayout, pixels_per_unit: f32) -> TextBlock 
         ),
         anchor: title_anchor,
         max_width: Some(max_width),
+        clip: None,
     }
 }
 
@@ -3184,6 +3193,7 @@ fn equipment_labels(
             ),
             anchor: [(label.min[0] + label.max[0]) * 0.5, label.min[1]],
             max_width: Some(label.width().max(1.0)),
+            clip: None,
         })
         .collect())
 }
@@ -3530,6 +3540,7 @@ fn inventory_items_frame(
                 ),
                 anchor: [slot.max[0] - inset, slot.max[1] - font_size - inset],
                 max_width: Some((slot.max[0] - slot.min[0] - inset * 2.0).max(1.0)),
+                clip: None,
             });
         }
     }
@@ -3719,6 +3730,7 @@ fn inventory_tooltip_frame(
             ),
             anchor: title_anchor,
             max_width: Some(text_width),
+            clip: None,
         },
         TextBlock {
             content: TextContent(detail),
@@ -3729,6 +3741,7 @@ fn inventory_tooltip_frame(
             ),
             anchor: detail_anchor,
             max_width: Some(text_width),
+            clip: None,
         },
     ];
     if !description.is_empty() {
@@ -3741,6 +3754,7 @@ fn inventory_tooltip_frame(
             ),
             anchor: [detail_anchor[0], detail_anchor[1] + font_size + line_gap],
             max_width: Some(text_width),
+            clip: None,
         });
     }
     let quads = compose_nine_slice_with_borders(
@@ -4289,6 +4303,7 @@ pub(crate) fn button_label_text(
             content.min[1] + ((content.height() - font_px) * 0.5).max(0.0),
         ],
         max_width: Some(content.width().max(1.0)),
+        clip: None,
     }
 }
 

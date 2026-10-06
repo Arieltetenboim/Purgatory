@@ -1,20 +1,23 @@
 //! Dev-only UI DEBUG window. It consumes reusable controls; it does not invent them.
 
+use std::time::Instant;
+
 use winit::event::{ElementState, MouseScrollDelta};
 use winit::keyboard::Key;
 
 use crate::asset_runtime::AssetRuntime;
 use crate::assets::ClientAssetLoader;
-use crate::renderer::text::measure_text;
+use crate::renderer::text::{TextCaretBoundaries, measure_caret_boundaries, measure_text};
 use crate::renderer::{
     PixelViewport, SpriteTextureId, TextAlignment, TextBlock, TextContent, TextStyle, UiRect,
     UiTexturedQuad,
 };
 use crate::ui_controls::{
-    PROGRESS_FILL_INSET, UiButton, UiButtonSkin, UiButtonVisual, UiCheckbox, UiCheckboxSkin,
-    UiPointerOutcome, UiRadioGroup, UiRadioOutcome, UiRadioSkin, UiScrollGeometry, UiScrollbar,
-    UiSlider, UiSliderGeometry, UiSliderOutcome, UiSliderSkin, UiSlotVisual, UiTabSkin,
-    UiTabVisual, UiTextInput, compose_progress_bar, scroll_geometry, scroll_max_offset,
+    PROGRESS_FILL_INSET, TooltipContent, UiButton, UiButtonSkin, UiButtonVisual, UiCheckbox,
+    UiCheckboxSkin, UiPointerOutcome, UiRadioGroup, UiRadioOutcome, UiRadioSkin, UiScrollGeometry,
+    UiScrollbar, UiSlider, UiSliderGeometry, UiSliderOutcome, UiSliderSkin, UiSlotVisual,
+    UiTabSkin, UiTabVisual, UiTextInput, UiTextMetrics, UiTextNav, compose_progress_bar,
+    notification_badge_label, notification_badge_scale, scroll_geometry, scroll_max_offset,
     scroll_offset_after_wheel, scroll_rows_from_wheel, slider_geometry, slot_visual, tab_visual,
     visible_row_indices,
 };
@@ -108,15 +111,11 @@ const TOOLTIP_INNER_PAD_Y: f32 = 6.0;
 const TOOLTIP_LINE_GAP: f32 = 4.0;
 const TOOLTIP_MAX_WIDTH: f32 = 220.0;
 const TOOLTIP_POINTER: [f32; 2] = [10.0, 6.0];
-const TOOLTIP_TITLE: [f32; 4] = [0.96, 0.94, 0.88, 1.0];
 const TOOLTIP_BODY: [f32; 4] = [0.74, 0.78, 0.82, 1.0];
-const TOOLTIP_LINES: [(&str, [f32; 4]); 2] = [
-    ("Training Sword", TOOLTIP_TITLE),
-    (
-        "Example UI DEBUG tooltip that wraps once the copy is wider than the tooltip.",
-        TOOLTIP_BODY,
-    ),
-];
+const TOOLTIP_ITEM_TITLE: [f32; 4] = [0.93, 0.72, 0.28, 1.0];
+const TOOLTIP_DIVIDER_HEIGHT: f32 = 8.0;
+const SELECTION_FILL: [f32; 4] = [0.62, 0.78, 0.95, 0.55];
+const NOTIFICATION_PULSE_MS: u32 = 180;
 const CHAT_BORDER: [f32; 4] = [10.0, 10.0, 10.0, 10.0];
 const SCROLL_TRACK_BORDER: [f32; 4] = [8.0, 10.0, 8.0, 10.0];
 const TOOLTIP_BORDER: [f32; 4] = [14.0, 14.0, 14.0, 18.0];
@@ -188,6 +187,8 @@ struct UiDebugState {
     selected_slot: usize,
     selected_hotbar_slot: usize,
     notification_count: u32,
+    notification_pulse_at: Option<Instant>,
+    notification_pulse_generation: u64,
 }
 
 impl Default for UiDebugState {
@@ -204,6 +205,8 @@ impl Default for UiDebugState {
             selected_slot: 2,
             selected_hotbar_slot: 0,
             notification_count: 0,
+            notification_pulse_at: None,
+            notification_pulse_generation: 0,
         }
     }
 }
@@ -253,6 +256,7 @@ pub(crate) struct UiDebugAssets {
     scroll_down: [SpriteTextureId; 3],
     tooltip_body: UiV2NineSlice,
     tooltip_pointer: SpriteTextureId,
+    tooltip_divider: UiV2NineSlice,
     slots: [SpriteTextureId; 4],
     hotbar_body: UiV2NineSlice,
     hotbar_slots: [SpriteTextureId; 4],
@@ -372,6 +376,7 @@ impl UiDebugAssets {
         )?)?;
         let tooltip_body = load_ui_v2_nine_slice(&mut loader, &catalog, "tooltip_body_9slice")?;
         let tooltip_pointer = load_ui_v2_image(&mut loader, &catalog, "tooltip_pointer")?.texture;
+        let tooltip_divider = load_ui_v2_nine_slice(&mut loader, &catalog, "divider_plain_9slice")?;
         let slots = image_textures(family(
             &mut loader,
             &catalog,
@@ -422,6 +427,7 @@ impl UiDebugAssets {
             scroll_down,
             tooltip_body,
             tooltip_pointer,
+            tooltip_divider,
             slots,
             hotbar_body,
             hotbar_slots,
@@ -549,12 +555,25 @@ impl UiDebugWindow {
         self.text_input.blur();
     }
 
-    pub(crate) fn apply_text_key(&mut self, key: &Key, text: Option<&str>, repeat: bool) -> bool {
+    pub(crate) fn apply_text_key(
+        &mut self,
+        key: &Key,
+        text: Option<&str>,
+        repeat: bool,
+        nav: UiTextNav,
+        scale: f32,
+    ) -> bool {
         if !self.wants_text_keyboard() {
             return false;
         }
-        self.text_input
-            .apply_key(&mut self.state.input_text, key, text, repeat)
+        self.text_input.apply_key(
+            &mut self.state.input_text,
+            key,
+            text,
+            repeat,
+            nav,
+            input_metrics(scale),
+        )
     }
 
     pub(crate) fn take_event(&mut self) -> Option<UiDebugEvent> {
@@ -628,6 +647,22 @@ impl UiDebugWindow {
                 Err(_) => false,
             };
         }
+        if self.text_input.is_dragging() && self.tabs.selected_index() == INPUT_PAGE {
+            let Ok(Some(layout)) = self.layout(viewport, pixels_per_unit) else {
+                self.text_input.end_drag();
+                return false;
+            };
+            return self.text_input.apply_drag(
+                input_local_x(
+                    cursor[0],
+                    layout.input.field,
+                    pixels_per_unit,
+                    self.text_input.scroll(),
+                ),
+                &self.state.input_text,
+                input_metrics(pixels_per_unit),
+            );
+        }
         if self.scrollbar.is_dragging() {
             let Ok(Some(layout)) = self.layout(viewport, pixels_per_unit) else {
                 self.scrollbar.cancel();
@@ -680,6 +715,14 @@ impl UiDebugWindow {
         }
         if self.scrollbar.is_dragging() && self.tabs.selected_index() != CONTAINERS_PAGE {
             self.scrollbar.cancel();
+            if state == ElementState::Released {
+                return true;
+            }
+        }
+        if self.text_input.is_dragging() {
+            if state == ElementState::Released || self.tabs.selected_index() != INPUT_PAGE {
+                self.text_input.end_drag();
+            }
             if state == ElementState::Released {
                 return true;
             }
@@ -1031,6 +1074,9 @@ impl UiDebugWindow {
             ) == UiPointerOutcome::Activated
             {
                 self.state.notification_count = self.state.notification_count.saturating_add(1);
+                self.state.notification_pulse_at = Some(Instant::now());
+                self.state.notification_pulse_generation =
+                    self.state.notification_pulse_generation.saturating_add(1);
             }
             return true;
         }
@@ -1079,9 +1125,25 @@ impl UiDebugWindow {
         match self.tabs.selected_index() {
             BASICS => self.press_controls(layout, cursor),
             VALUES => self.press_slider(layout, cursor, scale),
-            INPUT_PAGE => self
-                .text_input
-                .apply_press(inside(layout.input.field, cursor), &self.state.input_text),
+            INPUT_PAGE => {
+                let inside = inside(layout.input.field, cursor);
+                let local_x = cursor
+                    .map(|point| {
+                        input_local_x(
+                            point[0],
+                            layout.input.field,
+                            scale,
+                            self.text_input.scroll(),
+                        )
+                    })
+                    .unwrap_or(0.0);
+                self.text_input.apply_press(
+                    inside,
+                    local_x,
+                    &self.state.input_text,
+                    input_metrics(scale),
+                )
+            }
             CONTAINERS_PAGE => self.press_containers(layout, cursor),
             COMPOSITE_PAGE => self.press_composite(layout, cursor),
             _ => false,
@@ -2159,6 +2221,7 @@ fn meter_label(label: &str, row: ScreenRect, align_right: bool, scale: f32) -> T
             style: TextStyle::at_size(BODY_FONT, INK, TextAlignment::Right),
             anchor: [row.max[0], y],
             max_width: Some(row.width().max(1.0)),
+            clip: None,
         }
     } else {
         body_text(label, [row.min[0], y], row.width().max(1.0), INK)
@@ -2209,6 +2272,7 @@ fn heading(label: &str, anchor: [f32; 2]) -> TextBlock {
         style: TextStyle::at_size(SECTION_FONT, INK, TextAlignment::Left),
         anchor,
         max_width: Some(180.0),
+        clip: None,
     }
 }
 
@@ -2218,6 +2282,7 @@ fn body_text(label: &str, anchor: [f32; 2], max_width: f32, color: [f32; 4]) -> 
         style: TextStyle::at_size(BODY_FONT, color, TextAlignment::Left),
         anchor,
         max_width: Some(max_width.max(1.0)),
+        clip: None,
     }
 }
 
@@ -2256,12 +2321,14 @@ fn push_input(
         max: interior.max,
         color: INPUT_FILL,
     });
-    texts.push(field_text(
-        &window.text_input.display_text(&window.state.input_text),
+    push_field_editor(
+        rects,
+        texts,
+        &window.text_input,
+        &window.state.input_text,
         layout.input.field,
-        INK,
         scale,
-    ));
+    );
     let count = window.state.input_text.chars().count();
     texts.push(body_text(
         &format!("Characters: {count}"),
@@ -2492,15 +2559,15 @@ fn push_composite(
         layout.composite.badge_button,
         window.assets.icon_buttons.texture(UiButtonVisual::Normal),
     )?;
-    push_button(
-        quads,
-        layout.composite.badge,
-        window.assets.notification_badge,
-    )?;
+    let pulse = notification_badge_scale(notification_pulse_elapsed(
+        window.state.notification_pulse_at,
+    ));
+    let badge = scale_about_center(layout.composite.badge, pulse);
+    push_button(quads, badge, window.assets.notification_badge)?;
     texts.push(centered_label(
-        &window.state.notification_count.to_string(),
-        layout.composite.badge,
-        8.0,
+        &notification_badge_label(window.state.notification_count),
+        badge,
+        8.0 * pulse,
         TITLE_COLOR,
         scale,
     ));
@@ -2539,7 +2606,7 @@ fn push_composite(
     )?;
     if inside(layout.composite.slots[1], cursor) {
         let placed = place_tooltip(
-            &TOOLTIP_LINES,
+            &sample_tooltip(),
             layout.composite.slots[1],
             layout.window,
             scale,
@@ -2552,6 +2619,11 @@ fn push_composite(
             scale,
         )?;
         push_button(quads, placed.pointer, window.assets.tooltip_pointer)?;
+        quads.extend(compose_v2_text_button(
+            placed.divider,
+            &window.assets.tooltip_divider,
+            scale,
+        )?);
         texts.extend(placed.lines);
     }
     Ok(())
@@ -2588,7 +2660,7 @@ fn field_text(value: &str, bounds: ScreenRect, color: [f32; 4], scale: f32) -> T
     let interior = field_interior(bounds, scale);
     let pad = INPUT_TEXT_PAD * scale;
     let font_px = BODY_FONT * scale;
-    body_text(
+    let mut block = body_text(
         value,
         [
             interior.min[0] + pad,
@@ -2596,7 +2668,133 @@ fn field_text(value: &str, bounds: ScreenRect, color: [f32; 4], scale: f32) -> T
         ],
         (interior.width() - pad * 2.0).max(1.0),
         color,
-    )
+    );
+    block.clip = Some([
+        interior.min[0] + pad,
+        interior.min[1],
+        interior.max[0] - pad,
+        interior.max[1],
+    ]);
+    block
+}
+
+fn input_metrics(scale: f32) -> UiTextMetrics {
+    let interior_width = (INPUT_WIDTH - CHAT_BORDER[0] - CHAT_BORDER[2]) * scale;
+    let pad = INPUT_TEXT_PAD * scale;
+    UiTextMetrics {
+        style: TextStyle::at_size(BODY_FONT, INK, TextAlignment::Left),
+        scale,
+        view_width: (interior_width - pad * 2.0).max(1.0),
+    }
+}
+
+fn input_local_x(cursor_x: f32, field: ScreenRect, scale: f32, scroll: f32) -> f32 {
+    let interior = field_interior(field, scale);
+    let pad = INPUT_TEXT_PAD * scale;
+    cursor_x - (interior.min[0] + pad) + scroll
+}
+
+fn push_field_editor(
+    rects: &mut Vec<UiRect>,
+    texts: &mut Vec<TextBlock>,
+    input: &UiTextInput,
+    value: &str,
+    field: ScreenRect,
+    scale: f32,
+) {
+    let metrics = input_metrics(scale);
+    let interior = field_interior(field, scale);
+    let pad = INPUT_TEXT_PAD * scale;
+    let origin_x = interior.min[0] + pad;
+    let clip_left = origin_x;
+    let clip_right = origin_x + metrics.view_width;
+    let font_px = BODY_FONT * scale;
+    let text_y = interior.min[1] + ((interior.height() - font_px) * 0.5).max(0.0);
+    let line_height = BODY_FONT * 1.2 * scale;
+    let stops = measure_field_stops(value, metrics);
+    let scroll = input.scroll();
+    if input.is_focused()
+        && let Some((start, end)) = input.selection()
+        && let (Some(x0), Some(x1)) = (stops.x.get(start), stops.x.get(end))
+        && let Some((left, right)) = clipped_span(
+            origin_x + x0 - scroll,
+            origin_x + x1 - scroll,
+            clip_left,
+            clip_right,
+        )
+    {
+        rects.push(UiRect {
+            min: [left, text_y],
+            max: [right, (text_y + line_height).min(interior.max[1])],
+            color: SELECTION_FILL,
+        });
+    }
+    if input.is_focused() {
+        let caret = input.caret().min(stops.x.len().saturating_sub(1));
+        let caret_x = origin_x + stops.x.get(caret).copied().unwrap_or(0.0) - scroll;
+        if let Some((left, right)) = clipped_span(caret_x, caret_x + 1.0, clip_left, clip_right) {
+            rects.push(UiRect {
+                min: [left, text_y],
+                max: [right, (text_y + line_height).min(interior.max[1])],
+                color: INK,
+            });
+        }
+    }
+    let mut block = body_text(
+        value,
+        [origin_x - scroll, text_y],
+        metrics.view_width.max(1.0),
+        INK,
+    );
+    block.max_width = None;
+    block.clip = Some([clip_left, interior.min[1], clip_right, interior.max[1]]);
+    texts.push(block);
+}
+
+fn measure_field_stops(value: &str, metrics: UiTextMetrics) -> TextCaretBoundaries {
+    let block = TextBlock {
+        content: TextContent(value.to_owned()),
+        style: metrics.style,
+        anchor: [0.0, 0.0],
+        max_width: None,
+        clip: None,
+    };
+    measure_caret_boundaries(&block, metrics.scale).unwrap_or(TextCaretBoundaries { x: vec![0.0] })
+}
+
+fn clipped_span(start: f32, end: f32, left: f32, right: f32) -> Option<(f32, f32)> {
+    let min = start.min(end).max(left);
+    let max = start.max(end).min(right);
+    (max - min >= 0.4).then_some((min, max))
+}
+
+fn notification_pulse_elapsed(started: Option<Instant>) -> u32 {
+    let Some(started) = started else {
+        return NOTIFICATION_PULSE_MS;
+    };
+    u32::try_from(started.elapsed().as_millis()).unwrap_or(NOTIFICATION_PULSE_MS)
+}
+
+fn scale_about_center(bounds: ScreenRect, factor: f32) -> ScreenRect {
+    let center = [
+        (bounds.min[0] + bounds.max[0]) * 0.5,
+        (bounds.min[1] + bounds.max[1]) * 0.5,
+    ];
+    let width = bounds.width() * factor;
+    let height = bounds.height() * factor;
+    ScreenRect {
+        min: [center[0] - width * 0.5, center[1] - height * 0.5],
+        max: [center[0] + width * 0.5, center[1] + height * 0.5],
+    }
+}
+
+fn sample_tooltip() -> TooltipContent {
+    TooltipContent {
+        title: "Training Sword".to_owned(),
+        title_color: TOOLTIP_ITEM_TITLE,
+        description: "Example UI DEBUG tooltip that wraps once the copy is wider than the tooltip."
+            .to_owned(),
+    }
 }
 
 fn arrow_texture(textures: [SpriteTextureId; 3], visual: UiButtonVisual) -> SpriteTextureId {
@@ -2619,26 +2817,27 @@ fn slot_texture(textures: [SpriteTextureId; 4], visual: UiSlotVisual) -> SpriteT
 struct PlacedTooltip {
     body: ScreenRect,
     pointer: ScreenRect,
+    divider: ScreenRect,
     lines: Vec<TextBlock>,
 }
 
-fn measure_tooltip_lines(
-    lines: &[(&str, [f32; 4])],
-    max_width: f32,
-    scale: f32,
-) -> Result<Vec<(TextBlock, crate::renderer::text::TextMetrics)>, String> {
-    let mut measured = Vec::with_capacity(lines.len());
-    for (text, color) in lines {
-        let block = body_text(text, [0.0, 0.0], max_width, *color);
-        let metrics = measure_text(&block, scale)
-            .ok_or_else(|| format!("UI DEBUG tooltip cannot measure {text:?}"))?;
-        measured.push((block, metrics));
-    }
-    Ok(measured)
+/// Ordered tooltip pieces. Later categories append another piece here; they are not fields yet.
+enum TooltipPiece {
+    Title,
+    Divider,
+    Description,
+}
+
+fn tooltip_pieces() -> [TooltipPiece; 3] {
+    [
+        TooltipPiece::Title,
+        TooltipPiece::Divider,
+        TooltipPiece::Description,
+    ]
 }
 
 fn place_tooltip(
-    lines: &[(&str, [f32; 4])],
+    content: &TooltipContent,
     target: ScreenRect,
     window: ScreenRect,
     scale: f32,
@@ -2653,27 +2852,26 @@ fn place_tooltip(
     let pad_y = TOOLTIP_INNER_PAD_Y * scale;
     let gap = TOOLTIP_LINE_GAP * scale;
     let content_limit = (TOOLTIP_MAX_WIDTH * scale - border[0] - border[2] - pad_x * 2.0).max(1.0);
-    let probe = measure_tooltip_lines(lines, content_limit, scale)?;
-    let tightened = probe
-        .iter()
-        .map(|(_, metrics)| metrics.width)
-        .fold(1.0_f32, f32::max)
+    let title = measure_tooltip_text(&content.title, content.title_color, content_limit, scale)?;
+    let description =
+        measure_tooltip_text(&content.description, TOOLTIP_BODY, content_limit, scale)?;
+    let content_width = title
+        .1
+        .width
+        .max(description.1.width)
+        .max(24.0 * scale)
         .min(content_limit);
-    let measured = if (tightened - content_limit).abs() < 0.5 {
-        probe
-    } else {
-        measure_tooltip_lines(lines, tightened, scale)?
-    };
-    let content_width = measured
-        .iter()
-        .map(|(_, metrics)| metrics.width)
-        .fold(tightened, f32::max)
-        .min(content_limit);
-    let content_height = measured
-        .iter()
-        .map(|(_, metrics)| metrics.height)
-        .sum::<f32>()
-        + gap * measured.len().saturating_sub(1) as f32;
+    let divider_height = TOOLTIP_DIVIDER_HEIGHT * scale;
+    let mut content_height = 0.0;
+    for piece in tooltip_pieces() {
+        content_height += match piece {
+            TooltipPiece::Title => title.1.height,
+            TooltipPiece::Divider => divider_height,
+            TooltipPiece::Description => description.1.height,
+        };
+        content_height += gap;
+    }
+    content_height = (content_height - gap).max(divider_height);
     let width = (content_width + border[0] + border[2] + pad_x * 2.0).clamp(
         border[0] + border[2] + 2.0 * scale,
         TOOLTIP_MAX_WIDTH * scale,
@@ -2708,18 +2906,55 @@ fn place_tooltip(
         max: [pointer_x + pointer[0], pointer_y + pointer[1]],
     };
     let mut cursor_y = body.min[1] + border[1] + pad_y;
-    let mut text_blocks = Vec::with_capacity(measured.len());
-    for (mut block, metrics) in measured {
-        block.anchor = [body.min[0] + border[0] + pad_x, cursor_y];
-        block.max_width = Some(content_width);
-        text_blocks.push(block);
-        cursor_y += metrics.height + gap;
+    let text_x = body.min[0] + border[0] + pad_x;
+    let mut lines = Vec::new();
+    let mut divider = ScreenRect {
+        min: [text_x, cursor_y],
+        max: [text_x + content_width, cursor_y + divider_height],
+    };
+    for piece in tooltip_pieces() {
+        match piece {
+            TooltipPiece::Title => {
+                let mut block = title.0.clone();
+                block.anchor = [text_x, cursor_y];
+                block.max_width = Some(content_width);
+                block.style.color = content.title_color;
+                lines.push(block);
+                cursor_y += title.1.height + gap;
+            }
+            TooltipPiece::Divider => {
+                divider = ScreenRect {
+                    min: [text_x, cursor_y],
+                    max: [text_x + content_width, cursor_y + divider_height],
+                };
+                cursor_y += divider_height + gap;
+            }
+            TooltipPiece::Description => {
+                let mut block = description.0.clone();
+                block.anchor = [text_x, cursor_y];
+                block.max_width = Some(content_width);
+                lines.push(block);
+            }
+        }
     }
     Ok(PlacedTooltip {
         body,
         pointer: pointer_rect,
-        lines: text_blocks,
+        divider,
+        lines,
     })
+}
+
+fn measure_tooltip_text(
+    text: &str,
+    color: [f32; 4],
+    max_width: f32,
+    scale: f32,
+) -> Result<(TextBlock, crate::renderer::text::TextMetrics), String> {
+    let block = body_text(text, [0.0, 0.0], max_width, color);
+    let metrics = measure_text(&block, scale)
+        .ok_or_else(|| format!("UI DEBUG tooltip cannot measure {text:?}"))?;
+    Ok((block, metrics))
 }
 
 fn centered_label(
@@ -2738,6 +2973,7 @@ fn centered_label(
             bounds.min[1] + ((bounds.height() - font_px) * 0.5).max(0.0),
         ],
         max_width: Some((bounds.width() - 8.0 * scale).max(1.0)),
+        clip: None,
     }
 }
 
@@ -2784,6 +3020,7 @@ fn title_text(layout: &DebugLayout, scale: f32) -> TextBlock {
         style: TextStyle::at_size(TITLE_FONT, TITLE_COLOR, TextAlignment::Left),
         anchor,
         max_width: Some((layout.close_button.min[0] - TEXT_GAP * scale - anchor[0]).max(1.0)),
+        clip: None,
     }
 }
 
@@ -2866,6 +3103,7 @@ mod tests {
             scroll_down: [image(99).texture, image(100).texture, image(101).texture],
             tooltip_body: slice(102, [224, 112], [14, 14, 14, 18]),
             tooltip_pointer: image(103).texture,
+            tooltip_divider: slice(104, [240, 8], [6, 0, 6, 0]),
             slots: [
                 image(110).texture,
                 image(111).texture,
@@ -2995,6 +3233,7 @@ mod tests {
             "scroll_arrow_down_pressed",
             "tooltip_body_9slice",
             "tooltip_pointer",
+            "divider_plain_9slice",
             "slot_normal",
             "slot_hover",
             "slot_selected",
@@ -3798,17 +4037,34 @@ mod tests {
         assert!(window.wants_text_keyboard());
         assert!(!u_key_toggles_ui_debug(window.wants_text_keyboard()));
         assert!(window.apply_text_key(
+            &Key::Named(winit::keyboard::NamedKey::End),
+            None,
+            false,
+            UiTextNav::default(),
+            1.0,
+        ));
+        assert_eq!(window.text_input.caret(), 11);
+        assert!(window.apply_text_key(
             &Key::Named(winit::keyboard::NamedKey::ArrowLeft),
             None,
-            false
+            false,
+            UiTextNav::default(),
+            1.0,
         ));
         assert_eq!(window.text_input.caret(), 10);
-        assert!(window.apply_text_key(&Key::Character("u".into()), Some("u"), false));
+        assert!(window.apply_text_key(
+            &Key::Character("u".into()),
+            Some("u"),
+            false,
+            UiTextNav::default(),
+            1.0,
+        ));
         assert_eq!(window.state.input_text, "Hello worlud");
         assert!(window.wants_text_keyboard());
         let focused = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(focused.rects.iter().any(|rect| rect.color == INK));
         assert!(
-            focused
+            !focused
                 .texts
                 .iter()
                 .any(|text| text.content.0.contains('|'))
@@ -3838,14 +4094,22 @@ mod tests {
         let basics = center(window.layout(viewport(), 1.0).unwrap().unwrap().tabs[BASICS]);
         click(&mut window, basics);
         assert!(!window.wants_text_keyboard());
-        assert!(!window.apply_text_key(&Key::Character("z".into()), Some("z"), false));
+        assert!(!window.apply_text_key(
+            &Key::Character("z".into()),
+            Some("z"),
+            false,
+            UiTextNav::default(),
+            1.0,
+        ));
         assert_eq!(window.state.input_text, before);
         window.toggle();
         assert!(!window.wants_text_keyboard());
         assert!(!window.apply_text_key(
             &Key::Named(winit::keyboard::NamedKey::Backspace),
             None,
-            true
+            true,
+            UiTextNav::default(),
+            1.0,
         ));
     }
 
@@ -3999,24 +4263,43 @@ mod tests {
             min: [40.0, 80.0],
             max: [76.0, 116.0],
         };
-        let short = place_tooltip(&[("Hi", INK)], target, window, 1.0).unwrap();
-        let long = place_tooltip(
-            &[(
-                "This tooltip sentence is long enough that it must wrap inside the maximum width.",
-                INK,
-            )],
+        let short = place_tooltip(
+            &TooltipContent {
+                title: "Hi".into(),
+                title_color: TOOLTIP_ITEM_TITLE,
+                description: "Ok".into(),
+            },
             target,
             window,
             1.0,
         )
         .unwrap();
+        let long_copy =
+            "This tooltip sentence is long enough that it must wrap inside the maximum width.";
+        let long = place_tooltip(
+            &TooltipContent {
+                title: "Training Sword".into(),
+                title_color: TOOLTIP_ITEM_TITLE,
+                description: long_copy.into(),
+            },
+            target,
+            window,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(long.lines[0].style.color, TOOLTIP_ITEM_TITLE);
+        assert_eq!(long.lines[1].style.color, TOOLTIP_BODY);
+        assert!(long.divider.min[1] >= long.lines[0].anchor[1]);
+        assert!(long.lines[1].anchor[1] >= long.divider.max[1] - 0.05);
+        let description = measure_text(&long.lines[1], 1.0).unwrap();
+        assert!(description.line_count > 1);
         assert!(short.body.width() < TOOLTIP_MAX_WIDTH - 20.0);
         assert!(long.body.width() <= TOOLTIP_MAX_WIDTH + 0.05);
         assert!(long.body.width() > short.body.width());
         assert!(long.body.height() > short.body.height() + TOOLTIP_LINE_GAP);
         let content_limit =
             TOOLTIP_MAX_WIDTH - TOOLTIP_BORDER[0] - TOOLTIP_BORDER[2] - TOOLTIP_INNER_PAD_X * 2.0;
-        assert!(long.lines[0].max_width.unwrap() <= content_limit + 0.05);
+        assert!(long.lines[1].max_width.unwrap() <= content_limit + 0.05);
         let inset = [
             TOOLTIP_BORDER[0] + TOOLTIP_INNER_PAD_X,
             TOOLTIP_BORDER[1] + TOOLTIP_INNER_PAD_Y,
@@ -4026,17 +4309,20 @@ mod tests {
         assert!(long.lines[0].anchor[0] >= long.body.min[0] + inset[0] - 0.05);
         assert!(long.lines[0].anchor[1] >= long.body.min[1] + inset[1] - 0.05);
         assert!(
-            long.lines[0].anchor[0] + long.lines[0].max_width.unwrap()
+            long.lines[1].anchor[0] + long.lines[1].max_width.unwrap()
                 <= long.body.max[0] - inset[2] + 0.05
         );
+        assert!(long.lines[1].anchor[1] + description.height <= long.body.max[1] - inset[3] + 0.05);
+        assert!(long.divider.max[0] <= long.body.max[0] - inset[2] + 0.05);
         assert!((short.pointer.max[0] - short.body.min[0]).abs() < 0.05);
         for scale in [0.9_f32, 1.25] {
-            let placed = place_tooltip(&TOOLTIP_LINES, target, window, scale).unwrap();
+            let placed = place_tooltip(&sample_tooltip(), target, window, scale).unwrap();
             assert!(placed.body.max[0] <= window.max[0]);
             assert!(placed.body.max[1] <= window.max[1]);
             assert!(placed.body.min[0] >= window.min[0]);
             assert!(placed.pointer.max[1] <= placed.body.max[1] + 0.05);
-            assert!(placed.lines.len() == TOOLTIP_LINES.len());
+            assert_eq!(placed.lines.len(), 2);
+            assert_eq!(placed.lines[0].style.color, TOOLTIP_ITEM_TITLE);
         }
     }
 
@@ -4111,9 +4397,24 @@ mod tests {
         click(&mut window, center(layout.composite.notify_button));
         click(&mut window, center(layout.composite.notify_button));
         assert_eq!(window.state.notification_count, 2);
+        assert_eq!(window.state.notification_pulse_generation, 2);
         let counted = window.frame(viewport(), 1.0, None).unwrap().unwrap();
         assert!(counted.texts.iter().any(|text| text.content.0 == "2"));
         assert!(counted.texts.iter().any(|text| text.content.0 == "12"));
+        for _ in 0..8 {
+            click(&mut window, center(layout.composite.notify_button));
+        }
+        assert_eq!(window.state.notification_count, 10);
+        assert_eq!(window.state.notification_pulse_generation, 10);
+        let plus = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(plus.texts.iter().any(|text| text.content.0 == "+"));
+        assert!(!plus.texts.iter().any(|text| text.content.0 == "10"));
+        click(&mut window, center(layout.composite.notify_button));
+        assert_eq!(window.state.notification_count, 11);
+        assert_eq!(window.state.notification_pulse_generation, 11);
+        let still_plus = window.frame(viewport(), 1.0, None).unwrap().unwrap();
+        assert!(still_plus.texts.iter().any(|text| text.content.0 == "+"));
+        assert!(!still_plus.texts.iter().any(|text| text.content.0 == "11"));
         click(&mut window, center(layout.composite.dialog_button));
         assert_eq!(window.take_event(), Some(UiDebugEvent::OpenMessageDialog));
         assert!(window.take_event().is_none());

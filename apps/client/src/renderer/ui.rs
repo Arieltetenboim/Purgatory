@@ -602,6 +602,7 @@ mod tests {
             style: crate::renderer::text::TextStyle::default(),
             anchor: [0.0, 0.0],
             max_width: None,
+            clip: None,
         }];
         let first = UiComposition::new(&textured, &rects, &text);
         let second = UiComposition::new(&textured, &rects, &text);

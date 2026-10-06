@@ -119,6 +119,7 @@ pub(crate) fn layout_choice_bubble_in_column(
             style: TextStyle::at_size(14.0, [0.96, 0.93, 0.84, 1.0], TextAlignment::Left),
             anchor: [hit.min[0] + 4.0, hit.min[1] + TEXT_TOP_INSET_PX],
             max_width: Some((hit.max[0] - hit.min[0] - 8.0).max(1.0)),
+            clip: None,
         })
         .collect();
     ChoiceBubbleLayout {
