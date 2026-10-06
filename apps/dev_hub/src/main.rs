@@ -11,6 +11,7 @@ mod navigation;
 mod sound;
 mod theme;
 mod ui;
+mod weapon_side_master;
 
 fn main() -> eframe::Result {
     app::run()

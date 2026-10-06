@@ -7,6 +7,7 @@ use crate::headwear_side_master;
 use crate::theme;
 use crate::ui::layout::{self, btn_ghost, btn_primary, card};
 use crate::ui::tool_launch;
+use crate::weapon_side_master;
 
 pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<HubCommand> {
     let mut cmd = None;
@@ -235,6 +236,33 @@ pub fn show(ui: &mut egui::Ui, export_status: &mut Option<String>) -> Option<Hub
                 );
             }
         });
+    });
+
+    ui.add_space(12.0);
+    card(ui, "Weapon Side master", |ui| {
+        ui.label(
+            "Current HandFront + exact GripFront reference for authoring Side weapon paper-dolls.",
+        );
+        ui.add_space(6.0);
+        ui.colored_label(
+            theme::muted(),
+            format!(
+                "{}x{} px - {} px/wu - weapon pivot ({}, {})",
+                weapon_side_master::CANVAS_W,
+                weapon_side_master::CANVAS_H,
+                authoring_template::PX_PER_WU as u32,
+                weapon_side_master::PIVOT_X,
+                weapon_side_master::PIVOT_Y,
+            ),
+        );
+        ui.add_space(8.0);
+        if ui.add(btn_primary("Export Weapon Side master")).clicked() {
+            let path = weapon_side_master::default_output_path();
+            *export_status = Some(match weapon_side_master::export_to(&path) {
+                Ok(written) => format!("Wrote {}", written.display()),
+                Err(err) => format!("Export failed: {err}"),
+            });
+        }
     });
     if let Some(status) = export_status.as_ref() {
         ui.add_space(8.0);

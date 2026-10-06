@@ -562,10 +562,7 @@ fn practice_sword_uses_the_authored_visual_and_keeps_the_grip_on_the_hand() {
         "sword plus both boots stay on the debug fallback until a visual is registered"
     );
 
-    let hand = *visual_pack
-        .visual("character.base.dev_01.hand_front.side")
-        .unwrap();
-    crate::practice_sword::register_assets(&mut assets, hand).unwrap();
+    crate::practice_sword::register_assets(&mut assets).unwrap();
     let visual = *assets.visual(crate::practice_sword::VISUAL_KEY).unwrap();
     let quads = presentation_debug_quads_with_assets(
         set.bone_map(),
@@ -614,10 +611,7 @@ fn practice_sword_facing_left_mirrors_the_grip_about_root() {
     let mut assets = crate::asset_runtime::AssetRuntime::new();
     crate::headwear_proof::register_assets(&mut assets).unwrap();
     let visual_pack = crate::character_assets::embedded_character_visual_pack(&mut assets).unwrap();
-    let hand = *visual_pack
-        .visual("character.base.dev_01.hand_front.side")
-        .unwrap();
-    crate::practice_sword::register_assets(&mut assets, hand).unwrap();
+    crate::practice_sword::register_assets(&mut assets).unwrap();
     let visual = *assets.visual(crate::practice_sword::VISUAL_KEY).unwrap();
     let draw = |set: &CharacterPresentationSet,
                 entry: &super::collection::CharacterPresentationEntry| {

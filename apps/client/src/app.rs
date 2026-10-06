@@ -412,10 +412,7 @@ impl ClientApp {
         let character_visual_pack =
             crate::character_assets::embedded_character_visual_pack(&mut asset_runtime)
                 .map_err(|error| format!("PURGATORY character visual pack error: {error}"))?;
-        let hand_front = *character_visual_pack
-            .visual("character.base.dev_01.hand_front.side")
-            .ok_or("character visual pack is missing the front hand")?;
-        crate::practice_sword::register_assets(&mut asset_runtime, hand_front)?;
+        crate::practice_sword::register_assets(&mut asset_runtime)?;
         let mut monster_sheets = HashMap::new();
         for presentation in registry.iter_monster_presentations() {
             match SpriteSheet::from_sprite_id(&mut asset_runtime, &presentation.sprite_id) {

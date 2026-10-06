@@ -5,6 +5,10 @@
 //! `equipment.debug.practice_sword.side` from the retained paper-doll PNG.
 //! The draw path looks that key up in [`crate::asset_runtime::AssetRuntime`];
 //! it does not special-case the item id.
+//!
+//! Item Lab still authors item metadata and the inventory icon only. A later
+//! pass should let it author the equipped paper-doll: visual key, Side/Back
+//! variants, source artwork, pivot, and this pixels-per-unit value.
 
 use crate::asset_runtime::{AssetRuntime, ResolvedVisual};
 
@@ -19,32 +23,15 @@ const PNG: &[u8] =
 /// the crossguard. This pixel is the visual pivot, so it lands on GripFront.
 pub(crate) const GRIP_PIVOT_PX: [f32; 2] = [290.57, 983.43];
 
-/// Opaque thickness of the handle at the grip, perpendicular to the blade.
-const HANDLE_THICKNESS_PX: f32 = 123.0;
+/// Authored pixels per world unit.
+///
+/// Chosen on `WEAPON_SIDE_MASTER_V1` (256 px/wu, weapon pivot at (512, 512))
+/// with this grip pixel on the "+". At 1700 the blade tip sits about at the
+/// top of the current character's head and the handle reads as a grip in the
+/// fist. Runtime does not recompute this from the body.
+pub(crate) const PIXELS_PER_UNIT: f32 = 1700.0;
 
-/// Scale the paper-doll so the handle thickness matches the hand sprite's
-/// world height. The grip stays on the hand without a world-space offset.
-#[must_use]
-pub(crate) fn pixels_per_unit_for_hand(
-    hand_height_px: u32,
-    hand_pixels_per_unit: f32,
-) -> Option<f32> {
-    if hand_height_px == 0 || !hand_pixels_per_unit.is_finite() || hand_pixels_per_unit <= 0.0 {
-        return None;
-    }
-    let hand_world = hand_height_px as f32 / hand_pixels_per_unit;
-    let ppu = HANDLE_THICKNESS_PX / hand_world;
-    if ppu.is_finite() && ppu > 0.0 {
-        Some(ppu)
-    } else {
-        None
-    }
-}
-
-pub(crate) fn register_assets(
-    assets: &mut AssetRuntime,
-    hand: ResolvedVisual,
-) -> Result<(), String> {
+pub(crate) fn register_assets(assets: &mut AssetRuntime) -> Result<(), String> {
     let image = image::load_from_memory(PNG)
         .map_err(|err| format!("decode practice sword paper-doll: {err}"))?
         .to_rgba8();
@@ -53,8 +40,6 @@ pub(crate) fn register_assets(
     if width == 0 || height == 0 {
         return Err("practice sword paper-doll is empty".to_owned());
     }
-    let pixels_per_unit = pixels_per_unit_for_hand(hand.dimensions_px[1], hand.pixels_per_unit)
-        .ok_or("practice sword scale requires a positive hand visual")?;
     let texture = assets.register_image(VISUAL_KEY, image)?;
     assets.register_visual(
         VISUAL_KEY,
@@ -64,7 +49,7 @@ pub(crate) fn register_assets(
             uv: [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
             pivot_px: GRIP_PIVOT_PX,
             dimensions_px: [width, height],
-            pixels_per_unit,
+            pixels_per_unit: PIXELS_PER_UNIT,
         },
     )
 }
@@ -74,24 +59,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grip_pivot_and_hand_scale_register_the_authored_key() {
+    fn grip_pivot_and_authored_scale_register_the_authored_key() {
         let mut assets = AssetRuntime::new();
-        let hand = ResolvedVisual {
-            texture: crate::renderer::SpriteTextureId::from_raw(1),
-            rect_px: [0, 0, 99, 97],
-            uv: [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
-            pivot_px: [0.0, 0.0],
-            dimensions_px: [99, 97],
-            pixels_per_unit: 677.0,
-        };
-        let expected = pixels_per_unit_for_hand(97, 677.0).unwrap();
-        assert!((expected - (123.0 * 677.0 / 97.0)).abs() < 1e-3);
-        register_assets(&mut assets, hand).unwrap();
+        let hand_height_formula = 123.0 * 677.0 / 97.0;
+        assert!((PIXELS_PER_UNIT - hand_height_formula).abs() > 1.0);
+        register_assets(&mut assets).unwrap();
         let visual = assets.visual(VISUAL_KEY).unwrap();
         assert_eq!(visual.pivot_px, GRIP_PIVOT_PX);
-        assert!((visual.pixels_per_unit - expected).abs() < 1e-3);
-        assert!(visual.dimensions_px[0] > 0 && visual.dimensions_px[1] > 0);
-        let err = register_assets(&mut assets, hand).unwrap_err();
+        assert_eq!(visual.pivot_px, [290.57, 983.43]);
+        assert!((visual.pixels_per_unit - PIXELS_PER_UNIT).abs() < f32::EPSILON);
+        assert_eq!(visual.dimensions_px, [1254, 1254]);
+        let err = register_assets(&mut assets).unwrap_err();
         assert!(err.contains(VISUAL_KEY), "{err}");
     }
 }

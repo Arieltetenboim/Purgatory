@@ -130,8 +130,7 @@ fn load_presentation_assets() -> Option<(AssetRuntime, CharacterVisualPack)> {
         return None;
     }
     let visual_pack = crate::character_assets::embedded_character_visual_pack(&mut assets).ok()?;
-    let hand = *visual_pack.visual("character.base.dev_01.hand_front.side")?;
-    if crate::practice_sword::register_assets(&mut assets, hand).is_err() {
+    if crate::practice_sword::register_assets(&mut assets).is_err() {
         return None;
     }
     Some((assets, visual_pack))
