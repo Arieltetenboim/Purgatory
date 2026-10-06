@@ -59,3 +59,11 @@ Additional separate icons include potion, fire, and ice. Character portraits, la
 - `QA_report.json`: export and manifest validation results, generated after the build.
 
 The master places groups separately for visual comparison. Exported assets contain only their own artwork. The window variants and named HUD skins are reusable surfaces, not populated gameplay screenshots.
+
+## Inner tabbed content panel
+
+- `PNG/tabbed_content_body_9slice.png`: 288 × 192, transparent rounded corners, 8/8/8/8 slices (left/top/right/bottom). The top center is cream with no horizontal border.
+- `PNG/tabbed_content_top_edge.png`: 64 × 8, stretch horizontally at a fixed height of 8 pixels. Its ends have no caps or vertical borders.
+- Editable Photoshop sources: `Source/InnerTabbedContent/`.
+
+These assets use the existing `slot_normal` and `tab_active` materials: outline `#5F6C70`, highlight `#EEE8D8`, warm bevel `#B3A68F`, and cream `#E9E0CD`. Keep the body's 8-pixel corner regions fixed. Draw the top edge on each side of the active tab, then draw the active tab over the cream body so its open bottom connects directly to the content surface. Inactive tabs retain their closed bottoms. Both assets are registered in `asset_manifest.json`; runtime composition is supplied by the consuming UI.

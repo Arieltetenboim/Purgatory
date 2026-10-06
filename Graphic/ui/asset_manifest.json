@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "assetCount": 108,
+  "assetCount": 110,
   "units": "pixels",
   "sliceOrder": "left,top,right,bottom",
   "panelAssembly": {
@@ -16,6 +16,33 @@
     "fixedTopRegion": 64
   },
   "assets": {
+    "tabbed_content_body_9slice": {
+      "file": "PNG/tabbed_content_body_9slice.png",
+      "source": "Source/InnerTabbedContent/tabbed_content_body_9slice.psd",
+      "width": 288,
+      "height": 192,
+      "sliceLTRB": [
+        8,
+        8,
+        8,
+        8
+      ],
+      "vectorLayers": 6,
+      "borderThickness": 3,
+      "outerCornerRadius": 7,
+      "topCenterRail": false,
+      "topCenterOpaque": true
+    },
+    "tabbed_content_top_edge": {
+      "file": "PNG/tabbed_content_top_edge.png",
+      "source": "Source/InnerTabbedContent/tabbed_content_top_edge.psd",
+      "width": 64,
+      "height": 8,
+      "vectorLayers": 5,
+      "scaling": "horizontal_only",
+      "fixedHeight": 8,
+      "endpointCaps": false
+    },
     "panel_body_9slice": {
       "file": "PNG/panel_body_9slice.png",
       "width": 288,
