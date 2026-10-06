@@ -394,7 +394,7 @@ fn renderer_repeated_text_consumer_calibration() {
     use crate::asset_runtime::AssetRuntime;
     use crate::renderer::{Camera, PixelViewport, UiTexturedRect};
     use crate::ui_dialog::{DialogAction, DialogButton, MessageDialog, MessageDialogRequest};
-    use crate::ui_panel::{SettingsWindow, UiButtonAssets, UiWindowAssets};
+    use crate::ui_panel::{SettingsV2Assets, SettingsWindow, UiButtonAssets, UiWindowAssets};
     let Some(directory) = std::env::var_os("PURGATORY_TEXT_SPECIMEN_DIR") else {
         return;
     };
@@ -408,6 +408,7 @@ fn renderer_repeated_text_consumer_calibration() {
     let mut runtime = AssetRuntime::new();
     let windows = UiWindowAssets::load_embedded(&mut runtime).unwrap();
     let buttons = UiButtonAssets::load_embedded(&mut runtime).unwrap();
+    let settings_v2 = SettingsV2Assets::load(&mut runtime).unwrap();
     let (device, queue) = gpu();
     let mut text = TextRenderer::new(&device, &queue, FORMAT);
     let mut panels = panel_renderer(&device);
@@ -448,8 +449,7 @@ fn renderer_repeated_text_consumer_calibration() {
         settings.open();
         let settings = settings
             .frame(
-                windows,
-                buttons,
+                &settings_v2,
                 crate::display::DisplaySettings::default_dev(),
                 viewport,
                 scale,
@@ -474,10 +474,19 @@ fn renderer_repeated_text_consumer_calibration() {
             .frame(windows, buttons, viewport, scale, None)
             .unwrap()
             .unwrap();
+        let settings_rects = settings
+            .skin_quads
+            .into_iter()
+            .map(|quad| UiRect {
+                min: quad.corners[0],
+                max: quad.corners[2],
+                color: [0.12, 0.10, 0.08, 1.0],
+            })
+            .collect::<Vec<_>>();
         for (name, rects, blocks) in [
             ("choice", choice.rects, choice.texts),
             ("speech", speech.rects, vec![speech.text]),
-            ("settings", neutral(settings.textured_rects), settings.texts),
+            ("settings", settings_rects, settings.texts),
             ("dialog", neutral(dialog.textured_rects), dialog.texts),
         ] {
             text.begin_frame(&queue, SIZE);

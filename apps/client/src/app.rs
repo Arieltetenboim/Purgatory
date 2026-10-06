@@ -100,8 +100,8 @@ use crate::ui_panel::{
     DragDestination, DragResolution, DragSource, EquipmentV2Assets, EquipmentWindow,
     EquipmentWindowFrame, EquipmentWindowFrameInput, InventoryV2Assets, InventoryWindow,
     InventoryWindowFrame, InventoryWindowFrameInput, SettingsAction, SettingsLauncher,
-    SettingsLauncherFrame, SettingsWindow, SettingsWindowFrame, UiButtonAssets, UiItemIconAssets,
-    UiWindowAssets, resolve_drag,
+    SettingsLauncherFrame, SettingsV2Assets, SettingsWindow, SettingsWindowFrame, UiButtonAssets,
+    UiItemIconAssets, UiWindowAssets, resolve_drag,
 };
 use crate::ui_runtime::UIRuntimeState;
 #[cfg(feature = "dev-diagnostics")]
@@ -283,6 +283,7 @@ struct ClientApp {
     ui_item_icon_assets: UiItemIconAssets,
     inventory_v2: InventoryV2Assets,
     equipment_v2: EquipmentV2Assets,
+    settings_v2: SettingsV2Assets,
     #[cfg(feature = "dev-diagnostics")]
     ui_dev_proof: UiDevProof,
     inventory_window: InventoryWindow,
@@ -438,6 +439,8 @@ impl ClientApp {
             .map_err(|error| format!("PURGATORY UI V2 inventory asset error: {error}"))?;
         let equipment_v2 = EquipmentV2Assets::load(&mut asset_runtime)
             .map_err(|error| format!("PURGATORY UI V2 equipment asset error: {error}"))?;
+        let settings_v2 = SettingsV2Assets::load(&mut asset_runtime)
+            .map_err(|error| format!("PURGATORY UI V2 settings asset error: {error}"))?;
         let inventory_window = InventoryWindow::new(inventory_v2.metrics());
         let ui_item_icon_assets = UiItemIconAssets::load_placeholder(&mut asset_runtime, &registry)
             .map_err(|error| format!("PURGATORY UI item icon error: {error}"))?;
@@ -489,6 +492,7 @@ impl ClientApp {
             ui_item_icon_assets,
             inventory_v2,
             equipment_v2,
+            settings_v2,
             #[cfg(feature = "dev-diagnostics")]
             ui_dev_proof,
             inventory_window,
@@ -616,12 +620,10 @@ impl ClientApp {
                 self.equipment_window
                     .contains_window(cursor, viewport, pixels_per_unit)
             }
-            NormalWindowKind::Settings => self.settings_window.contains_window(
-                self.ui_window_assets,
-                cursor,
-                viewport,
-                pixels_per_unit,
-            ),
+            NormalWindowKind::Settings => {
+                self.settings_window
+                    .contains_window(cursor, viewport, pixels_per_unit)
+            }
         }
     }
 
@@ -669,7 +671,6 @@ impl ClientApp {
                     .apply_pointer_button(state, cursor, viewport, pixels_per_unit)
             }
             NormalWindowKind::Settings => self.settings_window.apply_pointer_button(
-                self.ui_window_assets,
                 state,
                 cursor,
                 viewport,
@@ -3424,8 +3425,7 @@ impl ClientApp {
             settings_frame = self
                 .settings_window
                 .frame(
-                    window_assets,
-                    self.ui_button_assets,
+                    &self.settings_v2,
                     self.display.settings(),
                     viewport,
                     pixels_per_unit,
@@ -3436,8 +3436,7 @@ impl ClientApp {
             settings_launcher_frame = self
                 .settings_launcher
                 .frame(
-                    window_assets,
-                    self.ui_button_assets,
+                    &self.settings_v2,
                     viewport,
                     pixels_per_unit,
                     self.cursor_position,
@@ -3515,7 +3514,9 @@ impl ClientApp {
 
         ui_compositions.push(UiComposition::new(&[], &ui_rects, &ui_text));
         if let Some(frame) = settings_launcher_frame.as_ref() {
-            ui_compositions.push(UiComposition::new(&frame.textured_rects, &[], &frame.texts));
+            let mut composition = UiComposition::new(&[], &[], &frame.texts);
+            composition.textured_quads = &frame.skin_quads;
+            ui_compositions.push(composition);
         }
         for kind in &self.normal_window_order {
             match kind {
@@ -3556,11 +3557,9 @@ impl ClientApp {
                 }
                 NormalWindowKind::Settings => {
                     if let Some(frame) = settings_frame.as_ref() {
-                        ui_compositions.push(UiComposition::new(
-                            &frame.textured_rects,
-                            &[],
-                            &frame.texts,
-                        ));
+                        let mut skins = UiComposition::new(&[], &[], &frame.texts);
+                        skins.textured_quads = &frame.skin_quads;
+                        ui_compositions.push(skins);
                     }
                 }
             }
