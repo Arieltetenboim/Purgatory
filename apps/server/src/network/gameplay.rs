@@ -3136,6 +3136,16 @@ impl GameplayOwner {
 
         let input_t0 = std::time::Instant::now();
         let channel_expired = Self::deadline_expired(self.channel_deadline);
+        let dead_actors: HashSet<EntityId> = self
+            .bindings
+            .values()
+            .filter(|binding| {
+                self.world
+                    .health_of(binding.entity)
+                    .is_some_and(|health| health.is_dead())
+            })
+            .map(|binding| binding.entity)
+            .collect();
         let ids: Vec<(
             ConnectionId,
             EntityId,
@@ -3148,7 +3158,8 @@ impl GameplayOwner {
             .iter_mut()
             .map(|(cid, binding)| {
                 let stopped = Self::control_ended(channel_expired, binding);
-                if stopped {
+                let dead = dead_actors.contains(&binding.entity);
+                if stopped || dead {
                     binding.input.neutralize_held();
                 }
                 let gated = binding.input.input_gated();
@@ -10732,6 +10743,48 @@ mod tests {
                 .take_for_tick(),
             PlayerInput::idle()
         );
+    }
+
+    #[test]
+    fn death_discards_held_movement_before_respawn() {
+        let mut owner = GameplayOwner::new();
+        let connection = ConnectionId::from_raw(1);
+        owner.attach(connection);
+        let actor = owner.entity_of(connection).expect("actor");
+        owner.apply_input(command_update(
+            connection,
+            cmd(1, MoveAxis::Right, false, true),
+        ));
+        owner.simulate_tick(1.0 / 60.0);
+        assert!(owner.world_mut().set_health(
+            actor,
+            Health {
+                current: 0.0,
+                max: PLAYER_HEALTH_MAX,
+            },
+        ));
+        owner.apply_input(command_update(
+            connection,
+            cmd(2, MoveAxis::Right, false, true),
+        ));
+
+        owner.simulate_tick(1.0 / 60.0);
+
+        let continued = owner
+            .bindings
+            .get_mut(&connection)
+            .expect("binding")
+            .input
+            .take_for_tick();
+        assert_eq!(continued, PlayerInput::idle());
+        owner.handle_respawn(connection);
+        let after = owner
+            .bindings
+            .get_mut(&connection)
+            .expect("binding")
+            .input
+            .take_for_tick();
+        assert_eq!(after, PlayerInput::idle());
     }
 
     fn authored_default(owner: &GameplayOwner, authored: &str) -> [f32; 2] {
