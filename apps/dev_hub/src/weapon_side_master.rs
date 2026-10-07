@@ -1,8 +1,9 @@
 //! Side weapon paper-doll calibration sheet (Developer Hub only).
 //!
 //! The red "+" is the weapon visual pivot. Runtime places that pixel on
-//! GripFront (`HandFront` composed with [`ANCHOR_GRIP`]). The hand image is
-//! guide art in that same weapon-local space. Not a runtime sprite.
+//! GripFront (`HandFront` composed with [`ANCHOR_GRIP`]). The character stays
+//! in bind-pose world orientation; the sheet is only translated so GripFront
+//! lands on the "+". Not a runtime sprite.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -90,24 +91,20 @@ fn rotate(point: [f32; 2], radians: f32) -> [f32; 2] {
     ]
 }
 
-/// Canvas position of a bone origin, in weapon-local space whose origin is `grip`.
-#[cfg(test)]
+/// Canvas position of a world point. GripFront is the "+", and world axes stay
+/// upright: +X right, +Y up.
 #[must_use]
-pub fn bone_origin_canvas(bone: BoneTransform, grip: BoneTransform) -> [f32; 2] {
-    let local = rotate(
-        [
-            bone.translation[0] - grip.translation[0],
-            bone.translation[1] - grip.translation[1],
-        ],
-        -grip.rotation,
-    );
+pub fn world_to_canvas(world: [f32; 2], grip: BoneTransform) -> [f32; 2] {
     [
-        PIVOT_X as f32 + local[0] * PX_PER_WU,
-        PIVOT_Y as f32 - local[1] * PX_PER_WU,
+        PIVOT_X as f32 + (world[0] - grip.translation[0]) * PX_PER_WU,
+        PIVOT_Y as f32 - (world[1] - grip.translation[1]) * PX_PER_WU,
     ]
 }
 
-/// Place a sprite's top-left so its pivot sits on `bone` and the sheet origin is `grip`.
+/// Place a sprite's top-left so its pivot sits on `bone` and GripFront is the "+".
+///
+/// The image keeps `bone`'s world rotation. [`ANCHOR_GRIP`]'s rotation is not
+/// applied to the reference.
 #[must_use]
 pub fn place_visual(
     rect_px: [u32; 4],
@@ -125,20 +122,13 @@ pub fn place_visual(
         top_left_local,
         0.0,
     ));
-    let local = rotate(
-        [
-            top_left_world.translation[0] - grip.translation[0],
-            top_left_world.translation[1] - grip.translation[1],
-        ],
-        -grip.rotation,
-    );
-    let rotation_deg = -(bone.rotation - grip.rotation).to_degrees();
+    let canvas = world_to_canvas(top_left_world.translation, grip);
     ImagePlacement {
-        x: PIVOT_X as f32 + local[0] * PX_PER_WU,
-        y: PIVOT_Y as f32 - local[1] * PX_PER_WU,
+        x: canvas[0],
+        y: canvas[1],
         width: rect_px[2] as f32 * scale,
         height: rect_px[3] as f32 * scale,
-        rotation_deg,
+        rotation_deg: -bone.rotation.to_degrees(),
     }
 }
 
@@ -249,7 +239,7 @@ pub fn render_svg() -> Result<String, String> {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{CANVAS_W}\" height=\"{CANVAS_H}\" viewBox=\"0 0 {CANVAS_W} {CANVAS_H}\">\n\
   <title>PURGATORY Weapon Side master v1</title>\n\
-  <desc>Weapon paper-doll sheet. {CANVAS_W}×{CANVAS_H} px · {px} px/wu · pivot ({PIVOT_X}, {PIVOT_Y}) is the weapon visual origin and GripFront. Draw weapon pixels around that +. {HAND_GROUP} and {CHARACTER_GROUP} are guide art and must not be exported into the weapon PNG.</desc>",
+  <desc>Weapon paper-doll sheet. {CANVAS_W}×{CANVAS_H} px · {px} px/wu · pivot ({PIVOT_X}, {PIVOT_Y}) is the weapon visual origin and GripFront. The reference character stays in bind-pose world orientation. Draw weapon pixels around that +. {HAND_GROUP} and {CHARACTER_GROUP} are guide art and must not be exported into the weapon PNG.</desc>",
         px = PX_PER_WU as u32,
     );
     write_grid(&mut out);
@@ -281,7 +271,7 @@ pub fn render_svg() -> Result<String, String> {
     let _ = writeln!(out, "  <g id=\"{HAND_GROUP}\">");
     write_image(&mut out, &hand_placement, &hand_png);
     let _ = writeln!(out, "  </g>");
-    write_pivot(&mut out);
+    write_pivot(&mut out, grip);
     let _ = writeln!(out, "</svg>");
     Ok(out)
 }
@@ -339,16 +329,22 @@ fn write_image(out: &mut String, placement: &ImagePlacement, png: &str) {
     );
 }
 
-fn write_pivot(out: &mut String) {
+fn write_pivot(out: &mut String, grip: BoneTransform) {
     let x = PIVOT_X as f32;
     let y = PIVOT_Y as f32;
     let arm = 14.0;
+    let axis = rotate([1.0, 0.0], grip.rotation);
+    let axis_len = 40.0;
     let _ = writeln!(
         out,
         "  <g id=\"pivot\" stroke=\"#b91c1c\" stroke-width=\"2\" fill=\"#b91c1c\" font-family=\"Segoe UI,Arial,sans-serif\" font-size=\"13\">\n\
     <line x1=\"{}\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\"/>\n\
     <line x1=\"{x}\" y1=\"{}\" x2=\"{x}\" y2=\"{}\"/>\n\
     <text x=\"{}\" y=\"{}\">GripFront</text>\n\
+  </g>\n\
+  <g id=\"grip-axis\" stroke=\"#b45309\" fill=\"#b45309\" stroke-width=\"1.5\" font-family=\"Segoe UI,Arial,sans-serif\" font-size=\"12\">\n\
+    <line x1=\"{x}\" y1=\"{y}\" x2=\"{}\" y2=\"{}\"/>\n\
+    <text x=\"{}\" y=\"{}\">grip +X</text>\n\
   </g>",
         fmt_num(x - arm),
         fmt_num(x + arm),
@@ -356,6 +352,10 @@ fn write_pivot(out: &mut String) {
         fmt_num(y + arm),
         fmt_num(x + 18.0),
         fmt_num(y - 16.0),
+        fmt_num(x + axis[0] * axis_len),
+        fmt_num(y - axis[1] * axis_len),
+        fmt_num(x + axis[0] * axis_len + 6.0),
+        fmt_num(y - axis[1] * axis_len + 14.0),
     );
 }
 
@@ -402,9 +402,14 @@ mod tests {
         let (hand, grip) = bind_hand_and_grip();
         let composed = hand.compose(ANCHOR_GRIP);
         assert_eq!(grip, composed);
-        let origin = bone_origin_canvas(hand, grip);
+        let grip_px = world_to_canvas(grip.translation, grip);
+        assert!((grip_px[0] - PIVOT_X as f32).abs() < 1e-3);
+        assert!((grip_px[1] - PIVOT_Y as f32).abs() < 1e-3);
+        let origin = world_to_canvas(hand.translation, grip);
         let dx = hand.translation[0] - grip.translation[0];
         let dy = hand.translation[1] - grip.translation[1];
+        assert!((origin[0] - (PIVOT_X as f32 + dx * PX_PER_WU)).abs() < 1e-3);
+        assert!((origin[1] - (PIVOT_Y as f32 - dy * PX_PER_WU)).abs() < 1e-3);
         let world_distance = (dx * dx + dy * dy).sqrt();
         let canvas_distance =
             ((origin[0] - PIVOT_X as f32).powi(2) + (origin[1] - PIVOT_Y as f32).powi(2)).sqrt();
@@ -448,6 +453,38 @@ mod tests {
             shifted_grip,
         );
         assert!((moved_grip.x - placed.x).abs() + (moved_grip.y - placed.y).abs() > 10.0);
+    }
+
+    #[test]
+    fn reference_keeps_world_orientation() {
+        let (hand_world, grip) = bind_hand_and_grip();
+        let (_ppu, parts) = load_visual_pack().unwrap();
+        let hand = hand_visual(&parts).unwrap();
+        let placed = place_visual(
+            hand.rect_px,
+            hand.pivot_px,
+            hand.pixels_per_unit,
+            hand_world,
+            grip,
+        );
+        assert!((placed.rotation_deg - (-hand_world.rotation.to_degrees())).abs() < 1e-3);
+        let grip_local_deg = -(hand_world.rotation - grip.rotation).to_degrees();
+        assert!(
+            (placed.rotation_deg - grip_local_deg).abs() > 1.0,
+            "ANCHOR_GRIP rotation must not tilt the reference"
+        );
+        let spun_grip =
+            BoneTransform::from_translation_rotation(grip.translation, grip.rotation + 0.35);
+        let spun = place_visual(
+            hand.rect_px,
+            hand.pivot_px,
+            hand.pixels_per_unit,
+            hand_world,
+            spun_grip,
+        );
+        assert!((spun.rotation_deg - placed.rotation_deg).abs() < 1e-4);
+        assert!((spun.x - placed.x).abs() < 1e-3);
+        assert!((spun.y - placed.y).abs() < 1e-3);
     }
 
     #[test]
