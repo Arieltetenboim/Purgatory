@@ -1,6 +1,6 @@
 # Item Lab V1 closeout audit — 2026-10-03
 
-Status: **automated CI repair green; full acceptance still open for remaining manual evidence**. The content-coupled regressions identified below were repaired with isolated fixtures in PR #127. GitHub Actions run `37142280327` passed both required jobs on repair head `5afdc30389742a5c839ac54051c69585421d9720`. This audit
+Status: **automated CI repair green; owner-reported native smoke PASS; full acceptance still open for dedicated Hub-button and browser file-chooser evidence**. The content-coupled regressions identified below were repaired with isolated fixtures in PR #127. GitHub Actions run `37142280327` passed both required jobs on repair head `5afdc30389742a5c839ac54051c69585421d9720`. This audit
 reviews master `8b3ccd5ee6440062f98e599fb987dfb1f20d39db` (`ITEM DONE?`).
 PR #125 and the existing-equipment save fix in PR #126 are already merged.
 This audit consolidates assets and documentation; it does not change gameplay,

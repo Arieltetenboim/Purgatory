@@ -1,8 +1,8 @@
 # Developer Tools capability / parity inventory
 
-Source of truth for “what the PowerShell launcher does today.” The Rust Developer Hub must not silently drop a CURRENT capability. Slice tags say when Hub work is allowed to take it.
+Capability/parity record for the PowerShell fallback and Rust Developer Hub. The Hub must not silently drop a CURRENT operational capability; this document also records intentional differences between the two shells.
 
-This is tooling, not a gameplay phase. Do not start Phase 7 from this document.
+This is tooling, not a gameplay phase. It does not advance or redefine root `PHASE`; current gameplay sequencing comes from root `PHASE` and `docs/ROADMAP.md`.
 
 See [`README.md`](README.md) (what exists now), [`RUNTIME_LIFECYCLE.md`](RUNTIME_LIFECYCLE.md) (state machine), [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
@@ -100,7 +100,7 @@ File logs under `logs/dev-tools/` may grow. The UI process must not. Match the l
 | Debug/Release profile toggle | Hub settings | Applies to **new** cargo/exe lookups |
 | Process exists ≠ Ready | 1 | |
 | Queued clients wait for Ready | Hub Clients | Stagger 140 ms; F6 = +1 |
-| Autostart on first show | — | **Code** currently logs `Auto-start disabled; click START` unless a server was adopted. README still lists autostart. Hub matches **code**. |
+| Autostart on first show | — | Disabled. Existing workspace servers are adopted/verified; otherwise the shell waits for explicit START. README is aligned with this behavior. |
 | Startup recovery adopt + verify; stop extra workspace servers | 1 | Clients adopted on reopen |
 | Recovery scan every 5 s when Stopped/Failed | 1 | |
 | Load-mode env (`PURGATORY_ADMISSION_CAP=256`, metrics `:5002`) | 2 (RV ExtraEnv) / 3 (load dialog) | |
@@ -134,7 +134,7 @@ Open +1/+2/+3, Stop All, F6, stagger 140 ms, skip client rebuild if exe locked, 
 
 ## Recorded Hub differences (intentional, not silent improvements)
 
-- Hub GUI is provisional eframe, not WinForms. Not a visual clone. Live: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings, Content (launches Animation Lab; ADR-0058). World stays a placeholder (map editor later).
+- Hub GUI is provisional eframe, not WinForms. Not a visual clone. Live: Dashboard, Runtime → Server / Clients, Validation, Performance, Logs, Settings, Content. Content launches Animation Lab, Character Lab, NPC Lab, Mob Lab, Item Lab, Map Lab, and Asset Slicer as standalone tools. World remains a placeholder; a dedicated in-Hub Maps page/editor is later scope.
 - Hub single-instance lock is workspace `logs/dev-tools/hub.lock`, not `Local\PurgatoryDevLauncher`. PowerShell still uses that mutex. Do not run Hub plus PowerShell against the same workspace.
 - Slice 1 listener diagnostic may report `unknown` (no `IPGlobalProperties` port). Must not affect Ready.
 - Activity timestamps in the Hub may be UTC `HH:MM:SS` rather than local `Get-Date`.
